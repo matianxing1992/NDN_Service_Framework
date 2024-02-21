@@ -1,0 +1,8 @@
+# Visual Studio Code
+.vscode/
+
+# Waf build system
+/build/
+.waf-*-*/
+.waf3-*-*/
+.lock-waf*

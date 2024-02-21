@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package muas;
+
+
+message ObjectDetection_YOLOv8_Request {
+  	bytes image_str = 1;
+}
+
+message ObjectDetection_YOLOv8_Response {
+  	repeated YOLOv8_DetectionResult results = 1;
+}
+
+message YOLOv8_DetectionResult {
+  int32 classification = 1;
+  float x_1 = 2;
+  float y_1 = 3;
+  float x_2 = 4;
+  float y_2 = 5;
+}

@@ -1,0 +1,32 @@
+top = '..'
+
+def build(bld):
+
+    
+    bld.program(name='server-main-example',
+                target='server-main-example',
+                source=["server_main.cpp", "messages.pb.cc"],
+                includes= ['.'],
+                use='NDN_CXX NDN_SVS BOOST ndn-service-framework PROTOBUF',
+                install_path=None)
+
+    bld.program(name='aa-example',
+                target='aa-example',
+                source=["aa-example.cpp"],
+                includes= ['.'],
+                use='ndn-service-framework',
+                install_path=None)
+    
+    bld.program(name='drone-example',
+                target='drone-example',
+                source=["main_drone.cpp","ServiceProvider_Drone.cpp","ObjectDetectionService.cpp","messages.pb.cc"],
+                includes= ['.','ndn-service-framework'],
+                use='ndn-service-framework',
+                install_path=None)
+    
+    bld.program(name='gs-example',
+                target='gs-example',
+                source=["main_gs.cpp","ServiceUser_GS.cpp","ObjectDetectionServiceStub.cpp","messages.pb.cc"],
+                includes= ['.','ndn-service-framework'],
+                use='ndn-service-framework',
+                install_path=None)
