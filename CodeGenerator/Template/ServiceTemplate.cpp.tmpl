@@ -1,0 +1,46 @@
+#include "./{{ServiceName}}Service.hpp"
+
+namespace {{NameSpace}}
+{
+    NDN_LOG_INIT({{NameSpace}}.{{ServiceName}}Service);
+
+    void {{ServiceName}}Service::OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
+    {
+        // ask service instance to deal with the request message and return a response messsage
+        // publish the request message
+        NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: " << requesterIdentity << ServiceName << FunctionName);
+
+        {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+        if (ServiceName.equals(ndn::Name("{{ServiceName}}")) & FunctionName.equals(ndn::Name("{{rpcName}}")))
+        {
+            NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: {ServiceName} {{rpcName}}");
+            {{rpcRequestMessage}} _request;
+            if (_request.ParseFromArray(buffer.data(), buffer.size()))
+            {
+                NDN_LOG_INFO("onRequestDecryptionSuccessCallback {{rpcRequestMessage}} parse success");
+                {{rpcResponseMessage}} _response;
+                {{rpcName}}(requesterIdentity, _request, _response);
+                std::string buffer = "";
+                _response.SerializeToString(&buffer);
+                ndn::Buffer b(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
+                m_ServiceProvider->PublishResponse(requesterIdentity, ServiceName, FunctionName, RequestID, b);
+            }
+            else
+            {
+                NDN_LOG_ERROR("OnRequestDecryptionSuccessCallback {{rpcRequestMessage}} parse failed");
+            }
+        }
+        {% endfor %}
+
+
+    }
+    {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+    void {{ServiceName}}Service::{{rpcName}}(const ndn::Name &requesterIdentity, const muas::ObjectDetection_YOLOv8_Request &_request, muas::ObjectDetection_YOLOv8_Response &_response)
+    {
+        NDN_LOG_INFO("{{rpcName}} request: " << _request.DebugString());
+        // RPC logic starts here
+
+        // RPC logic ends here
+    }
+    {% endfor %}
+}

@@ -1,11 +1,15 @@
-#include "ServiceProvider_Drone.hpp"
+#include "./ServiceProvider_Drone.hpp"
 
 namespace muas
 {
     NDN_LOG_INIT(muas.ServiceProvider_Drone);
     ServiceProvider_Drone::ServiceProvider_Drone(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath)
         : ndn_service_framework::ServiceProvider(face, group_prefix, identityCert, attrAuthorityCertificate,  trustSchemaPath),
-          m_ObjectDetectionService(*this)
+        
+            
+        m_ObjectDetectionService(*this)
+            
+        
 
     {
         init();
@@ -13,12 +17,14 @@ namespace muas
 
     void ServiceProvider_Drone::init()
     {
+        
         for (auto regex : m_ObjectDetectionService.regexSet)
         {
             m_svsps->subscribeWithRegex(*regex,
                                         std::bind(&ServiceProvider_Drone::OnRequest, this, _1),
                                         false);
         }
+        
     }
 
     void ServiceProvider_Drone::OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
@@ -49,6 +55,7 @@ namespace muas
 
     void ServiceProvider_Drone::ConsumeRequest(const ndn::Name& requesterName,const ndn::Name& ServiceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID)
     {
+        
         if (ServiceName.equals(m_ObjectDetectionService.serviceName))
         {
             ndn::Name request=ndn_service_framework::makeRequestName(requesterName,ServiceProviderName,ServiceName,FunctionName, RequestID);
@@ -56,6 +63,7 @@ namespace muas
                                     std::bind(&muas::ObjectDetectionService::OnRequestDecryptionSuccessCallback, m_ObjectDetectionService, requesterName, ServiceName, FunctionName, RequestID, _1),
                                     std::bind(&ServiceProvider_Drone::OnRequestDecryptionErrorCallback, this, requesterName, ServiceName, FunctionName, RequestID, _1));
         }
+        
     }
 
 

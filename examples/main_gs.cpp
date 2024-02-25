@@ -27,10 +27,10 @@ main(int argc, char **argv)
 
     muas::ObjectDetection_YOLOv8_Request _request;
     _request.set_image_str("image_str");
-    m_serviceUser.m_ObjectDetectionServiceStub.YOLOv8_Async(_request,[](const muas::ObjectDetection_YOLOv8_Response& _response){
+    m_serviceUser.YOLOv8_Async(ndn::Name("/muas/drone1"), _request, [](const muas::ObjectDetection_YOLOv8_Response& _response){
         //auto result0=_response.results().Get(0);
         NDN_LOG_INFO(_response.DebugString());
-    },ndn::Name("/muas/drone1")); 
+    }); 
 
     NDN_LOG_INFO("GS Running");
     try{

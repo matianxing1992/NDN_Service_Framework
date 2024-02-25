@@ -1,0 +1,42 @@
+#ifndef ${ServiceName}Service_HPP
+#define ${ServiceName}Service_HPP
+
+#include <ndn-cxx/name.hpp>
+#include <ndn-cxx/face.hpp>
+
+#include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/ServiceStub.hpp"
+#include "ndn-service-framework/Service.hpp"
+
+#include "messages.pb.h"
+
+#include <vector>
+
+namespace ${NameSpace}
+{
+
+${CallbackDefinitions}
+
+    class ${ServiceName}Service : public ndn_service_framework::Service
+    {
+    public:
+        ${ServiceName}Service(ndn_service_framework::ServiceProvider &serviceProvider)
+            : ndn_service_framework::Service(serviceProvider),
+              serviceName("${ServiceName}")
+        {
+        }
+
+        ~${ServiceName}Service() {}
+
+        void OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &) override;
+
+${RPCDefinitions}
+
+    public:
+        std::set<std::shared_ptr<ndn::Regex>> regexSet{
+${RequestRegex}
+        };
+        ndn::Name serviceName;
+    };
+}
+#endif

@@ -1,29 +1,31 @@
-#include "./ServiceUser_GS.hpp"
+#include "./ServiceUser_{{AppName}}.hpp"
 
-NDN_LOG_INIT(muas.ServiceUser_GS);
+NDN_LOG_INIT({{NameSpace}}.ServiceUser_{{AppName}});
 
-muas::ServiceUser_GS::ServiceUser_GS(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath)
+{{NameSpace}}::ServiceUser_{{AppName}}::ServiceUser_{{AppName}}(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath)
     :ndn_service_framework::ServiceUser(face, group_prefix, identityCert, attrAuthorityCertificate, trustSchemaPath),
-    
-        
-    m_ObjectDetectionServiceStub(*this)
-        
-    
+    {% for ServiceName in ServiceNameArray %}
+        {% if loop.revindex0 == 0 %}
+    m_{{ServiceName}}ServiceStub(*this)
+        {% else %}
+    m_{{ServiceName}}ServiceStub(*this),
+        {% endif %}
+    {% endfor %}
 {
     init();
 }
 
-void muas::ServiceUser_GS::init()
+void {{NameSpace}}::ServiceUser_{{AppName}}::init()
 {
     std::string regex_str = "^(<>*)<NDNSF><RESPONSE>" + ndn_service_framework::NameToRegexString(identity) + "(<>)(<>)(<>)$";
     NDN_LOG_INFO(regex_str);
 
     m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
-                                std::bind(&ServiceUser_GS::OnResponse, this, _1),
+                                std::bind(&ServiceUser_{{AppName}}::OnResponse, this, _1),
                                 false);
 }
 
-void muas::ServiceUser_GS::PublishRequest(const ndn::Name &serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
+void {{NameSpace}}::ServiceUser_{{AppName}}::PublishRequest(const ndn::Name &serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
 {
     ndn::Name requestName = ndn_service_framework::makeRequestName(identity, serviceProviderName, ServiceName, FunctionName, RequestID);
     ndn::Name requestNameWithoutPrefix = ndn_service_framework::makeRequestNameWithoutPrefix(serviceProviderName, ServiceName, FunctionName, RequestID);
@@ -50,7 +52,7 @@ void muas::ServiceUser_GS::PublishRequest(const ndn::Name &serviceProviderName, 
     //m_svsps->publish(ckData.at(0)->getName().getPrefix(-1));
 }
 
-void muas::ServiceUser_GS::OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
+void {{NameSpace}}::ServiceUser_{{AppName}}::OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
 {
         ndn::Name ServiceProviderName, RequesterName, ServiceName, FunctionName, RequestId;
         std::tie(ServiceProviderName, RequesterName, ServiceName, FunctionName, RequestId) =
@@ -58,17 +60,17 @@ void muas::ServiceUser_GS::OnResponse(const ndn::svs::SVSPubSub::SubscriptionDat
         NDN_LOG_INFO("OnResponse: " << ServiceProviderName << RequesterName << ServiceName << FunctionName << RequestId);
 
         // decrypt the request message with nac-abe; if cannot be decrypted
-        
-        if (ServiceName.equals(m_ObjectDetectionServiceStub.serviceName))
+        {% for ServiceName in ServiceNameArray %}
+        if (ServiceName.equals(m_{{ServiceName}}ServiceStub.serviceName))
         {
             requestConsumer.consume(subscription.name,
-                                    std::bind(&muas::ObjectDetectionServiceStub::OnResponseDecryptionSuccessCallback, &m_ObjectDetectionServiceStub, ServiceProviderName, ServiceName, FunctionName, RequestId, _1),
-                                    std::bind(&ServiceUser_GS::OnResponseDecryptionErrorCallback, this, ServiceProviderName, ServiceName, FunctionName, RequestId, _1));
+                                    std::bind(&{{NameSpace}}::{{ServiceName}}ServiceStub::OnResponseDecryptionSuccessCallback, &m_{{ServiceName}}ServiceStub, ServiceProviderName, ServiceName, FunctionName, RequestId, _1),
+                                    std::bind(&ServiceUser_{{AppName}}::OnResponseDecryptionErrorCallback, this, ServiceProviderName, ServiceName, FunctionName, RequestId, _1));
         }
-        
+        {% endfor %}
 }
 
-void muas::ServiceUser_GS::OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string &)
+void {{NameSpace}}::ServiceUser_{{AppName}}::OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string &)
 {
         NDN_LOG_ERROR("OnResponseDecryptionErrorCallback: " << serviceProviderName << ServiceName << FunctionName);
 }

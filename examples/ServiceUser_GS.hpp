@@ -2,7 +2,10 @@
 #define EXAMPLE_SERVICE_USER_GS_HPP
 
 #include <ndn-service-framework/ServiceUser.hpp>
-#include "ObjectDetectionServiceStub.hpp"
+
+#include "./ObjectDetectionServiceStub.hpp"
+
+
 
 namespace muas
 {
@@ -12,20 +15,30 @@ namespace muas
         ServiceUser_GS(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
         ~ServiceUser_GS() {}
 
-        void init();
+        void YOLOv8_Async(const ndn::Name& provider, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback)
+        {
+            m_ObjectDetectionServiceStub.YOLOv8_Async(provider, _request, _callback);
+        }
+        
+        void YOLOv8_S_Async(const ndn::Name& provider, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_S_Callback _callback)
+        {
+            m_ObjectDetectionServiceStub.YOLOv8_S_Async(provider, _request, _callback);
+        }
 
         void PublishRequest(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer) override;
 
-        void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription) override;
+    protected:
 
-        //void OnResponseDecryptionSuccessCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, const ndn::Buffer&) override;
+        void init();
+        
+        void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription) override;
 
         void OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, const std::string&) override;
 
-    public:
-        
+    private:
         
         muas::ObjectDetectionServiceStub m_ObjectDetectionServiceStub;
+        
     };
 }
 

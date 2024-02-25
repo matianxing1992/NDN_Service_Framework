@@ -38,7 +38,7 @@ namespace protobuf_messages_2eproto {
 struct TableStruct {
   static const ::google::protobuf::internal::ParseTableField entries[];
   static const ::google::protobuf::internal::AuxillaryParseTableField aux[];
-  static const ::google::protobuf::internal::ParseTable schema[3];
+  static const ::google::protobuf::internal::ParseTable schema[4];
   static const ::google::protobuf::internal::FieldMetadata field_metadata[];
   static const ::google::protobuf::internal::SerializationTable serialization_table[];
   static const ::google::protobuf::uint32 offsets[];
@@ -46,6 +46,9 @@ struct TableStruct {
 void AddDescriptors();
 }  // namespace protobuf_messages_2eproto
 namespace muas {
+class NDNSF_Request_Failure;
+class NDNSF_Request_FailureDefaultTypeInternal;
+extern NDNSF_Request_FailureDefaultTypeInternal _NDNSF_Request_Failure_default_instance_;
 class ObjectDetection_YOLOv8_Request;
 class ObjectDetection_YOLOv8_RequestDefaultTypeInternal;
 extern ObjectDetection_YOLOv8_RequestDefaultTypeInternal _ObjectDetection_YOLOv8_Request_default_instance_;
@@ -58,6 +61,7 @@ extern YOLOv8_DetectionResultDefaultTypeInternal _YOLOv8_DetectionResult_default
 }  // namespace muas
 namespace google {
 namespace protobuf {
+template<> ::muas::NDNSF_Request_Failure* Arena::CreateMaybeMessage<::muas::NDNSF_Request_Failure>(Arena*);
 template<> ::muas::ObjectDetection_YOLOv8_Request* Arena::CreateMaybeMessage<::muas::ObjectDetection_YOLOv8_Request>(Arena*);
 template<> ::muas::ObjectDetection_YOLOv8_Response* Arena::CreateMaybeMessage<::muas::ObjectDetection_YOLOv8_Response>(Arena*);
 template<> ::muas::YOLOv8_DetectionResult* Arena::CreateMaybeMessage<::muas::YOLOv8_DetectionResult>(Arena*);
@@ -66,6 +70,124 @@ template<> ::muas::YOLOv8_DetectionResult* Arena::CreateMaybeMessage<::muas::YOL
 namespace muas {
 
 // ===================================================================
+
+class NDNSF_Request_Failure : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.NDNSF_Request_Failure) */ {
+ public:
+  NDNSF_Request_Failure();
+  virtual ~NDNSF_Request_Failure();
+
+  NDNSF_Request_Failure(const NDNSF_Request_Failure& from);
+
+  inline NDNSF_Request_Failure& operator=(const NDNSF_Request_Failure& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  #if LANG_CXX11
+  NDNSF_Request_Failure(NDNSF_Request_Failure&& from) noexcept
+    : NDNSF_Request_Failure() {
+    *this = ::std::move(from);
+  }
+
+  inline NDNSF_Request_Failure& operator=(NDNSF_Request_Failure&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+  #endif
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const NDNSF_Request_Failure& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const NDNSF_Request_Failure* internal_default_instance() {
+    return reinterpret_cast<const NDNSF_Request_Failure*>(
+               &_NDNSF_Request_Failure_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    0;
+
+  void Swap(NDNSF_Request_Failure* other);
+  friend void swap(NDNSF_Request_Failure& a, NDNSF_Request_Failure& b) {
+    a.Swap(&b);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline NDNSF_Request_Failure* New() const final {
+    return CreateMaybeMessage<NDNSF_Request_Failure>(NULL);
+  }
+
+  NDNSF_Request_Failure* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<NDNSF_Request_Failure>(arena);
+  }
+  void CopyFrom(const ::google::protobuf::Message& from) final;
+  void MergeFrom(const ::google::protobuf::Message& from) final;
+  void CopyFrom(const NDNSF_Request_Failure& from);
+  void MergeFrom(const NDNSF_Request_Failure& from);
+  void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input) final;
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const final;
+  ::google::protobuf::uint8* InternalSerializeWithCachedSizesToArray(
+      bool deterministic, ::google::protobuf::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(NDNSF_Request_Failure* other);
+  private:
+  inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
+    return NULL;
+  }
+  inline void* MaybeArenaPtr() const {
+    return NULL;
+  }
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // string msg = 2;
+  void clear_msg();
+  static const int kMsgFieldNumber = 2;
+  const ::std::string& msg() const;
+  void set_msg(const ::std::string& value);
+  #if LANG_CXX11
+  void set_msg(::std::string&& value);
+  #endif
+  void set_msg(const char* value);
+  void set_msg(const char* value, size_t size);
+  ::std::string* mutable_msg();
+  ::std::string* release_msg();
+  void set_allocated_msg(::std::string* msg);
+
+  // int32 code = 1;
+  void clear_code();
+  static const int kCodeFieldNumber = 1;
+  ::google::protobuf::int32 code() const;
+  void set_code(::google::protobuf::int32 value);
+
+  // @@protoc_insertion_point(class_scope:muas.NDNSF_Request_Failure)
+ private:
+
+  ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
+  ::google::protobuf::internal::ArenaStringPtr msg_;
+  ::google::protobuf::int32 code_;
+  mutable ::google::protobuf::internal::CachedSize _cached_size_;
+  friend struct ::protobuf_messages_2eproto::TableStruct;
+};
+// -------------------------------------------------------------------
 
 class ObjectDetection_YOLOv8_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ObjectDetection_YOLOv8_Request) */ {
  public:
@@ -102,7 +224,7 @@ class ObjectDetection_YOLOv8_Request : public ::google::protobuf::Message /* @@p
                &_ObjectDetection_YOLOv8_Request_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    0;
+    1;
 
   void Swap(ObjectDetection_YOLOv8_Request* other);
   friend void swap(ObjectDetection_YOLOv8_Request& a, ObjectDetection_YOLOv8_Request& b) {
@@ -213,7 +335,7 @@ class ObjectDetection_YOLOv8_Response : public ::google::protobuf::Message /* @@
                &_ObjectDetection_YOLOv8_Response_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    1;
+    2;
 
   void Swap(ObjectDetection_YOLOv8_Response* other);
   friend void swap(ObjectDetection_YOLOv8_Response& a, ObjectDetection_YOLOv8_Response& b) {
@@ -322,7 +444,7 @@ class YOLOv8_DetectionResult : public ::google::protobuf::Message /* @@protoc_in
                &_YOLOv8_DetectionResult_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    2;
+    3;
 
   void Swap(YOLOv8_DetectionResult* other);
   friend void swap(YOLOv8_DetectionResult& a, YOLOv8_DetectionResult& b) {
@@ -425,6 +547,77 @@ class YOLOv8_DetectionResult : public ::google::protobuf::Message /* @@protoc_in
   #pragma GCC diagnostic push
   #pragma GCC diagnostic ignored "-Wstrict-aliasing"
 #endif  // __GNUC__
+// NDNSF_Request_Failure
+
+// int32 code = 1;
+inline void NDNSF_Request_Failure::clear_code() {
+  code_ = 0;
+}
+inline ::google::protobuf::int32 NDNSF_Request_Failure::code() const {
+  // @@protoc_insertion_point(field_get:muas.NDNSF_Request_Failure.code)
+  return code_;
+}
+inline void NDNSF_Request_Failure::set_code(::google::protobuf::int32 value) {
+  
+  code_ = value;
+  // @@protoc_insertion_point(field_set:muas.NDNSF_Request_Failure.code)
+}
+
+// string msg = 2;
+inline void NDNSF_Request_Failure::clear_msg() {
+  msg_.ClearToEmptyNoArena(&::google::protobuf::internal::GetEmptyStringAlreadyInited());
+}
+inline const ::std::string& NDNSF_Request_Failure::msg() const {
+  // @@protoc_insertion_point(field_get:muas.NDNSF_Request_Failure.msg)
+  return msg_.GetNoArena();
+}
+inline void NDNSF_Request_Failure::set_msg(const ::std::string& value) {
+  
+  msg_.SetNoArena(&::google::protobuf::internal::GetEmptyStringAlreadyInited(), value);
+  // @@protoc_insertion_point(field_set:muas.NDNSF_Request_Failure.msg)
+}
+#if LANG_CXX11
+inline void NDNSF_Request_Failure::set_msg(::std::string&& value) {
+  
+  msg_.SetNoArena(
+    &::google::protobuf::internal::GetEmptyStringAlreadyInited(), ::std::move(value));
+  // @@protoc_insertion_point(field_set_rvalue:muas.NDNSF_Request_Failure.msg)
+}
+#endif
+inline void NDNSF_Request_Failure::set_msg(const char* value) {
+  GOOGLE_DCHECK(value != NULL);
+  
+  msg_.SetNoArena(&::google::protobuf::internal::GetEmptyStringAlreadyInited(), ::std::string(value));
+  // @@protoc_insertion_point(field_set_char:muas.NDNSF_Request_Failure.msg)
+}
+inline void NDNSF_Request_Failure::set_msg(const char* value, size_t size) {
+  
+  msg_.SetNoArena(&::google::protobuf::internal::GetEmptyStringAlreadyInited(),
+      ::std::string(reinterpret_cast<const char*>(value), size));
+  // @@protoc_insertion_point(field_set_pointer:muas.NDNSF_Request_Failure.msg)
+}
+inline ::std::string* NDNSF_Request_Failure::mutable_msg() {
+  
+  // @@protoc_insertion_point(field_mutable:muas.NDNSF_Request_Failure.msg)
+  return msg_.MutableNoArena(&::google::protobuf::internal::GetEmptyStringAlreadyInited());
+}
+inline ::std::string* NDNSF_Request_Failure::release_msg() {
+  // @@protoc_insertion_point(field_release:muas.NDNSF_Request_Failure.msg)
+  
+  return msg_.ReleaseNoArena(&::google::protobuf::internal::GetEmptyStringAlreadyInited());
+}
+inline void NDNSF_Request_Failure::set_allocated_msg(::std::string* msg) {
+  if (msg != NULL) {
+    
+  } else {
+    
+  }
+  msg_.SetAllocatedNoArena(&::google::protobuf::internal::GetEmptyStringAlreadyInited(), msg);
+  // @@protoc_insertion_point(field_set_allocated:muas.NDNSF_Request_Failure.msg)
+}
+
+// -------------------------------------------------------------------
+
 // ObjectDetection_YOLOv8_Request
 
 // bytes image_str = 1;
@@ -591,6 +784,8 @@ inline void YOLOv8_DetectionResult::set_y_2(float value) {
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------

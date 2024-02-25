@@ -1,0 +1,53 @@
+#ifndef {{ServiceName}}ServiceStub_HPP
+#define {{ServiceName}}ServiceStub_HPP
+
+#include <ndn-cxx/name.hpp>
+#include <ndn-cxx/face.hpp>
+
+
+#include "ndn-service-framework/ServiceUser.hpp"
+#include "messages.pb.h"
+
+#include <iostream>
+#include <string>
+#include <regex>
+
+namespace {{NameSpace}}
+{
+    {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+    using {{rpcName}}_Callback = std::function<void(const {{rpcResponseMessage}} &)>;
+    {% endfor %}
+
+    class {{ServiceName}}ServiceStub : public ndn_service_framework::ServiceStub
+    {
+    public:
+        {{ServiceName}}ServiceStub(ndn_service_framework::ServiceUser& user);
+        ~{{ServiceName}}ServiceStub() {}
+
+        {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+        void {{rpcName}}_Async(const ndn::Name& provider, const {{rpcRequestMessage}} &_request, {{NameSpace}}::{{rpcName}}_Callback _callback);
+        {% endfor %}      
+
+        void OnResponseDecryptionSuccessCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer) override;
+
+
+    public:
+        {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+        std::map<ndn::Name,{{rpcName}}_Callback> {{rpcName}}_Callbacks;
+        {% endfor %}
+        
+        std::set<std::shared_ptr<ndn::Regex>> regexSet{
+            {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+                {% if loop.revindex0 == 0 %}
+            std::make_shared<ndn::Regex>("^(<>+)<NDNSF><RESPONSE>(<>*)<{{ServiceName}}><{{ServiceName}}>(<>)")
+                {% else %}
+            std::make_shared<ndn::Regex>("^(<>+)<NDNSF><RESPONSE>(<>*)<{{ServiceName}}><{{ServiceName}}>(<>)"),
+                {% endif %}
+            {% endfor %}
+        };
+
+        ndn::Name serviceName;
+    };
+}
+
+#endif

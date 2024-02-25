@@ -1,0 +1,34 @@
+#ifndef EXAMPLE_SERVICE_PROVIDER_{{AppName}}_HPP
+#define EXAMPLE_SERVICE_PROVIDER_{{AppName}}_HPP
+
+#include <ndn-service-framework/ServiceProvider.hpp>
+{% for ServiceName in ServiceNameArray %}
+#include "./{{ServiceName}}Service.hpp"
+{% endfor %}
+
+
+namespace {{NameSpace}}
+{
+    class ServiceProvider_{{AppName}} : public ndn_service_framework::ServiceProvider
+    {
+    public:
+        ServiceProvider_{{AppName}}(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath);
+        ~ServiceProvider_{{AppName}}() {}
+
+    protected:
+        void init();
+
+        void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription) override;
+
+        void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& ServiceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID) override;
+
+        void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, const std::string&) override;
+
+    public:
+        {% for ServiceName in ServiceNameArray %}
+        {{NameSpace}}::{{ServiceName}}Service m_{{ServiceName}}Service;
+        {% endfor %}
+    };
+}
+
+#endif

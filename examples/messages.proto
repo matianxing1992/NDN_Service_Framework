@@ -3,6 +3,12 @@ syntax = "proto3";
 package muas;
 
 
+message NDNSF_Request_Failure 
+{
+  int32 code = 1;
+  string msg = 2;
+}
+
 message ObjectDetection_YOLOv8_Request {
   	bytes image_str = 1;
 }

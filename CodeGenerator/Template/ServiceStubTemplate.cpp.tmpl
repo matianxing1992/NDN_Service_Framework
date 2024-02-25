@@ -1,0 +1,51 @@
+#include "./{{ServiceName}}ServiceStub.hpp"
+
+NDN_LOG_INIT(muas.{{ServiceName}}ServiceStub);
+
+muas::{{ServiceName}}ServiceStub::{{ServiceName}}ServiceStub(ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(user),
+      serviceName("{{ServiceName}}")
+{
+}
+
+{% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+void muas::{{ServiceName}}ServiceStub::{{rpcName}}_Async(const ndn::Name& provider, const {{rpcRequestMessage}} &_request, muas::{{rpcName}}_Callback _callback)
+{
+    NDN_LOG_INFO("{{rpcName}}_Async "<<"provider:"<<provider<<" request:"<<_request.DebugString());
+    {{rpcResponseMessage}} response;
+    std::string buffer = "";
+    _request.SerializeToString(&buffer);
+    ndn::Buffer b(buffer.begin(),buffer.end());
+    ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
+    m_user->PublishRequest(provider, ndn::Name("{{ServiceName}}"), ndn::Name("{{rpcName}}"), requestId, b);
+    {{rpcName}}_Callbacks.emplace(requestId, _callback);
+}
+{% endfor %}
+
+void muas::{{ServiceName}}ServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Name &serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
+{
+    NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: " << serviceProviderName << ServiceName << FunctionName << RequestID);
+    {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+    if (ServiceName.equals(ndn::Name("{{ServiceName}}")) & FunctionName.equals(ndn::Name("{{rpcName}}")))
+    {
+        
+        // {{ServiceName}}Service.{{rpcName}}()
+        {{rpcResponseMessage}} _response;
+        if (_response.ParseFromArray(buffer.data(), buffer.size()))
+        {
+            NDN_LOG_INFO("OnResponseDecryptionSuccessCallback {{rpcResponseMessage}} parse success");
+            auto it = {{rpcName}}_Callbacks.find(RequestID);
+            if (it != {{rpcName}}_Callbacks.end())
+            {
+                it->second(_response);
+                {{rpcName}}_Callbacks.erase(it);
+                NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Remove used callback");
+            }
+        }
+        else
+        {
+            NDN_LOG_ERROR("OnResponseDecryptionSuccessCallback {{rpcResponseMessage}} parse failed");
+        }
+    }
+    {% endfor %}
+}

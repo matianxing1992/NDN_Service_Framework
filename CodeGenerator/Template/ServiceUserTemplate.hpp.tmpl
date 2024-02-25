@@ -1,0 +1,42 @@
+#ifndef EXAMPLE_SERVICE_USER_{{AppName}}_HPP
+#define EXAMPLE_SERVICE_USER_{{AppName}}_HPP
+
+#include <ndn-service-framework/ServiceUser.hpp>
+{% for ServiceName in ServiceNameArray %}
+#include "./{{ServiceName}}ServiceStub.hpp"
+{% endfor %}
+
+
+namespace {{NameSpace}}
+{
+    class ServiceUser_{{AppName}} : public ndn_service_framework::ServiceUser
+    {
+    public:
+        ServiceUser_{{AppName}}(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
+        ~ServiceUser_{{AppName}}() {}
+
+        {% for ServiceName,rpcName,rpcRequestMessage,rpcResponseMessage in ServiceArray %}
+        void {{rpcName}}_Async(const ndn::Name& provider, const {{rpcRequestMessage}} &_request, {{NameSpace}}::{{rpcName}}_Callback _callback)
+        {
+            m_{{ServiceName}}ServiceStub.{{rpcName}}_Async(provider, _request, _callback);
+        }
+        {% endfor %}
+
+        void PublishRequest(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer) override;
+
+    protected:
+
+        void init();
+        
+        void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription) override;
+
+        void OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, const std::string&) override;
+
+    private:
+        {% for ServiceName in ServiceNameArray %}
+        {{NameSpace}}::{{ServiceName}}ServiceStub m_{{ServiceName}}ServiceStub;
+        {% endfor %}
+    };
+}
+
+#endif

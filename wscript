@@ -83,6 +83,10 @@ def configure(conf):
             args=['--cflags', '--libs'])
     conf.find_program('protoc', var='PROTOC')
 
+    # MAVSDK libmavsdk-dev_1.4.16
+    conf.check_cfg(package="mavsdk", uselib_store="MAVSDK", 
+            args=['--cflags', '--libs'])
+
     boost_libs = ['system']
     if conf.env.WITH_TESTS:
         boost_libs.append('unit_test_framework')

@@ -30,3 +30,10 @@ def build(bld):
                 includes= ['.','ndn-service-framework'],
                 use='ndn-service-framework',
                 install_path=None)
+    
+    bld.program(name='takeoff_and_land',
+                target='takeoff_and_land',
+                source=["takeoff_and_land.cpp"],
+                includes= ['.','ndn-service-framework'],
+                use='ndn-service-framework MAVSDK',
+                install_path=None)
