@@ -36,7 +36,7 @@ void muas::ObjectDetectionServiceStub::YOLOv8_S_Async(const ndn::Name& provider,
 
 void muas::ObjectDetectionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Name &serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
 {
-    NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: " << serviceProviderName << ServiceName << FunctionName << RequestID);
+    NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: " << serviceProviderName << ServiceName << FunctionName << RequestID);
     
     if (ServiceName.equals(ndn::Name("ObjectDetection")) & FunctionName.equals(ndn::Name("YOLOv8")))
     {
@@ -45,18 +45,18 @@ void muas::ObjectDetectionServiceStub::OnResponseDecryptionSuccessCallback(const
         muas::ObjectDetection_YOLOv8_Response _response;
         if (_response.ParseFromArray(buffer.data(), buffer.size()))
         {
-            NDN_LOG_INFO("OnRequestDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse success");
+            NDN_LOG_INFO("OnResponseDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse success");
             auto it = YOLOv8_Callbacks.find(RequestID);
             if (it != YOLOv8_Callbacks.end())
             {
                 it->second(_response);
                 YOLOv8_Callbacks.erase(it);
-                NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: Remove used callback");
+                NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Remove used callback");
             }
         }
         else
         {
-            NDN_LOG_ERROR("OnRequestDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse failed");
+            NDN_LOG_ERROR("OnResponseDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse failed");
         }
     }
     
@@ -67,18 +67,18 @@ void muas::ObjectDetectionServiceStub::OnResponseDecryptionSuccessCallback(const
         muas::ObjectDetection_YOLOv8_Response _response;
         if (_response.ParseFromArray(buffer.data(), buffer.size()))
         {
-            NDN_LOG_INFO("OnRequestDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse success");
+            NDN_LOG_INFO("OnResponseDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse success");
             auto it = YOLOv8_S_Callbacks.find(RequestID);
             if (it != YOLOv8_S_Callbacks.end())
             {
                 it->second(_response);
                 YOLOv8_S_Callbacks.erase(it);
-                NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: Remove used callback");
+                NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Remove used callback");
             }
         }
         else
         {
-            NDN_LOG_ERROR("OnRequestDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse failed");
+            NDN_LOG_ERROR("OnResponseDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Response parse failed");
         }
     }
     

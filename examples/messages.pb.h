@@ -38,7 +38,7 @@ namespace protobuf_messages_2eproto {
 struct TableStruct {
   static const ::google::protobuf::internal::ParseTableField entries[];
   static const ::google::protobuf::internal::AuxillaryParseTableField aux[];
-  static const ::google::protobuf::internal::ParseTable schema[4];
+  static const ::google::protobuf::internal::ParseTable schema[8];
   static const ::google::protobuf::internal::FieldMetadata field_metadata[];
   static const ::google::protobuf::internal::SerializationTable serialization_table[];
   static const ::google::protobuf::uint32 offsets[];
@@ -46,6 +46,18 @@ struct TableStruct {
 void AddDescriptors();
 }  // namespace protobuf_messages_2eproto
 namespace muas {
+class ManualControl_Land_Request;
+class ManualControl_Land_RequestDefaultTypeInternal;
+extern ManualControl_Land_RequestDefaultTypeInternal _ManualControl_Land_Request_default_instance_;
+class ManualControl_Land_Response;
+class ManualControl_Land_ResponseDefaultTypeInternal;
+extern ManualControl_Land_ResponseDefaultTypeInternal _ManualControl_Land_Response_default_instance_;
+class ManualControl_Takeoff_Request;
+class ManualControl_Takeoff_RequestDefaultTypeInternal;
+extern ManualControl_Takeoff_RequestDefaultTypeInternal _ManualControl_Takeoff_Request_default_instance_;
+class ManualControl_Takeoff_Response;
+class ManualControl_Takeoff_ResponseDefaultTypeInternal;
+extern ManualControl_Takeoff_ResponseDefaultTypeInternal _ManualControl_Takeoff_Response_default_instance_;
 class NDNSF_Request_Failure;
 class NDNSF_Request_FailureDefaultTypeInternal;
 extern NDNSF_Request_FailureDefaultTypeInternal _NDNSF_Request_Failure_default_instance_;
@@ -61,6 +73,10 @@ extern YOLOv8_DetectionResultDefaultTypeInternal _YOLOv8_DetectionResult_default
 }  // namespace muas
 namespace google {
 namespace protobuf {
+template<> ::muas::ManualControl_Land_Request* Arena::CreateMaybeMessage<::muas::ManualControl_Land_Request>(Arena*);
+template<> ::muas::ManualControl_Land_Response* Arena::CreateMaybeMessage<::muas::ManualControl_Land_Response>(Arena*);
+template<> ::muas::ManualControl_Takeoff_Request* Arena::CreateMaybeMessage<::muas::ManualControl_Takeoff_Request>(Arena*);
+template<> ::muas::ManualControl_Takeoff_Response* Arena::CreateMaybeMessage<::muas::ManualControl_Takeoff_Response>(Arena*);
 template<> ::muas::NDNSF_Request_Failure* Arena::CreateMaybeMessage<::muas::NDNSF_Request_Failure>(Arena*);
 template<> ::muas::ObjectDetection_YOLOv8_Request* Arena::CreateMaybeMessage<::muas::ObjectDetection_YOLOv8_Request>(Arena*);
 template<> ::muas::ObjectDetection_YOLOv8_Response* Arena::CreateMaybeMessage<::muas::ObjectDetection_YOLOv8_Response>(Arena*);
@@ -538,6 +554,446 @@ class YOLOv8_DetectionResult : public ::google::protobuf::Message /* @@protoc_in
   mutable ::google::protobuf::internal::CachedSize _cached_size_;
   friend struct ::protobuf_messages_2eproto::TableStruct;
 };
+// -------------------------------------------------------------------
+
+class ManualControl_Takeoff_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Takeoff_Request) */ {
+ public:
+  ManualControl_Takeoff_Request();
+  virtual ~ManualControl_Takeoff_Request();
+
+  ManualControl_Takeoff_Request(const ManualControl_Takeoff_Request& from);
+
+  inline ManualControl_Takeoff_Request& operator=(const ManualControl_Takeoff_Request& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  #if LANG_CXX11
+  ManualControl_Takeoff_Request(ManualControl_Takeoff_Request&& from) noexcept
+    : ManualControl_Takeoff_Request() {
+    *this = ::std::move(from);
+  }
+
+  inline ManualControl_Takeoff_Request& operator=(ManualControl_Takeoff_Request&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+  #endif
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const ManualControl_Takeoff_Request& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const ManualControl_Takeoff_Request* internal_default_instance() {
+    return reinterpret_cast<const ManualControl_Takeoff_Request*>(
+               &_ManualControl_Takeoff_Request_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    4;
+
+  void Swap(ManualControl_Takeoff_Request* other);
+  friend void swap(ManualControl_Takeoff_Request& a, ManualControl_Takeoff_Request& b) {
+    a.Swap(&b);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline ManualControl_Takeoff_Request* New() const final {
+    return CreateMaybeMessage<ManualControl_Takeoff_Request>(NULL);
+  }
+
+  ManualControl_Takeoff_Request* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<ManualControl_Takeoff_Request>(arena);
+  }
+  void CopyFrom(const ::google::protobuf::Message& from) final;
+  void MergeFrom(const ::google::protobuf::Message& from) final;
+  void CopyFrom(const ManualControl_Takeoff_Request& from);
+  void MergeFrom(const ManualControl_Takeoff_Request& from);
+  void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input) final;
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const final;
+  ::google::protobuf::uint8* InternalSerializeWithCachedSizesToArray(
+      bool deterministic, ::google::protobuf::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ManualControl_Takeoff_Request* other);
+  private:
+  inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
+    return NULL;
+  }
+  inline void* MaybeArenaPtr() const {
+    return NULL;
+  }
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // float latitude = 1;
+  void clear_latitude();
+  static const int kLatitudeFieldNumber = 1;
+  float latitude() const;
+  void set_latitude(float value);
+
+  // float longitude = 2;
+  void clear_longitude();
+  static const int kLongitudeFieldNumber = 2;
+  float longitude() const;
+  void set_longitude(float value);
+
+  // @@protoc_insertion_point(class_scope:muas.ManualControl_Takeoff_Request)
+ private:
+
+  ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
+  float latitude_;
+  float longitude_;
+  mutable ::google::protobuf::internal::CachedSize _cached_size_;
+  friend struct ::protobuf_messages_2eproto::TableStruct;
+};
+// -------------------------------------------------------------------
+
+class ManualControl_Takeoff_Response : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Takeoff_Response) */ {
+ public:
+  ManualControl_Takeoff_Response();
+  virtual ~ManualControl_Takeoff_Response();
+
+  ManualControl_Takeoff_Response(const ManualControl_Takeoff_Response& from);
+
+  inline ManualControl_Takeoff_Response& operator=(const ManualControl_Takeoff_Response& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  #if LANG_CXX11
+  ManualControl_Takeoff_Response(ManualControl_Takeoff_Response&& from) noexcept
+    : ManualControl_Takeoff_Response() {
+    *this = ::std::move(from);
+  }
+
+  inline ManualControl_Takeoff_Response& operator=(ManualControl_Takeoff_Response&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+  #endif
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const ManualControl_Takeoff_Response& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const ManualControl_Takeoff_Response* internal_default_instance() {
+    return reinterpret_cast<const ManualControl_Takeoff_Response*>(
+               &_ManualControl_Takeoff_Response_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    5;
+
+  void Swap(ManualControl_Takeoff_Response* other);
+  friend void swap(ManualControl_Takeoff_Response& a, ManualControl_Takeoff_Response& b) {
+    a.Swap(&b);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline ManualControl_Takeoff_Response* New() const final {
+    return CreateMaybeMessage<ManualControl_Takeoff_Response>(NULL);
+  }
+
+  ManualControl_Takeoff_Response* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<ManualControl_Takeoff_Response>(arena);
+  }
+  void CopyFrom(const ::google::protobuf::Message& from) final;
+  void MergeFrom(const ::google::protobuf::Message& from) final;
+  void CopyFrom(const ManualControl_Takeoff_Response& from);
+  void MergeFrom(const ManualControl_Takeoff_Response& from);
+  void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input) final;
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const final;
+  ::google::protobuf::uint8* InternalSerializeWithCachedSizesToArray(
+      bool deterministic, ::google::protobuf::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ManualControl_Takeoff_Response* other);
+  private:
+  inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
+    return NULL;
+  }
+  inline void* MaybeArenaPtr() const {
+    return NULL;
+  }
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // float latitude = 1;
+  void clear_latitude();
+  static const int kLatitudeFieldNumber = 1;
+  float latitude() const;
+  void set_latitude(float value);
+
+  // float longitude = 2;
+  void clear_longitude();
+  static const int kLongitudeFieldNumber = 2;
+  float longitude() const;
+  void set_longitude(float value);
+
+  // @@protoc_insertion_point(class_scope:muas.ManualControl_Takeoff_Response)
+ private:
+
+  ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
+  float latitude_;
+  float longitude_;
+  mutable ::google::protobuf::internal::CachedSize _cached_size_;
+  friend struct ::protobuf_messages_2eproto::TableStruct;
+};
+// -------------------------------------------------------------------
+
+class ManualControl_Land_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Land_Request) */ {
+ public:
+  ManualControl_Land_Request();
+  virtual ~ManualControl_Land_Request();
+
+  ManualControl_Land_Request(const ManualControl_Land_Request& from);
+
+  inline ManualControl_Land_Request& operator=(const ManualControl_Land_Request& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  #if LANG_CXX11
+  ManualControl_Land_Request(ManualControl_Land_Request&& from) noexcept
+    : ManualControl_Land_Request() {
+    *this = ::std::move(from);
+  }
+
+  inline ManualControl_Land_Request& operator=(ManualControl_Land_Request&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+  #endif
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const ManualControl_Land_Request& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const ManualControl_Land_Request* internal_default_instance() {
+    return reinterpret_cast<const ManualControl_Land_Request*>(
+               &_ManualControl_Land_Request_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    6;
+
+  void Swap(ManualControl_Land_Request* other);
+  friend void swap(ManualControl_Land_Request& a, ManualControl_Land_Request& b) {
+    a.Swap(&b);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline ManualControl_Land_Request* New() const final {
+    return CreateMaybeMessage<ManualControl_Land_Request>(NULL);
+  }
+
+  ManualControl_Land_Request* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<ManualControl_Land_Request>(arena);
+  }
+  void CopyFrom(const ::google::protobuf::Message& from) final;
+  void MergeFrom(const ::google::protobuf::Message& from) final;
+  void CopyFrom(const ManualControl_Land_Request& from);
+  void MergeFrom(const ManualControl_Land_Request& from);
+  void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input) final;
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const final;
+  ::google::protobuf::uint8* InternalSerializeWithCachedSizesToArray(
+      bool deterministic, ::google::protobuf::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ManualControl_Land_Request* other);
+  private:
+  inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
+    return NULL;
+  }
+  inline void* MaybeArenaPtr() const {
+    return NULL;
+  }
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // float latitude = 1;
+  void clear_latitude();
+  static const int kLatitudeFieldNumber = 1;
+  float latitude() const;
+  void set_latitude(float value);
+
+  // float longitude = 2;
+  void clear_longitude();
+  static const int kLongitudeFieldNumber = 2;
+  float longitude() const;
+  void set_longitude(float value);
+
+  // @@protoc_insertion_point(class_scope:muas.ManualControl_Land_Request)
+ private:
+
+  ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
+  float latitude_;
+  float longitude_;
+  mutable ::google::protobuf::internal::CachedSize _cached_size_;
+  friend struct ::protobuf_messages_2eproto::TableStruct;
+};
+// -------------------------------------------------------------------
+
+class ManualControl_Land_Response : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Land_Response) */ {
+ public:
+  ManualControl_Land_Response();
+  virtual ~ManualControl_Land_Response();
+
+  ManualControl_Land_Response(const ManualControl_Land_Response& from);
+
+  inline ManualControl_Land_Response& operator=(const ManualControl_Land_Response& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  #if LANG_CXX11
+  ManualControl_Land_Response(ManualControl_Land_Response&& from) noexcept
+    : ManualControl_Land_Response() {
+    *this = ::std::move(from);
+  }
+
+  inline ManualControl_Land_Response& operator=(ManualControl_Land_Response&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+  #endif
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const ManualControl_Land_Response& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const ManualControl_Land_Response* internal_default_instance() {
+    return reinterpret_cast<const ManualControl_Land_Response*>(
+               &_ManualControl_Land_Response_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    7;
+
+  void Swap(ManualControl_Land_Response* other);
+  friend void swap(ManualControl_Land_Response& a, ManualControl_Land_Response& b) {
+    a.Swap(&b);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline ManualControl_Land_Response* New() const final {
+    return CreateMaybeMessage<ManualControl_Land_Response>(NULL);
+  }
+
+  ManualControl_Land_Response* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<ManualControl_Land_Response>(arena);
+  }
+  void CopyFrom(const ::google::protobuf::Message& from) final;
+  void MergeFrom(const ::google::protobuf::Message& from) final;
+  void CopyFrom(const ManualControl_Land_Response& from);
+  void MergeFrom(const ManualControl_Land_Response& from);
+  void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input) final;
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const final;
+  ::google::protobuf::uint8* InternalSerializeWithCachedSizesToArray(
+      bool deterministic, ::google::protobuf::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ManualControl_Land_Response* other);
+  private:
+  inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
+    return NULL;
+  }
+  inline void* MaybeArenaPtr() const {
+    return NULL;
+  }
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // float latitude = 1;
+  void clear_latitude();
+  static const int kLatitudeFieldNumber = 1;
+  float latitude() const;
+  void set_latitude(float value);
+
+  // float longitude = 2;
+  void clear_longitude();
+  static const int kLongitudeFieldNumber = 2;
+  float longitude() const;
+  void set_longitude(float value);
+
+  // @@protoc_insertion_point(class_scope:muas.ManualControl_Land_Response)
+ private:
+
+  ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
+  float latitude_;
+  float longitude_;
+  mutable ::google::protobuf::internal::CachedSize _cached_size_;
+  friend struct ::protobuf_messages_2eproto::TableStruct;
+};
 // ===================================================================
 
 
@@ -781,9 +1237,145 @@ inline void YOLOv8_DetectionResult::set_y_2(float value) {
   // @@protoc_insertion_point(field_set:muas.YOLOv8_DetectionResult.y_2)
 }
 
+// -------------------------------------------------------------------
+
+// ManualControl_Takeoff_Request
+
+// float latitude = 1;
+inline void ManualControl_Takeoff_Request::clear_latitude() {
+  latitude_ = 0;
+}
+inline float ManualControl_Takeoff_Request::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Request.latitude)
+  return latitude_;
+}
+inline void ManualControl_Takeoff_Request::set_latitude(float value) {
+  
+  latitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Request.latitude)
+}
+
+// float longitude = 2;
+inline void ManualControl_Takeoff_Request::clear_longitude() {
+  longitude_ = 0;
+}
+inline float ManualControl_Takeoff_Request::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Request.longitude)
+  return longitude_;
+}
+inline void ManualControl_Takeoff_Request::set_longitude(float value) {
+  
+  longitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Request.longitude)
+}
+
+// -------------------------------------------------------------------
+
+// ManualControl_Takeoff_Response
+
+// float latitude = 1;
+inline void ManualControl_Takeoff_Response::clear_latitude() {
+  latitude_ = 0;
+}
+inline float ManualControl_Takeoff_Response::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Response.latitude)
+  return latitude_;
+}
+inline void ManualControl_Takeoff_Response::set_latitude(float value) {
+  
+  latitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Response.latitude)
+}
+
+// float longitude = 2;
+inline void ManualControl_Takeoff_Response::clear_longitude() {
+  longitude_ = 0;
+}
+inline float ManualControl_Takeoff_Response::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Response.longitude)
+  return longitude_;
+}
+inline void ManualControl_Takeoff_Response::set_longitude(float value) {
+  
+  longitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Response.longitude)
+}
+
+// -------------------------------------------------------------------
+
+// ManualControl_Land_Request
+
+// float latitude = 1;
+inline void ManualControl_Land_Request::clear_latitude() {
+  latitude_ = 0;
+}
+inline float ManualControl_Land_Request::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Request.latitude)
+  return latitude_;
+}
+inline void ManualControl_Land_Request::set_latitude(float value) {
+  
+  latitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Request.latitude)
+}
+
+// float longitude = 2;
+inline void ManualControl_Land_Request::clear_longitude() {
+  longitude_ = 0;
+}
+inline float ManualControl_Land_Request::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Request.longitude)
+  return longitude_;
+}
+inline void ManualControl_Land_Request::set_longitude(float value) {
+  
+  longitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Request.longitude)
+}
+
+// -------------------------------------------------------------------
+
+// ManualControl_Land_Response
+
+// float latitude = 1;
+inline void ManualControl_Land_Response::clear_latitude() {
+  latitude_ = 0;
+}
+inline float ManualControl_Land_Response::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Response.latitude)
+  return latitude_;
+}
+inline void ManualControl_Land_Response::set_latitude(float value) {
+  
+  latitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Response.latitude)
+}
+
+// float longitude = 2;
+inline void ManualControl_Land_Response::clear_longitude() {
+  longitude_ = 0;
+}
+inline float ManualControl_Land_Response::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Response.longitude)
+  return longitude_;
+}
+inline void ManualControl_Land_Response::set_longitude(float value) {
+  
+  longitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Response.longitude)
+}
+
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------

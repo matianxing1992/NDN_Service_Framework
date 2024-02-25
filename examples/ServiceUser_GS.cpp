@@ -6,7 +6,11 @@ muas::ServiceUser_GS::ServiceUser_GS(ndn::Face& face, ndn::Name group_prefix, nd
     :ndn_service_framework::ServiceUser(face, group_prefix, identityCert, attrAuthorityCertificate, trustSchemaPath),
     
         
-    m_ObjectDetectionServiceStub(*this)
+    m_ObjectDetectionServiceStub(*this),
+        
+    
+        
+    m_ManualControlServiceStub(*this)
         
     
 {
@@ -63,6 +67,13 @@ void muas::ServiceUser_GS::OnResponse(const ndn::svs::SVSPubSub::SubscriptionDat
         {
             requestConsumer.consume(subscription.name,
                                     std::bind(&muas::ObjectDetectionServiceStub::OnResponseDecryptionSuccessCallback, &m_ObjectDetectionServiceStub, ServiceProviderName, ServiceName, FunctionName, RequestId, _1),
+                                    std::bind(&ServiceUser_GS::OnResponseDecryptionErrorCallback, this, ServiceProviderName, ServiceName, FunctionName, RequestId, _1));
+        }
+        
+        if (ServiceName.equals(m_ManualControlServiceStub.serviceName))
+        {
+            requestConsumer.consume(subscription.name,
+                                    std::bind(&muas::ManualControlServiceStub::OnResponseDecryptionSuccessCallback, &m_ManualControlServiceStub, ServiceProviderName, ServiceName, FunctionName, RequestId, _1),
                                     std::bind(&ServiceUser_GS::OnResponseDecryptionErrorCallback, this, ServiceProviderName, ServiceName, FunctionName, RequestId, _1));
         }
         

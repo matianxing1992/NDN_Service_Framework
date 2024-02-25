@@ -24,18 +24,13 @@ public:
     auto Cert1 = m_keyChain.getPib().getIdentity("/muas/drone1").getDefaultKey().getDefaultCertificate();
     auto Cert2 = m_keyChain.getPib().getIdentity("/muas/gs1").getDefaultKey().getDefaultCertificate();
     //auto Cert3 = m_keyChain.getPib().getIdentity("/muas/drone2").getDefaultKey().getDefaultCertificate();
-    m_aa.addNewPolicy(Cert1, "(/ID/muas/drone1 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/drone1/ObjectDetection/YOLOv8 "
-                                "OR /PERMISSION/ObjectDetection/YOLOv8 OR /PERMISSION/muas/gs1/ObjectDetection/YOLOv8)");
-    m_aa.addNewPolicy(Cert2, "(/ID/muas/gs1 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/gs1/ObjectDetection/YOLOv8 "
-                                "OR /PERMISSION/ObjectDetection/YOLOv8 OR /PERMISSION/muas/drone1/ObjectDetection/YOLOv8)");
-    //m_aa.addNewPolicy(Cert2, "attribute");
-    //m_aa.addNewPolicy(Cert2, "(/PERMISSION/muas/drone1/ObjectDetection/YOLOv8)");
-    //m_aa.addNewPolicy(Cert2, "/muas/gs1 and /SERVICE/ObjectDetection/YOLOv8 and /PERMISSION/ObjectDetection/YOLOv8 and /PERMISSION/muas/drone1/ObjectDetection/YOLOv8");
-    // m_aa.addNewPolicy(Cert1, "/muas");
-    // m_aa.addNewPolicy(Cert2, "/muas");
-    
-    //m_aa.addNewPolicy(Cert2,"attribute");
-    //m_aa.addNewPolicy(Cert3, "/muas/drone2 and (/PERMISSION/ObjectDetection/YOLOv8 or /PERMISSION/muas/drone1/ObjectDetection/YOLOv8)");
+    m_aa.addNewPolicy(Cert1, "(/ID/muas/drone1 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/drone1/ObjectDetection/YOLOv8 OR "
+                                "/PERMISSION/ObjectDetection/YOLOv8 OR /PERMISSION/muas/gs1/ObjectDetection/YOLOv8 OR "
+                                "/SERVICE/muas/drone1/ManualControl/Takeoff OR /SERVICE/muas/drone1/ManualControl/Land)");
+    m_aa.addNewPolicy(Cert2, "(/ID/muas/gs1 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/gs1/ObjectDetection/YOLOv8 OR "
+                                "/PERMISSION/ObjectDetection/YOLOv8 OR /PERMISSION/muas/drone1/ObjectDetection/YOLOv8 OR "
+                                "/PERMISSION/muas/drone1/ManualControl/Takeoff OR /PERMISSION/muas/drone1/ManualControl/Land)");
+
     m_validator.load("trust-schema.conf");
 
     // root certificate filter

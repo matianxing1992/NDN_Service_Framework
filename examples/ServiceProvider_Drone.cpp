@@ -7,7 +7,11 @@ namespace muas
         : ndn_service_framework::ServiceProvider(face, group_prefix, identityCert, attrAuthorityCertificate,  trustSchemaPath),
         
             
-        m_ObjectDetectionService(*this)
+        m_ObjectDetectionService(*this),
+            
+        
+            
+        m_ManualControlService(*this)
             
         
 
@@ -19,6 +23,13 @@ namespace muas
     {
         
         for (auto regex : m_ObjectDetectionService.regexSet)
+        {
+            m_svsps->subscribeWithRegex(*regex,
+                                        std::bind(&ServiceProvider_Drone::OnRequest, this, _1),
+                                        false);
+        }
+        
+        for (auto regex : m_ManualControlService.regexSet)
         {
             m_svsps->subscribeWithRegex(*regex,
                                         std::bind(&ServiceProvider_Drone::OnRequest, this, _1),
@@ -61,6 +72,14 @@ namespace muas
             ndn::Name request=ndn_service_framework::makeRequestName(requesterName,ServiceProviderName,ServiceName,FunctionName, RequestID);
             requestConsumer.consume(request,
                                     std::bind(&muas::ObjectDetectionService::OnRequestDecryptionSuccessCallback, m_ObjectDetectionService, requesterName, ServiceName, FunctionName, RequestID, _1),
+                                    std::bind(&ServiceProvider_Drone::OnRequestDecryptionErrorCallback, this, requesterName, ServiceName, FunctionName, RequestID, _1));
+        }
+        
+        if (ServiceName.equals(m_ManualControlService.serviceName))
+        {
+            ndn::Name request=ndn_service_framework::makeRequestName(requesterName,ServiceProviderName,ServiceName,FunctionName, RequestID);
+            requestConsumer.consume(request,
+                                    std::bind(&muas::ManualControlService::OnRequestDecryptionSuccessCallback, m_ManualControlService, requesterName, ServiceName, FunctionName, RequestID, _1),
                                     std::bind(&ServiceProvider_Drone::OnRequestDecryptionErrorCallback, this, requesterName, ServiceName, FunctionName, RequestID, _1));
         }
         

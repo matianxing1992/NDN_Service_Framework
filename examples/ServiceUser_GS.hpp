@@ -5,6 +5,8 @@
 
 #include "./ObjectDetectionServiceStub.hpp"
 
+#include "./ManualControlServiceStub.hpp"
+
 
 
 namespace muas
@@ -15,6 +17,7 @@ namespace muas
         ServiceUser_GS(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
         ~ServiceUser_GS() {}
 
+        
         void YOLOv8_Async(const ndn::Name& provider, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback)
         {
             m_ObjectDetectionServiceStub.YOLOv8_Async(provider, _request, _callback);
@@ -24,6 +27,17 @@ namespace muas
         {
             m_ObjectDetectionServiceStub.YOLOv8_S_Async(provider, _request, _callback);
         }
+        
+        void Takeoff_Async(const ndn::Name& provider, const muas::ManualControl_Takeoff_Request &_request, muas::Takeoff_Callback _callback)
+        {
+            m_ManualControlServiceStub.Takeoff_Async(provider, _request, _callback);
+        }
+        
+        void Land_Async(const ndn::Name& provider, const muas::ManualControl_Land_Request &_request, muas::Land_Callback _callback)
+        {
+            m_ManualControlServiceStub.Land_Async(provider, _request, _callback);
+        }
+        
 
         void PublishRequest(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer) override;
 
@@ -38,6 +52,8 @@ namespace muas
     private:
         
         muas::ObjectDetectionServiceStub m_ObjectDetectionServiceStub;
+        
+        muas::ManualControlServiceStub m_ManualControlServiceStub;
         
     };
 }

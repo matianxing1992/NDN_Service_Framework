@@ -59,12 +59,7 @@ namespace muas
     {
         NDN_LOG_INFO("YOLOv8 request: " << _request.DebugString());
         // RPC logic starts here
-        muas::YOLOv8_DetectionResult *result = _response.add_results();
-        result->set_classification(8);
-        result->set_x_1(1);
-        result->set_y_1(2);
-        result->set_x_2(100);
-        result->set_y_2(200);
+
         // RPC logic ends here
     }
     
@@ -73,11 +68,11 @@ namespace muas
         NDN_LOG_INFO("YOLOv8_S request: " << _request.DebugString());
         // RPC logic starts here
         muas::YOLOv8_DetectionResult *result = _response.add_results();
-        result->set_classification(8);
-        result->set_x_1(1);
-        result->set_y_1(2);
-        result->set_x_2(100);
-        result->set_y_2(200);
+        result->set_classification(2);
+        result->set_x_1(230);
+        result->set_y_1(600);
+        result->set_x_2(430);
+        result->set_y_2(700);
         // RPC logic ends here
     }
     

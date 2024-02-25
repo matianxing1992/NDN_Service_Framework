@@ -86,6 +86,10 @@ def configure(conf):
     # MAVSDK libmavsdk-dev_1.4.16
     conf.check_cfg(package="mavsdk", uselib_store="MAVSDK", 
             args=['--cflags', '--libs'])
+    
+    # gtkmm-3.0
+    conf.check_cfg(package="gtkmm-3.0", uselib_store="gtkmm", 
+            args=['--cflags', '--libs'], pkg_config_path=pkg_config_path)
 
     boost_libs = ['system']
     if conf.env.WITH_TESTS:

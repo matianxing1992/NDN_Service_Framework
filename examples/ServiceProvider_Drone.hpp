@@ -5,6 +5,8 @@
 
 #include "./ObjectDetectionService.hpp"
 
+#include "./ManualControlService.hpp"
+
 
 
 namespace muas
@@ -27,6 +29,8 @@ namespace muas
     public:
         
         muas::ObjectDetectionService m_ObjectDetectionService;
+        
+        muas::ManualControlService m_ManualControlService;
         
     };
 }

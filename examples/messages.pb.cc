@@ -43,6 +43,26 @@ class YOLOv8_DetectionResultDefaultTypeInternal {
   ::google::protobuf::internal::ExplicitlyConstructed<YOLOv8_DetectionResult>
       _instance;
 } _YOLOv8_DetectionResult_default_instance_;
+class ManualControl_Takeoff_RequestDefaultTypeInternal {
+ public:
+  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Takeoff_Request>
+      _instance;
+} _ManualControl_Takeoff_Request_default_instance_;
+class ManualControl_Takeoff_ResponseDefaultTypeInternal {
+ public:
+  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Takeoff_Response>
+      _instance;
+} _ManualControl_Takeoff_Response_default_instance_;
+class ManualControl_Land_RequestDefaultTypeInternal {
+ public:
+  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Land_Request>
+      _instance;
+} _ManualControl_Land_Request_default_instance_;
+class ManualControl_Land_ResponseDefaultTypeInternal {
+ public:
+  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Land_Response>
+      _instance;
+} _ManualControl_Land_Response_default_instance_;
 }  // namespace muas
 namespace protobuf_messages_2eproto {
 static void InitDefaultsNDNSF_Request_Failure() {
@@ -102,14 +122,74 @@ static void InitDefaultsYOLOv8_DetectionResult() {
 ::google::protobuf::internal::SCCInfo<0> scc_info_YOLOv8_DetectionResult =
     {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsYOLOv8_DetectionResult}, {}};
 
+static void InitDefaultsManualControl_Takeoff_Request() {
+  GOOGLE_PROTOBUF_VERIFY_VERSION;
+
+  {
+    void* ptr = &::muas::_ManualControl_Takeoff_Request_default_instance_;
+    new (ptr) ::muas::ManualControl_Takeoff_Request();
+    ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
+  }
+  ::muas::ManualControl_Takeoff_Request::InitAsDefaultInstance();
+}
+
+::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Takeoff_Request =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Takeoff_Request}, {}};
+
+static void InitDefaultsManualControl_Takeoff_Response() {
+  GOOGLE_PROTOBUF_VERIFY_VERSION;
+
+  {
+    void* ptr = &::muas::_ManualControl_Takeoff_Response_default_instance_;
+    new (ptr) ::muas::ManualControl_Takeoff_Response();
+    ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
+  }
+  ::muas::ManualControl_Takeoff_Response::InitAsDefaultInstance();
+}
+
+::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Takeoff_Response =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Takeoff_Response}, {}};
+
+static void InitDefaultsManualControl_Land_Request() {
+  GOOGLE_PROTOBUF_VERIFY_VERSION;
+
+  {
+    void* ptr = &::muas::_ManualControl_Land_Request_default_instance_;
+    new (ptr) ::muas::ManualControl_Land_Request();
+    ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
+  }
+  ::muas::ManualControl_Land_Request::InitAsDefaultInstance();
+}
+
+::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Land_Request =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Land_Request}, {}};
+
+static void InitDefaultsManualControl_Land_Response() {
+  GOOGLE_PROTOBUF_VERIFY_VERSION;
+
+  {
+    void* ptr = &::muas::_ManualControl_Land_Response_default_instance_;
+    new (ptr) ::muas::ManualControl_Land_Response();
+    ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
+  }
+  ::muas::ManualControl_Land_Response::InitAsDefaultInstance();
+}
+
+::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Land_Response =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Land_Response}, {}};
+
 void InitDefaults() {
   ::google::protobuf::internal::InitSCC(&scc_info_NDNSF_Request_Failure.base);
   ::google::protobuf::internal::InitSCC(&scc_info_ObjectDetection_YOLOv8_Request.base);
   ::google::protobuf::internal::InitSCC(&scc_info_ObjectDetection_YOLOv8_Response.base);
   ::google::protobuf::internal::InitSCC(&scc_info_YOLOv8_DetectionResult.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Takeoff_Request.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Takeoff_Response.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Land_Request.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Land_Response.base);
 }
 
-::google::protobuf::Metadata file_level_metadata[4];
+::google::protobuf::Metadata file_level_metadata[8];
 
 const ::google::protobuf::uint32 TableStruct::offsets[] GOOGLE_PROTOBUF_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
   ~0u,  // no _has_bits_
@@ -141,12 +221,44 @@ const ::google::protobuf::uint32 TableStruct::offsets[] GOOGLE_PROTOBUF_ATTRIBUT
   GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::YOLOv8_DetectionResult, y_1_),
   GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::YOLOv8_DetectionResult, x_2_),
   GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::YOLOv8_DetectionResult, y_2_),
+  ~0u,  // no _has_bits_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Request, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Request, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Request, longitude_),
+  ~0u,  // no _has_bits_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Response, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Response, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Response, longitude_),
+  ~0u,  // no _has_bits_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Request, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Request, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Request, longitude_),
+  ~0u,  // no _has_bits_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Response, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Response, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Response, longitude_),
 };
 static const ::google::protobuf::internal::MigrationSchema schemas[] GOOGLE_PROTOBUF_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
   { 0, -1, sizeof(::muas::NDNSF_Request_Failure)},
   { 7, -1, sizeof(::muas::ObjectDetection_YOLOv8_Request)},
   { 13, -1, sizeof(::muas::ObjectDetection_YOLOv8_Response)},
   { 19, -1, sizeof(::muas::YOLOv8_DetectionResult)},
+  { 29, -1, sizeof(::muas::ManualControl_Takeoff_Request)},
+  { 36, -1, sizeof(::muas::ManualControl_Takeoff_Response)},
+  { 43, -1, sizeof(::muas::ManualControl_Land_Request)},
+  { 50, -1, sizeof(::muas::ManualControl_Land_Response)},
 };
 
 static ::google::protobuf::Message const * const file_default_instances[] = {
@@ -154,6 +266,10 @@ static ::google::protobuf::Message const * const file_default_instances[] = {
   reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ObjectDetection_YOLOv8_Request_default_instance_),
   reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ObjectDetection_YOLOv8_Response_default_instance_),
   reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_YOLOv8_DetectionResult_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Takeoff_Request_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Takeoff_Response_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Land_Request_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Land_Response_default_instance_),
 };
 
 void protobuf_AssignDescriptors() {
@@ -171,7 +287,7 @@ void protobuf_AssignDescriptorsOnce() {
 void protobuf_RegisterTypes(const ::std::string&) GOOGLE_PROTOBUF_ATTRIBUTE_COLD;
 void protobuf_RegisterTypes(const ::std::string&) {
   protobuf_AssignDescriptorsOnce();
-  ::google::protobuf::internal::RegisterAllTypes(file_level_metadata, 4);
+  ::google::protobuf::internal::RegisterAllTypes(file_level_metadata, 8);
 }
 
 void AddDescriptorsImpl() {
@@ -184,10 +300,17 @@ void AddDescriptorsImpl() {
       "se\022-\n\007results\030\001 \003(\0132\034.muas.YOLOv8_Detect"
       "ionResult\"d\n\026YOLOv8_DetectionResult\022\026\n\016c"
       "lassification\030\001 \001(\005\022\013\n\003x_1\030\002 \001(\002\022\013\n\003y_1\030"
-      "\003 \001(\002\022\013\n\003x_2\030\004 \001(\002\022\013\n\003y_2\030\005 \001(\002b\006proto3"
+      "\003 \001(\002\022\013\n\003x_2\030\004 \001(\002\022\013\n\003y_2\030\005 \001(\002\"D\n\035Manua"
+      "lControl_Takeoff_Request\022\020\n\010latitude\030\001 \001"
+      "(\002\022\021\n\tlongitude\030\002 \001(\002\"E\n\036ManualControl_T"
+      "akeoff_Response\022\020\n\010latitude\030\001 \001(\002\022\021\n\tlon"
+      "gitude\030\002 \001(\002\"A\n\032ManualControl_Land_Reque"
+      "st\022\020\n\010latitude\030\001 \001(\002\022\021\n\tlongitude\030\002 \001(\002\""
+      "B\n\033ManualControl_Land_Response\022\020\n\010latitu"
+      "de\030\001 \001(\002\022\021\n\tlongitude\030\002 \001(\002b\006proto3"
   };
   ::google::protobuf::DescriptorPool::InternalAddGeneratedFile(
-      descriptor, 319);
+      descriptor, 595);
   ::google::protobuf::MessageFactory::InternalRegisterGeneratedFile(
     "messages.proto", &protobuf_RegisterTypes);
 }
@@ -1310,6 +1433,1050 @@ void YOLOv8_DetectionResult::InternalSwap(YOLOv8_DetectionResult* other) {
 }
 
 
+// ===================================================================
+
+void ManualControl_Takeoff_Request::InitAsDefaultInstance() {
+}
+#if !defined(_MSC_VER) || _MSC_VER >= 1900
+const int ManualControl_Takeoff_Request::kLatitudeFieldNumber;
+const int ManualControl_Takeoff_Request::kLongitudeFieldNumber;
+#endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
+
+ManualControl_Takeoff_Request::ManualControl_Takeoff_Request()
+  : ::google::protobuf::Message(), _internal_metadata_(NULL) {
+  ::google::protobuf::internal::InitSCC(
+      &protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Request.base);
+  SharedCtor();
+  // @@protoc_insertion_point(constructor:muas.ManualControl_Takeoff_Request)
+}
+ManualControl_Takeoff_Request::ManualControl_Takeoff_Request(const ManualControl_Takeoff_Request& from)
+  : ::google::protobuf::Message(),
+      _internal_metadata_(NULL) {
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::memcpy(&latitude_, &from.latitude_,
+    static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
+    reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Takeoff_Request)
+}
+
+void ManualControl_Takeoff_Request::SharedCtor() {
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+}
+
+ManualControl_Takeoff_Request::~ManualControl_Takeoff_Request() {
+  // @@protoc_insertion_point(destructor:muas.ManualControl_Takeoff_Request)
+  SharedDtor();
+}
+
+void ManualControl_Takeoff_Request::SharedDtor() {
+}
+
+void ManualControl_Takeoff_Request::SetCachedSize(int size) const {
+  _cached_size_.Set(size);
+}
+const ::google::protobuf::Descriptor* ManualControl_Takeoff_Request::descriptor() {
+  ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
+}
+
+const ManualControl_Takeoff_Request& ManualControl_Takeoff_Request::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Request.base);
+  return *internal_default_instance();
+}
+
+
+void ManualControl_Takeoff_Request::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Takeoff_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  _internal_metadata_.Clear();
+}
+
+bool ManualControl_Takeoff_Request::MergePartialFromCodedStream(
+    ::google::protobuf::io::CodedInputStream* input) {
+#define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
+  ::google::protobuf::uint32 tag;
+  // @@protoc_insertion_point(parse_start:muas.ManualControl_Takeoff_Request)
+  for (;;) {
+    ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
+    tag = p.first;
+    if (!p.second) goto handle_unusual;
+    switch (::google::protobuf::internal::WireFormatLite::GetTagFieldNumber(tag)) {
+      // float latitude = 1;
+      case 1: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(13u /* 13 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &latitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float longitude = 2;
+      case 2: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(21u /* 21 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &longitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      default: {
+      handle_unusual:
+        if (tag == 0) {
+          goto success;
+        }
+        DO_(::google::protobuf::internal::WireFormat::SkipField(
+              input, tag, _internal_metadata_.mutable_unknown_fields()));
+        break;
+      }
+    }
+  }
+success:
+  // @@protoc_insertion_point(parse_success:muas.ManualControl_Takeoff_Request)
+  return true;
+failure:
+  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Takeoff_Request)
+  return false;
+#undef DO_
+}
+
+void ManualControl_Takeoff_Request::SerializeWithCachedSizes(
+    ::google::protobuf::io::CodedOutputStream* output) const {
+  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Takeoff_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(1, this->latitude(), output);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(2, this->longitude(), output);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
+  }
+  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Takeoff_Request)
+}
+
+::google::protobuf::uint8* ManualControl_Takeoff_Request::InternalSerializeWithCachedSizesToArray(
+    bool deterministic, ::google::protobuf::uint8* target) const {
+  (void)deterministic; // Unused
+  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Takeoff_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(1, this->latitude(), target);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(2, this->longitude(), target);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Takeoff_Request)
+  return target;
+}
+
+size_t ManualControl_Takeoff_Request::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Takeoff_Request)
+  size_t total_size = 0;
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    total_size +=
+      ::google::protobuf::internal::WireFormat::ComputeUnknownFieldsSize(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()));
+  }
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  int cached_size = ::google::protobuf::internal::ToCachedSize(total_size);
+  SetCachedSize(cached_size);
+  return total_size;
+}
+
+void ManualControl_Takeoff_Request::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Takeoff_Request)
+  GOOGLE_DCHECK_NE(&from, this);
+  const ManualControl_Takeoff_Request* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Takeoff_Request>(
+          &from);
+  if (source == NULL) {
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Takeoff_Request)
+    ::google::protobuf::internal::ReflectionOps::Merge(from, this);
+  } else {
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Takeoff_Request)
+    MergeFrom(*source);
+  }
+}
+
+void ManualControl_Takeoff_Request::MergeFrom(const ManualControl_Takeoff_Request& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Takeoff_Request)
+  GOOGLE_DCHECK_NE(&from, this);
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (from.latitude() != 0) {
+    set_latitude(from.latitude());
+  }
+  if (from.longitude() != 0) {
+    set_longitude(from.longitude());
+  }
+}
+
+void ManualControl_Takeoff_Request::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Takeoff_Request)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+void ManualControl_Takeoff_Request::CopyFrom(const ManualControl_Takeoff_Request& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Takeoff_Request)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool ManualControl_Takeoff_Request::IsInitialized() const {
+  return true;
+}
+
+void ManualControl_Takeoff_Request::Swap(ManualControl_Takeoff_Request* other) {
+  if (other == this) return;
+  InternalSwap(other);
+}
+void ManualControl_Takeoff_Request::InternalSwap(ManualControl_Takeoff_Request* other) {
+  using std::swap;
+  swap(latitude_, other->latitude_);
+  swap(longitude_, other->longitude_);
+  _internal_metadata_.Swap(&other->_internal_metadata_);
+}
+
+::google::protobuf::Metadata ManualControl_Takeoff_Request::GetMetadata() const {
+  protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
+}
+
+
+// ===================================================================
+
+void ManualControl_Takeoff_Response::InitAsDefaultInstance() {
+}
+#if !defined(_MSC_VER) || _MSC_VER >= 1900
+const int ManualControl_Takeoff_Response::kLatitudeFieldNumber;
+const int ManualControl_Takeoff_Response::kLongitudeFieldNumber;
+#endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
+
+ManualControl_Takeoff_Response::ManualControl_Takeoff_Response()
+  : ::google::protobuf::Message(), _internal_metadata_(NULL) {
+  ::google::protobuf::internal::InitSCC(
+      &protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Response.base);
+  SharedCtor();
+  // @@protoc_insertion_point(constructor:muas.ManualControl_Takeoff_Response)
+}
+ManualControl_Takeoff_Response::ManualControl_Takeoff_Response(const ManualControl_Takeoff_Response& from)
+  : ::google::protobuf::Message(),
+      _internal_metadata_(NULL) {
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::memcpy(&latitude_, &from.latitude_,
+    static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
+    reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Takeoff_Response)
+}
+
+void ManualControl_Takeoff_Response::SharedCtor() {
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+}
+
+ManualControl_Takeoff_Response::~ManualControl_Takeoff_Response() {
+  // @@protoc_insertion_point(destructor:muas.ManualControl_Takeoff_Response)
+  SharedDtor();
+}
+
+void ManualControl_Takeoff_Response::SharedDtor() {
+}
+
+void ManualControl_Takeoff_Response::SetCachedSize(int size) const {
+  _cached_size_.Set(size);
+}
+const ::google::protobuf::Descriptor* ManualControl_Takeoff_Response::descriptor() {
+  ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
+}
+
+const ManualControl_Takeoff_Response& ManualControl_Takeoff_Response::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Response.base);
+  return *internal_default_instance();
+}
+
+
+void ManualControl_Takeoff_Response::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Takeoff_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  _internal_metadata_.Clear();
+}
+
+bool ManualControl_Takeoff_Response::MergePartialFromCodedStream(
+    ::google::protobuf::io::CodedInputStream* input) {
+#define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
+  ::google::protobuf::uint32 tag;
+  // @@protoc_insertion_point(parse_start:muas.ManualControl_Takeoff_Response)
+  for (;;) {
+    ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
+    tag = p.first;
+    if (!p.second) goto handle_unusual;
+    switch (::google::protobuf::internal::WireFormatLite::GetTagFieldNumber(tag)) {
+      // float latitude = 1;
+      case 1: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(13u /* 13 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &latitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float longitude = 2;
+      case 2: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(21u /* 21 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &longitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      default: {
+      handle_unusual:
+        if (tag == 0) {
+          goto success;
+        }
+        DO_(::google::protobuf::internal::WireFormat::SkipField(
+              input, tag, _internal_metadata_.mutable_unknown_fields()));
+        break;
+      }
+    }
+  }
+success:
+  // @@protoc_insertion_point(parse_success:muas.ManualControl_Takeoff_Response)
+  return true;
+failure:
+  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Takeoff_Response)
+  return false;
+#undef DO_
+}
+
+void ManualControl_Takeoff_Response::SerializeWithCachedSizes(
+    ::google::protobuf::io::CodedOutputStream* output) const {
+  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Takeoff_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(1, this->latitude(), output);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(2, this->longitude(), output);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
+  }
+  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Takeoff_Response)
+}
+
+::google::protobuf::uint8* ManualControl_Takeoff_Response::InternalSerializeWithCachedSizesToArray(
+    bool deterministic, ::google::protobuf::uint8* target) const {
+  (void)deterministic; // Unused
+  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Takeoff_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(1, this->latitude(), target);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(2, this->longitude(), target);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Takeoff_Response)
+  return target;
+}
+
+size_t ManualControl_Takeoff_Response::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Takeoff_Response)
+  size_t total_size = 0;
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    total_size +=
+      ::google::protobuf::internal::WireFormat::ComputeUnknownFieldsSize(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()));
+  }
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  int cached_size = ::google::protobuf::internal::ToCachedSize(total_size);
+  SetCachedSize(cached_size);
+  return total_size;
+}
+
+void ManualControl_Takeoff_Response::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Takeoff_Response)
+  GOOGLE_DCHECK_NE(&from, this);
+  const ManualControl_Takeoff_Response* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Takeoff_Response>(
+          &from);
+  if (source == NULL) {
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Takeoff_Response)
+    ::google::protobuf::internal::ReflectionOps::Merge(from, this);
+  } else {
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Takeoff_Response)
+    MergeFrom(*source);
+  }
+}
+
+void ManualControl_Takeoff_Response::MergeFrom(const ManualControl_Takeoff_Response& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Takeoff_Response)
+  GOOGLE_DCHECK_NE(&from, this);
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (from.latitude() != 0) {
+    set_latitude(from.latitude());
+  }
+  if (from.longitude() != 0) {
+    set_longitude(from.longitude());
+  }
+}
+
+void ManualControl_Takeoff_Response::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Takeoff_Response)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+void ManualControl_Takeoff_Response::CopyFrom(const ManualControl_Takeoff_Response& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Takeoff_Response)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool ManualControl_Takeoff_Response::IsInitialized() const {
+  return true;
+}
+
+void ManualControl_Takeoff_Response::Swap(ManualControl_Takeoff_Response* other) {
+  if (other == this) return;
+  InternalSwap(other);
+}
+void ManualControl_Takeoff_Response::InternalSwap(ManualControl_Takeoff_Response* other) {
+  using std::swap;
+  swap(latitude_, other->latitude_);
+  swap(longitude_, other->longitude_);
+  _internal_metadata_.Swap(&other->_internal_metadata_);
+}
+
+::google::protobuf::Metadata ManualControl_Takeoff_Response::GetMetadata() const {
+  protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
+}
+
+
+// ===================================================================
+
+void ManualControl_Land_Request::InitAsDefaultInstance() {
+}
+#if !defined(_MSC_VER) || _MSC_VER >= 1900
+const int ManualControl_Land_Request::kLatitudeFieldNumber;
+const int ManualControl_Land_Request::kLongitudeFieldNumber;
+#endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
+
+ManualControl_Land_Request::ManualControl_Land_Request()
+  : ::google::protobuf::Message(), _internal_metadata_(NULL) {
+  ::google::protobuf::internal::InitSCC(
+      &protobuf_messages_2eproto::scc_info_ManualControl_Land_Request.base);
+  SharedCtor();
+  // @@protoc_insertion_point(constructor:muas.ManualControl_Land_Request)
+}
+ManualControl_Land_Request::ManualControl_Land_Request(const ManualControl_Land_Request& from)
+  : ::google::protobuf::Message(),
+      _internal_metadata_(NULL) {
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::memcpy(&latitude_, &from.latitude_,
+    static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
+    reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Land_Request)
+}
+
+void ManualControl_Land_Request::SharedCtor() {
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+}
+
+ManualControl_Land_Request::~ManualControl_Land_Request() {
+  // @@protoc_insertion_point(destructor:muas.ManualControl_Land_Request)
+  SharedDtor();
+}
+
+void ManualControl_Land_Request::SharedDtor() {
+}
+
+void ManualControl_Land_Request::SetCachedSize(int size) const {
+  _cached_size_.Set(size);
+}
+const ::google::protobuf::Descriptor* ManualControl_Land_Request::descriptor() {
+  ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
+}
+
+const ManualControl_Land_Request& ManualControl_Land_Request::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Land_Request.base);
+  return *internal_default_instance();
+}
+
+
+void ManualControl_Land_Request::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Land_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  _internal_metadata_.Clear();
+}
+
+bool ManualControl_Land_Request::MergePartialFromCodedStream(
+    ::google::protobuf::io::CodedInputStream* input) {
+#define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
+  ::google::protobuf::uint32 tag;
+  // @@protoc_insertion_point(parse_start:muas.ManualControl_Land_Request)
+  for (;;) {
+    ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
+    tag = p.first;
+    if (!p.second) goto handle_unusual;
+    switch (::google::protobuf::internal::WireFormatLite::GetTagFieldNumber(tag)) {
+      // float latitude = 1;
+      case 1: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(13u /* 13 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &latitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float longitude = 2;
+      case 2: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(21u /* 21 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &longitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      default: {
+      handle_unusual:
+        if (tag == 0) {
+          goto success;
+        }
+        DO_(::google::protobuf::internal::WireFormat::SkipField(
+              input, tag, _internal_metadata_.mutable_unknown_fields()));
+        break;
+      }
+    }
+  }
+success:
+  // @@protoc_insertion_point(parse_success:muas.ManualControl_Land_Request)
+  return true;
+failure:
+  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Land_Request)
+  return false;
+#undef DO_
+}
+
+void ManualControl_Land_Request::SerializeWithCachedSizes(
+    ::google::protobuf::io::CodedOutputStream* output) const {
+  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Land_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(1, this->latitude(), output);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(2, this->longitude(), output);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
+  }
+  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Land_Request)
+}
+
+::google::protobuf::uint8* ManualControl_Land_Request::InternalSerializeWithCachedSizesToArray(
+    bool deterministic, ::google::protobuf::uint8* target) const {
+  (void)deterministic; // Unused
+  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Land_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(1, this->latitude(), target);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(2, this->longitude(), target);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Land_Request)
+  return target;
+}
+
+size_t ManualControl_Land_Request::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Land_Request)
+  size_t total_size = 0;
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    total_size +=
+      ::google::protobuf::internal::WireFormat::ComputeUnknownFieldsSize(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()));
+  }
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  int cached_size = ::google::protobuf::internal::ToCachedSize(total_size);
+  SetCachedSize(cached_size);
+  return total_size;
+}
+
+void ManualControl_Land_Request::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Land_Request)
+  GOOGLE_DCHECK_NE(&from, this);
+  const ManualControl_Land_Request* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Land_Request>(
+          &from);
+  if (source == NULL) {
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Land_Request)
+    ::google::protobuf::internal::ReflectionOps::Merge(from, this);
+  } else {
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Land_Request)
+    MergeFrom(*source);
+  }
+}
+
+void ManualControl_Land_Request::MergeFrom(const ManualControl_Land_Request& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Land_Request)
+  GOOGLE_DCHECK_NE(&from, this);
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (from.latitude() != 0) {
+    set_latitude(from.latitude());
+  }
+  if (from.longitude() != 0) {
+    set_longitude(from.longitude());
+  }
+}
+
+void ManualControl_Land_Request::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Land_Request)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+void ManualControl_Land_Request::CopyFrom(const ManualControl_Land_Request& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Land_Request)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool ManualControl_Land_Request::IsInitialized() const {
+  return true;
+}
+
+void ManualControl_Land_Request::Swap(ManualControl_Land_Request* other) {
+  if (other == this) return;
+  InternalSwap(other);
+}
+void ManualControl_Land_Request::InternalSwap(ManualControl_Land_Request* other) {
+  using std::swap;
+  swap(latitude_, other->latitude_);
+  swap(longitude_, other->longitude_);
+  _internal_metadata_.Swap(&other->_internal_metadata_);
+}
+
+::google::protobuf::Metadata ManualControl_Land_Request::GetMetadata() const {
+  protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
+}
+
+
+// ===================================================================
+
+void ManualControl_Land_Response::InitAsDefaultInstance() {
+}
+#if !defined(_MSC_VER) || _MSC_VER >= 1900
+const int ManualControl_Land_Response::kLatitudeFieldNumber;
+const int ManualControl_Land_Response::kLongitudeFieldNumber;
+#endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
+
+ManualControl_Land_Response::ManualControl_Land_Response()
+  : ::google::protobuf::Message(), _internal_metadata_(NULL) {
+  ::google::protobuf::internal::InitSCC(
+      &protobuf_messages_2eproto::scc_info_ManualControl_Land_Response.base);
+  SharedCtor();
+  // @@protoc_insertion_point(constructor:muas.ManualControl_Land_Response)
+}
+ManualControl_Land_Response::ManualControl_Land_Response(const ManualControl_Land_Response& from)
+  : ::google::protobuf::Message(),
+      _internal_metadata_(NULL) {
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::memcpy(&latitude_, &from.latitude_,
+    static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
+    reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Land_Response)
+}
+
+void ManualControl_Land_Response::SharedCtor() {
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+}
+
+ManualControl_Land_Response::~ManualControl_Land_Response() {
+  // @@protoc_insertion_point(destructor:muas.ManualControl_Land_Response)
+  SharedDtor();
+}
+
+void ManualControl_Land_Response::SharedDtor() {
+}
+
+void ManualControl_Land_Response::SetCachedSize(int size) const {
+  _cached_size_.Set(size);
+}
+const ::google::protobuf::Descriptor* ManualControl_Land_Response::descriptor() {
+  ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
+}
+
+const ManualControl_Land_Response& ManualControl_Land_Response::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Land_Response.base);
+  return *internal_default_instance();
+}
+
+
+void ManualControl_Land_Response::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Land_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&longitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
+  _internal_metadata_.Clear();
+}
+
+bool ManualControl_Land_Response::MergePartialFromCodedStream(
+    ::google::protobuf::io::CodedInputStream* input) {
+#define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
+  ::google::protobuf::uint32 tag;
+  // @@protoc_insertion_point(parse_start:muas.ManualControl_Land_Response)
+  for (;;) {
+    ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
+    tag = p.first;
+    if (!p.second) goto handle_unusual;
+    switch (::google::protobuf::internal::WireFormatLite::GetTagFieldNumber(tag)) {
+      // float latitude = 1;
+      case 1: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(13u /* 13 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &latitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float longitude = 2;
+      case 2: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(21u /* 21 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &longitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      default: {
+      handle_unusual:
+        if (tag == 0) {
+          goto success;
+        }
+        DO_(::google::protobuf::internal::WireFormat::SkipField(
+              input, tag, _internal_metadata_.mutable_unknown_fields()));
+        break;
+      }
+    }
+  }
+success:
+  // @@protoc_insertion_point(parse_success:muas.ManualControl_Land_Response)
+  return true;
+failure:
+  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Land_Response)
+  return false;
+#undef DO_
+}
+
+void ManualControl_Land_Response::SerializeWithCachedSizes(
+    ::google::protobuf::io::CodedOutputStream* output) const {
+  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Land_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(1, this->latitude(), output);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(2, this->longitude(), output);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
+  }
+  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Land_Response)
+}
+
+::google::protobuf::uint8* ManualControl_Land_Response::InternalSerializeWithCachedSizesToArray(
+    bool deterministic, ::google::protobuf::uint8* target) const {
+  (void)deterministic; // Unused
+  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Land_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(1, this->latitude(), target);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(2, this->longitude(), target);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Land_Response)
+  return target;
+}
+
+size_t ManualControl_Land_Response::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Land_Response)
+  size_t total_size = 0;
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    total_size +=
+      ::google::protobuf::internal::WireFormat::ComputeUnknownFieldsSize(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()));
+  }
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  int cached_size = ::google::protobuf::internal::ToCachedSize(total_size);
+  SetCachedSize(cached_size);
+  return total_size;
+}
+
+void ManualControl_Land_Response::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Land_Response)
+  GOOGLE_DCHECK_NE(&from, this);
+  const ManualControl_Land_Response* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Land_Response>(
+          &from);
+  if (source == NULL) {
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Land_Response)
+    ::google::protobuf::internal::ReflectionOps::Merge(from, this);
+  } else {
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Land_Response)
+    MergeFrom(*source);
+  }
+}
+
+void ManualControl_Land_Response::MergeFrom(const ManualControl_Land_Response& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Land_Response)
+  GOOGLE_DCHECK_NE(&from, this);
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (from.latitude() != 0) {
+    set_latitude(from.latitude());
+  }
+  if (from.longitude() != 0) {
+    set_longitude(from.longitude());
+  }
+}
+
+void ManualControl_Land_Response::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Land_Response)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+void ManualControl_Land_Response::CopyFrom(const ManualControl_Land_Response& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Land_Response)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool ManualControl_Land_Response::IsInitialized() const {
+  return true;
+}
+
+void ManualControl_Land_Response::Swap(ManualControl_Land_Response* other) {
+  if (other == this) return;
+  InternalSwap(other);
+}
+void ManualControl_Land_Response::InternalSwap(ManualControl_Land_Response* other) {
+  using std::swap;
+  swap(latitude_, other->latitude_);
+  swap(longitude_, other->longitude_);
+  _internal_metadata_.Swap(&other->_internal_metadata_);
+}
+
+::google::protobuf::Metadata ManualControl_Land_Response::GetMetadata() const {
+  protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
+}
+
+
 // @@protoc_insertion_point(namespace_scope)
 }  // namespace muas
 namespace google {
@@ -1325,6 +2492,18 @@ template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ObjectDetection_YOLOv8_Res
 }
 template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::YOLOv8_DetectionResult* Arena::CreateMaybeMessage< ::muas::YOLOv8_DetectionResult >(Arena* arena) {
   return Arena::CreateInternal< ::muas::YOLOv8_DetectionResult >(arena);
+}
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Takeoff_Request* Arena::CreateMaybeMessage< ::muas::ManualControl_Takeoff_Request >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::ManualControl_Takeoff_Request >(arena);
+}
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Takeoff_Response* Arena::CreateMaybeMessage< ::muas::ManualControl_Takeoff_Response >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::ManualControl_Takeoff_Response >(arena);
+}
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Land_Request* Arena::CreateMaybeMessage< ::muas::ManualControl_Land_Request >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::ManualControl_Land_Request >(arena);
+}
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Land_Response* Arena::CreateMaybeMessage< ::muas::ManualControl_Land_Response >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::ManualControl_Land_Response >(arena);
 }
 }  // namespace protobuf
 }  // namespace google

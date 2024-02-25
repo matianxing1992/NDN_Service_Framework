@@ -186,7 +186,17 @@ if __name__ == '__main__':
     build = NDNSFCodeGenerator()
     build.GenerateServiceAndStubs("muas","ObjectDetection",[["YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
         ["YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
-    build.GenerateServiceForUser("GS","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    build.GenerateServiceAndStubs("muas","ManualControl",[["Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
+        ["Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])
+    build.GenerateServiceForUser("GS","muas",["ObjectDetection","ManualControl"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+        ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+        ["ManualControl","Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
+        ["ManualControl","Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])
+    build.GenerateServiceForUser("Drone","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
         ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
-    build.GenerateServiceForProvider("Drone","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    build.GenerateServiceForProvider("GS","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
         ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
+    build.GenerateServiceForProvider("Drone","muas",["ObjectDetection","ManualControl"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+        ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+        ["ManualControl","Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
+        ["ManualControl","Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])

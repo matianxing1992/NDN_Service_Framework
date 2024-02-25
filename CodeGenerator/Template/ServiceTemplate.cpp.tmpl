@@ -35,7 +35,7 @@ namespace {{NameSpace}}
 
     }
     {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
-    void {{ServiceName}}Service::{{rpcName}}(const ndn::Name &requesterIdentity, const muas::ObjectDetection_YOLOv8_Request &_request, muas::ObjectDetection_YOLOv8_Response &_response)
+    void {{ServiceName}}Service::{{rpcName}}(const ndn::Name &requesterIdentity, const {{rpcRequestMessage}} &_request, {{rpcResponseMessage}} &_response)
     {
         NDN_LOG_INFO("{{rpcName}} request: " << _request.DebugString());
         // RPC logic starts here

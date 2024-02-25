@@ -7,7 +7,7 @@ def build(bld):
                 target='server-main-example',
                 source=["server_main.cpp", "messages.pb.cc"],
                 includes= ['.'],
-                use='NDN_CXX NDN_SVS BOOST ndn-service-framework PROTOBUF',
+                use='NDN_CXX NDN_SVS BOOST ndn-service-framework PROTOBUF gtkmm',
                 install_path=None)
 
     bld.program(name='aa-example',
@@ -19,14 +19,14 @@ def build(bld):
     
     bld.program(name='drone-example',
                 target='drone-example',
-                source=["main_drone.cpp","ServiceProvider_Drone.cpp","ObjectDetectionService.cpp","messages.pb.cc"],
+                source=["main_drone.cpp","ServiceProvider_Drone.cpp","ObjectDetectionService.cpp","ManualControlService.cpp","messages.pb.cc"],
                 includes= ['.','ndn-service-framework'],
                 use='ndn-service-framework',
                 install_path=None)
     
     bld.program(name='gs-example',
                 target='gs-example',
-                source=["main_gs.cpp","ServiceUser_GS.cpp","ObjectDetectionServiceStub.cpp","messages.pb.cc"],
+                source=["main_gs.cpp","ServiceUser_GS.cpp","ObjectDetectionServiceStub.cpp","ManualControlServiceStub.cpp","messages.pb.cc"],
                 includes= ['.','ndn-service-framework'],
                 use='ndn-service-framework',
                 install_path=None)

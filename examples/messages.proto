@@ -24,3 +24,27 @@ message YOLOv8_DetectionResult {
   float x_2 = 4;
   float y_2 = 5;
 }
+
+message ManualControl_Takeoff_Request
+{
+  float latitude = 1;
+  float longitude = 2;
+}
+
+message ManualControl_Takeoff_Response
+{
+  float latitude = 1;
+  float longitude = 2;
+}
+
+message ManualControl_Land_Request
+{
+  float latitude = 1;
+  float longitude = 2;
+}
+
+message ManualControl_Land_Response
+{
+  float latitude = 1;
+  float longitude = 2;
+}
