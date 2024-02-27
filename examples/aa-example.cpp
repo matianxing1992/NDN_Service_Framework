@@ -22,14 +22,18 @@ public:
     // 2. this approach will try fetch corresponding certificate when receiving 
     //    corresponding DKEY Interest
     auto Cert1 = m_keyChain.getPib().getIdentity("/muas/drone1").getDefaultKey().getDefaultCertificate();
-    auto Cert2 = m_keyChain.getPib().getIdentity("/muas/gs1").getDefaultKey().getDefaultCertificate();
+    auto Cert2 = m_keyChain.getPib().getIdentity("/muas/drone2").getDefaultKey().getDefaultCertificate();
+    auto Cert3 = m_keyChain.getPib().getIdentity("/muas/gs1").getDefaultKey().getDefaultCertificate();
     //auto Cert3 = m_keyChain.getPib().getIdentity("/muas/drone2").getDefaultKey().getDefaultCertificate();
     m_aa.addNewPolicy(Cert1, "(/ID/muas/drone1 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/drone1/ObjectDetection/YOLOv8 OR "
                                 "/PERMISSION/ObjectDetection/YOLOv8 OR /PERMISSION/muas/gs1/ObjectDetection/YOLOv8 OR "
                                 "/SERVICE/muas/drone1/ManualControl/Takeoff OR /SERVICE/muas/drone1/ManualControl/Land)");
-    m_aa.addNewPolicy(Cert2, "(/ID/muas/gs1 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/gs1/ObjectDetection/YOLOv8 OR "
+    m_aa.addNewPolicy(Cert2, "(/ID/muas/drone2 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/drone2/ObjectDetection/YOLOv8 OR "
+                                "/PERMISSION/ObjectDetection/YOLOv8 OR /PERMISSION/muas/gs1/ObjectDetection/YOLOv8 OR "
+                                "/SERVICE/muas/drone2/ManualControl/Takeoff OR /SERVICE/muas/drone2/ManualControl/Land)");
+    m_aa.addNewPolicy(Cert3, "(/ID/muas/gs1 OR /SERVICE/ObjectDetection/YOLOv8 OR /SERVICE/muas/gs1/ObjectDetection/YOLOv8 OR "
                                 "/PERMISSION/ObjectDetection/YOLOv8 OR /PERMISSION/muas/drone1/ObjectDetection/YOLOv8 OR "
-                                "/PERMISSION/muas/drone1/ManualControl/Takeoff OR /PERMISSION/muas/drone1/ManualControl/Land)");
+                                "/PERMISSION/muas/drone2/ManualControl/Takeoff OR /PERMISSION/muas/drone2/ManualControl/Land)");
 
     m_validator.load("trust-schema.conf");
 

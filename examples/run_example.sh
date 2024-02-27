@@ -27,6 +27,9 @@ ndnsec sign-req /muas/gs1 | ndnsec cert-gen -s /muas -i muas | ndnsec cert-insta
 ndnsec key-gen -t r /muas/drone1 > /dev/null
 ndnsec sign-req /muas/drone1 | ndnsec cert-gen -s /muas -i muas | ndnsec cert-install -
 
+ndnsec key-gen -t r /muas/drone2 > /dev/null
+ndnsec sign-req /muas/drone2 | ndnsec cert-gen -s /muas -i muas | ndnsec cert-install -
+
 ndnsec list
 
 cp muas-trust-anchor.cert ../build/examples/muas-trust-anchor.cert

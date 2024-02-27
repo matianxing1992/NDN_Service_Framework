@@ -1,0 +1,87 @@
+NameSpace: muas
+
+MessageProto:
+  syntax = "proto3";
+  package muas;
+  message NDNSF_Request_Failure 
+  {
+    int32 code = 1;
+    string msg = 2;
+  }
+  message ObjectDetection_YOLOv8_Request {
+      bytes image_str = 1;
+  }
+  message ObjectDetection_YOLOv8_Response {
+      repeated YOLOv8_DetectionResult results = 1;
+  }
+  message YOLOv8_DetectionResult {
+    int32 classification = 1;
+    float x_1 = 2;
+    float y_1 = 3;
+    float x_2 = 4;
+    float y_2 = 5;
+  }
+  message ManualControl_Takeoff_Request
+  {
+    float latitude = 1;
+    float longitude = 2;
+  }
+  message ManualControl_Takeoff_Response
+  {
+    float latitude = 1;
+    float longitude = 2;
+  }
+  message ManualControl_Land_Request
+  {
+    float latitude = 1;
+    float longitude = 2;
+  }
+  message ManualControl_Land_Response
+  {
+    float latitude = 1;
+    float longitude = 2;
+  }
+
+Services:
+- serviceName: ObjectDetection
+  serviceDescription: Object Detection using YOLOv8
+  RPCList:
+  - name: YOLOv8
+    requestMessage: muas::ObjectDetection_YOLOv8_Request
+    responseMessage: muas::ObjectDetection_YOLOv8_Response
+  - name: YOLOv8_S
+    requestMessage: muas::ObjectDetection_YOLOv8_Request
+    responseMessage: muas::ObjectDetection_YOLOv8_Response
+- serviceName: ManualControl
+  serviceDescription: ManualControl using MAVLINK
+  RPCList:
+  - name: Takeoff
+    requestMessage: muas::ManualControl_Takeoff_Request
+    responseMessage: muas::ManualControl_Takeoff_Response
+  - name: Land
+    requestMessage: muas::ManualControl_Land_Request
+    responseMessage: muas::ManualControl_Land_Response
+
+ServiceProviders:
+- providerName: GS
+  providerDescription: Ground Station of MUAS Project
+  ServiceList:
+  - ObjectDetection
+- providerName: Drone
+  providerDescription: Drone of MUAS Project
+  ServiceList:
+  - ObjectDetection
+  - ManualControl
+
+ServiceUsers:
+- userName: GS
+  userDescription: Ground Station of MUAS Project
+  ServiceStubList:
+  - ObjectDetection
+  - ManualControl
+- userName: Drone
+  userDescription: Drone of MUAS Project
+  ServiceStubList:
+  - ObjectDetection
+
+

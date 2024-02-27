@@ -6,11 +6,24 @@ from string import Template
 
 from jinja2 import Template as jinja2Template
 
+import yaml
+
+import os
+
+def writeToFile(filePath,content):
+    file = open(filePath, 'w')
+
+    mycode = []
+    mycode.append(content)
+
+    file.writelines(mycode)
+    file.close()
+
 class NDNSFCodeGenerator:
 
     # rpcNameArray =[[rpcName,rpcRequestMessage,rpcResponseMessage]]
     def GenerateServiceHeader(self,NameSpace,ServiceName,rpcArray):
-        serivceHeaderPath = './'+ServiceName+'Service.hpp'
+        serivceHeaderPath = './Generated/'+ServiceName+'Service.hpp'
         serivceHeader_file = open(serivceHeaderPath, 'w')
 
         mycode = []
@@ -47,7 +60,7 @@ class NDNSFCodeGenerator:
         print('Generate Service Header Done:'+ServiceName)
 
     def GenerateService(self,NameSpace,ServiceName,rpcArray):
-        serivcePath = './'+ServiceName+'Service.cpp'
+        serivcePath = './Generated/'+ServiceName+'Service.cpp'
         serivce_file = open(serivcePath, 'w')
 
         mycode = []
@@ -65,7 +78,7 @@ class NDNSFCodeGenerator:
 
 
     def GenerateServiceStubHeader(self,NameSpace,ServiceName,rpcArray):
-        serivceStubHeaderPath = './'+ServiceName+'ServiceStub.hpp'
+        serivceStubHeaderPath = './Generated/'+ServiceName+'ServiceStub.hpp'
         serivceStubHeader_file = open(serivceStubHeaderPath, 'w')
 
         mycode = []
@@ -82,7 +95,7 @@ class NDNSFCodeGenerator:
         print('Generate Service Stub Header Done:'+ServiceName)
 
     def GenerateServiceStub(self,NameSpace,ServiceName,rpcArray):
-        serivceStubPath = './'+ServiceName+'ServiceStub.cpp'
+        serivceStubPath = './Generated/'+ServiceName+'ServiceStub.cpp'
         serivceStub_file = open(serivceStubPath, 'w')
 
         mycode = []
@@ -100,7 +113,7 @@ class NDNSFCodeGenerator:
 
 
     def GenerateServiceProviderHeader(self,AppName, NameSpace,ServiceNameArray,ServiceArray):
-        serivceProviderHeaderPath = './ServiceProvider_'+AppName+'.hpp'
+        serivceProviderHeaderPath = './Generated/ServiceProvider_'+AppName+'.hpp'
         serivceProviderHeader_file = open(serivceProviderHeaderPath, 'w')
 
         mycode = []
@@ -117,7 +130,7 @@ class NDNSFCodeGenerator:
         print('Generate Service Provider Header Done: ServiceProvider_'+AppName)
 
     def GenerateServiceProvider(self,AppName, NameSpace,ServiceNameArray,ServiceArray):
-        serivceProviderPath = './ServiceProvider_'+AppName+'.cpp'
+        serivceProviderPath = './Generated/ServiceProvider_'+AppName+'.cpp'
         serivceProvider_file = open(serivceProviderPath, 'w')
 
         mycode = []
@@ -135,7 +148,7 @@ class NDNSFCodeGenerator:
 
 
     def GenerateServiceUserHeader(self,AppName, NameSpace,ServiceNameArray,ServiceArray):
-        serivceUserHeaderPath = './ServiceUser_'+AppName+'.hpp'
+        serivceUserHeaderPath = './Generated/ServiceUser_'+AppName+'.hpp'
         serivceUserHeader_file = open(serivceUserHeaderPath, 'w')
 
         mycode = []
@@ -152,7 +165,7 @@ class NDNSFCodeGenerator:
         print('Generate Service User Header Done: ServiceUser_'+AppName)
 
     def GenerateServiceUser(self,AppName, NameSpace,ServiceNameArray,ServiceArray):
-        serivceUserPath = './ServiceUser_'+AppName+'.cpp'
+        serivceUserPath = './Generated/ServiceUser_'+AppName+'.cpp'
         serivceUser_file = open(serivceUserPath, 'w')
 
         mycode = []
@@ -174,29 +187,86 @@ class NDNSFCodeGenerator:
         self.GenerateServiceStubHeader(NameSpace,ServiceName,rpcNameArray)
         self.GenerateServiceStub(NameSpace,ServiceName,rpcNameArray)
 
-    def GenerateServiceForProvider(self,AppName,NameSpace,ServiceNameArray,ServiceArray):
-        self.GenerateServiceProviderHeader(AppName,NameSpace,ServiceNameArray,ServiceArray)
-        self.GenerateServiceProvider(AppName,NameSpace,ServiceNameArray,ServiceArray)
+    def GenerateServiceForProvider(self,ServiceProviderName,NameSpace,ServiceNameArray,ServiceArray):
+        self.GenerateServiceProviderHeader(ServiceProviderName,NameSpace,ServiceNameArray,ServiceArray)
+        self.GenerateServiceProvider(ServiceProviderName,NameSpace,ServiceNameArray,ServiceArray)
     
-    def GenerateServiceForUser(self,AppName,NameSpace,ServiceNameArray,ServiceArray):
-        self.GenerateServiceUserHeader(AppName,NameSpace,ServiceNameArray,ServiceArray)
-        self.GenerateServiceUser(AppName,NameSpace,ServiceNameArray,ServiceArray)
+    def GenerateServiceForUser(self,ServiceUserName,NameSpace,ServiceNameArray,ServiceArray):
+        self.GenerateServiceUserHeader(ServiceUserName,NameSpace,ServiceNameArray,ServiceArray)
+        self.GenerateServiceUser(ServiceUserName,NameSpace,ServiceNameArray,ServiceArray)
 
 if __name__ == '__main__':
+
     build = NDNSFCodeGenerator()
-    build.GenerateServiceAndStubs("muas","ObjectDetection",[["YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
-        ["YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
-    build.GenerateServiceAndStubs("muas","ManualControl",[["Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
-        ["Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])
-    build.GenerateServiceForUser("GS","muas",["ObjectDetection","ManualControl"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
-        ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
-        ["ManualControl","Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
-        ["ManualControl","Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])
-    build.GenerateServiceForUser("Drone","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
-        ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
-    build.GenerateServiceForProvider("GS","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
-        ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
-    build.GenerateServiceForProvider("Drone","muas",["ObjectDetection","ManualControl"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
-        ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
-        ["ManualControl","Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
-        ["ManualControl","Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])
+    with open("app.yml", "r") as stream:
+        try:
+            config = yaml.safe_load(stream)
+            # print(config)
+            NameSpace = config['NameSpace']
+            # print(NameSpace)
+            MessageProto = config['MessageProto']
+            # print(MessageProto)
+            writeToFile("./Generated/messages.proto",MessageProto)
+            os.system("protoc --proto_path=./Generated --cpp_out=./Generated messages.proto")
+
+            ServiceNameArray = [service['serviceName'] for service in config['Services']]
+            # print(ServiceNameArray)
+
+            ServiceDict = {}
+
+            # print(config['Services'])
+            for service in config['Services']:
+                # print(service['serviceName'])
+                # print(service['serviceDescription'])
+                rpcNameArray = [[rpc['name'], rpc['requestMessage'], rpc['responseMessage']] for rpc in service['RPCList']]
+                # print(rpcNameArray)
+                build.GenerateServiceAndStubs(NameSpace,service['serviceName'],rpcNameArray)
+                rpcNameArray = [[service['serviceName'], rpc['name'], rpc['requestMessage'], rpc['responseMessage']] for rpc in service['RPCList']]
+                ServiceDict[service['serviceName']] = rpcNameArray
+
+            print(ServiceDict)
+
+            # print(config['ServiceProviders'])
+            for ServiceProvider in config['ServiceProviders']:
+                print(ServiceProvider['providerName'])
+                print(ServiceProvider['providerDescription'])
+                print(ServiceProvider['ServiceList'])
+                ServiceArray = []
+                for ServiceName in ServiceProvider['ServiceList']:
+                    for d in ServiceDict[ServiceName]:
+                        # d.insert(0, ServiceName)
+                        ServiceArray.append(d)
+                print(ServiceArray)
+                build.GenerateServiceForProvider(ServiceProvider['providerName'],NameSpace,ServiceProvider['ServiceList'],ServiceArray)
+            
+            # print(config['ServiceUsers'])
+            for ServiceUser in config['ServiceUsers']:
+                print(ServiceUser['userName'])
+                print(ServiceUser['userDescription'])
+                print(ServiceUser['ServiceStubList'])
+                ServiceStubArray = []
+                for ServiceName in ServiceUser['ServiceStubList']:
+                    for d in ServiceDict[ServiceName]:
+                        ServiceStubArray.append(d)
+                print(ServiceStubArray)
+                build.GenerateServiceForUser(ServiceUser['userName'],NameSpace,ServiceUser['ServiceStubList'],ServiceStubArray)
+            
+        except yaml.YAMLError as exc:
+            print(exc)
+
+    # build.GenerateServiceAndStubs("muas","ObjectDetection",[["YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    #     ["YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
+    # build.GenerateServiceAndStubs("muas","ManualControl",[["Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
+    #     ["Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])
+    # build.GenerateServiceForUser("GS","muas",["ObjectDetection","ManualControl"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    #     ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    #     ["ManualControl","Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
+    #     ["ManualControl","Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])
+    # build.GenerateServiceForUser("Drone","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    #     ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
+    # build.GenerateServiceForProvider("GS","muas",["ObjectDetection"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    #     ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"]])
+    # build.GenerateServiceForProvider("Drone","muas",["ObjectDetection","ManualControl"],[["ObjectDetection","YOLOv8","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    #     ["ObjectDetection","YOLOv8_S","muas::ObjectDetection_YOLOv8_Request","muas::ObjectDetection_YOLOv8_Response"],
+    #     ["ManualControl","Takeoff","muas::ManualControl_Takeoff_Request","muas::ManualControl_Takeoff_Response"],
+    #     ["ManualControl","Land","muas::ManualControl_Land_Request","muas::ManualControl_Land_Response"]])

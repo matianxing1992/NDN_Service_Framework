@@ -41,7 +41,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    auto system = mavsdk.first_autopilot(3.0);
+    auto system = mavsdk.first_autopilot(-1);
     if (!system) {
         std::cerr << "Timed out waiting for system\n";
         return 1;
@@ -87,7 +87,7 @@ int main(int argc, char** argv)
     }
 
     // Let it hover for a bit before landing again.
-    sleep_for(seconds(10));
+    sleep_for(seconds(30));
 
     std::cout << "Landing...\n";
     const Action::Result land_result = action.land();

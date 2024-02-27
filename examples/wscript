@@ -19,16 +19,23 @@ def build(bld):
     
     bld.program(name='drone-example',
                 target='drone-example',
-                source=["main_drone.cpp","ServiceProvider_Drone.cpp","ObjectDetectionService.cpp","ManualControlService.cpp","messages.pb.cc"],
+                source=["main_drone.cpp","ServiceProvider_Drone.cpp","ServiceUser_Drone.cpp","ObjectDetectionService.cpp","ObjectDetectionServiceStub.cpp","ManualControlService.cpp","ManualControlServiceStub.cpp","messages.pb.cc"],
                 includes= ['.','ndn-service-framework'],
-                use='ndn-service-framework',
+                use='ndn-service-framework gtkmm MAVSDK',
+                install_path=None)
+    
+    bld.program(name='drone-manualcontrol-example',
+                target='drone-manualcontrol-example',
+                source=["main_drone_manualcontrol.cpp","ServiceProvider_Drone.cpp","ServiceUser_Drone.cpp","ObjectDetectionService.cpp","ObjectDetectionServiceStub.cpp","ManualControlService.cpp","ManualControlServiceStub.cpp","messages.pb.cc"],
+                includes= ['.','ndn-service-framework'],
+                use='ndn-service-framework gtkmm MAVSDK',
                 install_path=None)
     
     bld.program(name='gs-example',
                 target='gs-example',
-                source=["main_gs.cpp","ServiceUser_GS.cpp","ObjectDetectionServiceStub.cpp","ManualControlServiceStub.cpp","messages.pb.cc"],
+                source=["main_gs.cpp","ServiceProvider_GS.cpp","ServiceUser_GS.cpp","ObjectDetectionService.cpp","ObjectDetectionServiceStub.cpp","ManualControlService.cpp","ManualControlServiceStub.cpp","messages.pb.cc"],
                 includes= ['.','ndn-service-framework'],
-                use='ndn-service-framework',
+                use='ndn-service-framework gtkmm MAVSDK',
                 install_path=None)
     
     bld.program(name='takeoff_and_land',
