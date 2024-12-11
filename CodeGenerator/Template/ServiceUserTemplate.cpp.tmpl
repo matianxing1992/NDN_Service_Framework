@@ -12,65 +12,44 @@ NDN_LOG_INIT({{NameSpace}}.ServiceUser_{{AppName}});
         {% endif %}
     {% endfor %}
 {
+    {% for ServiceName in ServiceNameArray %}
+    this->m_serviceNames.push_back("{{ServiceName}}");
+    {% endfor %}
     init();
 }
 
-void {{NameSpace}}::ServiceUser_{{AppName}}::init()
-{
-    std::string regex_str = "^(<>*)<NDNSF><RESPONSE>" + ndn_service_framework::NameToRegexString(identity) + "(<>)(<>)(<>)$";
-    NDN_LOG_INFO(regex_str);
-
-    m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
-                                std::bind(&ServiceUser_{{AppName}}::OnResponse, this, _1),
-                                false);
-}
-
-void {{NameSpace}}::ServiceUser_{{AppName}}::PublishRequest(const ndn::Name &serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
-{
-    ndn::Name requestName = ndn_service_framework::makeRequestName(identity, serviceProviderName, ServiceName, FunctionName, RequestID);
-    ndn::Name requestNameWithoutPrefix = ndn_service_framework::makeRequestNameWithoutPrefix(serviceProviderName, ServiceName, FunctionName, RequestID);
-   
-    NDN_LOG_INFO(requestName);
-
-    ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
-    ndn::Name serviceAttributeName("/SERVICE");
-    serviceAttributeName.append(serviceProviderName).append(ServiceName).append(FunctionName);
-    std::vector<std::string> attributes;
-    attributes = {serviceAttributeName.toUri()};
-
-    std::tie(contentData, ckData) =
-        responseProduer.produce(requestNameWithoutPrefix, attributes, ndn::span<const uint8_t>{buffer.begin(),buffer.end()}, m_signingInfo);
-    // serve data
-    for (auto data : contentData){
-        NDN_LOG_INFO(data->getName());
-        m_IMS.insert(*data);
-    }
-        
-    for (auto data : ckData)
-        m_IMS.insert(*data);
-    m_svsps->publish(requestName);
-    //m_svsps->publish(ckData.at(0)->getName().getPrefix(-1));
-}
+{{NameSpace}}::ServiceUser_{{AppName}}::~ServiceUser_{{AppName}}() {}
 
 void {{NameSpace}}::ServiceUser_{{AppName}}::OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
 {
-        ndn::Name ServiceProviderName, RequesterName, ServiceName, FunctionName, RequestId;
-        std::tie(ServiceProviderName, RequesterName, ServiceName, FunctionName, RequestId) =
-            ndn_service_framework::parseResponseName(subscription.name);
-        NDN_LOG_INFO("OnResponse: " << ServiceProviderName << RequesterName << ServiceName << FunctionName << RequestId);
+        ndn::Name RequesterName, providerName,ServiceName, FunctionName, RequestId;
+        //std::tie(ServiceProviderName, RequesterName, ServiceName, FunctionName, RequestId) =
+        auto results=ndn_service_framework::parseResponseName(subscription.name);
+        if(!results){
+            NDN_LOG_ERROR("parseResponseName failed: " << subscription.name);
+            return;
+        }
+        std::tie(RequesterName, providerName, ServiceName, FunctionName, RequestId) = results.value();
+        NDN_LOG_INFO("OnResponse: " << RequesterName << providerName << ServiceName << FunctionName << RequestId);
 
         // decrypt the request message with nac-abe; if cannot be decrypted
         {% for ServiceName in ServiceNameArray %}
         if (ServiceName.equals(m_{{ServiceName}}ServiceStub.serviceName))
         {
-            requestConsumer.consume(subscription.name,
-                                    std::bind(&{{NameSpace}}::{{ServiceName}}ServiceStub::OnResponseDecryptionSuccessCallback, &m_{{ServiceName}}ServiceStub, ServiceProviderName, ServiceName, FunctionName, RequestId, _1),
-                                    std::bind(&ServiceUser_{{AppName}}::OnResponseDecryptionErrorCallback, this, ServiceProviderName, ServiceName, FunctionName, RequestId, _1));
+            NDN_LOG_INFO("Response for : "  << m_{{ServiceName}}ServiceStub.serviceName);
+            if(subscription.data.size() > 0){
+                nacConsumer.consume(subscription.name,
+                                    ndn::Block(subscription.data),
+                                    std::bind(&{{NameSpace}}::{{ServiceName}}ServiceStub::OnResponseDecryptionSuccessCallback, &m_{{ServiceName}}ServiceStub, providerName, ServiceName, FunctionName, RequestId, _1),
+                                    std::bind(&ServiceUser_{{AppName}}::OnResponseDecryptionErrorCallback, this, providerName, ServiceName, FunctionName, RequestId, _1));
+            }else{
+                nacConsumer.consume(subscription.name,
+                                    std::bind(&{{NameSpace}}::{{ServiceName}}ServiceStub::OnResponseDecryptionSuccessCallback, &m_{{ServiceName}}ServiceStub, providerName, ServiceName, FunctionName, RequestId, _1),
+                                    std::bind(&ServiceUser_{{AppName}}::OnResponseDecryptionErrorCallback, this, providerName, ServiceName, FunctionName, RequestId, _1));
+            }
         }
         {% endfor %}
 }
 
-void {{NameSpace}}::ServiceUser_{{AppName}}::OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string &)
-{
-        NDN_LOG_ERROR("OnResponseDecryptionErrorCallback: " << serviceProviderName << ServiceName << FunctionName);
-}
+
+

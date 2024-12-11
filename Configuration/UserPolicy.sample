@@ -1,0 +1,17 @@
+; For the time being, only allow sections in the configuration files work; 
+; In the allow section, the items should be names instead of regexes;
+name /muas/controller/NDNSF/UserPolicy/v1 ; policy name
+user-policy
+{
+    allow ; allowed user prefixes
+    {
+        /muas/drone1
+    }
+    deny ; denied user prefixes
+    {
+        /muas/drone2
+    }
+}
+
+
+

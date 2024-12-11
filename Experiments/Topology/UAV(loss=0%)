@@ -1,0 +1,14 @@
+[nodes]
+gs1:
+drone1: 
+drone2:
+drone3:
+drone4:
+
+[links]
+drone1:gs1 delay=10ms loss=0
+drone2:gs1 delay=10ms loss=0
+drone3:gs1 delay=10ms loss=0
+drone4:gs1 delay=10ms loss=0
+
+

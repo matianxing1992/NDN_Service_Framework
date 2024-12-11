@@ -14,7 +14,6 @@ namespace ndn_service_framework{
             ServiceStub(ServiceUser &user);
             virtual ~ServiceStub() {}
 
-
             virtual void OnResponseDecryptionSuccessCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer)= 0;
 
         protected:

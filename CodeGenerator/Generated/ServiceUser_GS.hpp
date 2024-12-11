@@ -2,10 +2,11 @@
 #define EXAMPLE_SERVICE_USER_GS_HPP
 
 #include <ndn-service-framework/ServiceUser.hpp>
+#include <ndn-service-framework/NDNSFMessages.hpp>
 
 #include "./ObjectDetectionServiceStub.hpp"
 
-#include "./ManualControlServiceStub.hpp"
+#include "./FlightControlServiceStub.hpp"
 
 
 
@@ -15,45 +16,45 @@ namespace muas
     {
     public:
         ServiceUser_GS(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
-        ~ServiceUser_GS() {}
+        virtual ~ServiceUser_GS();
 
         
-        void YOLOv8_Async(const ndn::Name& provider, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback)
+        void YOLOv8_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_ObjectDetectionServiceStub.YOLOv8_Async(provider, _request, _callback);
+            m_ObjectDetectionServiceStub.YOLOv8_Async(providers, _request, _callback, strategy);
         }
         
-        void YOLOv8_S_Async(const ndn::Name& provider, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_S_Callback _callback)
+        void YOLOv8_S_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_S_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_ObjectDetectionServiceStub.YOLOv8_S_Async(provider, _request, _callback);
+            m_ObjectDetectionServiceStub.YOLOv8_S_Async(providers, _request, _callback, strategy);
         }
         
-        void Takeoff_Async(const ndn::Name& provider, const muas::ManualControl_Takeoff_Request &_request, muas::Takeoff_Callback _callback)
+        void Takeoff_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_Takeoff_Request &_request, muas::Takeoff_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_ManualControlServiceStub.Takeoff_Async(provider, _request, _callback);
+            m_FlightControlServiceStub.Takeoff_Async(providers, _request, _callback, strategy);
         }
         
-        void Land_Async(const ndn::Name& provider, const muas::ManualControl_Land_Request &_request, muas::Land_Callback _callback)
+        void Land_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_Land_Request &_request, muas::Land_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_ManualControlServiceStub.Land_Async(provider, _request, _callback);
+            m_FlightControlServiceStub.Land_Async(providers, _request, _callback, strategy);
+        }
+        
+        void ManualControl_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_ManualControl_Request &_request, muas::ManualControl_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        {
+            m_FlightControlServiceStub.ManualControl_Async(providers, _request, _callback, strategy);
         }
         
 
-        void PublishRequest(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer) override;
-
+      
     protected:
-
-        void init();
         
         void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription) override;
-
-        void OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, const std::string&) override;
-
+        
     private:
         
         muas::ObjectDetectionServiceStub m_ObjectDetectionServiceStub;
         
-        muas::ManualControlServiceStub m_ManualControlServiceStub;
+        muas::FlightControlServiceStub m_FlightControlServiceStub;
         
     };
 }

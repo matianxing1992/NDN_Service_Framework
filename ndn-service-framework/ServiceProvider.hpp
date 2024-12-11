@@ -6,33 +6,64 @@
 #include "Service.hpp"
 #include "utils.hpp"
 
+#include "BloomFilter.hpp"
+#include "UserPermissionTable.hpp"
+#include "NDNSFMessages.hpp"
+
+
+
 namespace ndn_service_framework{
 
-    using PermissionCheckCallback = std::function<void(bool isAuthorized)>;
-  
     class ServiceProvider
     {
         public:
             ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
             virtual ~ServiceProvider() {}
 
+            void init();
 
-            void PermissionCheck(const ndn::Name& requesterIdentity,const ndn::Name &ServiceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName,const ndn::Name& RequestID, PermissionCheckCallback AfterPermissionCheck);
+            ndn::Name getName();
 
+            void UpdateUPTWithServiceMetaInfo(std::shared_ptr<ndnsd::discovery::ServiceDiscovery> serviceDiscovery);
             
-            
-            virtual void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription) = 0;
+            void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
-            virtual void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& ServiceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID) = 0;
+            // After receving service coordination message, this function is called to consumeRequest;
+            virtual void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, RequestMessage& requestMessage) = 0;
 
-            void OnPermissionChallengeResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
-
+            void OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilterName,  const ndn::Name &RequestID, const ndn::Buffer & buffer);
+    
             // virtual void OnRequestDecryptionSuccessCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &);
-            virtual void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const std::string &) = 0;
+            void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const std::string &);
             
-            void PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer& buffer);
+            // ndnsd serviceinfo discovery callback
+            void processNDNSDServiceInfoCallback(const ndnsd::discovery::Reply& callback);
+
+            // void PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer& buffer);
 
             bool replyFromIMS(const ndn::Interest &interest);
+
+            void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason);
+
+            void onInterest(const ndn::InterestFilter &, const ndn::Interest &interest);
+
+            void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
+
+            void PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, std::string& msg);
+    
+            void onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
+
+            void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
+
+            void OnServiceCoordinationMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer & buffer);
+
+            void OnServiceCoordinationMessageDecryptionErrorCallback(const ndn::Name& requesterName,const ndn::Name &providerName, const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& msgID,const std::string & reason);
+            
+            // Register NDNSF Messages in the ndn-svs
+            void registerNDNSFMessages();
+
+            // Register service info using ndnsd();
+            void registerServiceInfo();
 
         protected:
             void
@@ -44,13 +75,15 @@ namespace ndn_service_framework{
             ndn::KeyChain m_keyChain;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
             std::shared_ptr<MessageValidator> validator;
+            std::vector<std::string> m_serviceNames;
 
             //ndn::security::Validator nac_validator;
             ndn::ValidatorConfig nac_validator{m_face};
             ndn::security::Certificate identityCert;
             ndn::security::Certificate attrAuthorityCertificate;
-            ndn::nacabe::Consumer requestConsumer;
-            ndn::nacabe::Producer responseProduer;
+            ndn::nacabe::Consumer nacConsumer;
+            //ndn::nacabe::Producer nacProducer;
+            ndn::nacabe::CacheProducer nacProducer;
             ndn::security::SigningInfo m_signingInfo;
 
             // ChanllengeID->(Token->RequestNameWithoutRequestID)
@@ -60,10 +93,19 @@ namespace ndn_service_framework{
             // Requests that are authorized request -> requestPrefix
             std::map<ndn::Name,ndn::Name> unauthorizedRequestMap;
 
+            /*
+                pending requests waiting for Service Coordination Message;
+                (/<requesterName>/<ServiceName>/<FunctionName>/<RequestID> -> RequestMessage)
+            */
+            std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
+
             ndn::random::RandomNumberEngine random;
 
             ndn::InMemoryStorageFifo m_IMS;
             std::mutex _cache_mutex;
+
+            ndnsd::discovery::MultiServiceDiscovery multiServiceDiscovery;
+            UserPermissionTable UPT;
     };
 }
 

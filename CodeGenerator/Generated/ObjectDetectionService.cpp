@@ -4,26 +4,39 @@ namespace muas
 {
     NDN_LOG_INIT(muas.ObjectDetectionService);
 
-    void ObjectDetectionService::OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
+    ObjectDetectionService::~ObjectDetectionService() {}
+
+    void ObjectDetectionService::ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage)
     {
-        // ask service instance to deal with the request message and return a response messsage
-        // publish the request message
-        NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: " << requesterIdentity << ServiceName << FunctionName);
+        // log the parameters
+        NDN_LOG_INFO("ConsumeRequest: RequesterName: " << RequesterName << " providerName: " << providerName << " ServiceName: " << ServiceName << " FunctionName: " << FunctionName << " RequestID: " << RequestID);
+        
+        //the payload of the request message is a protobuf message, which is deserialized by the following code:
+        ndn::Buffer payload = requestMessage.getPayload();
 
         
         if (ServiceName.equals(ndn::Name("ObjectDetection")) & FunctionName.equals(ndn::Name("YOLOv8")))
         {
             NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: {ServiceName} YOLOv8");
             muas::ObjectDetection_YOLOv8_Request _request;
-            if (_request.ParseFromArray(buffer.data(), buffer.size()))
+            if (_request.ParseFromArray(payload.data(), payload.size()))
             {
                 NDN_LOG_INFO("onRequestDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Request parse success");
                 muas::ObjectDetection_YOLOv8_Response _response;
-                YOLOv8(requesterIdentity, _request, _response);
+                YOLOv8(RequesterName, _request, _response);
                 std::string buffer = "";
                 _response.SerializeToString(&buffer);
-                ndn::Buffer b(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
-                m_ServiceProvider->PublishResponse(requesterIdentity, ServiceName, FunctionName, RequestID, b);
+                ndn::Buffer resPayload(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
+                // make ResponseMessage and publish it
+                ndn_service_framework::ResponseMessage responseMessage;
+                responseMessage.setStatus(true);
+                responseMessage.setErrorInfo("No error");
+                responseMessage.setPayload(const_cast<ndn::Buffer&>(resPayload), resPayload.size());
+
+                // make response name and response name without prefix
+                ndn::Name responseName = ndn_service_framework::makeResponseName(providerName, RequesterName, ServiceName, FunctionName, RequestID);
+                ndn::Name responseNameWithoutPrefix = ndn_service_framework::makeResponseNameWithoutPrefix(RequesterName, ServiceName, FunctionName, RequestID);
+                m_ServiceProvider->PublishMessage(responseName, responseNameWithoutPrefix, responseMessage);
             }
             else
             {
@@ -35,15 +48,24 @@ namespace muas
         {
             NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: {ServiceName} YOLOv8_S");
             muas::ObjectDetection_YOLOv8_Request _request;
-            if (_request.ParseFromArray(buffer.data(), buffer.size()))
+            if (_request.ParseFromArray(payload.data(), payload.size()))
             {
                 NDN_LOG_INFO("onRequestDecryptionSuccessCallback muas::ObjectDetection_YOLOv8_Request parse success");
                 muas::ObjectDetection_YOLOv8_Response _response;
-                YOLOv8_S(requesterIdentity, _request, _response);
+                YOLOv8_S(RequesterName, _request, _response);
                 std::string buffer = "";
                 _response.SerializeToString(&buffer);
-                ndn::Buffer b(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
-                m_ServiceProvider->PublishResponse(requesterIdentity, ServiceName, FunctionName, RequestID, b);
+                ndn::Buffer resPayload(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
+                // make ResponseMessage and publish it
+                ndn_service_framework::ResponseMessage responseMessage;
+                responseMessage.setStatus(true);
+                responseMessage.setErrorInfo("No error");
+                responseMessage.setPayload(const_cast<ndn::Buffer&>(resPayload), resPayload.size());
+
+                // make response name and response name without prefix
+                ndn::Name responseName = ndn_service_framework::makeResponseName(providerName, RequesterName, ServiceName, FunctionName, RequestID);
+                ndn::Name responseNameWithoutPrefix = ndn_service_framework::makeResponseNameWithoutPrefix(RequesterName, ServiceName, FunctionName, RequestID);
+                m_ServiceProvider->PublishMessage(responseName, responseNameWithoutPrefix, responseMessage);
             }
             else
             {
@@ -52,8 +74,8 @@ namespace muas
         }
         
 
-
     }
+
     
     void ObjectDetectionService::YOLOv8(const ndn::Name &requesterIdentity, const muas::ObjectDetection_YOLOv8_Request &_request, muas::ObjectDetection_YOLOv8_Response &_response)
     {

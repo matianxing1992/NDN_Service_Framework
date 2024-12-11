@@ -23,41 +23,22 @@ class NDNSFCodeGenerator:
 
     # rpcNameArray =[[rpcName,rpcRequestMessage,rpcResponseMessage]]
     def GenerateServiceHeader(self,NameSpace,ServiceName,rpcArray):
-        serivceHeaderPath = './Generated/'+ServiceName+'Service.hpp'
-        serivceHeader_file = open(serivceHeaderPath, 'w')
+        serivcePath = './Generated/'+ServiceName+'Service.hpp'
+        serivce_file = open(serivcePath, 'w')
 
         mycode = []
 
-        CallbackDefinitions = ""
-        RPCDefinitions = ""
-        RequestRegex = ""
-
-        CallbackDefinitionTmpl = Template('\tusing ${rpcName}_Function = std::function<void(const ndn::Name &, const ${rpcRequestMessage} &, ${rpcResponseMessage} &)>;\n\n') 
-        RPCDefinitionTmpl = Template("\t\tvoid ${rpcName}(const ndn::Name &requesterIdentity, const ${rpcRequestMessage} &_request, ${rpcResponseMessage} &_response);\n\n")
-        RequestRegexTmpl = Template("\t\t\tstd::make_shared<ndn::Regex>(\"^(<>*)<NDNSF><REQUEST>(<>*)<${ServiceName}><${rpcName}>(<>)\"),\n")
-        RequestRegexEndTmpl = Template("\t\t\tstd::make_shared<ndn::Regex>(\"^(<>*)<NDNSF><REQUEST>(<>*)<${ServiceName}><${rpcName}>(<>)\")\n")
-
-        count = 0
-        for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray:
-            count += 1
-            CallbackDefinitions = CallbackDefinitions + CallbackDefinitionTmpl.substitute(rpcName=rpcName,rpcRequestMessage=rpcRequestMessage,rpcResponseMessage=rpcResponseMessage)
-            RPCDefinitions = RPCDefinitions + RPCDefinitionTmpl.substitute(rpcName=rpcName,rpcRequestMessage=rpcRequestMessage,rpcResponseMessage=rpcResponseMessage)
-            if count != len(rpcArray):
-                RequestRegex = RequestRegex + RequestRegexTmpl.substitute(ServiceName=ServiceName, rpcName=rpcName)
-            if count == len(rpcArray):
-                RequestRegex = RequestRegex + RequestRegexEndTmpl.substitute(ServiceName=ServiceName, rpcName=rpcName)
-
-
         template_file = open('./Template/ServiceTemplate.hpp.tmpl', 'r')
-        tmpl = Template(template_file.read())
+        tmpl = jinja2Template(template_file.read())
 
-        mycode.append(tmpl.substitute(
-            NameSpace = NameSpace, ServiceName = ServiceName, CallbackDefinitions = CallbackDefinitions, RPCDefinitions = RPCDefinitions, RequestRegex = RequestRegex))
+        mycode.append(tmpl.render(
+            NameSpace = NameSpace, ServiceName = ServiceName, rpcArray = rpcArray))
 
-        serivceHeader_file.writelines(mycode)
-        serivceHeader_file.close()
+        serivce_file.writelines(mycode)
+        serivce_file.close()
 
         print('Generate Service Header Done:'+ServiceName)
+
 
     def GenerateService(self,NameSpace,ServiceName,rpcArray):
         serivcePath = './Generated/'+ServiceName+'Service.cpp'
@@ -224,31 +205,31 @@ if __name__ == '__main__':
                 rpcNameArray = [[service['serviceName'], rpc['name'], rpc['requestMessage'], rpc['responseMessage']] for rpc in service['RPCList']]
                 ServiceDict[service['serviceName']] = rpcNameArray
 
-            print(ServiceDict)
+            # print(ServiceDict)
 
             # print(config['ServiceProviders'])
             for ServiceProvider in config['ServiceProviders']:
-                print(ServiceProvider['providerName'])
-                print(ServiceProvider['providerDescription'])
-                print(ServiceProvider['ServiceList'])
+                # print(ServiceProvider['providerName'])
+                # print(ServiceProvider['providerDescription'])
+                # print(ServiceProvider['ServiceList'])
                 ServiceArray = []
                 for ServiceName in ServiceProvider['ServiceList']:
                     for d in ServiceDict[ServiceName]:
                         # d.insert(0, ServiceName)
                         ServiceArray.append(d)
-                print(ServiceArray)
+                # print(ServiceArray)
                 build.GenerateServiceForProvider(ServiceProvider['providerName'],NameSpace,ServiceProvider['ServiceList'],ServiceArray)
             
             # print(config['ServiceUsers'])
             for ServiceUser in config['ServiceUsers']:
-                print(ServiceUser['userName'])
-                print(ServiceUser['userDescription'])
-                print(ServiceUser['ServiceStubList'])
+                # print(ServiceUser['userName'])
+                # print(ServiceUser['userDescription'])
+                # print(ServiceUser['ServiceStubList'])
                 ServiceStubArray = []
                 for ServiceName in ServiceUser['ServiceStubList']:
                     for d in ServiceDict[ServiceName]:
                         ServiceStubArray.append(d)
-                print(ServiceStubArray)
+                # print(ServiceStubArray)
                 build.GenerateServiceForUser(ServiceUser['userName'],NameSpace,ServiceUser['ServiceStubList'],ServiceStubArray)
             
         except yaml.YAMLError as exc:

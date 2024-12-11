@@ -43,26 +43,36 @@ class YOLOv8_DetectionResultDefaultTypeInternal {
   ::google::protobuf::internal::ExplicitlyConstructed<YOLOv8_DetectionResult>
       _instance;
 } _YOLOv8_DetectionResult_default_instance_;
-class ManualControl_Takeoff_RequestDefaultTypeInternal {
+class FlightControl_Takeoff_RequestDefaultTypeInternal {
  public:
-  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Takeoff_Request>
+  ::google::protobuf::internal::ExplicitlyConstructed<FlightControl_Takeoff_Request>
       _instance;
-} _ManualControl_Takeoff_Request_default_instance_;
-class ManualControl_Takeoff_ResponseDefaultTypeInternal {
+} _FlightControl_Takeoff_Request_default_instance_;
+class FlightControl_Takeoff_ResponseDefaultTypeInternal {
  public:
-  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Takeoff_Response>
+  ::google::protobuf::internal::ExplicitlyConstructed<FlightControl_Takeoff_Response>
       _instance;
-} _ManualControl_Takeoff_Response_default_instance_;
-class ManualControl_Land_RequestDefaultTypeInternal {
+} _FlightControl_Takeoff_Response_default_instance_;
+class FlightControl_Land_RequestDefaultTypeInternal {
  public:
-  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Land_Request>
+  ::google::protobuf::internal::ExplicitlyConstructed<FlightControl_Land_Request>
       _instance;
-} _ManualControl_Land_Request_default_instance_;
-class ManualControl_Land_ResponseDefaultTypeInternal {
+} _FlightControl_Land_Request_default_instance_;
+class FlightControl_Land_ResponseDefaultTypeInternal {
  public:
-  ::google::protobuf::internal::ExplicitlyConstructed<ManualControl_Land_Response>
+  ::google::protobuf::internal::ExplicitlyConstructed<FlightControl_Land_Response>
       _instance;
-} _ManualControl_Land_Response_default_instance_;
+} _FlightControl_Land_Response_default_instance_;
+class FlightControl_ManualControl_RequestDefaultTypeInternal {
+ public:
+  ::google::protobuf::internal::ExplicitlyConstructed<FlightControl_ManualControl_Request>
+      _instance;
+} _FlightControl_ManualControl_Request_default_instance_;
+class FlightControl_ManualControl_ResponseDefaultTypeInternal {
+ public:
+  ::google::protobuf::internal::ExplicitlyConstructed<FlightControl_ManualControl_Response>
+      _instance;
+} _FlightControl_ManualControl_Response_default_instance_;
 }  // namespace muas
 namespace protobuf_messages_2eproto {
 static void InitDefaultsNDNSF_Request_Failure() {
@@ -122,74 +132,104 @@ static void InitDefaultsYOLOv8_DetectionResult() {
 ::google::protobuf::internal::SCCInfo<0> scc_info_YOLOv8_DetectionResult =
     {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsYOLOv8_DetectionResult}, {}};
 
-static void InitDefaultsManualControl_Takeoff_Request() {
+static void InitDefaultsFlightControl_Takeoff_Request() {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
   {
-    void* ptr = &::muas::_ManualControl_Takeoff_Request_default_instance_;
-    new (ptr) ::muas::ManualControl_Takeoff_Request();
+    void* ptr = &::muas::_FlightControl_Takeoff_Request_default_instance_;
+    new (ptr) ::muas::FlightControl_Takeoff_Request();
     ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
   }
-  ::muas::ManualControl_Takeoff_Request::InitAsDefaultInstance();
+  ::muas::FlightControl_Takeoff_Request::InitAsDefaultInstance();
 }
 
-::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Takeoff_Request =
-    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Takeoff_Request}, {}};
+::google::protobuf::internal::SCCInfo<0> scc_info_FlightControl_Takeoff_Request =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsFlightControl_Takeoff_Request}, {}};
 
-static void InitDefaultsManualControl_Takeoff_Response() {
+static void InitDefaultsFlightControl_Takeoff_Response() {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
   {
-    void* ptr = &::muas::_ManualControl_Takeoff_Response_default_instance_;
-    new (ptr) ::muas::ManualControl_Takeoff_Response();
+    void* ptr = &::muas::_FlightControl_Takeoff_Response_default_instance_;
+    new (ptr) ::muas::FlightControl_Takeoff_Response();
     ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
   }
-  ::muas::ManualControl_Takeoff_Response::InitAsDefaultInstance();
+  ::muas::FlightControl_Takeoff_Response::InitAsDefaultInstance();
 }
 
-::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Takeoff_Response =
-    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Takeoff_Response}, {}};
+::google::protobuf::internal::SCCInfo<0> scc_info_FlightControl_Takeoff_Response =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsFlightControl_Takeoff_Response}, {}};
 
-static void InitDefaultsManualControl_Land_Request() {
+static void InitDefaultsFlightControl_Land_Request() {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
   {
-    void* ptr = &::muas::_ManualControl_Land_Request_default_instance_;
-    new (ptr) ::muas::ManualControl_Land_Request();
+    void* ptr = &::muas::_FlightControl_Land_Request_default_instance_;
+    new (ptr) ::muas::FlightControl_Land_Request();
     ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
   }
-  ::muas::ManualControl_Land_Request::InitAsDefaultInstance();
+  ::muas::FlightControl_Land_Request::InitAsDefaultInstance();
 }
 
-::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Land_Request =
-    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Land_Request}, {}};
+::google::protobuf::internal::SCCInfo<0> scc_info_FlightControl_Land_Request =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsFlightControl_Land_Request}, {}};
 
-static void InitDefaultsManualControl_Land_Response() {
+static void InitDefaultsFlightControl_Land_Response() {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
   {
-    void* ptr = &::muas::_ManualControl_Land_Response_default_instance_;
-    new (ptr) ::muas::ManualControl_Land_Response();
+    void* ptr = &::muas::_FlightControl_Land_Response_default_instance_;
+    new (ptr) ::muas::FlightControl_Land_Response();
     ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
   }
-  ::muas::ManualControl_Land_Response::InitAsDefaultInstance();
+  ::muas::FlightControl_Land_Response::InitAsDefaultInstance();
 }
 
-::google::protobuf::internal::SCCInfo<0> scc_info_ManualControl_Land_Response =
-    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsManualControl_Land_Response}, {}};
+::google::protobuf::internal::SCCInfo<0> scc_info_FlightControl_Land_Response =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsFlightControl_Land_Response}, {}};
+
+static void InitDefaultsFlightControl_ManualControl_Request() {
+  GOOGLE_PROTOBUF_VERIFY_VERSION;
+
+  {
+    void* ptr = &::muas::_FlightControl_ManualControl_Request_default_instance_;
+    new (ptr) ::muas::FlightControl_ManualControl_Request();
+    ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
+  }
+  ::muas::FlightControl_ManualControl_Request::InitAsDefaultInstance();
+}
+
+::google::protobuf::internal::SCCInfo<0> scc_info_FlightControl_ManualControl_Request =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsFlightControl_ManualControl_Request}, {}};
+
+static void InitDefaultsFlightControl_ManualControl_Response() {
+  GOOGLE_PROTOBUF_VERIFY_VERSION;
+
+  {
+    void* ptr = &::muas::_FlightControl_ManualControl_Response_default_instance_;
+    new (ptr) ::muas::FlightControl_ManualControl_Response();
+    ::google::protobuf::internal::OnShutdownDestroyMessage(ptr);
+  }
+  ::muas::FlightControl_ManualControl_Response::InitAsDefaultInstance();
+}
+
+::google::protobuf::internal::SCCInfo<0> scc_info_FlightControl_ManualControl_Response =
+    {{ATOMIC_VAR_INIT(::google::protobuf::internal::SCCInfoBase::kUninitialized), 0, InitDefaultsFlightControl_ManualControl_Response}, {}};
 
 void InitDefaults() {
   ::google::protobuf::internal::InitSCC(&scc_info_NDNSF_Request_Failure.base);
   ::google::protobuf::internal::InitSCC(&scc_info_ObjectDetection_YOLOv8_Request.base);
   ::google::protobuf::internal::InitSCC(&scc_info_ObjectDetection_YOLOv8_Response.base);
   ::google::protobuf::internal::InitSCC(&scc_info_YOLOv8_DetectionResult.base);
-  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Takeoff_Request.base);
-  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Takeoff_Response.base);
-  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Land_Request.base);
-  ::google::protobuf::internal::InitSCC(&scc_info_ManualControl_Land_Response.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_FlightControl_Takeoff_Request.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_FlightControl_Takeoff_Response.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_FlightControl_Land_Request.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_FlightControl_Land_Response.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_FlightControl_ManualControl_Request.base);
+  ::google::protobuf::internal::InitSCC(&scc_info_FlightControl_ManualControl_Response.base);
 }
 
-::google::protobuf::Metadata file_level_metadata[8];
+::google::protobuf::Metadata file_level_metadata[10];
 
 const ::google::protobuf::uint32 TableStruct::offsets[] GOOGLE_PROTOBUF_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
   ~0u,  // no _has_bits_
@@ -222,43 +262,64 @@ const ::google::protobuf::uint32 TableStruct::offsets[] GOOGLE_PROTOBUF_ATTRIBUT
   GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::YOLOv8_DetectionResult, x_2_),
   GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::YOLOv8_DetectionResult, y_2_),
   ~0u,  // no _has_bits_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Request, _internal_metadata_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Takeoff_Request, _internal_metadata_),
   ~0u,  // no _extensions_
   ~0u,  // no _oneof_case_
   ~0u,  // no _weak_field_map_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Request, latitude_),
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Request, longitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Takeoff_Request, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Takeoff_Request, longitude_),
   ~0u,  // no _has_bits_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Response, _internal_metadata_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Takeoff_Response, _internal_metadata_),
   ~0u,  // no _extensions_
   ~0u,  // no _oneof_case_
   ~0u,  // no _weak_field_map_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Response, latitude_),
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Takeoff_Response, longitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Takeoff_Response, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Takeoff_Response, longitude_),
   ~0u,  // no _has_bits_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Request, _internal_metadata_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Land_Request, _internal_metadata_),
   ~0u,  // no _extensions_
   ~0u,  // no _oneof_case_
   ~0u,  // no _weak_field_map_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Request, latitude_),
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Request, longitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Land_Request, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Land_Request, longitude_),
   ~0u,  // no _has_bits_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Response, _internal_metadata_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Land_Response, _internal_metadata_),
   ~0u,  // no _extensions_
   ~0u,  // no _oneof_case_
   ~0u,  // no _weak_field_map_
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Response, latitude_),
-  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::ManualControl_Land_Response, longitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Land_Response, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_Land_Response, longitude_),
+  ~0u,  // no _has_bits_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Request, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Request, x_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Request, y_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Request, z_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Request, r_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Request, s_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Request, t_),
+  ~0u,  // no _has_bits_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Response, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Response, latitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Response, longitude_),
+  GOOGLE_PROTOBUF_GENERATED_MESSAGE_FIELD_OFFSET(::muas::FlightControl_ManualControl_Response, altitude_),
 };
 static const ::google::protobuf::internal::MigrationSchema schemas[] GOOGLE_PROTOBUF_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
   { 0, -1, sizeof(::muas::NDNSF_Request_Failure)},
   { 7, -1, sizeof(::muas::ObjectDetection_YOLOv8_Request)},
   { 13, -1, sizeof(::muas::ObjectDetection_YOLOv8_Response)},
   { 19, -1, sizeof(::muas::YOLOv8_DetectionResult)},
-  { 29, -1, sizeof(::muas::ManualControl_Takeoff_Request)},
-  { 36, -1, sizeof(::muas::ManualControl_Takeoff_Response)},
-  { 43, -1, sizeof(::muas::ManualControl_Land_Request)},
-  { 50, -1, sizeof(::muas::ManualControl_Land_Response)},
+  { 29, -1, sizeof(::muas::FlightControl_Takeoff_Request)},
+  { 36, -1, sizeof(::muas::FlightControl_Takeoff_Response)},
+  { 43, -1, sizeof(::muas::FlightControl_Land_Request)},
+  { 50, -1, sizeof(::muas::FlightControl_Land_Response)},
+  { 57, -1, sizeof(::muas::FlightControl_ManualControl_Request)},
+  { 68, -1, sizeof(::muas::FlightControl_ManualControl_Response)},
 };
 
 static ::google::protobuf::Message const * const file_default_instances[] = {
@@ -266,10 +327,12 @@ static ::google::protobuf::Message const * const file_default_instances[] = {
   reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ObjectDetection_YOLOv8_Request_default_instance_),
   reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ObjectDetection_YOLOv8_Response_default_instance_),
   reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_YOLOv8_DetectionResult_default_instance_),
-  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Takeoff_Request_default_instance_),
-  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Takeoff_Response_default_instance_),
-  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Land_Request_default_instance_),
-  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_ManualControl_Land_Response_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_FlightControl_Takeoff_Request_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_FlightControl_Takeoff_Response_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_FlightControl_Land_Request_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_FlightControl_Land_Response_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_FlightControl_ManualControl_Request_default_instance_),
+  reinterpret_cast<const ::google::protobuf::Message*>(&::muas::_FlightControl_ManualControl_Response_default_instance_),
 };
 
 void protobuf_AssignDescriptors() {
@@ -287,7 +350,7 @@ void protobuf_AssignDescriptorsOnce() {
 void protobuf_RegisterTypes(const ::std::string&) GOOGLE_PROTOBUF_ATTRIBUTE_COLD;
 void protobuf_RegisterTypes(const ::std::string&) {
   protobuf_AssignDescriptorsOnce();
-  ::google::protobuf::internal::RegisterAllTypes(file_level_metadata, 8);
+  ::google::protobuf::internal::RegisterAllTypes(file_level_metadata, 10);
 }
 
 void AddDescriptorsImpl() {
@@ -300,17 +363,22 @@ void AddDescriptorsImpl() {
       "se\022-\n\007results\030\001 \003(\0132\034.muas.YOLOv8_Detect"
       "ionResult\"d\n\026YOLOv8_DetectionResult\022\026\n\016c"
       "lassification\030\001 \001(\005\022\013\n\003x_1\030\002 \001(\002\022\013\n\003y_1\030"
-      "\003 \001(\002\022\013\n\003x_2\030\004 \001(\002\022\013\n\003y_2\030\005 \001(\002\"D\n\035Manua"
-      "lControl_Takeoff_Request\022\020\n\010latitude\030\001 \001"
-      "(\002\022\021\n\tlongitude\030\002 \001(\002\"E\n\036ManualControl_T"
+      "\003 \001(\002\022\013\n\003x_2\030\004 \001(\002\022\013\n\003y_2\030\005 \001(\002\"D\n\035Fligh"
+      "tControl_Takeoff_Request\022\020\n\010latitude\030\001 \001"
+      "(\002\022\021\n\tlongitude\030\002 \001(\002\"E\n\036FlightControl_T"
       "akeoff_Response\022\020\n\010latitude\030\001 \001(\002\022\021\n\tlon"
-      "gitude\030\002 \001(\002\"A\n\032ManualControl_Land_Reque"
+      "gitude\030\002 \001(\002\"A\n\032FlightControl_Land_Reque"
       "st\022\020\n\010latitude\030\001 \001(\002\022\021\n\tlongitude\030\002 \001(\002\""
-      "B\n\033ManualControl_Land_Response\022\020\n\010latitu"
-      "de\030\001 \001(\002\022\021\n\tlongitude\030\002 \001(\002b\006proto3"
+      "B\n\033FlightControl_Land_Response\022\020\n\010latitu"
+      "de\030\001 \001(\002\022\021\n\tlongitude\030\002 \001(\002\"g\n#FlightCon"
+      "trol_ManualControl_Request\022\t\n\001x\030\001 \001(\002\022\t\n"
+      "\001y\030\002 \001(\002\022\t\n\001z\030\003 \001(\002\022\t\n\001r\030\004 \001(\002\022\t\n\001s\030\005 \001("
+      "\002\022\t\n\001t\030\006 \001(\002\"]\n$FlightControl_ManualCont"
+      "rol_Response\022\020\n\010latitude\030\001 \001(\002\022\021\n\tlongit"
+      "ude\030\002 \001(\002\022\020\n\010altitude\030\003 \001(\002b\006proto3"
   };
   ::google::protobuf::DescriptorPool::InternalAddGeneratedFile(
-      descriptor, 595);
+      descriptor, 795);
   ::google::protobuf::MessageFactory::InternalRegisterGeneratedFile(
     "messages.proto", &protobuf_RegisterTypes);
 }
@@ -1435,60 +1503,60 @@ void YOLOv8_DetectionResult::InternalSwap(YOLOv8_DetectionResult* other) {
 
 // ===================================================================
 
-void ManualControl_Takeoff_Request::InitAsDefaultInstance() {
+void FlightControl_Takeoff_Request::InitAsDefaultInstance() {
 }
 #if !defined(_MSC_VER) || _MSC_VER >= 1900
-const int ManualControl_Takeoff_Request::kLatitudeFieldNumber;
-const int ManualControl_Takeoff_Request::kLongitudeFieldNumber;
+const int FlightControl_Takeoff_Request::kLatitudeFieldNumber;
+const int FlightControl_Takeoff_Request::kLongitudeFieldNumber;
 #endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
 
-ManualControl_Takeoff_Request::ManualControl_Takeoff_Request()
+FlightControl_Takeoff_Request::FlightControl_Takeoff_Request()
   : ::google::protobuf::Message(), _internal_metadata_(NULL) {
   ::google::protobuf::internal::InitSCC(
-      &protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Request.base);
+      &protobuf_messages_2eproto::scc_info_FlightControl_Takeoff_Request.base);
   SharedCtor();
-  // @@protoc_insertion_point(constructor:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(constructor:muas.FlightControl_Takeoff_Request)
 }
-ManualControl_Takeoff_Request::ManualControl_Takeoff_Request(const ManualControl_Takeoff_Request& from)
+FlightControl_Takeoff_Request::FlightControl_Takeoff_Request(const FlightControl_Takeoff_Request& from)
   : ::google::protobuf::Message(),
       _internal_metadata_(NULL) {
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::memcpy(&latitude_, &from.latitude_,
     static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
     reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
-  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(copy_constructor:muas.FlightControl_Takeoff_Request)
 }
 
-void ManualControl_Takeoff_Request::SharedCtor() {
+void FlightControl_Takeoff_Request::SharedCtor() {
   ::memset(&latitude_, 0, static_cast<size_t>(
       reinterpret_cast<char*>(&longitude_) -
       reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
 }
 
-ManualControl_Takeoff_Request::~ManualControl_Takeoff_Request() {
-  // @@protoc_insertion_point(destructor:muas.ManualControl_Takeoff_Request)
+FlightControl_Takeoff_Request::~FlightControl_Takeoff_Request() {
+  // @@protoc_insertion_point(destructor:muas.FlightControl_Takeoff_Request)
   SharedDtor();
 }
 
-void ManualControl_Takeoff_Request::SharedDtor() {
+void FlightControl_Takeoff_Request::SharedDtor() {
 }
 
-void ManualControl_Takeoff_Request::SetCachedSize(int size) const {
+void FlightControl_Takeoff_Request::SetCachedSize(int size) const {
   _cached_size_.Set(size);
 }
-const ::google::protobuf::Descriptor* ManualControl_Takeoff_Request::descriptor() {
+const ::google::protobuf::Descriptor* FlightControl_Takeoff_Request::descriptor() {
   ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
 }
 
-const ManualControl_Takeoff_Request& ManualControl_Takeoff_Request::default_instance() {
-  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Request.base);
+const FlightControl_Takeoff_Request& FlightControl_Takeoff_Request::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_FlightControl_Takeoff_Request.base);
   return *internal_default_instance();
 }
 
 
-void ManualControl_Takeoff_Request::Clear() {
-// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Takeoff_Request)
+void FlightControl_Takeoff_Request::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.FlightControl_Takeoff_Request)
   ::google::protobuf::uint32 cached_has_bits = 0;
   // Prevent compiler warnings about cached_has_bits being unused
   (void) cached_has_bits;
@@ -1499,11 +1567,11 @@ void ManualControl_Takeoff_Request::Clear() {
   _internal_metadata_.Clear();
 }
 
-bool ManualControl_Takeoff_Request::MergePartialFromCodedStream(
+bool FlightControl_Takeoff_Request::MergePartialFromCodedStream(
     ::google::protobuf::io::CodedInputStream* input) {
 #define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
   ::google::protobuf::uint32 tag;
-  // @@protoc_insertion_point(parse_start:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(parse_start:muas.FlightControl_Takeoff_Request)
   for (;;) {
     ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
     tag = p.first;
@@ -1549,17 +1617,17 @@ bool ManualControl_Takeoff_Request::MergePartialFromCodedStream(
     }
   }
 success:
-  // @@protoc_insertion_point(parse_success:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(parse_success:muas.FlightControl_Takeoff_Request)
   return true;
 failure:
-  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(parse_failure:muas.FlightControl_Takeoff_Request)
   return false;
 #undef DO_
 }
 
-void ManualControl_Takeoff_Request::SerializeWithCachedSizes(
+void FlightControl_Takeoff_Request::SerializeWithCachedSizes(
     ::google::protobuf::io::CodedOutputStream* output) const {
-  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(serialize_start:muas.FlightControl_Takeoff_Request)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -1577,13 +1645,13 @@ void ManualControl_Takeoff_Request::SerializeWithCachedSizes(
     ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
   }
-  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(serialize_end:muas.FlightControl_Takeoff_Request)
 }
 
-::google::protobuf::uint8* ManualControl_Takeoff_Request::InternalSerializeWithCachedSizesToArray(
+::google::protobuf::uint8* FlightControl_Takeoff_Request::InternalSerializeWithCachedSizesToArray(
     bool deterministic, ::google::protobuf::uint8* target) const {
   (void)deterministic; // Unused
-  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(serialize_to_array_start:muas.FlightControl_Takeoff_Request)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -1601,12 +1669,12 @@ void ManualControl_Takeoff_Request::SerializeWithCachedSizes(
     target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
   }
-  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(serialize_to_array_end:muas.FlightControl_Takeoff_Request)
   return target;
 }
 
-size_t ManualControl_Takeoff_Request::ByteSizeLong() const {
-// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Takeoff_Request)
+size_t FlightControl_Takeoff_Request::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.FlightControl_Takeoff_Request)
   size_t total_size = 0;
 
   if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
@@ -1629,23 +1697,23 @@ size_t ManualControl_Takeoff_Request::ByteSizeLong() const {
   return total_size;
 }
 
-void ManualControl_Takeoff_Request::MergeFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Takeoff_Request)
+void FlightControl_Takeoff_Request::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.FlightControl_Takeoff_Request)
   GOOGLE_DCHECK_NE(&from, this);
-  const ManualControl_Takeoff_Request* source =
-      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Takeoff_Request>(
+  const FlightControl_Takeoff_Request* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const FlightControl_Takeoff_Request>(
           &from);
   if (source == NULL) {
-  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.FlightControl_Takeoff_Request)
     ::google::protobuf::internal::ReflectionOps::Merge(from, this);
   } else {
-  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.FlightControl_Takeoff_Request)
     MergeFrom(*source);
   }
 }
 
-void ManualControl_Takeoff_Request::MergeFrom(const ManualControl_Takeoff_Request& from) {
-// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Takeoff_Request)
+void FlightControl_Takeoff_Request::MergeFrom(const FlightControl_Takeoff_Request& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.FlightControl_Takeoff_Request)
   GOOGLE_DCHECK_NE(&from, this);
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::google::protobuf::uint32 cached_has_bits = 0;
@@ -1659,36 +1727,36 @@ void ManualControl_Takeoff_Request::MergeFrom(const ManualControl_Takeoff_Reques
   }
 }
 
-void ManualControl_Takeoff_Request::CopyFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Takeoff_Request)
+void FlightControl_Takeoff_Request::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.FlightControl_Takeoff_Request)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-void ManualControl_Takeoff_Request::CopyFrom(const ManualControl_Takeoff_Request& from) {
-// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Takeoff_Request)
+void FlightControl_Takeoff_Request::CopyFrom(const FlightControl_Takeoff_Request& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.FlightControl_Takeoff_Request)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-bool ManualControl_Takeoff_Request::IsInitialized() const {
+bool FlightControl_Takeoff_Request::IsInitialized() const {
   return true;
 }
 
-void ManualControl_Takeoff_Request::Swap(ManualControl_Takeoff_Request* other) {
+void FlightControl_Takeoff_Request::Swap(FlightControl_Takeoff_Request* other) {
   if (other == this) return;
   InternalSwap(other);
 }
-void ManualControl_Takeoff_Request::InternalSwap(ManualControl_Takeoff_Request* other) {
+void FlightControl_Takeoff_Request::InternalSwap(FlightControl_Takeoff_Request* other) {
   using std::swap;
   swap(latitude_, other->latitude_);
   swap(longitude_, other->longitude_);
   _internal_metadata_.Swap(&other->_internal_metadata_);
 }
 
-::google::protobuf::Metadata ManualControl_Takeoff_Request::GetMetadata() const {
+::google::protobuf::Metadata FlightControl_Takeoff_Request::GetMetadata() const {
   protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
 }
@@ -1696,60 +1764,60 @@ void ManualControl_Takeoff_Request::InternalSwap(ManualControl_Takeoff_Request* 
 
 // ===================================================================
 
-void ManualControl_Takeoff_Response::InitAsDefaultInstance() {
+void FlightControl_Takeoff_Response::InitAsDefaultInstance() {
 }
 #if !defined(_MSC_VER) || _MSC_VER >= 1900
-const int ManualControl_Takeoff_Response::kLatitudeFieldNumber;
-const int ManualControl_Takeoff_Response::kLongitudeFieldNumber;
+const int FlightControl_Takeoff_Response::kLatitudeFieldNumber;
+const int FlightControl_Takeoff_Response::kLongitudeFieldNumber;
 #endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
 
-ManualControl_Takeoff_Response::ManualControl_Takeoff_Response()
+FlightControl_Takeoff_Response::FlightControl_Takeoff_Response()
   : ::google::protobuf::Message(), _internal_metadata_(NULL) {
   ::google::protobuf::internal::InitSCC(
-      &protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Response.base);
+      &protobuf_messages_2eproto::scc_info_FlightControl_Takeoff_Response.base);
   SharedCtor();
-  // @@protoc_insertion_point(constructor:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(constructor:muas.FlightControl_Takeoff_Response)
 }
-ManualControl_Takeoff_Response::ManualControl_Takeoff_Response(const ManualControl_Takeoff_Response& from)
+FlightControl_Takeoff_Response::FlightControl_Takeoff_Response(const FlightControl_Takeoff_Response& from)
   : ::google::protobuf::Message(),
       _internal_metadata_(NULL) {
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::memcpy(&latitude_, &from.latitude_,
     static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
     reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
-  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(copy_constructor:muas.FlightControl_Takeoff_Response)
 }
 
-void ManualControl_Takeoff_Response::SharedCtor() {
+void FlightControl_Takeoff_Response::SharedCtor() {
   ::memset(&latitude_, 0, static_cast<size_t>(
       reinterpret_cast<char*>(&longitude_) -
       reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
 }
 
-ManualControl_Takeoff_Response::~ManualControl_Takeoff_Response() {
-  // @@protoc_insertion_point(destructor:muas.ManualControl_Takeoff_Response)
+FlightControl_Takeoff_Response::~FlightControl_Takeoff_Response() {
+  // @@protoc_insertion_point(destructor:muas.FlightControl_Takeoff_Response)
   SharedDtor();
 }
 
-void ManualControl_Takeoff_Response::SharedDtor() {
+void FlightControl_Takeoff_Response::SharedDtor() {
 }
 
-void ManualControl_Takeoff_Response::SetCachedSize(int size) const {
+void FlightControl_Takeoff_Response::SetCachedSize(int size) const {
   _cached_size_.Set(size);
 }
-const ::google::protobuf::Descriptor* ManualControl_Takeoff_Response::descriptor() {
+const ::google::protobuf::Descriptor* FlightControl_Takeoff_Response::descriptor() {
   ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
 }
 
-const ManualControl_Takeoff_Response& ManualControl_Takeoff_Response::default_instance() {
-  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Takeoff_Response.base);
+const FlightControl_Takeoff_Response& FlightControl_Takeoff_Response::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_FlightControl_Takeoff_Response.base);
   return *internal_default_instance();
 }
 
 
-void ManualControl_Takeoff_Response::Clear() {
-// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Takeoff_Response)
+void FlightControl_Takeoff_Response::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.FlightControl_Takeoff_Response)
   ::google::protobuf::uint32 cached_has_bits = 0;
   // Prevent compiler warnings about cached_has_bits being unused
   (void) cached_has_bits;
@@ -1760,11 +1828,11 @@ void ManualControl_Takeoff_Response::Clear() {
   _internal_metadata_.Clear();
 }
 
-bool ManualControl_Takeoff_Response::MergePartialFromCodedStream(
+bool FlightControl_Takeoff_Response::MergePartialFromCodedStream(
     ::google::protobuf::io::CodedInputStream* input) {
 #define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
   ::google::protobuf::uint32 tag;
-  // @@protoc_insertion_point(parse_start:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(parse_start:muas.FlightControl_Takeoff_Response)
   for (;;) {
     ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
     tag = p.first;
@@ -1810,17 +1878,17 @@ bool ManualControl_Takeoff_Response::MergePartialFromCodedStream(
     }
   }
 success:
-  // @@protoc_insertion_point(parse_success:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(parse_success:muas.FlightControl_Takeoff_Response)
   return true;
 failure:
-  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(parse_failure:muas.FlightControl_Takeoff_Response)
   return false;
 #undef DO_
 }
 
-void ManualControl_Takeoff_Response::SerializeWithCachedSizes(
+void FlightControl_Takeoff_Response::SerializeWithCachedSizes(
     ::google::protobuf::io::CodedOutputStream* output) const {
-  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(serialize_start:muas.FlightControl_Takeoff_Response)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -1838,13 +1906,13 @@ void ManualControl_Takeoff_Response::SerializeWithCachedSizes(
     ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
   }
-  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(serialize_end:muas.FlightControl_Takeoff_Response)
 }
 
-::google::protobuf::uint8* ManualControl_Takeoff_Response::InternalSerializeWithCachedSizesToArray(
+::google::protobuf::uint8* FlightControl_Takeoff_Response::InternalSerializeWithCachedSizesToArray(
     bool deterministic, ::google::protobuf::uint8* target) const {
   (void)deterministic; // Unused
-  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(serialize_to_array_start:muas.FlightControl_Takeoff_Response)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -1862,12 +1930,12 @@ void ManualControl_Takeoff_Response::SerializeWithCachedSizes(
     target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
   }
-  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(serialize_to_array_end:muas.FlightControl_Takeoff_Response)
   return target;
 }
 
-size_t ManualControl_Takeoff_Response::ByteSizeLong() const {
-// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Takeoff_Response)
+size_t FlightControl_Takeoff_Response::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.FlightControl_Takeoff_Response)
   size_t total_size = 0;
 
   if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
@@ -1890,23 +1958,23 @@ size_t ManualControl_Takeoff_Response::ByteSizeLong() const {
   return total_size;
 }
 
-void ManualControl_Takeoff_Response::MergeFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Takeoff_Response)
+void FlightControl_Takeoff_Response::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.FlightControl_Takeoff_Response)
   GOOGLE_DCHECK_NE(&from, this);
-  const ManualControl_Takeoff_Response* source =
-      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Takeoff_Response>(
+  const FlightControl_Takeoff_Response* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const FlightControl_Takeoff_Response>(
           &from);
   if (source == NULL) {
-  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.FlightControl_Takeoff_Response)
     ::google::protobuf::internal::ReflectionOps::Merge(from, this);
   } else {
-  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.FlightControl_Takeoff_Response)
     MergeFrom(*source);
   }
 }
 
-void ManualControl_Takeoff_Response::MergeFrom(const ManualControl_Takeoff_Response& from) {
-// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Takeoff_Response)
+void FlightControl_Takeoff_Response::MergeFrom(const FlightControl_Takeoff_Response& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.FlightControl_Takeoff_Response)
   GOOGLE_DCHECK_NE(&from, this);
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::google::protobuf::uint32 cached_has_bits = 0;
@@ -1920,36 +1988,36 @@ void ManualControl_Takeoff_Response::MergeFrom(const ManualControl_Takeoff_Respo
   }
 }
 
-void ManualControl_Takeoff_Response::CopyFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Takeoff_Response)
+void FlightControl_Takeoff_Response::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.FlightControl_Takeoff_Response)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-void ManualControl_Takeoff_Response::CopyFrom(const ManualControl_Takeoff_Response& from) {
-// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Takeoff_Response)
+void FlightControl_Takeoff_Response::CopyFrom(const FlightControl_Takeoff_Response& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.FlightControl_Takeoff_Response)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-bool ManualControl_Takeoff_Response::IsInitialized() const {
+bool FlightControl_Takeoff_Response::IsInitialized() const {
   return true;
 }
 
-void ManualControl_Takeoff_Response::Swap(ManualControl_Takeoff_Response* other) {
+void FlightControl_Takeoff_Response::Swap(FlightControl_Takeoff_Response* other) {
   if (other == this) return;
   InternalSwap(other);
 }
-void ManualControl_Takeoff_Response::InternalSwap(ManualControl_Takeoff_Response* other) {
+void FlightControl_Takeoff_Response::InternalSwap(FlightControl_Takeoff_Response* other) {
   using std::swap;
   swap(latitude_, other->latitude_);
   swap(longitude_, other->longitude_);
   _internal_metadata_.Swap(&other->_internal_metadata_);
 }
 
-::google::protobuf::Metadata ManualControl_Takeoff_Response::GetMetadata() const {
+::google::protobuf::Metadata FlightControl_Takeoff_Response::GetMetadata() const {
   protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
 }
@@ -1957,60 +2025,60 @@ void ManualControl_Takeoff_Response::InternalSwap(ManualControl_Takeoff_Response
 
 // ===================================================================
 
-void ManualControl_Land_Request::InitAsDefaultInstance() {
+void FlightControl_Land_Request::InitAsDefaultInstance() {
 }
 #if !defined(_MSC_VER) || _MSC_VER >= 1900
-const int ManualControl_Land_Request::kLatitudeFieldNumber;
-const int ManualControl_Land_Request::kLongitudeFieldNumber;
+const int FlightControl_Land_Request::kLatitudeFieldNumber;
+const int FlightControl_Land_Request::kLongitudeFieldNumber;
 #endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
 
-ManualControl_Land_Request::ManualControl_Land_Request()
+FlightControl_Land_Request::FlightControl_Land_Request()
   : ::google::protobuf::Message(), _internal_metadata_(NULL) {
   ::google::protobuf::internal::InitSCC(
-      &protobuf_messages_2eproto::scc_info_ManualControl_Land_Request.base);
+      &protobuf_messages_2eproto::scc_info_FlightControl_Land_Request.base);
   SharedCtor();
-  // @@protoc_insertion_point(constructor:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(constructor:muas.FlightControl_Land_Request)
 }
-ManualControl_Land_Request::ManualControl_Land_Request(const ManualControl_Land_Request& from)
+FlightControl_Land_Request::FlightControl_Land_Request(const FlightControl_Land_Request& from)
   : ::google::protobuf::Message(),
       _internal_metadata_(NULL) {
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::memcpy(&latitude_, &from.latitude_,
     static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
     reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
-  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(copy_constructor:muas.FlightControl_Land_Request)
 }
 
-void ManualControl_Land_Request::SharedCtor() {
+void FlightControl_Land_Request::SharedCtor() {
   ::memset(&latitude_, 0, static_cast<size_t>(
       reinterpret_cast<char*>(&longitude_) -
       reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
 }
 
-ManualControl_Land_Request::~ManualControl_Land_Request() {
-  // @@protoc_insertion_point(destructor:muas.ManualControl_Land_Request)
+FlightControl_Land_Request::~FlightControl_Land_Request() {
+  // @@protoc_insertion_point(destructor:muas.FlightControl_Land_Request)
   SharedDtor();
 }
 
-void ManualControl_Land_Request::SharedDtor() {
+void FlightControl_Land_Request::SharedDtor() {
 }
 
-void ManualControl_Land_Request::SetCachedSize(int size) const {
+void FlightControl_Land_Request::SetCachedSize(int size) const {
   _cached_size_.Set(size);
 }
-const ::google::protobuf::Descriptor* ManualControl_Land_Request::descriptor() {
+const ::google::protobuf::Descriptor* FlightControl_Land_Request::descriptor() {
   ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
 }
 
-const ManualControl_Land_Request& ManualControl_Land_Request::default_instance() {
-  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Land_Request.base);
+const FlightControl_Land_Request& FlightControl_Land_Request::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_FlightControl_Land_Request.base);
   return *internal_default_instance();
 }
 
 
-void ManualControl_Land_Request::Clear() {
-// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Land_Request)
+void FlightControl_Land_Request::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.FlightControl_Land_Request)
   ::google::protobuf::uint32 cached_has_bits = 0;
   // Prevent compiler warnings about cached_has_bits being unused
   (void) cached_has_bits;
@@ -2021,11 +2089,11 @@ void ManualControl_Land_Request::Clear() {
   _internal_metadata_.Clear();
 }
 
-bool ManualControl_Land_Request::MergePartialFromCodedStream(
+bool FlightControl_Land_Request::MergePartialFromCodedStream(
     ::google::protobuf::io::CodedInputStream* input) {
 #define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
   ::google::protobuf::uint32 tag;
-  // @@protoc_insertion_point(parse_start:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(parse_start:muas.FlightControl_Land_Request)
   for (;;) {
     ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
     tag = p.first;
@@ -2071,17 +2139,17 @@ bool ManualControl_Land_Request::MergePartialFromCodedStream(
     }
   }
 success:
-  // @@protoc_insertion_point(parse_success:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(parse_success:muas.FlightControl_Land_Request)
   return true;
 failure:
-  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(parse_failure:muas.FlightControl_Land_Request)
   return false;
 #undef DO_
 }
 
-void ManualControl_Land_Request::SerializeWithCachedSizes(
+void FlightControl_Land_Request::SerializeWithCachedSizes(
     ::google::protobuf::io::CodedOutputStream* output) const {
-  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(serialize_start:muas.FlightControl_Land_Request)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -2099,13 +2167,13 @@ void ManualControl_Land_Request::SerializeWithCachedSizes(
     ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
   }
-  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(serialize_end:muas.FlightControl_Land_Request)
 }
 
-::google::protobuf::uint8* ManualControl_Land_Request::InternalSerializeWithCachedSizesToArray(
+::google::protobuf::uint8* FlightControl_Land_Request::InternalSerializeWithCachedSizesToArray(
     bool deterministic, ::google::protobuf::uint8* target) const {
   (void)deterministic; // Unused
-  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(serialize_to_array_start:muas.FlightControl_Land_Request)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -2123,12 +2191,12 @@ void ManualControl_Land_Request::SerializeWithCachedSizes(
     target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
   }
-  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(serialize_to_array_end:muas.FlightControl_Land_Request)
   return target;
 }
 
-size_t ManualControl_Land_Request::ByteSizeLong() const {
-// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Land_Request)
+size_t FlightControl_Land_Request::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.FlightControl_Land_Request)
   size_t total_size = 0;
 
   if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
@@ -2151,23 +2219,23 @@ size_t ManualControl_Land_Request::ByteSizeLong() const {
   return total_size;
 }
 
-void ManualControl_Land_Request::MergeFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Land_Request)
+void FlightControl_Land_Request::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.FlightControl_Land_Request)
   GOOGLE_DCHECK_NE(&from, this);
-  const ManualControl_Land_Request* source =
-      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Land_Request>(
+  const FlightControl_Land_Request* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const FlightControl_Land_Request>(
           &from);
   if (source == NULL) {
-  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.FlightControl_Land_Request)
     ::google::protobuf::internal::ReflectionOps::Merge(from, this);
   } else {
-  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.FlightControl_Land_Request)
     MergeFrom(*source);
   }
 }
 
-void ManualControl_Land_Request::MergeFrom(const ManualControl_Land_Request& from) {
-// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Land_Request)
+void FlightControl_Land_Request::MergeFrom(const FlightControl_Land_Request& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.FlightControl_Land_Request)
   GOOGLE_DCHECK_NE(&from, this);
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::google::protobuf::uint32 cached_has_bits = 0;
@@ -2181,36 +2249,36 @@ void ManualControl_Land_Request::MergeFrom(const ManualControl_Land_Request& fro
   }
 }
 
-void ManualControl_Land_Request::CopyFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Land_Request)
+void FlightControl_Land_Request::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.FlightControl_Land_Request)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-void ManualControl_Land_Request::CopyFrom(const ManualControl_Land_Request& from) {
-// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Land_Request)
+void FlightControl_Land_Request::CopyFrom(const FlightControl_Land_Request& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.FlightControl_Land_Request)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-bool ManualControl_Land_Request::IsInitialized() const {
+bool FlightControl_Land_Request::IsInitialized() const {
   return true;
 }
 
-void ManualControl_Land_Request::Swap(ManualControl_Land_Request* other) {
+void FlightControl_Land_Request::Swap(FlightControl_Land_Request* other) {
   if (other == this) return;
   InternalSwap(other);
 }
-void ManualControl_Land_Request::InternalSwap(ManualControl_Land_Request* other) {
+void FlightControl_Land_Request::InternalSwap(FlightControl_Land_Request* other) {
   using std::swap;
   swap(latitude_, other->latitude_);
   swap(longitude_, other->longitude_);
   _internal_metadata_.Swap(&other->_internal_metadata_);
 }
 
-::google::protobuf::Metadata ManualControl_Land_Request::GetMetadata() const {
+::google::protobuf::Metadata FlightControl_Land_Request::GetMetadata() const {
   protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
 }
@@ -2218,60 +2286,60 @@ void ManualControl_Land_Request::InternalSwap(ManualControl_Land_Request* other)
 
 // ===================================================================
 
-void ManualControl_Land_Response::InitAsDefaultInstance() {
+void FlightControl_Land_Response::InitAsDefaultInstance() {
 }
 #if !defined(_MSC_VER) || _MSC_VER >= 1900
-const int ManualControl_Land_Response::kLatitudeFieldNumber;
-const int ManualControl_Land_Response::kLongitudeFieldNumber;
+const int FlightControl_Land_Response::kLatitudeFieldNumber;
+const int FlightControl_Land_Response::kLongitudeFieldNumber;
 #endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
 
-ManualControl_Land_Response::ManualControl_Land_Response()
+FlightControl_Land_Response::FlightControl_Land_Response()
   : ::google::protobuf::Message(), _internal_metadata_(NULL) {
   ::google::protobuf::internal::InitSCC(
-      &protobuf_messages_2eproto::scc_info_ManualControl_Land_Response.base);
+      &protobuf_messages_2eproto::scc_info_FlightControl_Land_Response.base);
   SharedCtor();
-  // @@protoc_insertion_point(constructor:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(constructor:muas.FlightControl_Land_Response)
 }
-ManualControl_Land_Response::ManualControl_Land_Response(const ManualControl_Land_Response& from)
+FlightControl_Land_Response::FlightControl_Land_Response(const FlightControl_Land_Response& from)
   : ::google::protobuf::Message(),
       _internal_metadata_(NULL) {
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::memcpy(&latitude_, &from.latitude_,
     static_cast<size_t>(reinterpret_cast<char*>(&longitude_) -
     reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
-  // @@protoc_insertion_point(copy_constructor:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(copy_constructor:muas.FlightControl_Land_Response)
 }
 
-void ManualControl_Land_Response::SharedCtor() {
+void FlightControl_Land_Response::SharedCtor() {
   ::memset(&latitude_, 0, static_cast<size_t>(
       reinterpret_cast<char*>(&longitude_) -
       reinterpret_cast<char*>(&latitude_)) + sizeof(longitude_));
 }
 
-ManualControl_Land_Response::~ManualControl_Land_Response() {
-  // @@protoc_insertion_point(destructor:muas.ManualControl_Land_Response)
+FlightControl_Land_Response::~FlightControl_Land_Response() {
+  // @@protoc_insertion_point(destructor:muas.FlightControl_Land_Response)
   SharedDtor();
 }
 
-void ManualControl_Land_Response::SharedDtor() {
+void FlightControl_Land_Response::SharedDtor() {
 }
 
-void ManualControl_Land_Response::SetCachedSize(int size) const {
+void FlightControl_Land_Response::SetCachedSize(int size) const {
   _cached_size_.Set(size);
 }
-const ::google::protobuf::Descriptor* ManualControl_Land_Response::descriptor() {
+const ::google::protobuf::Descriptor* FlightControl_Land_Response::descriptor() {
   ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
 }
 
-const ManualControl_Land_Response& ManualControl_Land_Response::default_instance() {
-  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_ManualControl_Land_Response.base);
+const FlightControl_Land_Response& FlightControl_Land_Response::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_FlightControl_Land_Response.base);
   return *internal_default_instance();
 }
 
 
-void ManualControl_Land_Response::Clear() {
-// @@protoc_insertion_point(message_clear_start:muas.ManualControl_Land_Response)
+void FlightControl_Land_Response::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.FlightControl_Land_Response)
   ::google::protobuf::uint32 cached_has_bits = 0;
   // Prevent compiler warnings about cached_has_bits being unused
   (void) cached_has_bits;
@@ -2282,11 +2350,11 @@ void ManualControl_Land_Response::Clear() {
   _internal_metadata_.Clear();
 }
 
-bool ManualControl_Land_Response::MergePartialFromCodedStream(
+bool FlightControl_Land_Response::MergePartialFromCodedStream(
     ::google::protobuf::io::CodedInputStream* input) {
 #define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
   ::google::protobuf::uint32 tag;
-  // @@protoc_insertion_point(parse_start:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(parse_start:muas.FlightControl_Land_Response)
   for (;;) {
     ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
     tag = p.first;
@@ -2332,17 +2400,17 @@ bool ManualControl_Land_Response::MergePartialFromCodedStream(
     }
   }
 success:
-  // @@protoc_insertion_point(parse_success:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(parse_success:muas.FlightControl_Land_Response)
   return true;
 failure:
-  // @@protoc_insertion_point(parse_failure:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(parse_failure:muas.FlightControl_Land_Response)
   return false;
 #undef DO_
 }
 
-void ManualControl_Land_Response::SerializeWithCachedSizes(
+void FlightControl_Land_Response::SerializeWithCachedSizes(
     ::google::protobuf::io::CodedOutputStream* output) const {
-  // @@protoc_insertion_point(serialize_start:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(serialize_start:muas.FlightControl_Land_Response)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -2360,13 +2428,13 @@ void ManualControl_Land_Response::SerializeWithCachedSizes(
     ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
   }
-  // @@protoc_insertion_point(serialize_end:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(serialize_end:muas.FlightControl_Land_Response)
 }
 
-::google::protobuf::uint8* ManualControl_Land_Response::InternalSerializeWithCachedSizesToArray(
+::google::protobuf::uint8* FlightControl_Land_Response::InternalSerializeWithCachedSizesToArray(
     bool deterministic, ::google::protobuf::uint8* target) const {
   (void)deterministic; // Unused
-  // @@protoc_insertion_point(serialize_to_array_start:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(serialize_to_array_start:muas.FlightControl_Land_Response)
   ::google::protobuf::uint32 cached_has_bits = 0;
   (void) cached_has_bits;
 
@@ -2384,12 +2452,12 @@ void ManualControl_Land_Response::SerializeWithCachedSizes(
     target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
         (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
   }
-  // @@protoc_insertion_point(serialize_to_array_end:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(serialize_to_array_end:muas.FlightControl_Land_Response)
   return target;
 }
 
-size_t ManualControl_Land_Response::ByteSizeLong() const {
-// @@protoc_insertion_point(message_byte_size_start:muas.ManualControl_Land_Response)
+size_t FlightControl_Land_Response::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.FlightControl_Land_Response)
   size_t total_size = 0;
 
   if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
@@ -2412,23 +2480,23 @@ size_t ManualControl_Land_Response::ByteSizeLong() const {
   return total_size;
 }
 
-void ManualControl_Land_Response::MergeFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_merge_from_start:muas.ManualControl_Land_Response)
+void FlightControl_Land_Response::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.FlightControl_Land_Response)
   GOOGLE_DCHECK_NE(&from, this);
-  const ManualControl_Land_Response* source =
-      ::google::protobuf::internal::DynamicCastToGenerated<const ManualControl_Land_Response>(
+  const FlightControl_Land_Response* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const FlightControl_Land_Response>(
           &from);
   if (source == NULL) {
-  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.FlightControl_Land_Response)
     ::google::protobuf::internal::ReflectionOps::Merge(from, this);
   } else {
-  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.FlightControl_Land_Response)
     MergeFrom(*source);
   }
 }
 
-void ManualControl_Land_Response::MergeFrom(const ManualControl_Land_Response& from) {
-// @@protoc_insertion_point(class_specific_merge_from_start:muas.ManualControl_Land_Response)
+void FlightControl_Land_Response::MergeFrom(const FlightControl_Land_Response& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.FlightControl_Land_Response)
   GOOGLE_DCHECK_NE(&from, this);
   _internal_metadata_.MergeFrom(from._internal_metadata_);
   ::google::protobuf::uint32 cached_has_bits = 0;
@@ -2442,36 +2510,728 @@ void ManualControl_Land_Response::MergeFrom(const ManualControl_Land_Response& f
   }
 }
 
-void ManualControl_Land_Response::CopyFrom(const ::google::protobuf::Message& from) {
-// @@protoc_insertion_point(generalized_copy_from_start:muas.ManualControl_Land_Response)
+void FlightControl_Land_Response::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.FlightControl_Land_Response)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-void ManualControl_Land_Response::CopyFrom(const ManualControl_Land_Response& from) {
-// @@protoc_insertion_point(class_specific_copy_from_start:muas.ManualControl_Land_Response)
+void FlightControl_Land_Response::CopyFrom(const FlightControl_Land_Response& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.FlightControl_Land_Response)
   if (&from == this) return;
   Clear();
   MergeFrom(from);
 }
 
-bool ManualControl_Land_Response::IsInitialized() const {
+bool FlightControl_Land_Response::IsInitialized() const {
   return true;
 }
 
-void ManualControl_Land_Response::Swap(ManualControl_Land_Response* other) {
+void FlightControl_Land_Response::Swap(FlightControl_Land_Response* other) {
   if (other == this) return;
   InternalSwap(other);
 }
-void ManualControl_Land_Response::InternalSwap(ManualControl_Land_Response* other) {
+void FlightControl_Land_Response::InternalSwap(FlightControl_Land_Response* other) {
   using std::swap;
   swap(latitude_, other->latitude_);
   swap(longitude_, other->longitude_);
   _internal_metadata_.Swap(&other->_internal_metadata_);
 }
 
-::google::protobuf::Metadata ManualControl_Land_Response::GetMetadata() const {
+::google::protobuf::Metadata FlightControl_Land_Response::GetMetadata() const {
+  protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
+}
+
+
+// ===================================================================
+
+void FlightControl_ManualControl_Request::InitAsDefaultInstance() {
+}
+#if !defined(_MSC_VER) || _MSC_VER >= 1900
+const int FlightControl_ManualControl_Request::kXFieldNumber;
+const int FlightControl_ManualControl_Request::kYFieldNumber;
+const int FlightControl_ManualControl_Request::kZFieldNumber;
+const int FlightControl_ManualControl_Request::kRFieldNumber;
+const int FlightControl_ManualControl_Request::kSFieldNumber;
+const int FlightControl_ManualControl_Request::kTFieldNumber;
+#endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
+
+FlightControl_ManualControl_Request::FlightControl_ManualControl_Request()
+  : ::google::protobuf::Message(), _internal_metadata_(NULL) {
+  ::google::protobuf::internal::InitSCC(
+      &protobuf_messages_2eproto::scc_info_FlightControl_ManualControl_Request.base);
+  SharedCtor();
+  // @@protoc_insertion_point(constructor:muas.FlightControl_ManualControl_Request)
+}
+FlightControl_ManualControl_Request::FlightControl_ManualControl_Request(const FlightControl_ManualControl_Request& from)
+  : ::google::protobuf::Message(),
+      _internal_metadata_(NULL) {
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::memcpy(&x_, &from.x_,
+    static_cast<size_t>(reinterpret_cast<char*>(&t_) -
+    reinterpret_cast<char*>(&x_)) + sizeof(t_));
+  // @@protoc_insertion_point(copy_constructor:muas.FlightControl_ManualControl_Request)
+}
+
+void FlightControl_ManualControl_Request::SharedCtor() {
+  ::memset(&x_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&t_) -
+      reinterpret_cast<char*>(&x_)) + sizeof(t_));
+}
+
+FlightControl_ManualControl_Request::~FlightControl_ManualControl_Request() {
+  // @@protoc_insertion_point(destructor:muas.FlightControl_ManualControl_Request)
+  SharedDtor();
+}
+
+void FlightControl_ManualControl_Request::SharedDtor() {
+}
+
+void FlightControl_ManualControl_Request::SetCachedSize(int size) const {
+  _cached_size_.Set(size);
+}
+const ::google::protobuf::Descriptor* FlightControl_ManualControl_Request::descriptor() {
+  ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
+}
+
+const FlightControl_ManualControl_Request& FlightControl_ManualControl_Request::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_FlightControl_ManualControl_Request.base);
+  return *internal_default_instance();
+}
+
+
+void FlightControl_ManualControl_Request::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.FlightControl_ManualControl_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  ::memset(&x_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&t_) -
+      reinterpret_cast<char*>(&x_)) + sizeof(t_));
+  _internal_metadata_.Clear();
+}
+
+bool FlightControl_ManualControl_Request::MergePartialFromCodedStream(
+    ::google::protobuf::io::CodedInputStream* input) {
+#define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
+  ::google::protobuf::uint32 tag;
+  // @@protoc_insertion_point(parse_start:muas.FlightControl_ManualControl_Request)
+  for (;;) {
+    ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
+    tag = p.first;
+    if (!p.second) goto handle_unusual;
+    switch (::google::protobuf::internal::WireFormatLite::GetTagFieldNumber(tag)) {
+      // float x = 1;
+      case 1: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(13u /* 13 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &x_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float y = 2;
+      case 2: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(21u /* 21 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &y_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float z = 3;
+      case 3: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(29u /* 29 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &z_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float r = 4;
+      case 4: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(37u /* 37 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &r_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float s = 5;
+      case 5: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(45u /* 45 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &s_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float t = 6;
+      case 6: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(53u /* 53 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &t_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      default: {
+      handle_unusual:
+        if (tag == 0) {
+          goto success;
+        }
+        DO_(::google::protobuf::internal::WireFormat::SkipField(
+              input, tag, _internal_metadata_.mutable_unknown_fields()));
+        break;
+      }
+    }
+  }
+success:
+  // @@protoc_insertion_point(parse_success:muas.FlightControl_ManualControl_Request)
+  return true;
+failure:
+  // @@protoc_insertion_point(parse_failure:muas.FlightControl_ManualControl_Request)
+  return false;
+#undef DO_
+}
+
+void FlightControl_ManualControl_Request::SerializeWithCachedSizes(
+    ::google::protobuf::io::CodedOutputStream* output) const {
+  // @@protoc_insertion_point(serialize_start:muas.FlightControl_ManualControl_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float x = 1;
+  if (this->x() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(1, this->x(), output);
+  }
+
+  // float y = 2;
+  if (this->y() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(2, this->y(), output);
+  }
+
+  // float z = 3;
+  if (this->z() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(3, this->z(), output);
+  }
+
+  // float r = 4;
+  if (this->r() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(4, this->r(), output);
+  }
+
+  // float s = 5;
+  if (this->s() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(5, this->s(), output);
+  }
+
+  // float t = 6;
+  if (this->t() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(6, this->t(), output);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
+  }
+  // @@protoc_insertion_point(serialize_end:muas.FlightControl_ManualControl_Request)
+}
+
+::google::protobuf::uint8* FlightControl_ManualControl_Request::InternalSerializeWithCachedSizesToArray(
+    bool deterministic, ::google::protobuf::uint8* target) const {
+  (void)deterministic; // Unused
+  // @@protoc_insertion_point(serialize_to_array_start:muas.FlightControl_ManualControl_Request)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float x = 1;
+  if (this->x() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(1, this->x(), target);
+  }
+
+  // float y = 2;
+  if (this->y() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(2, this->y(), target);
+  }
+
+  // float z = 3;
+  if (this->z() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(3, this->z(), target);
+  }
+
+  // float r = 4;
+  if (this->r() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(4, this->r(), target);
+  }
+
+  // float s = 5;
+  if (this->s() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(5, this->s(), target);
+  }
+
+  // float t = 6;
+  if (this->t() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(6, this->t(), target);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:muas.FlightControl_ManualControl_Request)
+  return target;
+}
+
+size_t FlightControl_ManualControl_Request::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.FlightControl_ManualControl_Request)
+  size_t total_size = 0;
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    total_size +=
+      ::google::protobuf::internal::WireFormat::ComputeUnknownFieldsSize(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()));
+  }
+  // float x = 1;
+  if (this->x() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float y = 2;
+  if (this->y() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float z = 3;
+  if (this->z() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float r = 4;
+  if (this->r() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float s = 5;
+  if (this->s() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float t = 6;
+  if (this->t() != 0) {
+    total_size += 1 + 4;
+  }
+
+  int cached_size = ::google::protobuf::internal::ToCachedSize(total_size);
+  SetCachedSize(cached_size);
+  return total_size;
+}
+
+void FlightControl_ManualControl_Request::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.FlightControl_ManualControl_Request)
+  GOOGLE_DCHECK_NE(&from, this);
+  const FlightControl_ManualControl_Request* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const FlightControl_ManualControl_Request>(
+          &from);
+  if (source == NULL) {
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.FlightControl_ManualControl_Request)
+    ::google::protobuf::internal::ReflectionOps::Merge(from, this);
+  } else {
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.FlightControl_ManualControl_Request)
+    MergeFrom(*source);
+  }
+}
+
+void FlightControl_ManualControl_Request::MergeFrom(const FlightControl_ManualControl_Request& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.FlightControl_ManualControl_Request)
+  GOOGLE_DCHECK_NE(&from, this);
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (from.x() != 0) {
+    set_x(from.x());
+  }
+  if (from.y() != 0) {
+    set_y(from.y());
+  }
+  if (from.z() != 0) {
+    set_z(from.z());
+  }
+  if (from.r() != 0) {
+    set_r(from.r());
+  }
+  if (from.s() != 0) {
+    set_s(from.s());
+  }
+  if (from.t() != 0) {
+    set_t(from.t());
+  }
+}
+
+void FlightControl_ManualControl_Request::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.FlightControl_ManualControl_Request)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+void FlightControl_ManualControl_Request::CopyFrom(const FlightControl_ManualControl_Request& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.FlightControl_ManualControl_Request)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool FlightControl_ManualControl_Request::IsInitialized() const {
+  return true;
+}
+
+void FlightControl_ManualControl_Request::Swap(FlightControl_ManualControl_Request* other) {
+  if (other == this) return;
+  InternalSwap(other);
+}
+void FlightControl_ManualControl_Request::InternalSwap(FlightControl_ManualControl_Request* other) {
+  using std::swap;
+  swap(x_, other->x_);
+  swap(y_, other->y_);
+  swap(z_, other->z_);
+  swap(r_, other->r_);
+  swap(s_, other->s_);
+  swap(t_, other->t_);
+  _internal_metadata_.Swap(&other->_internal_metadata_);
+}
+
+::google::protobuf::Metadata FlightControl_ManualControl_Request::GetMetadata() const {
+  protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
+}
+
+
+// ===================================================================
+
+void FlightControl_ManualControl_Response::InitAsDefaultInstance() {
+}
+#if !defined(_MSC_VER) || _MSC_VER >= 1900
+const int FlightControl_ManualControl_Response::kLatitudeFieldNumber;
+const int FlightControl_ManualControl_Response::kLongitudeFieldNumber;
+const int FlightControl_ManualControl_Response::kAltitudeFieldNumber;
+#endif  // !defined(_MSC_VER) || _MSC_VER >= 1900
+
+FlightControl_ManualControl_Response::FlightControl_ManualControl_Response()
+  : ::google::protobuf::Message(), _internal_metadata_(NULL) {
+  ::google::protobuf::internal::InitSCC(
+      &protobuf_messages_2eproto::scc_info_FlightControl_ManualControl_Response.base);
+  SharedCtor();
+  // @@protoc_insertion_point(constructor:muas.FlightControl_ManualControl_Response)
+}
+FlightControl_ManualControl_Response::FlightControl_ManualControl_Response(const FlightControl_ManualControl_Response& from)
+  : ::google::protobuf::Message(),
+      _internal_metadata_(NULL) {
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::memcpy(&latitude_, &from.latitude_,
+    static_cast<size_t>(reinterpret_cast<char*>(&altitude_) -
+    reinterpret_cast<char*>(&latitude_)) + sizeof(altitude_));
+  // @@protoc_insertion_point(copy_constructor:muas.FlightControl_ManualControl_Response)
+}
+
+void FlightControl_ManualControl_Response::SharedCtor() {
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&altitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(altitude_));
+}
+
+FlightControl_ManualControl_Response::~FlightControl_ManualControl_Response() {
+  // @@protoc_insertion_point(destructor:muas.FlightControl_ManualControl_Response)
+  SharedDtor();
+}
+
+void FlightControl_ManualControl_Response::SharedDtor() {
+}
+
+void FlightControl_ManualControl_Response::SetCachedSize(int size) const {
+  _cached_size_.Set(size);
+}
+const ::google::protobuf::Descriptor* FlightControl_ManualControl_Response::descriptor() {
+  ::protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
+  return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages].descriptor;
+}
+
+const FlightControl_ManualControl_Response& FlightControl_ManualControl_Response::default_instance() {
+  ::google::protobuf::internal::InitSCC(&protobuf_messages_2eproto::scc_info_FlightControl_ManualControl_Response.base);
+  return *internal_default_instance();
+}
+
+
+void FlightControl_ManualControl_Response::Clear() {
+// @@protoc_insertion_point(message_clear_start:muas.FlightControl_ManualControl_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  ::memset(&latitude_, 0, static_cast<size_t>(
+      reinterpret_cast<char*>(&altitude_) -
+      reinterpret_cast<char*>(&latitude_)) + sizeof(altitude_));
+  _internal_metadata_.Clear();
+}
+
+bool FlightControl_ManualControl_Response::MergePartialFromCodedStream(
+    ::google::protobuf::io::CodedInputStream* input) {
+#define DO_(EXPRESSION) if (!GOOGLE_PREDICT_TRUE(EXPRESSION)) goto failure
+  ::google::protobuf::uint32 tag;
+  // @@protoc_insertion_point(parse_start:muas.FlightControl_ManualControl_Response)
+  for (;;) {
+    ::std::pair<::google::protobuf::uint32, bool> p = input->ReadTagWithCutoffNoLastTag(127u);
+    tag = p.first;
+    if (!p.second) goto handle_unusual;
+    switch (::google::protobuf::internal::WireFormatLite::GetTagFieldNumber(tag)) {
+      // float latitude = 1;
+      case 1: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(13u /* 13 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &latitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float longitude = 2;
+      case 2: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(21u /* 21 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &longitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      // float altitude = 3;
+      case 3: {
+        if (static_cast< ::google::protobuf::uint8>(tag) ==
+            static_cast< ::google::protobuf::uint8>(29u /* 29 & 0xFF */)) {
+
+          DO_((::google::protobuf::internal::WireFormatLite::ReadPrimitive<
+                   float, ::google::protobuf::internal::WireFormatLite::TYPE_FLOAT>(
+                 input, &altitude_)));
+        } else {
+          goto handle_unusual;
+        }
+        break;
+      }
+
+      default: {
+      handle_unusual:
+        if (tag == 0) {
+          goto success;
+        }
+        DO_(::google::protobuf::internal::WireFormat::SkipField(
+              input, tag, _internal_metadata_.mutable_unknown_fields()));
+        break;
+      }
+    }
+  }
+success:
+  // @@protoc_insertion_point(parse_success:muas.FlightControl_ManualControl_Response)
+  return true;
+failure:
+  // @@protoc_insertion_point(parse_failure:muas.FlightControl_ManualControl_Response)
+  return false;
+#undef DO_
+}
+
+void FlightControl_ManualControl_Response::SerializeWithCachedSizes(
+    ::google::protobuf::io::CodedOutputStream* output) const {
+  // @@protoc_insertion_point(serialize_start:muas.FlightControl_ManualControl_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(1, this->latitude(), output);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(2, this->longitude(), output);
+  }
+
+  // float altitude = 3;
+  if (this->altitude() != 0) {
+    ::google::protobuf::internal::WireFormatLite::WriteFloat(3, this->altitude(), output);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    ::google::protobuf::internal::WireFormat::SerializeUnknownFields(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), output);
+  }
+  // @@protoc_insertion_point(serialize_end:muas.FlightControl_ManualControl_Response)
+}
+
+::google::protobuf::uint8* FlightControl_ManualControl_Response::InternalSerializeWithCachedSizesToArray(
+    bool deterministic, ::google::protobuf::uint8* target) const {
+  (void)deterministic; // Unused
+  // @@protoc_insertion_point(serialize_to_array_start:muas.FlightControl_ManualControl_Response)
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(1, this->latitude(), target);
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(2, this->longitude(), target);
+  }
+
+  // float altitude = 3;
+  if (this->altitude() != 0) {
+    target = ::google::protobuf::internal::WireFormatLite::WriteFloatToArray(3, this->altitude(), target);
+  }
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    target = ::google::protobuf::internal::WireFormat::SerializeUnknownFieldsToArray(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()), target);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:muas.FlightControl_ManualControl_Response)
+  return target;
+}
+
+size_t FlightControl_ManualControl_Response::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:muas.FlightControl_ManualControl_Response)
+  size_t total_size = 0;
+
+  if ((_internal_metadata_.have_unknown_fields() &&  ::google::protobuf::internal::GetProto3PreserveUnknownsDefault())) {
+    total_size +=
+      ::google::protobuf::internal::WireFormat::ComputeUnknownFieldsSize(
+        (::google::protobuf::internal::GetProto3PreserveUnknownsDefault()   ? _internal_metadata_.unknown_fields()   : _internal_metadata_.default_instance()));
+  }
+  // float latitude = 1;
+  if (this->latitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float longitude = 2;
+  if (this->longitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  // float altitude = 3;
+  if (this->altitude() != 0) {
+    total_size += 1 + 4;
+  }
+
+  int cached_size = ::google::protobuf::internal::ToCachedSize(total_size);
+  SetCachedSize(cached_size);
+  return total_size;
+}
+
+void FlightControl_ManualControl_Response::MergeFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_merge_from_start:muas.FlightControl_ManualControl_Response)
+  GOOGLE_DCHECK_NE(&from, this);
+  const FlightControl_ManualControl_Response* source =
+      ::google::protobuf::internal::DynamicCastToGenerated<const FlightControl_ManualControl_Response>(
+          &from);
+  if (source == NULL) {
+  // @@protoc_insertion_point(generalized_merge_from_cast_fail:muas.FlightControl_ManualControl_Response)
+    ::google::protobuf::internal::ReflectionOps::Merge(from, this);
+  } else {
+  // @@protoc_insertion_point(generalized_merge_from_cast_success:muas.FlightControl_ManualControl_Response)
+    MergeFrom(*source);
+  }
+}
+
+void FlightControl_ManualControl_Response::MergeFrom(const FlightControl_ManualControl_Response& from) {
+// @@protoc_insertion_point(class_specific_merge_from_start:muas.FlightControl_ManualControl_Response)
+  GOOGLE_DCHECK_NE(&from, this);
+  _internal_metadata_.MergeFrom(from._internal_metadata_);
+  ::google::protobuf::uint32 cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (from.latitude() != 0) {
+    set_latitude(from.latitude());
+  }
+  if (from.longitude() != 0) {
+    set_longitude(from.longitude());
+  }
+  if (from.altitude() != 0) {
+    set_altitude(from.altitude());
+  }
+}
+
+void FlightControl_ManualControl_Response::CopyFrom(const ::google::protobuf::Message& from) {
+// @@protoc_insertion_point(generalized_copy_from_start:muas.FlightControl_ManualControl_Response)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+void FlightControl_ManualControl_Response::CopyFrom(const FlightControl_ManualControl_Response& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:muas.FlightControl_ManualControl_Response)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool FlightControl_ManualControl_Response::IsInitialized() const {
+  return true;
+}
+
+void FlightControl_ManualControl_Response::Swap(FlightControl_ManualControl_Response* other) {
+  if (other == this) return;
+  InternalSwap(other);
+}
+void FlightControl_ManualControl_Response::InternalSwap(FlightControl_ManualControl_Response* other) {
+  using std::swap;
+  swap(latitude_, other->latitude_);
+  swap(longitude_, other->longitude_);
+  swap(altitude_, other->altitude_);
+  _internal_metadata_.Swap(&other->_internal_metadata_);
+}
+
+::google::protobuf::Metadata FlightControl_ManualControl_Response::GetMetadata() const {
   protobuf_messages_2eproto::protobuf_AssignDescriptorsOnce();
   return ::protobuf_messages_2eproto::file_level_metadata[kIndexInFileMessages];
 }
@@ -2493,17 +3253,23 @@ template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ObjectDetection_YOLOv8_Res
 template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::YOLOv8_DetectionResult* Arena::CreateMaybeMessage< ::muas::YOLOv8_DetectionResult >(Arena* arena) {
   return Arena::CreateInternal< ::muas::YOLOv8_DetectionResult >(arena);
 }
-template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Takeoff_Request* Arena::CreateMaybeMessage< ::muas::ManualControl_Takeoff_Request >(Arena* arena) {
-  return Arena::CreateInternal< ::muas::ManualControl_Takeoff_Request >(arena);
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::FlightControl_Takeoff_Request* Arena::CreateMaybeMessage< ::muas::FlightControl_Takeoff_Request >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::FlightControl_Takeoff_Request >(arena);
 }
-template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Takeoff_Response* Arena::CreateMaybeMessage< ::muas::ManualControl_Takeoff_Response >(Arena* arena) {
-  return Arena::CreateInternal< ::muas::ManualControl_Takeoff_Response >(arena);
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::FlightControl_Takeoff_Response* Arena::CreateMaybeMessage< ::muas::FlightControl_Takeoff_Response >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::FlightControl_Takeoff_Response >(arena);
 }
-template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Land_Request* Arena::CreateMaybeMessage< ::muas::ManualControl_Land_Request >(Arena* arena) {
-  return Arena::CreateInternal< ::muas::ManualControl_Land_Request >(arena);
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::FlightControl_Land_Request* Arena::CreateMaybeMessage< ::muas::FlightControl_Land_Request >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::FlightControl_Land_Request >(arena);
 }
-template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::ManualControl_Land_Response* Arena::CreateMaybeMessage< ::muas::ManualControl_Land_Response >(Arena* arena) {
-  return Arena::CreateInternal< ::muas::ManualControl_Land_Response >(arena);
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::FlightControl_Land_Response* Arena::CreateMaybeMessage< ::muas::FlightControl_Land_Response >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::FlightControl_Land_Response >(arena);
+}
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::FlightControl_ManualControl_Request* Arena::CreateMaybeMessage< ::muas::FlightControl_ManualControl_Request >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::FlightControl_ManualControl_Request >(arena);
+}
+template<> GOOGLE_PROTOBUF_ATTRIBUTE_NOINLINE ::muas::FlightControl_ManualControl_Response* Arena::CreateMaybeMessage< ::muas::FlightControl_ManualControl_Response >(Arena* arena) {
+  return Arena::CreateInternal< ::muas::FlightControl_ManualControl_Response >(arena);
 }
 }  // namespace protobuf
 }  // namespace google

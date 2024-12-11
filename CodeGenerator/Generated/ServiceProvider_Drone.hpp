@@ -5,7 +5,7 @@
 
 #include "./ObjectDetectionService.hpp"
 
-#include "./ManualControlService.hpp"
+#include "./FlightControlService.hpp"
 
 
 
@@ -15,22 +15,18 @@ namespace muas
     {
     public:
         ServiceProvider_Drone(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath);
-        ~ServiceProvider_Drone() {}
+        virtual ~ServiceProvider_Drone();
 
     protected:
-        void init();
 
-        void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription) override;
+        void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage) override;
 
-        void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& ServiceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID) override;
-
-        void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, const std::string&) override;
 
     public:
         
         muas::ObjectDetectionService m_ObjectDetectionService;
         
-        muas::ManualControlService m_ManualControlService;
+        muas::FlightControlService m_FlightControlService;
         
     };
 }

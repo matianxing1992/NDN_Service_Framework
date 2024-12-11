@@ -77,6 +77,9 @@ def configure(conf):
 
     conf.check_cfg(package='libnac-abe', args=['--cflags', '--libs'], uselib_store='NAC-ABE',
                    pkg_config_path=pkg_config_path)
+    
+    conf.check_cfg(package='ndnsd', args=['--cflags', '--libs'], uselib_store='NDNSD',
+                   pkg_config_path=pkg_config_path)
 
     # protobuf
     conf.check_cfg(package="protobuf", uselib_store="PROTOBUF", 

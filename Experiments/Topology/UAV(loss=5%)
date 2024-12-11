@@ -1,0 +1,7 @@
+[nodes]
+drone1: 
+gs1:
+[links]
+drone1:gs1 delay=10ms loss=5
+
+

@@ -38,7 +38,7 @@ namespace protobuf_messages_2eproto {
 struct TableStruct {
   static const ::google::protobuf::internal::ParseTableField entries[];
   static const ::google::protobuf::internal::AuxillaryParseTableField aux[];
-  static const ::google::protobuf::internal::ParseTable schema[8];
+  static const ::google::protobuf::internal::ParseTable schema[10];
   static const ::google::protobuf::internal::FieldMetadata field_metadata[];
   static const ::google::protobuf::internal::SerializationTable serialization_table[];
   static const ::google::protobuf::uint32 offsets[];
@@ -46,18 +46,24 @@ struct TableStruct {
 void AddDescriptors();
 }  // namespace protobuf_messages_2eproto
 namespace muas {
-class ManualControl_Land_Request;
-class ManualControl_Land_RequestDefaultTypeInternal;
-extern ManualControl_Land_RequestDefaultTypeInternal _ManualControl_Land_Request_default_instance_;
-class ManualControl_Land_Response;
-class ManualControl_Land_ResponseDefaultTypeInternal;
-extern ManualControl_Land_ResponseDefaultTypeInternal _ManualControl_Land_Response_default_instance_;
-class ManualControl_Takeoff_Request;
-class ManualControl_Takeoff_RequestDefaultTypeInternal;
-extern ManualControl_Takeoff_RequestDefaultTypeInternal _ManualControl_Takeoff_Request_default_instance_;
-class ManualControl_Takeoff_Response;
-class ManualControl_Takeoff_ResponseDefaultTypeInternal;
-extern ManualControl_Takeoff_ResponseDefaultTypeInternal _ManualControl_Takeoff_Response_default_instance_;
+class FlightControl_Land_Request;
+class FlightControl_Land_RequestDefaultTypeInternal;
+extern FlightControl_Land_RequestDefaultTypeInternal _FlightControl_Land_Request_default_instance_;
+class FlightControl_Land_Response;
+class FlightControl_Land_ResponseDefaultTypeInternal;
+extern FlightControl_Land_ResponseDefaultTypeInternal _FlightControl_Land_Response_default_instance_;
+class FlightControl_ManualControl_Request;
+class FlightControl_ManualControl_RequestDefaultTypeInternal;
+extern FlightControl_ManualControl_RequestDefaultTypeInternal _FlightControl_ManualControl_Request_default_instance_;
+class FlightControl_ManualControl_Response;
+class FlightControl_ManualControl_ResponseDefaultTypeInternal;
+extern FlightControl_ManualControl_ResponseDefaultTypeInternal _FlightControl_ManualControl_Response_default_instance_;
+class FlightControl_Takeoff_Request;
+class FlightControl_Takeoff_RequestDefaultTypeInternal;
+extern FlightControl_Takeoff_RequestDefaultTypeInternal _FlightControl_Takeoff_Request_default_instance_;
+class FlightControl_Takeoff_Response;
+class FlightControl_Takeoff_ResponseDefaultTypeInternal;
+extern FlightControl_Takeoff_ResponseDefaultTypeInternal _FlightControl_Takeoff_Response_default_instance_;
 class NDNSF_Request_Failure;
 class NDNSF_Request_FailureDefaultTypeInternal;
 extern NDNSF_Request_FailureDefaultTypeInternal _NDNSF_Request_Failure_default_instance_;
@@ -73,10 +79,12 @@ extern YOLOv8_DetectionResultDefaultTypeInternal _YOLOv8_DetectionResult_default
 }  // namespace muas
 namespace google {
 namespace protobuf {
-template<> ::muas::ManualControl_Land_Request* Arena::CreateMaybeMessage<::muas::ManualControl_Land_Request>(Arena*);
-template<> ::muas::ManualControl_Land_Response* Arena::CreateMaybeMessage<::muas::ManualControl_Land_Response>(Arena*);
-template<> ::muas::ManualControl_Takeoff_Request* Arena::CreateMaybeMessage<::muas::ManualControl_Takeoff_Request>(Arena*);
-template<> ::muas::ManualControl_Takeoff_Response* Arena::CreateMaybeMessage<::muas::ManualControl_Takeoff_Response>(Arena*);
+template<> ::muas::FlightControl_Land_Request* Arena::CreateMaybeMessage<::muas::FlightControl_Land_Request>(Arena*);
+template<> ::muas::FlightControl_Land_Response* Arena::CreateMaybeMessage<::muas::FlightControl_Land_Response>(Arena*);
+template<> ::muas::FlightControl_ManualControl_Request* Arena::CreateMaybeMessage<::muas::FlightControl_ManualControl_Request>(Arena*);
+template<> ::muas::FlightControl_ManualControl_Response* Arena::CreateMaybeMessage<::muas::FlightControl_ManualControl_Response>(Arena*);
+template<> ::muas::FlightControl_Takeoff_Request* Arena::CreateMaybeMessage<::muas::FlightControl_Takeoff_Request>(Arena*);
+template<> ::muas::FlightControl_Takeoff_Response* Arena::CreateMaybeMessage<::muas::FlightControl_Takeoff_Response>(Arena*);
 template<> ::muas::NDNSF_Request_Failure* Arena::CreateMaybeMessage<::muas::NDNSF_Request_Failure>(Arena*);
 template<> ::muas::ObjectDetection_YOLOv8_Request* Arena::CreateMaybeMessage<::muas::ObjectDetection_YOLOv8_Request>(Arena*);
 template<> ::muas::ObjectDetection_YOLOv8_Response* Arena::CreateMaybeMessage<::muas::ObjectDetection_YOLOv8_Response>(Arena*);
@@ -556,24 +564,24 @@ class YOLOv8_DetectionResult : public ::google::protobuf::Message /* @@protoc_in
 };
 // -------------------------------------------------------------------
 
-class ManualControl_Takeoff_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Takeoff_Request) */ {
+class FlightControl_Takeoff_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.FlightControl_Takeoff_Request) */ {
  public:
-  ManualControl_Takeoff_Request();
-  virtual ~ManualControl_Takeoff_Request();
+  FlightControl_Takeoff_Request();
+  virtual ~FlightControl_Takeoff_Request();
 
-  ManualControl_Takeoff_Request(const ManualControl_Takeoff_Request& from);
+  FlightControl_Takeoff_Request(const FlightControl_Takeoff_Request& from);
 
-  inline ManualControl_Takeoff_Request& operator=(const ManualControl_Takeoff_Request& from) {
+  inline FlightControl_Takeoff_Request& operator=(const FlightControl_Takeoff_Request& from) {
     CopyFrom(from);
     return *this;
   }
   #if LANG_CXX11
-  ManualControl_Takeoff_Request(ManualControl_Takeoff_Request&& from) noexcept
-    : ManualControl_Takeoff_Request() {
+  FlightControl_Takeoff_Request(FlightControl_Takeoff_Request&& from) noexcept
+    : FlightControl_Takeoff_Request() {
     *this = ::std::move(from);
   }
 
-  inline ManualControl_Takeoff_Request& operator=(ManualControl_Takeoff_Request&& from) noexcept {
+  inline FlightControl_Takeoff_Request& operator=(FlightControl_Takeoff_Request&& from) noexcept {
     if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
       if (this != &from) InternalSwap(&from);
     } else {
@@ -583,34 +591,34 @@ class ManualControl_Takeoff_Request : public ::google::protobuf::Message /* @@pr
   }
   #endif
   static const ::google::protobuf::Descriptor* descriptor();
-  static const ManualControl_Takeoff_Request& default_instance();
+  static const FlightControl_Takeoff_Request& default_instance();
 
   static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
-  static inline const ManualControl_Takeoff_Request* internal_default_instance() {
-    return reinterpret_cast<const ManualControl_Takeoff_Request*>(
-               &_ManualControl_Takeoff_Request_default_instance_);
+  static inline const FlightControl_Takeoff_Request* internal_default_instance() {
+    return reinterpret_cast<const FlightControl_Takeoff_Request*>(
+               &_FlightControl_Takeoff_Request_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
     4;
 
-  void Swap(ManualControl_Takeoff_Request* other);
-  friend void swap(ManualControl_Takeoff_Request& a, ManualControl_Takeoff_Request& b) {
+  void Swap(FlightControl_Takeoff_Request* other);
+  friend void swap(FlightControl_Takeoff_Request& a, FlightControl_Takeoff_Request& b) {
     a.Swap(&b);
   }
 
   // implements Message ----------------------------------------------
 
-  inline ManualControl_Takeoff_Request* New() const final {
-    return CreateMaybeMessage<ManualControl_Takeoff_Request>(NULL);
+  inline FlightControl_Takeoff_Request* New() const final {
+    return CreateMaybeMessage<FlightControl_Takeoff_Request>(NULL);
   }
 
-  ManualControl_Takeoff_Request* New(::google::protobuf::Arena* arena) const final {
-    return CreateMaybeMessage<ManualControl_Takeoff_Request>(arena);
+  FlightControl_Takeoff_Request* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<FlightControl_Takeoff_Request>(arena);
   }
   void CopyFrom(const ::google::protobuf::Message& from) final;
   void MergeFrom(const ::google::protobuf::Message& from) final;
-  void CopyFrom(const ManualControl_Takeoff_Request& from);
-  void MergeFrom(const ManualControl_Takeoff_Request& from);
+  void CopyFrom(const FlightControl_Takeoff_Request& from);
+  void MergeFrom(const FlightControl_Takeoff_Request& from);
   void Clear() final;
   bool IsInitialized() const final;
 
@@ -627,7 +635,7 @@ class ManualControl_Takeoff_Request : public ::google::protobuf::Message /* @@pr
   void SharedCtor();
   void SharedDtor();
   void SetCachedSize(int size) const final;
-  void InternalSwap(ManualControl_Takeoff_Request* other);
+  void InternalSwap(FlightControl_Takeoff_Request* other);
   private:
   inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
     return NULL;
@@ -655,7 +663,7 @@ class ManualControl_Takeoff_Request : public ::google::protobuf::Message /* @@pr
   float longitude() const;
   void set_longitude(float value);
 
-  // @@protoc_insertion_point(class_scope:muas.ManualControl_Takeoff_Request)
+  // @@protoc_insertion_point(class_scope:muas.FlightControl_Takeoff_Request)
  private:
 
   ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
@@ -666,24 +674,24 @@ class ManualControl_Takeoff_Request : public ::google::protobuf::Message /* @@pr
 };
 // -------------------------------------------------------------------
 
-class ManualControl_Takeoff_Response : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Takeoff_Response) */ {
+class FlightControl_Takeoff_Response : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.FlightControl_Takeoff_Response) */ {
  public:
-  ManualControl_Takeoff_Response();
-  virtual ~ManualControl_Takeoff_Response();
+  FlightControl_Takeoff_Response();
+  virtual ~FlightControl_Takeoff_Response();
 
-  ManualControl_Takeoff_Response(const ManualControl_Takeoff_Response& from);
+  FlightControl_Takeoff_Response(const FlightControl_Takeoff_Response& from);
 
-  inline ManualControl_Takeoff_Response& operator=(const ManualControl_Takeoff_Response& from) {
+  inline FlightControl_Takeoff_Response& operator=(const FlightControl_Takeoff_Response& from) {
     CopyFrom(from);
     return *this;
   }
   #if LANG_CXX11
-  ManualControl_Takeoff_Response(ManualControl_Takeoff_Response&& from) noexcept
-    : ManualControl_Takeoff_Response() {
+  FlightControl_Takeoff_Response(FlightControl_Takeoff_Response&& from) noexcept
+    : FlightControl_Takeoff_Response() {
     *this = ::std::move(from);
   }
 
-  inline ManualControl_Takeoff_Response& operator=(ManualControl_Takeoff_Response&& from) noexcept {
+  inline FlightControl_Takeoff_Response& operator=(FlightControl_Takeoff_Response&& from) noexcept {
     if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
       if (this != &from) InternalSwap(&from);
     } else {
@@ -693,34 +701,34 @@ class ManualControl_Takeoff_Response : public ::google::protobuf::Message /* @@p
   }
   #endif
   static const ::google::protobuf::Descriptor* descriptor();
-  static const ManualControl_Takeoff_Response& default_instance();
+  static const FlightControl_Takeoff_Response& default_instance();
 
   static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
-  static inline const ManualControl_Takeoff_Response* internal_default_instance() {
-    return reinterpret_cast<const ManualControl_Takeoff_Response*>(
-               &_ManualControl_Takeoff_Response_default_instance_);
+  static inline const FlightControl_Takeoff_Response* internal_default_instance() {
+    return reinterpret_cast<const FlightControl_Takeoff_Response*>(
+               &_FlightControl_Takeoff_Response_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
     5;
 
-  void Swap(ManualControl_Takeoff_Response* other);
-  friend void swap(ManualControl_Takeoff_Response& a, ManualControl_Takeoff_Response& b) {
+  void Swap(FlightControl_Takeoff_Response* other);
+  friend void swap(FlightControl_Takeoff_Response& a, FlightControl_Takeoff_Response& b) {
     a.Swap(&b);
   }
 
   // implements Message ----------------------------------------------
 
-  inline ManualControl_Takeoff_Response* New() const final {
-    return CreateMaybeMessage<ManualControl_Takeoff_Response>(NULL);
+  inline FlightControl_Takeoff_Response* New() const final {
+    return CreateMaybeMessage<FlightControl_Takeoff_Response>(NULL);
   }
 
-  ManualControl_Takeoff_Response* New(::google::protobuf::Arena* arena) const final {
-    return CreateMaybeMessage<ManualControl_Takeoff_Response>(arena);
+  FlightControl_Takeoff_Response* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<FlightControl_Takeoff_Response>(arena);
   }
   void CopyFrom(const ::google::protobuf::Message& from) final;
   void MergeFrom(const ::google::protobuf::Message& from) final;
-  void CopyFrom(const ManualControl_Takeoff_Response& from);
-  void MergeFrom(const ManualControl_Takeoff_Response& from);
+  void CopyFrom(const FlightControl_Takeoff_Response& from);
+  void MergeFrom(const FlightControl_Takeoff_Response& from);
   void Clear() final;
   bool IsInitialized() const final;
 
@@ -737,7 +745,7 @@ class ManualControl_Takeoff_Response : public ::google::protobuf::Message /* @@p
   void SharedCtor();
   void SharedDtor();
   void SetCachedSize(int size) const final;
-  void InternalSwap(ManualControl_Takeoff_Response* other);
+  void InternalSwap(FlightControl_Takeoff_Response* other);
   private:
   inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
     return NULL;
@@ -765,7 +773,7 @@ class ManualControl_Takeoff_Response : public ::google::protobuf::Message /* @@p
   float longitude() const;
   void set_longitude(float value);
 
-  // @@protoc_insertion_point(class_scope:muas.ManualControl_Takeoff_Response)
+  // @@protoc_insertion_point(class_scope:muas.FlightControl_Takeoff_Response)
  private:
 
   ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
@@ -776,24 +784,24 @@ class ManualControl_Takeoff_Response : public ::google::protobuf::Message /* @@p
 };
 // -------------------------------------------------------------------
 
-class ManualControl_Land_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Land_Request) */ {
+class FlightControl_Land_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.FlightControl_Land_Request) */ {
  public:
-  ManualControl_Land_Request();
-  virtual ~ManualControl_Land_Request();
+  FlightControl_Land_Request();
+  virtual ~FlightControl_Land_Request();
 
-  ManualControl_Land_Request(const ManualControl_Land_Request& from);
+  FlightControl_Land_Request(const FlightControl_Land_Request& from);
 
-  inline ManualControl_Land_Request& operator=(const ManualControl_Land_Request& from) {
+  inline FlightControl_Land_Request& operator=(const FlightControl_Land_Request& from) {
     CopyFrom(from);
     return *this;
   }
   #if LANG_CXX11
-  ManualControl_Land_Request(ManualControl_Land_Request&& from) noexcept
-    : ManualControl_Land_Request() {
+  FlightControl_Land_Request(FlightControl_Land_Request&& from) noexcept
+    : FlightControl_Land_Request() {
     *this = ::std::move(from);
   }
 
-  inline ManualControl_Land_Request& operator=(ManualControl_Land_Request&& from) noexcept {
+  inline FlightControl_Land_Request& operator=(FlightControl_Land_Request&& from) noexcept {
     if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
       if (this != &from) InternalSwap(&from);
     } else {
@@ -803,34 +811,34 @@ class ManualControl_Land_Request : public ::google::protobuf::Message /* @@proto
   }
   #endif
   static const ::google::protobuf::Descriptor* descriptor();
-  static const ManualControl_Land_Request& default_instance();
+  static const FlightControl_Land_Request& default_instance();
 
   static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
-  static inline const ManualControl_Land_Request* internal_default_instance() {
-    return reinterpret_cast<const ManualControl_Land_Request*>(
-               &_ManualControl_Land_Request_default_instance_);
+  static inline const FlightControl_Land_Request* internal_default_instance() {
+    return reinterpret_cast<const FlightControl_Land_Request*>(
+               &_FlightControl_Land_Request_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
     6;
 
-  void Swap(ManualControl_Land_Request* other);
-  friend void swap(ManualControl_Land_Request& a, ManualControl_Land_Request& b) {
+  void Swap(FlightControl_Land_Request* other);
+  friend void swap(FlightControl_Land_Request& a, FlightControl_Land_Request& b) {
     a.Swap(&b);
   }
 
   // implements Message ----------------------------------------------
 
-  inline ManualControl_Land_Request* New() const final {
-    return CreateMaybeMessage<ManualControl_Land_Request>(NULL);
+  inline FlightControl_Land_Request* New() const final {
+    return CreateMaybeMessage<FlightControl_Land_Request>(NULL);
   }
 
-  ManualControl_Land_Request* New(::google::protobuf::Arena* arena) const final {
-    return CreateMaybeMessage<ManualControl_Land_Request>(arena);
+  FlightControl_Land_Request* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<FlightControl_Land_Request>(arena);
   }
   void CopyFrom(const ::google::protobuf::Message& from) final;
   void MergeFrom(const ::google::protobuf::Message& from) final;
-  void CopyFrom(const ManualControl_Land_Request& from);
-  void MergeFrom(const ManualControl_Land_Request& from);
+  void CopyFrom(const FlightControl_Land_Request& from);
+  void MergeFrom(const FlightControl_Land_Request& from);
   void Clear() final;
   bool IsInitialized() const final;
 
@@ -847,7 +855,7 @@ class ManualControl_Land_Request : public ::google::protobuf::Message /* @@proto
   void SharedCtor();
   void SharedDtor();
   void SetCachedSize(int size) const final;
-  void InternalSwap(ManualControl_Land_Request* other);
+  void InternalSwap(FlightControl_Land_Request* other);
   private:
   inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
     return NULL;
@@ -875,7 +883,7 @@ class ManualControl_Land_Request : public ::google::protobuf::Message /* @@proto
   float longitude() const;
   void set_longitude(float value);
 
-  // @@protoc_insertion_point(class_scope:muas.ManualControl_Land_Request)
+  // @@protoc_insertion_point(class_scope:muas.FlightControl_Land_Request)
  private:
 
   ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
@@ -886,24 +894,24 @@ class ManualControl_Land_Request : public ::google::protobuf::Message /* @@proto
 };
 // -------------------------------------------------------------------
 
-class ManualControl_Land_Response : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.ManualControl_Land_Response) */ {
+class FlightControl_Land_Response : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.FlightControl_Land_Response) */ {
  public:
-  ManualControl_Land_Response();
-  virtual ~ManualControl_Land_Response();
+  FlightControl_Land_Response();
+  virtual ~FlightControl_Land_Response();
 
-  ManualControl_Land_Response(const ManualControl_Land_Response& from);
+  FlightControl_Land_Response(const FlightControl_Land_Response& from);
 
-  inline ManualControl_Land_Response& operator=(const ManualControl_Land_Response& from) {
+  inline FlightControl_Land_Response& operator=(const FlightControl_Land_Response& from) {
     CopyFrom(from);
     return *this;
   }
   #if LANG_CXX11
-  ManualControl_Land_Response(ManualControl_Land_Response&& from) noexcept
-    : ManualControl_Land_Response() {
+  FlightControl_Land_Response(FlightControl_Land_Response&& from) noexcept
+    : FlightControl_Land_Response() {
     *this = ::std::move(from);
   }
 
-  inline ManualControl_Land_Response& operator=(ManualControl_Land_Response&& from) noexcept {
+  inline FlightControl_Land_Response& operator=(FlightControl_Land_Response&& from) noexcept {
     if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
       if (this != &from) InternalSwap(&from);
     } else {
@@ -913,34 +921,34 @@ class ManualControl_Land_Response : public ::google::protobuf::Message /* @@prot
   }
   #endif
   static const ::google::protobuf::Descriptor* descriptor();
-  static const ManualControl_Land_Response& default_instance();
+  static const FlightControl_Land_Response& default_instance();
 
   static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
-  static inline const ManualControl_Land_Response* internal_default_instance() {
-    return reinterpret_cast<const ManualControl_Land_Response*>(
-               &_ManualControl_Land_Response_default_instance_);
+  static inline const FlightControl_Land_Response* internal_default_instance() {
+    return reinterpret_cast<const FlightControl_Land_Response*>(
+               &_FlightControl_Land_Response_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
     7;
 
-  void Swap(ManualControl_Land_Response* other);
-  friend void swap(ManualControl_Land_Response& a, ManualControl_Land_Response& b) {
+  void Swap(FlightControl_Land_Response* other);
+  friend void swap(FlightControl_Land_Response& a, FlightControl_Land_Response& b) {
     a.Swap(&b);
   }
 
   // implements Message ----------------------------------------------
 
-  inline ManualControl_Land_Response* New() const final {
-    return CreateMaybeMessage<ManualControl_Land_Response>(NULL);
+  inline FlightControl_Land_Response* New() const final {
+    return CreateMaybeMessage<FlightControl_Land_Response>(NULL);
   }
 
-  ManualControl_Land_Response* New(::google::protobuf::Arena* arena) const final {
-    return CreateMaybeMessage<ManualControl_Land_Response>(arena);
+  FlightControl_Land_Response* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<FlightControl_Land_Response>(arena);
   }
   void CopyFrom(const ::google::protobuf::Message& from) final;
   void MergeFrom(const ::google::protobuf::Message& from) final;
-  void CopyFrom(const ManualControl_Land_Response& from);
-  void MergeFrom(const ManualControl_Land_Response& from);
+  void CopyFrom(const FlightControl_Land_Response& from);
+  void MergeFrom(const FlightControl_Land_Response& from);
   void Clear() final;
   bool IsInitialized() const final;
 
@@ -957,7 +965,7 @@ class ManualControl_Land_Response : public ::google::protobuf::Message /* @@prot
   void SharedCtor();
   void SharedDtor();
   void SetCachedSize(int size) const final;
-  void InternalSwap(ManualControl_Land_Response* other);
+  void InternalSwap(FlightControl_Land_Response* other);
   private:
   inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
     return NULL;
@@ -985,12 +993,267 @@ class ManualControl_Land_Response : public ::google::protobuf::Message /* @@prot
   float longitude() const;
   void set_longitude(float value);
 
-  // @@protoc_insertion_point(class_scope:muas.ManualControl_Land_Response)
+  // @@protoc_insertion_point(class_scope:muas.FlightControl_Land_Response)
  private:
 
   ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
   float latitude_;
   float longitude_;
+  mutable ::google::protobuf::internal::CachedSize _cached_size_;
+  friend struct ::protobuf_messages_2eproto::TableStruct;
+};
+// -------------------------------------------------------------------
+
+class FlightControl_ManualControl_Request : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.FlightControl_ManualControl_Request) */ {
+ public:
+  FlightControl_ManualControl_Request();
+  virtual ~FlightControl_ManualControl_Request();
+
+  FlightControl_ManualControl_Request(const FlightControl_ManualControl_Request& from);
+
+  inline FlightControl_ManualControl_Request& operator=(const FlightControl_ManualControl_Request& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  #if LANG_CXX11
+  FlightControl_ManualControl_Request(FlightControl_ManualControl_Request&& from) noexcept
+    : FlightControl_ManualControl_Request() {
+    *this = ::std::move(from);
+  }
+
+  inline FlightControl_ManualControl_Request& operator=(FlightControl_ManualControl_Request&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+  #endif
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const FlightControl_ManualControl_Request& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const FlightControl_ManualControl_Request* internal_default_instance() {
+    return reinterpret_cast<const FlightControl_ManualControl_Request*>(
+               &_FlightControl_ManualControl_Request_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    8;
+
+  void Swap(FlightControl_ManualControl_Request* other);
+  friend void swap(FlightControl_ManualControl_Request& a, FlightControl_ManualControl_Request& b) {
+    a.Swap(&b);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline FlightControl_ManualControl_Request* New() const final {
+    return CreateMaybeMessage<FlightControl_ManualControl_Request>(NULL);
+  }
+
+  FlightControl_ManualControl_Request* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<FlightControl_ManualControl_Request>(arena);
+  }
+  void CopyFrom(const ::google::protobuf::Message& from) final;
+  void MergeFrom(const ::google::protobuf::Message& from) final;
+  void CopyFrom(const FlightControl_ManualControl_Request& from);
+  void MergeFrom(const FlightControl_ManualControl_Request& from);
+  void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input) final;
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const final;
+  ::google::protobuf::uint8* InternalSerializeWithCachedSizesToArray(
+      bool deterministic, ::google::protobuf::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(FlightControl_ManualControl_Request* other);
+  private:
+  inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
+    return NULL;
+  }
+  inline void* MaybeArenaPtr() const {
+    return NULL;
+  }
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // float x = 1;
+  void clear_x();
+  static const int kXFieldNumber = 1;
+  float x() const;
+  void set_x(float value);
+
+  // float y = 2;
+  void clear_y();
+  static const int kYFieldNumber = 2;
+  float y() const;
+  void set_y(float value);
+
+  // float z = 3;
+  void clear_z();
+  static const int kZFieldNumber = 3;
+  float z() const;
+  void set_z(float value);
+
+  // float r = 4;
+  void clear_r();
+  static const int kRFieldNumber = 4;
+  float r() const;
+  void set_r(float value);
+
+  // float s = 5;
+  void clear_s();
+  static const int kSFieldNumber = 5;
+  float s() const;
+  void set_s(float value);
+
+  // float t = 6;
+  void clear_t();
+  static const int kTFieldNumber = 6;
+  float t() const;
+  void set_t(float value);
+
+  // @@protoc_insertion_point(class_scope:muas.FlightControl_ManualControl_Request)
+ private:
+
+  ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
+  float x_;
+  float y_;
+  float z_;
+  float r_;
+  float s_;
+  float t_;
+  mutable ::google::protobuf::internal::CachedSize _cached_size_;
+  friend struct ::protobuf_messages_2eproto::TableStruct;
+};
+// -------------------------------------------------------------------
+
+class FlightControl_ManualControl_Response : public ::google::protobuf::Message /* @@protoc_insertion_point(class_definition:muas.FlightControl_ManualControl_Response) */ {
+ public:
+  FlightControl_ManualControl_Response();
+  virtual ~FlightControl_ManualControl_Response();
+
+  FlightControl_ManualControl_Response(const FlightControl_ManualControl_Response& from);
+
+  inline FlightControl_ManualControl_Response& operator=(const FlightControl_ManualControl_Response& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  #if LANG_CXX11
+  FlightControl_ManualControl_Response(FlightControl_ManualControl_Response&& from) noexcept
+    : FlightControl_ManualControl_Response() {
+    *this = ::std::move(from);
+  }
+
+  inline FlightControl_ManualControl_Response& operator=(FlightControl_ManualControl_Response&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+  #endif
+  static const ::google::protobuf::Descriptor* descriptor();
+  static const FlightControl_ManualControl_Response& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const FlightControl_ManualControl_Response* internal_default_instance() {
+    return reinterpret_cast<const FlightControl_ManualControl_Response*>(
+               &_FlightControl_ManualControl_Response_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    9;
+
+  void Swap(FlightControl_ManualControl_Response* other);
+  friend void swap(FlightControl_ManualControl_Response& a, FlightControl_ManualControl_Response& b) {
+    a.Swap(&b);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline FlightControl_ManualControl_Response* New() const final {
+    return CreateMaybeMessage<FlightControl_ManualControl_Response>(NULL);
+  }
+
+  FlightControl_ManualControl_Response* New(::google::protobuf::Arena* arena) const final {
+    return CreateMaybeMessage<FlightControl_ManualControl_Response>(arena);
+  }
+  void CopyFrom(const ::google::protobuf::Message& from) final;
+  void MergeFrom(const ::google::protobuf::Message& from) final;
+  void CopyFrom(const FlightControl_ManualControl_Response& from);
+  void MergeFrom(const FlightControl_ManualControl_Response& from);
+  void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  bool MergePartialFromCodedStream(
+      ::google::protobuf::io::CodedInputStream* input) final;
+  void SerializeWithCachedSizes(
+      ::google::protobuf::io::CodedOutputStream* output) const final;
+  ::google::protobuf::uint8* InternalSerializeWithCachedSizesToArray(
+      bool deterministic, ::google::protobuf::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  void SharedCtor();
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(FlightControl_ManualControl_Response* other);
+  private:
+  inline ::google::protobuf::Arena* GetArenaNoVirtual() const {
+    return NULL;
+  }
+  inline void* MaybeArenaPtr() const {
+    return NULL;
+  }
+  public:
+
+  ::google::protobuf::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // float latitude = 1;
+  void clear_latitude();
+  static const int kLatitudeFieldNumber = 1;
+  float latitude() const;
+  void set_latitude(float value);
+
+  // float longitude = 2;
+  void clear_longitude();
+  static const int kLongitudeFieldNumber = 2;
+  float longitude() const;
+  void set_longitude(float value);
+
+  // float altitude = 3;
+  void clear_altitude();
+  static const int kAltitudeFieldNumber = 3;
+  float altitude() const;
+  void set_altitude(float value);
+
+  // @@protoc_insertion_point(class_scope:muas.FlightControl_ManualControl_Response)
+ private:
+
+  ::google::protobuf::internal::InternalMetadataWithArena _internal_metadata_;
+  float latitude_;
+  float longitude_;
+  float altitude_;
   mutable ::google::protobuf::internal::CachedSize _cached_size_;
   friend struct ::protobuf_messages_2eproto::TableStruct;
 };
@@ -1239,135 +1502,273 @@ inline void YOLOv8_DetectionResult::set_y_2(float value) {
 
 // -------------------------------------------------------------------
 
-// ManualControl_Takeoff_Request
+// FlightControl_Takeoff_Request
 
 // float latitude = 1;
-inline void ManualControl_Takeoff_Request::clear_latitude() {
+inline void FlightControl_Takeoff_Request::clear_latitude() {
   latitude_ = 0;
 }
-inline float ManualControl_Takeoff_Request::latitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Request.latitude)
+inline float FlightControl_Takeoff_Request::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Takeoff_Request.latitude)
   return latitude_;
 }
-inline void ManualControl_Takeoff_Request::set_latitude(float value) {
+inline void FlightControl_Takeoff_Request::set_latitude(float value) {
   
   latitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Request.latitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Takeoff_Request.latitude)
 }
 
 // float longitude = 2;
-inline void ManualControl_Takeoff_Request::clear_longitude() {
+inline void FlightControl_Takeoff_Request::clear_longitude() {
   longitude_ = 0;
 }
-inline float ManualControl_Takeoff_Request::longitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Request.longitude)
+inline float FlightControl_Takeoff_Request::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Takeoff_Request.longitude)
   return longitude_;
 }
-inline void ManualControl_Takeoff_Request::set_longitude(float value) {
+inline void FlightControl_Takeoff_Request::set_longitude(float value) {
   
   longitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Request.longitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Takeoff_Request.longitude)
 }
 
 // -------------------------------------------------------------------
 
-// ManualControl_Takeoff_Response
+// FlightControl_Takeoff_Response
 
 // float latitude = 1;
-inline void ManualControl_Takeoff_Response::clear_latitude() {
+inline void FlightControl_Takeoff_Response::clear_latitude() {
   latitude_ = 0;
 }
-inline float ManualControl_Takeoff_Response::latitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Response.latitude)
+inline float FlightControl_Takeoff_Response::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Takeoff_Response.latitude)
   return latitude_;
 }
-inline void ManualControl_Takeoff_Response::set_latitude(float value) {
+inline void FlightControl_Takeoff_Response::set_latitude(float value) {
   
   latitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Response.latitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Takeoff_Response.latitude)
 }
 
 // float longitude = 2;
-inline void ManualControl_Takeoff_Response::clear_longitude() {
+inline void FlightControl_Takeoff_Response::clear_longitude() {
   longitude_ = 0;
 }
-inline float ManualControl_Takeoff_Response::longitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Takeoff_Response.longitude)
+inline float FlightControl_Takeoff_Response::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Takeoff_Response.longitude)
   return longitude_;
 }
-inline void ManualControl_Takeoff_Response::set_longitude(float value) {
+inline void FlightControl_Takeoff_Response::set_longitude(float value) {
   
   longitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Takeoff_Response.longitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Takeoff_Response.longitude)
 }
 
 // -------------------------------------------------------------------
 
-// ManualControl_Land_Request
+// FlightControl_Land_Request
 
 // float latitude = 1;
-inline void ManualControl_Land_Request::clear_latitude() {
+inline void FlightControl_Land_Request::clear_latitude() {
   latitude_ = 0;
 }
-inline float ManualControl_Land_Request::latitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Request.latitude)
+inline float FlightControl_Land_Request::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Land_Request.latitude)
   return latitude_;
 }
-inline void ManualControl_Land_Request::set_latitude(float value) {
+inline void FlightControl_Land_Request::set_latitude(float value) {
   
   latitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Request.latitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Land_Request.latitude)
 }
 
 // float longitude = 2;
-inline void ManualControl_Land_Request::clear_longitude() {
+inline void FlightControl_Land_Request::clear_longitude() {
   longitude_ = 0;
 }
-inline float ManualControl_Land_Request::longitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Request.longitude)
+inline float FlightControl_Land_Request::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Land_Request.longitude)
   return longitude_;
 }
-inline void ManualControl_Land_Request::set_longitude(float value) {
+inline void FlightControl_Land_Request::set_longitude(float value) {
   
   longitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Request.longitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Land_Request.longitude)
 }
 
 // -------------------------------------------------------------------
 
-// ManualControl_Land_Response
+// FlightControl_Land_Response
 
 // float latitude = 1;
-inline void ManualControl_Land_Response::clear_latitude() {
+inline void FlightControl_Land_Response::clear_latitude() {
   latitude_ = 0;
 }
-inline float ManualControl_Land_Response::latitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Response.latitude)
+inline float FlightControl_Land_Response::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Land_Response.latitude)
   return latitude_;
 }
-inline void ManualControl_Land_Response::set_latitude(float value) {
+inline void FlightControl_Land_Response::set_latitude(float value) {
   
   latitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Response.latitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Land_Response.latitude)
 }
 
 // float longitude = 2;
-inline void ManualControl_Land_Response::clear_longitude() {
+inline void FlightControl_Land_Response::clear_longitude() {
   longitude_ = 0;
 }
-inline float ManualControl_Land_Response::longitude() const {
-  // @@protoc_insertion_point(field_get:muas.ManualControl_Land_Response.longitude)
+inline float FlightControl_Land_Response::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_Land_Response.longitude)
   return longitude_;
 }
-inline void ManualControl_Land_Response::set_longitude(float value) {
+inline void FlightControl_Land_Response::set_longitude(float value) {
   
   longitude_ = value;
-  // @@protoc_insertion_point(field_set:muas.ManualControl_Land_Response.longitude)
+  // @@protoc_insertion_point(field_set:muas.FlightControl_Land_Response.longitude)
+}
+
+// -------------------------------------------------------------------
+
+// FlightControl_ManualControl_Request
+
+// float x = 1;
+inline void FlightControl_ManualControl_Request::clear_x() {
+  x_ = 0;
+}
+inline float FlightControl_ManualControl_Request::x() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Request.x)
+  return x_;
+}
+inline void FlightControl_ManualControl_Request::set_x(float value) {
+  
+  x_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Request.x)
+}
+
+// float y = 2;
+inline void FlightControl_ManualControl_Request::clear_y() {
+  y_ = 0;
+}
+inline float FlightControl_ManualControl_Request::y() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Request.y)
+  return y_;
+}
+inline void FlightControl_ManualControl_Request::set_y(float value) {
+  
+  y_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Request.y)
+}
+
+// float z = 3;
+inline void FlightControl_ManualControl_Request::clear_z() {
+  z_ = 0;
+}
+inline float FlightControl_ManualControl_Request::z() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Request.z)
+  return z_;
+}
+inline void FlightControl_ManualControl_Request::set_z(float value) {
+  
+  z_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Request.z)
+}
+
+// float r = 4;
+inline void FlightControl_ManualControl_Request::clear_r() {
+  r_ = 0;
+}
+inline float FlightControl_ManualControl_Request::r() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Request.r)
+  return r_;
+}
+inline void FlightControl_ManualControl_Request::set_r(float value) {
+  
+  r_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Request.r)
+}
+
+// float s = 5;
+inline void FlightControl_ManualControl_Request::clear_s() {
+  s_ = 0;
+}
+inline float FlightControl_ManualControl_Request::s() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Request.s)
+  return s_;
+}
+inline void FlightControl_ManualControl_Request::set_s(float value) {
+  
+  s_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Request.s)
+}
+
+// float t = 6;
+inline void FlightControl_ManualControl_Request::clear_t() {
+  t_ = 0;
+}
+inline float FlightControl_ManualControl_Request::t() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Request.t)
+  return t_;
+}
+inline void FlightControl_ManualControl_Request::set_t(float value) {
+  
+  t_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Request.t)
+}
+
+// -------------------------------------------------------------------
+
+// FlightControl_ManualControl_Response
+
+// float latitude = 1;
+inline void FlightControl_ManualControl_Response::clear_latitude() {
+  latitude_ = 0;
+}
+inline float FlightControl_ManualControl_Response::latitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Response.latitude)
+  return latitude_;
+}
+inline void FlightControl_ManualControl_Response::set_latitude(float value) {
+  
+  latitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Response.latitude)
+}
+
+// float longitude = 2;
+inline void FlightControl_ManualControl_Response::clear_longitude() {
+  longitude_ = 0;
+}
+inline float FlightControl_ManualControl_Response::longitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Response.longitude)
+  return longitude_;
+}
+inline void FlightControl_ManualControl_Response::set_longitude(float value) {
+  
+  longitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Response.longitude)
+}
+
+// float altitude = 3;
+inline void FlightControl_ManualControl_Response::clear_altitude() {
+  altitude_ = 0;
+}
+inline float FlightControl_ManualControl_Response::altitude() const {
+  // @@protoc_insertion_point(field_get:muas.FlightControl_ManualControl_Response.altitude)
+  return altitude_;
+}
+inline void FlightControl_ManualControl_Response::set_altitude(float value) {
+  
+  altitude_ = value;
+  // @@protoc_insertion_point(field_set:muas.FlightControl_ManualControl_Response.altitude)
 }
 
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------

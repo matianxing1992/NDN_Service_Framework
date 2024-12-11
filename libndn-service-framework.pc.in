@@ -3,8 +3,8 @@ exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
 
-Name: libndn-service-framework
+Name: libndnsf
 Description: NDN SERVICE Framework
 Version: @VERSION@
-Libs: -L${libdir} @EXTRA_LINKFLAGS@ @EXTRA_LDFLAGS@ -lndn_service_framework @EXTRA_LIBS@ @EXTRA_FRAMEWORKS@
+Libs: -L${libdir} @EXTRA_LINKFLAGS@ @EXTRA_LDFLAGS@ -lndnsf @EXTRA_LIBS@ @EXTRA_FRAMEWORKS@
 Cflags: -I${includedir} @EXTRA_CXXFLAGS@ @EXTRA_INCLUDES@

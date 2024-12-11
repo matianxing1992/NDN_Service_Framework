@@ -21,25 +21,41 @@ MessageProto:
     float x_2 = 4;
     float y_2 = 5;
   }
-  message ManualControl_Takeoff_Request
+  message FlightControl_Takeoff_Request
   {
     float latitude = 1;
     float longitude = 2;
   }
-  message ManualControl_Takeoff_Response
+  message FlightControl_Takeoff_Response
   {
     float latitude = 1;
     float longitude = 2;
   }
-  message ManualControl_Land_Request
+  message FlightControl_Land_Request
   {
     float latitude = 1;
     float longitude = 2;
   }
-  message ManualControl_Land_Response
+  message FlightControl_Land_Response
   {
     float latitude = 1;
     float longitude = 2;
+  }
+
+  message FlightControl_ManualControl_Request
+  {
+    float x = 1;
+    float y = 2;
+    float z = 3;
+    float r = 4;
+    float s = 5;
+    float t = 6;
+  }
+  message FlightControl_ManualControl_Response
+  {
+    float latitude = 1;
+    float longitude = 2;
+    float altitude = 3;
   }
 
 Services:
@@ -52,15 +68,18 @@ Services:
   - name: YOLOv8_S
     requestMessage: muas::ObjectDetection_YOLOv8_Request
     responseMessage: muas::ObjectDetection_YOLOv8_Response
-- serviceName: ManualControl
-  serviceDescription: ManualControl using MAVLINK
+- serviceName: FlightControl
+  serviceDescription: FlightControl using MAVLINK
   RPCList:
   - name: Takeoff
-    requestMessage: muas::ManualControl_Takeoff_Request
-    responseMessage: muas::ManualControl_Takeoff_Response
+    requestMessage: muas::FlightControl_Takeoff_Request
+    responseMessage: muas::FlightControl_Takeoff_Response
   - name: Land
-    requestMessage: muas::ManualControl_Land_Request
-    responseMessage: muas::ManualControl_Land_Response
+    requestMessage: muas::FlightControl_Land_Request
+    responseMessage: muas::FlightControl_Land_Response
+  - name: ManualControl
+    requestMessage: muas::FlightControl_ManualControl_Request
+    responseMessage: muas::FlightControl_ManualControl_Response
 
 ServiceProviders:
 - providerName: GS
@@ -71,14 +90,14 @@ ServiceProviders:
   providerDescription: Drone of MUAS Project
   ServiceList:
   - ObjectDetection
-  - ManualControl
+  - FlightControl
 
 ServiceUsers:
 - userName: GS
   userDescription: Ground Station of MUAS Project
   ServiceStubList:
   - ObjectDetection
-  - ManualControl
+  - FlightControl
 - userName: Drone
   userDescription: Drone of MUAS Project
   ServiceStubList:

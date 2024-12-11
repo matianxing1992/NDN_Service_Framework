@@ -5,73 +5,28 @@ namespace {{NameSpace}}
     NDN_LOG_INIT({{NameSpace}}.ServiceProvider_{{AppName}});
     ServiceProvider_{{AppName}}::ServiceProvider_{{AppName}}(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath)
         : ndn_service_framework::ServiceProvider(face, group_prefix, identityCert, attrAuthorityCertificate,  trustSchemaPath),
-        {% for ServiceName in ServiceNameArray %}
-            {% if loop.revindex0 == 0 %}
-        m_{{ServiceName}}Service(*this)
-            {% else %}
-        m_{{ServiceName}}Service(*this),
-            {% endif %}
-        {% endfor %}
-
+        {% for ServiceName in ServiceNameArray %}{% if loop.revindex0 == 0 %}m_{{ServiceName}}Service(*this){% else %}m_{{ServiceName}}Service(*this),{% endif %}{% endfor %}
     {
+        {% for ServiceName in ServiceNameArray %}
+        this->m_serviceNames.push_back("{{ServiceName}}");
+        {% endfor %}
         init();
     }
 
-    void ServiceProvider_{{AppName}}::init()
+    ServiceProvider_{{AppName}}::~ServiceProvider_{{AppName}}(){}
+
+    void ServiceProvider_{{AppName}}::ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage)
     {
-        {% for ServiceName in ServiceNameArray %}
-        for (auto regex : m_{{ServiceName}}Service.regexSet)
-        {
-            m_svsps->subscribeWithRegex(*regex,
-                                        std::bind(&ServiceProvider_{{AppName}}::OnRequest, this, _1),
-                                        false);
-        }
-        {% endfor %}
-    }
+        // log the request
+        NDN_LOG_TRACE("Received request from " << RequesterName << " for service " << ServiceName << " function " << FunctionName << " with request id " << RequestID);
 
-    void ServiceProvider_{{AppName}}::OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
-
-    {
-
-        ndn::Name RequesterName, ServiceProviderIdentity, ServiceName, FunctionName, RequestId;
-        std::tie(RequesterName, ServiceProviderIdentity, ServiceName, FunctionName, RequestId) =
-            ndn_service_framework::parseRequestName(subscription.name);
-        NDN_LOG_INFO("OnRequest: " << RequesterName << ServiceProviderIdentity << ServiceName << FunctionName << RequestId);
-
-        // check whether you should process it by the ServiceProviderIdentity if it's "/" or "/your-identity"
-        if (!ServiceProviderIdentity.equals(identity) & !ServiceProviderIdentity.equals(ndn::Name()))
-        {
-            return;
-        }
-
-        // check the permission of user identityndn::N
-        PermissionCheck(RequesterName,ServiceProviderIdentity,ServiceName,FunctionName, RequestId, [=](bool isAuthorized){
-            if(isAuthorized)
-                ConsumeRequest(RequesterName,ServiceName,ServiceProviderIdentity,FunctionName,RequestId);
-        });
-        // decrypt the request message with nac-abe; if cannot be decrypted
-
-        
-
-    }
-
-    void ServiceProvider_{{AppName}}::ConsumeRequest(const ndn::Name& requesterName,const ndn::Name& ServiceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID)
-    {
         {% for ServiceName in ServiceNameArray %}
         if (ServiceName.equals(m_{{ServiceName}}Service.serviceName))
         {
-            ndn::Name request=ndn_service_framework::makeRequestName(requesterName,ServiceProviderName,ServiceName,FunctionName, RequestID);
-            requestConsumer.consume(request,
-                                    std::bind(&{{NameSpace}}::{{ServiceName}}Service::OnRequestDecryptionSuccessCallback, m_{{ServiceName}}Service, requesterName, ServiceName, FunctionName, RequestID, _1),
-                                    std::bind(&ServiceProvider_{{AppName}}::OnRequestDecryptionErrorCallback, this, requesterName, ServiceName, FunctionName, RequestID, _1));
+            m_{{ServiceName}}Service.ConsumeRequest(RequesterName, providerName, ServiceName, FunctionName, RequestID, requestMessage);                                  
         }
         {% endfor %}
     }
 
-
-    void ServiceProvider_{{AppName}}::OnRequestDecryptionErrorCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string &)
-    {
-        NDN_LOG_ERROR("OnRequestDecryptionErrorCallback: " << requesterIdentity << ServiceName << FunctionName);
-    }
 
 }

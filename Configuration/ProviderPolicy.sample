@@ -1,0 +1,34 @@
+; For the time being, only allow sections in the configuration files work; 
+; In the allow section, the items should be names instead of regexes;
+name /muas/controller/NDNSF/ProviderPolicy/v1 ; policy name
+provider-policies
+{
+    provider-policy
+    {
+        for /ObjectDetection/YOLOv8 ; service name without provider
+        allow ; allowed provider prefixes
+        {
+            /muas/gs1
+        }
+        deny ; denied provider prefixes
+        {
+            /muas/drone1
+            /muas/drone2
+        }
+    }
+    provider-policy 
+    {
+        for /ObjectDetection/YOLOv8_S ; service name without provider
+        allow ; allowed provider prefixes
+        {
+            /muas/gs1
+        }
+        deny ; denied provider prefixes
+        {
+            /muas/drone1
+            /muas/drone2
+        }
+    }
+}
+
+

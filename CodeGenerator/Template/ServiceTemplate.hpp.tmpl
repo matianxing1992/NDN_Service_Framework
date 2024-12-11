@@ -1,5 +1,5 @@
-#ifndef ${ServiceName}Service_HPP
-#define ${ServiceName}Service_HPP
+#ifndef {{ServiceName}}Service_HPP
+#define {{ServiceName}}Service_HPP
 
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/face.hpp>
@@ -12,30 +12,31 @@
 
 #include <vector>
 
-namespace ${NameSpace}
+namespace {{NameSpace}}
 {
 
-${CallbackDefinitions}
+    {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+    using {{rpcName}}_Function = std::function<void(const ndn::Name &, const {{rpcRequestMessage}} &, {{rpcResponseMessage}} &)>;
+    {% endfor %}
 
-    class ${ServiceName}Service : public ndn_service_framework::Service
+    class {{ServiceName}}Service : public ndn_service_framework::Service
     {
     public:
-        ${ServiceName}Service(ndn_service_framework::ServiceProvider &serviceProvider)
+        {{ServiceName}}Service(ndn_service_framework::ServiceProvider &serviceProvider)
             : ndn_service_framework::Service(serviceProvider),
-              serviceName("${ServiceName}")
+              serviceName("{{ServiceName}}")
         {
         }
 
-        ~${ServiceName}Service() {}
+        virtual ~{{ServiceName}}Service();
 
-        void OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &) override;
+        void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage) override;
+        {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+        void {{rpcName}}(const ndn::Name &requesterIdentity, const {{rpcRequestMessage}} &_request, {{rpcResponseMessage}} &_response);
+        {% endfor %}
 
-${RPCDefinitions}
 
     public:
-        std::set<std::shared_ptr<ndn::Regex>> regexSet{
-${RequestRegex}
-        };
         ndn::Name serviceName;
     };
 }

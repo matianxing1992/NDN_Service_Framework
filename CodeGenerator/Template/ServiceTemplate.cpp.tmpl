@@ -4,26 +4,39 @@ namespace {{NameSpace}}
 {
     NDN_LOG_INIT({{NameSpace}}.{{ServiceName}}Service);
 
-    void {{ServiceName}}Service::OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
+    {{ServiceName}}Service::~{{ServiceName}}Service() {}
+
+    void {{ServiceName}}Service::ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage)
     {
-        // ask service instance to deal with the request message and return a response messsage
-        // publish the request message
-        NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: " << requesterIdentity << ServiceName << FunctionName);
+        // log the parameters
+        NDN_LOG_INFO("ConsumeRequest: RequesterName: " << RequesterName << " providerName: " << providerName << " ServiceName: " << ServiceName << " FunctionName: " << FunctionName << " RequestID: " << RequestID);
+        
+        //the payload of the request message is a protobuf message, which is deserialized by the following code:
+        ndn::Buffer payload = requestMessage.getPayload();
 
         {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
         if (ServiceName.equals(ndn::Name("{{ServiceName}}")) & FunctionName.equals(ndn::Name("{{rpcName}}")))
         {
             NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: {ServiceName} {{rpcName}}");
             {{rpcRequestMessage}} _request;
-            if (_request.ParseFromArray(buffer.data(), buffer.size()))
+            if (_request.ParseFromArray(payload.data(), payload.size()))
             {
                 NDN_LOG_INFO("onRequestDecryptionSuccessCallback {{rpcRequestMessage}} parse success");
                 {{rpcResponseMessage}} _response;
-                {{rpcName}}(requesterIdentity, _request, _response);
+                {{rpcName}}(RequesterName, _request, _response);
                 std::string buffer = "";
                 _response.SerializeToString(&buffer);
-                ndn::Buffer b(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
-                m_ServiceProvider->PublishResponse(requesterIdentity, ServiceName, FunctionName, RequestID, b);
+                ndn::Buffer resPayload(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
+                // make ResponseMessage and publish it
+                ndn_service_framework::ResponseMessage responseMessage;
+                responseMessage.setStatus(true);
+                responseMessage.setErrorInfo("No error");
+                responseMessage.setPayload(const_cast<ndn::Buffer&>(resPayload), resPayload.size());
+
+                // make response name and response name without prefix
+                ndn::Name responseName = ndn_service_framework::makeResponseName(providerName, RequesterName, ServiceName, FunctionName, RequestID);
+                ndn::Name responseNameWithoutPrefix = ndn_service_framework::makeResponseNameWithoutPrefix(RequesterName, ServiceName, FunctionName, RequestID);
+                m_ServiceProvider->PublishMessage(responseName, responseNameWithoutPrefix, responseMessage);
             }
             else
             {
@@ -32,8 +45,8 @@ namespace {{NameSpace}}
         }
         {% endfor %}
 
-
     }
+
     {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
     void {{ServiceName}}Service::{{rpcName}}(const ndn::Name &requesterIdentity, const {{rpcRequestMessage}} &_request, {{rpcResponseMessage}} &_response)
     {

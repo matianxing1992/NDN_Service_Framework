@@ -1,7 +1,7 @@
 #ifndef NDN_SERVICE_FRAMEWORK_COMMON_HPP
 #define NDN_SERVICE_FRAMEWORK_COMMON_HPP
 
-
+#define BOOST_BIND_NO_PLACEHOLDERS
 
 #include <iostream>
 #include <thread>
@@ -21,14 +21,27 @@
 #include <ndn-cxx/util/regex.hpp>
 #include "ndn-cxx/util/time.hpp"
 #include "ndn-cxx/util/random.hpp"
-#include <nac-abe/consumer.hpp>
-#include <nac-abe/producer.hpp>
+#include "ndn-cxx/util/scheduler.hpp"
+
+#include <ndn-cxx/encoding/block-helpers.hpp>
+
 #include <ndn-cxx/util/segment-fetcher.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
 #include "ndn-cxx/ims/in-memory-storage-fifo.hpp"
+
+#include <nac-abe/consumer.hpp>
+#include <nac-abe/producer.hpp>
+#include <nac-abe/cache-producer.hpp>
+
+#include <ndnsd/discovery/service-discovery.hpp>
+
 #include <mutex>
 #include <boost/bimap/bimap.hpp>
 #include <boost/bimap/unordered_set_of.hpp>
+#include <boost/bimap.hpp>
+#include <boost/bimap/set_of.hpp>
+#include <boost/bimap/multiset_of.hpp>
+
 
 
 
