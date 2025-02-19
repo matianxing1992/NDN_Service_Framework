@@ -2,98 +2,72 @@
 
 namespace ndn_service_framework {
 
-ndn::Block ServicePolicy::WireEncode() const {
-    ndn::Block block(tlv::ServicePolicyType);
+std::pair<std::vector<ProviderPolicy>, std::vector<UserPolicy>> PolicyParser::parsePolicyFile(const std::string& filename) {
+    std::ifstream file(filename);
+    std::vector<ProviderPolicy> providerPolicies;
+    std::vector<UserPolicy> userPolicies;
 
-    // Encode for
-    block.push_back(ndn::makeStringBlock(tlv::ForType, forValue));
-
-    // Encode allowedUsers
-    for (const auto& user : allowedUsers) {
-        block.push_back(ndn::makeStringBlock(tlv::AllowedUsersType, user));
+    if (!file.is_open()) {
+        std::cerr << "Error opening file!" << std::endl;
+        return std::make_pair(std::vector<ProviderPolicy>(), std::vector<UserPolicy>());
     }
 
-    // Encode deniedUsers
-    for (const auto& user : deniedUsers) {
-        block.push_back(ndn::makeStringBlock(tlv::DeniedUsersType, user));
+    boost::property_tree::ptree pt;
+
+    // 将文件内容读取到ptree对象
+    try {
+        boost::property_tree::read_info(file, pt);
+    } catch (const boost::property_tree::info_parser_error& e) {
+        std::cerr << "Error parsing file: " << e.what() << std::endl;
     }
 
-    block.encode();
+    // 解析Provider Policies
+    for (const auto& providerPolicyNode : pt.get_child("provider-policies")) {
+        if (providerPolicyNode.first == "provider-policy") {
+            ProviderPolicy providerPolicy;
+            providerPolicy.serviceName = providerPolicyNode.second.get<std::string>("for");
 
-    return block;
-}
+            // 获取允许的提供者
+            for (const auto& providerNode : providerPolicyNode.second.get_child("allow")) {
+                providerPolicy.allowedProviders.push_back(providerNode.first.data());
+            }
 
-bool ServicePolicy::WireDecode(const ndn::Block& block) {
-    // Verify message type
-    if (block.type() != tlv::ServicePolicyType) {
-        return false; // Message type mismatch
-    }
-
-    // Parse Block
-    block.parse();
-    for (const auto& element : block.elements()) {
-        if (element.type() == tlv::ForType) {
-            forValue = ndn::readString(element);
-        } else if (element.type() == tlv::AllowedUsersType) {
-            allowedUsers.push_back(ndn::readString(element));
-        } else if (element.type() == tlv::DeniedUsersType) {
-            deniedUsers.push_back(ndn::readString(element));
+            providerPolicies.push_back(providerPolicy);
         }
     }
 
-    return true;
-}
+    // 解析User Policies
+    for (const auto& userPolicyNode : pt.get_child("user-policies")) {
+        if (userPolicyNode.first == "user-policy") {
+            UserPolicy userPolicy;
+            userPolicy.userName = userPolicyNode.second.get<std::string>("for");
 
-std::list<ServicePolicy> PolicyParser::parseServicePolicies(const std::string& policyFilePath) {
-    std::ifstream input(policyFilePath);
-    pt::ptree tree;
-    pt::read_info(input, tree);
-    input.close();
+            // 获取允许的服务
+            for (const auto& serviceNode : userPolicyNode.second.get_child("allow")) {
+               userPolicy.allowedServices.push_back(serviceNode.first.data());
+            }
 
-    std::list<ServicePolicy> servicePolicies;
-    for (const auto& servicePolicy : tree.get_child("service-policies")) {
-        ServicePolicy policy;
-        policy.forValue = servicePolicy.second.get<std::string>("for", "");
-        for (const auto& allowUser : servicePolicy.second.get_child("allow")) {
-            policy.allowedUsers.push_back(allowUser.second.data());
+            userPolicies.push_back(userPolicy);
         }
-        for (const auto& denyUser : servicePolicy.second.get_child("deny")) {
-            policy.deniedUsers.push_back(denyUser.second.data());
-        }
-        servicePolicies.push_back(policy);
     }
 
-    return servicePolicies;
-}
+    // // 打印解析结果（可选）
+    // std::cout << "Provider Policies:" << std::endl;
+    // for (const auto& policy : providerPolicies) {
+    //     std::cout << "  Service Name: " << policy.serviceName << std::endl;
+    //     for (const auto& provider : policy.allowedProviders) {
+    //         std::cout << "    Allowed Provider: " << provider << std::endl;
+    //     }
+    // }
 
-void PolicyParser::writeServicePolicies(const std::string& policyFilePath, const std::list<ServicePolicy>& servicePolicies) {
-    pt::ptree tree;
-
-    pt::ptree servicePoliciesTree;
-    for (const auto& policy : servicePolicies) {
-        pt::ptree servicePolicyTree;
-        servicePolicyTree.put("for", policy.forValue);
-
-        pt::ptree allowTree;
-        for (const auto& user : policy.allowedUsers) {
-            allowTree.push_back(std::make_pair("", pt::ptree(user)));
-        }
-        servicePolicyTree.add_child("allow", allowTree);
-
-        pt::ptree denyTree;
-        for (const auto& user : policy.deniedUsers) {
-            denyTree.push_back(std::make_pair("", pt::ptree(user)));
-        }
-        servicePolicyTree.add_child("deny", denyTree);
-
-        servicePoliciesTree.push_back(std::make_pair("", servicePolicyTree));
-    }
-
-    tree.add_child("service-policies", servicePoliciesTree);
-
-    std::ofstream output(policyFilePath);
-    pt::write_info(output, tree);
-    output.close();
+    // std::cout << "User Policies:" << std::endl;
+    // for (const auto& policy : userPolicies) {
+    //     std::cout << "  User Name: " << policy.userName << std::endl;
+    //     for (const auto& service : policy.allowedServices) {
+    //         std::cout << "    Allowed Service: " << service << std::endl;
+    //     }
+    // }
+    return std::make_pair(providerPolicies, userPolicies);
 }
 
 }

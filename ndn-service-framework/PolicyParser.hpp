@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <list>
 #include "common.hpp"
+#include <boost/property_tree/info_parser.hpp>
 
 namespace ndn_service_framework {
 
@@ -20,25 +21,24 @@ namespace tlv {
 
 namespace pt = boost::property_tree;
 
-struct ServicePolicy {
-    std::string forValue;
-    std::list<std::string> allowedUsers;
-    std::list<std::string> deniedUsers;
 
-    // Serialize to ndn::Block
-    ndn::Block WireEncode() const;
+// ProviderPolicy结构体
+struct ProviderPolicy {
+    std::string serviceName;
+    std::vector<std::string> allowedProviders;
+};
 
-    // Deserialize from ndn::Block
-    bool WireDecode(const ndn::Block& block);
+// UserPolicy结构体
+struct UserPolicy {
+    std::string userName;
+    std::vector<std::string> allowedServices;
 };
 
 class PolicyParser {
 public:
     PolicyParser() {}
 
-    std::list<ServicePolicy> parseServicePolicies(const std::string& policyFilePath);
-
-    void writeServicePolicies(const std::string& policyFilePath, const std::list<ServicePolicy>& servicePolicies);
+    std::pair<std::vector<ProviderPolicy>, std::vector<UserPolicy>> parsePolicyFile(const std::string& filename);
 
 };
 

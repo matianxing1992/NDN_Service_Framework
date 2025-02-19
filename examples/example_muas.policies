@@ -1,0 +1,38 @@
+name /muas/controller/NDNSF/ControllerPolicy/v1 ; policy name  
+provider-policies  
+{  
+    provider-policy  
+    {  
+        for /FlightControl/Takeoff ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/drone1
+            /muas/drone2
+            /muas/drone3
+        } 
+    }  
+    provider-policy  
+    {  
+        for /FlightControl/Land ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/drone1
+            /muas/drone2
+            /muas/drone3 
+        }   
+    }  
+}  
+
+user-policies  
+{  
+    user-policy  
+    {  
+        for /muas/gs1/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/drone3/NDNSF/FlightControl/Takeoff
+            /muas/drone3/NDNSF/FlightControl/Land
+        }  
+    }  
+  
+}  

@@ -425,10 +425,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::Re
                 m_signingInfo);
         // serve data
         serveDataWithIMS(contentData, ckData);
+        NDN_LOG_INFO("Merge Data Contents");
         auto buffer = mergeDataContents(contentData);
+        
         ndn::Block contentBlock(buffer);
         // publish message name using ndn-svs
+        NDN_LOG_INFO("publish message name using ndn-svs: " << messageName.toUri());
         m_svsps->publish(messageName, contentBlock);
+        NDN_LOG_INFO("Message Published: " << messageName.toUri());
     }
     void ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer &buffer)
     {

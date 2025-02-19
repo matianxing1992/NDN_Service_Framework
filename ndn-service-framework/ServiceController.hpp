@@ -21,7 +21,7 @@ namespace ndn_service_framework
     class ServiceController
     {
     public:
-        ServiceController(ndn::Face& face,ndn::security::Certificate aaCert, const std::string &configFolderPath) 
+        ServiceController(ndn::Face& face,ndn::security::Certificate aaCert, ndn::ValidatorConfig m_validator, const std::string &configFolderPath) 
             :   m_face(face),
                 m_aaCert(aaCert),
                 m_aa(m_aaCert, m_face, m_validator, m_keyChain),
@@ -44,26 +44,32 @@ namespace ndn_service_framework
 
                     // 使用 PolicyParser 加载配置文件
                     PolicyParser parser;
-                    auto policies = parser.parseServicePolicies(filePath);
+                    auto policies = parser.parsePolicyFile(filePath);
 
                     // 将加载的策略存储到成员变量中
-                    m_servicePolicies.insert(m_servicePolicies.end(), policies.begin(), policies.end());
+                    m_ProviderPolicies.insert(m_ProviderPolicies.end(), policies.first.begin(), policies.first.end());
+                    m_UserPolicies.insert(m_UserPolicies.end(), policies.second.begin(), policies.second.end());
                 }
             }
         }
 
         void AddAttributesForUsersAccordingToServicePolicy()
         {
-            for(auto policy : m_servicePolicies)
+            for(auto policy : m_ProviderPolicies){
+                // 遍历策略中的服务
+                for (auto provider : policy.allowedProviders){
+                    addAttribute(provider, "/ID"+provider);
+                    addAttribute(provider, "/SERVICE"+policy.serviceName);
+                }
+            }
+            for(auto policy : m_UserPolicies)
             {
-                // 遍历策略中的用户}
-                ndn::Name serviceFullName(policy.forValue);
-                addAttribute(serviceFullName.getPrefix(-2).toUri(), "/ID"+serviceFullName.getPrefix(-2).toUri());
-                addAttribute(serviceFullName.getPrefix(-2).toUri(), "/SERVICE"+serviceFullName.getSubName(-2,2).toUri());
-                for(auto allowedUser: policy.allowedUsers)
+                // 遍历策略中的用户
+                ndn::Name userName(policy.userName);
+                addAttribute(userName.toUri(), "/ID"+userName.toUri());
+                for(auto allowedService: policy.allowedServices)
                 {
-                    addAttribute(allowedUser, "/ID"+allowedUser);
-                    addAttribute(allowedUser, "/PERMISSION"+serviceFullName.toUri());
+                    addAttribute(userName.toUri(), "/PERMISSION"+allowedService);
                 }
             }
             for(auto item : attributesMap)
@@ -99,16 +105,21 @@ namespace ndn_service_framework
             {
                 attributesMap[identity] = std::set<std::string>();
             }
+            //check if attributeName exists in attributesMap[identity];
+            if(attributesMap[identity].find(attributeName) != attributesMap[identity].end())
+            {
+                return;
+            }
             // add attribute to attributesMap
             attributesMap[identity].emplace(attributeName);
         }
 
     private:
         std::string m_configFolderPath;
-        std::vector<ndn_service_framework::ServicePolicy> m_servicePolicies;
+        std::vector<ndn_service_framework::ProviderPolicy> m_ProviderPolicies;
+        std::vector<ndn_service_framework::UserPolicy> m_UserPolicies;
         ndn::Face& m_face;
         ndn::KeyChain m_keyChain;
-        ndn::ValidatorConfig m_validator{m_face};
         ndn::security::Certificate m_aaCert;
         ndn::nacabe::CpAttributeAuthority m_aa;
         // identity -> attributes

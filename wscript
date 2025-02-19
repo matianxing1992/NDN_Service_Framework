@@ -155,4 +155,3 @@ def build(bld):
         install_path='${LIBDIR}/pkgconfig',
         VERSION=VERSION)
 
-
