@@ -23,17 +23,18 @@ NDN_LOG_INIT(muas.main_gs);
 int
 main(int argc, char **argv)
 {
-    if (argc != 3)
+    if (argc != 4)
     {
-        std::cerr << "Usage: ./gs-example <interval_in_ms> <count>" << std::endl;
+        std::cerr << "Usage: gs-example <identity> <interval_in_ms> <count>" << std::endl;
         exit(1);
     }
-    int interval_in_ms = std::stoi(argv[1]);
-    int count = std::stoi(argv[2]);
+    std::string identity = argv[1];
+    int interval_in_ms = std::stoi(argv[2]);
+    int count = std::stoi(argv[3]);
     ndn::Face m_face;
     ndn::Scheduler m_scheduler(m_face.getIoContext());
     ndn::security::KeyChain m_keyChain;
-    ndn::security::Certificate gs_certificate(m_keyChain.getPib().getIdentity("/muas/gs1").getDefaultKey().getDefaultCertificate());
+    ndn::security::Certificate gs_certificate(m_keyChain.getPib().getIdentity(identity).getDefaultKey().getDefaultCertificate());
     // a map to record the starting time of each RPC Call
     std::map<int, ndn::time::system_clock::time_point> rpcStartTimeMap;
     // a map to record the end time of each RPC Call
@@ -46,7 +47,7 @@ main(int argc, char **argv)
 
 
     // muas::ServiceProvider_Drone m_serviceProvider(m_face,"/nsn/svs/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"trust-schema.conf");
-    muas::ServiceUser_GS m_serviceUser(m_face, "/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"trust-schema.conf");
+    muas::ServiceUser_GS m_serviceUser(m_face, "/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"/usr/local/bin/trust-any.conf");
     
     m_face.processEvents(ndn::time::milliseconds(2000));
 

@@ -14,7 +14,8 @@ namespace ndn_service_framework
         // nac_validator(std::move(ndn::security::ValidatorNull())),
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        m_IMS(6000)
+        m_IMS(6000),
+        m_ServiceDiscovery(group_prefix, identity, face, m_keyChain, std::bind(&ServiceUser::processNDNSDServiceInfoCallback, this, _1))
     {
         nac_validator.load(trustSchemaPath);
 
@@ -88,7 +89,6 @@ namespace ndn_service_framework
 
     void ServiceUser::init()
     {   
-        requestForServiceInfo();
         registerNDNSFMessages();
     }
 
@@ -172,33 +172,28 @@ namespace ndn_service_framework
         }
     }
 
-    void ServiceUser::processNDNSDServiceInfoCallback(const ndnsd::discovery::Reply &callback)
+    void ServiceUser::processNDNSDServiceInfoCallback(const ndnsd::discovery::Details &details)
     {
         NDN_LOG_INFO("processNDNSDServiceInfoCallback: Service publish callback received");
-        auto status = (callback.status == ndnsd::discovery::ACTIVE)? "ACTIVE": "EXPIRED";
-        NDN_LOG_INFO("Status: " << status);
         // find key name = "tokenNames"
-        if (callback.serviceDetails.find("tokenNames") != callback.serviceDetails.end()) {
-            std::string tokenNames = callback.serviceDetails.at("tokenNames");
+        if (details.serviceMetaInfo.find("tokenName") != details.serviceMetaInfo.end()) {
+            std::string tokenName = details.serviceMetaInfo.at("tokenName");
             // split tokens uing ";"
-            std::vector<std::string> tokenNamesVec;
-            boost::split(tokenNamesVec, tokenNames, boost::is_any_of(";"));
-            for (auto tokenName : tokenNamesVec)
-            {
-                // consume tokenName using NAC-ABE
-                ndn::Name providerName, ServiceName, FunctionName, seqNum;
-                
-                auto result = ndn_service_framework::parsePermissionTokenName(ndn::Name(tokenName));
-                if(result){
-                    std::tie(providerName, ServiceName, FunctionName, seqNum) = result.value();
-                nacConsumer.consume(
-                    ndn::Name(tokenName),
-                    std::bind(&ServiceUser::OnPermissionTokenDecryptionSuccessCallback, this, providerName, ServiceName, FunctionName, seqNum, _1),
-                    std::bind(&ServiceUser::OnPermissionTokenDecryptionErrorCallback, this, providerName, ServiceName, FunctionName, seqNum, _1));
-                }else{
-                    NDN_LOG_ERROR("Invalid token name: " << tokenName); 
-                }
+
+            // consume tokenName using NAC-ABE
+            ndn::Name providerName, ServiceName, FunctionName, seqNum;
+            
+            auto result = ndn_service_framework::parsePermissionTokenName(ndn::Name(tokenName));
+            if(result){
+                std::tie(providerName, ServiceName, FunctionName, seqNum) = result.value();
+            nacConsumer.consume(
+                ndn::Name(tokenName),
+                std::bind(&ServiceUser::OnPermissionTokenDecryptionSuccessCallback, this, providerName, ServiceName, FunctionName, seqNum, _1),
+                std::bind(&ServiceUser::OnPermissionTokenDecryptionErrorCallback, this, providerName, ServiceName, FunctionName, seqNum, _1));
+            }else{
+                NDN_LOG_ERROR("Invalid token name: " << tokenName); 
             }
+            
         } else {
             NDN_LOG_ERROR("No tokenNames found in service publish callback");
         }
@@ -404,36 +399,24 @@ namespace ndn_service_framework
 
         // log register
         NDN_LOG_INFO("Register NDNSF Messages in ndn-svs");
-        for(auto serviceName:m_serviceNames){ 
-            // register Permission Ack Message
-            std::string regex_str = "^(<>*)<NDNSF><ACK>" + ndn_service_framework::NameToRegexString(identity) ;
-            NDN_LOG_INFO(regex_str);
-            m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
-                                        std::bind(&ServiceUser::OnRequestAck, this, _1),
-                                        false);
-            // register Response Message
-            std::string regex_str2 = "^(<>*)<NDNSF><RESPONSE>" + ndn_service_framework::NameToRegexString(identity);
-            NDN_LOG_INFO(regex_str2);
-            m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
-                                        std::bind(&ServiceUser::OnResponse, this, _1),
-                                        false);
-        }
+
+        // register Permission Ack Message
+        std::string regex_str = "^(<>*)<NDNSF><ACK>" + ndn_service_framework::NameToRegexString(identity) ;
+        NDN_LOG_INFO(regex_str);
+        m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
+                                    std::bind(&ServiceUser::OnRequestAck, this, _1),
+                                    false);
+        // register Response Message
+        std::string regex_str2 = "^(<>*)<NDNSF><RESPONSE>" + ndn_service_framework::NameToRegexString(identity);
+        NDN_LOG_INFO(regex_str2);
+        m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
+                                    std::bind(&ServiceUser::OnResponse, this, _1),
+                                    false);
+        
     }
     void ServiceUser::requestForServiceInfo()
     {
-        // request for ServiceInfo using NDNSD;
-        std::map<char, uint8_t> flagsMap = {
-        {'p', ndnsd::SYNC_PROTOCOL_CHRONOSYNC}, // Protocol choice
-        {'t', ndnsd::discovery::CONSUMER}  // Type consumer: 0
-        };
-        for(auto serviceName:m_serviceNames){ 
-            auto serviceDiscovery = std::make_shared<ndnsd::discovery::ServiceDiscovery>(
-                ndn::Name(serviceName), flagsMap, 
-                std::bind(&ServiceUser::processNDNSDServiceInfoCallback, this, std::placeholders::_1)
-            );
-            multiServiceDiscovery.addServiceDiscovery(serviceDiscovery);
-        }
-        multiServiceDiscovery.startAll();
+        NDN_LOG_DEBUG("Requesting Service Info");
     }
 
     void ServiceUser::OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string & msg)

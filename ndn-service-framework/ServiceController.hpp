@@ -21,11 +21,11 @@ namespace ndn_service_framework
     class ServiceController
     {
     public:
-        ServiceController(ndn::Face& face,ndn::security::Certificate aaCert, ndn::ValidatorConfig m_validator, const std::string &configFolderPath) 
+        ServiceController(ndn::Face& face,ndn::security::Certificate aaCert, ndn::ValidatorConfig& m_validator, const std::string &configFilePath) 
             :   m_face(face),
                 m_aaCert(aaCert),
                 m_aa(m_aaCert, m_face, m_validator, m_keyChain),
-                m_configFolderPath(configFolderPath)
+                m_configFilePath(configFilePath)
         {
             loadConfigFiles();
             AddAttributesForUsersAccordingToServicePolicy();
@@ -34,22 +34,22 @@ namespace ndn_service_framework
     private:
         void loadConfigFiles()
         {
-            // 遍历配置文件夹中的所有文件
-            for (const auto &entry : fs::directory_iterator(m_configFolderPath))
+            // Check if the specified path is a regular file
+            if (fs::is_regular_file(m_configFilePath))
             {
-                if (entry.is_regular_file())
-                {
-                    std::string filePath = entry.path().string();
-                    std::cout << "Loading config file: " << filePath << std::endl;
-
-                    // 使用 PolicyParser 加载配置文件
-                    PolicyParser parser;
-                    auto policies = parser.parsePolicyFile(filePath);
-
-                    // 将加载的策略存储到成员变量中
-                    m_ProviderPolicies.insert(m_ProviderPolicies.end(), policies.first.begin(), policies.first.end());
-                    m_UserPolicies.insert(m_UserPolicies.end(), policies.second.begin(), policies.second.end());
-                }
+                std::cout << "Loading config file: " << m_configFilePath << std::endl;
+        
+                // Use PolicyParser to load the configuration file
+                PolicyParser parser;
+                auto policies = parser.parsePolicyFile(m_configFilePath);
+        
+                // Store the loaded policies into member variables
+                m_ProviderPolicies.insert(m_ProviderPolicies.end(), policies.first.begin(), policies.first.end());
+                m_UserPolicies.insert(m_UserPolicies.end(), policies.second.begin(), policies.second.end());
+            }
+            else
+            {
+                std::cerr << "Error: " << m_configFilePath << " is not a valid file." << std::endl;
             }
         }
 
@@ -81,12 +81,17 @@ namespace ndn_service_framework
                 // 将 set<string> 中的元素复制到 vector<string> 中
                 std::copy(item.second.begin(), item.second.end(), std::back_inserter(attributeList));
                 // add attributes to attribute authority
-                m_aa.addNewPolicy(ndn::Name(item.first), attributeList);
-                // log item.first and attributeList
-                std::cout << "Add attributes for identity: " << item.first << std::endl;
-                for(auto attribute : attributeList)
-                {
-                    std::cout << attribute << std::endl;
+                try{
+                    auto cert = m_keyChain.getPib().getIdentity(item.first).getDefaultKey().getDefaultCertificate();
+                    //m_aa.addNewPolicy(cert, attributeList);
+                    // merge attributesList using " or "
+                    std::string policy = boost::algorithm::join(attributeList, " OR ");
+                    m_aa.addNewPolicy(cert, policy);
+                    std::cout << "Add policy: " << policy << " For " << item.first << std::endl;
+                }catch(const std::exception& e){
+                    std::string policy = boost::algorithm::join(attributeList, " OR ");
+                    m_aa.addNewPolicy(item.first, policy);
+                    std::cout << "Add policy: " << policy << " For " << item.first << std::endl;
                 }
 
             }
@@ -115,13 +120,13 @@ namespace ndn_service_framework
         }
 
     private:
-        std::string m_configFolderPath;
+        std::string m_configFilePath;
         std::vector<ndn_service_framework::ProviderPolicy> m_ProviderPolicies;
         std::vector<ndn_service_framework::UserPolicy> m_UserPolicies;
         ndn::Face& m_face;
         ndn::KeyChain m_keyChain;
         ndn::security::Certificate m_aaCert;
-        ndn::nacabe::CpAttributeAuthority m_aa;
+        ndn::nacabe::KpAttributeAuthority m_aa;
         // identity -> attributes
         std::map<std::string, std::set<std::string>> attributesMap;
     };

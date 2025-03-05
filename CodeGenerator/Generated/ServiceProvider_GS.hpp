@@ -16,6 +16,7 @@ namespace muas
         virtual ~ServiceProvider_GS();
 
     protected:
+        virtual void registerServiceInfo() override;
 
         void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage) override;
 

@@ -20,6 +20,16 @@ provider-policies
             /muas/drone2
             /muas/drone3 
         }   
+    } 
+    provider-policy  
+    {  
+        for /FlightControl/ManualControl ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/drone1
+            /muas/drone2
+            /muas/drone3 
+        }   
     }  
 }  
 
@@ -30,8 +40,9 @@ user-policies
         for /muas/gs1/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/drone3/NDNSF/FlightControl/Takeoff
-            /muas/drone3/NDNSF/FlightControl/Land
+            /muas/drone1/FlightControl/Takeoff
+            /muas/drone1/FlightControl/Land
+            /muas/drone1/FlightControl/ManualControl
         }  
     }  
   

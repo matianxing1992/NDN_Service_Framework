@@ -32,15 +32,13 @@ void FlightControlService::Takeoff(const ndn::Name &requesterIdentity, const mua
 3.2 Example:
 `/examples/main_drone_manualcontrol.cpp` and `/examples/main_gs_manualcontrol.cpp` provide examples of how to use the generated code.  
 
-`/examples/FlightControl.info` is the configuration file for NDNSD (I am modifying NDNSD to reduce such inconveniences).  
-
-`/examples/aa-example.cpp` is the Attribute Authority prepared for NAC-ABE, where policies are configured (ServiceController is more complex and not recommended for now).
+`/examples/aa-example.cpp` is the Attribute Authority prepared for NAC-ABE, where policies are configured (ServiceController is more complex and not recommended for now). For more complex cases, please see `/examples/service-controller-example.cpp`
 
 See `/examples/wscript` for how to compile the examples.
 
 3.3 How to run examples:
 
-NDN requires creating a corresponding root certificate, then using the root certificate to generate the corresponding sub-certificates. Both the root certificate and these sub-certificates need to be installed on each node. `/examples/run_example.sh` provides an example of how to create certificates, which you need to modify according to your own requirements.
+NDN requires creating a corresponding root certificate, then using the root certificate to generate the corresponding sub-certificates. Both the root certificate and these sub-certificates need to be installed on each node. `/Experiments/NDNSFExperiment_AutoConfig.py` provides an example of how to create certificates, which you need to modify according to your own requirements.
 
 The `aa-example` instance only needs to run on one node, but it must ensure that other nodes can retrieve keys from it. Run `drone-example` on one node and `gs-example` on another, and you should see the expected output.
 

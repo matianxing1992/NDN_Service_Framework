@@ -36,7 +36,7 @@ namespace ndn_service_framework{
             virtual void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription)= 0;
 
             // ndnsd serviceinfo discovery callback
-            void processNDNSDServiceInfoCallback(const ndnsd::discovery::Reply& callback);
+            void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
 
             void OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -95,7 +95,7 @@ namespace ndn_service_framework{
             ndn::InMemoryStorageFifo m_IMS;
             std::mutex _cache_mutex;
 
-            ndnsd::discovery::MultiServiceDiscovery multiServiceDiscovery;
+            ndnsd::discovery::ServiceDiscovery m_ServiceDiscovery;
             UserPermissionTable UPT;
 
             std::map<ndn::Name, size_t> m_strategyMap;

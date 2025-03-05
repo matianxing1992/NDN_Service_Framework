@@ -21,27 +21,28 @@ if __name__ == '__main__':
     Minindn.cleanUp()
     Minindn.verifyDependencies()
 
-    ndn = Minindn(topoFile="./Topology/UAV(loss=5%)")
+    ndn = Minindn(topoFile="./Topology/UAV(loss=0%)")
 
     ndn.start()
 
     info('Starting NFD on nodes\n')
-    nfds = AppManager(ndn, ndn.net.hosts, Nfd)
+    nfds = AppManager(ndn, ndn.net.hosts, Nfd, logLevel='DEBUG')
+    
     info('Starting NLSR on nodes\n')
     nlsrs = AppManager(ndn, ndn.net.hosts, Nlsr)
 
     for node in ndn.net.hosts:
         print(node.name)
-        node.cmd('ndnsec key-gen -t r /muas/{} > /dev/null'.format(node.name))
+        # node.cmd('ndnsec key-gen -t r /muas/{} > /dev/null'.format(node.name))
         node.cmd("nlsrc advertise /muas")
         # node.cmd("nlsrc advertise /ndn/broadcast")
         node.cmd('nfdc strategy set /muas /localhost/nfd/strategy/multicast')
         node.cmd("nlsrc advertise /muas/{}".format(node.name))
         node.cmd('nfdc strategy set /muas/{} /localhost/nfd/strategy/multicast'.format(node.name))
         node.cmd('nfdc strategy set /muas/{}/NDNSF /localhost/nfd/strategy/multicast'.format(node.name))
-        node.cmd("nlsrc advertise /discovery") # for ndnsd
-        node.cmd('nfdc strategy set /discovery /localhost/nfd/strategy/multicast')
-        time.sleep(5)
+        node.cmd("nlsrc advertise /muas/NDNSD") # for ndnsd
+        node.cmd('nfdc strategy set /muas/NDNSD /localhost/nfd/strategy/multicast')
+        time.sleep(2)
 
     gs1 = ndn.net['gs1']
     drone1 = ndn.net['drone1']
@@ -68,7 +69,7 @@ if __name__ == '__main__':
     gs1.cmd('ndnsec cert-dump -i /muas/gs1 > /home/tianxing/NDN/ndn-service-framework/Experiments/gs1.cert')
     drone1.cmd('ndnsec key-gen -t r /muas/drone1 > /dev/null')
     drone1.cmd('ndnsec cert-dump -i /muas/drone1 > /home/tianxing/NDN/ndn-service-framework/Experiments/drone1.cert')
-    # expert ndnkey
+    # export ndnkey
     gs1.cmd('ndnsec-export -P 123456 -o /home/tianxing/NDN/ndn-service-framework/Experiments/aa.ndnkey -i /muas/aa')
     gs1.cmd('ndnsec-export -P 123456 -o /home/tianxing/NDN/ndn-service-framework/Experiments/gs1.ndnkey -i /muas/gs1')
     drone1.cmd('ndnsec-export -P 123456 -o /home/tianxing/NDN/ndn-service-framework/Experiments/drone1.ndnkey -i /muas/drone1')
@@ -78,31 +79,36 @@ if __name__ == '__main__':
     drone1.cmd('ndnsec import -P 123456 /home/tianxing/NDN/ndn-service-framework/Experiments/aa.ndnkey')
     # copy files to gs1 and drone1
     gs1.cmd('cp /home/tianxing/NDN/ndn-service-framework/examples/trust-schema.conf .')
-    gs1.cmd('cp /home/tianxing/NDN/ndn-service-framework/examples/FlightControl.info .')
-    gs1.cmd('cp /home/tianxing/NDN/ndn-service-framework/examples/ObjectDetection.info .')
     drone1.cmd('cp /home/tianxing/NDN/ndn-service-framework/examples/trust-schema.conf .')
-    drone1.cmd('cp /home/tianxing/NDN/ndn-service-framework/examples/FlightControl.info .')
-    drone1.cmd('cp /home/tianxing/NDN/ndn-service-framework/examples/ObjectDetection.info .')
+
 
 
     # sleep for 10 seconds to allow NLSR to propagate the prefixes
     print("Waiting for NLSR to propagate prefixes...")
-    time.sleep(10)
+    time.sleep(15)
 
     # do some experiment here
 
     # run aa on gs1
     # gs1.cmd('export NDN_LOG="*=TRACE"')
     # gs1.cmd('export NDN_LOG="muas.main_gs=TRACE"')
-    gs1.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE"')
+    gs1.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
     # gs1.cmd('/home/tianxing/NDN/ndn-service-framework/build/examples/aa-example &')
-    gs1.cmd('xterm -T "gs1" &') # for aa-example
-
-    gs1.cmd('xterm -T "gs1" &')
+    
+    # for aa-example
+    # gs1.cmd('/home/tianxing/NDN/ndn-service-framework/build/examples/aa-example &')
+    gs1.cmd('xterm -T "gs1" -e "/home/tianxing/NDN/ndn-service-framework/build/examples/aa-example" &') # for aa-example
     # drone1.cmd('export NDN_LOG="muas.main_gs=TRACE"')
-    drone1.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE"')
-    drone1.cmd('xterm -T "drone1" &')
+    drone1.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
+    
+    time.sleep(3)
 
+    drone1.cmd('xterm -T "drone1" &') # for drone-example
+    
+    time.sleep(3)
+
+    gs1.cmd('xterm -T "gs1" &') # for gs-example
+    
     # /home/tianxing/NDN/ndn-service-framework/build/examples/aa-example
     # /home/tianxing/NDN/ndn-service-framework/build/examples/gs-example 100 100
     # /home/tianxing/NDN/ndn-service-framework/build/examples/drone-example

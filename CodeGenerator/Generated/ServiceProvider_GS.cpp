@@ -15,6 +15,33 @@ namespace muas
 
     ServiceProvider_GS::~ServiceProvider_GS(){}
 
+    void ServiceProvider_GS::registerServiceInfo()
+    {
+        NDN_LOG_INFO("Registering services using NDNSD");
+        ndnsd::discovery::Details details;
+        
+        
+
+        details = {ndn::Name("/ObjectDetection/YOLOv8"),
+            identity,
+            3600,
+            time(NULL),
+            { {"type", "ObjectDetection"}, {"version", "1.0.0"}, {"tokenName", identity.toUri()+"/NDNSF/TOKEN/ObjectDetection/YOLOv8/0"} }};
+        m_ServiceDiscovery.publishServiceDetail(details);
+        UpdateUPTWithServiceMetaInfo(details);
+        
+        
+
+        details = {ndn::Name("/ObjectDetection/YOLOv8_S"),
+            identity,
+            3600,
+            time(NULL),
+            { {"type", "ObjectDetection"}, {"version", "1.0.0"}, {"tokenName", identity.toUri()+"/NDNSF/TOKEN/ObjectDetection/YOLOv8_S/0"} }};
+        m_ServiceDiscovery.publishServiceDetail(details);
+        UpdateUPTWithServiceMetaInfo(details);
+        
+    }
+
     void ServiceProvider_GS::ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage)
     {
         // log the request

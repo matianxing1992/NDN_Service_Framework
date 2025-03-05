@@ -12,7 +12,8 @@ namespace ndn_service_framework
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
-        m_IMS(6000)
+        m_IMS(6000),
+        m_ServiceDiscovery(group_prefix, identity, m_face, m_keyChain, std::bind(&ServiceProvider::processNDNSDServiceInfoCallback, this, _1))
     {
         nac_validator.load(trustSchemaPath);
 
@@ -95,21 +96,18 @@ namespace ndn_service_framework
 
     }
 
-    void ServiceProvider::UpdateUPTWithServiceMetaInfo(std::shared_ptr<ndnsd::discovery::ServiceDiscovery> serviceDiscovery)
+    void ServiceProvider::UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails)
     {
-        std::string tokenNames = serviceDiscovery->m_producerState.serviceMetaInfo["tokenNames"];
-        // split tokens uing ";"
-        std::vector<std::string> tokenNamesVec;
-        boost::split(tokenNamesVec, tokenNames, boost::is_any_of(";"));
-        for (auto tokenName : tokenNamesVec)
-        {
+        if (serviceDetails.serviceMetaInfo.find("tokenName") != serviceDetails.serviceMetaInfo.end()) {
+            std::string tokenName = serviceDetails.serviceMetaInfo.at("tokenName");
+
             // parse token and get return values
             ndn::Name providerName, ServiceName, FunctionName, seqNum;
-            
+                
             auto result = ndn_service_framework::parsePermissionTokenName(ndn::Name(tokenName));
             if (!result){
                 NDN_LOG_ERROR("Invalid Permission Token Name: " << tokenName);    
-                continue;
+                return;
             }
             std::tie(providerName, ServiceName, FunctionName, seqNum) = result.value();
             // update UPT
@@ -264,15 +262,9 @@ namespace ndn_service_framework
         NDN_LOG_ERROR("OnRequestDecryptionErrorCallback: " << requesterIdentity.toUri() << ServiceName.toUri() << FunctionName.toUri() << RequestID.toUri());
     }
 
-void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::Reply & callback)
+void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::Details & callback)
 {
         NDN_LOG_INFO("Service publish callback received");
-        auto status = (callback.status == ndnsd::discovery::ACTIVE)? "ACTIVE": "EXPIRED";
-        NDN_LOG_INFO("Status: " << status);
-        for (auto& item : callback.serviceDetails)
-        {
-            NDN_LOG_INFO("Callback: " << item.first << ":" << item.second);
-        }
 }
 
 // void ServiceProvider::PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
@@ -482,18 +474,5 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::Re
                                         false);
         }
     }
-    void ServiceProvider::registerServiceInfo()
-    {
-        // Serve ServiceInfo using NDNSD;
-        std::map<char, uint8_t> flagsMap = {
-            {'p', ndnsd::SYNC_PROTOCOL_CHRONOSYNC}, // Protocol choice
-            {'t', ndnsd::discovery::PRODUCER}  // Type consumer: 0
-        };
-        for(auto serviceName:m_serviceNames){ 
-            auto serviceDiscovery = std::make_shared<ndnsd::discovery::ServiceDiscovery>((serviceName+".info"), flagsMap, std::bind(&ServiceProvider::processNDNSDServiceInfoCallback, this, std::placeholders::_1));
-            UpdateUPTWithServiceMetaInfo(serviceDiscovery);
-            multiServiceDiscovery.addServiceDiscovery(serviceDiscovery);
-        }
-        multiServiceDiscovery.startAll();
-    }
+
 }

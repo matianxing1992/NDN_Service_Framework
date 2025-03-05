@@ -15,6 +15,23 @@ namespace {{NameSpace}}
 
     ServiceProvider_{{AppName}}::~ServiceProvider_{{AppName}}(){}
 
+    void ServiceProvider_{{AppName}}::registerServiceInfo()
+    {
+        NDN_LOG_INFO("Registering services using NDNSD");
+        ndnsd::discovery::Details details;
+        {% for Service in ServiceArray %}
+        
+
+        details = {ndn::Name("/{{Service[0]}}/{{Service[1]}}"),
+            identity,
+            3600,
+            time(NULL),
+            { {"type", "{{Service[0]}}"}, {"version", "1.0.0"}, {"tokenName", identity.toUri()+"/NDNSF/TOKEN/{{Service[0]}}/{{Service[1]}}/0"} }};
+        m_ServiceDiscovery.publishServiceDetail(details);
+        UpdateUPTWithServiceMetaInfo(details);
+        {% endfor %}
+    }
+
     void ServiceProvider_{{AppName}}::ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, ndn_service_framework::RequestMessage& requestMessage)
     {
         // log the request

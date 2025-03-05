@@ -27,7 +27,7 @@ public:
     m_aa.addNewPolicy(Cert1, "/ID/muas/drone1 OR /SERVICE/FlightControl/ManualControl");
     m_aa.addNewPolicy(Cert3, "/ID/muas/gs1 OR /PERMISSION/muas/drone1/FlightControl/ManualControl");
 
-    m_validator.load("trust-schema.conf");
+    m_validator.load("/usr/local/bin/trust-any.conf");
 
     // root certificate filter
     ndn::security::Certificate rootCert(m_keyChain.getPib().getIdentity("/muas").getDefaultKey().getDefaultCertificate());

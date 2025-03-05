@@ -24,7 +24,7 @@ namespace ndn_service_framework{
 
             ndn::Name getName();
 
-            void UpdateUPTWithServiceMetaInfo(std::shared_ptr<ndnsd::discovery::ServiceDiscovery> serviceDiscovery);
+            void UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails);
             
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -37,7 +37,7 @@ namespace ndn_service_framework{
             void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const std::string &);
             
             // ndnsd serviceinfo discovery callback
-            void processNDNSDServiceInfoCallback(const ndnsd::discovery::Reply& callback);
+            void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
 
             // void PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer& buffer);
 
@@ -63,7 +63,7 @@ namespace ndn_service_framework{
             void registerNDNSFMessages();
 
             // Register service info using ndnsd();
-            void registerServiceInfo();
+            virtual void registerServiceInfo() = 0;
 
         protected:
             void
@@ -104,7 +104,8 @@ namespace ndn_service_framework{
             ndn::InMemoryStorageFifo m_IMS;
             std::mutex _cache_mutex;
 
-            ndnsd::discovery::MultiServiceDiscovery multiServiceDiscovery;
+            ndnsd::discovery::ServiceDiscovery m_ServiceDiscovery;
+
             UserPermissionTable UPT;
     };
 }

@@ -18,7 +18,7 @@ def build(bld):
                 source=["aa-example.cpp"],
                 includes= ['.'],
                 use='ndn-service-framework',
-                install_path=None)
+                install_path='/usr/local/bin')
     
     cpp_files = glob.glob('./CodeGenerator/Generated/*.cpp')
     cpp_files = ['.' + s for s in cpp_files]
@@ -31,7 +31,7 @@ def build(bld):
                 source=["main_drone_manualcontrol.cpp"] + cpp_files + cc_files,
                 includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
                 use='ndn-service-framework gtkmm MAVSDK NDNSD',
-                install_path=None)
+                install_path='/usr/local/bin')
     
     # bld.program(name='drone-manualcontrol-example',
     #             target='drone-manualcontrol-example',
@@ -45,7 +45,14 @@ def build(bld):
                 source=["main_gs_manualcontrol.cpp"] + cpp_files + cc_files,
                 includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
                 use='ndn-service-framework gtkmm MAVSDK NDNSD',
-                install_path=None)
+                install_path='/usr/local/bin')
+    
+    bld.program(name='service-controller-example',
+                target='service-controller-example',
+                source=["service-controller-example.cpp"] + cpp_files + cc_files,
+                includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
+                use='ndn-service-framework NDNSD',
+                install_path='/usr/local/bin')
     
     # bld.program(name='takeoff_and_land',
     #             target='takeoff_and_land',
@@ -53,3 +60,5 @@ def build(bld):
     #             includes= ['.','ndn-service-framework'],
     #             use='ndn-service-framework MAVSDK',
     #             install_path=None)
+
+    bld.install_files('/usr/local/bin', ['trust-schema.conf', 'trust-any.conf', 'example_muas.policies'])

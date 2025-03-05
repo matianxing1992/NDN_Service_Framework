@@ -19,10 +19,16 @@ NDN_LOG_INIT(muas.main_drone);
 int
 main(int argc, char **argv)
 {
+    if (argc != 2)
+    {
+        std::cerr << "Usage: drone-example <identity>" << std::endl;
+        exit(1);
+    }
+    std::string identity = argv[1];
     ndn::Face m_face;
     ndn::security::KeyChain m_keyChain;
-    ndn::security::Certificate gs_certificate(m_keyChain.getPib().getIdentity("/muas/drone1").getDefaultKey().getDefaultCertificate());
-    muas::ServiceProvider_Drone m_serviceProvider(m_face,"/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"trust-schema.conf");
+    ndn::security::Certificate gs_certificate(m_keyChain.getPib().getIdentity(identity).getDefaultKey().getDefaultCertificate());
+    muas::ServiceProvider_Drone m_serviceProvider(m_face,"/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"/usr/local/bin/trust-any.conf");
     
     //m_face.processEvents(ndn::time::milliseconds(2000));
 
