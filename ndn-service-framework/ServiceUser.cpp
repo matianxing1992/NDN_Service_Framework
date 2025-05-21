@@ -100,7 +100,7 @@ namespace ndn_service_framework
     void ServiceUser::PublishRequest(const std::vector<ndn::Name> &serviceProviderNames, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &payload, const size_t& strategy)
     {
         // log the request;
-        NDN_LOG_INFO("PublishRequest: " << serviceProviderNames.size() << ServiceName << FunctionName << RequestID);
+        NDN_LOG_INFO("PublishRequest: " <<  ServiceName << FunctionName << RequestID);
         
         ndn_service_framework::BloomFilter bloomFilter;
         std::vector<std::pair<std::string, std::string>> pairs; // serviceFullName->token mapping
@@ -143,7 +143,7 @@ namespace ndn_service_framework
             // insert RequestID->vector<AckInfo> into m_AckInfoMap
             m_AckInfoMap[RequestID] = std::vector<ndn_service_framework::AckInfo>();
 
-            m_scheduler.schedule(1_s,[this,RequestID](){
+            m_scheduler.schedule(100_ms,[this,RequestID](){
                 // find vector<AckInfo> from m_AckInfoMap by RequestID 
                 auto ackInfoVec = m_AckInfoMap.find(RequestID);
                 if (ackInfoVec == m_AckInfoMap.end()){
@@ -153,7 +153,7 @@ namespace ndn_service_framework
 
                 // if ackInfoVect.size() == 0, means no provider responded, change strategy to FirstResponding
                 if (ackInfoVec->second.size() == 0){
-                     NDN_LOG_ERROR("After waiting for 1 second, No AckInfo found for RequestID: " << RequestID.toUri());
+                     NDN_LOG_ERROR("After waiting for 100 ms, No AckInfo found for RequestID: " << RequestID.toUri());
                     // log change strategy to FirstResponding
                     NDN_LOG_INFO("Change strategy of "<< RequestID<< " to FirstResponding");
                     m_strategyMap[RequestID] = tlv::FirstResponding;
@@ -390,7 +390,7 @@ namespace ndn_service_framework
         
         ndn::Block contentBlock(buffer);
         // publish message name using ndn-svs
-        NDN_LOG_INFO("publish message name using ndn-svs: " << messageName.toUri());
+        NDN_LOG_INFO("publish message name using ndn-svs: " << messageName.toUri() << " size: " << contentBlock.size());
         m_svsps->publish(messageName, contentBlock);
         NDN_LOG_INFO("Message Published: " << messageName.toUri());
     }
@@ -405,13 +405,13 @@ namespace ndn_service_framework
         NDN_LOG_INFO(regex_str);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                     std::bind(&ServiceUser::OnRequestAck, this, _1),
-                                    false);
+                                    false, false);
         // register Response Message
         std::string regex_str2 = "^(<>*)<NDNSF><RESPONSE>" + ndn_service_framework::NameToRegexString(identity);
         NDN_LOG_INFO(regex_str2);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                     std::bind(&ServiceUser::OnResponse, this, _1),
-                                    false);
+                                    false, false);
         
     }
     void ServiceUser::requestForServiceInfo()

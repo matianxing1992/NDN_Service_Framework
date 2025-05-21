@@ -422,7 +422,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         
         ndn::Block contentBlock(buffer);
         // publish message name using ndn-svs
-        NDN_LOG_INFO("publish message name using ndn-svs: " << messageName.toUri());
+        NDN_LOG_INFO("publish message name using ndn-svs: " << messageName.toUri() << " size: " << contentBlock.size());
         m_svsps->publish(messageName, contentBlock);
         NDN_LOG_INFO("Message Published: " << messageName.toUri());
     }
@@ -465,13 +465,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             NDN_LOG_INFO(regex_str);
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                         std::bind(&ServiceProvider::OnRequest, this, _1),
-                                        false);
+                                        false, false);
             // register Service Coordination Message
             std::string regex_str2 = "^(<>*)<NDNSF><COORDINATION>" + ndn_service_framework::NameToRegexString(identity);
             NDN_LOG_INFO(regex_str2);
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                         std::bind(&ServiceProvider::onServiceCoordinationMessage, this, _1),
-                                        false);
+                                        false, false);
         }
     }
 

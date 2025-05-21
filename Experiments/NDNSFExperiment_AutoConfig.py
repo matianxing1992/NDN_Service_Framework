@@ -3,10 +3,12 @@ from subprocess import PIPE
 from mininet.log import setLogLevel, info
 
 from minindn.minindn import Minindn
+from minindn.wifi.minindnwifi import MinindnAdhoc
 from minindn.util import MiniNDNCLI, getPopen
 from minindn.apps.app_manager import AppManager
 from minindn.apps.nfd import Nfd
 from minindn.apps.nlsr import Nlsr
+from minindn.helpers.ndnping import NDNPing
 
 import time
 
@@ -68,7 +70,6 @@ def generateAndSignCertificates(ndn: Minindn):
             node.cmd('ndnsec import -P 123456 /tmp/{}.ndnkey'.format(node2.name))
             node.cmd('ndnsec cert-install -f /tmp/{}.cert'.format(node2.name))
 
-
 if __name__ == '__main__':
     setLogLevel('info')
 
@@ -106,12 +107,23 @@ if __name__ == '__main__':
 
     gs1 = ndn.net["gs1"]
     drone1 = ndn.net["drone1"]
+    NDNPing.startPingServer(drone1, "/muas/drone1")
+    drone2 = ndn.net["drone2"]
+    drone3 = ndn.net["drone3"]
+    drone4 = ndn.net["drone4"]
 
     gs1.cmd('xterm -T "service-controller" -e "service-controller-example" &')
     time.sleep(2)
-    drone1.cmd('xterm -T "drone1" -e "drone-example /muas/drone1" &')
-    time.sleep(2)
-    gs1.cmd('xterm -T "gs1" -e "gs-example /muas/gs1 100 100" &')
+    drone1.cmd('xterm -T "drone1" -e "multi-drone-example /muas/drone1" &')
+    NDNPing.startPingServer(drone1, "/muas/drone1")
+    # time.sleep(2)
+    # drone2.cmd('xterm -T "drone2" -e "multi-drone-example /muas/drone2" &')
+    # time.sleep(2)
+    # drone3.cmd('xterm -T "drone3" -e "multi-drone-example /muas/drone3" &')
+    # time.sleep(2)
+    # drone4.cmd('xterm -T "drone4" -e "multi-drone-example /muas/drone4" &')
+    # time.sleep(10)
+    gs1.cmd('xterm -T "gs1" -e "multi-gs-example /muas/gs1 1000 10 /muas/drone1 /muas/drone2 /muas/drone3 /muas/drone4" &')
     time.sleep(2)
 
 

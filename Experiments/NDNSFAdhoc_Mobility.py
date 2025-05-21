@@ -12,7 +12,13 @@ from minindn.apps.nfd import Nfd
 from minindn.helpers.nfdc import Nfdc
 from minindn.apps.nlsr import Nlsr
 from minindn.helpers.ndnping import NDNPing
+from mn_wifi.link import wmediumd
+from mn_wifi.wmediumdConnector import interference
 import time
+
+import random
+
+random.seed(42)
 
 def generateAndSignCertificates(ndn: MinindnAdhoc):
     # delete identities
@@ -55,8 +61,8 @@ def generateAndSignCertificates(ndn: MinindnAdhoc):
 
     info('Installing keys and certificates on nodes\n')
     for node in ndn.net.stations:
-        node.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
-        # node.cmd('export NDN_LOG="muas.main_gs=TRACE"')
+        # node.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
+        node.cmd('export NDN_LOG="muas.main_gs=TRACE"')
         
 
         node.cmd('ndnsec import -P 123456 /tmp/muas.ndnkey')
@@ -71,7 +77,7 @@ def generateAndSignCertificates(ndn: MinindnAdhoc):
 
 def topology():
     "Create a network."
-    ndnwifi = MinindnAdhoc(topoFile="./Topology/UAV_adhoc(loss=0%).conf")
+    ndnwifi = MinindnAdhoc(topoFile="./Topology/UAV_adhoc(lossy).conf",link=wmediumd, wmediumd_mode=interference)
     ndnwifi.net.setPropagationModel(model="logDistance", exp=3)
 
     ndnwifi.start()
@@ -88,7 +94,7 @@ def topology():
     # gs5 = ndnwifi.net['gs5']
     drone1 = ndnwifi.net['drone1']
     drone2 = ndnwifi.net['drone2']
-    drone3 = ndnwifi.net['drone3']
+    # drone3 = ndnwifi.net['drone3']
     # drone4 = ndnwifi.net['drone4']
     # drone5 = ndnwifi.net['drone5']
 
@@ -117,10 +123,12 @@ def topology():
     drone1.cmd('xterm -T "drone1" -e "multi-drone-example /muas/drone1" &')
     time.sleep(2)
     drone2.cmd('xterm -T "drone2" -e "multi-drone-example /muas/drone2" &')
-    time.sleep(2)
-    drone3.cmd('xterm -T "drone3" -e "multi-drone-example /muas/drone3" &')
+    # time.sleep(2)
+    # drone3.cmd('xterm -T "drone3" -e "multi-drone-example /muas/drone3" &')
     time.sleep(5)
-    gs1.cmd('xterm -T "gs1" -e "multi-gs-example /muas/gs1 1000 10 /muas/drone1 /muas/drone2 /muas/drone3" &')
+    # FirstResponding/LoadBalancing/NoCoordination
+    # gs1.cmd('xterm -T "gs1" -e "multi-gs-example FirstResponding /muas/gs1 1000 60 /muas/drone1 /muas/drone2 /muas/drone3" &')
+    gs1.cmd('xterm -T "gs1" -e "multi-gs-example NoCoordination /muas/gs1 1000 60 /muas/drone1" &')
     
     # gs1.cmd('wireshark -X lua_script:/usr/local/share/ndn-dissect-wireshark/ndn.lua')
     # gs2.cmd('xterm -T "gs2" -e "gs-example /muas/gs2 1000 10" &')

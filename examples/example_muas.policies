@@ -9,6 +9,7 @@ provider-policies
             /muas/drone1
             /muas/drone2
             /muas/drone3
+            /muas/drone4
         } 
     }  
     provider-policy  
@@ -18,7 +19,8 @@ provider-policies
         { 
             /muas/drone1
             /muas/drone2
-            /muas/drone3 
+            /muas/drone3
+            /muas/drone4
         }   
     } 
     provider-policy  
@@ -28,7 +30,8 @@ provider-policies
         { 
             /muas/drone1
             /muas/drone2
-            /muas/drone3 
+            /muas/drone3
+            /muas/drone4
         }   
     }  
 }  
@@ -43,6 +46,57 @@ user-policies
             /muas/drone1/FlightControl/Takeoff
             /muas/drone1/FlightControl/Land
             /muas/drone1/FlightControl/ManualControl
+            /muas/drone2/FlightControl/ManualControl
+            /muas/drone3/FlightControl/ManualControl
+            /muas/drone4/FlightControl/ManualControl
+        }  
+    }  
+    user-policy  
+    {  
+        for /muas/gs2/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/drone1/FlightControl/Takeoff
+            /muas/drone1/FlightControl/Land
+            /muas/drone1/FlightControl/ManualControl
+            /muas/drone2/FlightControl/ManualControl
+            /muas/drone3/FlightControl/ManualControl
+        }  
+    }  
+    user-policy  
+    {  
+        for /muas/gs3/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/drone1/FlightControl/Takeoff
+            /muas/drone1/FlightControl/Land
+            /muas/drone1/FlightControl/ManualControl
+            /muas/drone2/FlightControl/ManualControl
+            /muas/drone3/FlightControl/ManualControl
+        }  
+    }  
+    user-policy  
+    {  
+        for /muas/gs4/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/drone1/FlightControl/Takeoff
+            /muas/drone1/FlightControl/Land
+            /muas/drone1/FlightControl/ManualControl
+            /muas/drone2/FlightControl/ManualControl
+            /muas/drone3/FlightControl/ManualControl
+        }  
+    }  
+    user-policy  
+    {  
+        for /muas/gs5/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/drone1/FlightControl/Takeoff
+            /muas/drone1/FlightControl/Land
+            /muas/drone1/FlightControl/ManualControl
+            /muas/drone2/FlightControl/ManualControl
+            /muas/drone3/FlightControl/ManualControl
         }  
     }  
   

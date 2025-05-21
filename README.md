@@ -42,3 +42,21 @@ NDN requires creating a corresponding root certificate, then using the root cert
 
 The `aa-example` instance only needs to run on one node, but it must ensure that other nodes can retrieve keys from it. Run `drone-example` on one node and `gs-example` on another, and you should see the expected output.
 
+3.4 How to log to file:
+For example, assuming your program is `./app` and you want to log everything, first set the log level in the command line using:
+
+```bash
+export NDN_LOG="*=TRACE"
+```
+
+Then run:
+
+```bash
+./app > filename.log 2>&1
+```
+
+The output will be saved in the file `filename.log` in the current directory.
+If you're using MiniNDN, the output will be stored under `/tmp/minindn/<nodeName>`.
+
+
+
