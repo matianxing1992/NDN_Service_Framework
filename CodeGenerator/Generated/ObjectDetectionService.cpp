@@ -81,6 +81,11 @@ namespace muas
     {
         NDN_LOG_INFO("YOLOv8 request: " << _request.DebugString());
         // RPC logic starts here
+        if (YOLOv8_Handler) {
+            YOLOv8_Handler(requesterIdentity, _request, _response);
+        } else {
+            NDN_LOG_ERROR("No YOLOv8 handler set.");
+        }
 
         // RPC logic ends here
     }
@@ -89,6 +94,11 @@ namespace muas
     {
         NDN_LOG_INFO("YOLOv8_S request: " << _request.DebugString());
         // RPC logic starts here
+        if (YOLOv8_S_Handler) {
+            YOLOv8_S_Handler(requesterIdentity, _request, _response);
+        } else {
+            NDN_LOG_ERROR("No YOLOv8_S handler set.");
+        }
 
         // RPC logic ends here
     }

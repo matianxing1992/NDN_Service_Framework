@@ -110,6 +110,11 @@ namespace muas
     {
         NDN_LOG_INFO("Takeoff request: " << _request.DebugString());
         // RPC logic starts here
+        if (Takeoff_Handler) {
+            Takeoff_Handler(requesterIdentity, _request, _response);
+        } else {
+            NDN_LOG_ERROR("No Takeoff handler set.");
+        }
 
         // RPC logic ends here
     }
@@ -118,6 +123,11 @@ namespace muas
     {
         NDN_LOG_INFO("Land request: " << _request.DebugString());
         // RPC logic starts here
+        if (Land_Handler) {
+            Land_Handler(requesterIdentity, _request, _response);
+        } else {
+            NDN_LOG_ERROR("No Land handler set.");
+        }
 
         // RPC logic ends here
     }
@@ -126,6 +136,11 @@ namespace muas
     {
         NDN_LOG_INFO("ManualControl request: " << _request.DebugString());
         // RPC logic starts here
+        if (ManualControl_Handler) {
+            ManualControl_Handler(requesterIdentity, _request, _response);
+        } else {
+            NDN_LOG_ERROR("No ManualControl handler set.");
+        }
 
         // RPC logic ends here
     }

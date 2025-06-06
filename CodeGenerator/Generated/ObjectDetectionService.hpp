@@ -42,6 +42,11 @@ namespace muas
 
     public:
         ndn::Name serviceName;
+        
+        YOLOv8_Function YOLOv8_Handler;
+        
+        YOLOv8_S_Function YOLOv8_S_Handler;
+        
     };
 }
 #endif

@@ -38,6 +38,9 @@ namespace {{NameSpace}}
 
     public:
         ndn::Name serviceName;
+        {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
+        {{rpcName}}_Function {{rpcName}}_Handler;
+        {% endfor %}
     };
 }
 #endif

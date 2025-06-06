@@ -46,6 +46,13 @@ namespace muas
 
     public:
         ndn::Name serviceName;
+        
+        Takeoff_Function Takeoff_Handler;
+        
+        Land_Function Land_Handler;
+        
+        ManualControl_Function ManualControl_Handler;
+        
     };
 }
 #endif

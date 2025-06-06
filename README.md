@@ -20,6 +20,7 @@ The `app.yml` file defines services and their message types. By running `sudo py
 
 If you want to start creating a new application, first clear the `Generated` folder, then define your application in `app.yml`, and finally run `sudo python NDNSFCodeGenerator.py` to generate the code. When writing your program, simply include `/Generated` to use the pre-generated services.
 
+Solution A:
 Implement your service logic in `/Generated/XXXService.cpp`. Example: 
 
 void FlightControlService::Takeoff(const ndn::Name &requesterIdentity, const muas::FlightControl_Takeoff_Request &_request, muas::FlightControl_Takeoff_Response &_response)  
@@ -28,6 +29,14 @@ void FlightControlService::Takeoff(const ndn::Name &requesterIdentity, const mua
     // RPC logic starts here  
     // RPC logic ends here  
 }  
+
+Solution B: 
+Set the handler for the function (main_drone_manualcontrol.cpp:line 31)
+m_serviceProvider.m_FlightControlService.Land_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightControl_Land_Request& _request, muas::FlightControl_Land_Response& _response){
+        NDN_LOG_INFO("Land");
+        _response.set_latitude(0);
+        _response.set_longitude(0);
+    };
 
 3.2 Example:
 `/examples/main_drone_manualcontrol.cpp` and `/examples/main_gs_manualcontrol.cpp` provide examples of how to use the generated code.  

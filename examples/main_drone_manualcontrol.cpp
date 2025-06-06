@@ -30,6 +30,12 @@ main(int argc, char **argv)
     ndn::security::Certificate gs_certificate(m_keyChain.getPib().getIdentity(identity).getDefaultKey().getDefaultCertificate());
     muas::ServiceProvider_Drone m_serviceProvider(m_face,"/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"/usr/local/bin/trust-any.conf");
     
+    m_serviceProvider.m_FlightControlService.Land_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightControl_Land_Request& _request, muas::FlightControl_Land_Response& _response){
+        NDN_LOG_INFO("Land");
+        _response.set_latitude(0);
+        _response.set_longitude(0);
+    };
+    
     //m_face.processEvents(ndn::time::milliseconds(2000));
 
     NDN_LOG_INFO("Drone Running");

@@ -52,6 +52,11 @@ namespace {{NameSpace}}
     {
         NDN_LOG_INFO("{{rpcName}} request: " << _request.DebugString());
         // RPC logic starts here
+        if ({{rpcName}}_Handler) {
+            {{rpcName}}_Handler(requesterIdentity, _request, _response);
+        } else {
+            NDN_LOG_ERROR("No {{rpcName}} handler set.");
+        }
 
         // RPC logic ends here
     }
