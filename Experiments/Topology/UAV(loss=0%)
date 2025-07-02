@@ -4,11 +4,13 @@ drone1:
 drone2:
 drone3:
 drone4:
+drone5:
 
 [links]
-drone1:gs1 delay=10ms loss=0
-drone2:gs1 delay=10ms loss=0
-drone3:gs1 delay=10ms loss=0
-drone4:gs1 delay=10ms loss=0
+gs1:drone1 delay=2ms loss=0
+drone1:drone2 delay=2ms loss=0
+drone2:drone3 delay=2ms loss=0
+drone3:drone4 delay=2ms loss=0
+drone4:drone5 delay=2ms loss=0
 
 

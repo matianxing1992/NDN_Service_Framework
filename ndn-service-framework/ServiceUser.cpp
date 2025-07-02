@@ -66,7 +66,7 @@ namespace ndn_service_framework
         // Do not fetch publications older than 10 seconds
         ndn::svs::SVSPubSubOptions opts;
         // opts.useTimestamp = true;
-        // opts.maxPubAge = ndn::time::seconds(10);
+        // opts.maxPubAge = ndn::time::seconds(0);
 
         // Create the Pub/Sub instance
         m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
