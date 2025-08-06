@@ -30,7 +30,9 @@ def serve():
     helloworld_pb2_grpc.add_GreeterServicer_to_server(Greeter(), server)
     
     # 绑定服务器到指定端口并启用安全通道
-    server.add_secure_port('10.0.0.1:50051', server_credentials)
+    # server.add_secure_port('10.0.0.58:50051', server_credentials)
+    server.add_insecure_port('10.0.0.58:50051')
+    
     server.start()
     print("Server started, listening on port 50051")
 

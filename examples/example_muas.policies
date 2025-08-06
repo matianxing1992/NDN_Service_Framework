@@ -1,103 +1,297 @@
 name /muas/controller/NDNSF/ControllerPolicy/v1 ; policy name  
-provider-policies  
-{  
-    provider-policy  
-    {  
-        for /FlightControl/Takeoff ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/drone1
-            /muas/drone2
-            /muas/drone3
-            /muas/drone4
-        } 
-    }  
-    provider-policy  
-    {  
-        for /FlightControl/Land ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/drone1
-            /muas/drone2
-            /muas/drone3
-            /muas/drone4
-        }   
-    } 
-    provider-policy  
-    {  
-        for /FlightControl/ManualControl ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/drone1
-            /muas/drone2
-            /muas/drone3
-            /muas/drone4
-        }   
-    }  
-}  
+
+provider-policies
+{
+    provider-policy
+    {
+        for /muas/ucla
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/pku
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/csu
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/caida
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/arizona
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/uiuc
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/wustl
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/umich
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/neu
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/memphis
+        allow
+        {
+            /FlightControl/Takeoff
+            /FlightControl/Land
+            /FlightControl/ManualControl
+        }
+    }
+} 
 
 user-policies  
 {  
     user-policy  
     {  
-        for /muas/gs1/ ; user full name  
+        for /muas/memphis/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/drone1/FlightControl/Takeoff
-            /muas/drone1/FlightControl/Land
-            /muas/drone1/FlightControl/ManualControl
-            /muas/drone2/FlightControl/ManualControl
-            /muas/drone3/FlightControl/ManualControl
-            /muas/drone4/FlightControl/ManualControl
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
         }  
     }  
+
     user-policy  
     {  
-        for /muas/gs2/ ; user full name  
+        for /muas/pku/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/drone1/FlightControl/Takeoff
-            /muas/drone1/FlightControl/Land
-            /muas/drone1/FlightControl/ManualControl
-            /muas/drone2/FlightControl/ManualControl
-            /muas/drone3/FlightControl/ManualControl
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
         }  
     }  
+
     user-policy  
     {  
-        for /muas/gs3/ ; user full name  
+        for /muas/csu/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/drone1/FlightControl/Takeoff
-            /muas/drone1/FlightControl/Land
-            /muas/drone1/FlightControl/ManualControl
-            /muas/drone2/FlightControl/ManualControl
-            /muas/drone3/FlightControl/ManualControl
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
         }  
-    }  
+    }
+
     user-policy  
     {  
-        for /muas/gs4/ ; user full name  
+        for /muas/caida/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/drone1/FlightControl/Takeoff
-            /muas/drone1/FlightControl/Land
-            /muas/drone1/FlightControl/ManualControl
-            /muas/drone2/FlightControl/ManualControl
-            /muas/drone3/FlightControl/ManualControl
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
         }  
-    }  
+    }
+
     user-policy  
     {  
-        for /muas/gs5/ ; user full name  
+        for /muas/arizona/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/drone1/FlightControl/Takeoff
-            /muas/drone1/FlightControl/Land
-            /muas/drone1/FlightControl/ManualControl
-            /muas/drone2/FlightControl/ManualControl
-            /muas/drone3/FlightControl/ManualControl
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
+        }  
+    }
+
+    user-policy  
+    {  
+        for /muas/uiuc/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
+        }  
+    }
+
+    user-policy  
+    {  
+        for /muas/wustl/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
+        }  
+    }
+
+    user-policy  
+    {  
+        for /muas/umich/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
+        }  
+    }
+
+    user-policy  
+    {  
+        for /muas/neu/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/ucla/FlightControl/Takeoff
+            /muas/ucla/FlightControl/Land
+            /muas/ucla/FlightControl/ManualControl
+            /muas/pku/FlightControl/ManualControl
+            /muas/csu/FlightControl/ManualControl
+            /muas/caida/FlightControl/ManualControl
+            /muas/arizona/FlightControl/ManualControl
+            /muas/uiuc/FlightControl/ManualControl
+            /muas/wustl/FlightControl/ManualControl
+            /muas/umich/FlightControl/ManualControl
+            /muas/neu/FlightControl/ManualControl
+            /muas/memphis/FlightControl/ManualControl
         }  
     }  
-  
-}  
+}

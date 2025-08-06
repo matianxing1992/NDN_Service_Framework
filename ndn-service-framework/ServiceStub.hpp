@@ -18,6 +18,7 @@ namespace ndn_service_framework{
 
         protected:
             ndn::Face m_face;
+            ndn::scheduler::Scheduler m_scheduler;
             ndn::Name m_serviceGroupName;
             ndn::Name m_serviceStubID;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;

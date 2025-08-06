@@ -8,6 +8,7 @@
 #include "BloomFilter.hpp"
 #include "UserPermissionTable.hpp"
 #include "NDNSFMessages.hpp"
+#include "ConfigManager.hpp"
 
 
 namespace ndn_service_framework{
@@ -18,6 +19,8 @@ namespace ndn_service_framework{
         ndn::Name functionName;
         ndn::Name requestID;
     };
+
+    using Timeout_Callback = std::function<void(const std::string & reason)>;
 
     class ServiceUser
     {
@@ -68,6 +71,8 @@ namespace ndn_service_framework{
             // search for service info using ndnsd();
             void requestForServiceInfo();
 
+            bool isFresh(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
+
             
 
         protected:
@@ -102,6 +107,10 @@ namespace ndn_service_framework{
 
             // a map used for load balancing requestID 
             std::map<ndn::Name, std::vector<AckInfo>> m_AckInfoMap;
+
+            ConfigManager m_configManager;
+
+            std::map<ndn::Name, int> m_sessionIDMap;
     };
 }
 

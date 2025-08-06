@@ -16,6 +16,7 @@ namespace {{NameSpace}}
 {
     {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
     using {{rpcName}}_Callback = std::function<void(const {{rpcResponseMessage}} &)>;
+    using {{rpcName}}_Timeout_Callback = std::function<void(const {{rpcRequestMessage}} &)>;
     {% endfor %}
 
     class {{ServiceName}}ServiceStub : public ndn_service_framework::ServiceStub
@@ -25,7 +26,7 @@ namespace {{NameSpace}}
         virtual ~{{ServiceName}}ServiceStub();
 
         {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
-        void {{rpcName}}_Async(const std::vector<ndn::Name>& providers, const {{rpcRequestMessage}} &_request, {{NameSpace}}::{{rpcName}}_Callback _callback,  const size_t strategy);
+        void {{rpcName}}_Async(const std::vector<ndn::Name>& providers, const {{rpcRequestMessage}} &_request, {{NameSpace}}::{{rpcName}}_Callback _callback, {{NameSpace}}::{{rpcName}}_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy);
         {% endfor %}      
 
         void OnResponseDecryptionSuccessCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer) override;
@@ -35,6 +36,7 @@ namespace {{NameSpace}}
         std::map<ndn::Name,size_t> strategyMap;
         {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}
         std::map<ndn::Name,{{rpcName}}_Callback> {{rpcName}}_Callbacks;
+        std::map<ndn::Name,{{rpcName}}_Timeout_Callback> {{rpcName}}_Timeout_Callbacks;
         {% endfor %}
         ndn::Name serviceName;
     };

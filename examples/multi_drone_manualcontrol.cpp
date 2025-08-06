@@ -30,6 +30,10 @@ main(int argc, char **argv)
     ndn::security::Certificate gs_certificate(m_keyChain.getPib().getIdentity(identity).getDefaultKey().getDefaultCertificate());
     muas::ServiceProvider_Drone m_serviceProvider(m_face,"/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"/usr/local/bin/trust-any.conf");
     
+    m_serviceProvider.m_FlightControlService.ManualControl_Handler = [](const ndn::Name &, const muas::FlightControl_ManualControl_Request &, muas::FlightControl_ManualControl_Response &){
+        
+    };
+
     //m_face.processEvents(ndn::time::milliseconds(2000));
 
     NDN_LOG_INFO("Drone Running");

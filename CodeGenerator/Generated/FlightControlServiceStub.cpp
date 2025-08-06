@@ -11,7 +11,7 @@ muas::FlightControlServiceStub::FlightControlServiceStub(ndn_service_framework::
 muas::FlightControlServiceStub::~FlightControlServiceStub(){}
 
 
-void muas::FlightControlServiceStub::Takeoff_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_Takeoff_Request &_request, muas::Takeoff_Callback _callback,  const size_t strategy)
+void muas::FlightControlServiceStub::Takeoff_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_Takeoff_Request &_request, muas::Takeoff_Callback _callback, muas::Takeoff_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Takeoff_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightControl_Takeoff_Response response;
@@ -21,10 +21,17 @@ void muas::FlightControlServiceStub::Takeoff_Async(const std::vector<ndn::Name>&
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightControl"), ndn::Name("Takeoff"), requestId, payload, strategy);
     Takeoff_Callbacks.emplace(requestId, _callback);
+    Takeoff_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Takeoff_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightControlServiceStub::Land_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_Land_Request &_request, muas::Land_Callback _callback,  const size_t strategy)
+void muas::FlightControlServiceStub::Land_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_Land_Request &_request, muas::Land_Callback _callback, muas::Land_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Land_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightControl_Land_Response response;
@@ -34,10 +41,17 @@ void muas::FlightControlServiceStub::Land_Async(const std::vector<ndn::Name>& pr
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightControl"), ndn::Name("Land"), requestId, payload, strategy);
     Land_Callbacks.emplace(requestId, _callback);
+    Land_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Land_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightControlServiceStub::ManualControl_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_ManualControl_Request &_request, muas::ManualControl_Callback _callback,  const size_t strategy)
+void muas::FlightControlServiceStub::ManualControl_Async(const std::vector<ndn::Name>& providers, const muas::FlightControl_ManualControl_Request &_request, muas::ManualControl_Callback _callback, muas::ManualControl_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("ManualControl_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightControl_ManualControl_Response response;
@@ -47,7 +61,14 @@ void muas::FlightControlServiceStub::ManualControl_Async(const std::vector<ndn::
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightControl"), ndn::Name("ManualControl"), requestId, payload, strategy);
     ManualControl_Callbacks.emplace(requestId, _callback);
+    ManualControl_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->ManualControl_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -88,6 +109,8 @@ void muas::FlightControlServiceStub::OnResponseDecryptionSuccessCallback(const n
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Takeoff_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -122,6 +145,8 @@ void muas::FlightControlServiceStub::OnResponseDecryptionSuccessCallback(const n
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Land_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -156,6 +181,8 @@ void muas::FlightControlServiceStub::OnResponseDecryptionSuccessCallback(const n
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    ManualControl_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

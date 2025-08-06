@@ -65,13 +65,20 @@ namespace ndn_service_framework
 
         // Do not fetch publications older than 10 seconds
         ndn::svs::SVSPubSubOptions opts;
-        // opts.useTimestamp = true;
-        // opts.maxPubAge = ndn::time::seconds(0);
+        #ifdef USE_TIMESTAMP
+        opts.useTimestamp = true;
+        //opts.maxPubAge = ndn::time::seconds(0);
+        #endif
+
+        ndn::Name node_id(identity);
+        node_id.append("user");
+        int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(),node_id.toUri());
+        node_id.append(std::to_string(session_id));
 
         // Create the Pub/Sub instance
         m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
             ndn::Name(group_prefix),
-            ndn::Name(identity),
+            node_id,
             m_face,
             std::bind(&ServiceUser::onMissingData, this, _1),
             opts,
@@ -79,6 +86,7 @@ namespace ndn_service_framework
 
         while(!nacConsumer.readyForDecryption()){
             // log waiting for decryption key
+            nacConsumer.obtainDecryptionKey();
             NDN_LOG_INFO("Waiting for decryption key");
             face.processEvents(ndn::time::milliseconds(1000));
         }
@@ -203,6 +211,7 @@ namespace ndn_service_framework
 
     void ServiceUser::OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
+        if(!isFresh(subscription)) return;
         // log message
         NDN_LOG_INFO("OnRequestAck: " << subscription.name);
         // parse permission ack name
@@ -303,10 +312,14 @@ namespace ndn_service_framework
         PublishMessage(serviceCoordinationName, serviceCoordinationNameWithoutPrefix, coordinationMessage);
     }
 
-    void ServiceUser::onMissingData(const std::vector<ndn::svs::MissingDataInfo> &)
+    void ServiceUser::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)
     {
-        NDN_LOG_INFO("onMissingData");
+        for (const auto& info : infoVector) {
+            NDN_LOG_INFO("onMissingData from node " << info.nodeId
+                        << " seq range [" << info.low << ", " << info.high << "]");
+        }
     }
+
 
     void ServiceUser::OnPermissionTokenDecryptionSuccessCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &seqNum, const ndn::Buffer &buffer)
     {
@@ -418,6 +431,43 @@ namespace ndn_service_framework
     {
         NDN_LOG_DEBUG("Requesting Service Info");
     }
+
+    bool ServiceUser::isFresh(const ndn::svs::SVSPubSub::SubscriptionData& subscription)
+    {
+        const ndn::Name& producerPrefix = subscription.producerPrefix;
+
+        if (producerPrefix.size() < 1)
+            return false;
+
+        std::string lastComponentStr = producerPrefix[-1].toUri();
+        int sessionID = 0;
+
+        try {
+            sessionID = std::stoi(lastComponentStr);
+        }
+        catch (const std::invalid_argument& e) {
+            NDN_LOG_WARN("Wrong sessionID" << lastComponentStr);
+            return false;
+        }
+        catch (const std::out_of_range& e) {
+            NDN_LOG_WARN("Wrong sessionID: " << lastComponentStr);
+            return false;
+        }
+
+        ndn::Name basePrefix = producerPrefix.getPrefix(-1); // 去掉最后一个component作为key
+
+        auto it = m_sessionIDMap.find(basePrefix);
+        if (it != m_sessionIDMap.end()) {
+            if (it->second > sessionID) {
+                return false;
+            }
+        }
+
+        // Update
+        m_sessionIDMap[basePrefix] = sessionID;
+        return true;
+    }
+
 
     void ServiceUser::OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string & msg)
     {

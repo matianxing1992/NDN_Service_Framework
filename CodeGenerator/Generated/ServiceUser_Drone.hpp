@@ -17,14 +17,14 @@ namespace muas
         virtual ~ServiceUser_Drone();
 
         
-        void YOLOv8_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void YOLOv8_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback,  muas::YOLOv8_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_ObjectDetectionServiceStub.YOLOv8_Async(providers, _request, _callback, strategy);
+            m_ObjectDetectionServiceStub.YOLOv8_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         
-        void YOLOv8_S_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_S_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void YOLOv8_S_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_S_Callback _callback,  muas::YOLOv8_S_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_ObjectDetectionServiceStub.YOLOv8_S_Async(providers, _request, _callback, strategy);
+            m_ObjectDetectionServiceStub.YOLOv8_S_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         
 

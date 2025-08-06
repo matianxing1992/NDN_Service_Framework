@@ -111,7 +111,7 @@ def topology():
 
 
     # do some experiment here
-    NDNPing.startPingServer(drone1, "/muas/drone1/ping")
+    NDNPing.startPingServer(drone1, "/muas/drone1")
     gs1.cmd('xterm -T "service-controller" -e "service-controller-example" &')
     time.sleep(2)
     drone1.cmd('xterm -T "drone1" -e "multi-drone-example /muas/drone1" &')
@@ -120,7 +120,7 @@ def topology():
     time.sleep(2)
     drone3.cmd('xterm -T "drone3" -e "multi-drone-example /muas/drone3" &')
     time.sleep(5)
-    gs1.cmd('xterm -T "gs1" -e "multi-gs-example /muas/gs1 1000 10 /muas/drone1 /muas/drone2 /muas/drone3" &')
+    gs1.cmd('xterm -T "gs1" -e "multi-gs-example FirstResponding /muas/gs1 1 60 /muas/drone1 /muas/drone2 /muas/drone3" &')
     
     # gs1.cmd('wireshark -X lua_script:/usr/local/share/ndn-dissect-wireshark/ndn.lua')
     # gs2.cmd('xterm -T "gs2" -e "gs-example /muas/gs2 1000 10" &')

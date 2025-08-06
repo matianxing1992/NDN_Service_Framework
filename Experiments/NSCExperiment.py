@@ -8,7 +8,17 @@ from minindn.apps.app_manager import AppManager
 from minindn.apps.nfd import Nfd
 from minindn.apps.nlsr import Nlsr
 
+from minindn.helpers.ndnping import NDNPing
+
 import time
+
+
+def registerRouteToAllNeighbors(ndn, host, syncPrefix):
+    for node in ndn.net.hosts:
+        for neighbor in node.connectionsTo(host):
+            ip = node.IP(neighbor[0])
+            faceID = Nfdc.createFace(host, ip)
+            Nfdc.registerRoute(host, syncPrefix, faceID)
 
 def printOutput(output):
     _out = output.decode("utf-8").split("\n")
@@ -21,7 +31,7 @@ if __name__ == '__main__':
     Minindn.cleanUp()
     Minindn.verifyDependencies()
 
-    ndn = Minindn(topoFile="./Topology/UAV(loss=0%)")
+    ndn = Minindn(topoFile="./Topology/testbed(loss=0%).conf")
 
     ndn.start()
 
@@ -30,10 +40,10 @@ if __name__ == '__main__':
     info('Starting NLSR on nodes\n')
     nlsrs = AppManager(ndn, ndn.net.hosts, Nlsr)
 
-    # create /muas on gs1 and dump the cert
-    gs1 = ndn.net['gs1']
-    drone1 = ndn.net['drone1']
-    gs1.cmd('ndnsec key-gen -t r /muas > /dev/null')
+    # create /muas on memphis and dump the cert
+    memphis = ndn.net['memphis']
+    ucla = ndn.net['ucla']
+    memphis.cmd('ndnsec key-gen -t r /muas > /dev/null')
 
     for node in ndn.net.hosts:
         print(node.name)
@@ -50,15 +60,19 @@ if __name__ == '__main__':
     # do some experiment here
     # ndn.net['drone1'].cmd('/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/producer /muas/drone1 /FlightControl /ManualControl &')
 
-    # nsc = getPopen(ndn.net["gs1"], "/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/gs1 /muas/drone1 /FlightControl /ManualControl 1000 10", stdout=PIPE, stderr=PIPE)
+    # nsc = getPopen(ndn.net["memphis"], "/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/drone1 /FlightControl /ManualControl 1000 10", stdout=PIPE, stderr=PIPE)
     # nsc.wait()
     # printOutput(nsc.stdout.read())
 
-    gs1.cmd('xterm -T "gs1" &')
-    # /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/gs1 /muas/drone1 /FlightControl /ManualControl 100 100
-    drone1.cmd('xterm -T "drone1" &')
-    # /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/producer /muas/drone1 /FlightControl /ManualControl
-    
+    getPopen(ndn.net["ucla"], "ndnpingserver /muas/ucla")
+
+    ucla.cmd('xterm -T "ucla" -e "/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/producer /muas/ucla /FlightControl /ManualControl" &')
+    # /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/producer /muas/ucla /FlightControl /ManualControl
+    time.sleep(5)
+    memphis.cmd('xterm -T "memphis" -e "/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla /FlightControl /ManualControl 100 1000" &')
+    # /home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla /FlightControl /ManualControl 100 1000
+
+
     MiniNDNCLI(ndn.net)
 
     ndn.stop()

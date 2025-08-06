@@ -8,66 +8,47 @@ std::pair<std::vector<ProviderPolicy>, std::vector<UserPolicy>> PolicyParser::pa
     std::vector<UserPolicy> userPolicies;
 
     if (!file.is_open()) {
-        std::cerr << "Error opening file!" << std::endl;
-        return std::make_pair(std::vector<ProviderPolicy>(), std::vector<UserPolicy>());
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return { {}, {} };
     }
 
-    boost::property_tree::ptree pt;
-
-    // 将文件内容读取到ptree对象
+    pt::ptree pt;
     try {
-        boost::property_tree::read_info(file, pt);
-    } catch (const boost::property_tree::info_parser_error& e) {
+        pt::read_info(file, pt);
+    } catch (const pt::info_parser_error& e) {
         std::cerr << "Error parsing file: " << e.what() << std::endl;
+        return { {}, {} };
     }
 
-    // 解析Provider Policies
+    // Parse provider policies (new structure)
     for (const auto& providerPolicyNode : pt.get_child("provider-policies")) {
         if (providerPolicyNode.first == "provider-policy") {
             ProviderPolicy providerPolicy;
-            providerPolicy.serviceName = providerPolicyNode.second.get<std::string>("for");
+            providerPolicy.providerName = providerPolicyNode.second.get<std::string>("for");
 
-            // 获取允许的提供者
-            for (const auto& providerNode : providerPolicyNode.second.get_child("allow")) {
-                providerPolicy.allowedProviders.push_back(providerNode.first.data());
+            for (const auto& serviceNode : providerPolicyNode.second.get_child("allow")) {
+                providerPolicy.allowedServices.push_back(serviceNode.first.data());
             }
 
-            providerPolicies.push_back(providerPolicy);
+            providerPolicies.push_back(std::move(providerPolicy));
         }
     }
 
-    // 解析User Policies
+    // Parse user policies (unchanged)
     for (const auto& userPolicyNode : pt.get_child("user-policies")) {
         if (userPolicyNode.first == "user-policy") {
             UserPolicy userPolicy;
             userPolicy.userName = userPolicyNode.second.get<std::string>("for");
 
-            // 获取允许的服务
             for (const auto& serviceNode : userPolicyNode.second.get_child("allow")) {
-               userPolicy.allowedServices.push_back(serviceNode.first.data());
+                userPolicy.allowedServices.push_back(serviceNode.first.data());
             }
 
-            userPolicies.push_back(userPolicy);
+            userPolicies.push_back(std::move(userPolicy));
         }
     }
 
-    // // 打印解析结果（可选）
-    // std::cout << "Provider Policies:" << std::endl;
-    // for (const auto& policy : providerPolicies) {
-    //     std::cout << "  Service Name: " << policy.serviceName << std::endl;
-    //     for (const auto& provider : policy.allowedProviders) {
-    //         std::cout << "    Allowed Provider: " << provider << std::endl;
-    //     }
-    // }
-
-    // std::cout << "User Policies:" << std::endl;
-    // for (const auto& policy : userPolicies) {
-    //     std::cout << "  User Name: " << policy.userName << std::endl;
-    //     for (const auto& service : policy.allowedServices) {
-    //         std::cout << "    Allowed Service: " << service << std::endl;
-    //     }
-    // }
-    return std::make_pair(providerPolicies, userPolicies);
+    return { providerPolicies, userPolicies };
 }
 
 }

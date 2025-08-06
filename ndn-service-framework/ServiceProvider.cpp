@@ -63,13 +63,20 @@ namespace ndn_service_framework
 
         // Do not fetch publications older than 10 seconds
         ndn::svs::SVSPubSubOptions opts;
-        // opts.useTimestamp = false;
+        #ifdef USE_TIMESTAMP
+        opts.useTimestamp = true;
         // opts.maxPubAge = ndn::time::seconds(0);
+        #endif
+
+        ndn::Name node_id(identity);
+        node_id.append("provider");
+        int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(),node_id.toUri());
+        node_id.append(std::to_string(session_id));
 
         // Create the Pub/Sub instance
         m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
             ndn::Name(group_prefix),
-            ndn::Name(identity),
+            ndn::Name(node_id),
             m_face,
             std::bind(&ServiceProvider::onMissingData, this, _1),
             opts,
@@ -77,6 +84,7 @@ namespace ndn_service_framework
 
         while(!nacConsumer.readyForDecryption()){
             // log waiting for decryption key
+            nacConsumer.obtainDecryptionKey();
             NDN_LOG_INFO("Waiting for decryption key");
             face.processEvents(ndn::time::milliseconds(1000));
         }
@@ -90,10 +98,12 @@ namespace ndn_service_framework
         registerNDNSFMessages();
     }
 
-    void ServiceProvider::onMissingData(const std::vector<ndn::svs::MissingDataInfo> &)
+    void ServiceProvider::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)
     {
-        NDN_LOG_INFO("onMissingData");
-
+        for (const auto& info : infoVector) {
+            NDN_LOG_INFO("onMissingData from node " << info.nodeId
+                        << " seq range [" << info.low << ", " << info.high << "]");
+        }
     }
 
     void ServiceProvider::UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails)
@@ -141,8 +151,10 @@ namespace ndn_service_framework
 
     void ServiceProvider::OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
+        if(!isFresh(subscription)) return;
         // log the request
         NDN_LOG_INFO("OnRequest: " << subscription.name << " " << subscription.data.size());
+        subscription.producerPrefix;
         
         ndn::Name RequesterName, ServiceName, FunctionName, bloomFilterName, RequestId;
         
@@ -364,6 +376,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     void ServiceProvider::onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
+        if(!isFresh(subscription)) return;
         // log message
         NDN_LOG_INFO("Received Service Coordination Message: " << subscription.name.toUri());
         // parse ServiceCoordinationMessage
@@ -473,6 +486,42 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                         std::bind(&ServiceProvider::onServiceCoordinationMessage, this, _1),
                                         false, false);
         }
+    }
+
+    bool ServiceProvider::isFresh(const ndn::svs::SVSPubSub::SubscriptionData& subscription)
+    {
+        const ndn::Name& producerPrefix = subscription.producerPrefix;
+
+        if (producerPrefix.size() < 1)
+            return false;
+
+        std::string lastComponentStr = producerPrefix[-1].toUri();
+        int sessionID = 0;
+
+        try {
+            sessionID = std::stoi(lastComponentStr);
+        }
+        catch (const std::invalid_argument& e) {
+            NDN_LOG_WARN("Wrong sessionID" << lastComponentStr);
+            return false;
+        }
+        catch (const std::out_of_range& e) {
+            NDN_LOG_WARN("Wrong sessionID: " << lastComponentStr);
+            return false;
+        }
+
+        ndn::Name basePrefix = producerPrefix.getPrefix(-1); // 去掉最后一个component作为key
+
+        auto it = m_sessionIDMap.find(basePrefix);
+        if (it != m_sessionIDMap.end()) {
+            if (it->second > sessionID) {
+                return false;
+            }
+        }
+
+        // Update
+        m_sessionIDMap[basePrefix] = sessionID;
+        return true;
     }
 
 }

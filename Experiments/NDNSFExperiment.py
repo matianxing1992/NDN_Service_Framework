@@ -21,7 +21,7 @@ if __name__ == '__main__':
     Minindn.cleanUp()
     Minindn.verifyDependencies()
 
-    ndn = Minindn(topoFile="./Topology/UAV(loss=0%)")
+    ndn = Minindn(topoFile="./Topology/wired_12nodes(loss=5%).conf")
 
     ndn.start()
 

@@ -77,7 +77,7 @@ def generateAndSignCertificates(ndn: MinindnAdhoc):
 
 def topology():
     "Create a network."
-    ndnwifi = MinindnAdhoc(topoFile="./Topology/UAV_adhoc(lossy).conf",link=wmediumd, wmediumd_mode=interference)
+    ndnwifi = MinindnAdhoc(topoFile="./Topology/UAV_adhoc(loss=0%).conf",link=wmediumd, wmediumd_mode=interference)
     ndnwifi.net.setPropagationModel(model="logDistance", exp=3)
 
     ndnwifi.start()

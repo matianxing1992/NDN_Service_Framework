@@ -9,6 +9,7 @@
 #include "BloomFilter.hpp"
 #include "UserPermissionTable.hpp"
 #include "NDNSFMessages.hpp"
+#include "ConfigManager.hpp"
 
 
 
@@ -65,6 +66,8 @@ namespace ndn_service_framework{
             // Register service info using ndnsd();
             virtual void registerServiceInfo() = 0;
 
+            bool isFresh(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
+
         protected:
             void
             onMissingData(const std::vector<ndn::svs::MissingDataInfo> &);
@@ -107,6 +110,10 @@ namespace ndn_service_framework{
             ndnsd::discovery::ServiceDiscovery m_ServiceDiscovery;
 
             UserPermissionTable UPT;
+
+            ConfigManager m_configManager;
+
+            std::map<ndn::Name, int> m_sessionIDMap;
     };
 }
 

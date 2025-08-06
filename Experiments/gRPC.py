@@ -1,55 +1,119 @@
-from mininet.net import Mininet
-from mininet.node import Controller
-from mininet.topo import Topo
-from mininet.cli import CLI
+from subprocess import PIPE
+
 from mininet.log import setLogLevel, info
+from mininet.topo import Topo
 
-class MyTopo(Topo):
-    def build(self):
-        # 创建主机
-        h1 = self.addHost('h1')
-        h2 = self.addHost('h2')
+from minindn.minindn import Minindn
+from minindn.apps.app_manager import AppManager
+from minindn.util import MiniNDNCLI, getPopen
+from minindn.apps.nfd import Nfd
+from minindn.helpers.nfdc import Nfdc
 
-        # 创建交换机
-        s1 = self.addSwitch('s1')
+from mininet.node import Controller
 
-        # 将主机连接到交换机，并设置链路参数
-        self.addLink(h1, s1, delay='10ms')
-        self.addLink(h2, s1, delay='10ms')
+PREFIX = "/example"
+
+def printOutput(output):
+    _out = output.decode("utf-8").split("\n")
+    for _line in _out:
+        info(_line + "\n")
+
+def configure_static_routes(ndn):
+    hosts = ["gs1", "drone1", "drone2", "drone3", "drone4", "drone5"]
+    
+    # forward route: gs1 -> drone1 -> ... -> drone5
+    for i in range(len(hosts) - 1):
+        src = ndn.net[hosts[i]]
+        next_hop = ndn.net[hosts[i + 1]]
+
+
+        iface = next_hop.connectionsTo(src)[0][0]
+        next_hop_ip = iface.IP()
+
+        dst = ndn.net["drone5"]
+        dst_ip = dst.IP()
+
+        src.cmd(f"ip route add {dst_ip} via {next_hop_ip}")
+
+    # reverse route: drone5 -> ... -> drone1 -> gs1
+    for i in range(len(hosts) - 1, 0, -1):
+        src = ndn.net[hosts[i]]
+        next_hop = ndn.net[hosts[i - 1]]
+
+        iface = next_hop.connectionsTo(src)[0][0]
+        next_hop_ip = iface.IP()
+
+        dst = ndn.net["gs1"]
+        dst_ip = dst.IP()
+
+        src.cmd(f"ip route add {dst_ip} via {next_hop_ip}")
+
+    info("Static IP routes configured.\n")
+
 
 def run():
-    # 设置日志级别
-    setLogLevel('info')
+    Minindn.cleanUp()
+    Minindn.verifyDependencies()
+
+    ndn = Minindn(topoFile="./Topology/wired_12nodes(loss=0%).conf", controller=Controller)
+    ndn.start()
     
-    # 创建自定义拓扑
-    topo = MyTopo()
+    configure_static_routes(ndn)
 
-    # 创建 Mininet 网络
-    net = Mininet(topo=topo, controller=Controller)
+    # configure and start nfd on each node
+    info("Configuring NFD\n")
+    AppManager(ndn, ndn.net.hosts, Nfd, logLevel="DEBUG")
 
-    # 启动网络
-    net.start()
-
-    # 测试网络连通性
-    info("Testing network connectivity\n")
-    net.pingAll()
-
-    # 启动 CLI
-    info("Starting CLI\n")
+    """
+    There are multiple ways of setting up routes in Mini-NDN
+    refer: https://minindn.memphis.edu/experiment.html#routing-options
+    It can also be set manually as follows. The important bit to note here
+    is the use of the Nfdc command
+    """
     
-    # h1 tc qdisc add dev h1-eth0 root netem delay 10ms loss 5
-    # h2 tc qdisc add dev h2-eth0 root netem delay 10ms loss 5
-    # h1 xterm -T "h1" &
-    # h2 xterm -T "h2" &
+    gs1 = ndn.net['gs1']
+    drone1 = ndn.net['drone1']
+    drone2 = ndn.net['drone2']
+    drone3 = ndn.net['drone3']
+    drone4 = ndn.net['drone4']
+    drone5 = ndn.net['drone5']
+    
+    links = {"gs1":["drone1"], "drone1":["drone2"], "drone2":["drone3"], "drone3":["drone4"], "drone4":["drone5"]}
+    for first in links:
+        for second in links[first]:
+            host1 = ndn.net[first]
+            host2 = ndn.net[second]
+            interface = host2.connectionsTo(host1)[0][0]
+            interface_ip = interface.IP()
+            Nfdc.createFace(host1, interface_ip)
+            Nfdc.registerRoute(host1, PREFIX, interface_ip, cost=0)
+
+    # Start ping server
+    info("Starting pings...\n")
+    pingserver_log = open("{}/drone5/ndnpingserver.log".format(ndn.workDir), "w")
+    getPopen(ndn.net["drone5"], "ndnpingserver {}".format(PREFIX), stdout=pingserver_log,\
+             stderr=pingserver_log)
+             
+    drone5_ip = ndn.net["drone5"].IP()
+    print(drone5_ip)
+    # gs1.cmd("xterm -hold -T 'IP ping: gs1 ping drone5' -e 'ping {}' &".format(drone5_ip))
+
+    # gs1.cmd("xterm -hold -T 'ndnping: gs1 ping /example' -e 'ndnping /example' &")
+
+    # gs1 xterm -T "gs1" &
+    # drone5 xterm -T "drone5" &
     # source /home/tianxing/NDN/ndn-service-framework/Experiments/pythonEnv/bin/activate
     # python /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_server.py
     # python /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_client.py
-    
-    CLI(net)
 
-    # 停止网络
-    net.stop()
+    gs1.cmd("xterm -hold -T 'gs1 grpc server' &")
+
+    drone5.cmd("xterm -hold -T 'drone5 grpc client' &")
+
+    info("\nExperiment Completed!\n")
+    MiniNDNCLI(ndn.net)
+    ndn.stop()
 
 if __name__ == '__main__':
+    setLogLevel("info")
     run()
-

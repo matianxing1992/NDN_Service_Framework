@@ -25,27 +25,6 @@ def build(bld):
     cc_files = glob.glob('./CodeGenerator/Generated/*.cc')
     cc_files = ['.' + s for s in cc_files]
     # print(cpp_files)
-
-    bld.program(name='drone-example',
-                target='drone-example',
-                source=["main_drone_manualcontrol.cpp"] + cpp_files + cc_files,
-                includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
-                use='ndn-service-framework gtkmm MAVSDK NDNSD',
-                install_path='/usr/local/bin')
-    
-    # bld.program(name='drone-manualcontrol-example',
-    #             target='drone-manualcontrol-example',
-    #             source=["main_drone_manualcontrol.cpp","ServiceProvider_Drone.cpp","ServiceUser_Drone.cpp","ObjectDetectionService.cpp","ObjectDetectionServiceStub.cpp","ManualControlService.cpp","ManualControlServiceStub.cpp","messages.pb.cc"],
-    #             includes= ['.','ndn-service-framework'],
-    #             use='ndn-service-framework gtkmm MAVSDK',
-                # install_path=None)
-    
-    bld.program(name='gs-example',
-                target='gs-example',
-                source=["main_gs_manualcontrol.cpp"] + cpp_files + cc_files,
-                includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
-                use='ndn-service-framework gtkmm MAVSDK NDNSD',
-                install_path='/usr/local/bin')
     
     bld.program(name='multi-drone-example',
                 target='multi-drone-example',

@@ -17,9 +17,9 @@ namespace {{NameSpace}}
         virtual ~ServiceUser_{{AppName}}();
 
         {% for ServiceName,rpcName,rpcRequestMessage,rpcResponseMessage in ServiceArray %}
-        void {{rpcName}}_Async(const std::vector<ndn::Name>& providers, const {{rpcRequestMessage}} &_request, {{NameSpace}}::{{rpcName}}_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void {{rpcName}}_Async(const std::vector<ndn::Name>& providers, const {{rpcRequestMessage}} &_request, {{NameSpace}}::{{rpcName}}_Callback _callback,  {{NameSpace}}::{{rpcName}}_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_{{ServiceName}}ServiceStub.{{rpcName}}_Async(providers, _request, _callback, strategy);
+            m_{{ServiceName}}ServiceStub.{{rpcName}}_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         {% endfor %}
 

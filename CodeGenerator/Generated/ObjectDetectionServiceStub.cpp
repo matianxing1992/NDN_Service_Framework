@@ -11,7 +11,7 @@ muas::ObjectDetectionServiceStub::ObjectDetectionServiceStub(ndn_service_framewo
 muas::ObjectDetectionServiceStub::~ObjectDetectionServiceStub(){}
 
 
-void muas::ObjectDetectionServiceStub::YOLOv8_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback,  const size_t strategy)
+void muas::ObjectDetectionServiceStub::YOLOv8_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_Callback _callback, muas::YOLOv8_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("YOLOv8_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::ObjectDetection_YOLOv8_Response response;
@@ -21,10 +21,17 @@ void muas::ObjectDetectionServiceStub::YOLOv8_Async(const std::vector<ndn::Name>
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("ObjectDetection"), ndn::Name("YOLOv8"), requestId, payload, strategy);
     YOLOv8_Callbacks.emplace(requestId, _callback);
+    YOLOv8_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->YOLOv8_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::ObjectDetectionServiceStub::YOLOv8_S_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_S_Callback _callback,  const size_t strategy)
+void muas::ObjectDetectionServiceStub::YOLOv8_S_Async(const std::vector<ndn::Name>& providers, const muas::ObjectDetection_YOLOv8_Request &_request, muas::YOLOv8_S_Callback _callback, muas::YOLOv8_S_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("YOLOv8_S_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::ObjectDetection_YOLOv8_Response response;
@@ -34,7 +41,14 @@ void muas::ObjectDetectionServiceStub::YOLOv8_S_Async(const std::vector<ndn::Nam
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("ObjectDetection"), ndn::Name("YOLOv8_S"), requestId, payload, strategy);
     YOLOv8_S_Callbacks.emplace(requestId, _callback);
+    YOLOv8_S_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->YOLOv8_S_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -75,6 +89,8 @@ void muas::ObjectDetectionServiceStub::OnResponseDecryptionSuccessCallback(const
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    YOLOv8_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -109,6 +125,8 @@ void muas::ObjectDetectionServiceStub::OnResponseDecryptionSuccessCallback(const
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    YOLOv8_S_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
