@@ -6,9 +6,9 @@ NDN_LOG_INIT({{NameSpace}}.ServiceUser_{{AppName}});
     :ndn_service_framework::ServiceUser(face, group_prefix, identityCert, attrAuthorityCertificate, trustSchemaPath),
     {% for ServiceName in ServiceNameArray %}
         {% if loop.revindex0 == 0 %}
-    m_{{ServiceName}}ServiceStub(*this)
+    m_{{ServiceName}}ServiceStub(face, *this)
         {% else %}
-    m_{{ServiceName}}ServiceStub(*this),
+    m_{{ServiceName}}ServiceStub(face, *this),
         {% endif %}
     {% endfor %}
 {

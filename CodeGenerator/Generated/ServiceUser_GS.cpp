@@ -6,11 +6,11 @@ muas::ServiceUser_GS::ServiceUser_GS(ndn::Face& face, ndn::Name group_prefix, nd
     :ndn_service_framework::ServiceUser(face, group_prefix, identityCert, attrAuthorityCertificate, trustSchemaPath),
     
         
-    m_ObjectDetectionServiceStub(*this),
+    m_ObjectDetectionServiceStub(face, *this),
         
     
         
-    m_FlightControlServiceStub(*this)
+    m_FlightControlServiceStub(face, *this)
         
     
 {

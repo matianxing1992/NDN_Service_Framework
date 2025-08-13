@@ -2,8 +2,8 @@
 
 NDN_LOG_INIT(muas.FlightControlServiceStub);
 
-muas::FlightControlServiceStub::FlightControlServiceStub(ndn_service_framework::ServiceUser &user)
-    : ndn_service_framework::ServiceStub(user),
+muas::FlightControlServiceStub::FlightControlServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(face, user),
       serviceName("FlightControl")
 {
 }
@@ -24,10 +24,14 @@ void muas::FlightControlServiceStub::Takeoff_Async(const std::vector<ndn::Name>&
     Takeoff_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Takeoff_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Takeoff_Timeout_Callbacks.find(requestId);
+        if (it != Takeoff_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -44,10 +48,14 @@ void muas::FlightControlServiceStub::Land_Async(const std::vector<ndn::Name>& pr
     Land_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Land_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Land_Timeout_Callbacks.find(requestId);
+        if (it != Land_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -64,10 +72,14 @@ void muas::FlightControlServiceStub::ManualControl_Async(const std::vector<ndn::
     ManualControl_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->ManualControl_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = ManualControl_Timeout_Callbacks.find(requestId);
+        if (it != ManualControl_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 

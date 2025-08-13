@@ -77,26 +77,22 @@ def generateAndSignCertificates(ndn: MinindnAdhoc):
 
 def topology():
     "Create a network."
-    ndnwifi = MinindnAdhoc(topoFile="./Topology/UAV_adhoc(loss=0%).conf",link=wmediumd, wmediumd_mode=interference)
+    ndnwifi = MinindnAdhoc(topoFile="./Topology/UAV_adhoc.conf",link=wmediumd, wmediumd_mode=interference)
     ndnwifi.net.setPropagationModel(model="logDistance", exp=3)
 
     ndnwifi.start()
     info("Starting NFD")
-    AppManager(ndnwifi, ndnwifi.net.stations, Nfd, logLevel='DEBUG')
+    AppManager(ndnwifi, ndnwifi.net.stations, Nfd, logLevel='INFO')
     # info('Starting NLSR on nodes\n')
     # nlsrs = AppManager(ndnwifi, ndnwifi.net.stations, Nlsr)
 
-     # create /muas on gs1 and dump the cert
-    gs1 = ndnwifi.net['gs1']
-    # gs2 = ndnwifi.net['gs2']
-    # gs3 = ndnwifi.net['gs3']
-    # gs4 = ndnwifi.net['gs4']
-    # gs5 = ndnwifi.net['gs5']
-    drone1 = ndnwifi.net['drone1']
-    drone2 = ndnwifi.net['drone2']
-    # drone3 = ndnwifi.net['drone3']
-    # drone4 = ndnwifi.net['drone4']
-    # drone5 = ndnwifi.net['drone5']
+     # create /muas on uiuc and dump the cert
+    uiuc = ndnwifi.net['uiuc']
+    ucla = ndnwifi.net['ucla']
+    neu = ndnwifi.net['neu']
+    csu = ndnwifi.net['csu']
+
+
 
     generateAndSignCertificates(ndnwifi)
 
@@ -109,28 +105,37 @@ def topology():
         node.cmd('nfdc strategy set /muas/{} /localhost/nfd/strategy/multicast'.format(node.name))
         node.cmd('nfdc strategy set /muas/{}/NDNSF /localhost/nfd/strategy/multicast'.format(node.name))
         node.cmd("nfdc route add prefix /muas/NDNSD nexthop 256 cost 100") # for ndnsd
-        node.cmd("nfdc route add prefix /muas/{}/ping nexthop 256 cost 100")
+        # node.cmd("nfdc route add prefix /muas/{}/ping nexthop 256 cost 100".format(node.name))
         node.cmd('nfdc strategy set /muas/NDNSD /localhost/nfd/strategy/multicast')
         # nfdc route add prefix /ndn nexthop 256 cost 100
         # face 256: ether://[01:00:5e:00:17:aa]
+
+        NDNPing.startPingServer(node, f"/muas/{node.name}")
+        for node2 in ndnwifi.net.stations:
+            if node.name != node2.name:
+                node.cmd(f"nfdc route add prefix /muas/{node2.name} nexthop 256 cost 100")
+                node.cmd(f'nfdc strategy set /muas/{node2.name} /localhost/nfd/strategy/multicast')
+
+        # nfdc face create remote ether://[01:00:5e:00:17:aa] local 
         time.sleep(1)
 
-
-    # do some experiment here
-    NDNPing.startPingServer(drone1, "/muas/drone1/ping")
-    gs1.cmd('xterm -T "service-controller" -e "service-controller-example" &')
+    uiuc.cmd('xterm -T "service-controller" -e "service-controller-example" &')
     time.sleep(2)
-    drone1.cmd('xterm -T "drone1" -e "multi-drone-example /muas/drone1" &')
+    ucla.cmd('xterm -T "ucla" -e "multi-drone-example /muas/ucla" &')
     time.sleep(2)
-    drone2.cmd('xterm -T "drone2" -e "multi-drone-example /muas/drone2" &')
+    neu.cmd('xterm -T "neu" -e "multi-drone-example /muas/neu" &')
+    time.sleep(2)
+    csu.cmd('xterm -T "csu" -e "multi-drone-example /muas/csu" &')
     # time.sleep(2)
-    # drone3.cmd('xterm -T "drone3" -e "multi-drone-example /muas/drone3" &')
+    # csu.cmd('xterm -T "csu" -e "multi-drone-example /muas/csu" &')
     time.sleep(5)
     # FirstResponding/LoadBalancing/NoCoordination
-    # gs1.cmd('xterm -T "gs1" -e "multi-gs-example FirstResponding /muas/gs1 1000 60 /muas/drone1 /muas/drone2 /muas/drone3" &')
-    gs1.cmd('xterm -T "gs1" -e "multi-gs-example NoCoordination /muas/gs1 1000 60 /muas/drone1" &')
     
-    # gs1.cmd('wireshark -X lua_script:/usr/local/share/ndn-dissect-wireshark/ndn.lua')
+    ## uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example NoCoordination /muas/uiuc 1 180 /muas/ucla" &')
+    
+    uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example FirstResponding /muas/uiuc 1 600 /muas/ucla /muas/csu /muas/neu" &')
+    
+    # uiuc.cmd('wireshark -X lua_script:/usr/local/share/ndn-dissect-wireshark/ndn.lua')
     # gs2.cmd('xterm -T "gs2" -e "gs-example /muas/gs2 1000 10" &')
     # gs3.cmd('xterm -T "gs3" -e "gs-example /muas/gs3 1000 10" &')
     # gs4.cmd('xterm -T "gs4" -e "gs-example /muas/gs4 1000 10" &')

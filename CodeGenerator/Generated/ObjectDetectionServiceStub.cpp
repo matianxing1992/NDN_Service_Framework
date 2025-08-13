@@ -2,8 +2,8 @@
 
 NDN_LOG_INIT(muas.ObjectDetectionServiceStub);
 
-muas::ObjectDetectionServiceStub::ObjectDetectionServiceStub(ndn_service_framework::ServiceUser &user)
-    : ndn_service_framework::ServiceStub(user),
+muas::ObjectDetectionServiceStub::ObjectDetectionServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(face, user),
       serviceName("ObjectDetection")
 {
 }
@@ -24,10 +24,14 @@ void muas::ObjectDetectionServiceStub::YOLOv8_Async(const std::vector<ndn::Name>
     YOLOv8_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->YOLOv8_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = YOLOv8_Timeout_Callbacks.find(requestId);
+        if (it != YOLOv8_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -44,10 +48,14 @@ void muas::ObjectDetectionServiceStub::YOLOv8_S_Async(const std::vector<ndn::Nam
     YOLOv8_S_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->YOLOv8_S_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = YOLOv8_S_Timeout_Callbacks.find(requestId);
+        if (it != YOLOv8_S_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 

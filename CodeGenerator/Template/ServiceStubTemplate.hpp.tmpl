@@ -22,7 +22,7 @@ namespace {{NameSpace}}
     class {{ServiceName}}ServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        {{ServiceName}}ServiceStub(ndn_service_framework::ServiceUser& user);
+        {{ServiceName}}ServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~{{ServiceName}}ServiceStub();
 
         {% for rpcName,rpcRequestMessage,rpcResponseMessage in rpcArray %}

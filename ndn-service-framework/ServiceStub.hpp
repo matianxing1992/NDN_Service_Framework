@@ -11,13 +11,13 @@ namespace ndn_service_framework{
     class ServiceStub
     {
         public:
-            ServiceStub(ServiceUser &user);
+            ServiceStub(ndn::Face& face, ServiceUser &user);
             virtual ~ServiceStub() {}
 
             virtual void OnResponseDecryptionSuccessCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer)= 0;
 
         protected:
-            ndn::Face m_face;
+            ndn::Face& m_face;
             ndn::scheduler::Scheduler m_scheduler;
             ndn::Name m_serviceGroupName;
             ndn::Name m_serviceStubID;

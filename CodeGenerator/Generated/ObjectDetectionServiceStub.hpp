@@ -25,7 +25,7 @@ namespace muas
     class ObjectDetectionServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        ObjectDetectionServiceStub(ndn_service_framework::ServiceUser& user);
+        ObjectDetectionServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~ObjectDetectionServiceStub();
 
         

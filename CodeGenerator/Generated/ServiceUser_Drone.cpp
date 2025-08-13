@@ -6,7 +6,7 @@ muas::ServiceUser_Drone::ServiceUser_Drone(ndn::Face& face, ndn::Name group_pref
     :ndn_service_framework::ServiceUser(face, group_prefix, identityCert, attrAuthorityCertificate, trustSchemaPath),
     
         
-    m_ObjectDetectionServiceStub(*this)
+    m_ObjectDetectionServiceStub(face, *this)
         
     
 {

@@ -73,6 +73,8 @@ main(int argc, char **argv)
         m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),
         "/usr/local/bin/trust-any.conf");
 
+    
+
     m_face.processEvents(ndn::time::milliseconds(2000));
 
     muas::FlightControl_ManualControl_Request _request;
@@ -104,7 +106,7 @@ main(int argc, char **argv)
             [&](const muas::FlightControl_ManualControl_Request& _request) {
                 NDN_LOG_INFO("Timeout " << _request.DebugString());
             },
-            3000,
+            1000, // timeout time in ms
             strategy);
     };
 
