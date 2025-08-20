@@ -44,7 +44,7 @@
 
 
 
-#define USE_TIMESTAMP
+// #define USE_TIMESTAMP
 
 
 namespace ndn_service_framework{
