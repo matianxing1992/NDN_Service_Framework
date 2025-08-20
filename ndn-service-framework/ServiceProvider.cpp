@@ -66,6 +66,8 @@ namespace ndn_service_framework
         #ifdef USE_TIMESTAMP
         opts.useTimestamp = true;
         // opts.maxPubAge = ndn::time::seconds(0);
+        #else
+        opts.useTimestamp = false;
         #endif
 
         ndn::Name node_id(identity);
