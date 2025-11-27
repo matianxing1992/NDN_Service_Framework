@@ -9,6 +9,7 @@ from minindn.wifi.minindnwifi import MinindnAdhoc
 from minindn.util import MiniNDNWifiCLI
 from minindn.apps.app_manager import AppManager
 from minindn.apps.nfd import Nfd
+from minindn.apps.gpsd import Gpsd
 from minindn.helpers.nfdc import Nfdc
 from minindn.apps.nlsr import Nlsr
 from minindn.helpers.ndnping import NDNPing
@@ -61,8 +62,8 @@ def generateAndSignCertificates(ndn: MinindnAdhoc):
 
     info('Installing keys and certificates on nodes\n')
     for node in ndn.net.stations:
-        # node.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
-        node.cmd('export NDN_LOG="muas.main_gs=TRACE"')
+        node.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
+        # node.cmd('export NDN_LOG="muas.main_gs=TRACE"')
         
 
         node.cmd('ndnsec import -P 123456 /tmp/muas.ndnkey')
@@ -81,8 +82,11 @@ def topology():
     ndnwifi.net.setPropagationModel(model="logDistance", exp=3)
 
     ndnwifi.start()
+
+    AppManager(ndnwifi, ndnwifi.net.stations, Gpsd, lat=35.11908, lon=-89.93778, altitude=200, update_interval=0.2)
+
     info("Starting NFD")
-    AppManager(ndnwifi, ndnwifi.net.stations, Nfd, logLevel='INFO')
+    AppManager(ndnwifi, ndnwifi.net.stations, Nfd, logLevel='TRACE')
     # info('Starting NLSR on nodes\n')
     # nlsrs = AppManager(ndnwifi, ndnwifi.net.stations, Nlsr)
 
@@ -102,6 +106,7 @@ def topology():
         # nfdc route add prefix /ndn nexthop 256 cost 100
         # face 256: ether://[01:00:5e:00:17:aa]
         node.cmd('nfdc route add prefix /muas nexthop 256 cost 100')
+        
         node.cmd('nfdc strategy set /muas/{} /localhost/nfd/strategy/multicast'.format(node.name))
         node.cmd('nfdc strategy set /muas/{}/NDNSF /localhost/nfd/strategy/multicast'.format(node.name))
         node.cmd("nfdc route add prefix /muas/NDNSD nexthop 256 cost 100") # for ndnsd
@@ -109,6 +114,11 @@ def topology():
         node.cmd('nfdc strategy set /muas/NDNSD /localhost/nfd/strategy/multicast')
         # nfdc route add prefix /ndn nexthop 256 cost 100
         # face 256: ether://[01:00:5e:00:17:aa]
+
+        # clf
+        node.cmd('nfdc strategy set prefix /muas strategy /localhost/nfd/strategy/clf')
+
+        
 
         NDNPing.startPingServer(node, f"/muas/{node.name}")
         for node2 in ndnwifi.net.stations:
@@ -122,6 +132,10 @@ def topology():
     uiuc.cmd('xterm -T "service-controller" -e "service-controller-example" &')
     time.sleep(2)
     ucla.cmd('xterm -T "ucla" -e "multi-drone-example /muas/ucla" &')
+
+
+
+
     time.sleep(2)
     neu.cmd('xterm -T "neu" -e "multi-drone-example /muas/neu" &')
     time.sleep(2)
@@ -133,7 +147,8 @@ def topology():
     
     ## uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example NoCoordination /muas/uiuc 1 180 /muas/ucla" &')
     
-    uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example FirstResponding /muas/uiuc 1 600 /muas/ucla /muas/csu /muas/neu" &')
+    uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example FirstResponding /muas/uiuc 3 120 /muas/ucla /muas/csu /muas/neu" &')
+    # uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example RandomSelection /muas/uiuc 3 600 /muas/ucla /muas/csu /muas/neu" &')
     
     # uiuc.cmd('wireshark -X lua_script:/usr/local/share/ndn-dissect-wireshark/ndn.lua')
     # gs2.cmd('xterm -T "gs2" -e "gs-example /muas/gs2 1000 10" &')

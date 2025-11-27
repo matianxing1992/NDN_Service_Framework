@@ -87,8 +87,8 @@ def configure(conf):
     conf.find_program('protoc', var='PROTOC')
 
     # MAVSDK libmavsdk-dev_1.4.16
-    conf.check_cfg(package="mavsdk", uselib_store="MAVSDK", 
-            args=['--cflags', '--libs'])
+    #conf.check_cfg(package="mavsdk", uselib_store="MAVSDK", 
+    #        args=['--cflags', '--libs'])
     
     # gtkmm-3.0
     conf.check_cfg(package="gtkmm-3.0", uselib_store="gtkmm", 

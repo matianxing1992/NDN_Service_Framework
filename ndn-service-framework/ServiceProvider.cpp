@@ -5,6 +5,7 @@ namespace ndn_service_framework
 
     ServiceProvider::ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) 
         : m_face(face),
+        m_scheduler(m_face.getIoContext()),
         identity(identityCert.getIdentity()),
         identityCert(identityCert),
         validator(std::make_shared<MessageValidator>(trustSchemaPath)),
@@ -100,12 +101,43 @@ namespace ndn_service_framework
         registerNDNSFMessages();
     }
 
+    void ServiceProvider::PublishMessage(const ndn::Name &messageName, const ndn::Name &messageNameWithoutPrefix,AbstractMessage &message)
+    {
+        // log message
+        NDN_LOG_INFO("PublishMessage: " << messageName.toUri());
+
+        ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
+        auto results = ndn_service_framework::GetAttributesByName(messageName);
+        if (!results)
+        {
+            NDN_LOG_ERROR("GetAttributesByName failed: " << messageName);
+            return;
+        }
+        std::tie(contentData, ckData) =
+            nacProducer.produce(messageNameWithoutPrefix, 
+                ndn_service_framework::GetAttributesByName(messageName).value(), 
+                ndn::span<const uint8_t>(message.WireEncode().data(), message.WireEncode().size()),
+                m_signingInfo);
+        // m_face.getIoContext().post([this,
+        //  messageName,
+        //  contentData = std::move(contentData),
+        //  ckData      = std::move(ckData)]() mutable
+        // {
+        serveDataWithIMS(contentData, ckData);
+        auto buffer = mergeDataContents(contentData);
+        ndn::Block contentBlock(buffer);
+        m_svsps->publish(messageName, contentBlock);
+        NDN_LOG_INFO("Message Published: " << messageName.toUri() << " " << contentBlock.value_size());
+        // });
+        
+    }
+
     void ServiceProvider::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)
     {
-        for (const auto& info : infoVector) {
-            NDN_LOG_INFO("onMissingData from node " << info.nodeId
-                        << " seq range [" << info.low << ", " << info.high << "]");
-        }
+        // for (const auto& info : infoVector) {
+        //     NDN_LOG_INFO("onMissingData from node " << info.nodeId
+        //                 << " seq range [" << info.low << ", " << info.high << "]");
+        // }
     }
 
     void ServiceProvider::UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails)
@@ -215,60 +247,114 @@ namespace ndn_service_framework
 
     }
 
-    void ServiceProvider::OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilterName,  const ndn::Name &RequestID, const ndn::Buffer & buffer)
-    {
-        // log request
-        NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: " << requesterIdentity.toUri() << ServiceName.toUri() << FunctionName.toUri() << bloomFilterName.toUri() << RequestID.toUri());
+void ServiceProvider::OnRequestDecryptionSuccessCallback(
+    const ndn::Name& requesterIdentity,
+    const ndn::Name& ServiceName,
+    const ndn::Name& FunctionName,
+    const ndn::Name& bloomFilterName,
+    const ndn::Name& RequestID,
+    const ndn::Buffer& buffer)
+{
+    // Deep copy buffer so it is safe to pass across threads
+    auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
 
-        auto token = UPT.queryPermission(ndn::Name(identity.toUri()).append(ServiceName).append(FunctionName).toUri(), ndn::Name(ServiceName).append(FunctionName).toUri());
-            
-        if(!token)
-        {
-            NDN_LOG_ERROR("Not Serving:" << ServiceName << " function " << FunctionName);
+    // ndnsf::post([this,
+    //              requesterIdentity,
+    //              ServiceName,
+    //              FunctionName,
+    //              bloomFilterName,
+    //              RequestID,
+    //              raw]() mutable
+    // {
+        // Reconstruct a safe TLV block
+        auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
+        auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
+
+        // Logging
+        NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: "
+            << requesterIdentity.toUri()
+            << ServiceName.toUri()
+            << FunctionName.toUri()
+            << bloomFilterName.toUri()
+            << RequestID.toUri());
+
+        // Token permission check
+        auto token = UPT.queryPermission(
+            ndn::Name(identity.toUri())
+                .append(ServiceName)
+                .append(FunctionName)
+                .toUri(),
+            ndn::Name(ServiceName).append(FunctionName).toUri());
+
+        if (!token) {
+            NDN_LOG_ERROR("Not Serving: " << ServiceName << " function " << FunctionName);
             return;
         }
 
+        // Decode RequestMessage safely
         ndn_service_framework::RequestMessage requestMessage;
-        requestMessage.WireDecode(ndn::Block(buffer));
+        requestMessage.WireDecode(block);
 
-        // check whether the tokens in request messaget match the token passed in
+        // Validate tokens
         bool isAuthorized = false;
-        for (auto pair :requestMessage.getTokens()){
-            if (pair.second == std::to_string(std::hash<std::string>()(token.value() + RequestID.toUri())))
+        for (const auto& pair : requestMessage.getTokens()) {
+            if (pair.second ==
+                std::to_string(std::hash<std::string>()(
+                    token.value() + RequestID.toUri())))
             {
                 isAuthorized = true;
                 break;
-            } 
+            }
         }
-        // for test only
+
+        // For debugging only
         isAuthorized = true;
 
-        if(!isAuthorized) 
-        {
+        if (!isAuthorized) {
             NDN_LOG_ERROR("OnRequestDecryptionSuccessCallback: Permission Denied");
             return;
-        }else{
-            // log request is authorized
-            NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: Permission Granted to" << requesterIdentity.toUri() << " for " << ServiceName.toUri() << " function " << FunctionName.toUri());
+        }
+        else {
+            NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: Permission Granted to "
+                << requesterIdentity.toUri()
+                << " for " << ServiceName.toUri()
+                << " function " << FunctionName.toUri());
         }
 
-        // In case of strategy is NoCoordination, we don't need to wait for Service Coordination Message
-        if(requestMessage.getStrategy() == tlv::NoCoordination)
-        {
-            // log request is not waiting for Service Coordination Message
+        // Strategy: NoCoordination → direct execution
+        if (requestMessage.getStrategy() == tlv::NoCoordination) {
             NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: NoCoordination Strategy");
-            ConsumeRequest(requesterIdentity, identity,ServiceName, FunctionName, RequestID, requestMessage);
+            ConsumeRequest(requesterIdentity,
+                           identity,
+                           ServiceName,
+                           FunctionName,
+                           RequestID,
+                           requestMessage);
             return;
         }
 
-        // add requestMessage to pendingRequests
-        pendingRequests[ndn::Name(requesterIdentity.toUri()).append(ServiceName).append(FunctionName).append(RequestID)] = std::make_shared<RequestMessage>(requestMessage);
+        // Save request into pendingRequests
+        ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())
+                                   .append(ServiceName)
+                                   .append(FunctionName)
+                                   .append(RequestID);
 
-        // publish Permission Ack Message and wait for Service Coordination Message
+        pendingRequests[pendingKey] =
+            std::make_shared<RequestMessage>(requestMessage);
+
+        // Send Permission ACK
         std::string msg = "Permission Granted";
-        PublishRequestAckMessage(requesterIdentity, ServiceName, FunctionName, RequestID, true, msg);
-       
-    }
+        PublishRequestAckMessage(requesterIdentity,
+                                 ServiceName,
+                                 FunctionName,
+                                 RequestID,
+                                 true,
+                                 msg);
+    //});
+}
+
+
+
 
     void ServiceProvider::OnRequestDecryptionErrorCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string &)
     {
@@ -413,54 +499,68 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     }
 
 
-    void ServiceProvider::PublishMessage(const ndn::Name &messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage &message)
+    void ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallback(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& ServiceName,
+        const ndn::Name& FunctionName,
+        const ndn::Name& msgID,
+        const ndn::Buffer& buffer)
     {
-        // log message
-        NDN_LOG_INFO("PublishMessage: " << messageName.toUri());
+        // Deep copy the buffer (never pass ndn::Buffer or ndn::Block across threads)
+        auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
 
-        ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
-        auto results = ndn_service_framework::GetAttributesByName(messageName);
-        if (!results)
-        {
-            NDN_LOG_ERROR("GetAttributesByName failed: " << messageName);
-            return;
-        }
-        std::tie(contentData, ckData) =
-            nacProducer.produce(messageNameWithoutPrefix, 
-                ndn_service_framework::GetAttributesByName(messageName).value(), 
-                ndn::span<const uint8_t>(message.WireEncode().data(), message.WireEncode().size()),
-                m_signingInfo);
-        // serve data
-        serveDataWithIMS(contentData, ckData);
-        NDN_LOG_INFO("Merge Data Contents");
-        auto buffer = mergeDataContents(contentData);
-        
-        ndn::Block contentBlock(buffer);
-        // publish message name using ndn-svs
-        NDN_LOG_INFO("publish message name using ndn-svs: " << messageName.toUri() << " size: " << contentBlock.size());
-        m_svsps->publish(messageName, contentBlock);
-        NDN_LOG_INFO("Message Published: " << messageName.toUri());
-    }
-    void ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer &buffer)
-    {
-        // log message
-        NDN_LOG_INFO("OnServiceCoordinationMessageDecryptionSuccessCallback: " << requesterName.toUri() << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << msgID.toUri());
-        // parse ServiceCoordinationMessage
+        // ndnsf::post([this,
+        //             requesterName,
+        //             providerName,
+        //             ServiceName,
+        //             FunctionName,
+        //             msgID,
+        //             raw]() mutable
+        // {
+            // Reconstruct Block on NDNSF thread (safe)
+            auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
+            auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
 
-        ServiceCoordinationMessage message;
-        message.WireDecode(ndn::Block(buffer));
-        for(auto requestID:message.getRequestIDs()){
-            // find the corresponding request message in the pendingRequests
-            auto it = pendingRequests.find(ndn::Name(requesterName.toUri()).append(ServiceName).append(FunctionName).append(msgID));
-            if (it != pendingRequests.end())
-            {
-                // consume the request
-                ConsumeRequest(requesterName, providerName, ServiceName, FunctionName, ndn::Name(requestID), *(it->second));
+            NDN_LOG_INFO("OnServiceCoordinationMessageDecryptionSuccessCallback: "
+                << requesterName.toUri()
+                << providerName.toUri()
+                << ServiceName.toUri()
+                << FunctionName.toUri()
+                << msgID.toUri());
+
+            // Decode ServiceCoordinationMessage
+            ServiceCoordinationMessage message;
+            message.WireDecode(block);
+
+            // Build lookup key
+            auto key = ndn::Name(requesterName.toUri())
+                        .append(ServiceName)
+                        .append(FunctionName)
+                        .append(msgID);
+
+            auto it = pendingRequests.find(key);
+            if (it != pendingRequests.end()) {
+
+                for (const auto& requestID : message.getRequestIDs()) {
+
+                    // Consume corresponding request
+                    ConsumeRequest(
+                        requesterName,
+                        providerName,
+                        ServiceName,
+                        FunctionName,
+                        ndn::Name(requestID),
+                        *(it->second));
+                }
+
+                // Remove pending record
+                pendingRequests.erase(it);
             }
-            pendingRequests.erase(ndn::Name(requestID));
-        }
-
+        // });
     }
+
+
 
     void ServiceProvider::OnServiceCoordinationMessageDecryptionErrorCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const std::string &reason)
     {
@@ -480,13 +580,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             NDN_LOG_INFO(regex_str);
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                         std::bind(&ServiceProvider::OnRequest, this, _1),
-                                        false, false);
+                                        true, false);
             // register Service Coordination Message
             std::string regex_str2 = "^(<>*)<NDNSF><COORDINATION>" + ndn_service_framework::NameToRegexString(identity);
             NDN_LOG_INFO(regex_str2);
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                         std::bind(&ServiceProvider::onServiceCoordinationMessage, this, _1),
-                                        false, false);
+                                        true, false);
         }
     }
 

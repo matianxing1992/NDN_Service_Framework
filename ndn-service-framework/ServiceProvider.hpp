@@ -74,6 +74,7 @@ namespace ndn_service_framework{
 
         protected:
             ndn::Face& m_face;
+            ndn::Scheduler m_scheduler;
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
             std::shared_ptr<ndn::svs::SVSPubSub> m_svsps;
@@ -114,6 +115,8 @@ namespace ndn_service_framework{
             ConfigManager m_configManager;
 
             std::map<ndn::Name, int> m_sessionIDMap;
+
+            std::mutex svs_mutex;
     };
 }
 

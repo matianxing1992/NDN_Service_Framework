@@ -35,14 +35,18 @@
 
 #include <ndnsd/discovery/service-discovery.hpp>
 
+#include <map>
 #include <mutex>
+
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/bimap/bimap.hpp>
 #include <boost/bimap/unordered_set_of.hpp>
 #include <boost/bimap.hpp>
 #include <boost/bimap/set_of.hpp>
 #include <boost/bimap/multiset_of.hpp>
 
-
+#include <NDNSFThreadPool.hpp>
 
 // #define USE_TIMESTAMP
 

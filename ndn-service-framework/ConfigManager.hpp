@@ -11,6 +11,7 @@
 #include <sys/file.h>  // flock
 #include <unistd.h>    // close
 #include <fcntl.h>     // open
+#include <filesystem>
 
 namespace ndn_service_framework {
 
@@ -106,9 +107,15 @@ public:
 private:
   void loadToCache()
   {
+    // 确保上级目录存在
+    std::filesystem::create_directories(std::filesystem::path(m_path).parent_path());
+
     std::ifstream ifs(m_path);
     if (!ifs.is_open()) {
-      return;
+      // 创建空文件
+      std::ofstream ofs(m_path);
+      ofs.close();
+      ifs.open(m_path);
     }
 
     std::string line;
@@ -129,6 +136,7 @@ private:
       }
     }
   }
+
 
 private:
   std::string m_path;

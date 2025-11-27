@@ -111,6 +111,8 @@ namespace ndn_service_framework{
             ConfigManager m_configManager;
 
             std::map<ndn::Name, int> m_sessionIDMap;
+
+            std::mutex svs_mutex;
     };
 }
 

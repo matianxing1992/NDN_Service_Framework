@@ -241,56 +241,104 @@ namespace ndn_service_framework
 
     }
 
-    void ServiceUser::OnRequestAckDecryptionSuccessCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID, const ndn::Buffer &buffer)
-    {
-        // log message
-        NDN_LOG_INFO("OnRequestAckDecryptionSuccessCallback: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri());
-        
-        // parse Permission Ack Message from buffer
-        RequestAckMessage AckMessage;
-        AckMessage.WireDecode(ndn::Block(buffer));
+void ServiceUser::OnRequestAckDecryptionSuccessCallback(
+    const ndn::Name& providerName,
+    const ndn::Name& ServiceName,
+    const ndn::Name& FunctionName,
+    const ndn::Name& requestID,
+    const ndn::Buffer& buffer)
+{
+    // Copy raw bytes across thread boundary (DO NOT pass Block/Buffer)
+    auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
 
-        // check if permission is granted
-        if(!AckMessage.getStatus()){
-            NDN_LOG_ERROR("Permission Denied by Provider: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri() << " with message: " << AckMessage.getMessage());
+    // ndnsf::post([this,
+    //              providerName,
+    //              ServiceName,
+    //              FunctionName,
+    //              requestID,
+    //              raw]() mutable
+    // {
+        // Reconstruct TLV block safely
+        ndn::Block block(ndn::span<const uint8_t>(raw->data(), raw->size()));
+
+        try {
+            block.parse();
+        }
+        catch (const std::exception& e) {
+            NDN_LOG_ERROR("OnRequestAckDecryptionSuccessCallback: Failed to parse Block: " << e.what());
             return;
         }
 
+        // Logging
+        NDN_LOG_INFO("OnRequestAckDecryptionSuccessCallback: "
+                     << providerName.toUri() << " "
+                     << ServiceName.toUri() << " "
+                     << FunctionName.toUri() << " "
+                     << requestID.toUri());
 
-        // get strategy from m_strategyMap
-        auto strategy = m_strategyMap.find(requestID);
-        if(strategy == m_strategyMap.end()){
+        // Decode Permission Ack message
+        RequestAckMessage AckMessage;
+        try {
+            AckMessage.WireDecode(block);
+        }
+        catch (const std::exception& e) {
+            NDN_LOG_ERROR("RequestAckMessage decode failed: " << e.what());
+            return;
+        }
+
+        // Check permission
+        if (!AckMessage.getStatus()) {
+            NDN_LOG_ERROR("Permission Denied by Provider: "
+                          << providerName.toUri() << " "
+                          << ServiceName.toUri() << " "
+                          << FunctionName.toUri() << " "
+                          << requestID.toUri() << " "
+                          << "message: " << AckMessage.getMessage());
+            return;
+        }
+
+        // Lookup strategy
+        auto strategyIt = m_strategyMap.find(requestID);
+        if (strategyIt == m_strategyMap.end()) {
             NDN_LOG_ERROR("Strategy not found for requestID: " << requestID.toUri());
             return;
         }
-        // log strategy
-        NDN_LOG_INFO("Strategy: " << strategy->second);
 
-        // make decision based on strategy
-        if(strategy->second == tlv::FirstResponding){
+        auto strategy = strategyIt->second;
+        NDN_LOG_INFO("Strategy: " << strategy);
+
+        // Decision based on strategy
+        if (strategy == tlv::FirstResponding) {
             PublishServiceCoordinationMessage(providerName, ServiceName, FunctionName, requestID);
-            m_strategyMap.erase(strategy);
-
-        }else if(strategy->second == tlv::LoadBalancing){
-            // check requestID exists in m_AckInfoMap
-            if (m_AckInfoMap.find(requestID) == m_AckInfoMap.end()){
-                NDN_LOG_ERROR("AckInfo vector not found for RequestID: " << requestID.toUri());
+            m_strategyMap.erase(strategyIt);
+        }
+        else if (strategy == tlv::LoadBalancing) {
+            // Ensure vector exists
+            auto itAck = m_AckInfoMap.find(requestID);
+            if (itAck == m_AckInfoMap.end()) {
+                NDN_LOG_ERROR("AckInfo vector missing for RequestID: " << requestID.toUri());
                 return;
             }
-            // insert AckInfo into m_AckInfoMap
-            m_AckInfoMap[requestID].push_back({providerName, ServiceName, FunctionName, requestID});
-            // log AckINfo added to m_AckInfoMap
-            NDN_LOG_INFO("AckInfo added to m_AckInfoMap for RequestID: " << providerName << " " << requestID);
 
-        }else if(strategy->second == tlv::NoCoordination){
-            // publish service coordination message
+            // Add provider ACK info
+            itAck->second.push_back({providerName, ServiceName, FunctionName, requestID});
+
+            NDN_LOG_INFO("AckInfo added for RequestID: "
+                         << providerName.toUri() << " "
+                         << requestID.toUri());
+        }
+        else if (strategy == tlv::NoCoordination) {
+            // Directly publish coordination message
             PublishServiceCoordinationMessage(providerName, ServiceName, FunctionName, requestID);
-        }else{
-            NDN_LOG_ERROR("Invalid strategy: " << strategy->second);
+        }
+        else {
+            NDN_LOG_ERROR("Invalid strategy: " << strategy);
             return;
         }
+    // });
+}
 
-    }
+
 
     void ServiceUser::OnRequestAckDecryptionErrorCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID, const std::string &error)
     {
@@ -316,10 +364,10 @@ namespace ndn_service_framework
 
     void ServiceUser::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)
     {
-        for (const auto& info : infoVector) {
-            NDN_LOG_INFO("onMissingData from node " << info.nodeId
-                        << " seq range [" << info.low << ", " << info.high << "]");
-        }
+        // for (const auto& info : infoVector) {
+        //     NDN_LOG_INFO("onMissingData from node " << info.nodeId
+        //                 << " seq range [" << info.low << ", " << info.high << "]");
+        // }
     }
 
 
@@ -398,16 +446,17 @@ namespace ndn_service_framework
                 ndn_service_framework::GetAttributesByName(messageName).value(), 
                 ndn::span<const uint8_t>(message.WireEncode().data(), message.WireEncode().size()),
                 m_signingInfo);
-        // serve data
+        // m_face.getIoContext().post([this,
+        //  messageName,
+        //  contentData = std::move(contentData),
+        //  ckData      = std::move(ckData)]() mutable
+        // {
         serveDataWithIMS(contentData, ckData);
-        NDN_LOG_INFO("Merge Data Contents");
         auto buffer = mergeDataContents(contentData);
-        
         ndn::Block contentBlock(buffer);
-        // publish message name using ndn-svs
-        NDN_LOG_INFO("publish message name using ndn-svs: " << messageName.toUri() << " size: " << contentBlock.size());
         m_svsps->publish(messageName, contentBlock);
-        NDN_LOG_INFO("Message Published: " << messageName.toUri());
+        //});
+        NDN_LOG_INFO("Message Published: " << messageName.toUri() << " " << contentBlock.value_size());
     }
     void ServiceUser::registerNDNSFMessages()
     {
@@ -420,13 +469,13 @@ namespace ndn_service_framework
         NDN_LOG_INFO(regex_str);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                     std::bind(&ServiceUser::OnRequestAck, this, _1),
-                                    false, false);
+                                    true, false);
         // register Response Message
         std::string regex_str2 = "^(<>*)<NDNSF><RESPONSE>" + ndn_service_framework::NameToRegexString(identity);
         NDN_LOG_INFO(regex_str2);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                     std::bind(&ServiceUser::OnResponse, this, _1),
-                                    false, false);
+                                    true, false);
         
     }
     void ServiceUser::requestForServiceInfo()

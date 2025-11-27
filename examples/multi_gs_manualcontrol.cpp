@@ -20,6 +20,8 @@
 #include "CodeGenerator/Generated/ServiceProvider_Drone.hpp"
 #include "CodeGenerator/Generated/ServiceUser_GS.hpp"
 
+using namespace std::chrono;
+
 #include <boost/asio/io_context.hpp>
 
 NDN_LOG_INIT(muas.main_gs);
@@ -75,7 +77,7 @@ main(int argc, char **argv)
 
     
 
-    m_face.processEvents(ndn::time::milliseconds(2000));
+    m_face.processEvents(ndn::time::milliseconds(5000));
 
     muas::FlightControl_ManualControl_Request _request;
     _request.set_x(0.5f);
@@ -92,12 +94,19 @@ main(int argc, char **argv)
             requestSent += 1;
         }
 
+        auto now = std::chrono::steady_clock::now();
+        double recvTime = duration_cast<microseconds>(now.time_since_epoch()).count() / 1000.0;
+        NDN_LOG_INFO("Start Calling" << recvTime);
+
+        
+
         m_serviceUser.ManualControl_Async(provider_identities, _request,
             [&, start_time](const muas::FlightControl_ManualControl_Response& _response) {
                 NDN_LOG_INFO(_response.DebugString());
                 auto end_time = ndn::time::system_clock::now();
                 auto latency = ndn::time::duration_cast<ndn::time::milliseconds>(end_time - start_time).count();
-                NDN_LOG_INFO("Latency: " << latency << " ms");
+                double startTimeStr = duration_cast<microseconds>(now.time_since_epoch()).count() / 1000.0;
+                NDN_LOG_INFO("Latency: " << latency << " ms " << "StartTime" << startTimeStr);
 
                 std::lock_guard<std::mutex> lock(mtx);
                 totalLatency += latency;
@@ -106,7 +115,7 @@ main(int argc, char **argv)
             [&](const muas::FlightControl_ManualControl_Request& _request) {
                 NDN_LOG_INFO("Timeout " << _request.DebugString());
             },
-            1000, // timeout time in ms
+            10000, // timeout time in ms
             strategy);
     };
 
@@ -123,6 +132,23 @@ main(int argc, char **argv)
     };
 
     m_face.processEvents(ndn::time::milliseconds(30000), true);
+
+    // std::thread svsThread([&] { m_face.processEvents(); });
+
+    // std::this_thread::sleep_for(std::chrono::milliseconds(30000));
+
+    // std::cout << "Start periodic publishing every 10 ms" << std::endl;
+
+    // int i = 0;
+    // while (i < 10000) {
+    //   call();
+    //   i++;
+    //   std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    // }
+    // std::this_thread::sleep_for(std::chrono::milliseconds(30000));
+    // CalculateLatency();
+
+    // svsThread.join();
 
     for (int i = 0; i < count; ++i) {
         m_scheduler.schedule(ndn::time::milliseconds(interval_in_ms * i), call);

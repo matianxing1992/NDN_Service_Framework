@@ -60,7 +60,10 @@ def generateAndSignCertificates(ndn: Minindn):
     info('Installing keys and certificates on nodes\n')
     for node in ndn.net.hosts:
         # node.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
-        node.cmd('export NDN_LOG="muas.main_gs=TRACE"')
+        # node.cmd('export NDN_LOG="muas.main_gs=TRACE:ndnsvs.pubsub=TRACE:ndnsvs.core=TRACE"')
+        #node.cmd('export NDN_LOG="muas.*=TRACE:ndnsvs.pubsub=TRACE:ndnsvs.core=TRACE"')
+        node.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.*=TRACE"')
+        # node.cmd('export NDN_LOG="*=TRACE"')
         
         node.cmd('ndnsec import -P 123456 /tmp/muas.ndnkey')
         node.cmd('ndnsec cert-install -f /tmp/muas.cert')
@@ -148,6 +151,8 @@ if __name__ == '__main__':
 
     configure_static_routes(ndn, ['memphis', 'csu', 'ucla'])
 
+    ndn.net["memphis"].cmd("nlsrc advertise /muas/aa")
+
     # sleep for 30 seconds to allow NLSR to propagate the prefixes
     print("Waiting for NLSR to propagate prefixes...")
     time.sleep(25)
@@ -166,7 +171,8 @@ if __name__ == '__main__':
     memphis = ndn.net["memphis"]
 
 
-    ucla.cmd('xterm -T "service-controller" -e "service-controller-example" &')
+    memphis.cmd('xterm -T "service-controller" -e "service-controller-example" &')
+
 
 
 
@@ -181,34 +187,36 @@ if __name__ == '__main__':
     # memphis.cmd('xterm -T "NDNSF Client memphis" -e "multi-gs-example NoCoordination /muas/memphis 50 60 /muas/ucla /muas/caida /muas/neu" &')
     # arizona uiuc
     
-    frequency = 25
+    frequency = 150
     time_in_seconds = 60
-    # strategy = "NoCoordination"
+    strategy = "NoCoordination"
     # strategy = "FirstResponding"
-    strategy = "RandomSelection"
+    # strategy = "RandomSelection"
     clients = ['memphis']
     # clients = ['memphis', 'arizona', 'wustl']
     # clients = ['memphis', 'arizona', 'wustl', 'uiuc', 'neu']
-    # servers_id = ['ucla']
-    servers_id = ['ucla', 'arizona', 'wustl', 'uiuc', 'neu']
+    servers_id = ['ucla']
+    #servers_id = ['ucla', 'arizona', 'wustl', 'uiuc', 'neu']
 
     for node_id in servers_id:
-        cmd = (f'xterm -T "NDNSF Server {node_id}" -e "multi-drone-example /muas/{node_id}" &')
+        cmd = (f'xterm -T "NDNSF Server {node_id}" -e "multi-drone-example /muas/{node_id} > /tmp/{node_id}.log 2>&1" &')
+        # cmd = f'xterm -sl 5000 -T "NDNSF Server {node_id}" -hold -e bash -c "gdb -q -ex run -ex bt -ex quit --args multi-drone-example /muas/{node_id} 2>&1 | tee /tmp/{node_id}.log" &'
+
+
         info(f"{node_id} {cmd}")
         # eval(f"{node_id}.cmd('{cmd}')")
         ndn.net[node_id].cmd(cmd)
         time.sleep(1)
-        NDNPing.startPingServer(ndn.net[node_id], f"/muas/{node_id}")
+        # NDNPing.startPingServer(ndn.net[node_id], f"/muas/{node_id}")
         time.sleep(1)
 
     for client in clients:
         server_args = ' '.join(f'/muas/{sid}' for sid in servers_id)
         client_identity = f"/muas/{client}"
         ping_target = servers_id[0]  # 假设你只 ping 第一个服务器
-        cmd = (
-            f'xterm -T "NDNSF Client {client}" -e "multi-gs-example {strategy} {client_identity} {frequency} {time_in_seconds} {server_args}" &'
-            # f'&& timeout 10 ndnping {ping_target}'
-        )
+        cmd = (f'xterm -T "NDNSF Client {client}" -e "multi-gs-example {strategy} {client_identity} {frequency} {time_in_seconds} {server_args} > /tmp/{client}.log 2>&1" &')
+        # cmd = f'xterm -sl 5000 -T "NDNSF Client {client}" -hold -e bash -c "gdb -q -ex run -ex bt -ex quit --args multi-gs-example {strategy} {client_identity} {frequency} {time_in_seconds} {server_args} 2>&1 | tee /tmp/{client}.log" &'
+
         info(f"{client} {cmd}")
         eval(f"{client}.cmd('{cmd}')")
         time.sleep(2)
@@ -216,7 +224,10 @@ if __name__ == '__main__':
             f'xterm -hold -T "NDNSF Client {client} ping" '
             f'-e bash -c "ndnping /muas/{ping_target}" &'
         )
-        ndn.net[client].cmd(cmd2)
+        # ndn.net[client].cmd(cmd2)
+        time.sleep(1)
+        # NDNPing.startPingServer(ndn.net[client], f"/muas/{client}")
+        time.sleep(1)
         # for node_id in servers_id:
         #     ping_target = node_id
         #     cmd2 = (
