@@ -321,17 +321,17 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
                 << " function " << FunctionName.toUri());
         }
 
-        // Strategy: NoCoordination → direct execution
-        if (requestMessage.getStrategy() == tlv::NoCoordination) {
-            NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: NoCoordination Strategy");
-            ConsumeRequest(requesterIdentity,
-                           identity,
-                           ServiceName,
-                           FunctionName,
-                           RequestID,
-                           requestMessage);
-            return;
-        }
+        // // Strategy: NoCoordination → direct execution
+        // if (requestMessage.getStrategy() == tlv::NoCoordination) {
+        //     NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: NoCoordination Strategy");
+        //     ConsumeRequest(requesterIdentity,
+        //                    identity,
+        //                    ServiceName,
+        //                    FunctionName,
+        //                    RequestID,
+        //                    requestMessage);
+        //     return;
+        // }
 
         // Save request into pendingRequests
         ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())

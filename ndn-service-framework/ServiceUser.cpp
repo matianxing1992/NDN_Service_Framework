@@ -308,7 +308,10 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         NDN_LOG_INFO("Strategy: " << strategy);
 
         // Decision based on strategy
-        if (strategy == tlv::FirstResponding) {
+        if (strategy == tlv::NoCoordination) {
+            PublishServiceCoordinationMessage(providerName, ServiceName, FunctionName, requestID);
+        }
+        else if (strategy == tlv::FirstResponding) {
             PublishServiceCoordinationMessage(providerName, ServiceName, FunctionName, requestID);
             m_strategyMap.erase(strategyIt);
         }

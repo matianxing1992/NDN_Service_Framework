@@ -32,6 +32,7 @@ public:
     }
 
 private:
+
     void loadConfigFiles()
     {
         if (fs::is_regular_file(m_configFilePath)) {
@@ -89,6 +90,8 @@ private:
     {
         m_face.processEvents();
     }
+
+    void onRequestForServicePermissions();
 
 private:
     std::string m_configFilePath;
