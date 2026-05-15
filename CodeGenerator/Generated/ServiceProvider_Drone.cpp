@@ -11,6 +11,46 @@ namespace muas
         this->m_serviceNames.push_back("ObjectDetection");
         
         this->m_serviceNames.push_back("FlightControl");
+
+        addHandler<muas::ObjectDetection_YOLOv8_Request, muas::ObjectDetection_YOLOv8_Response>(
+            ndn::Name("/ObjectDetection/YOLOv8"),
+            [this](const ndn::Name& requesterIdentity,
+                   const muas::ObjectDetection_YOLOv8_Request& request,
+                   muas::ObjectDetection_YOLOv8_Response& response) {
+                m_ObjectDetectionService.YOLOv8(requesterIdentity, request, response);
+            });
+
+        addHandler<muas::ObjectDetection_YOLOv8_Request, muas::ObjectDetection_YOLOv8_Response>(
+            ndn::Name("/ObjectDetection/YOLOv8_S"),
+            [this](const ndn::Name& requesterIdentity,
+                   const muas::ObjectDetection_YOLOv8_Request& request,
+                   muas::ObjectDetection_YOLOv8_Response& response) {
+                m_ObjectDetectionService.YOLOv8_S(requesterIdentity, request, response);
+            });
+
+        addHandler<muas::FlightControl_Takeoff_Request, muas::FlightControl_Takeoff_Response>(
+            ndn::Name("/FlightControl/Takeoff"),
+            [this](const ndn::Name& requesterIdentity,
+                   const muas::FlightControl_Takeoff_Request& request,
+                   muas::FlightControl_Takeoff_Response& response) {
+                m_FlightControlService.Takeoff(requesterIdentity, request, response);
+            });
+
+        addHandler<muas::FlightControl_Land_Request, muas::FlightControl_Land_Response>(
+            ndn::Name("/FlightControl/Land"),
+            [this](const ndn::Name& requesterIdentity,
+                   const muas::FlightControl_Land_Request& request,
+                   muas::FlightControl_Land_Response& response) {
+                m_FlightControlService.Land(requesterIdentity, request, response);
+            });
+
+        addHandler<muas::FlightControl_ManualControl_Request, muas::FlightControl_ManualControl_Response>(
+            ndn::Name("/FlightControl/ManualControl"),
+            [this](const ndn::Name& requesterIdentity,
+                   const muas::FlightControl_ManualControl_Request& request,
+                   muas::FlightControl_ManualControl_Response& response) {
+                m_FlightControlService.ManualControl(requesterIdentity, request, response);
+            });
         
         init();
     }
