@@ -141,6 +141,16 @@ namespace ndn_service_framework
         
         ndn::Name requestName = ndn_service_framework::makeRequestName(identity, ServiceName, FunctionName, ndn::Name(bloomFilter.toHexString()), RequestID);
         ndn::Name requestNameWithoutPrefix = ndn_service_framework::makeRequestNameWithoutPrefix(ServiceName, FunctionName, ndn::Name(bloomFilter.toHexString()),RequestID);
+
+        auto pendingIt = m_pendingCalls.find(RequestID);
+        if (pendingIt != m_pendingCalls.end()) {
+            pendingIt->second.providers = serviceProviderNames;
+            pendingIt->second.serviceName = makeUnifiedServiceName(ServiceName, FunctionName);
+            pendingIt->second.requestName = requestName;
+            pendingIt->second.requestNameWithoutPrefix = requestNameWithoutPrefix;
+            pendingIt->second.requestMessage = requestMessage;
+            pendingIt->second.strategy = strategy;
+        }
     
         PublishMessage(requestName,requestNameWithoutPrefix,requestMessage);
 
@@ -180,6 +190,385 @@ namespace ndn_service_framework
                 
             });
         }
+    }
+
+    ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
+                                      const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler,
+                                      size_t strategy)
+    {
+        const ndn::Name requestId = makeRequestId();
+
+        PendingCall pendingCall;
+        pendingCall.providers = providers;
+        pendingCall.serviceName = serviceName;
+        pendingCall.requestMessage = requestMessage;
+        pendingCall.strategy = strategy;
+        pendingCall.timeoutMs = timeoutMs;
+        pendingCall.timeoutHandler = std::move(onTimeout);
+        pendingCall.responseHandler = std::move(onResponseHandler);
+        m_pendingCalls[requestId] = std::move(pendingCall);
+
+        const auto payload = requestMessage.getPayload();
+        PublishRequest(providers, serviceName, ndn::Name(), requestId, payload, strategy);
+
+        if (timeoutMs > 0) {
+            m_scheduler.schedule(ndn::time::milliseconds(timeoutMs), [this, requestId]() {
+                auto pendingCall = m_pendingCalls.find(requestId);
+                if (pendingCall == m_pendingCalls.end()) {
+                    return;
+                }
+
+                auto timeoutHandler = pendingCall->second.timeoutHandler;
+                m_pendingCalls.erase(pendingCall);
+
+                if (timeoutHandler) {
+                    timeoutHandler(requestId);
+                }
+            });
+        }
+
+        return requestId;
+    }
+
+    ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
+                                      const ndn::Name& serviceName,
+                                      const ndn::Name& functionName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler,
+                                      size_t strategy)
+    {
+        return async_call(providers,
+                          makeUnifiedServiceName(serviceName, functionName),
+                          std::move(requestMessage),
+                          timeoutMs,
+                          std::move(onTimeout),
+                          std::move(onResponseHandler),
+                          strategy);
+    }
+
+    ndn::Name ServiceUser::async_call(const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler,
+                                      size_t strategy)
+    {
+        return async_call({},
+                          serviceName,
+                          std::move(requestMessage),
+                          timeoutMs,
+                          std::move(onTimeout),
+                          std::move(onResponseHandler),
+                          strategy);
+    }
+
+    ndn::Name ServiceUser::async_call(const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int ackTimeoutMs,
+                                      AcksHandler onAcksHandler,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler)
+    {
+        const ndn::Name requestId = makeRequestId();
+
+        PendingCall pendingCall;
+        pendingCall.serviceName = serviceName;
+        pendingCall.requestMessage = requestMessage;
+        pendingCall.strategy = ndn_service_framework::tlv::FirstResponding;
+        pendingCall.timeoutMs = timeoutMs;
+        pendingCall.ackTimeoutMs = ackTimeoutMs;
+        pendingCall.acksHandler = std::move(onAcksHandler);
+        pendingCall.timeoutHandler = std::move(onTimeout);
+        pendingCall.responseHandler = std::move(onResponseHandler);
+        m_pendingCalls[requestId] = std::move(pendingCall);
+
+        const auto payload = requestMessage.getPayload();
+        PublishRequest({}, serviceName, ndn::Name(), requestId, payload, ndn_service_framework::tlv::FirstResponding);
+
+        if (ackTimeoutMs > 0) {
+            m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
+                evaluateAckSelection(requestId);
+            });
+        }
+
+        if (timeoutMs > 0) {
+            m_scheduler.schedule(ndn::time::milliseconds(timeoutMs), [this, requestId]() {
+                auto pendingCall = m_pendingCalls.find(requestId);
+                if (pendingCall == m_pendingCalls.end()) {
+                    return;
+                }
+
+                auto timeoutHandler = pendingCall->second.timeoutHandler;
+                m_pendingCalls.erase(pendingCall);
+
+                if (timeoutHandler) {
+                    timeoutHandler(requestId);
+                }
+            });
+        }
+
+        return requestId;
+    }
+
+    void ServiceUser::handleResponse(const ndn::Name& requestId,
+                                     const ndn_service_framework::ResponseMessage& responseMessage)
+    {
+        auto pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end()) {
+            return;
+        }
+
+        if (pendingCall->second.responseHandler) {
+            pendingCall->second.responseHandler(responseMessage);
+        }
+
+        if (pendingCall->second.strategy != ndn_service_framework::tlv::NoCoordination) {
+            m_pendingCalls.erase(pendingCall);
+        }
+    }
+
+    bool ServiceUser::handleDecryptedResponse(
+        const ndn::Name& requestId,
+        const ndn_service_framework::ResponseMessage& responseMessage)
+    {
+        if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
+            return false;
+        }
+
+        handleResponse(requestId, responseMessage);
+        return true;
+    }
+
+    bool ServiceUser::handleDecryptedResponse(const ndn::Name& requestId,
+                                              const ndn::Block& responseBlock)
+    {
+        ndn_service_framework::ResponseMessage responseMessage;
+        if (!responseMessage.WireDecode(responseBlock)) {
+            return false;
+        }
+
+        return handleDecryptedResponse(requestId, responseMessage);
+    }
+
+    bool ServiceUser::handleDecryptedResponseByName(
+        const ndn::Name& responseName,
+        const ndn_service_framework::ResponseMessage& responseMessage)
+    {
+        auto parsed = ndn_service_framework::parseResponseName(responseName);
+        if (!parsed) {
+            NDN_LOG_ERROR("handleDecryptedResponseByName: parseResponseName failed: " << responseName);
+            return false;
+        }
+
+        ndn::Name requesterIdentity;
+        ndn::Name providerName;
+        ndn::Name serviceName;
+        ndn::Name functionName;
+        ndn::Name requestId;
+        std::tie(requesterIdentity, providerName, serviceName, functionName, requestId) =
+            parsed.value();
+
+        return handleDecryptedResponse(requestId, responseMessage);
+    }
+
+    bool ServiceUser::handleDecryptedResponseByName(const ndn::Name& responseName,
+                                                    const ndn::Block& responseBlock)
+    {
+        ndn_service_framework::ResponseMessage responseMessage;
+        if (!responseMessage.WireDecode(responseBlock)) {
+            return false;
+        }
+
+        return handleDecryptedResponseByName(responseName, responseMessage);
+    }
+
+    bool ServiceUser::handleRequestAckByName(
+        const ndn::Name& ackName,
+        const ndn_service_framework::RequestAckMessage& ackMessage)
+    {
+        auto parsed = ndn_service_framework::parseRequestAckName(ackName);
+        if (!parsed) {
+            NDN_LOG_ERROR("handleRequestAckByName: parseRequestAckName failed: " << ackName);
+            return false;
+        }
+
+        ndn::Name providerName;
+        ndn::Name requesterName;
+        ndn::Name serviceName;
+        ndn::Name functionName;
+        ndn::Name requestId;
+        std::tie(providerName, requesterName, serviceName, functionName, requestId) =
+            parsed.value();
+
+        auto pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end()) {
+            return false;
+        }
+
+        pendingCall->second.requestAcks.push_back(
+            StoredAck{providerName,
+                      makeUnifiedServiceName(serviceName, functionName),
+                      requestId,
+                      ackMessage});
+        evaluateAckSelection(requestId);
+
+        return true;
+    }
+
+    bool ServiceUser::handleRequestAckByName(const ndn::Name& ackName,
+                                             const ndn::Block& ackBlock)
+    {
+        ndn_service_framework::RequestAckMessage ackMessage;
+        if (!ackMessage.WireDecode(ackBlock)) {
+            return false;
+        }
+
+        return handleRequestAckByName(ackName, ackMessage);
+    }
+
+    ndn::Name ServiceUser::makeRequestId()
+    {
+        return ndn::Name(ndn::time::toIsoString(ndn::time::system_clock::now()));
+    }
+
+    ndn::Name ServiceUser::makeUnifiedServiceName(const ndn::Name& serviceName,
+                                                  const ndn::Name& functionName)
+    {
+        if (functionName.empty()) {
+            return serviceName;
+        }
+
+        ndn::Name unified(serviceName);
+        for (const auto& component : functionName) {
+            unified.append(component);
+        }
+        return unified;
+    }
+
+    bool ServiceUser::evaluateAckSelection(const ndn::Name& requestId)
+    {
+        auto pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end()) {
+            return false;
+        }
+
+        if (pendingCall->second.acksHandler) {
+            return evaluateCustomAckSelection(pendingCall->second);
+        }
+
+        return evaluateBuiltInAckSelection(pendingCall->second);
+    }
+
+    bool ServiceUser::evaluateCustomAckSelection(PendingCall& pendingCall)
+    {
+        std::vector<ndn_service_framework::RequestAckMessage> ackMessages;
+        for (const auto& storedAck : pendingCall.requestAcks) {
+            ackMessages.push_back(storedAck.message);
+        }
+
+        const auto selectedMessages = pendingCall.acksHandler(ackMessages);
+        pendingCall.customSelectedAcks.clear();
+        pendingCall.successfulAckProviders.clear();
+        pendingCall.selectedProvider = ndn::Name();
+
+        for (const auto& selectedMessage : selectedMessages) {
+            const auto* storedAck = findStoredAck(pendingCall, selectedMessage);
+            if (storedAck == nullptr || !storedAck->message.getStatus()) {
+                continue;
+            }
+
+            pendingCall.customSelectedAcks.push_back(*storedAck);
+            addUniqueName(pendingCall.successfulAckProviders, storedAck->providerName);
+            if (pendingCall.selectedProvider.empty()) {
+                pendingCall.selectedProvider = storedAck->providerName;
+            }
+        }
+
+        return true;
+    }
+
+    bool ServiceUser::evaluateBuiltInAckSelection(PendingCall& pendingCall)
+    {
+        pendingCall.successfulAckProviders.clear();
+        for (const auto& storedAck : pendingCall.requestAcks) {
+            if (storedAck.message.getStatus()) {
+                addUniqueName(pendingCall.successfulAckProviders, storedAck.providerName);
+            }
+        }
+
+        if (pendingCall.strategy == ndn_service_framework::tlv::FirstResponding) {
+            if (pendingCall.selectedProvider.empty() && !pendingCall.successfulAckProviders.empty()) {
+                pendingCall.selectedProvider = pendingCall.successfulAckProviders.front();
+            }
+            return true;
+        }
+
+        if (pendingCall.strategy == ndn_service_framework::tlv::LoadBalancing) {
+            pendingCall.selectedProvider = selectLoadBalancingProvider(pendingCall.successfulAckProviders);
+            return true;
+        }
+
+        if (pendingCall.strategy == ndn_service_framework::tlv::NoCoordination) {
+            pendingCall.selectedProvider = ndn::Name();
+            return true;
+        }
+
+        return false;
+    }
+
+    bool ServiceUser::containsName(const std::vector<ndn::Name>& names,
+                                   const ndn::Name& name)
+    {
+        for (const auto& item : names) {
+            if (item.equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void ServiceUser::addUniqueName(std::vector<ndn::Name>& names,
+                                    const ndn::Name& name)
+    {
+        if (!name.empty() && !containsName(names, name)) {
+            names.push_back(name);
+        }
+    }
+
+    ndn::Name ServiceUser::selectLoadBalancingProvider(
+        const std::vector<ndn::Name>& providers)
+    {
+        if (providers.empty()) {
+            return ndn::Name();
+        }
+
+        ndn::Name selected = providers.front();
+        for (const auto& provider : providers) {
+            if (provider.toUri() < selected.toUri()) {
+                selected = provider;
+            }
+        }
+        return selected;
+    }
+
+    const ServiceUser::StoredAck* ServiceUser::findStoredAck(
+        const PendingCall& pendingCall,
+        const ndn_service_framework::RequestAckMessage& ackMessage)
+    {
+        for (const auto& storedAck : pendingCall.requestAcks) {
+            if (storedAck.message.getStatus() == ackMessage.getStatus() &&
+                storedAck.message.getMessage() == ackMessage.getMessage()) {
+                return &storedAck;
+            }
+        }
+        return nullptr;
     }
 
     void ServiceUser::processNDNSDServiceInfoCallback(const ndnsd::discovery::Details &details)
@@ -241,6 +630,43 @@ namespace ndn_service_framework
 
     }
 
+    void ServiceUser::OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
+    {
+        if(!isFresh(subscription)) return;
+
+        NDN_LOG_INFO("OnResponse: " << subscription.name);
+
+        ndn::Name requesterName, providerName, ServiceName, FunctionName, RequestId;
+        auto results = ndn_service_framework::parseResponseName(subscription.name);
+        if (!results) {
+            NDN_LOG_ERROR("parseResponseName failed: " << subscription.name);
+            return;
+        }
+        std::tie(requesterName, providerName, ServiceName, FunctionName, RequestId) =
+            results.value();
+
+        const ndn::Name responseName(subscription.name);
+        auto onSuccess = [this, responseName](const ndn::Buffer& buffer) {
+            ndn::Block responseBlock(buffer);
+            if (!handleDecryptedResponseByName(responseName, responseBlock)) {
+                NDN_LOG_INFO("OnResponse: no pending async callback for " << responseName);
+            }
+        };
+
+        if(subscription.data.size() > 0){
+            nacConsumer.consume(
+                        ndn::Name(subscription.name),
+                        ndn::Block(subscription.data),
+                        onSuccess,
+                        std::bind(&ServiceUser::OnResponseDecryptionErrorCallback, this, providerName, ServiceName, FunctionName, RequestId, _1));
+        }else{
+            nacConsumer.consume(
+                        ndn::Name(subscription.name),
+                        onSuccess,
+                        std::bind(&ServiceUser::OnResponseDecryptionErrorCallback, this, providerName, ServiceName, FunctionName, RequestId, _1));
+        }
+    }
+
 void ServiceUser::OnRequestAckDecryptionSuccessCallback(
     const ndn::Name& providerName,
     const ndn::Name& ServiceName,
@@ -283,6 +709,20 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         }
         catch (const std::exception& e) {
             NDN_LOG_ERROR("RequestAckMessage decode failed: " << e.what());
+            return;
+        }
+
+        const ndn::Name ackName =
+            ndn_service_framework::makeRequestAckName(providerName,
+                                                      identity,
+                                                      ServiceName,
+                                                      FunctionName,
+                                                      requestID);
+        const bool handledByPendingCall = handleRequestAckByName(ackName, AckMessage);
+        auto pendingCall = m_pendingCalls.find(requestID);
+        if (handledByPendingCall &&
+            pendingCall != m_pendingCalls.end() &&
+            pendingCall->second.acksHandler) {
             return;
         }
 
