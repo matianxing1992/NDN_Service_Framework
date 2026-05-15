@@ -245,7 +245,7 @@ ndn::Block ServiceCoordinationMessage::WireEncode() const {
     if (m_wire.hasWire()) {
         m_wire.reset();
     }
-    ndn::Block block(tlv::ServiceCoordinationMessageType);
+    ndn::Block block(tlv::ServiceSelectionMessageType);
     for (const auto& id : requestIDs_) {
         block.push_back(ndn::makeStringBlock(tlv::RequestIDType, id));
     }
@@ -257,7 +257,7 @@ ndn::Block ServiceCoordinationMessage::WireEncode() const {
 bool ServiceCoordinationMessage::WireDecode(const ndn::Block& block) {
     Clear(); // 清除已初始化的值
 
-    if (block.type() != tlv::ServiceCoordinationMessageType) {
+    if (block.type() != tlv::ServiceSelectionMessageType) {
         return false; // 消息类型不匹配
     }
 

@@ -1,0 +1,67 @@
+provider-policies
+{
+    provider-policy
+    {
+        for /UAVNET/drone1
+        allow
+        {
+            /UAVNET/drone1/FlightControl/Takeoff
+            /UAVNET/drone1/FlightControl/Land
+            /UAVNET/ImageProc/YOLO12
+            /UAVNET/Sensor/HyperSpectral
+        }
+    }
+    provider-policy
+    {
+        for /UAVNET/drone2
+        allow
+        {
+            /UAVNET/drone2/FlightControl/Takeoff
+            /UAVNET/drone2/FlightControl/Land
+            /UAVNET/ImageProc/YOLO12
+        }
+    }
+    provider-policy
+    {
+        for /UAVNET/drone3
+        allow
+        {
+            /UAVNET/drone3/FlightControl/Takeoff
+            /UAVNET/drone3/FlightControl/Land
+            /UAVNET/Sensor/HyperSpectral
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /UAVNET/gs/
+        allow
+        {
+            /UAVNET/drone1/FlightControl/Takeoff
+            /UAVNET/drone1/FlightControl/Land
+            /UAVNET/drone2/FlightControl/Takeoff
+            /UAVNET/drone2/FlightControl/Land
+            /UAVNET/drone3/FlightControl/Takeoff
+            /UAVNET/drone3/FlightControl/Land
+        }
+    }
+    user-policy
+    {
+        for /UAVNET/drone2/
+        allow
+        {
+            /UAVNET/Sensor/HyperSpectral
+        }
+    }
+    user-policy
+    {
+        for /UAVNET/drone3/
+        allow
+        {
+            /UAVNET/ImageProc/YOLO12
+        }
+    }
+}

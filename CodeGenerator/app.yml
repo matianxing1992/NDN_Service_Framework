@@ -59,48 +59,54 @@ MessageProto:
   }
 
 Services:
-- serviceName: ObjectDetection
+- serviceName: /muas/ObjectDetection/YOLOv8
   serviceDescription: Object Detection using YOLOv8
-  RPCList:
-  - name: YOLOv8
-    requestMessage: muas::ObjectDetection_YOLOv8_Request
-    responseMessage: muas::ObjectDetection_YOLOv8_Response
-  - name: YOLOv8_S
-    requestMessage: muas::ObjectDetection_YOLOv8_Request
-    responseMessage: muas::ObjectDetection_YOLOv8_Response
-- serviceName: FlightControl
+  requestMessage: muas::ObjectDetection_YOLOv8_Request
+  responseMessage: muas::ObjectDetection_YOLOv8_Response
+- serviceName: /muas/drone1/Takeoff
   serviceDescription: FlightControl using MAVLINK
-  RPCList:
-  - name: Takeoff
-    requestMessage: muas::FlightControl_Takeoff_Request
-    responseMessage: muas::FlightControl_Takeoff_Response
-  - name: Land
-    requestMessage: muas::FlightControl_Land_Request
-    responseMessage: muas::FlightControl_Land_Response
-  - name: ManualControl
-    requestMessage: muas::FlightControl_ManualControl_Request
-    responseMessage: muas::FlightControl_ManualControl_Response
+  requestMessage: muas::FlightControl_Takeoff_Request
+  responseMessage: muas::FlightControl_Takeoff_Response
+- serviceName: /muas/drone1/Land
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_Land_Request
+  responseMessage: muas::FlightControl_Land_Response
+- serviceName: /muas/drone1/ManualControl
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_ManualControl_Request
+  responseMessage: muas::FlightControl_ManualControl_Response
+- serviceName: /muas/drone2/Takeoff
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_Takeoff_Request
+  responseMessage: muas::FlightControl_Takeoff_Response
+- serviceName: /muas/drone2/Land
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_Land_Request
+  responseMessage: muas::FlightControl_Land_Response
+- serviceName: /muas/drone2/ManualControl
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_ManualControl_Request
+  responseMessage: muas::FlightControl_ManualControl_Response
+- serviceName: /muas/drone3/Takeoff
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_Takeoff_Request
+  responseMessage: muas::FlightControl_Takeoff_Response
+- serviceName: /muas/drone3/Land
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_Land_Request
+  responseMessage: muas::FlightControl_Land_Response
+- serviceName: /muas/drone3/ManualControl
+  serviceDescription: FlightControl using MAVLINK
+  requestMessage: muas::FlightControl_ManualControl_Request
+  responseMessage: muas::FlightControl_ManualControl_Response
 
 ServiceProviders:
-- providerName: GS
-  providerDescription: Ground Station of MUAS Project
-  ServiceList:
-  - ObjectDetection
-- providerName: Drone
-  providerDescription: Drone of MUAS Project
-  ServiceList:
-  - ObjectDetection
-  - FlightControl
+- providerName: Provider
+  providerDescription: Provider of MUAS Project
 
 ServiceUsers:
-- userName: GS
-  userDescription: Ground Station of MUAS Project
-  ServiceStubList:
-  - ObjectDetection
-  - FlightControl
-- userName: Drone
-  userDescription: Drone of MUAS Project
-  ServiceStubList:
-  - ObjectDetection
+- userName: User
+  userDescription: User of MUAS Project
+
 
 

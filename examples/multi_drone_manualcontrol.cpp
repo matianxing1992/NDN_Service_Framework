@@ -34,6 +34,9 @@ main(int argc, char **argv)
         
     };
 
+
+
+
     //m_face.processEvents(ndn::time::milliseconds(2000));
 
     NDN_LOG_INFO("Drone Running");

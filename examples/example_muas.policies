@@ -7,9 +7,9 @@ provider-policies
         for /muas/ucla
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -18,9 +18,9 @@ provider-policies
         for /muas/pku
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -29,9 +29,9 @@ provider-policies
         for /muas/csu
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -40,9 +40,9 @@ provider-policies
         for /muas/caida
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -51,9 +51,9 @@ provider-policies
         for /muas/arizona
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -62,9 +62,9 @@ provider-policies
         for /muas/uiuc
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -73,9 +73,9 @@ provider-policies
         for /muas/wustl
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -84,9 +84,9 @@ provider-policies
         for /muas/umich
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -95,9 +95,9 @@ provider-policies
         for /muas/neu
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 
@@ -106,9 +106,9 @@ provider-policies
         for /muas/memphis
         allow
         {
-            /FlightControl/Takeoff
-            /FlightControl/Land
-            /FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }
     }
 } 
@@ -120,18 +120,9 @@ user-policies
         for /muas/memphis/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }  
 
@@ -140,18 +131,9 @@ user-policies
         for /muas/pku/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }  
 
@@ -160,18 +142,9 @@ user-policies
         for /muas/csu/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }
 
@@ -180,18 +153,9 @@ user-policies
         for /muas/caida/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }
 
@@ -200,18 +164,9 @@ user-policies
         for /muas/arizona/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }
 
@@ -220,18 +175,9 @@ user-policies
         for /muas/uiuc/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }
 
@@ -240,18 +186,9 @@ user-policies
         for /muas/wustl/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }
 
@@ -260,18 +197,9 @@ user-policies
         for /muas/umich/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }
 
@@ -280,18 +208,9 @@ user-policies
         for /muas/neu/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/ucla/FlightControl/Takeoff
-            /muas/ucla/FlightControl/Land
-            /muas/ucla/FlightControl/ManualControl
-            /muas/pku/FlightControl/ManualControl
-            /muas/csu/FlightControl/ManualControl
-            /muas/caida/FlightControl/ManualControl
-            /muas/arizona/FlightControl/ManualControl
-            /muas/uiuc/FlightControl/ManualControl
-            /muas/wustl/FlightControl/ManualControl
-            /muas/umich/FlightControl/ManualControl
-            /muas/neu/FlightControl/ManualControl
-            /muas/memphis/FlightControl/ManualControl
+            /muas/FlightControl/Takeoff
+            /muas/FlightControl/Land
+            /muas/FlightControl/ManualControl
         }  
     }  
 }

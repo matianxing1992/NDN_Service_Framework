@@ -1,111 +1,149 @@
-#ifndef NDN_SERVICE_FRAMEWORK_SERVICE_CONTROLLER_HPP
-#define NDN_SERVICE_FRAMEWORK_SERVICE_CONTROLLER_HPP
+#pragma once
 
-#include "common.hpp"
-#include "utils.hpp"
-#include <iostream>
+#include <ndn-cxx/face.hpp>
+#include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/validator-config.hpp>
+#include <ndn-cxx/security/certificate.hpp>
+#include <ndn-cxx/util/time.hpp>
+#include <ndn-cxx/name.hpp>
+#include <ndn-cxx/interest.hpp>
+#include <ndn-cxx/data.hpp>
+#include <ndn-cxx/encoding/block.hpp>
+
+#include <boost/algorithm/string/join.hpp>
+
 #include <filesystem>
+#include <iostream>
+#include <map>
+#include <set>
+#include <string>
 #include <vector>
-#include "PolicyParser.hpp"
-#include <nac-abe/attribute-authority.hpp>
-
-namespace ndn_service_framework
-{
+#include <list>
+#include <algorithm>
+#include <utility>
 
 namespace fs = std::filesystem;
 
-/*
- * For the time being, only allow sections in the configuration files work;
- * In the allow section, the items should be names instead of regexes;
- */
+namespace ndn_service_framework {
+
+// ======= 你工程里应该已有这些：PolicyParser / Policy types / AA =======
+// 这里保持“只声明，不定义”，避免跟你工程冲突。
+// 你可以删掉这段 forward decl，改为 include 你自己的头文件。
+
+struct ProviderPolicy
+{
+  std::string providerName;                 // identity URI
+  std::vector<std::string> allowedServices; // service name URIs or name strings
+};
+
+struct UserPolicy
+{
+  std::string userName;                     // identity URI
+  std::vector<std::string> allowedServices; // service name URIs or name strings
+};
+
+class PolicyParser
+{
+public:
+  // returns {providerPolicies, userPolicies}
+  std::pair<std::vector<ProviderPolicy>, std::vector<UserPolicy>>
+  parsePolicyFile(const std::string& path);
+};
+
+// 你的 Attribute Authority 类型（用你工程实际类型替换这个 forward decl / include）
+class AttributeAuthority
+{
+public:
+  AttributeAuthority(const ndn::security::Certificate& aaCert,
+                     ndn::Face& face,
+                     ndn::ValidatorConfig& validator,
+                     ndn::KeyChain& keyChain);
+
+  void addNewPolicy(const ndn::security::Certificate& cert, const std::string& abePolicy);
+  void addNewPolicy(const std::string& identity, const std::string& abePolicy);
+};
+
+// ======= 你的 TLV 常量（用你工程里的真实值替换） =======
+constexpr uint32_t TLV_AllowedServiceList = 0xF501;
+constexpr uint32_t TLV_AllowedService     = 0xF502;
+
+// ======= 你已有的 hybrid 加密函数（外部已有实现） =======
+// 你前面给过 encryptDataContentWithCK(payload, rsaKeyBits) 的雏形。
+// 这里声明一下供本文件调用。签名按你工程实际来改。
+ndn::Block
+encryptDataContentWithCK(ndn::span<const uint8_t> payload,
+                         ndn::span<const uint8_t> rsaKeyBits);
+
 class ServiceController
 {
 public:
-    ServiceController(ndn::Face& face, ndn::security::Certificate aaCert, ndn::ValidatorConfig& m_validator, const std::string& configFilePath)
-        : m_face(face)
-        , m_aaCert(aaCert)
-        , m_aa(m_aaCert, m_face, m_validator, m_keyChain)
-        , m_configFilePath(configFilePath)
-    {
-        loadConfigFiles();
-        addAttributesForUsersAccordingToServicePolicy();
-    }
+  ServiceController(ndn::Face& face,
+                    ndn::security::Certificate aaCert,
+                    ndn::ValidatorConfig& validator,
+                    const std::string& configFilePath);
+
+  void setControllerPrefix(const ndn::Name& prefix);
+  void run();
 
 private:
+  // ===== lifecycle =====
+  void loadConfigFiles();
+  void addAttributesForUsersAccordingToServicePolicy();
+  void buildLookupTables();
+  void registerInterestHandlers();
 
-    void loadConfigFiles()
-    {
-        if (fs::is_regular_file(m_configFilePath)) {
-            std::cout << "Loading config file: " << m_configFilePath << std::endl;
+  // ===== helpers =====
+  static std::vector<std::string> uniqSorted(std::vector<std::string> v);
 
-            PolicyParser parser;
-            auto policies = parser.parsePolicyFile(m_configFilePath);
+  void addAttribute(const std::string& identity, const std::string& attributeName);
 
-            m_providerPolicies.insert(m_providerPolicies.end(), policies.first.begin(), policies.first.end());
-            m_userPolicies.insert(m_userPolicies.end(), policies.second.begin(), policies.second.end());
-        } else {
-            std::cerr << "Error: " << m_configFilePath << " is not a valid file." << std::endl;
-        }
-    }
+  bool extractEntityAfterPrefix(const ndn::Name& interestName,
+                                const ndn::Name& prefix,
+                                ndn::Name& entityOut);
 
-    void addAttributesForUsersAccordingToServicePolicy()
-    {
-        for (const auto& policy : m_providerPolicies) {
-            for (const auto& service : policy.allowedServices) {
-                addAttribute(policy.providerName, "/SERVICE" + service);
-            }
-            addAttribute(policy.providerName, "/ID" + policy.providerName);
-        }
+  ndn::Block makeAllowedServiceListTlv(const std::vector<std::string>& services) const;
 
-        for (const auto& policy : m_userPolicies) {
-            ndn::Name userName(policy.userName);
-            addAttribute(userName.toUri(), "/ID" + userName.toUri());
+  // ===== signer-based encryption =====
+  ndn::Name getSignerCertNameFromInterest(const ndn::Interest& interest) const;
+  ndn::security::Certificate getSignerCertificateFromInterest(const ndn::Interest& interest) const;
 
-            for (const auto& service : policy.allowedServices) {
-                addAttribute(userName.toUri(), "/PERMISSION" + service);
-            }
-        }
+  ndn::Block encryptForCertificate(const ndn::security::Certificate& cert,
+                                  const ndn::Block& plaintext) const;
 
-        for (const auto& item : m_attributesMap) {
-            std::list<std::string> attributeList(item.second.begin(), item.second.end());
-
-            std::string policy = boost::algorithm::join(attributeList, " OR ");
-            try {
-                auto cert = m_keyChain.getPib().getIdentity(item.first).getDefaultKey().getDefaultCertificate();
-                m_aa.addNewPolicy(cert, policy);
-                std::cout << "Add policy: " << policy << " for identity: " << item.first << std::endl;
-            } catch (const std::exception& e) {
-                m_aa.addNewPolicy(item.first, policy);
-                std::cout << "Add policy (fallback): " << policy << " for identity: " << item.first << std::endl;
-            }
-        }
-    }
-
-    void addAttribute(const std::string& identity, const std::string& attributeName)
-    {
-        m_attributesMap[identity].emplace(attributeName);
-    }
-
-    void run()
-    {
-        m_face.processEvents();
-    }
-
-    void onRequestForServicePermissions();
+  // ===== handlers =====
+  void onServiceAccessInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
+  void onServiceProvisionInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
 
 private:
-    std::string m_configFilePath;
-    std::vector<ndn_service_framework::ProviderPolicy> m_providerPolicies;
-    std::vector<ndn_service_framework::UserPolicy> m_userPolicies;
+  std::string m_configFilePath;
 
-    ndn::Face& m_face;
-    ndn::KeyChain m_keyChain;
-    ndn::security::Certificate m_aaCert;
-    ndn::nacabe::KpAttributeAuthority m_aa;
+  ndn::Face& m_face;
+  ndn::security::Certificate m_aaCert;
 
-    std::map<std::string, std::set<std::string>> m_attributesMap;
+  // 用传入的 validator（引用）
+  ndn::ValidatorConfig& m_validator;
+
+  ndn::KeyChain m_keyChain;
+  AttributeAuthority m_aa;
+
+  // controller prefix selection
+  ndn::Name m_controllerPrefix;
+  bool m_hasCustomControllerPrefix = false;
+
+  // registered prefixes
+  ndn::Name m_prefixServiceAccess;
+  ndn::Name m_prefixServiceProvision;
+
+  // policies loaded from config
+  std::vector<ProviderPolicy> m_providerPolicies;
+  std::vector<UserPolicy> m_userPolicies;
+
+  // identity -> set(attributes)
+  std::map<std::string, std::set<std::string>> m_attributesMap;
+
+  // fast lookup tables
+  std::map<std::string, std::vector<std::string>> m_userAllowedServices;     // userUri -> services
+  std::map<std::string, std::vector<std::string>> m_providerAllowedServices; // providerUri -> services
 };
 
 } // namespace ndn_service_framework
-
-#endif
