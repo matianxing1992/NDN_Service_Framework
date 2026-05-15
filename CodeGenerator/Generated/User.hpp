@@ -32,6 +32,8 @@
 #include <ndn-service-framework/NDNSFMessages.hpp>
 #include <ndn-service-framework/utils.hpp>
 
+#include "PublishMessageBridge.hpp"
+
 namespace muas {
 
 class User
@@ -107,6 +109,24 @@ public:
   setRequestPublisher(RequestPublisher publisher)
   {
     m_requestPublisher = std::move(publisher);
+  }
+
+  void
+  setPublishMessageBridgeForRequests(PublishMessageBridge& bridge)
+  {
+    setRequestPublisher([this, &bridge](const ndn::Name& requestId,
+                                        const ndn::Name& requestName,
+                                        const std::vector<ndn::Name>&,
+                                        const ndn::Name&,
+                                        const ndn_service_framework::RequestMessage& requestMessage,
+                                        size_t) {
+      const auto* requestNameWithoutPrefix = getPendingRequestNameWithoutPrefix(requestId);
+      if (requestNameWithoutPrefix == nullptr) {
+        return;
+      }
+
+      bridge.publish(requestName, *requestNameWithoutPrefix, requestMessage);
+    });
   }
 
   ndn::Name

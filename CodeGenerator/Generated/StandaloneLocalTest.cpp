@@ -1,4 +1,5 @@
 #include "Provider.hpp"
+#include "PublishMessageBridge.hpp"
 #include "User.hpp"
 #include "messages.pb.h"
 
@@ -13,6 +14,36 @@ main()
   ndn::security::Certificate identityCert;
   ndn::security::Certificate attrAuthorityCertificate;
 
+  muas::PublishMessageBridge publishBridge;
+  ndn_service_framework::RequestAckMessage bridgeAck;
+  bridgeAck.setStatus(true);
+  bridgeAck.setMessage("Permission Granted");
+
+  bool runtimePublisherCalled = false;
+  publishBridge.setRuntimePublisher(
+      [&runtimePublisherCalled](const ndn::Name& messageName,
+                                const ndn::Name& messageNameWithoutPrefix,
+                                const ndn::Block& encodedBlock) {
+        runtimePublisherCalled = true;
+        assert(messageName.equals(
+            ndn::Name("/muas/provider/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
+        assert(messageNameWithoutPrefix.equals(
+            ndn::Name("/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
+        assert(encodedBlock.size() > 0);
+      });
+
+  publishBridge.publish(ndn::Name("/muas/provider/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1"),
+                        ndn::Name("/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1"),
+                        bridgeAck);
+
+  assert(runtimePublisherCalled);
+  assert(publishBridge.getPublishedCount() == 1);
+  assert(publishBridge.getLastPublishedName().equals(
+      ndn::Name("/muas/provider/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
+  assert(publishBridge.getLastPublishedNameWithoutPrefix().equals(
+      ndn::Name("/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
+  assert(publishBridge.getPublishedRecords().back().encodedBlock.size() > 0);
+
   muas::Provider provider(face,
                           ndn::Name("/muas"),
                           identityCert,
@@ -23,6 +54,82 @@ main()
                   identityCert,
                   attrAuthorityCertificate,
                   "trust-schema.conf");
+
+  muas::PublishMessageBridge requestPublishBridge;
+  muas::User bridgeUser(face,
+                        ndn::Name("/muas"),
+                        identityCert,
+                        attrAuthorityCertificate,
+                        "trust-schema.conf");
+  bridgeUser.setPublishMessageBridgeForRequests(requestPublishBridge);
+
+  ndn_service_framework::RequestMessage bridgeRequest;
+  const ndn::Name bridgeRequestId =
+      bridgeUser.async_call({ndn::Name("/muas/provider")},
+                            ndn::Name("/ObjectDetection/YOLOv8"),
+                            bridgeRequest,
+                            1000,
+                            muas::User::TimeoutHandler([](const ndn::Name&) {}),
+                            muas::User::ResponseHandler(
+                                [](const ndn_service_framework::ResponseMessage&) {}));
+
+  assert(!bridgeRequestId.empty());
+  assert(requestPublishBridge.getPublishedCount() == 1);
+  assert(requestPublishBridge.getLastPublishedName().equals(
+      *bridgeUser.getPendingRequestName(bridgeRequestId)));
+  assert(requestPublishBridge.getLastPublishedNameWithoutPrefix().equals(
+      *bridgeUser.getPendingRequestNameWithoutPrefix(bridgeRequestId)));
+
+  muas::PublishMessageBridge ackPublishBridge;
+  muas::PublishMessageBridge responsePublishBridge;
+  muas::Provider bridgeProvider(face,
+                                ndn::Name("/muas"),
+                                identityCert,
+                                attrAuthorityCertificate,
+                                "trust-schema.conf");
+  bridgeProvider.setPublishMessageBridgeForRequestAcks(ackPublishBridge);
+  bridgeProvider.setPublishMessageBridgeForResponses(responsePublishBridge);
+  bridgeProvider.addService(
+      ndn::Name("/ObjectDetection/YOLOv8"),
+      muas::Provider::RequestHandler(
+          [](const ndn::Name&,
+             const ndn::Name&,
+             const ndn::Name&,
+             const ndn::Name&,
+             const ndn_service_framework::RequestMessage&) {
+            ndn_service_framework::ResponseMessage response;
+            response.setStatus(true);
+            response.setErrorInfo("No error");
+            return response;
+          }));
+
+  const ndn::Name bridgeProviderRequestName =
+      ndn_service_framework::makeRequestName(ndn::Name("/muas/user"),
+                                             ndn::Name("/ObjectDetection/YOLOv8"),
+                                             ndn::Name(),
+                                             ndn::Name("bridge-bloom"),
+                                             ndn::Name("bridge-request"));
+
+  const auto bridgeProviderAck = bridgeProvider.publishRequestAckForName(bridgeProviderRequestName);
+  assert(bridgeProviderAck.getStatus());
+  assert(ackPublishBridge.getPublishedCount() == 1);
+  assert(ackPublishBridge.getLastPublishedNameWithoutPrefix().equals(
+      ndn_service_framework::makeRequestAckNameWithoutPrefix(ndn::Name("/muas/user"),
+                                                             ndn::Name("/ObjectDetection/YOLOv8"),
+                                                             ndn::Name(),
+                                                             ndn::Name("bridge-request"))));
+
+  ndn_service_framework::RequestMessage bridgeProviderRequest;
+  const auto bridgeProviderResponse =
+      bridgeProvider.handleDecryptedRequestByNameAndPublish(bridgeProviderRequestName,
+                                                            bridgeProviderRequest);
+  assert(bridgeProviderResponse.getStatus());
+  assert(responsePublishBridge.getPublishedCount() == 1);
+  assert(responsePublishBridge.getLastPublishedNameWithoutPrefix().equals(
+      ndn_service_framework::makeResponseNameWithoutPrefix(ndn::Name("/muas/user"),
+                                                           ndn::Name("/ObjectDetection/YOLOv8"),
+                                                           ndn::Name(),
+                                                           ndn::Name("bridge-request"))));
 
   bool ackHandled = false;
 

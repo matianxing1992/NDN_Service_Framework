@@ -26,6 +26,8 @@
 #include <ndn-service-framework/NDNSFMessages.hpp>
 #include <ndn-service-framework/utils.hpp>
 
+#include "PublishMessageBridge.hpp"
+
 namespace muas {
 
 class Provider
@@ -108,6 +110,36 @@ public:
   setRequestAckPublisher(RequestAckPublisher publisher)
   {
     m_requestAckPublisher = std::move(publisher);
+  }
+
+  void
+  setPublishMessageBridgeForRequestAcks(PublishMessageBridge& bridge)
+  {
+    setRequestAckPublisher([&bridge](const ndn::Name& requesterIdentity,
+                                     const ndn::Name&,
+                                     const ndn::Name& serviceName,
+                                     const ndn::Name& requestId,
+                                     const ndn::Name& ackName,
+                                     const ndn_service_framework::RequestAckMessage& ack) {
+      bridge.publish(ackName,
+                     makeRequestAckNameWithoutPrefix(requesterIdentity, serviceName, requestId),
+                     ack);
+    });
+  }
+
+  void
+  setPublishMessageBridgeForResponses(PublishMessageBridge& bridge)
+  {
+    setResponsePublisher([&bridge](const ndn::Name& requesterIdentity,
+                                   const ndn::Name&,
+                                   const ndn::Name& serviceName,
+                                   const ndn::Name& requestId,
+                                   const ndn::Name& responseName,
+                                   const ndn_service_framework::ResponseMessage& response) {
+      bridge.publish(responseName,
+                     makeResponseNameWithoutPrefix(requesterIdentity, serviceName, requestId),
+                     response);
+    });
   }
 
   void
@@ -675,6 +707,17 @@ private:
                                                      requestId);
   }
 
+  static ndn::Name
+  makeRequestAckNameWithoutPrefix(const ndn::Name& requesterIdentity,
+                                  const ndn::Name& serviceName,
+                                  const ndn::Name& requestId)
+  {
+    return ndn_service_framework::makeRequestAckNameWithoutPrefix(requesterIdentity,
+                                                                  serviceName,
+                                                                  ndn::Name(),
+                                                                  requestId);
+  }
+
 private:
   ndn::Face& m_face;
 
@@ -693,7 +736,6 @@ private:
 } // namespace muas
 
 #endif // NDNSF_PROVIDER_HPP
-
 
 
 
