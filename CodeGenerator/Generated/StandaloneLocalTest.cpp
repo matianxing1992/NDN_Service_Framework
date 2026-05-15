@@ -5,7 +5,28 @@
 
 #include <cassert>
 #include <functional>
+#include <memory>
 #include <tuple>
+
+class MockRuntimeBackend final : public muas::RuntimeBackend
+{
+public:
+  void
+  publish(const ndn::Name& messageName,
+          const ndn::Name& messageNameWithoutPrefix,
+          const ndn::Block& encodedBlock) final
+  {
+    publishCalled = true;
+    lastMessageName = messageName;
+    lastMessageNameWithoutPrefix = messageNameWithoutPrefix;
+    lastEncodedBlock = encodedBlock;
+  }
+
+  bool publishCalled = false;
+  ndn::Name lastMessageName;
+  ndn::Name lastMessageNameWithoutPrefix;
+  ndn::Block lastEncodedBlock;
+};
 
 int
 main()
@@ -19,24 +40,19 @@ main()
   bridgeAck.setStatus(true);
   bridgeAck.setMessage("Permission Granted");
 
-  bool runtimePublisherCalled = false;
-  publishBridge.setRuntimePublisher(
-      [&runtimePublisherCalled](const ndn::Name& messageName,
-                                const ndn::Name& messageNameWithoutPrefix,
-                                const ndn::Block& encodedBlock) {
-        runtimePublisherCalled = true;
-        assert(messageName.equals(
-            ndn::Name("/muas/provider/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
-        assert(messageNameWithoutPrefix.equals(
-            ndn::Name("/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
-        assert(encodedBlock.size() > 0);
-      });
+  auto runtimeBackend = std::make_shared<MockRuntimeBackend>();
+  publishBridge.setRuntimeBackend(runtimeBackend);
 
   publishBridge.publish(ndn::Name("/muas/provider/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1"),
                         ndn::Name("/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1"),
                         bridgeAck);
 
-  assert(runtimePublisherCalled);
+  assert(runtimeBackend->publishCalled);
+  assert(runtimeBackend->lastMessageName.equals(
+      ndn::Name("/muas/provider/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
+  assert(runtimeBackend->lastMessageNameWithoutPrefix.equals(
+      ndn::Name("/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));
+  assert(runtimeBackend->lastEncodedBlock.size() > 0);
   assert(publishBridge.getPublishedCount() == 1);
   assert(publishBridge.getLastPublishedName().equals(
       ndn::Name("/muas/provider/NDNSF/ACK/muas/user/ObjectDetection/YOLOv8/req-1")));

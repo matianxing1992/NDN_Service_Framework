@@ -2,7 +2,7 @@
 #define NDNSF_PUBLISH_MESSAGE_BRIDGE_HPP
 
 #include <cstddef>
-#include <functional>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -13,14 +13,20 @@
 
 namespace muas {
 
+class RuntimeBackend
+{
+public:
+  virtual ~RuntimeBackend() = default;
+
+  virtual void
+  publish(const ndn::Name& messageName,
+          const ndn::Name& messageNameWithoutPrefix,
+          const ndn::Block& encodedBlock) = 0;
+};
+
 class PublishMessageBridge
 {
 public:
-  using RuntimePublisher =
-      std::function<void(const ndn::Name& messageName,
-                         const ndn::Name& messageNameWithoutPrefix,
-                         const ndn::Block& encodedBlock)>;
-
   struct PublishedRecord
   {
     ndn::Name messageName;
@@ -29,9 +35,9 @@ public:
   };
 
   void
-  setRuntimePublisher(RuntimePublisher publisher)
+  setRuntimeBackend(std::shared_ptr<RuntimeBackend> backend)
   {
-    m_runtimePublisher = std::move(publisher);
+    m_runtimeBackend = std::move(backend);
   }
 
   void
@@ -44,11 +50,11 @@ public:
         messageNameWithoutPrefix,
         message.WireEncode()});
 
-    if (m_runtimePublisher) {
+    if (m_runtimeBackend) {
       const auto& publishedRecord = m_publishedRecords.back();
-      m_runtimePublisher(publishedRecord.messageName,
-                         publishedRecord.messageNameWithoutPrefix,
-                         publishedRecord.encodedBlock);
+      m_runtimeBackend->publish(publishedRecord.messageName,
+                                publishedRecord.messageNameWithoutPrefix,
+                                publishedRecord.encodedBlock);
     }
   }
 
@@ -92,7 +98,7 @@ public:
 
 private:
   std::vector<PublishedRecord> m_publishedRecords;
-  RuntimePublisher m_runtimePublisher;
+  std::shared_ptr<RuntimeBackend> m_runtimeBackend;
 };
 
 } // namespace muas
