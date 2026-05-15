@@ -1,6 +1,8 @@
 #include "tests/boost-test.hpp"
 
 #include "ndn-service-framework/NDNSFMessages.hpp"
+#include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/UserPermissionTable.hpp"
 #include "ndn-service-framework/utils.hpp"
 
@@ -134,6 +136,21 @@ protected:
     return decoded;
   }
 
+  static ndn::Data
+  makeSignedEncryptedPermissionData(const ndn::Name& dataName,
+                                    const PermissionResponse& response,
+                                    const ndn::security::Certificate& recipientCert,
+                                    ndn::security::KeyChain& signerKeyChain)
+  {
+    auto encrypted = encryptPermissionResponseForCertificate(response, recipientCert);
+
+    ndn::Data data(dataName);
+    data.setFreshnessPeriod(ndn::time::seconds(2));
+    data.setContent(encrypted.WireEncode());
+    signerKeyChain.sign(data);
+    return data;
+  }
+
   ndn::security::KeyChain userKeyChain;
   ndn::security::KeyChain providerKeyChain;
   ndn::Name userIdentity;
@@ -252,6 +269,120 @@ BOOST_FIXTURE_TEST_CASE(PermissionKindCheckRejectsWrongKind,
   UserPermissionTable table;
   BOOST_CHECK(!validateAndApply(decrypted, userIdentity, tlv::UserPermission, table));
   BOOST_CHECK(table.dumpAll().empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(ServiceUserPermissionFetchCallbackHandlesEncryptedData,
+                        EncryptedPermissionResponseFixture)
+{
+  const std::string providerName = "/test/provider/camera";
+  const std::string serviceName = "/ObjectDetection/YOLOv8";
+  const std::string token = "callback-user-token";
+  auto response = makeResponse(userIdentity,
+                               tlv::UserPermission,
+                               providerName,
+                               serviceName,
+                               token);
+  auto data = makeSignedEncryptedPermissionData(ndn::Name("/test/controller/user-permissions"),
+                                                response,
+                                                userCert,
+                                                userKeyChain);
+
+  UserPermissionTable permissionTable;
+  BOOST_CHECK(ServiceUser::handlePermissionResponseData(data,
+                                                        userIdentity,
+                                                        userKeyChain,
+                                                        permissionTable));
+  checkInstalledPermission(permissionTable, providerName, serviceName, token);
+
+  auto wrongTarget = makeResponse(ndn::Name("/test/runtime/not-user"),
+                                  tlv::UserPermission,
+                                  providerName,
+                                  serviceName,
+                                  "wrong-target-token");
+  auto wrongTargetData = makeSignedEncryptedPermissionData(
+    ndn::Name("/test/controller/user-permissions/wrong-target"),
+    wrongTarget,
+    userCert,
+    userKeyChain);
+  BOOST_CHECK(!ServiceUser::handlePermissionResponseData(wrongTargetData,
+                                                         userIdentity,
+                                                         userKeyChain,
+                                                         permissionTable));
+  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+
+  auto wrongKind = makeResponse(userIdentity,
+                                tlv::ProviderPermission,
+                                providerName,
+                                serviceName,
+                                "wrong-kind-token");
+  auto wrongKindData = makeSignedEncryptedPermissionData(
+    ndn::Name("/test/controller/user-permissions/wrong-kind"),
+    wrongKind,
+    userCert,
+    userKeyChain);
+  BOOST_CHECK(!ServiceUser::handlePermissionResponseData(wrongKindData,
+                                                         userIdentity,
+                                                         userKeyChain,
+                                                         permissionTable));
+  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedData,
+                        EncryptedPermissionResponseFixture)
+{
+  const std::string serviceName = "/LLM/Llama3/Prefill";
+  const std::string token = "callback-provider-token";
+  auto response = makeResponse(providerIdentity,
+                               tlv::ProviderPermission,
+                               providerIdentity.toUri(),
+                               serviceName,
+                               token);
+  auto data = makeSignedEncryptedPermissionData(ndn::Name("/test/controller/provider-permissions"),
+                                                response,
+                                                providerCert,
+                                                providerKeyChain);
+
+  UserPermissionTable permissionTable;
+  BOOST_CHECK(ServiceProvider::handlePermissionResponseData(data,
+                                                            providerIdentity,
+                                                            providerKeyChain,
+                                                            permissionTable));
+  checkInstalledPermission(permissionTable,
+                           providerIdentity.toUri(),
+                           serviceName,
+                           token);
+
+  auto wrongTarget = makeResponse(ndn::Name("/test/runtime/not-provider"),
+                                  tlv::ProviderPermission,
+                                  providerIdentity.toUri(),
+                                  serviceName,
+                                  "wrong-target-token");
+  auto wrongTargetData = makeSignedEncryptedPermissionData(
+    ndn::Name("/test/controller/provider-permissions/wrong-target"),
+    wrongTarget,
+    providerCert,
+    providerKeyChain);
+  BOOST_CHECK(!ServiceProvider::handlePermissionResponseData(wrongTargetData,
+                                                             providerIdentity,
+                                                             providerKeyChain,
+                                                             permissionTable));
+  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+
+  auto wrongKind = makeResponse(providerIdentity,
+                                tlv::UserPermission,
+                                providerIdentity.toUri(),
+                                serviceName,
+                                "wrong-kind-token");
+  auto wrongKindData = makeSignedEncryptedPermissionData(
+    ndn::Name("/test/controller/provider-permissions/wrong-kind"),
+    wrongKind,
+    providerCert,
+    providerKeyChain);
+  BOOST_CHECK(!ServiceProvider::handlePermissionResponseData(wrongKindData,
+                                                             providerIdentity,
+                                                             providerKeyChain,
+                                                             permissionTable));
+  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

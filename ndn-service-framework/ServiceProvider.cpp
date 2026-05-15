@@ -771,46 +771,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::onPermissionResponseData(const ndn::Interest&,
                                                    const ndn::Data& data)
     {
-        PermissionResponse response;
-        EncryptedPermissionResponse encryptedResponse;
-        if (decodeEncryptedPermissionResponseFromDataContent(data, encryptedResponse)) {
-            try {
-                response = decryptPermissionResponseWithKeyChain(encryptedResponse, m_keyChain);
-            }
-            catch (const std::exception& e) {
-                NDN_LOG_ERROR("Failed to decrypt encrypted PermissionResponse from "
-                              << data.getName() << ": " << e.what());
-                return;
-            }
-
-            NDN_LOG_INFO("Received encrypted PermissionResponse: "
-                         << response.toString());
-        }
-        else {
-            if (!decodePermissionResponseFromDataContent(data, response)) {
-                NDN_LOG_ERROR("Failed to decode PermissionResponse from "
-                              << data.getName());
-                return;
-            }
-
-            NDN_LOG_INFO("Received plaintext PermissionResponse fallback: "
-                         << response.toString());
-        }
-
-        if (response.getTargetIdentity() != identity.toUri()) {
-            NDN_LOG_ERROR("Ignoring PermissionResponse for unexpected targetIdentity="
-                          << response.getTargetIdentity()
-                          << " expected=" << identity.toUri());
-            return;
-        }
-
-        if (response.getPermissionKind() != tlv::ProviderPermission) {
-            NDN_LOG_ERROR("Ignoring non-provider PermissionResponse for "
-                          << response.getTargetIdentity());
-            return;
-        }
-
-        applyPermissionResponse(response);
+        handlePermissionResponseData(data, identity, m_keyChain, UPT);
     }
 
     void ServiceProvider::onPermissionResponseTimeout(const ndn::Interest& interest)
@@ -1056,6 +1017,63 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                          << entry.getProviderName()
                          << " service=" << entry.getServiceName());
         }
+    }
+
+    bool ServiceProvider::handlePermissionResponseData(const ndn::Data& data,
+                                                       const ndn::Name& identity,
+                                                       ndn::KeyChain& keyChain,
+                                                       UserPermissionTable& permissionTable)
+    {
+        PermissionResponse response;
+        EncryptedPermissionResponse encryptedResponse;
+        if (decodeEncryptedPermissionResponseFromDataContent(data, encryptedResponse)) {
+            try {
+                response = decryptPermissionResponseWithKeyChain(encryptedResponse, keyChain);
+            }
+            catch (const std::exception& e) {
+                NDN_LOG_ERROR("Failed to decrypt encrypted PermissionResponse from "
+                              << data.getName() << ": " << e.what());
+                return false;
+            }
+
+            NDN_LOG_INFO("Received encrypted PermissionResponse: "
+                         << response.toString());
+        }
+        else {
+            if (!decodePermissionResponseFromDataContent(data, response)) {
+                NDN_LOG_ERROR("Failed to decode PermissionResponse from "
+                              << data.getName());
+                return false;
+            }
+
+            NDN_LOG_INFO("Received plaintext PermissionResponse fallback: "
+                         << response.toString());
+        }
+
+        if (response.getTargetIdentity() != identity.toUri()) {
+            NDN_LOG_ERROR("Ignoring PermissionResponse for unexpected targetIdentity="
+                          << response.getTargetIdentity()
+                          << " expected=" << identity.toUri());
+            return false;
+        }
+
+        if (response.getPermissionKind() != tlv::ProviderPermission) {
+            NDN_LOG_ERROR("Ignoring non-provider PermissionResponse for "
+                          << response.getTargetIdentity());
+            return false;
+        }
+
+        for (const auto& entry : response.getEntries()) {
+            ndn::Name providerServiceName(entry.getProviderName());
+            providerServiceName.append(ndn::Name(entry.getServiceName()));
+            permissionTable.insertPermission(providerServiceName.toUri(),
+                                             entry.getServiceName(),
+                                             entry.getToken());
+            NDN_LOG_INFO("Installed provider permission provider="
+                         << entry.getProviderName()
+                         << " service=" << entry.getServiceName());
+        }
+        return true;
     }
 
     void ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallbackV2(

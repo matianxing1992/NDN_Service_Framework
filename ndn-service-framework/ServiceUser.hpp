@@ -52,6 +52,10 @@ namespace ndn_service_framework{
 
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
+            static bool handlePermissionResponseData(const ndn::Data& data,
+                                                     const ndn::Name& identity,
+                                                     ndn::KeyChain& keyChain,
+                                                     UserPermissionTable& permissionTable);
 
             void PublishRequest(const std::vector<ndn::Name>& serviceProviderNames,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &payload, const size_t& strategy=ndn_service_framework::tlv::FirstResponding);
             void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
