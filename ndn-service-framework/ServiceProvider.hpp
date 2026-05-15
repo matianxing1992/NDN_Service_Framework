@@ -151,6 +151,12 @@ namespace ndn_service_framework{
             ResponseMessage handleDecryptedRequestByName(const ndn::Name& requestName,
                                                          const ndn::Block& requestBlock) const;
 
+            void OnRequestDecryptionSuccessCallbackV2(const ndn::Name& requesterIdentity,
+                                                       const ndn::Name& serviceName,
+                                                       const ndn::Name& bloomFilterName,
+                                                       const ndn::Name& requestId,
+                                                       const ndn::Buffer& buffer);
+
             void OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilterName,  const ndn::Name &RequestID, const ndn::Buffer & buffer);
     
             // virtual void OnRequestDecryptionSuccessCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &);
@@ -170,12 +176,22 @@ namespace ndn_service_framework{
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
             void PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, std::string& msg);
+            void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
+                                            const ndn::Name& serviceName,
+                                            const ndn::Name& requestId,
+                                            bool status,
+                                            const std::string& msg);
     
             void onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
             void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
 
             void OnServiceCoordinationMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer & buffer);
+            void OnServiceCoordinationMessageDecryptionSuccessCallbackV2(const ndn::Name& requesterName,
+                                                                          const ndn::Name& providerName,
+                                                                          const ndn::Name& serviceName,
+                                                                          const ndn::Name& msgId,
+                                                                          const ndn::Buffer& buffer);
 
             void OnServiceCoordinationMessageDecryptionErrorCallback(const ndn::Name& requesterName,const ndn::Name &providerName, const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& msgID,const std::string & reason);
             

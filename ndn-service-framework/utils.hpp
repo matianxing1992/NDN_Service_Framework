@@ -6,6 +6,7 @@
 #include <tuple>
 #include <optional>
 #include <set>
+#include <cstddef>
 
 #include <boost/format.hpp>
 #include <ndn-cxx/encoding/buffer-stream.hpp>
@@ -44,6 +45,84 @@ namespace ndn_service_framework
 
     ndn::Name makeServiceCoordinationName(const ndn::Name &requesterName, const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
     ndn::Name makeServiceCoordinationNameWithoutPrefix(const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
+
+    struct RequestNameV2
+    {
+        ndn::Name requesterName;
+        ndn::Name serviceName;
+        ndn::Name bloomFilter;
+        ndn::Name requestId;
+    };
+
+    struct ResponseNameV2
+    {
+        ndn::Name providerName;
+        ndn::Name requesterName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+    };
+
+    struct RequestAckNameV2
+    {
+        ndn::Name providerName;
+        ndn::Name requesterName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+    };
+
+    struct ServiceCoordinationNameV2
+    {
+        ndn::Name requesterName;
+        ndn::Name providerName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+    };
+
+    // V2 wire names use one unified serviceName endpoint path, never ServiceName + FunctionName.
+    // Request:
+    //   /<requester>/NDNSF/REQUEST/<serviceComponentCount>/<serviceName...>/<bloomFilter>/<requestId>
+    // Response:
+    //   /<provider>/NDNSF/RESPONSE/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
+    // ACK:
+    //   /<provider>/NDNSF/ACK/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
+    // Coordination:
+    //   /<requester>/NDNSF/COORDINATION/<providerComponentCount>/<provider...>/<serviceComponentCount>/<serviceName...>/<requestId>
+    ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
+                                const ndn::Name& serviceName,
+                                const ndn::Name& bloomFilter,
+                                const ndn::Name& requestId);
+    ndn::Name makeRequestNameWithoutPrefixV2(const ndn::Name& serviceName,
+                                             const ndn::Name& bloomFilter,
+                                             const ndn::Name& requestId);
+    std::optional<RequestNameV2> parseRequestNameV2(const ndn::Name& requestName);
+
+    ndn::Name makeResponseNameV2(const ndn::Name& providerName,
+                                 const ndn::Name& requesterName,
+                                 const ndn::Name& serviceName,
+                                 const ndn::Name& requestId);
+    ndn::Name makeResponseNameWithoutPrefixV2(const ndn::Name& requesterName,
+                                              const ndn::Name& serviceName,
+                                              const ndn::Name& requestId);
+    std::optional<ResponseNameV2> parseResponseNameV2(const ndn::Name& responseName);
+
+    ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,
+                                   const ndn::Name& requesterName,
+                                   const ndn::Name& serviceName,
+                                   const ndn::Name& requestId);
+    ndn::Name makeRequestAckNameWithoutPrefixV2(const ndn::Name& requesterName,
+                                                const ndn::Name& serviceName,
+                                                const ndn::Name& requestId);
+    std::optional<RequestAckNameV2> parseRequestAckNameV2(const ndn::Name& requestAckName);
+
+    ndn::Name makeServiceCoordinationNameV2(const ndn::Name& requesterName,
+                                            const ndn::Name& providerName,
+                                            const ndn::Name& serviceName,
+                                            const ndn::Name& requestId);
+    ndn::Name makeServiceCoordinationNameWithoutPrefixV2(const ndn::Name& providerName,
+                                                         const ndn::Name& serviceName,
+                                                         const ndn::Name& requestId);
+    std::optional<ServiceCoordinationNameV2>
+    parseServiceCoordinationNameV2(const ndn::Name& serviceCoordinationName);
 
     // /muas/drone1/NDNSF/TOKEN/ObjectDetection/YOLOv8/0
     // <provider> <service> <function> <seqNum>

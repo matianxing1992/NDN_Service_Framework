@@ -11,6 +11,78 @@ namespace ndn_service_framework
     std::string serviceCoordinationRegexString = "^(<>+)<NDNSF><COORDINATION>(<>+)(<>)(<>)(<>)$";
     std::string permissionTokenRegexString = "^(<>+)<NDNSF><TOKEN>(<>)(<>)(<>)$";
 
+    namespace
+    {
+        ndn::Name
+        getSubNameByComponentCount(const ndn::Name& name, size_t begin, size_t count)
+        {
+            ndn::Name result;
+            for (size_t i = 0; i < count; ++i) {
+                result.append(name.get(begin + i));
+            }
+            return result;
+        }
+
+        void
+        appendCountedName(ndn::Name& dst, const ndn::Name& value)
+        {
+            dst.append(std::to_string(value.size()));
+            dst.append(value);
+        }
+
+        std::optional<size_t>
+        parseComponentCount(const ndn::Name& name, size_t index)
+        {
+            if (index >= name.size()) {
+                return std::nullopt;
+            }
+
+            const auto text = name.get(index).toUri();
+            if (text.empty()) {
+                return std::nullopt;
+            }
+
+            size_t value = 0;
+            for (const auto ch : text) {
+                if (ch < '0' || ch > '9') {
+                    return std::nullopt;
+                }
+                value = (value * 10) + static_cast<size_t>(ch - '0');
+            }
+            return value;
+        }
+
+        std::optional<ndn::Name>
+        parseCountedName(const ndn::Name& name, size_t& index)
+        {
+            auto count = parseComponentCount(name, index);
+            if (!count) {
+                return std::nullopt;
+            }
+            ++index;
+
+            if (index + *count > name.size()) {
+                return std::nullopt;
+            }
+
+            ndn::Name result = getSubNameByComponentCount(name, index, *count);
+            index += *count;
+            return result;
+        }
+
+        std::optional<size_t>
+        findNdnsfMessageMarker(const ndn::Name& name, const std::string& messageType)
+        {
+            for (size_t i = 0; i + 1 < name.size(); ++i) {
+                if (name.get(i).toUri() == "NDNSF" &&
+                    name.get(i + 1).toUri() == messageType) {
+                    return i;
+                }
+            }
+            return std::nullopt;
+        }
+    }
+
     std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
     parseRequestName(ndn::Name requestName)
     {
@@ -161,6 +233,188 @@ namespace ndn_service_framework
         serviceCoordinationName.append(ndn::Name("/NDNSF/COORDINATION")).append(ServiceProviderName).append(ServiceName)
             .append(FunctionName).append(msgID);
         return serviceCoordinationName;
+    }
+
+    ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
+                                const ndn::Name& serviceName,
+                                const ndn::Name& bloomFilter,
+                                const ndn::Name& requestId)
+    {
+        ndn::Name requestName;
+        requestName.append(requesterName).append(ndn::Name("/NDNSF/REQUEST"));
+        appendCountedName(requestName, serviceName);
+        requestName.append(bloomFilter).append(requestId);
+        return requestName;
+    }
+
+    ndn::Name makeRequestNameWithoutPrefixV2(const ndn::Name& serviceName,
+                                             const ndn::Name& bloomFilter,
+                                             const ndn::Name& requestId)
+    {
+        ndn::Name requestName;
+        requestName.append(ndn::Name("/NDNSF/REQUEST"));
+        appendCountedName(requestName, serviceName);
+        requestName.append(bloomFilter).append(requestId);
+        return requestName;
+    }
+
+    std::optional<RequestNameV2> parseRequestNameV2(const ndn::Name& requestName)
+    {
+        auto marker = findNdnsfMessageMarker(requestName, "REQUEST");
+        if (!marker) {
+            return std::nullopt;
+        }
+
+        size_t index = *marker + 2;
+        auto serviceName = parseCountedName(requestName, index);
+        if (!serviceName || index + 2 != requestName.size()) {
+            return std::nullopt;
+        }
+
+        return RequestNameV2{
+            getSubNameByComponentCount(requestName, 0, *marker),
+            *serviceName,
+            getSubNameByComponentCount(requestName, index, 1),
+            getSubNameByComponentCount(requestName, index + 1, 1)};
+    }
+
+    ndn::Name makeResponseNameV2(const ndn::Name& providerName,
+                                 const ndn::Name& requesterName,
+                                 const ndn::Name& serviceName,
+                                 const ndn::Name& requestId)
+    {
+        ndn::Name responseName;
+        responseName.append(providerName).append(ndn::Name("/NDNSF/RESPONSE"));
+        appendCountedName(responseName, requesterName);
+        appendCountedName(responseName, serviceName);
+        responseName.append(requestId);
+        return responseName;
+    }
+
+    ndn::Name makeResponseNameWithoutPrefixV2(const ndn::Name& requesterName,
+                                              const ndn::Name& serviceName,
+                                              const ndn::Name& requestId)
+    {
+        ndn::Name responseName;
+        responseName.append(ndn::Name("/NDNSF/RESPONSE"));
+        appendCountedName(responseName, requesterName);
+        appendCountedName(responseName, serviceName);
+        responseName.append(requestId);
+        return responseName;
+    }
+
+    std::optional<ResponseNameV2> parseResponseNameV2(const ndn::Name& responseName)
+    {
+        auto marker = findNdnsfMessageMarker(responseName, "RESPONSE");
+        if (!marker) {
+            return std::nullopt;
+        }
+
+        size_t index = *marker + 2;
+        auto requesterName = parseCountedName(responseName, index);
+        auto serviceName = parseCountedName(responseName, index);
+        if (!requesterName || !serviceName || index + 1 != responseName.size()) {
+            return std::nullopt;
+        }
+
+        return ResponseNameV2{
+            getSubNameByComponentCount(responseName, 0, *marker),
+            *requesterName,
+            *serviceName,
+            getSubNameByComponentCount(responseName, index, 1)};
+    }
+
+    ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,
+                                   const ndn::Name& requesterName,
+                                   const ndn::Name& serviceName,
+                                   const ndn::Name& requestId)
+    {
+        ndn::Name requestAckName;
+        requestAckName.append(providerName).append(ndn::Name("/NDNSF/ACK"));
+        appendCountedName(requestAckName, requesterName);
+        appendCountedName(requestAckName, serviceName);
+        requestAckName.append(requestId);
+        return requestAckName;
+    }
+
+    ndn::Name makeRequestAckNameWithoutPrefixV2(const ndn::Name& requesterName,
+                                                const ndn::Name& serviceName,
+                                                const ndn::Name& requestId)
+    {
+        ndn::Name requestAckName;
+        requestAckName.append(ndn::Name("/NDNSF/ACK"));
+        appendCountedName(requestAckName, requesterName);
+        appendCountedName(requestAckName, serviceName);
+        requestAckName.append(requestId);
+        return requestAckName;
+    }
+
+    std::optional<RequestAckNameV2> parseRequestAckNameV2(const ndn::Name& requestAckName)
+    {
+        auto marker = findNdnsfMessageMarker(requestAckName, "ACK");
+        if (!marker) {
+            return std::nullopt;
+        }
+
+        size_t index = *marker + 2;
+        auto requesterName = parseCountedName(requestAckName, index);
+        auto serviceName = parseCountedName(requestAckName, index);
+        if (!requesterName || !serviceName || index + 1 != requestAckName.size()) {
+            return std::nullopt;
+        }
+
+        return RequestAckNameV2{
+            getSubNameByComponentCount(requestAckName, 0, *marker),
+            *requesterName,
+            *serviceName,
+            getSubNameByComponentCount(requestAckName, index, 1)};
+    }
+
+    ndn::Name makeServiceCoordinationNameV2(const ndn::Name& requesterName,
+                                            const ndn::Name& providerName,
+                                            const ndn::Name& serviceName,
+                                            const ndn::Name& requestId)
+    {
+        ndn::Name serviceCoordinationName;
+        serviceCoordinationName.append(requesterName).append(ndn::Name("/NDNSF/COORDINATION"));
+        appendCountedName(serviceCoordinationName, providerName);
+        appendCountedName(serviceCoordinationName, serviceName);
+        serviceCoordinationName.append(requestId);
+        return serviceCoordinationName;
+    }
+
+    ndn::Name makeServiceCoordinationNameWithoutPrefixV2(const ndn::Name& providerName,
+                                                         const ndn::Name& serviceName,
+                                                         const ndn::Name& requestId)
+    {
+        ndn::Name serviceCoordinationName;
+        serviceCoordinationName.append(ndn::Name("/NDNSF/COORDINATION"));
+        appendCountedName(serviceCoordinationName, providerName);
+        appendCountedName(serviceCoordinationName, serviceName);
+        serviceCoordinationName.append(requestId);
+        return serviceCoordinationName;
+    }
+
+    std::optional<ServiceCoordinationNameV2>
+    parseServiceCoordinationNameV2(const ndn::Name& serviceCoordinationName)
+    {
+        auto marker = findNdnsfMessageMarker(serviceCoordinationName, "COORDINATION");
+        if (!marker) {
+            return std::nullopt;
+        }
+
+        size_t index = *marker + 2;
+        auto providerName = parseCountedName(serviceCoordinationName, index);
+        auto serviceName = parseCountedName(serviceCoordinationName, index);
+        if (!providerName || !serviceName || index + 1 != serviceCoordinationName.size()) {
+            return std::nullopt;
+        }
+
+        return ServiceCoordinationNameV2{
+            getSubNameByComponentCount(serviceCoordinationName, 0, *marker),
+            *providerName,
+            *serviceName,
+            getSubNameByComponentCount(serviceCoordinationName, index, 1)};
     }
 
     std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name>>

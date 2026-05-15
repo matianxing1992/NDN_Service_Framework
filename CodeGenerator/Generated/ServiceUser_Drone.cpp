@@ -32,6 +32,11 @@ void muas::ServiceUser_Drone::OnResponse(const ndn::svs::SVSPubSub::Subscription
         std::tie(RequesterName, providerName, ServiceName, FunctionName, RequestId) = results.value();
         NDN_LOG_INFO("OnResponse: " << RequesterName << providerName << ServiceName << FunctionName << RequestId);
 
+        if (m_pendingCalls.find(RequestId) != m_pendingCalls.end()) {
+            ndn_service_framework::ServiceUser::OnResponse(subscription);
+            return;
+        }
+
         // decrypt the request message with nac-abe; if cannot be decrypted
         
         if (ServiceName.equals(m_ObjectDetectionServiceStub.serviceName))
@@ -50,5 +55,4 @@ void muas::ServiceUser_Drone::OnResponse(const ndn::svs::SVSPubSub::Subscription
         }
         
 }
-
 

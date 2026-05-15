@@ -192,6 +192,96 @@ namespace ndn_service_framework
         }
     }
 
+    void ServiceUser::PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
+                                       const ndn::Name& serviceName,
+                                       const ndn::Name& requestId,
+                                       const ndn::Buffer& payload,
+                                       const size_t& strategy)
+    {
+        NDN_LOG_INFO("PublishRequestV2: " << serviceName << requestId);
+
+        ndn_service_framework::BloomFilter bloomFilter;
+        std::vector<std::pair<std::string, std::string>> pairs =
+            UPT.searchByFunctionName(serviceName.toUri());
+
+        if (serviceProviderNames.size() > 0){
+            for (auto providerName : serviceProviderNames){
+                bloomFilter.insert(providerName.toUri());
+            }
+        }else{
+            for (auto pair : pairs){
+                ndn::Name serviceFullName(pair.first);
+                bloomFilter.insert(serviceFullName.getPrefix(
+                    -static_cast<int>(serviceName.size())).toUri());
+            }
+        }
+
+        ndn_service_framework::RequestMessage requestMessage;
+        std::map<std::string, std::string> tokens;
+        for (auto pair : pairs){
+            tokens[pair.first] =
+                std::to_string(std::hash<std::string>()(pair.second + requestId.toUri()));
+        }
+        requestMessage.setTokens(tokens);
+        requestMessage.setPayload(const_cast<ndn::Buffer&>(payload), payload.size());
+        requestMessage.setStrategy(strategy);
+        requestMessage.WireEncode().data();
+
+        ndn::Name requestName =
+            ndn_service_framework::makeRequestNameV2(identity,
+                                                     serviceName,
+                                                     ndn::Name(bloomFilter.toHexString()),
+                                                     requestId);
+        ndn::Name requestNameWithoutPrefix =
+            ndn_service_framework::makeRequestNameWithoutPrefixV2(
+                serviceName,
+                ndn::Name(bloomFilter.toHexString()),
+                requestId);
+
+        auto pendingIt = m_pendingCalls.find(requestId);
+        if (pendingIt != m_pendingCalls.end()) {
+            pendingIt->second.providers = serviceProviderNames;
+            pendingIt->second.serviceName = serviceName;
+            pendingIt->second.requestName = requestName;
+            pendingIt->second.requestNameWithoutPrefix = requestNameWithoutPrefix;
+            pendingIt->second.requestMessage = requestMessage;
+            pendingIt->second.strategy = strategy;
+        }
+
+        PublishMessage(requestName, requestNameWithoutPrefix, requestMessage);
+
+        m_strategyMap.emplace(requestId, strategy);
+
+        if (strategy == tlv::LoadBalancing){
+            m_AckInfoMap[requestId] = std::vector<ndn_service_framework::AckInfo>();
+
+            m_scheduler.schedule(100_ms,[this, requestId](){
+                auto ackInfoVec = m_AckInfoMap.find(requestId);
+                if (ackInfoVec == m_AckInfoMap.end()){
+                    NDN_LOG_ERROR("AckInfo vector not found for RequestID: " << requestId.toUri());
+                    return;
+                }
+
+                if (ackInfoVec->second.size() == 0){
+                    NDN_LOG_ERROR("After waiting for 100 ms, No AckInfo found for RequestID: " << requestId.toUri());
+                    NDN_LOG_INFO("Change strategy of "<< requestId<< " to FirstResponding");
+                    m_strategyMap[requestId] = tlv::FirstResponding;
+                    m_AckInfoMap.erase(ackInfoVec);
+                    return;
+                }
+
+                auto randomAckInfo = ackInfoVec->second[rand() % ackInfoVec->second.size()];
+                NDN_LOG_INFO("Choosen AckInfo for LoadBalancing: "
+                             << randomAckInfo.providerName.toUri() << " "
+                             << randomAckInfo.requestID.toUri());
+                PublishServiceCoordinationMessage(randomAckInfo.providerName,
+                                                  randomAckInfo.serviceName,
+                                                  randomAckInfo.functionName,
+                                                  randomAckInfo.requestID);
+            });
+        }
+    }
+
     ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
                                       const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
@@ -213,7 +303,7 @@ namespace ndn_service_framework
         m_pendingCalls[requestId] = std::move(pendingCall);
 
         const auto payload = requestMessage.getPayload();
-        PublishRequest(providers, serviceName, ndn::Name(), requestId, payload, strategy);
+        PublishRequestV2(providers, serviceName, requestId, payload, strategy);
 
         if (timeoutMs > 0) {
             m_scheduler.schedule(ndn::time::milliseconds(timeoutMs), [this, requestId]() {
@@ -290,7 +380,11 @@ namespace ndn_service_framework
         m_pendingCalls[requestId] = std::move(pendingCall);
 
         const auto payload = requestMessage.getPayload();
-        PublishRequest({}, serviceName, ndn::Name(), requestId, payload, ndn_service_framework::tlv::FirstResponding);
+        PublishRequestV2({},
+                         serviceName,
+                         requestId,
+                         payload,
+                         ndn_service_framework::tlv::FirstResponding);
 
         if (ackTimeoutMs > 0) {
             m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
@@ -361,6 +455,11 @@ namespace ndn_service_framework
         const ndn::Name& responseName,
         const ndn_service_framework::ResponseMessage& responseMessage)
     {
+        auto parsedV2 = ndn_service_framework::parseResponseNameV2(responseName);
+        if (parsedV2) {
+            return handleDecryptedResponse(parsedV2->requestId, responseMessage);
+        }
+
         auto parsed = ndn_service_framework::parseResponseName(responseName);
         if (!parsed) {
             NDN_LOG_ERROR("handleDecryptedResponseByName: parseResponseName failed: " << responseName);
@@ -393,6 +492,23 @@ namespace ndn_service_framework
         const ndn::Name& ackName,
         const ndn_service_framework::RequestAckMessage& ackMessage)
     {
+        auto parsedV2 = ndn_service_framework::parseRequestAckNameV2(ackName);
+        if (parsedV2) {
+            auto pendingCall = m_pendingCalls.find(parsedV2->requestId);
+            if (pendingCall == m_pendingCalls.end()) {
+                return false;
+            }
+
+            pendingCall->second.requestAcks.push_back(
+                StoredAck{parsedV2->providerName,
+                          parsedV2->serviceName,
+                          parsedV2->requestId,
+                          ackMessage});
+            evaluateAckSelection(parsedV2->requestId);
+
+            return true;
+        }
+
         auto parsed = ndn_service_framework::parseRequestAckName(ackName);
         if (!parsed) {
             NDN_LOG_ERROR("handleRequestAckByName: parseRequestAckName failed: " << ackName);
@@ -605,6 +721,48 @@ namespace ndn_service_framework
         if(!isFresh(subscription)) return;
         // log message
         NDN_LOG_INFO("OnRequestAck: " << subscription.name);
+
+        auto ackV2 = parseRequestAckNameV2(subscription.name);
+        if (ackV2) {
+            if(subscription.data.size() > 0){
+                nacConsumer.consume(
+                            ndn::Name(subscription.name),
+                            ndn::Block(subscription.data),
+                            std::bind(&ServiceUser::OnRequestAckDecryptionSuccessCallback,
+                                      this,
+                                      ackV2->providerName,
+                                      ackV2->serviceName,
+                                      ndn::Name(),
+                                      ackV2->requestId,
+                                      _1),
+                            std::bind(&ServiceUser::OnRequestAckDecryptionErrorCallback,
+                                      this,
+                                      ackV2->providerName,
+                                      ackV2->serviceName,
+                                      ndn::Name(),
+                                      ackV2->requestId,
+                                      _1));
+            }else{
+                nacConsumer.consume(
+                            ndn::Name(subscription.name),
+                            std::bind(&ServiceUser::OnRequestAckDecryptionSuccessCallback,
+                                      this,
+                                      ackV2->providerName,
+                                      ackV2->serviceName,
+                                      ndn::Name(),
+                                      ackV2->requestId,
+                                      _1),
+                            std::bind(&ServiceUser::OnRequestAckDecryptionErrorCallback,
+                                      this,
+                                      ackV2->providerName,
+                                      ackV2->serviceName,
+                                      ndn::Name(),
+                                      ackV2->requestId,
+                                      _1));
+            }
+            return;
+        }
+
         // parse permission ack name
         ndn::Name providerName, userName, ServiceName, FunctionName, seqNum;
         auto results = parseRequestAckName(subscription.name);
@@ -637,13 +795,23 @@ namespace ndn_service_framework
         NDN_LOG_INFO("OnResponse: " << subscription.name);
 
         ndn::Name requesterName, providerName, ServiceName, FunctionName, RequestId;
-        auto results = ndn_service_framework::parseResponseName(subscription.name);
-        if (!results) {
+        auto resultsV2 = ndn_service_framework::parseResponseNameV2(subscription.name);
+        if (resultsV2) {
+            requesterName = resultsV2->requesterName;
+            providerName = resultsV2->providerName;
+            ServiceName = resultsV2->serviceName;
+            FunctionName = ndn::Name();
+            RequestId = resultsV2->requestId;
+        }
+        else {
+            auto results = ndn_service_framework::parseResponseName(subscription.name);
+            if (!results) {
             NDN_LOG_ERROR("parseResponseName failed: " << subscription.name);
             return;
+            }
+            std::tie(requesterName, providerName, ServiceName, FunctionName, RequestId) =
+                results.value();
         }
-        std::tie(requesterName, providerName, ServiceName, FunctionName, RequestId) =
-            results.value();
 
         const ndn::Name responseName(subscription.name);
         auto onSuccess = [this, responseName](const ndn::Buffer& buffer) {
@@ -712,7 +880,11 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             return;
         }
 
-        const ndn::Name ackName =
+        const ndn::Name ackName = FunctionName.empty() ?
+            ndn_service_framework::makeRequestAckNameV2(providerName,
+                                                        identity,
+                                                        ServiceName,
+                                                        requestID) :
             ndn_service_framework::makeRequestAckName(providerName,
                                                       identity,
                                                       ServiceName,
@@ -791,6 +963,11 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
 
     void ServiceUser::PublishServiceCoordinationMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID)
     {
+        if (FunctionName.empty()) {
+            PublishServiceCoordinationMessageV2(providerName, ServiceName, requestID);
+            return;
+        }
+
         // log message
         NDN_LOG_INFO("PublishServiceCoordinationMessage: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri());
         // create service coordination message
@@ -803,6 +980,28 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
 
         // publish service coordination message
         PublishMessage(serviceCoordinationName, serviceCoordinationNameWithoutPrefix, coordinationMessage);
+    }
+
+    void ServiceUser::PublishServiceCoordinationMessageV2(const ndn::Name& providerName,
+                                                          const ndn::Name& serviceName,
+                                                          const ndn::Name& requestId)
+    {
+        NDN_LOG_INFO("PublishServiceCoordinationMessageV2: "
+                     << providerName.toUri()
+                     << serviceName.toUri()
+                     << requestId.toUri());
+
+        ServiceCoordinationMessage coordinationMessage;
+        coordinationMessage.setRequestIDs({requestId.toUri()});
+
+        ndn::Name serviceCoordinationName =
+            makeServiceCoordinationNameV2(identity, providerName, serviceName, requestId);
+        ndn::Name serviceCoordinationNameWithoutPrefix =
+            makeServiceCoordinationNameWithoutPrefixV2(providerName, serviceName, requestId);
+
+        PublishMessage(serviceCoordinationName,
+                       serviceCoordinationNameWithoutPrefix,
+                       coordinationMessage);
     }
 
     void ServiceUser::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)

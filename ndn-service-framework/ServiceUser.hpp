@@ -51,6 +51,11 @@ namespace ndn_service_framework{
             ndn::Name getName();
 
             void PublishRequest(const std::vector<ndn::Name>& serviceProviderNames,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &payload, const size_t& strategy=ndn_service_framework::tlv::FirstResponding);
+            void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
+                                  const ndn::Name& serviceName,
+                                  const ndn::Name& requestId,
+                                  const ndn::Buffer& payload,
+                                  const size_t& strategy=ndn_service_framework::tlv::FirstResponding);
 
             ndn::Name async_call(const std::vector<ndn::Name>& providers,
                                  const ndn::Name& serviceName,
@@ -182,6 +187,9 @@ namespace ndn_service_framework{
             void OnRequestAckDecryptionErrorCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID, const std::string &error) ;
 
             void PublishServiceCoordinationMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID) ;
+            void PublishServiceCoordinationMessageV2(const ndn::Name& providerName,
+                                                     const ndn::Name& serviceName,
+                                                     const ndn::Name& requestId);
 
             void OnResponseDecryptionErrorCallback(const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const std::string &);
 
