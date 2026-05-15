@@ -5,6 +5,13 @@ top = '..'
 def build(bld):
     bld.program(target='../unit-tests',
                 name='unit-tests',
-                source=bld.path.ant_glob('**/*.cpp'),
-                use='NDN_CXX NDN_SVS BOOST ndn-service-framework',
+                source=(bld.path.ant_glob('**/*.cpp') +
+                        bld.path.parent.ant_glob([
+                            'ndn-service-framework/NDNSFMessages.cpp',
+                            'ndn-service-framework/utils.cpp',
+                        ])),
+                includes='.. ../ndn-service-framework',
+                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD',
+                libpath=['/usr/local/lib'],
+                lib=['boost_unit_test_framework'],
                 install_path=None)
