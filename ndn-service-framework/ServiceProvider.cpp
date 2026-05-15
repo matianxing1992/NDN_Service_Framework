@@ -101,6 +101,176 @@ namespace ndn_service_framework
         registerNDNSFMessages();
     }
 
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     AckStrategyHandler ackHandler,
+                                     RequestHandler requestHandler)
+    {
+        m_services[serviceName] = {std::move(ackHandler), std::move(requestHandler)};
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     RequestHandler requestHandler)
+    {
+        addService(serviceName, AckStrategyHandler{}, std::move(requestHandler));
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     AckStrategyHandler ackHandler,
+                                     SimpleRequestHandler requestHandler)
+    {
+        addService(serviceName,
+                   std::move(ackHandler),
+                   [handler = std::move(requestHandler)](
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const RequestMessage& requestMessage) {
+                       return handler(requestMessage);
+                   });
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     const ndn::Name& functionName,
+                                     AckStrategyHandler ackHandler,
+                                     RequestHandler requestHandler)
+    {
+        addService(makeUnifiedServiceName(serviceName, functionName),
+                   std::move(ackHandler),
+                   std::move(requestHandler));
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     const ndn::Name& functionName,
+                                     RequestHandler requestHandler)
+    {
+        addService(makeUnifiedServiceName(serviceName, functionName),
+                   std::move(requestHandler));
+    }
+
+    bool ServiceProvider::hasService(const ndn::Name& serviceName) const
+    {
+        return m_services.find(serviceName) != m_services.end();
+    }
+
+    bool ServiceProvider::hasService(const ndn::Name& serviceName,
+                                     const ndn::Name& functionName) const
+    {
+        return hasService(makeUnifiedServiceName(serviceName, functionName));
+    }
+
+    ResponseMessage ServiceProvider::dispatchRequest(
+        const ndn::Name& requesterIdentity,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        const RequestMessage& requestMessage) const
+    {
+        auto service = m_services.find(serviceName);
+        if (service == m_services.end()) {
+            return makeErrorResponse("No handler registered for " + serviceName.toUri());
+        }
+
+        if (!service->second.requestHandler) {
+            return makeErrorResponse("Registered service has no request handler for " +
+                                     serviceName.toUri());
+        }
+
+        return service->second.requestHandler(requesterIdentity,
+                                              providerName,
+                                              serviceName,
+                                              requestId,
+                                              requestMessage);
+    }
+
+    ResponseMessage ServiceProvider::dispatchRequest(
+        const ndn::Name& requesterIdentity,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& functionName,
+        const ndn::Name& requestId,
+        const RequestMessage& requestMessage) const
+    {
+        return dispatchRequest(requesterIdentity,
+                               providerName,
+                               makeUnifiedServiceName(serviceName, functionName),
+                               requestId,
+                               requestMessage);
+    }
+
+    ResponseMessage ServiceProvider::handleDecryptedRequestByName(
+        const ndn::Name& requestName,
+        const RequestMessage& requestMessage) const
+    {
+        auto parsed = parseRequestNameForUnifiedService(requestName);
+        if (!parsed) {
+            return makeErrorResponse("Failed to parse request name " + requestName.toUri());
+        }
+
+        return dispatchRequest(parsed->requesterIdentity,
+                               identity,
+                               parsed->serviceName,
+                               parsed->requestId,
+                               requestMessage);
+    }
+
+    ResponseMessage ServiceProvider::handleDecryptedRequestByName(
+        const ndn::Name& requestName,
+        const ndn::Block& requestBlock) const
+    {
+        RequestMessage requestMessage;
+        if (!requestMessage.WireDecode(requestBlock)) {
+            return makeErrorResponse("Failed to decode RequestMessage for " +
+                                     requestName.toUri());
+        }
+
+        return handleDecryptedRequestByName(requestName, requestMessage);
+    }
+
+    ResponseMessage ServiceProvider::makeErrorResponse(const std::string& errorInfo)
+    {
+        ResponseMessage response;
+        response.setStatus(false);
+        response.setErrorInfo(errorInfo);
+        return response;
+    }
+
+    ndn::Name ServiceProvider::makeUnifiedServiceName(const ndn::Name& serviceName,
+                                                      const ndn::Name& functionName)
+    {
+        if (functionName.empty()) {
+            return serviceName;
+        }
+
+        ndn::Name unified(serviceName);
+        for (const auto& component : functionName) {
+            unified.append(component);
+        }
+        return unified;
+    }
+
+    std::optional<ServiceProvider::ParsedRequestName>
+    ServiceProvider::parseRequestNameForUnifiedService(const ndn::Name& requestName)
+    {
+        auto parsed = ndn_service_framework::parseRequestName(requestName);
+        if (!parsed) {
+            return std::nullopt;
+        }
+
+        ndn::Name requesterIdentity;
+        ndn::Name serviceName;
+        ndn::Name functionName;
+        ndn::Name bloomFilterName;
+        ndn::Name requestId;
+        std::tie(requesterIdentity, serviceName, functionName, bloomFilterName, requestId) =
+            parsed.value();
+
+        return ParsedRequestName{
+            requesterIdentity,
+            makeUnifiedServiceName(serviceName, functionName),
+            requestId};
+    }
+
     void ServiceProvider::PublishMessage(const ndn::Name &messageName, const ndn::Name &messageNameWithoutPrefix,AbstractMessage &message)
     {
         // log message
@@ -321,17 +491,46 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
                 << " function " << FunctionName.toUri());
         }
 
-        // // Strategy: NoCoordination → direct execution
-        // if (requestMessage.getStrategy() == tlv::NoCoordination) {
-        //     NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: NoCoordination Strategy");
-        //     ConsumeRequest(requesterIdentity,
-        //                    identity,
-        //                    ServiceName,
-        //                    FunctionName,
-        //                    RequestID,
-        //                    requestMessage);
-        //     return;
-        // }
+        const ndn::Name unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
+        if (hasService(unifiedServiceName)) {
+            NDN_LOG_INFO("Dispatch request using dynamic handler for "
+                         << unifiedServiceName.toUri());
+
+            auto response = dispatchRequest(requesterIdentity,
+                                            identity,
+                                            unifiedServiceName,
+                                            RequestID,
+                                            requestMessage);
+            ndn::Name responseName = makeResponseName(identity,
+                                                      requesterIdentity,
+                                                      ServiceName,
+                                                      FunctionName,
+                                                      RequestID);
+            ndn::Name responseNameWithoutPrefix =
+                makeResponseNameWithoutPrefix(requesterIdentity,
+                                              ServiceName,
+                                              FunctionName,
+                                              RequestID);
+            PublishMessage(responseName, responseNameWithoutPrefix, response);
+            return;
+        }
+
+        if (requestMessage.getStrategy() == tlv::NoCoordination) {
+            NDN_LOG_INFO("No dynamic handler for "
+                         << unifiedServiceName.toUri()
+                         << "; falling back to old ConsumeRequest path");
+            ConsumeRequest(requesterIdentity,
+                           identity,
+                           ServiceName,
+                           FunctionName,
+                           RequestID,
+                           requestMessage);
+            return;
+        }
+
+        NDN_LOG_INFO("No dynamic handler for "
+                     << unifiedServiceName.toUri()
+                     << "; preserving old ACK/coordination path");
 
         // Save request into pendingRequests
         ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())

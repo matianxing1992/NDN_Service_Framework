@@ -11,6 +11,13 @@
 #include "NDNSFMessages.hpp"
 #include "ConfigManager.hpp"
 
+#include <functional>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
 
 
 namespace ndn_service_framework{
@@ -18,6 +25,21 @@ namespace ndn_service_framework{
     class ServiceProvider
     {
         public:
+            using ServiceKey = ndn::Name;
+
+            using AckStrategyHandler =
+                std::function<std::pair<bool, ndn::Block>(const RequestAckMessage&)>;
+
+            using RequestHandler =
+                std::function<ResponseMessage(const ndn::Name& requesterIdentity,
+                                              const ndn::Name& providerName,
+                                              const ndn::Name& serviceName,
+                                              const ndn::Name& requestId,
+                                              const RequestMessage& requestMessage)>;
+
+            using SimpleRequestHandler =
+                std::function<ResponseMessage(const RequestMessage& requestMessage)>;
+
             ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
             virtual ~ServiceProvider() {}
 
@@ -31,6 +53,103 @@ namespace ndn_service_framework{
 
             // After receving service coordination message, this function is called to consumeRequest;
             virtual void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, RequestMessage& requestMessage) = 0;
+
+            void addService(const ndn::Name& serviceName,
+                            AckStrategyHandler ackHandler,
+                            RequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            RequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            AckStrategyHandler ackHandler,
+                            SimpleRequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            const ndn::Name& functionName,
+                            AckStrategyHandler ackHandler,
+                            RequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            const ndn::Name& functionName,
+                            RequestHandler requestHandler);
+
+            template<typename RequestT, typename ResponseT>
+            void addHandler(const ndn::Name& serviceName,
+                            std::function<void(const ndn::Name& requesterIdentity,
+                                               const RequestT& request,
+                                               ResponseT& response)> handler)
+            {
+                addService(serviceName,
+                           [handler = std::move(handler)](
+                               const ndn::Name& requesterIdentity,
+                               const ndn::Name&,
+                               const ndn::Name& serviceName,
+                               const ndn::Name&,
+                               const RequestMessage& requestMessage) {
+                               const auto payload = requestMessage.getPayload();
+
+                               RequestT typedRequest;
+                               if (!typedRequest.ParseFromArray(payload.data(), payload.size())) {
+                                   return makeErrorResponse("Failed to parse request payload for " +
+                                                            serviceName.toUri());
+                               }
+
+                               ResponseT typedResponse;
+                               handler(requesterIdentity, typedRequest, typedResponse);
+
+                               std::string responseBytes;
+                               if (!typedResponse.SerializeToString(&responseBytes)) {
+                                   return makeErrorResponse("Failed to serialize response payload for " +
+                                                            serviceName.toUri());
+                               }
+
+                               ndn::Buffer responsePayload(
+                                   reinterpret_cast<const uint8_t*>(responseBytes.data()),
+                                   responseBytes.size());
+
+                               ResponseMessage responseMessage;
+                               responseMessage.setStatus(true);
+                               responseMessage.setErrorInfo("No error");
+                               responseMessage.setPayload(responsePayload, responsePayload.size());
+                               return responseMessage;
+                           });
+            }
+
+            template<typename RequestT, typename ResponseT>
+            void addHandler(const ndn::Name& serviceName,
+                            const ndn::Name& functionName,
+                            std::function<void(const ndn::Name& requesterIdentity,
+                                               const RequestT& request,
+                                               ResponseT& response)> handler)
+            {
+                addHandler<RequestT, ResponseT>(makeUnifiedServiceName(serviceName, functionName),
+                                                std::move(handler));
+            }
+
+            bool hasService(const ndn::Name& serviceName) const;
+
+            bool hasService(const ndn::Name& serviceName,
+                            const ndn::Name& functionName) const;
+
+            ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
+                                            const ndn::Name& providerName,
+                                            const ndn::Name& serviceName,
+                                            const ndn::Name& requestId,
+                                            const RequestMessage& requestMessage) const;
+
+            ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
+                                            const ndn::Name& providerName,
+                                            const ndn::Name& serviceName,
+                                            const ndn::Name& functionName,
+                                            const ndn::Name& requestId,
+                                            const RequestMessage& requestMessage) const;
+
+            ResponseMessage handleDecryptedRequestByName(const ndn::Name& requestName,
+                                                         const RequestMessage& requestMessage) const;
+
+            ResponseMessage handleDecryptedRequestByName(const ndn::Name& requestName,
+                                                         const ndn::Block& requestBlock) const;
 
             void OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilterName,  const ndn::Name &RequestID, const ndn::Buffer & buffer);
     
@@ -73,6 +192,27 @@ namespace ndn_service_framework{
             onMissingData(const std::vector<ndn::svs::MissingDataInfo> &);
 
         protected:
+            struct RegisteredService
+            {
+                AckStrategyHandler ackHandler;
+                RequestHandler requestHandler;
+            };
+
+            struct ParsedRequestName
+            {
+                ndn::Name requesterIdentity;
+                ndn::Name serviceName;
+                ndn::Name requestId;
+            };
+
+            static ResponseMessage makeErrorResponse(const std::string& errorInfo);
+
+            static ndn::Name makeUnifiedServiceName(const ndn::Name& serviceName,
+                                                    const ndn::Name& functionName);
+
+            static std::optional<ParsedRequestName>
+            parseRequestNameForUnifiedService(const ndn::Name& requestName);
+
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
             ndn::Name identity;
@@ -117,6 +257,8 @@ namespace ndn_service_framework{
             std::map<ndn::Name, int> m_sessionIDMap;
 
             std::mutex svs_mutex;
+
+            std::map<ServiceKey, RegisteredService> m_services;
     };
 }
 
