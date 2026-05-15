@@ -271,4 +271,201 @@ bool ServiceCoordinationMessage::WireDecode(const ndn::Block& block) {
     return true;
 }
 
+PermissionEntry::PermissionEntry() {}
+
+void PermissionEntry::setProviderName(const std::string& providerName) {
+    providerName_ = providerName;
+}
+
+void PermissionEntry::setServiceName(const std::string& serviceName) {
+    serviceName_ = serviceName;
+}
+
+void PermissionEntry::setToken(const std::string& token) {
+    token_ = token;
+}
+
+void PermissionEntry::setTtl(size_t ttl) {
+    ttl_ = ttl;
+}
+
+void PermissionEntry::setVersion(size_t version) {
+    version_ = version;
+}
+
+const std::string& PermissionEntry::getProviderName() const {
+    return providerName_;
+}
+
+const std::string& PermissionEntry::getServiceName() const {
+    return serviceName_;
+}
+
+const std::string& PermissionEntry::getToken() const {
+    return token_;
+}
+
+size_t PermissionEntry::getTtl() const {
+    return ttl_;
+}
+
+size_t PermissionEntry::getVersion() const {
+    return version_;
+}
+
+std::string PermissionEntry::toString() const {
+    return "PermissionEntry{providerName=" + providerName_ +
+           ", serviceName=" + serviceName_ +
+           ", token=" + token_ +
+           ", ttl=" + std::to_string(ttl_) +
+           ", version=" + std::to_string(version_) + "}";
+}
+
+void PermissionEntry::Clear() {
+    providerName_.clear();
+    serviceName_.clear();
+    token_.clear();
+    ttl_ = 0;
+    version_ = 1;
+    m_wire.reset();
+}
+
+ndn::Block PermissionEntry::WireEncode() const {
+    if (m_wire.hasWire()) {
+        m_wire.reset();
+    }
+
+    ndn::Block block(tlv::PermissionEntryType);
+    block.push_back(ndn::makeStringBlock(tlv::ProviderNameType, providerName_));
+    block.push_back(ndn::makeStringBlock(tlv::ServiceNameType, serviceName_));
+    block.push_back(ndn::makeStringBlock(tlv::TokenType, token_));
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::TtlType, ttl_));
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, version_));
+    block.encode();
+    m_wire = block;
+    return m_wire;
+}
+
+bool PermissionEntry::WireDecode(const ndn::Block& block) {
+    Clear();
+
+    if (block.type() != tlv::PermissionEntryType) {
+        return false;
+    }
+
+    block.parse();
+    for (auto b : block.elements()) {
+        if (b.type() == tlv::ProviderNameType) {
+            providerName_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::ServiceNameType) {
+            serviceName_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::TokenType) {
+            token_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::TtlType) {
+            ttl_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::VersionType) {
+            version_ = ndn::readNonNegativeInteger(b);
+        }
+    }
+
+    return true;
+}
+
+PermissionResponse::PermissionResponse() {}
+
+void PermissionResponse::setTargetIdentity(const std::string& targetIdentity) {
+    targetIdentity_ = targetIdentity;
+}
+
+void PermissionResponse::setPermissionKind(size_t permissionKind) {
+    permissionKind_ = permissionKind;
+}
+
+void PermissionResponse::setEntries(const std::vector<PermissionEntry>& entries) {
+    entries_ = entries;
+}
+
+void PermissionResponse::addEntry(const PermissionEntry& entry) {
+    entries_.push_back(entry);
+}
+
+const std::string& PermissionResponse::getTargetIdentity() const {
+    return targetIdentity_;
+}
+
+size_t PermissionResponse::getPermissionKind() const {
+    return permissionKind_;
+}
+
+const std::vector<PermissionEntry>& PermissionResponse::getEntries() const {
+    return entries_;
+}
+
+std::string PermissionResponse::toString() const {
+    std::string result = "PermissionResponse{targetIdentity=" + targetIdentity_ +
+                         ", permissionKind=" + std::to_string(permissionKind_) +
+                         ", entries=[";
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        if (i > 0) {
+            result += ", ";
+        }
+        result += entries_[i].toString();
+    }
+    result += "]}";
+    return result;
+}
+
+void PermissionResponse::Clear() {
+    targetIdentity_.clear();
+    permissionKind_ = tlv::UserPermission;
+    entries_.clear();
+    m_wire.reset();
+}
+
+ndn::Block PermissionResponse::WireEncode() const {
+    if (m_wire.hasWire()) {
+        m_wire.reset();
+    }
+
+    ndn::Block block(tlv::PermissionResponseType);
+    block.push_back(ndn::makeStringBlock(tlv::TargetIdentityType, targetIdentity_));
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::PermissionKindType, permissionKind_));
+    for (const auto& entry : entries_) {
+        block.push_back(entry.WireEncode());
+    }
+    block.encode();
+    m_wire = block;
+    return m_wire;
+}
+
+bool PermissionResponse::WireDecode(const ndn::Block& block) {
+    Clear();
+
+    if (block.type() != tlv::PermissionResponseType) {
+        return false;
+    }
+
+    block.parse();
+    for (auto b : block.elements()) {
+        if (b.type() == tlv::TargetIdentityType) {
+            targetIdentity_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::PermissionKindType) {
+            permissionKind_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::PermissionEntryType) {
+            PermissionEntry entry;
+            if (entry.WireDecode(b)) {
+                entries_.push_back(entry);
+            }
+        }
+    }
+
+    return true;
+}
+
 } // namespace ndn_service_framework

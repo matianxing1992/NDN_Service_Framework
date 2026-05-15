@@ -24,6 +24,14 @@ namespace tlv {
         ErrorInfoType = 153,
         RequestIDType = 154,
         StrategyType = 155,
+        PermissionEntryType = 156,
+        PermissionResponseType = 157,
+        ProviderNameType = 158,
+        ServiceNameType = 159,
+        PermissionKindType = 160,
+        TargetIdentityType = 161,
+        TtlType = 162,
+        VersionType = 163,
     };
 
     // Coordination Strategies
@@ -31,6 +39,11 @@ namespace tlv {
         FirstResponding = 0,
         LoadBalancing = 1,
         NoCoordination = 2,
+    };
+
+    enum {
+        UserPermission = 0,
+        ProviderPermission = 1,
     };
 }
 
@@ -120,6 +133,61 @@ public:
 
 private:
     std::vector<std::string> requestIDs_;
+    mutable ndn::Block m_wire;
+};
+
+class PermissionEntry : public AbstractMessage {
+public:
+    PermissionEntry();
+
+    void setProviderName(const std::string& providerName);
+    void setServiceName(const std::string& serviceName);
+    void setToken(const std::string& token);
+    void setTtl(size_t ttl);
+    void setVersion(size_t version);
+
+    const std::string& getProviderName() const;
+    const std::string& getServiceName() const;
+    const std::string& getToken() const;
+    size_t getTtl() const;
+    size_t getVersion() const;
+    std::string toString() const;
+
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+
+private:
+    std::string providerName_;
+    std::string serviceName_;
+    std::string token_;
+    size_t ttl_ = 0;
+    size_t version_ = 1;
+    mutable ndn::Block m_wire;
+};
+
+class PermissionResponse : public AbstractMessage {
+public:
+    PermissionResponse();
+
+    void setTargetIdentity(const std::string& targetIdentity);
+    void setPermissionKind(size_t permissionKind);
+    void setEntries(const std::vector<PermissionEntry>& entries);
+    void addEntry(const PermissionEntry& entry);
+
+    const std::string& getTargetIdentity() const;
+    size_t getPermissionKind() const;
+    const std::vector<PermissionEntry>& getEntries() const;
+    std::string toString() const;
+
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+
+private:
+    std::string targetIdentity_;
+    size_t permissionKind_ = tlv::UserPermission;
+    std::vector<PermissionEntry> entries_;
     mutable ndn::Block m_wire;
 };
 
