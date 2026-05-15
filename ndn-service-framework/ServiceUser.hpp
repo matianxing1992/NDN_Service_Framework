@@ -50,6 +50,9 @@ namespace ndn_service_framework{
 
             ndn::Name getName();
 
+            void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
+            void applyPermissionResponse(const PermissionResponse& response);
+
             void PublishRequest(const std::vector<ndn::Name>& serviceProviderNames,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &payload, const size_t& strategy=ndn_service_framework::tlv::FirstResponding);
             void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
                                   const ndn::Name& serviceName,
@@ -179,6 +182,10 @@ namespace ndn_service_framework{
 
             // ndnsd serviceinfo discovery callback
             void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
+
+            void onPermissionResponseData(const ndn::Interest& interest,
+                                          const ndn::Data& data);
+            void onPermissionResponseTimeout(const ndn::Interest& interest);
 
             void OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 

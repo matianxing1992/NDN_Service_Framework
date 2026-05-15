@@ -5,6 +5,44 @@ namespace ndn_service_framework
 
     NDN_LOG_INIT(ndn_service_framework.ServiceUser);
 
+    namespace
+    {
+        bool
+        decodeEncryptedPermissionResponseFromDataContent(
+            const ndn::Data& data,
+            EncryptedPermissionResponse& response)
+        {
+            const auto& content = data.getContent();
+            if (content.type() == tlv::EncryptedPermissionResponseType) {
+                return response.WireDecode(content);
+            }
+
+            auto [ok, block] = ndn::Block::fromBuffer(
+                ndn::span<const uint8_t>(content.value(), content.value_size()));
+            if (!ok) {
+                return false;
+            }
+            return response.WireDecode(block);
+        }
+
+        bool
+        decodePermissionResponseFromDataContent(const ndn::Data& data,
+                                                PermissionResponse& response)
+        {
+            const auto& content = data.getContent();
+            if (content.type() == tlv::PermissionResponseType) {
+                return response.WireDecode(content);
+            }
+
+            auto [ok, block] = ndn::Block::fromBuffer(
+                ndn::span<const uint8_t>(content.value(), content.value_size()));
+            if (!ok) {
+                return false;
+            }
+            return response.WireDecode(block);
+        }
+    }
+
     ServiceUser::ServiceUser(ndn::Face &face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) : 
         m_face(face),
         m_scheduler(m_face.getIoContext()),
@@ -105,6 +143,47 @@ namespace ndn_service_framework
     ndn::Name ServiceUser::getName()
     {
         return identity;
+    }
+
+    void ServiceUser::fetchPermissionsFromController(const ndn::Name& controllerPrefix)
+    {
+        ndn::Name interestName(controllerPrefix);
+        interestName.append(ndn::Name("/NDNSF/PERMISSIONS/USER"));
+        interestName.append(identity);
+
+        ndn::Interest interest(interestName);
+        interest.setCanBePrefix(true);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::seconds(4));
+
+        NDN_LOG_INFO("Fetch user permissions: " << interestName);
+        m_face.expressInterest(
+            interest,
+            std::bind(&ServiceUser::onPermissionResponseData, this, _1, _2),
+            [this](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                onPermissionResponseTimeout(interest);
+            },
+            std::bind(&ServiceUser::onPermissionResponseTimeout, this, _1));
+    }
+
+    void ServiceUser::applyPermissionResponse(const PermissionResponse& response)
+    {
+        if (response.getPermissionKind() != tlv::UserPermission) {
+            NDN_LOG_ERROR("Ignoring non-user PermissionResponse for "
+                          << response.getTargetIdentity());
+            return;
+        }
+
+        for (const auto& entry : response.getEntries()) {
+            ndn::Name providerServiceName(entry.getProviderName());
+            providerServiceName.append(ndn::Name(entry.getServiceName()));
+            UPT.insertPermission(providerServiceName.toUri(),
+                                 entry.getServiceName(),
+                                 entry.getToken());
+            NDN_LOG_INFO("Installed user permission provider="
+                         << entry.getProviderName()
+                         << " service=" << entry.getServiceName());
+        }
     }
 
     void ServiceUser::PublishRequest(const std::vector<ndn::Name> &serviceProviderNames, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &payload, const size_t& strategy)
@@ -714,6 +793,56 @@ namespace ndn_service_framework
         }
 
 
+    }
+
+    void ServiceUser::onPermissionResponseData(const ndn::Interest&,
+                                               const ndn::Data& data)
+    {
+        PermissionResponse response;
+        EncryptedPermissionResponse encryptedResponse;
+        if (decodeEncryptedPermissionResponseFromDataContent(data, encryptedResponse)) {
+            try {
+                response = decryptPermissionResponseWithKeyChain(encryptedResponse, m_keyChain);
+            }
+            catch (const std::exception& e) {
+                NDN_LOG_ERROR("Failed to decrypt encrypted PermissionResponse from "
+                              << data.getName() << ": " << e.what());
+                return;
+            }
+
+            NDN_LOG_INFO("Received encrypted PermissionResponse: "
+                         << response.toString());
+        }
+        else {
+            if (!decodePermissionResponseFromDataContent(data, response)) {
+                NDN_LOG_ERROR("Failed to decode PermissionResponse from "
+                              << data.getName());
+                return;
+            }
+
+            NDN_LOG_INFO("Received plaintext PermissionResponse fallback: "
+                         << response.toString());
+        }
+
+        if (response.getTargetIdentity() != identity.toUri()) {
+            NDN_LOG_ERROR("Ignoring PermissionResponse for unexpected targetIdentity="
+                          << response.getTargetIdentity()
+                          << " expected=" << identity.toUri());
+            return;
+        }
+
+        if (response.getPermissionKind() != tlv::UserPermission) {
+            NDN_LOG_ERROR("Ignoring non-user PermissionResponse for "
+                          << response.getTargetIdentity());
+            return;
+        }
+
+        applyPermissionResponse(response);
+    }
+
+    void ServiceUser::onPermissionResponseTimeout(const ndn::Interest& interest)
+    {
+        NDN_LOG_ERROR("PermissionResponse timeout: " << interest.getName());
     }
 
     void ServiceUser::OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription)

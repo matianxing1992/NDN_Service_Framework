@@ -468,4 +468,112 @@ bool PermissionResponse::WireDecode(const ndn::Block& block) {
     return true;
 }
 
+EncryptedPermissionResponse::EncryptedPermissionResponse() {}
+
+void EncryptedPermissionResponse::setRecipientCertName(const std::string& recipientCertName) {
+    recipientCertName_ = recipientCertName;
+}
+
+void EncryptedPermissionResponse::setAlgorithm(const std::string& algorithm) {
+    algorithm_ = algorithm;
+}
+
+void EncryptedPermissionResponse::setEncryptedAesKey(const ndn::Buffer& encryptedAesKey) {
+    encryptedAesKey_ = encryptedAesKey;
+}
+
+void EncryptedPermissionResponse::setIv(const ndn::Buffer& iv) {
+    iv_ = iv;
+}
+
+void EncryptedPermissionResponse::setCipherText(const ndn::Buffer& cipherText) {
+    cipherText_ = cipherText;
+}
+
+const std::string& EncryptedPermissionResponse::getRecipientCertName() const {
+    return recipientCertName_;
+}
+
+const std::string& EncryptedPermissionResponse::getAlgorithm() const {
+    return algorithm_;
+}
+
+const ndn::Buffer& EncryptedPermissionResponse::getEncryptedAesKey() const {
+    return encryptedAesKey_;
+}
+
+const ndn::Buffer& EncryptedPermissionResponse::getIv() const {
+    return iv_;
+}
+
+const ndn::Buffer& EncryptedPermissionResponse::getCipherText() const {
+    return cipherText_;
+}
+
+std::string EncryptedPermissionResponse::toString() const {
+    return "EncryptedPermissionResponse{recipientCertName=" + recipientCertName_ +
+           ", algorithm=" + algorithm_ +
+           ", encryptedAesKeySize=" + std::to_string(encryptedAesKey_.size()) +
+           ", ivSize=" + std::to_string(iv_.size()) +
+           ", cipherTextSize=" + std::to_string(cipherText_.size()) + "}";
+}
+
+void EncryptedPermissionResponse::Clear() {
+    recipientCertName_.clear();
+    algorithm_.clear();
+    encryptedAesKey_.clear();
+    iv_.clear();
+    cipherText_.clear();
+    m_wire.reset();
+}
+
+ndn::Block EncryptedPermissionResponse::WireEncode() const {
+    if (m_wire.hasWire()) {
+        m_wire.reset();
+    }
+
+    ndn::Block block(tlv::EncryptedPermissionResponseType);
+    block.push_back(ndn::makeStringBlock(tlv::RecipientCertNameType, recipientCertName_));
+    block.push_back(ndn::makeStringBlock(tlv::AlgorithmType, algorithm_));
+    block.push_back(ndn::makeBinaryBlock(tlv::EncryptedAesKeyType,
+                                         encryptedAesKey_.begin(),
+                                         encryptedAesKey_.end()));
+    block.push_back(ndn::makeBinaryBlock(tlv::IvType, iv_.begin(), iv_.end()));
+    block.push_back(ndn::makeBinaryBlock(tlv::CipherTextType,
+                                         cipherText_.begin(),
+                                         cipherText_.end()));
+    block.encode();
+    m_wire = block;
+    return m_wire;
+}
+
+bool EncryptedPermissionResponse::WireDecode(const ndn::Block& block) {
+    Clear();
+
+    if (block.type() != tlv::EncryptedPermissionResponseType) {
+        return false;
+    }
+
+    block.parse();
+    for (auto b : block.elements()) {
+        if (b.type() == tlv::RecipientCertNameType) {
+            recipientCertName_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::AlgorithmType) {
+            algorithm_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::EncryptedAesKeyType) {
+            encryptedAesKey_ = ndn::Buffer(b.value(), b.value_size());
+        }
+        else if (b.type() == tlv::IvType) {
+            iv_ = ndn::Buffer(b.value(), b.value_size());
+        }
+        else if (b.type() == tlv::CipherTextType) {
+            cipherText_ = ndn::Buffer(b.value(), b.value_size());
+        }
+    }
+
+    return true;
+}
+
 } // namespace ndn_service_framework

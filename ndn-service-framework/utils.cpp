@@ -1,5 +1,7 @@
 #include "utils.hpp"
 
+#include <ndn-cxx/security/transform.hpp>
+
 namespace ndn_service_framework
 {
 
@@ -80,6 +82,36 @@ namespace ndn_service_framework
                 }
             }
             return std::nullopt;
+        }
+
+        ndn::span<const uint8_t>
+        bufferToSpan(const ndn::Buffer& buffer)
+        {
+            return ndn::span<const uint8_t>(buffer.data(), buffer.size());
+        }
+
+        ndn::span<uint8_t>
+        mutableBufferToSpan(ndn::Buffer& buffer)
+        {
+            return ndn::span<uint8_t>(buffer.data(), buffer.size());
+        }
+
+        ndn::Buffer
+        runAesCbc(ndn::span<const uint8_t> input,
+                  ndn::span<const uint8_t> key,
+                  ndn::span<const uint8_t> iv,
+                  ndn::CipherOperator op)
+        {
+            ndn::OBufferStream output;
+            ndn::security::transform::bufferSource(input) >>
+                ndn::security::transform::blockCipher(ndn::BlockCipherAlgorithm::AES_CBC,
+                                                      op,
+                                                      key,
+                                                      iv) >>
+                ndn::security::transform::streamSink(output);
+
+            const auto encrypted = output.buf();
+            return ndn::Buffer(encrypted->begin(), encrypted->end());
         }
     }
 
@@ -563,5 +595,72 @@ namespace ndn_service_framework
         }
 
         return mergedContent;
+    }
+
+    EncryptedPermissionResponse
+    encryptPermissionResponseForCertificate(const PermissionResponse& response,
+                                            const ndn::security::Certificate& recipientCert)
+    {
+        ndn::security::transform::PublicKey recipientPublicKey;
+        recipientPublicKey.loadPkcs8(recipientCert.getPublicKey());
+        if (recipientPublicKey.getKeyType() != ndn::KeyType::RSA) {
+            throw std::invalid_argument("PermissionResponse encryption requires an RSA recipient certificate");
+        }
+
+        ndn::Block plaintext = response.WireEncode();
+        plaintext.encode();
+
+        ndn::Buffer aesKey(32);
+        ndn::Buffer iv(16);
+        ndn::random::generateSecureBytes(mutableBufferToSpan(aesKey));
+        ndn::random::generateSecureBytes(mutableBufferToSpan(iv));
+
+        ndn::Buffer cipherText = runAesCbc(ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+                                           bufferToSpan(aesKey),
+                                           bufferToSpan(iv),
+                                           ndn::CipherOperator::ENCRYPT);
+        auto encryptedAesKey = recipientPublicKey.encrypt(bufferToSpan(aesKey));
+
+        EncryptedPermissionResponse encryptedResponse;
+        encryptedResponse.setRecipientCertName(recipientCert.getName().toUri());
+        encryptedResponse.setAlgorithm("RSA-WRAPPED-AES-CBC");
+        encryptedResponse.setEncryptedAesKey(ndn::Buffer(encryptedAesKey->begin(), encryptedAesKey->end()));
+        encryptedResponse.setIv(iv);
+        encryptedResponse.setCipherText(cipherText);
+        return encryptedResponse;
+    }
+
+    PermissionResponse
+    decryptPermissionResponseWithKeyChain(const EncryptedPermissionResponse& encryptedResponse,
+                                          const ndn::security::KeyChain& keyChain)
+    {
+        if (encryptedResponse.getAlgorithm() != "RSA-WRAPPED-AES-CBC") {
+            throw std::invalid_argument("Unsupported encrypted PermissionResponse algorithm: " +
+                                        encryptedResponse.getAlgorithm());
+        }
+
+        const ndn::Name recipientCertName(encryptedResponse.getRecipientCertName());
+        const ndn::Name recipientKeyName = ndn::security::extractKeyNameFromCertName(recipientCertName);
+        auto aesKey = keyChain.getTpm().decrypt(bufferToSpan(encryptedResponse.getEncryptedAesKey()),
+                                                recipientKeyName);
+        if (aesKey == nullptr) {
+            throw std::runtime_error("Cannot decrypt PermissionResponse AES key with local KeyChain");
+        }
+
+        ndn::Buffer plaintext = runAesCbc(bufferToSpan(encryptedResponse.getCipherText()),
+                                          ndn::span<const uint8_t>(aesKey->data(), aesKey->size()),
+                                          bufferToSpan(encryptedResponse.getIv()),
+                                          ndn::CipherOperator::DECRYPT);
+
+        auto [ok, block] = ndn::Block::fromBuffer(bufferToSpan(plaintext));
+        if (!ok) {
+            throw std::runtime_error("Decrypted PermissionResponse is not a valid TLV block");
+        }
+
+        PermissionResponse response;
+        if (!response.WireDecode(block)) {
+            throw std::runtime_error("Decrypted TLV block is not a PermissionResponse");
+        }
+        return response;
     }
 }

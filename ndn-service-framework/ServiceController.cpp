@@ -1,4 +1,5 @@
 #include "ServiceController.hpp"
+#include "utils.hpp"
 
 namespace ndn_service_framework {
 
@@ -146,6 +147,30 @@ bool ServiceController::extractEntityAfterPrefix(const ndn::Name& interestName,
   return true;
 }
 
+bool ServiceController::parseUserPermissionsInterestName(const ndn::Name& interestName,
+                                                         ndn::Name& targetIdentity) const
+{
+  if (!m_prefixUserPermissions.isPrefixOf(interestName) ||
+      interestName.size() <= m_prefixUserPermissions.size()) {
+    return false;
+  }
+
+  targetIdentity = interestName.getSubName(m_prefixUserPermissions.size());
+  return true;
+}
+
+bool ServiceController::parseProviderPermissionsInterestName(const ndn::Name& interestName,
+                                                             ndn::Name& targetIdentity) const
+{
+  if (!m_prefixProviderPermissions.isPrefixOf(interestName) ||
+      interestName.size() <= m_prefixProviderPermissions.size()) {
+    return false;
+  }
+
+  targetIdentity = interestName.getSubName(m_prefixProviderPermissions.size());
+  return true;
+}
+
 void ServiceController::registerInterestHandlers()
 {
   if (!m_hasCustomControllerPrefix) {
@@ -157,6 +182,12 @@ void ServiceController::registerInterestHandlers()
 
   m_prefixServiceProvision = m_controllerPrefix;
   m_prefixServiceProvision.append("NDNSF").append("SERVICEPROVISION");
+
+  m_prefixUserPermissions = m_controllerPrefix;
+  m_prefixUserPermissions.append("NDNSF").append("PERMISSIONS").append("USER");
+
+  m_prefixProviderPermissions = m_controllerPrefix;
+  m_prefixProviderPermissions.append("NDNSF").append("PERMISSIONS").append("PROVIDER");
 
   m_face.setInterestFilter(
     m_prefixServiceAccess,
@@ -178,9 +209,31 @@ void ServiceController::registerInterestHandlers()
       std::cerr << "Failed to register prefix " << p << " reason=" << reason << std::endl;
     });
 
+  m_face.setInterestFilter(
+    m_prefixUserPermissions,
+    [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
+      this->onUserPermissionsInterest(f, i);
+    },
+    ndn::RegisterPrefixSuccessCallback(),
+    [](const ndn::Name& p, const std::string& reason) {
+      std::cerr << "Failed to register prefix " << p << " reason=" << reason << std::endl;
+    });
+
+  m_face.setInterestFilter(
+    m_prefixProviderPermissions,
+    [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
+      this->onProviderPermissionsInterest(f, i);
+    },
+    ndn::RegisterPrefixSuccessCallback(),
+    [](const ndn::Name& p, const std::string& reason) {
+      std::cerr << "Failed to register prefix " << p << " reason=" << reason << std::endl;
+    });
+
   std::cout << "ServiceController listening on:\n"
             << "  " << m_prefixServiceAccess << "\n"
-            << "  " << m_prefixServiceProvision << std::endl;
+            << "  " << m_prefixServiceProvision << "\n"
+            << "  " << m_prefixUserPermissions << "\n"
+            << "  " << m_prefixProviderPermissions << std::endl;
 }
 
 ndn::Block ServiceController::makeAllowedServiceListTlv(const std::vector<std::string>& services) const
@@ -200,6 +253,82 @@ ndn::Block ServiceController::makeAllowedServiceListTlv(const std::vector<std::s
 
   list.encode();
   return list;
+}
+
+PermissionResponse
+ServiceController::buildUserPermissionResponse(const ndn::Name& targetIdentity) const
+{
+  PermissionResponse response;
+  response.setTargetIdentity(targetIdentity.toUri());
+  response.setPermissionKind(tlv::UserPermission);
+
+  std::vector<std::string> allowedServices;
+  if (auto it = m_userAllowedServices.find(targetIdentity.toUri());
+      it != m_userAllowedServices.end()) {
+    allowedServices = it->second;
+  }
+
+  for (const auto& service : allowedServices) {
+    for (const auto& provider : m_providerAllowedServices) {
+      const auto& providerName = provider.first;
+      const auto& providerServices = provider.second;
+      if (std::find(providerServices.begin(), providerServices.end(), service) ==
+          providerServices.end()) {
+        continue;
+      }
+
+      PermissionEntry entry;
+      entry.setProviderName(providerName);
+      entry.setServiceName(service);
+      entry.setToken("permission-token:" + targetIdentity.toUri() + ":" +
+                     providerName + ":" + service);
+      entry.setTtl(0);
+      entry.setVersion(1);
+      response.addEntry(entry);
+    }
+  }
+
+  return response;
+}
+
+PermissionResponse
+ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdentity) const
+{
+  PermissionResponse response;
+  response.setTargetIdentity(targetIdentity.toUri());
+  response.setPermissionKind(tlv::ProviderPermission);
+
+  std::vector<std::string> allowedServices;
+  if (auto it = m_providerAllowedServices.find(targetIdentity.toUri());
+      it != m_providerAllowedServices.end()) {
+    allowedServices = it->second;
+  }
+
+  for (const auto& service : allowedServices) {
+    PermissionEntry entry;
+    entry.setProviderName(targetIdentity.toUri());
+    entry.setServiceName(service);
+    entry.setToken("permission-token:" + targetIdentity.toUri() + ":" + service);
+    entry.setTtl(0);
+    entry.setVersion(1);
+    response.addEntry(entry);
+  }
+
+  return response;
+}
+
+ndn::security::Certificate
+ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity) const
+{
+  auto cert = m_keyChain.getPib()
+                .getIdentity(targetIdentity)
+                .getDefaultKey()
+                .getDefaultCertificate();
+  if (!cert.isValid()) {
+    throw std::runtime_error("Target identity certificate is not currently valid: " +
+                             cert.getName().toUri());
+  }
+  return cert;
 }
 
 // ===================== Signer cert extraction =====================
@@ -254,14 +383,12 @@ ServiceController::encryptForCertificate(const ndn::security::Certificate& cert,
   // 取明文 bytes
   ndn::Block pt = plaintext;
   pt.encode(); // 确保 wire 完整
-  auto ptWire = pt.wire(); // Buffer
 
   // 取证书公钥 bits（API 可能因版本略不同）
-  const auto& pk = cert.getPublicKey();
-  auto pkBits = pk.getKeyBits(); // span<const uint8_t> 或类似
+  const auto pkBits = cert.getPublicKey();
 
   // 用你已有的 hybrid 加密
-  return encryptDataContentWithCK(ndn::make_span(ptWire->data(), ptWire->size()), pkBits);
+  return encryptDataContentWithCK(ndn::make_span(pt.data(), pt.size()), pkBits);
 }
 
 // ===================== Handlers =====================
@@ -366,6 +493,84 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
       std::cerr << "[SERVICEPROVISION] Interest validation failed: "
                 << err << " name=" << badInterest.getName() << std::endl;
     });
+}
+
+void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
+                                                  const ndn::Interest& interest)
+{
+  ndn::Name targetIdentity;
+  if (!parseUserPermissionsInterestName(interest.getName(), targetIdentity)) {
+    return;
+  }
+
+  PermissionResponse response = buildUserPermissionResponse(targetIdentity);
+  EncryptedPermissionResponse encryptedResponse;
+  try {
+    const auto targetCert = getTargetIdentityCertificate(targetIdentity);
+    encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
+  }
+  catch (const std::exception& e) {
+    std::cerr << "[PERMISSIONS/USER] Refusing to reply without encrypting for target="
+              << targetIdentity.toUri()
+              << " error=" << e.what()
+              << std::endl;
+    return;
+  }
+
+  ndn::Name dataName = interest.getName();
+  dataName.appendTimestamp(ndn::time::system_clock::now());
+
+  ndn::Data data(dataName);
+  data.setContent(encryptedResponse.WireEncode());
+  data.setFreshnessPeriod(ndn::time::seconds(2));
+  m_keyChain.sign(data);
+  m_face.put(data);
+
+  std::cout << "[PERMISSIONS/USER] Encrypted reply target="
+            << targetIdentity.toUri()
+            << " entries=" << response.getEntries().size()
+            << " data=" << data.getName()
+            << " payload=" << encryptedResponse.toString()
+            << std::endl;
+}
+
+void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&,
+                                                      const ndn::Interest& interest)
+{
+  ndn::Name targetIdentity;
+  if (!parseProviderPermissionsInterestName(interest.getName(), targetIdentity)) {
+    return;
+  }
+
+  PermissionResponse response = buildProviderPermissionResponse(targetIdentity);
+  EncryptedPermissionResponse encryptedResponse;
+  try {
+    const auto targetCert = getTargetIdentityCertificate(targetIdentity);
+    encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
+  }
+  catch (const std::exception& e) {
+    std::cerr << "[PERMISSIONS/PROVIDER] Refusing to reply without encrypting for target="
+              << targetIdentity.toUri()
+              << " error=" << e.what()
+              << std::endl;
+    return;
+  }
+
+  ndn::Name dataName = interest.getName();
+  dataName.appendTimestamp(ndn::time::system_clock::now());
+
+  ndn::Data data(dataName);
+  data.setContent(encryptedResponse.WireEncode());
+  data.setFreshnessPeriod(ndn::time::seconds(2));
+  m_keyChain.sign(data);
+  m_face.put(data);
+
+  std::cout << "[PERMISSIONS/PROVIDER] Encrypted reply target="
+            << targetIdentity.toUri()
+            << " entries=" << response.getEntries().size()
+            << " data=" << data.getName()
+            << " payload=" << encryptedResponse.toString()
+            << std::endl;
 }
 
 } // namespace ndn_service_framework

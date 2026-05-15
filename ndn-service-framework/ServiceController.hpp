@@ -10,6 +10,8 @@
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
 
+#include "NDNSFMessages.hpp"
+
 #include <boost/algorithm/string/join.hpp>
 
 #include <filesystem>
@@ -100,8 +102,15 @@ private:
   bool extractEntityAfterPrefix(const ndn::Name& interestName,
                                 const ndn::Name& prefix,
                                 ndn::Name& entityOut);
+  bool parseUserPermissionsInterestName(const ndn::Name& interestName,
+                                        ndn::Name& targetIdentity) const;
+  bool parseProviderPermissionsInterestName(const ndn::Name& interestName,
+                                            ndn::Name& targetIdentity) const;
 
   ndn::Block makeAllowedServiceListTlv(const std::vector<std::string>& services) const;
+  PermissionResponse buildUserPermissionResponse(const ndn::Name& targetIdentity) const;
+  PermissionResponse buildProviderPermissionResponse(const ndn::Name& targetIdentity) const;
+  ndn::security::Certificate getTargetIdentityCertificate(const ndn::Name& targetIdentity) const;
 
   // ===== signer-based encryption =====
   ndn::Name getSignerCertNameFromInterest(const ndn::Interest& interest) const;
@@ -113,6 +122,8 @@ private:
   // ===== handlers =====
   void onServiceAccessInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
   void onServiceProvisionInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
+  void onUserPermissionsInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
+  void onProviderPermissionsInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
 
 private:
   std::string m_configFilePath;
@@ -133,6 +144,8 @@ private:
   // registered prefixes
   ndn::Name m_prefixServiceAccess;
   ndn::Name m_prefixServiceProvision;
+  ndn::Name m_prefixUserPermissions;
+  ndn::Name m_prefixProviderPermissions;
 
   // policies loaded from config
   std::vector<ProviderPolicy> m_providerPolicies;

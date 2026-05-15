@@ -47,6 +47,9 @@ namespace ndn_service_framework{
 
             ndn::Name getName();
 
+            void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
+            void applyPermissionResponse(const PermissionResponse& response);
+
             void UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails);
             
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
@@ -164,6 +167,10 @@ namespace ndn_service_framework{
             
             // ndnsd serviceinfo discovery callback
             void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
+
+            void onPermissionResponseData(const ndn::Interest& interest,
+                                          const ndn::Data& data);
+            void onPermissionResponseTimeout(const ndn::Interest& interest);
 
             // void PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer& buffer);
 

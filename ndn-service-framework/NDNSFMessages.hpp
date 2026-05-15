@@ -32,6 +32,12 @@ namespace tlv {
         TargetIdentityType = 161,
         TtlType = 162,
         VersionType = 163,
+        EncryptedPermissionResponseType = 164,
+        RecipientCertNameType = 165,
+        AlgorithmType = 166,
+        EncryptedAesKeyType = 167,
+        IvType = 168,
+        CipherTextType = 169,
     };
 
     // Coordination Strategies
@@ -188,6 +194,39 @@ private:
     std::string targetIdentity_;
     size_t permissionKind_ = tlv::UserPermission;
     std::vector<PermissionEntry> entries_;
+    mutable ndn::Block m_wire;
+};
+
+// Used only for PermissionResponse encryption.
+// This is not NAC-ABE and must not be used for NDNSF service message encryption.
+// Intended algorithm: RSA-wrapped AES-CBC.
+class EncryptedPermissionResponse : public AbstractMessage {
+public:
+    EncryptedPermissionResponse();
+
+    void setRecipientCertName(const std::string& recipientCertName);
+    void setAlgorithm(const std::string& algorithm);
+    void setEncryptedAesKey(const ndn::Buffer& encryptedAesKey);
+    void setIv(const ndn::Buffer& iv);
+    void setCipherText(const ndn::Buffer& cipherText);
+
+    const std::string& getRecipientCertName() const;
+    const std::string& getAlgorithm() const;
+    const ndn::Buffer& getEncryptedAesKey() const;
+    const ndn::Buffer& getIv() const;
+    const ndn::Buffer& getCipherText() const;
+    std::string toString() const;
+
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+
+private:
+    std::string recipientCertName_;
+    std::string algorithm_;
+    ndn::Buffer encryptedAesKey_;
+    ndn::Buffer iv_;
+    ndn::Buffer cipherText_;
     mutable ndn::Block m_wire;
 };
 

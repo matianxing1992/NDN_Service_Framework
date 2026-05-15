@@ -11,7 +11,10 @@
 #include <boost/format.hpp>
 #include <ndn-cxx/encoding/buffer-stream.hpp>
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/security/certificate.hpp>
+#include <ndn-cxx/security/key-chain.hpp>
 #include <common.hpp>
+#include <NDNSFMessages.hpp>
 
 namespace ndn_service_framework
 {
@@ -147,6 +150,16 @@ namespace ndn_service_framework
 
     // Function to merge content values of multiple ndn::Data objects into a uint8_t array
     std::vector<uint8_t> mergeDataContents(const std::vector<std::shared_ptr<ndn::Data>>& dataPackets);
+
+    // PermissionResponse-only encryption helpers. These do not use NAC-ABE.
+    // Intended algorithm: RSA-wrapped AES-CBC.
+    EncryptedPermissionResponse
+    encryptPermissionResponseForCertificate(const PermissionResponse& response,
+                                            const ndn::security::Certificate& recipientCert);
+
+    PermissionResponse
+    decryptPermissionResponseWithKeyChain(const EncryptedPermissionResponse& encryptedResponse,
+                                          const ndn::security::KeyChain& keyChain);
 
 } // namespace ndn_service_framework
 #endif

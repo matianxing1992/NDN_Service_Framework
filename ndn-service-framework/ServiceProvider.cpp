@@ -3,6 +3,44 @@ namespace ndn_service_framework
 {
     NDN_LOG_INIT(ndn_service_framework.ServiceProvider);
 
+    namespace
+    {
+        bool
+        decodeEncryptedPermissionResponseFromDataContent(
+            const ndn::Data& data,
+            EncryptedPermissionResponse& response)
+        {
+            const auto& content = data.getContent();
+            if (content.type() == tlv::EncryptedPermissionResponseType) {
+                return response.WireDecode(content);
+            }
+
+            auto [ok, block] = ndn::Block::fromBuffer(
+                ndn::span<const uint8_t>(content.value(), content.value_size()));
+            if (!ok) {
+                return false;
+            }
+            return response.WireDecode(block);
+        }
+
+        bool
+        decodePermissionResponseFromDataContent(const ndn::Data& data,
+                                                PermissionResponse& response)
+        {
+            const auto& content = data.getContent();
+            if (content.type() == tlv::PermissionResponseType) {
+                return response.WireDecode(content);
+            }
+
+            auto [ok, block] = ndn::Block::fromBuffer(
+                ndn::span<const uint8_t>(content.value(), content.value_size()));
+            if (!ok) {
+                return false;
+            }
+            return response.WireDecode(block);
+        }
+    }
+
     ServiceProvider::ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) 
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
@@ -730,6 +768,56 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         NDN_LOG_INFO("Service publish callback received");
 }
 
+    void ServiceProvider::onPermissionResponseData(const ndn::Interest&,
+                                                   const ndn::Data& data)
+    {
+        PermissionResponse response;
+        EncryptedPermissionResponse encryptedResponse;
+        if (decodeEncryptedPermissionResponseFromDataContent(data, encryptedResponse)) {
+            try {
+                response = decryptPermissionResponseWithKeyChain(encryptedResponse, m_keyChain);
+            }
+            catch (const std::exception& e) {
+                NDN_LOG_ERROR("Failed to decrypt encrypted PermissionResponse from "
+                              << data.getName() << ": " << e.what());
+                return;
+            }
+
+            NDN_LOG_INFO("Received encrypted PermissionResponse: "
+                         << response.toString());
+        }
+        else {
+            if (!decodePermissionResponseFromDataContent(data, response)) {
+                NDN_LOG_ERROR("Failed to decode PermissionResponse from "
+                              << data.getName());
+                return;
+            }
+
+            NDN_LOG_INFO("Received plaintext PermissionResponse fallback: "
+                         << response.toString());
+        }
+
+        if (response.getTargetIdentity() != identity.toUri()) {
+            NDN_LOG_ERROR("Ignoring PermissionResponse for unexpected targetIdentity="
+                          << response.getTargetIdentity()
+                          << " expected=" << identity.toUri());
+            return;
+        }
+
+        if (response.getPermissionKind() != tlv::ProviderPermission) {
+            NDN_LOG_ERROR("Ignoring non-provider PermissionResponse for "
+                          << response.getTargetIdentity());
+            return;
+        }
+
+        applyPermissionResponse(response);
+    }
+
+    void ServiceProvider::onPermissionResponseTimeout(const ndn::Interest& interest)
+    {
+        NDN_LOG_ERROR("PermissionResponse timeout: " << interest.getName());
+    }
+
 // void ServiceProvider::PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
 //     {
 //         //  /<identity>/NDNSF/RESPONSE/<requesterIdentity>/<ServiceName>/<FunctionName>/<request-id>
@@ -927,6 +1015,47 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     ndn::Name ServiceProvider::getName()
     {
         return identity;
+    }
+
+    void ServiceProvider::fetchPermissionsFromController(const ndn::Name& controllerPrefix)
+    {
+        ndn::Name interestName(controllerPrefix);
+        interestName.append(ndn::Name("/NDNSF/PERMISSIONS/PROVIDER"));
+        interestName.append(identity);
+
+        ndn::Interest interest(interestName);
+        interest.setCanBePrefix(true);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::seconds(4));
+
+        NDN_LOG_INFO("Fetch provider permissions: " << interestName);
+        m_face.expressInterest(
+            interest,
+            std::bind(&ServiceProvider::onPermissionResponseData, this, _1, _2),
+            [this](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                onPermissionResponseTimeout(interest);
+            },
+            std::bind(&ServiceProvider::onPermissionResponseTimeout, this, _1));
+    }
+
+    void ServiceProvider::applyPermissionResponse(const PermissionResponse& response)
+    {
+        if (response.getPermissionKind() != tlv::ProviderPermission) {
+            NDN_LOG_ERROR("Ignoring non-provider PermissionResponse for "
+                          << response.getTargetIdentity());
+            return;
+        }
+
+        for (const auto& entry : response.getEntries()) {
+            ndn::Name providerServiceName(entry.getProviderName());
+            providerServiceName.append(ndn::Name(entry.getServiceName()));
+            UPT.insertPermission(providerServiceName.toUri(),
+                                 entry.getServiceName(),
+                                 entry.getToken());
+            NDN_LOG_INFO("Installed provider permission provider="
+                         << entry.getProviderName()
+                         << " service=" << entry.getServiceName());
+        }
     }
 
     void ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
