@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <sstream>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -13,6 +14,19 @@ namespace ndn_service_framework
 
     namespace
     {
+        std::string
+        formatAttributesForLog(const std::vector<std::string>& attributes)
+        {
+            std::ostringstream os;
+            for (size_t i = 0; i < attributes.size(); ++i) {
+                if (i > 0) {
+                    os << ",";
+                }
+                os << attributes[i];
+            }
+            return os.str();
+        }
+
         class FileLock
         {
         public:
@@ -639,9 +653,11 @@ namespace ndn_service_framework
             NDN_LOG_ERROR("GetAttributesByName failed: " << messageName);
             return;
         }
+        NDN_LOG_INFO("GetAttributesByName: messageName=" << messageName.toUri()
+                     << " attributes=" << formatAttributesForLog(*results));
         std::tie(contentData, ckData) =
             nacProducer.produce(messageNameWithoutPrefix, 
-                ndn_service_framework::GetAttributesByName(messageName).value(), 
+                *results,
                 ndn::span<const uint8_t>(message.WireEncode().data(), message.WireEncode().size()),
                 m_signingInfo);
         // m_face.getIoContext().post([this,
@@ -895,6 +911,9 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
         NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: Permission Denied");
         return;
     }
+    NDN_LOG_INFO("OnRequestDecryptionSuccessCallbackV2: Permission Granted to "
+                 << requesterIdentity.toUri()
+                 << " for " << serviceName.toUri());
 
     if (hasService(serviceName)) {
         NDN_LOG_INFO("Dispatch request using V2 dynamic handler for "
@@ -1363,12 +1382,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         interest.setCanBePrefix(true);
         interest.setMustBeFresh(true);
         interest.setInterestLifetime(ndn::time::seconds(4));
-        ndn::security::InterestSigner signer(m_keyChain);
-        signer.makeSignedInterest(
-            interest,
-            m_signingInfo,
-            ndn::security::InterestSigner::SigningFlags::WantNonce |
-            ndn::security::InterestSigner::SigningFlags::WantTime);
 
         NDN_LOG_INFO("Fetch provider permissions: " << interestName);
         m_face.expressInterest(

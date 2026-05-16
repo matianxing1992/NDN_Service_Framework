@@ -18,10 +18,16 @@ protected:
   EncryptedPermissionResponseFixture()
     : userKeyChain("pib-memory:encrypted-permission-user", "tpm-memory:encrypted-permission-user")
     , providerKeyChain("pib-memory:encrypted-permission-provider", "tpm-memory:encrypted-permission-provider")
+    , controllerKeyChain("pib-memory:encrypted-permission-controller", "tpm-memory:encrypted-permission-controller")
+    , otherKeyChain("pib-memory:encrypted-permission-other", "tpm-memory:encrypted-permission-other")
     , userIdentity("/test/user/alice")
     , providerIdentity("/test/provider/llm")
+    , controllerIdentity("/test/controller")
+    , otherIdentity("/test/user/bob")
     , userCert(makeRsaIdentity(userKeyChain, userIdentity))
     , providerCert(makeRsaIdentity(providerKeyChain, providerIdentity))
+    , controllerCert(makeRsaIdentity(controllerKeyChain, controllerIdentity))
+    , otherCert(makeRsaIdentity(otherKeyChain, otherIdentity))
   {
   }
 
@@ -153,10 +159,16 @@ protected:
 
   ndn::security::KeyChain userKeyChain;
   ndn::security::KeyChain providerKeyChain;
+  ndn::security::KeyChain controllerKeyChain;
+  ndn::security::KeyChain otherKeyChain;
   ndn::Name userIdentity;
   ndn::Name providerIdentity;
+  ndn::Name controllerIdentity;
+  ndn::Name otherIdentity;
   ndn::security::Certificate userCert;
   ndn::security::Certificate providerCert;
+  ndn::security::Certificate controllerCert;
+  ndn::security::Certificate otherCert;
 };
 
 } // namespace
@@ -209,6 +221,63 @@ BOOST_FIXTURE_TEST_CASE(UserPermissionResponseEncryptDecryptAndApply,
   auto encrypted = encryptPermissionResponseForCertificate(response, userCert);
   auto decodedEncrypted = checkEncryptedPermissionResponseWireRoundTrip(encrypted);
   auto decrypted = decryptPermissionResponseWithKeyChain(decodedEncrypted, userKeyChain);
+  checkSamePermissionResponse(decrypted, response);
+
+  UserPermissionTable table;
+  BOOST_CHECK(validateAndApply(decrypted, userIdentity, tlv::UserPermission, table));
+  checkInstalledPermission(table, providerName, serviceName, token);
+}
+
+BOOST_FIXTURE_TEST_CASE(PermissionDiscoveryInterestMayBeUnsigned,
+                        EncryptedPermissionResponseFixture)
+{
+  ndn::Name interestName("/test/controller/NDNSF/PERMISSIONS/USER");
+  interestName.append(userIdentity);
+
+  ndn::Interest interest(interestName);
+  interest.setCanBePrefix(true);
+  interest.setMustBeFresh(true);
+
+  BOOST_CHECK(!interest.getSignatureInfo());
+}
+
+BOOST_FIXTURE_TEST_CASE(ControllerSignedDataIsEncryptedForTargetOnly,
+                        EncryptedPermissionResponseFixture)
+{
+  const std::string providerName = "/test/provider/camera";
+  const std::string serviceName = "/ObjectDetection/YOLOv8";
+  const std::string token = "target-only-token";
+  auto response = makeResponse(userIdentity,
+                               tlv::UserPermission,
+                               providerName,
+                               serviceName,
+                               token);
+
+  auto data = makeSignedEncryptedPermissionData(
+    ndn::Name("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice/%FE%00"),
+    response,
+    userCert,
+    controllerKeyChain);
+
+  const auto& sigInfo = data.getSignatureInfo();
+  BOOST_REQUIRE(sigInfo.hasKeyLocator());
+  BOOST_REQUIRE_EQUAL(sigInfo.getKeyLocator().getType(), ndn::tlv::Name);
+  BOOST_CHECK_EQUAL(
+    ndn::security::extractIdentityFromCertName(sigInfo.getKeyLocator().getName()).toUri(),
+    controllerIdentity.toUri());
+
+  auto [ok, encryptedBlock] = ndn::Block::fromBuffer(
+    ndn::span<const uint8_t>(data.getContent().value(), data.getContent().value_size()));
+  BOOST_REQUIRE(ok);
+
+  ::ndn_service_framework::EncryptedPermissionResponse encrypted;
+  BOOST_REQUIRE(encrypted.WireDecode(encryptedBlock));
+  BOOST_CHECK_EQUAL(encrypted.getRecipientCertName(), userCert.getName().toUri());
+
+  BOOST_CHECK_THROW(decryptPermissionResponseWithKeyChain(encrypted, otherKeyChain),
+                    std::exception);
+
+  auto decrypted = decryptPermissionResponseWithKeyChain(encrypted, userKeyChain);
   checkSamePermissionResponse(decrypted, response);
 
   UserPermissionTable table;

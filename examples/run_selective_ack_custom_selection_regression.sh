@@ -24,6 +24,7 @@ export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
 export NDNSF_DISABLE_NDNSD=1
 export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
 export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
+export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=INFO}"
 
 nfdc strategy set /example/hello/group /localhost/nfd/strategy/multicast/v=5 >/dev/null 2>&1 || true
 
@@ -139,6 +140,25 @@ echo "--- user ---"
 tail -n 220 "${tmpdir}/user.log"
 
 if [[ "${user_status}" -eq 0 ]] &&
+   grep -q "Fetch user permissions: /example/hello/controller/NDNSF/PERMISSIONS/USER/example/hello/user" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/A service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/B service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/C service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A" "${tmpdir}/provider-A.log" &&
+   grep -q "Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/B" "${tmpdir}/provider-B.log" &&
+   grep -q "Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/C" "${tmpdir}/provider-C.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/A service=/HELLO" "${tmpdir}/provider-A.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/B service=/HELLO" "${tmpdir}/provider-B.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/C service=/HELLO" "${tmpdir}/provider-C.log" &&
+   grep -q "\\[PERMISSIONS/USER\\] Encrypted reply target=/example/hello/user" "${tmpdir}/controller.log" &&
+   grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/A" "${tmpdir}/controller.log" &&
+   grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/B" "${tmpdir}/controller.log" &&
+   grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/C" "${tmpdir}/controller.log" &&
+   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider-A.log" &&
+   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider-B.log" &&
+   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider-C.log" &&
+   ! grep -R -q "isAuthorized[[:space:]]*=[[:space:]]*true" "${tmpdir}" &&
+   ! rg -n "isAuthorized[[:space:]]*=[[:space:]]*true" ndn-service-framework examples >/dev/null &&
    grep -q "Provider A selective ACK handler received request" "${tmpdir}/provider-A.log" &&
    grep -q "Provider A request received timestampMs=" "${tmpdir}/provider-A.log" &&
    grep -q "Provider A publishing HELLO ACK status=1 .*payload=queue=5;gpu=busy;rank=3" "${tmpdir}/provider-A.log" &&

@@ -658,64 +658,36 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
     return;
   }
 
-  m_validator.validate(
-    interest,
-    [this, targetIdentity](const ndn::Interest& validatedInterest) {
-      ndn::Name signerIdentity;
-      try {
-        signerIdentity = getSignerIdentityFromInterest(validatedInterest);
-      }
-      catch (const std::exception& e) {
-        std::cerr << "[PERMISSIONS/USER] authorization failed: requested="
-                  << targetIdentity
-                  << " signer=<unknown>"
-                  << " error=" << e.what()
-                  << std::endl;
-        return;
-      }
+  PermissionResponse response = buildUserPermissionResponse(targetIdentity);
+  EncryptedPermissionResponse encryptedResponse;
+  try {
+    const auto targetCert = getTargetIdentityCertificate(targetIdentity);
+    encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
+  }
+  catch (const std::exception& e) {
+    std::cerr << "[PERMISSIONS/USER] Refusing to reply without encrypting for target="
+              << targetIdentity.toUri()
+              << " error=" << e.what()
+              << std::endl;
+    return;
+  }
 
-      if (!identitiesMatch(signerIdentity, targetIdentity)) {
-        std::cerr << "[PERMISSIONS/USER] authorization failed: requested="
-                  << targetIdentity
-                  << " signer=" << signerIdentity
-                  << std::endl;
-        return;
-      }
+  ndn::Name dataName = interest.getName();
+  dataName.appendTimestamp(ndn::time::system_clock::now());
 
-      PermissionResponse response = buildUserPermissionResponse(targetIdentity);
-      EncryptedPermissionResponse encryptedResponse;
-      try {
-        const auto targetCert = getTargetIdentityCertificate(targetIdentity);
-        encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
-      }
-      catch (const std::exception& e) {
-        std::cerr << "[PERMISSIONS/USER] Refusing to reply without encrypting for target="
-                  << targetIdentity.toUri()
-                  << " error=" << e.what()
-                  << std::endl;
-        return;
-      }
+  ndn::Data data(dataName);
+  data.setContent(encryptedResponse.WireEncode());
+  data.setFreshnessPeriod(ndn::time::seconds(2));
+  m_keyChain.sign(data, ndn::security::SigningInfo(
+    ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
+  m_face.put(data);
 
-      ndn::Name dataName = validatedInterest.getName();
-      dataName.appendTimestamp(ndn::time::system_clock::now());
-
-      ndn::Data data(dataName);
-      data.setContent(encryptedResponse.WireEncode());
-      data.setFreshnessPeriod(ndn::time::seconds(2));
-      m_keyChain.sign(data);
-      m_face.put(data);
-
-      std::cout << "[PERMISSIONS/USER] Encrypted reply target="
-                << targetIdentity.toUri()
-                << " entries=" << response.getEntries().size()
-                << " data=" << data.getName()
-                << " payload=" << encryptedResponse.toString()
-                << std::endl;
-    },
-    [this](const ndn::Interest& badInterest, const ndn::security::ValidationError& err) {
-      std::cerr << "[PERMISSIONS/USER] Interest validation failed: "
-                << err << " name=" << badInterest.getName() << std::endl;
-    });
+  std::cout << "[PERMISSIONS/USER] Encrypted reply target="
+            << targetIdentity.toUri()
+            << " entries=" << response.getEntries().size()
+            << " data=" << data.getName()
+            << " payload=" << encryptedResponse.toString()
+            << std::endl;
 }
 
 void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&,
@@ -726,64 +698,36 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
     return;
   }
 
-  m_validator.validate(
-    interest,
-    [this, targetIdentity](const ndn::Interest& validatedInterest) {
-      ndn::Name signerIdentity;
-      try {
-        signerIdentity = getSignerIdentityFromInterest(validatedInterest);
-      }
-      catch (const std::exception& e) {
-        std::cerr << "[PERMISSIONS/PROVIDER] authorization failed: requested="
-                  << targetIdentity
-                  << " signer=<unknown>"
-                  << " error=" << e.what()
-                  << std::endl;
-        return;
-      }
+  PermissionResponse response = buildProviderPermissionResponse(targetIdentity);
+  EncryptedPermissionResponse encryptedResponse;
+  try {
+    const auto targetCert = getTargetIdentityCertificate(targetIdentity);
+    encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
+  }
+  catch (const std::exception& e) {
+    std::cerr << "[PERMISSIONS/PROVIDER] Refusing to reply without encrypting for target="
+              << targetIdentity.toUri()
+              << " error=" << e.what()
+              << std::endl;
+    return;
+  }
 
-      if (!identitiesMatch(signerIdentity, targetIdentity)) {
-        std::cerr << "[PERMISSIONS/PROVIDER] authorization failed: requested="
-                  << targetIdentity
-                  << " signer=" << signerIdentity
-                  << std::endl;
-        return;
-      }
+  ndn::Name dataName = interest.getName();
+  dataName.appendTimestamp(ndn::time::system_clock::now());
 
-      PermissionResponse response = buildProviderPermissionResponse(targetIdentity);
-      EncryptedPermissionResponse encryptedResponse;
-      try {
-        const auto targetCert = getTargetIdentityCertificate(targetIdentity);
-        encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
-      }
-      catch (const std::exception& e) {
-        std::cerr << "[PERMISSIONS/PROVIDER] Refusing to reply without encrypting for target="
-                  << targetIdentity.toUri()
-                  << " error=" << e.what()
-                  << std::endl;
-        return;
-      }
+  ndn::Data data(dataName);
+  data.setContent(encryptedResponse.WireEncode());
+  data.setFreshnessPeriod(ndn::time::seconds(2));
+  m_keyChain.sign(data, ndn::security::SigningInfo(
+    ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
+  m_face.put(data);
 
-      ndn::Name dataName = validatedInterest.getName();
-      dataName.appendTimestamp(ndn::time::system_clock::now());
-
-      ndn::Data data(dataName);
-      data.setContent(encryptedResponse.WireEncode());
-      data.setFreshnessPeriod(ndn::time::seconds(2));
-      m_keyChain.sign(data);
-      m_face.put(data);
-
-      std::cout << "[PERMISSIONS/PROVIDER] Encrypted reply target="
-                << targetIdentity.toUri()
-                << " entries=" << response.getEntries().size()
-                << " data=" << data.getName()
-                << " payload=" << encryptedResponse.toString()
-                << std::endl;
-    },
-    [this](const ndn::Interest& badInterest, const ndn::security::ValidationError& err) {
-      std::cerr << "[PERMISSIONS/PROVIDER] Interest validation failed: "
-                << err << " name=" << badInterest.getName() << std::endl;
-    });
+  std::cout << "[PERMISSIONS/PROVIDER] Encrypted reply target="
+            << targetIdentity.toUri()
+            << " entries=" << response.getEntries().size()
+            << " data=" << data.getName()
+            << " payload=" << encryptedResponse.toString()
+            << std::endl;
 }
 
 } // namespace ndn_service_framework

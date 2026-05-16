@@ -236,6 +236,13 @@ Permission Interest names:
 /<controller>/NDNSF/PERMISSIONS/PROVIDER/<targetIdentity...>
 ```
 
+Permission discovery Interests are normally unsigned. `ServiceController` parses
+the target identity from the Interest name and does not require or compare an
+Interest signer identity for `PERMISSIONS/USER` or `PERMISSIONS/PROVIDER`.
+The returned Data is signed by the controller identity, and its
+`PermissionResponse` payload is encrypted to the target identity certificate.
+A different requester may fetch the encrypted response but cannot decrypt it.
+
 Permission table entries use unified service names:
 
 ```text
@@ -245,8 +252,9 @@ Permission table entries use unified service names:
 `ServiceController` changes that support the current HELLO auth regression are intentional:
 
 ```text
-signed permission Interests
 parameters digest stripping
+unsigned permission discovery Interests
+controller-signed permission Data
 target-certificate encrypted PermissionResponse payloads
 explicit start() registration path
 demo authorization tokens consumed by ServiceUser and ServiceProvider
@@ -278,6 +286,46 @@ Current regression scripts:
 ```text
 examples/run_hello_auth_regression.sh
 examples/run_hello_ack_payload_regression.sh
+examples/run_selective_ack_custom_selection_regression.sh
+examples/run_nac_abe_attribute_routing_regression.sh
+```
+
+`examples/run_selective_ack_custom_selection_regression.sh` verifies multi-provider
+selective ACK behavior, ACK payload metadata collection, timeout-driven custom
+selection, and that only the selected provider executes the final response.
+
+`examples/run_nac_abe_attribute_routing_regression.sh` verifies runtime
+NAC-ABE attribute routing logs from `GetAttributesByName`: REQUEST and
+COORDINATION map to `/SERVICE/<service>`, while ACK and RESPONSE map to
+`/PERMISSION/<service>`.
+
+## Security Verification Notes
+
+The current examples/regressions are expected to exercise these mechanisms:
+
+```text
+Controller-authorized permission distribution:
+  - User fetches /NDNSF/PERMISSIONS/USER/<user>
+  - Provider fetches /NDNSF/PERMISSIONS/PROVIDER/<provider>
+  - Permission discovery Interests are normally unsigned
+  - ServiceController builds PermissionResponse for the target identity named
+    in the Interest
+  - PermissionResponse is encrypted to the target identity certificate
+  - Permission Data is signed by the controller
+
+NAC-ABE attributes:
+  - REQUEST and COORDINATION -> /SERVICE/<service>
+  - ACK and RESPONSE -> /PERMISSION/<service>
+
+Authorization and execution:
+  - User requests include a proof derived from the controller-issued token
+  - Provider verifies the proof before ACK/response
+  - Do not introduce debug bypasses such as isAuthorized = true
+  - Provider must install its own provider permission before serving a service
+  - Service authorization is enforced by token/proof verification and provider
+    permission checks, not by permission Interest signatures
+  - Custom selection must coordinate only selected providers; non-selected
+    providers must not publish final responses
 ```
 
 ## Refactor Rules

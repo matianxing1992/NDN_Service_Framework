@@ -117,7 +117,9 @@ Permission Interest names:
 /<controller>/NDNSF/PERMISSIONS/PROVIDER/<targetIdentity...>
 ```
 
-`ServiceController` returns a `PermissionResponse`. The preferred permission response path is encrypted for the target certificate using the PermissionResponse encryption helpers. This PermissionResponse encryption is not NAC-ABE.
+Permission discovery Interests are normally unsigned. `ServiceController` parses the target identity from the Interest name, builds a `PermissionResponse` for that target, encrypts it to the target identity certificate, signs the returned Data with the controller identity, and puts the Data. A different identity may fetch another target's encrypted PermissionResponse but cannot decrypt it. Service authorization is enforced later by token/proof verification and provider-side permission checks.
+
+This PermissionResponse encryption is not NAC-ABE.
 
 NAC-ABE remains the runtime encryption mechanism for NDNSF service request and response messages, future coordination payloads, content keys, IMS, and SVS-backed runtime publication.
 
@@ -150,7 +152,43 @@ Generated C++ outputs are not checked in unless an active build target or compat
 
 NDN requires creating a corresponding root certificate, then using the root certificate to generate the corresponding sub-certificates. Both the root certificate and these sub-certificates need to be installed on each node. `/Experiments/NDNSFExperiment_AutoConfig.py` provides an example of how to create certificates, which you need to modify according to your own requirements.
 
-The current HELLO examples are exercised by `examples/run_hello_auth_regression.sh` and `examples/run_hello_ack_payload_regression.sh`.
+The current HELLO examples are exercised by the regression scripts below.
+
+```bash
+./examples/run_hello_auth_regression.sh
+./examples/run_hello_ack_payload_regression.sh
+./examples/run_selective_ack_custom_selection_regression.sh
+./examples/run_nac_abe_attribute_routing_regression.sh
+```
+
+`run_hello_auth_regression.sh` verifies controller-issued user/provider permissions, user authorization proof validation by the provider, and the generic HELLO request/response flow.
+
+`run_hello_ack_payload_regression.sh` verifies that providers publish ACK metadata payloads and users collect the payload before receiving the HELLO response.
+
+`run_selective_ack_custom_selection_regression.sh` verifies multi-provider selective ACK, ACK payload metadata, timeout-driven custom selection, Provider C rejection, Provider B selection, and that only Provider B publishes the final response.
+
+`run_nac_abe_attribute_routing_regression.sh` verifies runtime `GetAttributesByName` logs for NAC-ABE routing: REQUEST and COORDINATION use `/SERVICE/HELLO`, while ACK and RESPONSE use `/PERMISSION/HELLO`.
+
+Security-mechanism alignment for these regressions:
+
+```text
+Permission distribution:
+  User fetches /NDNSF/PERMISSIONS/USER/<user>.
+  Provider fetches /NDNSF/PERMISSIONS/PROVIDER/<provider>.
+  Permission discovery Interests are normally unsigned.
+  ServiceController signs the returned Data with the controller identity.
+  PermissionResponse payloads are encrypted to the target identity certificate.
+
+NAC-ABE attributes:
+  REQUEST and COORDINATION use /SERVICE/<service>.
+  ACK and RESPONSE use /PERMISSION/<service>.
+
+Authorization:
+  User requests carry a proof derived from the controller-issued permission token.
+  Providers verify the proof before ACK/response and must not use an isAuthorized = true bypass.
+  Providers must install their own provider permission before serving a service.
+  Service authorization is enforced by token/proof verification and provider permission checks.
+```
 
 3.8 How to log to file:
 For example, assuming your program is `./app` and you want to log everything, first set the log level in the command line using:
@@ -167,4 +205,3 @@ Then run:
 
 The output will be saved in the file `filename.log` in the current directory.
 If you're using MiniNDN, the output will be stored under `/tmp/minindn/<nodeName>`.
-
