@@ -135,6 +135,15 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 
+            ndn::Name async_call(const std::vector<ndn::Name>& providers,
+                                 const ndn::Name& serviceName,
+                                 ndn_service_framework::RequestMessage requestMessage,
+                                 int ackTimeoutMs,
+                                 AckCandidatesHandler onAcksHandler,
+                                 int timeoutMs,
+                                 TimeoutHandler onTimeout,
+                                 ResponseHandler onResponseHandler);
+
             template<typename RequestT, typename ResponseT>
             ndn::Name asyncCall(const std::vector<ndn::Name>& providers,
                                 const ndn::Name& serviceName,

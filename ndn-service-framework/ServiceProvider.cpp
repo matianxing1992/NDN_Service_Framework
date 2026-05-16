@@ -3,12 +3,39 @@
 #include <algorithm>
 #include <iostream>
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 namespace ndn_service_framework
 {
     NDN_LOG_INIT(ndn_service_framework.ServiceProvider);
 
     namespace
     {
+        class FileLock
+        {
+        public:
+            explicit FileLock(const char* path)
+            {
+                m_fd = open(path, O_CREAT | O_RDWR, 0666);
+                if (m_fd < 0 || flock(m_fd, LOCK_EX) != 0) {
+                    throw std::runtime_error("Failed to acquire file lock");
+                }
+            }
+
+            ~FileLock()
+            {
+                if (m_fd >= 0) {
+                    flock(m_fd, LOCK_UN);
+                    close(m_fd);
+                }
+            }
+
+        private:
+            int m_fd = -1;
+        };
+
         ndn::Buffer
         blockToPayloadBuffer(const ndn::Block& block)
         {
@@ -137,11 +164,13 @@ namespace ndn_service_framework
         random(ndn::random::getRandomNumberEngine()),
         m_IMS(6000)
     {
-        m_ServiceDiscovery.enable(group_prefix,
-                                  identity,
-                                  m_face,
-                                  m_keyChain,
-                                  std::bind(&ServiceProvider::processNDNSDServiceInfoCallback, this, _1));
+        if (std::getenv("NDNSF_DISABLE_NDNSD") == nullptr) {
+            m_ServiceDiscovery.enable(group_prefix,
+                                      identity,
+                                      m_face,
+                                      m_keyChain,
+                                      std::bind(&ServiceProvider::processNDNSDServiceInfoCallback, this, _1));
+        }
 
         nac_validator.load(trustSchemaPath);
 
@@ -207,14 +236,16 @@ namespace ndn_service_framework
         int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(),node_id.toUri());
         node_id.append(std::to_string(session_id));
 
-        // Create the Pub/Sub instance
-        m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
-            ndn::Name(group_prefix),
-            ndn::Name(node_id),
-            m_face,
-            std::bind(&ServiceProvider::onMissingData, this, _1),
-            opts,
-            secOpts);
+        {
+            FileLock svsRegistrationLock("/tmp/ndnsf-svs-registration.lock");
+            m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
+                ndn::Name(group_prefix),
+                ndn::Name(node_id),
+                m_face,
+                std::bind(&ServiceProvider::onMissingData, this, _1),
+                opts,
+                secOpts);
+        }
 
         while(!nacConsumer.readyForDecryption()){
             // log waiting for decryption key
@@ -681,6 +712,10 @@ namespace ndn_service_framework
     void ServiceProvider::OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
         if(!isFresh(subscription)) return;
+        std::cout << "[ServiceProvider] OnRequest name="
+                  << subscription.name.toUri()
+                  << " producer=" << subscription.producerPrefix.toUri()
+                  << " bytes=" << subscription.data.size() << std::endl;
         // log the request
         NDN_LOG_INFO("OnRequest: " << subscription.name << " " << subscription.data.size());
 
@@ -695,6 +730,10 @@ namespace ndn_service_framework
                 return;
             }
             bool isTarget = bloomFilter.contains(this->identity.toUri());
+            std::cout << "[ServiceProvider] OnRequest targetCheck provider="
+                      << identity.toUri()
+                      << " service=" << requestV2->serviceName.toUri()
+                      << " isTarget=" << isTarget << std::endl;
             NDN_LOG_INFO("BloomFilter: " << bfStr << isTarget);
 
             if(isTarget)
@@ -704,6 +743,10 @@ namespace ndn_service_framework
                     requestV2->serviceName.toUri());
                 if(!token)
                 {
+                    std::cout << "[ServiceProvider] OnRequest missing permission provider="
+                              << identity.toUri()
+                              << " service=" << requestV2->serviceName.toUri()
+                              << std::endl;
                     NDN_LOG_ERROR("Not serving: " << requestV2->serviceName);
                     return;
                 }
@@ -1235,6 +1278,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto coordinationV2 =
             ndn_service_framework::parseServiceCoordinationNameV2(subscription.name);
         if (coordinationV2) {
+            if (!coordinationV2->providerName.equals(identity)) {
+                return;
+            }
+
             if(subscription.data.size() > 0){
                 nacConsumer.consume(subscription.name,
                                     ndn::Block(subscription.data),

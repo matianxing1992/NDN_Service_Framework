@@ -1,7 +1,12 @@
 #include "ServiceUser.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
+
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 namespace ndn_service_framework
 {
@@ -10,6 +15,29 @@ namespace ndn_service_framework
 
     namespace
     {
+        class FileLock
+        {
+        public:
+            explicit FileLock(const char* path)
+            {
+                m_fd = open(path, O_CREAT | O_RDWR, 0666);
+                if (m_fd < 0 || flock(m_fd, LOCK_EX) != 0) {
+                    throw std::runtime_error("Failed to acquire file lock");
+                }
+            }
+
+            ~FileLock()
+            {
+                if (m_fd >= 0) {
+                    flock(m_fd, LOCK_UN);
+                    close(m_fd);
+                }
+            }
+
+        private:
+            int m_fd = -1;
+        };
+
         bool
         decodeEncryptedPermissionResponseFromDataContent(
             const ndn::Data& data,
@@ -63,6 +91,13 @@ namespace ndn_service_framework
                    lhs.getMessage() == rhs.getMessage() &&
                    payloadEquals(lhs, rhs);
         }
+
+        uint64_t
+        nowMilliseconds()
+        {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+        }
     }
 
     ServiceUser::ServiceUser(ndn::Face &face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) : 
@@ -76,11 +111,13 @@ namespace ndn_service_framework
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         m_IMS(6000)
     {
-        m_ServiceDiscovery.enable(group_prefix,
-                                  identity,
-                                  face,
-                                  m_keyChain,
-                                  std::bind(&ServiceUser::processNDNSDServiceInfoCallback, this, _1));
+        if (std::getenv("NDNSF_DISABLE_NDNSD") == nullptr) {
+            m_ServiceDiscovery.enable(group_prefix,
+                                      identity,
+                                      face,
+                                      m_keyChain,
+                                      std::bind(&ServiceUser::processNDNSDServiceInfoCallback, this, _1));
+        }
 
         nac_validator.load(trustSchemaPath);
 
@@ -142,14 +179,16 @@ namespace ndn_service_framework
         int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(),node_id.toUri());
         node_id.append(std::to_string(session_id));
 
-        // Create the Pub/Sub instance
-        m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
-            ndn::Name(group_prefix),
-            node_id,
-            m_face,
-            std::bind(&ServiceUser::onMissingData, this, _1),
-            opts,
-            secOpts);
+        {
+            FileLock svsRegistrationLock("/tmp/ndnsf-svs-registration.lock");
+            m_svsps = std::make_shared<ndn::svs::SVSPubSub>(
+                ndn::Name(group_prefix),
+                node_id,
+                m_face,
+                std::bind(&ServiceUser::onMissingData, this, _1),
+                opts,
+                secOpts);
+        }
 
         while(!nacConsumer.readyForDecryption()){
             // log waiting for decryption key
@@ -657,6 +696,66 @@ namespace ndn_service_framework
 
         const auto payload = requestMessage.getPayload();
         PublishRequestV2({},
+                         serviceName,
+                         requestId,
+                         payload,
+                         ndn_service_framework::tlv::FirstResponding);
+
+        if (ackTimeoutMs > 0) {
+            m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
+                evaluateAckSelection(requestId);
+            });
+        }
+        else {
+            m_scheduler.schedule(ndn::time::milliseconds(0), [this, requestId]() {
+                evaluateAckSelection(requestId);
+            });
+        }
+
+        if (timeoutMs > 0) {
+            m_scheduler.schedule(ndn::time::milliseconds(timeoutMs), [this, requestId]() {
+                auto pendingCall = m_pendingCalls.find(requestId);
+                if (pendingCall == m_pendingCalls.end()) {
+                    return;
+                }
+
+                auto timeoutHandler = pendingCall->second.timeoutHandler;
+                m_pendingCalls.erase(pendingCall);
+
+                if (timeoutHandler) {
+                    timeoutHandler(requestId);
+                }
+            });
+        }
+
+        return requestId;
+    }
+
+    ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
+                                      const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int ackTimeoutMs,
+                                      AckCandidatesHandler onAcksHandler,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler)
+    {
+        const ndn::Name requestId = makeRequestId();
+
+        PendingCall pendingCall;
+        pendingCall.providers = providers;
+        pendingCall.serviceName = serviceName;
+        pendingCall.requestMessage = requestMessage;
+        pendingCall.strategy = ndn_service_framework::tlv::FirstResponding;
+        pendingCall.timeoutMs = timeoutMs;
+        pendingCall.ackTimeoutMs = ackTimeoutMs;
+        pendingCall.ackCandidatesHandler = std::move(onAcksHandler);
+        pendingCall.timeoutHandler = std::move(onTimeout);
+        pendingCall.responseHandler = std::move(onResponseHandler);
+        m_pendingCalls[requestId] = std::move(pendingCall);
+
+        const auto payload = requestMessage.getPayload();
+        PublishRequestV2(providers,
                          serviceName,
                          requestId,
                          payload,
@@ -1225,6 +1324,18 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             NDN_LOG_ERROR("RequestAckMessage decode failed: " << e.what());
             return;
         }
+
+        const auto ackPayload = AckMessage.getPayload();
+        const std::string ackPayloadText(
+            reinterpret_cast<const char*>(ackPayload.data()),
+            ackPayload.size());
+        std::cout << "[ServiceUser] ACK received timestampMs="
+                  << nowMilliseconds()
+                  << " providerName=" << providerName.toUri()
+                  << " status=" << AckMessage.getStatus()
+                  << " message=" << AckMessage.getMessage()
+                  << " payload=" << ackPayloadText
+                  << std::endl;
 
         const ndn::Name ackName = FunctionName.empty() ?
             ndn_service_framework::makeRequestAckNameV2(providerName,

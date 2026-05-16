@@ -40,7 +40,11 @@ main()
     ndn::ValidatorConfig validator(face);
 
     auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
+    keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(CONTROLLER_PREFIX));
     getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
+    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));
+    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("B"));
+    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("C"));
     getOrCreateIdentity(keyChain, USER_IDENTITY);
 
     validator.load("examples/trust-any.conf");

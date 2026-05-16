@@ -12,13 +12,17 @@
 #include <unistd.h>    // close
 #include <fcntl.h>     // open
 #include <filesystem>
+#include <cstdlib>
+#include <algorithm>
 
 namespace ndn_service_framework {
 
 class ConfigManager {
 public:
   ConfigManager(const std::string& path = "/etc/ndn/ndnsf.conf")
-    : m_path(path)
+    : m_path(std::getenv("NDNSF_CONFIG") != nullptr
+               ? std::getenv("NDNSF_CONFIG")
+               : path)
   {
     // 内存数据只用于快速查询，持久化由文件负责
     loadToCache();
@@ -30,7 +34,17 @@ public:
     using Entry = std::tuple<std::string, std::string, int>;
     std::vector<Entry> entries;
     bool updated = false;
-    int newSessionId = 1;
+    const char* sessionBaseEnv = std::getenv("NDNSF_SESSION_BASE");
+    int minimumSessionId = 1;
+    if (sessionBaseEnv != nullptr) {
+      try {
+        minimumSessionId = std::max(1, std::stoi(sessionBaseEnv));
+      }
+      catch (...) {
+        minimumSessionId = 1;
+      }
+    }
+    int newSessionId = minimumSessionId;
 
     // Step 1: 打开文件并加锁
     int fd = open(m_path.c_str(), O_RDWR | O_CREAT, 0666);
@@ -58,6 +72,7 @@ public:
           int sid = std::stoi(s);
           if (g == groupName && n == nodeName) {
             sid += 1;
+            sid = std::max(sid, minimumSessionId);
             newSessionId = sid;
             updated = true;
           }
@@ -70,8 +85,8 @@ public:
     }
 
     if (!updated) {
-      entries.emplace_back(groupName, nodeName, 1);
-      newSessionId = 1;
+      entries.emplace_back(groupName, nodeName, minimumSessionId);
+      newSessionId = minimumSessionId;
     }
 
     // Step 3: 写回所有条目

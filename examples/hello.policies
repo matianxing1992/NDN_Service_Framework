@@ -10,6 +10,30 @@ provider-policies
             /HELLO
         }
     }
+    provider-policy
+    {
+        for /example/hello/provider/A
+        allow
+        {
+            /HELLO
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/B
+        allow
+        {
+            /HELLO
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/C
+        allow
+        {
+            /HELLO
+        }
+    }
 }
 
 user-policies

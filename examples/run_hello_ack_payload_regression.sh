@@ -21,6 +21,8 @@ trap cleanup EXIT
 
 cd "${repo_root}"
 export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
+export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
+export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
 
 ./build/examples/App_ServiceController >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
