@@ -10,6 +10,8 @@
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
 
+#include <nac-abe/attribute-authority.hpp>
+
 #include "NDNSFMessages.hpp"
 
 #include <boost/algorithm/string/join.hpp>
@@ -52,29 +54,9 @@ public:
   parsePolicyFile(const std::string& path);
 };
 
-// 你的 Attribute Authority 类型（用你工程实际类型替换这个 forward decl / include）
-class AttributeAuthority
-{
-public:
-  AttributeAuthority(const ndn::security::Certificate& aaCert,
-                     ndn::Face& face,
-                     ndn::ValidatorConfig& validator,
-                     ndn::KeyChain& keyChain);
-
-  void addNewPolicy(const ndn::security::Certificate& cert, const std::string& abePolicy);
-  void addNewPolicy(const std::string& identity, const std::string& abePolicy);
-};
-
 // ======= 你的 TLV 常量（用你工程里的真实值替换） =======
 constexpr uint32_t TLV_AllowedServiceList = 0xF501;
 constexpr uint32_t TLV_AllowedService     = 0xF502;
-
-// ======= 你已有的 hybrid 加密函数（外部已有实现） =======
-// 你前面给过 encryptDataContentWithCK(payload, rsaKeyBits) 的雏形。
-// 这里声明一下供本文件调用。签名按你工程实际来改。
-ndn::Block
-encryptDataContentWithCK(ndn::span<const uint8_t> payload,
-                         ndn::span<const uint8_t> rsaKeyBits);
 
 class ServiceController
 {
@@ -135,7 +117,7 @@ private:
   ndn::ValidatorConfig& m_validator;
 
   ndn::KeyChain m_keyChain;
-  AttributeAuthority m_aa;
+  ndn::nacabe::KpAttributeAuthority m_aa;
 
   // controller prefix selection
   ndn::Name m_controllerPrefix;

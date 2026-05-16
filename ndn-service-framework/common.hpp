@@ -4,6 +4,8 @@
 #define BOOST_BIND_NO_PLACEHOLDERS
 
 #include <iostream>
+#include <functional>
+#include <memory>
 #include <thread>
 #include <stdexcept>
 #include <ndn-cxx/face.hpp>
@@ -53,7 +55,48 @@
 
 namespace ndn_service_framework{
 
+    class OptionalServiceDiscovery
+    {
+    public:
+        using Details = ndnsd::discovery::Details;
+        using Callback = std::function<void(const Details&)>;
 
+        OptionalServiceDiscovery() = default;
+
+        OptionalServiceDiscovery(const ndn::Name& groupPrefix,
+                                 const ndn::Name& identity,
+                                 ndn::Face& face,
+                                 ndn::KeyChain& keyChain,
+                                 Callback callback)
+        {
+            enable(groupPrefix, identity, face, keyChain, std::move(callback));
+        }
+
+        void enable(const ndn::Name& groupPrefix,
+                    const ndn::Name& identity,
+                    ndn::Face& face,
+                    ndn::KeyChain& keyChain,
+                    Callback callback)
+        {
+            m_discovery = std::make_unique<ndnsd::discovery::ServiceDiscovery>(
+                groupPrefix, identity, face, keyChain, std::move(callback));
+        }
+
+        bool isEnabled() const
+        {
+            return static_cast<bool>(m_discovery);
+        }
+
+        void publishServiceDetail(const Details& details)
+        {
+            if (m_discovery) {
+                m_discovery->publishServiceDetail(details);
+            }
+        }
+
+    private:
+        std::unique_ptr<ndnsd::discovery::ServiceDiscovery> m_discovery;
+    };
 
     class MessageValidator : public ndn::svs::BaseValidator
     {

@@ -45,15 +45,20 @@ namespace ndn_service_framework
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
         identity(identityCert.getIdentity()),
-        identityCert(identityCert),
         validator(std::make_shared<MessageValidator>(trustSchemaPath)),
+        identityCert(identityCert),
         // nac_validator(std::move(ndn::security::ValidatorNull())),
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
-        m_IMS(6000),
-        m_ServiceDiscovery(group_prefix, identity, m_face, m_keyChain, std::bind(&ServiceProvider::processNDNSDServiceInfoCallback, this, _1))
+        m_IMS(6000)
     {
+        m_ServiceDiscovery.enable(group_prefix,
+                                  identity,
+                                  m_face,
+                                  m_keyChain,
+                                  std::bind(&ServiceProvider::processNDNSDServiceInfoCallback, this, _1));
+
         nac_validator.load(trustSchemaPath);
 
         nacConsumer.obtainDecryptionKey();
@@ -133,10 +138,55 @@ namespace ndn_service_framework
 
     }
 
+    ServiceProvider::ServiceProvider(LocalMockTag,
+                                     ndn::Face& face,
+                                     ndn::Name group_prefix,
+                                     ndn::security::Certificate identityCert,
+                                     ndn::security::Certificate attrAuthorityCertificate,
+                                     std::string trustSchemaPath)
+        : m_face(face),
+        m_scheduler(m_face.getIoContext()),
+        identity(identityCert.getIdentity()),
+        m_keyChain(),
+        m_svsps(nullptr),
+        validator(std::make_shared<MessageValidator>(trustSchemaPath)),
+        nac_validator(m_face),
+        identityCert(identityCert),
+        attrAuthorityCertificate(attrAuthorityCertificate),
+        nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        random(ndn::random::getRandomNumberEngine()),
+        m_IMS(6000),
+        m_configManager("/tmp/ndnsf-service-provider-local-mock.conf")
+    {
+        m_signingInfo = ndn::security::signingByCertificate(identityCert);
+    }
+
     void ServiceProvider::init()
-    {   
+    {
         registerServiceInfo();
         registerNDNSFMessages();
+    }
+
+    void ServiceProvider::ConsumeRequest(const ndn::Name& RequesterName,
+                                         const ndn::Name& providerName,
+                                         const ndn::Name& ServiceName,
+                                         const ndn::Name& FunctionName,
+                                         const ndn::Name& RequestID,
+                                         RequestMessage&)
+    {
+        const auto unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
+        NDN_LOG_ERROR("No legacy ConsumeRequest handler registered for requester="
+                      << RequesterName.toUri()
+                      << " provider=" << providerName.toUri()
+                      << " service=" << unifiedServiceName.toUri()
+                      << " requestId=" << RequestID.toUri());
+    }
+
+    void ServiceProvider::registerServiceInfo()
+    {
+        NDN_LOG_INFO("No provider service info registration configured for "
+                     << identity.toUri());
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
@@ -405,7 +455,6 @@ namespace ndn_service_framework
         if(!isFresh(subscription)) return;
         // log the request
         NDN_LOG_INFO("OnRequest: " << subscription.name << " " << subscription.data.size());
-        subscription.producerPrefix;
 
         auto requestV2 = ndn_service_framework::parseRequestNameV2(subscription.name);
         if (requestV2) {

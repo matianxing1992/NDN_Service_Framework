@@ -14,8 +14,9 @@ def build(bld):
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/utils.cpp',
                         ])),
-                includes='.. ../ndn-service-framework',
+                includes=['..', '../ndn-service-framework', '../CodeGenerator/Generated'],
                 use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD',
                 libpath=['/usr/local/lib'],
                 lib=['boost_unit_test_framework'],
+                cxxflags=['-fPIC'],
                 install_path=None)

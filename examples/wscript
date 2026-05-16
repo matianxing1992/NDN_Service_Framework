@@ -1,9 +1,23 @@
-import glob
-import os
-
 top = '..'
 
+legacy_drone_provider_source_paths = [
+    'CodeGenerator/Generated/messages.pb.cc',
+    'CodeGenerator/Generated/ObjectDetectionService.cpp',
+    'CodeGenerator/Generated/FlightControlService.cpp',
+    'CodeGenerator/Generated/ServiceProvider_Drone.cpp',
+]
+
+legacy_gs_user_source_paths = [
+    'CodeGenerator/Generated/messages.pb.cc',
+    'CodeGenerator/Generated/ObjectDetectionServiceStub.cpp',
+    'CodeGenerator/Generated/FlightControlServiceStub.cpp',
+    'CodeGenerator/Generated/ServiceUser_GS.cpp',
+]
+
 def build(bld):
+    legacy_drone_provider_sources = bld.path.parent.ant_glob(legacy_drone_provider_source_paths)
+    legacy_gs_user_sources = bld.path.parent.ant_glob(legacy_gs_user_source_paths)
+
 
     
     # bld.program(name='server-main-example',
@@ -19,30 +33,40 @@ def build(bld):
                 includes= ['.'],
                 use='ndn-service-framework',
                 install_path='/usr/local/bin')
-    
-    cpp_files = glob.glob('./CodeGenerator/Generated/*.cpp')
-    cpp_files = ['.' + s for s in cpp_files]
-    cc_files = glob.glob('./CodeGenerator/Generated/*.cc')
-    cc_files = ['.' + s for s in cc_files]
-    # print(cpp_files)
+
+    bld.program(name='generic-dynamic-user-provider',
+                target='generic-dynamic-user-provider',
+                source=(["generic-dynamic-user-provider.cpp"] +
+                        bld.path.parent.ant_glob([
+                            'ndn-service-framework/NDNSFMessages.cpp',
+                            'ndn-service-framework/Service.cpp',
+                            'ndn-service-framework/ServiceProvider.cpp',
+                            'ndn-service-framework/ServiceStub.cpp',
+                            'ndn-service-framework/ServiceUser.cpp',
+                            'ndn-service-framework/utils.cpp',
+                        ])),
+                includes= ['..','../ndn-service-framework'],
+                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD',
+                cxxflags=['-fPIC'],
+                install_path=None)
     
     bld.program(name='multi-drone-example',
                 target='multi-drone-example',
-                source=["multi_drone_manualcontrol.cpp"] + cpp_files + cc_files,
+                source=["multi_drone_manualcontrol.cpp"] + legacy_drone_provider_sources,
                 includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
                 use='ndn-service-framework gtkmm NDNSD',
                 install_path='/usr/local/bin')
     
     bld.program(name='multi-gs-example',
                 target='multi-gs-example',
-                source=["multi_gs_manualcontrol.cpp"] + cpp_files + cc_files,
+                source=["multi_gs_manualcontrol.cpp"] + legacy_gs_user_sources,
                 includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
                 use='ndn-service-framework gtkmm NDNSD',
                 install_path='/usr/local/bin')
     
     bld.program(name='service-controller-example',
                 target='service-controller-example',
-                source=["service-controller-example.cpp"] + cpp_files + cc_files,
+                source=["service-controller-example.cpp"],
                 includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
                 use='ndn-service-framework NDNSD',
                 install_path='/usr/local/bin')

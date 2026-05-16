@@ -40,7 +40,17 @@ namespace ndn_service_framework{
             using SimpleRequestHandler =
                 std::function<ResponseMessage(const RequestMessage& requestMessage)>;
 
+            struct LocalMockTag
+            {
+            };
+
             ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
+            ServiceProvider(LocalMockTag,
+                            ndn::Face& face,
+                            ndn::Name group_prefix,
+                            ndn::security::Certificate identityCert,
+                            ndn::security::Certificate attrAuthorityCertificate,
+                            std::string trustSchemaPath);
             virtual ~ServiceProvider() {}
 
             void init();
@@ -58,8 +68,10 @@ namespace ndn_service_framework{
             
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
-            // After receving service coordination message, this function is called to consumeRequest;
-            virtual void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, RequestMessage& requestMessage) = 0;
+            // After receiving service coordination message, this function is called to consumeRequest.
+            // Generic dynamic providers can rely on this safe default; legacy generated providers
+            // may still override it for service-specific dispatch.
+            virtual void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, RequestMessage& requestMessage);
 
             void addService(const ndn::Name& serviceName,
                             AckStrategyHandler ackHandler,
@@ -209,8 +221,9 @@ namespace ndn_service_framework{
             // Register NDNSF Messages in the ndn-svs
             void registerNDNSFMessages();
 
-            // Register service info using ndnsd();
-            virtual void registerServiceInfo() = 0;
+            // Register service info using ndnsd(). Generic dynamic providers may use the no-op
+            // default; legacy generated providers may still override it.
+            virtual void registerServiceInfo();
 
             bool isFresh(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -275,7 +288,7 @@ namespace ndn_service_framework{
             ndn::InMemoryStorageFifo m_IMS;
             std::mutex _cache_mutex;
 
-            ndnsd::discovery::ServiceDiscovery m_ServiceDiscovery;
+            OptionalServiceDiscovery m_ServiceDiscovery;
 
             UserPermissionTable UPT;
 

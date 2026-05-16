@@ -47,14 +47,19 @@ namespace ndn_service_framework
         m_face(face),
         m_scheduler(m_face.getIoContext()),
         identity(identityCert.getIdentity()),
-        identityCert(identityCert),
         validator(std::make_shared<MessageValidator>(trustSchemaPath)),
+        identityCert(identityCert),
         // nac_validator(std::move(ndn::security::ValidatorNull())),
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        m_IMS(6000),
-        m_ServiceDiscovery(group_prefix, identity, face, m_keyChain, std::bind(&ServiceUser::processNDNSDServiceInfoCallback, this, _1))
+        m_IMS(6000)
     {
+        m_ServiceDiscovery.enable(group_prefix,
+                                  identity,
+                                  face,
+                                  m_keyChain,
+                                  std::bind(&ServiceUser::processNDNSDServiceInfoCallback, this, _1));
+
         nac_validator.load(trustSchemaPath);
 
         nacConsumer.obtainDecryptionKey();
@@ -135,9 +140,36 @@ namespace ndn_service_framework
 
     }
 
+    ServiceUser::ServiceUser(LocalMockTag,
+                             ndn::Face& face,
+                             ndn::Name group_prefix,
+                             ndn::security::Certificate identityCert,
+                             ndn::security::Certificate attrAuthorityCertificate,
+                             std::string trustSchemaPath)
+        : m_face(face),
+        m_scheduler(m_face.getIoContext()),
+        identity(identityCert.getIdentity()),
+        m_keyChain(),
+        m_svsps(nullptr),
+        validator(std::make_shared<MessageValidator>(trustSchemaPath)),
+        nac_validator(m_face),
+        identityCert(identityCert),
+        nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        m_IMS(6000),
+        m_configManager("/tmp/ndnsf-service-user-local-mock.conf")
+    {
+        m_signingInfo = ndn::security::signingByCertificate(identityCert);
+    }
+
     void ServiceUser::init()
-    {   
+    {
         registerNDNSFMessages();
+    }
+
+    void ServiceUser::setRequestPublisher(RequestPublisher publisher)
+    {
+        m_requestPublisher = std::move(publisher);
     }
 
     ndn::Name ServiceUser::getName()
@@ -384,7 +416,17 @@ namespace ndn_service_framework
             pendingIt->second.strategy = strategy;
         }
 
-        PublishMessage(requestName, requestNameWithoutPrefix, requestMessage);
+        if (m_requestPublisher) {
+            m_requestPublisher(requestId,
+                               requestName,
+                               serviceProviderNames,
+                               serviceName,
+                               requestMessage,
+                               strategy);
+        }
+        else {
+            PublishMessage(requestName, requestNameWithoutPrefix, requestMessage);
+        }
 
         m_strategyMap.emplace(requestId, strategy);
 

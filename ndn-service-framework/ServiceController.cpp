@@ -1,6 +1,8 @@
 #include "ServiceController.hpp"
 #include "utils.hpp"
 
+#include <nac-abe/ndn-crypto/data-enc-dec.hpp>
+
 namespace ndn_service_framework {
 
 ServiceController::ServiceController(ndn::Face& face,
@@ -96,7 +98,7 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
                 << " for identity (cert): " << identity << std::endl;
     }
     catch (const std::exception&) {
-      m_aa.addNewPolicy(identity, abePolicy);
+      m_aa.addNewPolicy(ndn::Name(identity), abePolicy);
       std::cout << "Add ABE policy (fallback): " << abePolicy
                 << " for identity: " << identity << std::endl;
     }
@@ -388,7 +390,7 @@ ServiceController::encryptForCertificate(const ndn::security::Certificate& cert,
   const auto pkBits = cert.getPublicKey();
 
   // 用你已有的 hybrid 加密
-  return encryptDataContentWithCK(ndn::make_span(pt.data(), pt.size()), pkBits);
+  return ndn::nacabe::encryptDataContentWithCK(ndn::make_span(pt.data(), pt.size()), pkBits);
 }
 
 // ===================== Handlers =====================

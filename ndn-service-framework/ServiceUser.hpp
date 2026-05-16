@@ -41,7 +41,25 @@ namespace ndn_service_framework{
             using TimeoutHandler =
                 std::function<void(const ndn::Name&)>;
 
+            using RequestPublisher =
+                std::function<void(const ndn::Name& requestId,
+                                   const ndn::Name& requestName,
+                                   const std::vector<ndn::Name>& providers,
+                                   const ndn::Name& serviceName,
+                                   const ndn_service_framework::RequestMessage& requestMessage,
+                                   size_t strategy)>;
+
+            struct LocalMockTag
+            {
+            };
+
             ServiceUser(ndn::Face& face,ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
+            ServiceUser(LocalMockTag,
+                        ndn::Face& face,
+                        ndn::Name group_prefix,
+                        ndn::security::Certificate identityCert,
+                        ndn::security::Certificate attrAuthorityCertificate,
+                        std::string trustSchemaPath);
 
             virtual ~ServiceUser() {}
             // void addServiceStub(ServiceStub serviceStub);
@@ -56,6 +74,7 @@ namespace ndn_service_framework{
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,
                                                      UserPermissionTable& permissionTable);
+            void setRequestPublisher(RequestPublisher publisher);
 
             void PublishRequest(const std::vector<ndn::Name>& serviceProviderNames,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &payload, const size_t& strategy=ndn_service_framework::tlv::FirstResponding);
             void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
@@ -303,7 +322,7 @@ namespace ndn_service_framework{
             ndn::InMemoryStorageFifo m_IMS;
             std::mutex _cache_mutex;
 
-            ndnsd::discovery::ServiceDiscovery m_ServiceDiscovery;
+            OptionalServiceDiscovery m_ServiceDiscovery;
             UserPermissionTable UPT;
 
             std::map<ndn::Name, size_t> m_strategyMap;
@@ -318,6 +337,7 @@ namespace ndn_service_framework{
             std::mutex svs_mutex;
 
             std::map<ndn::Name, PendingCall> m_pendingCalls;
+            RequestPublisher m_requestPublisher;
     };
 }
 
