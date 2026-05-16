@@ -1,38 +1,32 @@
 top = '..'
 
-legacy_drone_provider_source_paths = [
-    'CodeGenerator/Generated/messages.pb.cc',
-    'CodeGenerator/Generated/ObjectDetectionService.cpp',
-    'CodeGenerator/Generated/FlightControlService.cpp',
-    'CodeGenerator/Generated/ServiceProvider_Drone.cpp',
-]
-
-legacy_gs_user_source_paths = [
-    'CodeGenerator/Generated/messages.pb.cc',
-    'CodeGenerator/Generated/ObjectDetectionServiceStub.cpp',
-    'CodeGenerator/Generated/FlightControlServiceStub.cpp',
-    'CodeGenerator/Generated/ServiceUser_GS.cpp',
-]
-
 def build(bld):
-    legacy_drone_provider_sources = bld.path.parent.ant_glob(legacy_drone_provider_source_paths)
-    legacy_gs_user_sources = bld.path.parent.ant_glob(legacy_gs_user_source_paths)
+    bld.program(name='App_ServiceController',
+                target='App_ServiceController',
+                source=['App_ServiceController.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
 
+    bld.program(name='App_Provider',
+                target='App_Provider',
+                source=['App_Provider.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
 
-    
-    # bld.program(name='server-main-example',
-    #             target='server-main-example',
-    #             source=["server_main.cpp", "messages.pb.cc"],
-    #             includes= ['.'],
-    #             use='NDN_CXX NDN_SVS BOOST ndn-service-framework PROTOBUF gtkmm',
-    #             install_path=None)
+    bld.program(name='App_User',
+                target='App_User',
+                source=['App_User.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
 
-    bld.program(name='aa-example',
-                target='aa-example',
-                source=["aa-example.cpp"],
-                includes= ['.'],
-                use='ndn-service-framework',
-                install_path='/usr/local/bin')
+    if not bld.env.WITH_EXAMPLES:
+        return
 
     bld.program(name='generic-dynamic-user-provider',
                 target='generic-dynamic-user-provider',
@@ -49,40 +43,5 @@ def build(bld):
                 use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD',
                 cxxflags=['-fPIC'],
                 install_path=None)
-    
-    bld.program(name='multi-drone-example',
-                target='multi-drone-example',
-                source=["multi_drone_manualcontrol.cpp"] + legacy_drone_provider_sources,
-                includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
-                use='ndn-service-framework gtkmm NDNSD',
-                install_path='/usr/local/bin')
-    
-    bld.program(name='multi-gs-example',
-                target='multi-gs-example',
-                source=["multi_gs_manualcontrol.cpp"] + legacy_gs_user_sources,
-                includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
-                use='ndn-service-framework gtkmm NDNSD',
-                install_path='/usr/local/bin')
-    
-    bld.program(name='service-controller-example',
-                target='service-controller-example',
-                source=["service-controller-example.cpp"],
-                includes= ['.','ndn-service-framework','CodeGenerator/Generated'],
-                use='ndn-service-framework NDNSD',
-                install_path='/usr/local/bin')
-    
-    bld.program(name='pubsub',
-                target='pubsub',
-                source=["pubsub.cpp"],
-                includes= ['.','ndn-service-framework'],
-                use='ndn-service-framework NDNSD',
-                install_path='/usr/local/bin')
-    
-    # bld.program(name='takeoff_and_land',
-    #             target='takeoff_and_land',
-    #             source=["takeoff_and_land.cpp"],
-    #             includes= ['.','ndn-service-framework'],
-    #             use='ndn-service-framework MAVSDK',
-    #             install_path=None)
 
     bld.install_files('/usr/local/bin', ['trust-schema.conf', 'trust-any.conf', 'example_muas.policies'])

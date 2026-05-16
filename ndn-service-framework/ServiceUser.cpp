@@ -1,5 +1,8 @@
 #include "ServiceUser.hpp"
 
+#include <algorithm>
+#include <iostream>
+
 namespace ndn_service_framework
 {
 
@@ -40,6 +43,25 @@ namespace ndn_service_framework
                 return false;
             }
             return response.WireDecode(block);
+        }
+
+        bool
+        payloadEquals(const RequestAckMessage& lhs, const RequestAckMessage& rhs)
+        {
+            const auto lhsPayload = lhs.getPayload();
+            const auto rhsPayload = rhs.getPayload();
+            return lhsPayload.size() == rhsPayload.size() &&
+                   std::equal(lhsPayload.begin(),
+                              lhsPayload.end(),
+                              rhsPayload.begin());
+        }
+
+        bool
+        ackEquals(const RequestAckMessage& lhs, const RequestAckMessage& rhs)
+        {
+            return lhs.getStatus() == rhs.getStatus() &&
+                   lhs.getMessage() == rhs.getMessage() &&
+                   payloadEquals(lhs, rhs);
         }
     }
 
@@ -187,6 +209,12 @@ namespace ndn_service_framework
         interest.setCanBePrefix(true);
         interest.setMustBeFresh(true);
         interest.setInterestLifetime(ndn::time::seconds(4));
+        ndn::security::InterestSigner signer(m_keyChain);
+        signer.makeSignedInterest(
+            interest,
+            m_signingInfo,
+            ndn::security::InterestSigner::SigningFlags::WantNonce |
+            ndn::security::InterestSigner::SigningFlags::WantTime);
 
         NDN_LOG_INFO("Fetch user permissions: " << interestName);
         m_face.expressInterest(
@@ -300,7 +328,7 @@ namespace ndn_service_framework
         // name->tokens to name->hash(token+requestID)
         std::map<std::string, std::string> tokens;
         for (auto pair : pairs){
-            tokens[pair.first] = std::to_string(std::hash<std::string>()(pair.second + RequestID.toUri()));
+            tokens[pair.first] = makeAuthorizationProof(pair.second, RequestID);
         }
         requestMessage.setTokens(tokens);
         requestMessage.setPayload(const_cast<ndn::Buffer&>(payload),payload.size());
@@ -387,8 +415,7 @@ namespace ndn_service_framework
         ndn_service_framework::RequestMessage requestMessage;
         std::map<std::string, std::string> tokens;
         for (auto pair : pairs){
-            tokens[pair.first] =
-                std::to_string(std::hash<std::string>()(pair.second + requestId.toUri()));
+            tokens[pair.first] = makeAuthorizationProof(pair.second, requestId);
         }
         requestMessage.setTokens(tokens);
         requestMessage.setPayload(const_cast<ndn::Buffer&>(payload), payload.size());
@@ -405,6 +432,24 @@ namespace ndn_service_framework
                 serviceName,
                 ndn::Name(bloomFilter.toHexString()),
                 requestId);
+
+        std::cout << "[ServiceUser] selected providerName(s)=";
+        if (serviceProviderNames.empty()) {
+            std::cout << "<discovery/bloom-filter>";
+        }
+        else {
+            for (size_t i = 0; i < serviceProviderNames.size(); ++i) {
+                if (i != 0) {
+                    std::cout << ",";
+                }
+                std::cout << serviceProviderNames[i].toUri();
+            }
+        }
+        std::cout << " selected serviceName=" << serviceName.toUri()
+                  << " final request name=" << requestName.toUri()
+                  << std::endl;
+        NDN_LOG_INFO("PublishRequestV2 selected serviceName=" << serviceName.toUri()
+                     << " final request name=" << requestName.toUri());
 
         auto pendingIt = m_pendingCalls.find(requestId);
         if (pendingIt != m_pendingCalls.end()) {
@@ -589,6 +634,64 @@ namespace ndn_service_framework
         return requestId;
     }
 
+    ndn::Name ServiceUser::async_call(const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int ackTimeoutMs,
+                                      AckCandidatesHandler onAcksHandler,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler)
+    {
+        const ndn::Name requestId = makeRequestId();
+
+        PendingCall pendingCall;
+        pendingCall.serviceName = serviceName;
+        pendingCall.requestMessage = requestMessage;
+        pendingCall.strategy = ndn_service_framework::tlv::FirstResponding;
+        pendingCall.timeoutMs = timeoutMs;
+        pendingCall.ackTimeoutMs = ackTimeoutMs;
+        pendingCall.ackCandidatesHandler = std::move(onAcksHandler);
+        pendingCall.timeoutHandler = std::move(onTimeout);
+        pendingCall.responseHandler = std::move(onResponseHandler);
+        m_pendingCalls[requestId] = std::move(pendingCall);
+
+        const auto payload = requestMessage.getPayload();
+        PublishRequestV2({},
+                         serviceName,
+                         requestId,
+                         payload,
+                         ndn_service_framework::tlv::FirstResponding);
+
+        if (ackTimeoutMs > 0) {
+            m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
+                evaluateAckSelection(requestId);
+            });
+        }
+        else {
+            m_scheduler.schedule(ndn::time::milliseconds(0), [this, requestId]() {
+                evaluateAckSelection(requestId);
+            });
+        }
+
+        if (timeoutMs > 0) {
+            m_scheduler.schedule(ndn::time::milliseconds(timeoutMs), [this, requestId]() {
+                auto pendingCall = m_pendingCalls.find(requestId);
+                if (pendingCall == m_pendingCalls.end()) {
+                    return;
+                }
+
+                auto timeoutHandler = pendingCall->second.timeoutHandler;
+                m_pendingCalls.erase(pendingCall);
+
+                if (timeoutHandler) {
+                    timeoutHandler(requestId);
+                }
+            });
+        }
+
+        return requestId;
+    }
+
     void ServiceUser::handleResponse(const ndn::Name& requestId,
                                      const ndn_service_framework::ResponseMessage& responseMessage)
     {
@@ -682,6 +785,10 @@ namespace ndn_service_framework
                           parsedV2->serviceName,
                           parsedV2->requestId,
                           ackMessage});
+            if (pendingCall->second.acksHandler ||
+                pendingCall->second.ackCandidatesHandler) {
+                return true;
+            }
             evaluateAckSelection(parsedV2->requestId);
 
             return true;
@@ -711,6 +818,10 @@ namespace ndn_service_framework
                       makeUnifiedServiceName(serviceName, functionName),
                       requestId,
                       ackMessage});
+        if (pendingCall->second.acksHandler ||
+            pendingCall->second.ackCandidatesHandler) {
+            return true;
+        }
         evaluateAckSelection(requestId);
 
         return true;
@@ -753,7 +864,8 @@ namespace ndn_service_framework
             return false;
         }
 
-        if (pendingCall->second.acksHandler) {
+        if (pendingCall->second.acksHandler ||
+            pendingCall->second.ackCandidatesHandler) {
             return evaluateCustomAckSelection(pendingCall->second);
         }
 
@@ -762,27 +874,69 @@ namespace ndn_service_framework
 
     bool ServiceUser::evaluateCustomAckSelection(PendingCall& pendingCall)
     {
-        std::vector<ndn_service_framework::RequestAckMessage> ackMessages;
-        for (const auto& storedAck : pendingCall.requestAcks) {
-            ackMessages.push_back(storedAck.message);
-        }
-
-        const auto selectedMessages = pendingCall.acksHandler(ackMessages);
         pendingCall.customSelectedAcks.clear();
         pendingCall.successfulAckProviders.clear();
         pendingCall.selectedProvider = ndn::Name();
 
-        for (const auto& selectedMessage : selectedMessages) {
-            const auto* storedAck = findStoredAck(pendingCall, selectedMessage);
-            if (storedAck == nullptr || !storedAck->message.getStatus()) {
-                continue;
+        if (pendingCall.ackCandidatesHandler) {
+            std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
+            for (const auto& storedAck : pendingCall.requestAcks) {
+                candidates.push_back({storedAck.providerName,
+                                      storedAck.serviceName,
+                                      storedAck.requestId,
+                                      storedAck.message});
             }
 
-            pendingCall.customSelectedAcks.push_back(*storedAck);
-            addUniqueName(pendingCall.successfulAckProviders, storedAck->providerName);
-            if (pendingCall.selectedProvider.empty()) {
-                pendingCall.selectedProvider = storedAck->providerName;
+            const auto selectedCandidates = pendingCall.ackCandidatesHandler(candidates);
+            for (const auto& selectedCandidate : selectedCandidates) {
+                for (const auto& storedAck : pendingCall.requestAcks) {
+                    if (!storedAck.providerName.equals(selectedCandidate.providerName) ||
+                        !storedAck.serviceName.equals(selectedCandidate.serviceName) ||
+                        !storedAck.requestId.equals(selectedCandidate.requestId)) {
+                        continue;
+                    }
+                    if (!ackEquals(storedAck.message, selectedCandidate.ack)) {
+                        continue;
+                    }
+
+                    if (!storedAck.message.getStatus()) {
+                        break;
+                    }
+
+                    pendingCall.customSelectedAcks.push_back(storedAck);
+                    addUniqueName(pendingCall.successfulAckProviders, storedAck.providerName);
+                    if (pendingCall.selectedProvider.empty()) {
+                        pendingCall.selectedProvider = storedAck.providerName;
+                    }
+                    break;
+                }
             }
+        }
+        else {
+            std::vector<ndn_service_framework::RequestAckMessage> ackMessages;
+            for (const auto& storedAck : pendingCall.requestAcks) {
+                ackMessages.push_back(storedAck.message);
+            }
+
+            const auto selectedMessages = pendingCall.acksHandler(ackMessages);
+            for (const auto& selectedMessage : selectedMessages) {
+                const auto* storedAck = findStoredAck(pendingCall, selectedMessage);
+                if (storedAck == nullptr || !storedAck->message.getStatus()) {
+                    continue;
+                }
+
+                pendingCall.customSelectedAcks.push_back(*storedAck);
+                addUniqueName(pendingCall.successfulAckProviders, storedAck->providerName);
+                if (pendingCall.selectedProvider.empty()) {
+                    pendingCall.selectedProvider = storedAck->providerName;
+                }
+            }
+        }
+
+        for (const auto& selectedAck : pendingCall.customSelectedAcks) {
+            PublishServiceCoordinationMessageV2(selectedAck.providerName,
+                                                selectedAck.serviceName,
+                                                selectedAck.requestId);
         }
 
         return true;
@@ -857,8 +1011,7 @@ namespace ndn_service_framework
         const ndn_service_framework::RequestAckMessage& ackMessage)
     {
         for (const auto& storedAck : pendingCall.requestAcks) {
-            if (storedAck.message.getStatus() == ackMessage.getStatus() &&
-                storedAck.message.getMessage() == ackMessage.getMessage()) {
+            if (ackEquals(storedAck.message, ackMessage)) {
                 return &storedAck;
             }
         }
@@ -907,7 +1060,9 @@ namespace ndn_service_framework
 
     void ServiceUser::OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
-        if(!isFresh(subscription)) return;
+        if(!isFresh(subscription)) {
+            return;
+        }
         // log message
         NDN_LOG_INFO("OnRequestAck: " << subscription.name);
 
@@ -979,7 +1134,9 @@ namespace ndn_service_framework
 
     void ServiceUser::OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
-        if(!isFresh(subscription)) return;
+        if(!isFresh(subscription)) {
+            return;
+        }
 
         NDN_LOG_INFO("OnResponse: " << subscription.name);
 
@@ -1083,7 +1240,8 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         auto pendingCall = m_pendingCalls.find(requestID);
         if (handledByPendingCall &&
             pendingCall != m_pendingCalls.end() &&
-            pendingCall->second.acksHandler) {
+            (pendingCall->second.acksHandler ||
+             pendingCall->second.ackCandidatesHandler)) {
             return;
         }
 
@@ -1240,7 +1398,6 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
     }
     void ServiceUser::onInterest(const ndn::InterestFilter &, const ndn::Interest &interest)
     {
-        // log interest
         NDN_LOG_INFO("Received Interest: " << interest.getName().toUri());
         replyFromIMS(interest);
         
@@ -1295,14 +1452,14 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         // log register
         NDN_LOG_INFO("Register NDNSF Messages in ndn-svs");
 
-        // register Permission Ack Message
-        std::string regex_str = "^(<>*)<NDNSF><ACK>" + ndn_service_framework::NameToRegexString(identity) ;
+        // V2 ACK/RESPONSE subscriptions match every provider and parse counted
+        // requester/service names from the message body.
+        std::string regex_str = "^(<>*)<NDNSF><ACK>(<>*)$";
         NDN_LOG_INFO(regex_str);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                     std::bind(&ServiceUser::OnRequestAck, this, _1),
                                     true, false);
-        // register Response Message
-        std::string regex_str2 = "^(<>*)<NDNSF><RESPONSE>" + ndn_service_framework::NameToRegexString(identity);
+        std::string regex_str2 = "^(<>*)<NDNSF><RESPONSE>(<>*)$";
         NDN_LOG_INFO(regex_str2);
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                     std::bind(&ServiceUser::OnResponse, this, _1),
@@ -1353,6 +1510,12 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
 
     void ServiceUser::OnResponseDecryptionErrorCallback(const ndn::Name& serviceProviderName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const std::string & msg)
     {
+        std::cout << "[ServiceUser] OnResponseDecryptionErrorCallback provider="
+                  << serviceProviderName.toUri()
+                  << " service=" << ServiceName.toUri()
+                  << " function=" << FunctionName.toUri()
+                  << " requestID=" << RequestID.toUri()
+                  << " error=" << msg << std::endl;
         NDN_LOG_ERROR("OnResponseDecryptionErrorCallback: " << serviceProviderName << ServiceName << FunctionName << RequestID << " with error: " << msg);
     }
 }

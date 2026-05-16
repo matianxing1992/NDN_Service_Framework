@@ -27,8 +27,21 @@ namespace ndn_service_framework{
         public:
             using ServiceKey = ndn::Name;
 
+            struct AckDecision
+            {
+                bool status = false;
+                std::string message;
+                ndn::Buffer payload;
+            };
+
             using AckStrategyHandler =
+                std::function<AckDecision(const RequestMessage&)>;
+
+            using LegacyAckStrategyHandler =
                 std::function<std::pair<bool, ndn::Block>(const RequestAckMessage&)>;
+
+            using SimpleAckStrategyHandler =
+                std::function<bool(const RequestMessage&)>;
 
             using RequestHandler =
                 std::function<ResponseMessage(const ndn::Name& requesterIdentity,
@@ -78,10 +91,26 @@ namespace ndn_service_framework{
                             RequestHandler requestHandler);
 
             void addService(const ndn::Name& serviceName,
+                            LegacyAckStrategyHandler ackHandler,
+                            RequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
                             RequestHandler requestHandler);
 
             void addService(const ndn::Name& serviceName,
                             AckStrategyHandler ackHandler,
+                            SimpleRequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            LegacyAckStrategyHandler ackHandler,
+                            SimpleRequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            SimpleAckStrategyHandler ackHandler,
+                            RequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            SimpleAckStrategyHandler ackHandler,
                             SimpleRequestHandler requestHandler);
 
             void addService(const ndn::Name& serviceName,
@@ -91,7 +120,26 @@ namespace ndn_service_framework{
 
             void addService(const ndn::Name& serviceName,
                             const ndn::Name& functionName,
+                            LegacyAckStrategyHandler ackHandler,
                             RequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            const ndn::Name& functionName,
+                            RequestHandler requestHandler);
+
+            void setAckStrategyHandler(const ndn::Name& serviceName,
+                                       AckStrategyHandler ackHandler);
+
+            void setAckStrategyHandler(const ndn::Name& serviceName,
+                                       const ndn::Name& functionName,
+                                       AckStrategyHandler ackHandler);
+
+            void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
+                                             LegacyAckStrategyHandler ackHandler);
+
+            void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
+                                             const ndn::Name& functionName,
+                                             LegacyAckStrategyHandler ackHandler);
 
             template<typename RequestT, typename ResponseT>
             void addHandler(const ndn::Name& serviceName,
@@ -198,12 +246,13 @@ namespace ndn_service_framework{
 
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
-            void PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, std::string& msg);
+            void PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload = ndn::Buffer());
             void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
                                             const ndn::Name& serviceName,
                                             const ndn::Name& requestId,
                                             bool status,
-                                            const std::string& msg);
+                                            const std::string& msg,
+                                            const ndn::Buffer& payload = ndn::Buffer());
     
             void onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -246,6 +295,8 @@ namespace ndn_service_framework{
             };
 
             static ResponseMessage makeErrorResponse(const std::string& errorInfo);
+
+            static AckDecision makeDefaultAckDecision();
 
             static ndn::Name makeUnifiedServiceName(const ndn::Name& serviceName,
                                                     const ndn::Name& functionName);

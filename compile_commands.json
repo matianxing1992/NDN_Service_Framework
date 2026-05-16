@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/home/tianxing/NDN/ndn-service-framework/build",
+    "file": "/home/tianxing/NDN/ndn-service-framework/examples/App_Provider.cpp",
+    "command": "/usr/bin/g++ -O2 -g -pedantic -Wall -Wextra -Wcatch-value=2 -Wextra-semi -Wnon-virtual-dtor -Wno-unused-parameter -fdiagnostics-color -std=c++17 -pthread -pthread -pthread -pthread -I. -I.. -Indn-service-framework -I../ndn-service-framework -I. -I.. -I../.local-boost171/include -I/tmp/boost171-include -I/usr/include -I/usr/local/includeabc -DNDEBUG -DBOOST_STACKTRACE_DYN_LINK -DBOOST_LOG_DYN_LINK ../examples/App_Provider.cpp -c -o/home/tianxing/NDN/ndn-service-framework/build/examples/App_Provider.cpp.2.o"
+  }
+]

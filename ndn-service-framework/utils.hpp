@@ -82,6 +82,8 @@ namespace ndn_service_framework
     };
 
     // V2 wire names use one unified serviceName endpoint path, never ServiceName + FunctionName.
+    // NAC-ABE attributes follow message direction: REQUEST/COORDINATION use
+    // /SERVICE/<serviceName>; RESPONSE/ACK use /PERMISSION/<serviceName>.
     // Request:
     //   /<requester>/NDNSF/REQUEST/<serviceComponentCount>/<serviceName...>/<bloomFilter>/<requestId>
     // Response:
@@ -139,6 +141,12 @@ namespace ndn_service_framework
     std::string NameToRegexString(ndn::Name& name);
 
     std::string RandomString(const int len);
+
+    std::string makeAuthorizationProof(const std::string& token,
+                                       const ndn::Name& requestId);
+    bool verifyAuthorizationProof(const std::string& token,
+                                  const ndn::Name& requestId,
+                                  const std::string& proof);
 
     std::optional<std::vector<std::string>> GetAttributesByName(const ndn::Name& name);
 

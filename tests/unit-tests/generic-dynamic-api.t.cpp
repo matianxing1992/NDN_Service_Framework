@@ -7,6 +7,7 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 
+#include <map>
 #include <string>
 
 namespace ndn_service_framework::test {
@@ -132,6 +133,67 @@ makeSuccessAck()
   return ack;
 }
 
+std::string
+makeDemoAuthorizationToken(const char* permissionKind,
+                           const ndn::Name& targetIdentity,
+                           const ndn::Name& providerName,
+                           const ndn::Name& serviceName)
+{
+  return "DEMO-UNSIGNED-AUTHZ-TOKEN:v1:kind=" +
+         std::string(permissionKind) +
+         ":target=" + targetIdentity.toUri() +
+         ":provider=" + providerName.toUri() +
+         ":service=" + serviceName.toUri();
+}
+
+PermissionResponse
+makePermissionResponse(const ndn::Name& targetIdentity,
+                       size_t permissionKind,
+                       const ndn::Name& providerName,
+                       const ndn::Name& serviceName,
+                       const std::string& token)
+{
+  PermissionEntry entry;
+  entry.setProviderName(providerName.toUri());
+  entry.setServiceName(serviceName.toUri());
+  entry.setToken(token);
+  entry.setTtl(0);
+  entry.setVersion(1);
+
+  PermissionResponse response;
+  response.setTargetIdentity(targetIdentity.toUri());
+  response.setPermissionKind(permissionKind);
+  response.addEntry(entry);
+  return response;
+}
+
+void
+installPermissions(LocalServiceUser& user,
+                   ServiceProvider& provider,
+                   const ndn::Name& requesterName,
+                   const ndn::Name& serviceName)
+{
+  const ndn::Name providerName = provider.getName();
+  user.applyPermissionResponse(
+    makePermissionResponse(requesterName,
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName,
+                           makeDemoAuthorizationToken("user",
+                                                      requesterName,
+                                                      providerName,
+                                                      serviceName)));
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName,
+                           makeDemoAuthorizationToken("provider",
+                                                      providerName,
+                                                      providerName,
+                                                      serviceName)));
+}
+
 void
 runLocalFlow(LocalServiceUser& user,
              ServiceProvider& provider,
@@ -140,6 +202,10 @@ runLocalFlow(LocalServiceUser& user,
              int classification)
 {
   const ndn::Name providerName = provider.getName();
+  installPermissions(user,
+                     provider,
+                     ndn::Name("/test/user/alice"),
+                     serviceName);
   bool providerHandlerCalled = false;
 
   provider.addHandler<DynamicRequest, DynamicResponse>(
@@ -221,6 +287,30 @@ runLocalFlow(LocalServiceUser& user,
   BOOST_CHECK(callbackCalled);
 }
 
+RequestMessage
+makeAuthorizedRequestMessage(const std::string& payload,
+                             const ndn::Name& providerName,
+                             const ndn::Name& requesterName,
+                             const ndn::Name& serviceName,
+                             const ndn::Name& requestId)
+{
+  const auto token = makeDemoAuthorizationToken("user",
+                                               requesterName,
+                                               providerName,
+                                               serviceName);
+  std::map<std::string, std::string> tokens;
+  tokens[ndn::Name(providerName).append(serviceName).toUri()] =
+    makeAuthorizationProof(token, requestId);
+
+  RequestMessage request;
+  request.setTokens(tokens);
+  ndn::Buffer payloadBuffer(reinterpret_cast<const uint8_t*>(payload.data()),
+                            payload.size());
+  request.setPayload(payloadBuffer, payloadBuffer.size());
+  request.setStrategy(tlv::FirstResponding);
+  return request;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
@@ -268,6 +358,109 @@ BOOST_AUTO_TEST_CASE(AddHandlerAsyncCallDispatchResponseAndAck)
 
   runLocalFlow(user, provider, ndn::Name("/ObjectDetection/YOLOv8"), "local-image-bytes", 42);
   runLocalFlow(user, provider, ndn::Name("/LLM/Llama3/Prefill"), "prompt-tokens", 7);
+}
+
+BOOST_AUTO_TEST_CASE(AuthorizationProofUsesStableSha256)
+{
+  const ndn::Name requestId("/request-proof");
+  const auto proof = makeAuthorizationProof("token", requestId);
+
+  BOOST_CHECK_EQUAL(proof.size(), 64);
+  BOOST_CHECK(verifyAuthorizationProof("token", requestId, proof));
+  BOOST_CHECK(!verifyAuthorizationProof("wrong-token", requestId, proof));
+  BOOST_CHECK(!verifyAuthorizationProof("token", ndn::Name("/other-request"), proof));
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRejectsInvalidAuthorizationProofs)
+{
+  ndn::Face face;
+  ndn::security::KeyChain keyChain("pib-memory:generic-auth-negative",
+                                   "tpm-memory:generic-auth-negative");
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name providerName("/test/provider/camera");
+  const ndn::Name serviceName("/ObjectDetection/YOLOv8");
+  const ndn::Name otherServiceName("/ObjectDetection/Other");
+  const ndn::Name requestId("/request-auth-negative");
+
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-auth-negative"));
+
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  ServiceProvider provider(ServiceProvider::LocalMockTag{},
+                           face,
+                           ndn::Name("/test/group"),
+                           providerCert,
+                           aaCert,
+                           "examples/trust-any.conf");
+
+  bool handlerCalled = false;
+  provider.addHandler<DynamicRequest, DynamicResponse>(
+    serviceName,
+    std::function<void(const ndn::Name&, const DynamicRequest&, DynamicResponse&)>(
+      [&] (const ndn::Name&, const DynamicRequest&, DynamicResponse& response) {
+        handlerCalled = true;
+        response.setClassification(1);
+      }));
+
+  installPermissions(user, provider, requesterName, serviceName);
+
+  const auto requestName = makeRequestNameV2(requesterName,
+                                            serviceName,
+                                            ndn::Name("/bf"),
+                                            requestId);
+  auto goodRequest = makeAuthorizedRequestMessage("payload",
+                                                 providerName,
+                                                 requesterName,
+                                                 serviceName,
+                                                 requestId);
+  auto goodResponse = provider.handleDecryptedRequestByName(requestName, goodRequest);
+  BOOST_CHECK(goodResponse.getStatus());
+  BOOST_CHECK(handlerCalled);
+
+  handlerCalled = false;
+  auto wrongUserTokenRequest = goodRequest;
+  wrongUserTokenRequest.setTokens({
+    {ndn::Name(providerName).append(serviceName).toUri(),
+     makeAuthorizationProof("wrong-user-token", requestId)}
+  });
+  auto wrongUserResponse =
+    provider.handleDecryptedRequestByName(requestName, wrongUserTokenRequest);
+  BOOST_CHECK(!wrongUserResponse.getStatus());
+  BOOST_CHECK(!handlerCalled);
+
+  auto wrongServiceToken = makeDemoAuthorizationToken("user",
+                                                     requesterName,
+                                                     providerName,
+                                                     otherServiceName);
+  auto wrongServiceTokenRequest = goodRequest;
+  wrongServiceTokenRequest.setTokens({
+    {ndn::Name(providerName).append(serviceName).toUri(),
+     makeAuthorizationProof(wrongServiceToken, requestId)}
+  });
+  auto wrongServiceResponse =
+    provider.handleDecryptedRequestByName(requestName, wrongServiceTokenRequest);
+  BOOST_CHECK(!wrongServiceResponse.getStatus());
+  BOOST_CHECK(!handlerCalled);
+
+  ServiceProvider providerWithoutPermission(ServiceProvider::LocalMockTag{},
+                                            face,
+                                            ndn::Name("/test/group"),
+                                            providerCert,
+                                            aaCert,
+                                            "examples/trust-any.conf");
+  providerWithoutPermission.addHandler<DynamicRequest, DynamicResponse>(
+    serviceName,
+    std::function<void(const ndn::Name&, const DynamicRequest&, DynamicResponse&)>(
+      [&] (const ndn::Name&, const DynamicRequest&, DynamicResponse& response) {
+        handlerCalled = true;
+        response.setClassification(2);
+      }));
+
+  auto missingProviderPermissionResponse =
+    providerWithoutPermission.handleDecryptedRequestByName(requestName, goodRequest);
+  BOOST_CHECK(!missingProviderPermissionResponse.getStatus());
+  BOOST_CHECK(!handlerCalled);
 }
 
 BOOST_AUTO_TEST_CASE(BaseServiceProviderDefaultsAreSafe)

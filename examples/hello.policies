@@ -1,0 +1,25 @@
+name /example/hello/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/hello/provider
+        allow
+        {
+            /HELLO
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/hello/user
+        allow
+        {
+            /HELLO
+        }
+    }
+}

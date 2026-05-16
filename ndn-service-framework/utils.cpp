@@ -1,6 +1,7 @@
 #include "utils.hpp"
 
 #include <ndn-cxx/security/transform.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 
 namespace ndn_service_framework
 {
@@ -514,8 +515,41 @@ namespace ndn_service_framework
         return tmp_s;
     }
 
+    std::string makeAuthorizationProof(const std::string& token,
+                                       const ndn::Name& requestId)
+    {
+        ndn::util::Sha256 digest;
+        digest << token;
+        digest << std::string_view("\0", 1);
+        digest << requestId.toUri();
+        return digest.toString();
+    }
+
+    bool verifyAuthorizationProof(const std::string& token,
+                                  const ndn::Name& requestId,
+                                  const std::string& proof)
+    {
+        return proof == makeAuthorizationProof(token, requestId);
+    }
+
     std::optional<std::vector<std::string>> GetAttributesByName(const ndn::Name& name)
     {
+        // V2 NAC-ABE routing is intentionally service-scoped:
+        // requests and coordination require /SERVICE/<service>, while
+        // responses and ACKs require /PERMISSION/<service>.
+        if (auto requestV2 = parseRequestNameV2(name)) {
+            return std::vector<std::string>{"/SERVICE" + requestV2->serviceName.toUri()};
+        }
+        if (auto responseV2 = parseResponseNameV2(name)) {
+            return std::vector<std::string>{"/PERMISSION" + responseV2->serviceName.toUri()};
+        }
+        if (auto ackV2 = parseRequestAckNameV2(name)) {
+            return std::vector<std::string>{"/PERMISSION" + ackV2->serviceName.toUri()};
+        }
+        if (auto coordinationV2 = parseServiceCoordinationNameV2(name)) {
+            return std::vector<std::string>{"/SERVICE" + coordinationV2->serviceName.toUri()};
+        }
+
         std::shared_ptr<ndn::Regex> requestMatch = std::make_shared<ndn::Regex>(requestRegexString);
         std::shared_ptr<ndn::Regex> responseMatch = std::make_shared<ndn::Regex>(responseRegexString);
         std::shared_ptr<ndn::Regex> RequestAckMatch = std::make_shared<ndn::Regex>(RequestAckRegexString);

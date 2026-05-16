@@ -1,10 +1,60 @@
 #include <ServiceProvider.hpp>
+
+#include <algorithm>
+#include <iostream>
+
 namespace ndn_service_framework
 {
     NDN_LOG_INIT(ndn_service_framework.ServiceProvider);
 
     namespace
     {
+        ndn::Buffer
+        blockToPayloadBuffer(const ndn::Block& block)
+        {
+            try {
+                ndn::Block wireBlock(block);
+                if (!wireBlock.hasWire()) {
+                    wireBlock.encode();
+                }
+                return ndn::Buffer(wireBlock.value(), wireBlock.value_size());
+            }
+            catch (const std::exception&) {
+                return ndn::Buffer();
+            }
+        }
+
+        ServiceProvider::AckStrategyHandler
+        wrapLegacyAckStrategyHandler(ServiceProvider::LegacyAckStrategyHandler handler)
+        {
+            if (!handler) {
+                return ServiceProvider::AckStrategyHandler{};
+            }
+
+            return [handler = std::move(handler)](const RequestMessage&) {
+                RequestAckMessage legacyAck;
+                const auto result = handler(legacyAck);
+
+                ServiceProvider::AckDecision decision;
+                decision.status = result.first;
+                decision.payload = blockToPayloadBuffer(result.second);
+                return decision;
+            };
+        }
+
+        std::string
+        makeDemoAuthorizationToken(const char* permissionKind,
+                                   const ndn::Name& targetIdentity,
+                                   const ndn::Name& providerName,
+                                   const ndn::Name& serviceName)
+        {
+            return "DEMO-UNSIGNED-AUTHZ-TOKEN:v1:kind=" +
+                   std::string(permissionKind) +
+                   ":target=" + targetIdentity.toUri() +
+                   ":provider=" + providerName.toUri() +
+                   ":service=" + serviceName.toUri();
+        }
+
         bool
         decodeEncryptedPermissionResponseFromDataContent(
             const ndn::Data& data,
@@ -39,6 +89,40 @@ namespace ndn_service_framework
             }
             return response.WireDecode(block);
         }
+
+        bool
+        hasValidAuthorizationProof(const ndn::Name& providerIdentity,
+                                   const ndn::Name& requesterIdentity,
+                                   const ndn::Name& serviceName,
+                                   const ndn::Name& requestId,
+                                   const std::optional<std::string>& providerToken,
+                                   const RequestMessage& requestMessage)
+        {
+            if (!providerToken) {
+                return false;
+            }
+
+            const ndn::Name providerServiceName =
+                ndn::Name(providerIdentity.toUri()).append(serviceName);
+            const std::string expectedUserToken =
+                makeDemoAuthorizationToken("user",
+                                           requesterIdentity,
+                                           providerIdentity,
+                                           serviceName);
+
+            for (const auto& pair : requestMessage.getTokens()) {
+                if (pair.first != providerServiceName.toUri()) {
+                    continue;
+                }
+
+                if (verifyAuthorizationProof(expectedUserToken, requestId, pair.second) ||
+                    verifyAuthorizationProof(*providerToken, requestId, pair.second)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 
     ServiceProvider::ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) 
@@ -64,10 +148,14 @@ namespace ndn_service_framework
         nacConsumer.obtainDecryptionKey();
 
         // Serve NDNSF and ck messages using IMS
-        m_face.setInterestFilter(ndn::Name(identity.toUri()).append("NDNSF"),
+        const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
+        const ndn::Name ckFilter = ndn::Name(identity.toUri()).append("CK");
+        std::cout << "[ServiceProvider] registered service content prefix="
+                  << ndnsfFilter.toUri() << std::endl;
+        m_face.setInterestFilter(ndnsfFilter,
             std::bind(&ServiceProvider::onInterest, this, _1, _2),
             std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
-        m_face.setInterestFilter(ndn::Name(identity.toUri()).append("CK"),
+        m_face.setInterestFilter(ckFilter,
             std::bind(&ServiceProvider::onInterest, this, _1, _2),
             std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
 
@@ -194,6 +282,23 @@ namespace ndn_service_framework
                                      RequestHandler requestHandler)
     {
         m_services[serviceName] = {std::move(ackHandler), std::move(requestHandler)};
+        const auto serviceUri = serviceName.toUri();
+        if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
+            m_serviceNames.end()) {
+            m_serviceNames.push_back(serviceUri);
+        }
+        std::cout << "[ServiceProvider] registered service prefix="
+                  << serviceUri << std::endl;
+        NDN_LOG_INFO("Registered service handler for " << serviceUri);
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     LegacyAckStrategyHandler ackHandler,
+                                     RequestHandler requestHandler)
+    {
+        addService(serviceName,
+                   wrapLegacyAckStrategyHandler(std::move(ackHandler)),
+                   std::move(requestHandler));
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
@@ -204,6 +309,49 @@ namespace ndn_service_framework
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
                                      AckStrategyHandler ackHandler,
+                                     SimpleRequestHandler requestHandler)
+    {
+        addService(serviceName,
+                   std::move(ackHandler),
+                   [handler = std::move(requestHandler)](
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const RequestMessage& requestMessage) {
+                       return handler(requestMessage);
+                   });
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     LegacyAckStrategyHandler ackHandler,
+                                     SimpleRequestHandler requestHandler)
+    {
+        addService(serviceName,
+                   wrapLegacyAckStrategyHandler(std::move(ackHandler)),
+                   std::move(requestHandler));
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     SimpleAckStrategyHandler ackHandler,
+                                     RequestHandler requestHandler)
+    {
+        AckStrategyHandler wrappedAckHandler;
+        if (ackHandler) {
+            wrappedAckHandler = [handler = std::move(ackHandler)](
+                                    const RequestMessage& requestMessage) {
+                AckDecision decision;
+                decision.status = handler(requestMessage);
+                decision.message = decision.status ? "Permission Granted" : "Permission Denied";
+                return decision;
+            };
+        }
+
+        addService(serviceName, std::move(wrappedAckHandler), std::move(requestHandler));
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     SimpleAckStrategyHandler ackHandler,
                                      SimpleRequestHandler requestHandler)
     {
         addService(serviceName,
@@ -230,10 +378,56 @@ namespace ndn_service_framework
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
                                      const ndn::Name& functionName,
+                                     LegacyAckStrategyHandler ackHandler,
+                                     RequestHandler requestHandler)
+    {
+        addService(makeUnifiedServiceName(serviceName, functionName),
+                   wrapLegacyAckStrategyHandler(std::move(ackHandler)),
+                   std::move(requestHandler));
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     const ndn::Name& functionName,
                                      RequestHandler requestHandler)
     {
         addService(makeUnifiedServiceName(serviceName, functionName),
                    std::move(requestHandler));
+    }
+
+    void ServiceProvider::setAckStrategyHandler(const ndn::Name& serviceName,
+                                                AckStrategyHandler ackHandler)
+    {
+        m_services[serviceName].ackHandler = std::move(ackHandler);
+        const auto serviceUri = serviceName.toUri();
+        if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
+            m_serviceNames.end()) {
+            m_serviceNames.push_back(serviceUri);
+        }
+    }
+
+    void ServiceProvider::setAckStrategyHandler(const ndn::Name& serviceName,
+                                                const ndn::Name& functionName,
+                                                AckStrategyHandler ackHandler)
+    {
+        setAckStrategyHandler(makeUnifiedServiceName(serviceName, functionName),
+                              std::move(ackHandler));
+    }
+
+    void ServiceProvider::setLegacyAckStrategyHandler(
+        const ndn::Name& serviceName,
+        LegacyAckStrategyHandler ackHandler)
+    {
+        setAckStrategyHandler(serviceName,
+                              wrapLegacyAckStrategyHandler(std::move(ackHandler)));
+    }
+
+    void ServiceProvider::setLegacyAckStrategyHandler(
+        const ndn::Name& serviceName,
+        const ndn::Name& functionName,
+        LegacyAckStrategyHandler ackHandler)
+    {
+        setLegacyAckStrategyHandler(makeUnifiedServiceName(serviceName, functionName),
+                                    std::move(ackHandler));
     }
 
     bool ServiceProvider::hasService(const ndn::Name& serviceName) const
@@ -292,6 +486,19 @@ namespace ndn_service_framework
     {
         auto parsedV2 = ndn_service_framework::parseRequestNameV2(requestName);
         if (parsedV2) {
+            auto token = UPT.queryPermission(
+                ndn::Name(identity.toUri()).append(parsedV2->serviceName).toUri(),
+                parsedV2->serviceName.toUri());
+            if (!hasValidAuthorizationProof(identity,
+                                            parsedV2->requesterName,
+                                            parsedV2->serviceName,
+                                            parsedV2->requestId,
+                                            token,
+                                            requestMessage)) {
+                return makeErrorResponse("Permission denied for " +
+                                         parsedV2->serviceName.toUri());
+            }
+
             return dispatchRequest(parsedV2->requesterName,
                                    identity,
                                    parsedV2->serviceName,
@@ -302,6 +509,19 @@ namespace ndn_service_framework
         auto parsed = parseRequestNameForUnifiedService(requestName);
         if (!parsed) {
             return makeErrorResponse("Failed to parse request name " + requestName.toUri());
+        }
+
+        auto token = UPT.queryPermission(
+            ndn::Name(identity.toUri()).append(parsed->serviceName).toUri(),
+            parsed->serviceName.toUri());
+        if (!hasValidAuthorizationProof(identity,
+                                        parsed->requesterIdentity,
+                                        parsed->serviceName,
+                                        parsed->requestId,
+                                        token,
+                                        requestMessage)) {
+            return makeErrorResponse("Permission denied for " +
+                                     parsed->serviceName.toUri());
         }
 
         return dispatchRequest(parsed->requesterIdentity,
@@ -330,6 +550,14 @@ namespace ndn_service_framework
         response.setStatus(false);
         response.setErrorInfo(errorInfo);
         return response;
+    }
+
+    ServiceProvider::AckDecision ServiceProvider::makeDefaultAckDecision()
+    {
+        AckDecision decision;
+        decision.status = true;
+        decision.message = "Permission Granted";
+        return decision;
     }
 
     ndn::Name ServiceProvider::makeUnifiedServiceName(const ndn::Name& serviceName,
@@ -613,18 +841,12 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
     requestMessage.WireDecode(block);
 
     bool isAuthorized = false;
-    for (const auto& pair : requestMessage.getTokens()) {
-        if (pair.second ==
-            std::to_string(std::hash<std::string>()(
-                token.value() + requestId.toUri())))
-        {
-            isAuthorized = true;
-            break;
-        }
-    }
-
-    // For debugging only
-    isAuthorized = true;
+    isAuthorized = hasValidAuthorizationProof(identity,
+                                              requesterIdentity,
+                                              serviceName,
+                                              requestId,
+                                              token,
+                                              requestMessage);
 
     if (!isAuthorized) {
         NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: Permission Denied");
@@ -635,20 +857,46 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
         NDN_LOG_INFO("Dispatch request using V2 dynamic handler for "
                      << serviceName.toUri());
 
-        auto response = dispatchRequest(requesterIdentity,
-                                        identity,
-                                        serviceName,
-                                        requestId,
-                                        requestMessage);
-        ndn::Name responseName = makeResponseNameV2(identity,
-                                                    requesterIdentity,
-                                                    serviceName,
-                                                    requestId);
-        ndn::Name responseNameWithoutPrefix =
-            makeResponseNameWithoutPrefixV2(requesterIdentity,
+        if (requestMessage.getStrategy() == tlv::NoCoordination) {
+            auto response = dispatchRequest(requesterIdentity,
+                                            identity,
                                             serviceName,
-                                            requestId);
-        PublishMessage(responseName, responseNameWithoutPrefix, response);
+                                            requestId,
+                                            requestMessage);
+            ndn::Name responseName = makeResponseNameV2(identity,
+                                                        requesterIdentity,
+                                                        serviceName,
+                                                        requestId);
+            ndn::Name responseNameWithoutPrefix =
+                makeResponseNameWithoutPrefixV2(requesterIdentity,
+                                                serviceName,
+                                                requestId);
+            PublishMessage(responseName, responseNameWithoutPrefix, response);
+            return;
+        }
+
+        ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())
+                                   .append(serviceName)
+                                   .append(requestId);
+        pendingRequests[pendingKey] =
+            std::make_shared<RequestMessage>(requestMessage);
+
+        auto service = m_services.find(serviceName);
+        AckDecision decision = makeDefaultAckDecision();
+        if (service != m_services.end() && service->second.ackHandler) {
+            decision = service->second.ackHandler(requestMessage);
+            if (decision.message.empty()) {
+                decision.message =
+                    decision.status ? "Permission Granted" : "Permission Denied";
+            }
+        }
+
+        PublishRequestAckMessageV2(requesterIdentity,
+                                   serviceName,
+                                   requestId,
+                                   decision.status,
+                                   decision.message,
+                                   decision.payload);
         return;
     }
 
@@ -718,18 +966,13 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
 
         // Validate tokens
         bool isAuthorized = false;
-        for (const auto& pair : requestMessage.getTokens()) {
-            if (pair.second ==
-                std::to_string(std::hash<std::string>()(
-                    token.value() + RequestID.toUri())))
-            {
-                isAuthorized = true;
-                break;
-            }
-        }
-
-        // For debugging only
-        isAuthorized = true;
+        const ndn::Name unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
+        isAuthorized = hasValidAuthorizationProof(identity,
+                                                  requesterIdentity,
+                                                  unifiedServiceName,
+                                                  RequestID,
+                                                  token,
+                                                  requestMessage);
 
         if (!isAuthorized) {
             NDN_LOG_ERROR("OnRequestDecryptionSuccessCallback: Permission Denied");
@@ -742,27 +985,54 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
                 << " function " << FunctionName.toUri());
         }
 
-        const ndn::Name unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
         if (hasService(unifiedServiceName)) {
             NDN_LOG_INFO("Dispatch request using dynamic handler for "
                          << unifiedServiceName.toUri());
 
-            auto response = dispatchRequest(requesterIdentity,
-                                            identity,
-                                            unifiedServiceName,
-                                            RequestID,
-                                            requestMessage);
-            ndn::Name responseName = makeResponseName(identity,
-                                                      requesterIdentity,
-                                                      ServiceName,
-                                                      FunctionName,
-                                                      RequestID);
-            ndn::Name responseNameWithoutPrefix =
-                makeResponseNameWithoutPrefix(requesterIdentity,
-                                              ServiceName,
-                                              FunctionName,
-                                              RequestID);
-            PublishMessage(responseName, responseNameWithoutPrefix, response);
+            if (requestMessage.getStrategy() == tlv::NoCoordination) {
+                auto response = dispatchRequest(requesterIdentity,
+                                                identity,
+                                                unifiedServiceName,
+                                                RequestID,
+                                                requestMessage);
+                ndn::Name responseName = makeResponseName(identity,
+                                                          requesterIdentity,
+                                                          ServiceName,
+                                                          FunctionName,
+                                                          RequestID);
+                ndn::Name responseNameWithoutPrefix =
+                    makeResponseNameWithoutPrefix(requesterIdentity,
+                                                  ServiceName,
+                                                  FunctionName,
+                                                  RequestID);
+                PublishMessage(responseName, responseNameWithoutPrefix, response);
+                return;
+            }
+
+            ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())
+                                       .append(ServiceName)
+                                       .append(FunctionName)
+                                       .append(RequestID);
+            pendingRequests[pendingKey] =
+                std::make_shared<RequestMessage>(requestMessage);
+
+            auto service = m_services.find(unifiedServiceName);
+            AckDecision decision = makeDefaultAckDecision();
+            if (service != m_services.end() && service->second.ackHandler) {
+                decision = service->second.ackHandler(requestMessage);
+                if (decision.message.empty()) {
+                    decision.message =
+                        decision.status ? "Permission Granted" : "Permission Denied";
+                }
+            }
+
+            PublishRequestAckMessage(requesterIdentity,
+                                     ServiceName,
+                                     FunctionName,
+                                     RequestID,
+                                     decision.status,
+                                     decision.message,
+                                     decision.payload);
             return;
         }
 
@@ -909,7 +1179,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
 
 
-    void ServiceProvider::PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, std::string& msg)
+    void ServiceProvider::PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload)
     {
         // log message
         NDN_LOG_INFO("PublishRequestAckMessage: " << requesterIdentity.toUri() << ServiceName.toUri() << FunctionName.toUri() << RequestID.toUri());
@@ -917,6 +1187,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         RequestAckMessage RequestAckMessage;
         RequestAckMessage.setStatus(status);
         RequestAckMessage.setMessage(msg);
+        if (!payload.empty()) {
+            ndn::Buffer ackPayload(payload);
+            RequestAckMessage.setPayload(ackPayload, ackPayload.size());
+        }
 
         ndn::Name name = makeRequestAckName(identity, requesterIdentity, ServiceName, FunctionName, RequestID);
         ndn::Name nameWithouPrefix = makeRequestAckNameWithoutPrefix(requesterIdentity, ServiceName, FunctionName, RequestID);
@@ -927,7 +1201,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                      const ndn::Name& serviceName,
                                                      const ndn::Name& requestId,
                                                      bool status,
-                                                     const std::string& msg)
+                                                     const std::string& msg,
+                                                     const ndn::Buffer& payload)
     {
         NDN_LOG_INFO("PublishRequestAckMessageV2: " << requesterIdentity.toUri()
                      << serviceName.toUri() << requestId.toUri());
@@ -935,6 +1210,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         RequestAckMessage requestAckMessage;
         requestAckMessage.setStatus(status);
         requestAckMessage.setMessage(msg);
+        if (!payload.empty()) {
+            ndn::Buffer ackPayload(payload);
+            requestAckMessage.setPayload(ackPayload, ackPayload.size());
+        }
 
         ndn::Name name = makeRequestAckNameV2(identity,
                                               requesterIdentity,
@@ -1037,6 +1316,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         interest.setCanBePrefix(true);
         interest.setMustBeFresh(true);
         interest.setInterestLifetime(ndn::time::seconds(4));
+        ndn::security::InterestSigner signer(m_keyChain);
+        signer.makeSignedInterest(
+            interest,
+            m_signingInfo,
+            ndn::security::InterestSigner::SigningFlags::WantNonce |
+            ndn::security::InterestSigner::SigningFlags::WantTime);
 
         NDN_LOG_INFO("Fetch provider permissions: " << interestName);
         m_face.expressInterest(
@@ -1176,7 +1461,15 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 makeResponseNameWithoutPrefixV2(requesterName,
                                                 serviceName,
                                                 requestId);
-            PublishMessage(responseName, responseNameWithoutPrefix, response);
+            m_scheduler.schedule(100_ms,
+                                 [this,
+                                  responseName,
+                                  responseNameWithoutPrefix,
+                                 response]() mutable {
+                                     PublishMessage(responseName,
+                                                    responseNameWithoutPrefix,
+                                                    response);
+                                 });
         }
 
         pendingRequests.erase(it);
@@ -1227,6 +1520,26 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             if (it != pendingRequests.end()) {
 
                 for (const auto& requestID : message.getRequestIDs()) {
+                    const auto unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
+                    if (hasService(unifiedServiceName)) {
+                        auto response = dispatchRequest(requesterName,
+                                                        providerName,
+                                                        unifiedServiceName,
+                                                        ndn::Name(requestID),
+                                                        *(it->second));
+                        ndn::Name responseName = makeResponseName(providerName,
+                                                                  requesterName,
+                                                                  ServiceName,
+                                                                  FunctionName,
+                                                                  ndn::Name(requestID));
+                        ndn::Name responseNameWithoutPrefix =
+                            makeResponseNameWithoutPrefix(requesterName,
+                                                          ServiceName,
+                                                          FunctionName,
+                                                          ndn::Name(requestID));
+                        PublishMessage(responseName, responseNameWithoutPrefix, response);
+                        continue;
+                    }
 
                     // Consume corresponding request
                     ConsumeRequest(
@@ -1260,13 +1573,23 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         for(auto serviceName:m_serviceNames){ 
             // register Request Message
             ndn::Name sname(serviceName);
-            std::string regex_str = "^(<>*)<NDNSF><REQUEST>" + ndn_service_framework::NameToRegexString(sname) ;
+            std::string regex_str =
+                "^(<>*)<NDNSF><REQUEST><" +
+                std::to_string(sname.size()) + ">" +
+                ndn_service_framework::NameToRegexString(sname) +
+                "(<>)(<>)$";
+            // V2 requests are published as:
+            //   /<requester>/NDNSF/REQUEST/<serviceComponentCount>/<serviceName...>/<bloomFilter>/<requestId>
+            // The service-specific regex keeps /HELLO subscribed as:
+            //   ^(<>*)<NDNSF><REQUEST><1><HELLO>(<>)(<>)$
+            std::cout << "[ServiceProvider] SVS request subscription regex="
+                      << regex_str << std::endl;
             NDN_LOG_INFO(regex_str);
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                         std::bind(&ServiceProvider::OnRequest, this, _1),
                                         true, false);
             // register Service Coordination Message
-            std::string regex_str2 = "^(<>*)<NDNSF><COORDINATION>" + ndn_service_framework::NameToRegexString(identity);
+            std::string regex_str2 = "^(<>*)<NDNSF><COORDINATION>(<>*)$";
             NDN_LOG_INFO(regex_str2);
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                         std::bind(&ServiceProvider::onServiceCoordinationMessage, this, _1),

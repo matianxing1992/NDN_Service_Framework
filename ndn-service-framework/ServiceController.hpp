@@ -54,10 +54,6 @@ public:
   parsePolicyFile(const std::string& path);
 };
 
-// ======= 你的 TLV 常量（用你工程里的真实值替换） =======
-constexpr uint32_t TLV_AllowedServiceList = 0xF501;
-constexpr uint32_t TLV_AllowedService     = 0xF502;
-
 class ServiceController
 {
 public:
@@ -67,6 +63,7 @@ public:
                     const std::string& configFilePath);
 
   void setControllerPrefix(const ndn::Name& prefix);
+  void start();
   void run();
 
 private:
@@ -95,8 +92,10 @@ private:
   ndn::security::Certificate getTargetIdentityCertificate(const ndn::Name& targetIdentity) const;
 
   // ===== signer-based encryption =====
+  bool identitiesMatch(const ndn::Name& lhs, const ndn::Name& rhs) const;
   ndn::Name getSignerCertNameFromInterest(const ndn::Interest& interest) const;
   ndn::security::Certificate getSignerCertificateFromInterest(const ndn::Interest& interest) const;
+  ndn::Name getSignerIdentityFromInterest(const ndn::Interest& interest) const;
 
   ndn::Block encryptForCertificate(const ndn::security::Certificate& cert,
                                   const ndn::Block& plaintext) const;
@@ -122,6 +121,7 @@ private:
   // controller prefix selection
   ndn::Name m_controllerPrefix;
   bool m_hasCustomControllerPrefix = false;
+  bool m_isRegistered = false;
 
   // registered prefixes
   ndn::Name m_prefixServiceAccess;

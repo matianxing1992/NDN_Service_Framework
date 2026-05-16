@@ -132,37 +132,25 @@ Build it with:
 ./waf build --target=generic-dynamic-user-provider
 ```
 
-The older `/examples/multi_drone_manualcontrol.cpp` and `/examples/multi_gs_manualcontrol.cpp` examples use generated compatibility code.
-
-`/examples/aa-example.cpp` is the Attribute Authority prepared for NAC-ABE, where policies are configured. For controller-based permission responses, see `/examples/service-controller-example.cpp`.
+`/examples/App_ServiceController.cpp`, `/examples/App_Provider.cpp`, and `/examples/App_User.cpp` are the current HELLO regression examples. They use controller-issued permissions, dynamic `addService(...)`, `RequestMessage.payload = "HELLO"`, `ResponseMessage.payload = "HELLO"`, `AckDecision` metadata payloads, and timeout-driven custom selection over `AckSelectionCandidate`.
 
 See `/examples/wscript` for how to compile the examples.
 
 3.6 Legacy CodeGenerator compatibility
 
-The `/ndn-service-framework/CodeGenerator` directory contains the legacy generator: `Generated`, `Template`, `app.yml`, and `NDNSFCodeGenerator.py`.
+The `/CodeGenerator` directory contains the legacy generator: `Generated`, `Template`, `app.yml`, and `NDNSFCodeGenerator.py`.
 
 The `app.yml` file defines services and message types. Running `sudo python NDNSFCodeGenerator.py` generates compatibility files in the `Generated` folder based on the templates in `Template`.
 
 Generated classes such as `ServiceUser_*`, `ServiceProvider_*`, `*Service`, and `*ServiceStub` are legacy compatibility code only. They should not be treated as the primary architecture for new applications.
 
-Legacy generated service logic can still be implemented in `/Generated/XXXService.cpp`. Example:
-
-```cpp
-void FlightControlService::Takeoff(
-  const ndn::Name& requesterIdentity,
-  const muas::FlightControl_Takeoff_Request& request,
-  muas::FlightControl_Takeoff_Response& response)
-{
-  NDN_LOG_INFO("Takeoff request: " << request.DebugString());
-}
-```
+Generated C++ outputs are not checked in unless an active build target or compatibility test intentionally uses them.
 
 3.7 How to run examples:
 
 NDN requires creating a corresponding root certificate, then using the root certificate to generate the corresponding sub-certificates. Both the root certificate and these sub-certificates need to be installed on each node. `/Experiments/NDNSFExperiment_AutoConfig.py` provides an example of how to create certificates, which you need to modify according to your own requirements.
 
-The `aa-example` instance only needs to run on one node, but it must ensure that other nodes can retrieve keys from it. Run `drone-example` on one node and `gs-example` on another, and you should see the expected output.
+The current HELLO examples are exercised by `examples/run_hello_auth_regression.sh` and `examples/run_hello_ack_payload_regression.sh`.
 
 3.8 How to log to file:
 For example, assuming your program is `./app` and you want to log everything, first set the log level in the command line using:
@@ -179,5 +167,4 @@ Then run:
 
 The output will be saved in the file `filename.log` in the current directory.
 If you're using MiniNDN, the output will be stored under `/tmp/minindn/<nodeName>`.
-
 

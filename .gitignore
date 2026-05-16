@@ -3,6 +3,7 @@
 
 # Waf build system
 /build/
+.local-boost171/
 .waf-*-*/
 .waf3-*-*/
 .lock-waf*

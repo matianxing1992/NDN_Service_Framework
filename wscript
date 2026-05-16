@@ -64,7 +64,19 @@ def configure(conf):
     # Store the result in env.PKGCONFIG, which is the variable used inside check_cfg()
     conf.find_program(['pkgconf', 'pkg-config'], var='PKGCONFIG')
 
-    pkg_config_path = os.environ.get('PKG_CONFIG_PATH', f'{conf.env.LIBDIR}/pkgconfig')
+    local_prefix = os.path.join(conf.path.abspath(), '.local-boost171')
+    local_pkg_config_path = os.path.join(local_prefix, 'lib', 'pkgconfig')
+    pkg_config_paths = []
+    if os.path.isdir(local_pkg_config_path):
+        pkg_config_paths.append(local_pkg_config_path)
+        conf.env.append_value('LINKFLAGS',
+                              [f'-Wl,-rpath,{os.path.join(local_prefix, "lib")}'])
+    if os.environ.get('PKG_CONFIG_PATH'):
+        pkg_config_paths.append(os.environ['PKG_CONFIG_PATH'])
+    else:
+        pkg_config_paths.append(f'{conf.env.LIBDIR}/pkgconfig')
+    pkg_config_path = os.pathsep.join(pkg_config_paths)
+
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],
                    uselib_store='NDN_CXX', pkg_config_path=pkg_config_path)
 
@@ -140,8 +152,7 @@ def build(bld):
     if bld.env.WITH_TESTS:
         bld.recurse('tests')
 
-    if bld.env.WITH_EXAMPLES:
-        bld.recurse('examples')
+    bld.recurse('examples')
 
     headers = bld.path.ant_glob('ndn-service-framework/**/*.hpp')
     bld.install_files('${INCLUDEDIR}', headers, relative_trick=True)
@@ -154,4 +165,3 @@ def build(bld):
         target='libndn-service-framework.pc',
         install_path='${LIBDIR}/pkgconfig',
         VERSION=VERSION)
-

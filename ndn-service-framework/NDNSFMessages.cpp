@@ -178,6 +178,11 @@ void RequestAckMessage::setMessage(const std::string& message) {
     message_ = message;
 }
 
+void RequestAckMessage::setPayload(ndn::Buffer& payload, size_t size) {
+    payload_ = payload;
+    payloadSize_ = size;
+}
+
 bool RequestAckMessage::getStatus() const {
     return status_;
 }
@@ -186,9 +191,19 @@ const std::string& RequestAckMessage::getMessage() const {
     return message_;
 }
 
+ndn::Buffer RequestAckMessage::getPayload() const {
+    return payload_;
+}
+
+size_t RequestAckMessage::getPayloadSize() const {
+    return payloadSize_;
+}
+
 void RequestAckMessage::Clear() {
     status_ = false;
     message_.clear();
+    payload_.clear();
+    payloadSize_ = 0;
     m_wire.reset();
 }
 
@@ -201,6 +216,9 @@ ndn::Block RequestAckMessage::WireEncode() const {
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::StatusType, static_cast<int>(status_)));
     // 编码 message
     block.push_back(ndn::makeStringBlock(tlv::ErrorInfoType, message_));
+    // 编码 payload
+    ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
+    block.push_back(payloadBlock);
     block.encode();
     m_wire = block;
     return m_wire;
@@ -220,6 +238,10 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::ErrorInfoType) {
             message_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::PayloadType) {
+            payload_ = ndn::Buffer(b.value(),b.value_size());
+            payloadSize_ = b.value_size();
         }
     }
 

@@ -26,6 +26,14 @@ namespace ndn_service_framework{
         ndn::Name requestID;
     };
 
+    struct AckSelectionCandidate
+    {
+        ndn::Name providerName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+        ndn_service_framework::RequestAckMessage ack;
+    };
+
     using Timeout_Callback = std::function<void(const std::string & reason)>;
 
     class ServiceUser
@@ -34,6 +42,10 @@ namespace ndn_service_framework{
             using AcksHandler =
                 std::function<std::vector<ndn_service_framework::RequestAckMessage>(
                     const std::vector<ndn_service_framework::RequestAckMessage>&)>;
+
+            using AckCandidatesHandler =
+                std::function<std::vector<ndn_service_framework::AckSelectionCandidate>(
+                    const std::vector<ndn_service_framework::AckSelectionCandidate>&)>;
 
             using ResponseHandler =
                 std::function<void(const ndn_service_framework::ResponseMessage&)>;
@@ -111,6 +123,14 @@ namespace ndn_service_framework{
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int ackTimeoutMs,
                                  AcksHandler onAcksHandler,
+                                 int timeoutMs,
+                                 TimeoutHandler onTimeout,
+                                 ResponseHandler onResponseHandler);
+
+            ndn::Name async_call(const ndn::Name& serviceName,
+                                 ndn_service_framework::RequestMessage requestMessage,
+                                 int ackTimeoutMs,
+                                 AckCandidatesHandler onAcksHandler,
                                  int timeoutMs,
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
@@ -271,6 +291,7 @@ namespace ndn_service_framework{
                 int timeoutMs = 0;
                 int ackTimeoutMs = 0;
                 AcksHandler acksHandler;
+                AckCandidatesHandler ackCandidatesHandler;
                 TimeoutHandler timeoutHandler;
                 ResponseHandler responseHandler;
                 std::vector<StoredAck> requestAcks;

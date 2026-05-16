@@ -156,6 +156,67 @@ makeRsaIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
   return id.getDefaultKey().getDefaultCertificate();
 }
 
+std::string
+makeDemoAuthorizationToken(const char* permissionKind,
+                           const ndn::Name& targetIdentity,
+                           const ndn::Name& providerName,
+                           const ndn::Name& serviceName)
+{
+  return "DEMO-UNSIGNED-AUTHZ-TOKEN:v1:kind=" +
+         std::string(permissionKind) +
+         ":target=" + targetIdentity.toUri() +
+         ":provider=" + providerName.toUri() +
+         ":service=" + serviceName.toUri();
+}
+
+PermissionResponse
+makePermissionResponse(const ndn::Name& targetIdentity,
+                       size_t permissionKind,
+                       const ndn::Name& providerName,
+                       const ndn::Name& serviceName,
+                       const std::string& token)
+{
+  PermissionEntry entry;
+  entry.setProviderName(providerName.toUri());
+  entry.setServiceName(serviceName.toUri());
+  entry.setToken(token);
+  entry.setTtl(0);
+  entry.setVersion(1);
+
+  PermissionResponse response;
+  response.setTargetIdentity(targetIdentity.toUri());
+  response.setPermissionKind(permissionKind);
+  response.addEntry(entry);
+  return response;
+}
+
+void
+installPermissions(LocalSvsServiceUser& user,
+                   ServiceProvider& provider,
+                   const ndn::Name& requesterName,
+                   const ndn::Name& serviceName)
+{
+  const ndn::Name providerName = provider.getName();
+  user.applyPermissionResponse(
+    makePermissionResponse(requesterName,
+                           tlv::UserPermission,
+                           providerName,
+                           serviceName,
+                           makeDemoAuthorizationToken("user",
+                                                      requesterName,
+                                                      providerName,
+                                                      serviceName)));
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName,
+                           makeDemoAuthorizationToken("provider",
+                                                      providerName,
+                                                      providerName,
+                                                      serviceName)));
+}
+
 BOOST_AUTO_TEST_SUITE(NdnSvsSmoke)
 
 BOOST_AUTO_TEST_CASE(DummyFacesDeliverV2RequestPublication)
@@ -324,6 +385,10 @@ BOOST_AUTO_TEST_CASE(ServiceUserAsyncCallReachesProviderAndReturnsResponse)
                            "examples/trust-any.conf");
 
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
+  installPermissions(user,
+                     provider,
+                     ndn::Name("/test/user/alice"),
+                     serviceName);
   bool requestPublished = false;
   bool providerReceived = false;
   bool handlerCalled = false;
