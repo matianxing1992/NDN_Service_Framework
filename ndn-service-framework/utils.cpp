@@ -515,23 +515,6 @@ namespace ndn_service_framework
         return tmp_s;
     }
 
-    std::string makeAuthorizationProof(const std::string& token,
-                                       const ndn::Name& requestId)
-    {
-        ndn::util::Sha256 digest;
-        digest << token;
-        digest << std::string_view("\0", 1);
-        digest << requestId.toUri();
-        return digest.toString();
-    }
-
-    bool verifyAuthorizationProof(const std::string& token,
-                                  const ndn::Name& requestId,
-                                  const std::string& proof)
-    {
-        return proof == makeAuthorizationProof(token, requestId);
-    }
-
     std::optional<std::vector<std::string>> GetAttributesByName(const ndn::Name& name)
     {
         // V2 NAC-ABE routing is intentionally service-scoped:

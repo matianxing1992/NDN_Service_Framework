@@ -122,6 +122,50 @@ public:
     }
     return pending->second.selectedProvider;
   }
+
+  void
+  addPendingCallForTokenTest(const ndn::Name& requestId,
+                             const ndn::Name& serviceName,
+                             const std::string& userToken,
+                             size_t strategy = tlv::FirstResponding)
+  {
+    PendingCall pendingCall;
+    pendingCall.serviceName = serviceName;
+    pendingCall.strategy = strategy;
+    pendingCall.requestMessage.setUserToken(userToken);
+    m_pendingCalls[requestId] = pendingCall;
+  }
+};
+
+class LocalServiceProvider : public ServiceProvider
+{
+public:
+  LocalServiceProvider(ndn::Face& face,
+                       const ndn::Name& groupPrefix,
+                       const ndn::security::Certificate& identityCert,
+                       const ndn::security::Certificate& attrAuthorityCertificate,
+                       const std::string& trustSchemaPath)
+    : ServiceProvider(LocalMockTag{},
+                      face,
+                      groupPrefix,
+                      identityCert,
+                      attrAuthorityCertificate,
+                      trustSchemaPath)
+  {
+  }
+
+  void
+  addPendingRequestForTokenTest(const ndn::Name& requesterName,
+                                const ndn::Name& serviceName,
+                                const ndn::Name& requestId,
+                                const RequestMessage& requestMessage,
+                                const std::string& providerToken)
+  {
+    ndn::Name key(requesterName);
+    key.append(serviceName).append(requestId);
+    pendingRequests[key] = std::make_shared<RequestMessage>(requestMessage);
+    pendingProviderTokens[key] = providerToken;
+  }
 };
 
 RequestAckMessage
@@ -133,30 +177,16 @@ makeSuccessAck()
   return ack;
 }
 
-std::string
-makeDemoAuthorizationToken(const char* permissionKind,
-                           const ndn::Name& targetIdentity,
-                           const ndn::Name& providerName,
-                           const ndn::Name& serviceName)
-{
-  return "DEMO-UNSIGNED-AUTHZ-TOKEN:v1:kind=" +
-         std::string(permissionKind) +
-         ":target=" + targetIdentity.toUri() +
-         ":provider=" + providerName.toUri() +
-         ":service=" + serviceName.toUri();
-}
-
 PermissionResponse
 makePermissionResponse(const ndn::Name& targetIdentity,
                        size_t permissionKind,
                        const ndn::Name& providerName,
-                       const ndn::Name& serviceName,
-                       const std::string& token)
+                       const ndn::Name& serviceName)
 {
   PermissionEntry entry;
   entry.setProviderName(providerName.toUri());
   entry.setServiceName(serviceName.toUri());
-  entry.setToken(token);
+  entry.setToken("");
   entry.setTtl(0);
   entry.setVersion(1);
 
@@ -178,20 +208,12 @@ installPermissions(LocalServiceUser& user,
     makePermissionResponse(requesterName,
                            tlv::UserPermission,
                            providerName,
-                           serviceName,
-                           makeDemoAuthorizationToken("user",
-                                                      requesterName,
-                                                      providerName,
-                                                      serviceName)));
+                           serviceName));
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
                            providerName,
-                           serviceName,
-                           makeDemoAuthorizationToken("provider",
-                                                      providerName,
-                                                      providerName,
-                                                      serviceName)));
+                           serviceName));
 }
 
 void
@@ -242,7 +264,10 @@ runLocalFlow(LocalServiceUser& user,
                                                 parsedRequest->requesterName,
                                                 serviceName,
                                                 requestId);
-      BOOST_CHECK(user.handleRequestAckByName(ackName, makeSuccessAck()));
+      auto ack = makeSuccessAck();
+      ack.setUserToken(requestMessage.getUserToken());
+      ack.setProviderToken("provider-token");
+      BOOST_CHECK(user.handleRequestAckByName(ackName, ack));
       BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 1);
       BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerName);
 
@@ -288,22 +313,11 @@ runLocalFlow(LocalServiceUser& user,
 }
 
 RequestMessage
-makeAuthorizedRequestMessage(const std::string& payload,
-                             const ndn::Name& providerName,
-                             const ndn::Name& requesterName,
-                             const ndn::Name& serviceName,
-                             const ndn::Name& requestId)
+makeRequestMessageWithUserToken(const std::string& payload,
+                                const std::string& userToken = "user-token")
 {
-  const auto token = makeDemoAuthorizationToken("user",
-                                               requesterName,
-                                               providerName,
-                                               serviceName);
-  std::map<std::string, std::string> tokens;
-  tokens[ndn::Name(providerName).append(serviceName).toUri()] =
-    makeAuthorizationProof(token, requestId);
-
   RequestMessage request;
-  request.setTokens(tokens);
+  request.setUserToken(userToken);
   ndn::Buffer payloadBuffer(reinterpret_cast<const uint8_t*>(payload.data()),
                             payload.size());
   request.setPayload(payloadBuffer, payloadBuffer.size());
@@ -360,18 +374,36 @@ BOOST_AUTO_TEST_CASE(AddHandlerAsyncCallDispatchResponseAndAck)
   runLocalFlow(user, provider, ndn::Name("/LLM/Llama3/Prefill"), "prompt-tokens", 7);
 }
 
-BOOST_AUTO_TEST_CASE(AuthorizationProofUsesStableSha256)
+BOOST_AUTO_TEST_CASE(MessageTokenFieldsRoundTrip)
 {
-  const ndn::Name requestId("/request-proof");
-  const auto proof = makeAuthorizationProof("token", requestId);
+  RequestMessage request;
+  request.setUserToken("user-token");
+  RequestMessage decodedRequest;
+  BOOST_CHECK(decodedRequest.WireDecode(request.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedRequest.getUserToken(), "user-token");
 
-  BOOST_CHECK_EQUAL(proof.size(), 64);
-  BOOST_CHECK(verifyAuthorizationProof("token", requestId, proof));
-  BOOST_CHECK(!verifyAuthorizationProof("wrong-token", requestId, proof));
-  BOOST_CHECK(!verifyAuthorizationProof("token", ndn::Name("/other-request"), proof));
+  RequestAckMessage ack;
+  ack.setUserToken("user-token");
+  ack.setProviderToken("provider-token");
+  RequestAckMessage decodedAck;
+  BOOST_CHECK(decodedAck.WireDecode(ack.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedAck.getUserToken(), "user-token");
+  BOOST_CHECK_EQUAL(decodedAck.getProviderToken(), "provider-token");
+
+  ServiceCoordinationMessage coordination;
+  coordination.setProviderToken("provider-token");
+  ServiceCoordinationMessage decodedCoordination;
+  BOOST_CHECK(decodedCoordination.WireDecode(coordination.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedCoordination.getProviderToken(), "provider-token");
+
+  ResponseMessage response;
+  response.setUserToken("user-token");
+  ResponseMessage decodedResponse;
+  BOOST_CHECK(decodedResponse.WireDecode(response.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedResponse.getUserToken(), "user-token");
 }
 
-BOOST_AUTO_TEST_CASE(ProviderRejectsInvalidAuthorizationProofs)
+BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
 {
   ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:generic-auth-negative",
@@ -379,7 +411,6 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsInvalidAuthorizationProofs)
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
-  const ndn::Name otherServiceName("/ObjectDetection/Other");
   const ndn::Name requestId("/request-auth-negative");
 
   auto userCert = makeRsaIdentity(keyChain, requesterName);
@@ -409,38 +440,17 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsInvalidAuthorizationProofs)
                                             serviceName,
                                             ndn::Name("/bf"),
                                             requestId);
-  auto goodRequest = makeAuthorizedRequestMessage("payload",
-                                                 providerName,
-                                                 requesterName,
-                                                 serviceName,
-                                                 requestId);
+  auto goodRequest = makeRequestMessageWithUserToken("payload");
   auto goodResponse = provider.handleDecryptedRequestByName(requestName, goodRequest);
   BOOST_CHECK(goodResponse.getStatus());
+  BOOST_CHECK_EQUAL(goodResponse.getUserToken(), goodRequest.getUserToken());
   BOOST_CHECK(handlerCalled);
 
   handlerCalled = false;
-  auto wrongUserTokenRequest = goodRequest;
-  wrongUserTokenRequest.setTokens({
-    {ndn::Name(providerName).append(serviceName).toUri(),
-     makeAuthorizationProof("wrong-user-token", requestId)}
-  });
-  auto wrongUserResponse =
-    provider.handleDecryptedRequestByName(requestName, wrongUserTokenRequest);
-  BOOST_CHECK(!wrongUserResponse.getStatus());
-  BOOST_CHECK(!handlerCalled);
-
-  auto wrongServiceToken = makeDemoAuthorizationToken("user",
-                                                     requesterName,
-                                                     providerName,
-                                                     otherServiceName);
-  auto wrongServiceTokenRequest = goodRequest;
-  wrongServiceTokenRequest.setTokens({
-    {ndn::Name(providerName).append(serviceName).toUri(),
-     makeAuthorizationProof(wrongServiceToken, requestId)}
-  });
-  auto wrongServiceResponse =
-    provider.handleDecryptedRequestByName(requestName, wrongServiceTokenRequest);
-  BOOST_CHECK(!wrongServiceResponse.getStatus());
+  auto missingUserTokenRequest = makeRequestMessageWithUserToken("payload", "");
+  auto missingUserTokenResponse =
+    provider.handleDecryptedRequestByName(requestName, missingUserTokenRequest);
+  BOOST_CHECK(!missingUserTokenResponse.getStatus());
   BOOST_CHECK(!handlerCalled);
 
   ServiceProvider providerWithoutPermission(ServiceProvider::LocalMockTag{},
@@ -461,6 +471,91 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsInvalidAuthorizationProofs)
     providerWithoutPermission.handleDecryptedRequestByName(requestName, goodRequest);
   BOOST_CHECK(!missingProviderPermissionResponse.getStatus());
   BOOST_CHECK(!handlerCalled);
+}
+
+BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
+{
+  ndn::Face face;
+  ndn::security::KeyChain keyChain("pib-memory:token-handshake-negative",
+                                   "tpm-memory:token-handshake-negative");
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name providerName("/test/provider/camera");
+  const ndn::Name serviceName("/HELLO");
+  const ndn::Name requestId("/request-token-negative");
+
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-token-negative"));
+
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
+
+  auto ackName = makeRequestAckNameV2(providerName, requesterName, serviceName, requestId);
+  auto wrongUserAck = makeSuccessAck();
+  wrongUserAck.setUserToken("wrong-user-token");
+  wrongUserAck.setProviderToken("provider-token");
+  BOOST_CHECK(!user.handleRequestAckByName(ackName, wrongUserAck));
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 0);
+
+  auto missingProviderTokenAck = makeSuccessAck();
+  missingProviderTokenAck.setUserToken("user-token");
+  BOOST_CHECK(!user.handleRequestAckByName(ackName, missingProviderTokenAck));
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 0);
+
+  auto goodAck = makeSuccessAck();
+  goodAck.setUserToken("user-token");
+  goodAck.setProviderToken("provider-token");
+  BOOST_CHECK(user.handleRequestAckByName(ackName, goodAck));
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 1);
+
+  ResponseMessage wrongUserResponse;
+  wrongUserResponse.setStatus(true);
+  wrongUserResponse.setUserToken("wrong-user-token");
+  BOOST_CHECK(!user.handleDecryptedResponse(requestId, wrongUserResponse));
+
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  installPermissions(user, provider, requesterName, serviceName);
+
+  bool providerHandlerCalled = false;
+  provider.addService(
+    serviceName,
+    ServiceProvider::RequestHandler(
+      [&] (const ndn::Name&,
+           const ndn::Name&,
+           const ndn::Name&,
+           const ndn::Name&,
+           const RequestMessage&) {
+        providerHandlerCalled = true;
+        ResponseMessage response;
+        response.setStatus(true);
+        return response;
+      }));
+
+  RequestMessage requestMessage;
+  requestMessage.setUserToken("user-token");
+  provider.addPendingRequestForTokenTest(requesterName,
+                                         serviceName,
+                                         requestId,
+                                         requestMessage,
+                                         "provider-token");
+
+  ServiceCoordinationMessage wrongCoordination;
+  wrongCoordination.setRequestIDs({requestId.toUri()});
+  wrongCoordination.setProviderToken("wrong-provider-token");
+  auto wrongCoordinationBlock = wrongCoordination.WireEncode();
+  ndn::Buffer wrongCoordinationBuffer(wrongCoordinationBlock.data(),
+                                      wrongCoordinationBlock.size());
+  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+    requesterName,
+    providerName,
+    serviceName,
+    requestId,
+    wrongCoordinationBuffer);
+  BOOST_CHECK(!providerHandlerCalled);
 }
 
 BOOST_AUTO_TEST_CASE(BaseServiceProviderDefaultsAreSafe)

@@ -78,6 +78,17 @@ getOption(int argc, char** argv, const std::string& option, const std::string& f
 }
 
 bool
+hasFlag(int argc, char** argv, const std::string& option)
+{
+  for (int i = 1; i < argc; ++i) {
+    if (argv[i] == option) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
 parseAckStatus(const std::string& value)
 {
   return !(value == "false" || value == "0" || value == "reject" || value == "no");
@@ -101,6 +112,7 @@ main(int argc, char** argv)
     ndn::KeyChain keyChain;
 
     const std::string providerId = getOption(argc, argv, "--provider-id", "");
+    const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const std::string providerLabel = providerId.empty() ? "default" : providerId;
     const ndn::Name providerIdentity = providerId.empty()
       ? PROVIDER_IDENTITY
@@ -123,6 +135,7 @@ main(int argc, char** argv)
     std::cout << "[App_Provider] provider identity="
               << providerIdentity.toUri()
               << " providerId=" << providerLabel
+              << " benchmark=" << benchmark
               << " ackStatus=" << ackStatus
               << " ackPayload=" << ackPayloadText
               << " responsePayload=" << responseText

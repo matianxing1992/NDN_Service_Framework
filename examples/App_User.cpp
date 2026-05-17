@@ -4,10 +4,15 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -126,6 +131,36 @@ parseMetadataInt(const std::string& payload, const std::string& key, int fallbac
   }
 }
 
+size_t
+parseBenchmarkStrategy(const std::string& strategy)
+{
+  if (strategy == "no-coordination" || strategy == "NoCoordination") {
+    return ndn_service_framework::tlv::NoCoordination;
+  }
+  if (strategy == "first-responding" || strategy == "FirstResponding") {
+    return ndn_service_framework::tlv::FirstResponding;
+  }
+  if (strategy == "load-balancing" || strategy == "LoadBalancing") {
+    return ndn_service_framework::tlv::LoadBalancing;
+  }
+  return ndn_service_framework::tlv::FirstResponding;
+}
+
+std::string
+benchmarkStrategyLabel(size_t strategy, bool customSelection)
+{
+  if (customSelection) {
+    return "custom-selection";
+  }
+  if (strategy == ndn_service_framework::tlv::NoCoordination) {
+    return "no-coordination";
+  }
+  if (strategy == ndn_service_framework::tlv::LoadBalancing) {
+    return "load-balancing";
+  }
+  return "first-responding";
+}
+
 uint64_t
 nowMilliseconds()
 {
@@ -142,6 +177,47 @@ providerLabel(const ndn::Name& providerName)
   return providerName[-1].toUri();
 }
 
+std::string
+csvEscape(const std::string& value)
+{
+  if (value.find_first_of(",\"\n\r") == std::string::npos) {
+    return value;
+  }
+
+  std::string escaped = "\"";
+  for (const char ch : value) {
+    if (ch == '"') {
+      escaped += "\"\"";
+    }
+    else {
+      escaped += ch;
+    }
+  }
+  escaped += '"';
+  return escaped;
+}
+
+double
+percentile(std::vector<double> sortedValues, double percentileRank)
+{
+  if (sortedValues.empty()) {
+    return 0.0;
+  }
+
+  std::sort(sortedValues.begin(), sortedValues.end());
+  const auto index = static_cast<size_t>(
+    std::ceil((percentileRank / 100.0) * sortedValues.size()));
+  return sortedValues[std::min(sortedValues.size() - 1, index == 0 ? 0 : index - 1)];
+}
+
+struct BenchmarkResult
+{
+  std::string requestId;
+  bool success = false;
+  double latencyMs = 0.0;
+  std::string responsePayload;
+};
+
 } // namespace
 
 int
@@ -154,7 +230,15 @@ main(int argc, char** argv)
     ndn::Scheduler scheduler(face.getIoContext());
 
     const bool useCustomSelection = hasFlag(argc, argv, "--custom-selection");
+    const bool benchmark = hasFlag(argc, argv, "--benchmark");
+    const int benchmarkCount = parseIntOption(argc, argv, "--count", 100);
+    const int benchmarkWarmup = parseIntOption(argc, argv, "--warmup", 5);
+    const int benchmarkIntervalMs = parseIntOption(argc, argv, "--interval-ms", 1000);
     const int ackTimeoutMs = parseIntOption(argc, argv, "--ack-timeout-ms", 3000);
+    const int timeoutMs = parseIntOption(argc, argv, "--timeout-ms", 5000);
+    const std::string serviceNameText = getOption(argc, argv, "--service", "/HELLO");
+    const std::string outputCsv = getOption(argc, argv, "--output-csv", "");
+    const std::string benchmarkStrategyText = getOption(argc, argv, "--strategy", "custom-selection");
     const std::string expectedResponse = getOption(argc, argv, "--expect-response", "");
 
     auto userCert = getOrCreateIdentity(keyChain, USER_IDENTITY);
@@ -175,6 +259,218 @@ main(int argc, char** argv)
 
     user.init();
     user.fetchPermissionsFromController(CONTROLLER_PREFIX);
+
+    int exitCode = 0;
+
+    if (benchmark) {
+      if (benchmarkCount < 0 || benchmarkWarmup < 0 || benchmarkIntervalMs < 0) {
+        std::cerr << "Benchmark count, warmup, and interval must be non-negative" << std::endl;
+        return 2;
+      }
+      if (outputCsv.empty()) {
+        std::cerr << "--output-csv is required in --benchmark mode" << std::endl;
+        return 2;
+      }
+
+      auto csv = std::make_shared<std::ofstream>(outputCsv);
+      if (!*csv) {
+        std::cerr << "Failed to open benchmark CSV: " << outputCsv << std::endl;
+        return 2;
+      }
+      *csv << "request_id,success,latency_ms,response_payload\n";
+
+      auto results = std::make_shared<std::vector<BenchmarkResult>>();
+      auto issued = std::make_shared<int>(0);
+      auto completed = std::make_shared<int>(0);
+      auto timedOut = std::make_shared<int>(0);
+      auto completedRequestIds = std::make_shared<std::vector<std::string>>();
+      auto currentStart = std::make_shared<std::chrono::steady_clock::time_point>();
+      auto currentMeasured = std::make_shared<bool>(false);
+      auto currentRequestId = std::make_shared<std::string>();
+      auto runNext = std::make_shared<std::function<void()>>();
+      const int totalCalls = benchmarkWarmup + benchmarkCount;
+      const ndn::Name benchmarkServiceName(serviceNameText);
+      const bool useBenchmarkCustomSelection =
+        benchmarkStrategyText == "custom-selection" || benchmarkStrategyText == "custom";
+      const size_t benchmarkStrategy = parseBenchmarkStrategy(benchmarkStrategyText);
+
+      *runNext = [&, csv, results, issued, completed, timedOut, completedRequestIds, currentStart,
+                  currentMeasured, currentRequestId, runNext, totalCalls,
+                  benchmarkServiceName, useBenchmarkCustomSelection, benchmarkStrategy]() {
+        if (*issued >= totalCalls) {
+          const int success = static_cast<int>(results->size());
+          const int timeout = *timedOut;
+          std::vector<double> latencies;
+          latencies.reserve(results->size());
+          for (const auto& result : *results) {
+            if (result.success) {
+              latencies.push_back(result.latencyMs);
+            }
+          }
+
+          double avg = 0.0;
+          double min = 0.0;
+          double max = 0.0;
+          if (!latencies.empty()) {
+            avg = std::accumulate(latencies.begin(), latencies.end(), 0.0) /
+                  static_cast<double>(latencies.size());
+            min = *std::min_element(latencies.begin(), latencies.end());
+            max = *std::max_element(latencies.begin(), latencies.end());
+          }
+
+          std::cout << std::fixed << std::setprecision(3)
+                    << "count=" << benchmarkCount << "\n"
+                    << "success=" << success << "\n"
+                    << "timeout=" << timeout << "\n"
+                    << "avg_ms=" << avg << "\n"
+                    << "min_ms=" << min << "\n"
+                    << "max_ms=" << max << "\n"
+                    << "p50_ms=" << percentile(latencies, 50.0) << "\n"
+                    << "p95_ms=" << percentile(latencies, 95.0) << "\n"
+                    << "p99_ms=" << percentile(latencies, 99.0) << "\n"
+                    << "strategy=" << benchmarkStrategyLabel(benchmarkStrategy,
+                                                              useBenchmarkCustomSelection) << "\n"
+                    << "csv=" << outputCsv << std::endl;
+
+          csv->flush();
+          if (success == benchmarkCount && timeout == 0) {
+            std::cout << "LOCAL_NFD_SERVICE_LATENCY_BENCHMARK=PASS" << std::endl;
+            exitCode = 0;
+          }
+          else {
+            std::cout << "LOCAL_NFD_SERVICE_LATENCY_BENCHMARK=FAIL" << std::endl;
+            exitCode = 1;
+          }
+          face.getIoContext().stop();
+          return;
+        }
+
+        const bool measured = *issued >= benchmarkWarmup;
+        *currentMeasured = measured;
+
+        const std::string requestText = "HELLO";
+        ndn::Buffer requestPayload(
+          reinterpret_cast<const uint8_t*>(requestText.data()),
+          requestText.size());
+
+        ndn_service_framework::RequestMessage request;
+        request.setPayload(requestPayload, requestPayload.size());
+        request.setStrategy(useBenchmarkCustomSelection ?
+                            static_cast<size_t>(ndn_service_framework::tlv::FirstResponding) :
+                            benchmarkStrategy);
+
+        *currentStart = std::chrono::steady_clock::now();
+        auto onTimeout = std::function<void(const ndn::Name&)>(
+            [&, csv, results, issued, completed, timedOut, completedRequestIds, currentStart,
+             currentMeasured, currentRequestId, runNext, totalCalls](const ndn::Name& timedOutRequestId) {
+              const std::string requestIdText = timedOutRequestId.toUri();
+              if (std::find(completedRequestIds->begin(),
+                            completedRequestIds->end(),
+                            requestIdText) != completedRequestIds->end()) {
+                return;
+              }
+
+              const auto end = std::chrono::steady_clock::now();
+              const double latencyMs = std::chrono::duration<double, std::milli>(
+                end - *currentStart).count();
+
+              if (*currentMeasured) {
+                ++(*timedOut);
+                *csv << timedOutRequestId.toUri() << ",0,"
+                     << std::fixed << std::setprecision(3) << latencyMs << ",\n";
+              }
+
+              ++(*completed);
+              std::cout << "[App_User] benchmark timeout requestId="
+                        << timedOutRequestId.toUri()
+                        << " completed=" << *completed
+                        << "/" << totalCalls << std::endl;
+              scheduler.schedule(ndn::time::milliseconds(benchmarkIntervalMs),
+                                 [runNext] { (*runNext)(); });
+            });
+        auto onResponse = std::function<void(const ndn_service_framework::ResponseMessage&)>(
+            [&, csv, results, issued, completed, completedRequestIds, currentStart, currentMeasured,
+             currentRequestId, runNext, totalCalls](const ndn_service_framework::ResponseMessage& response) {
+              if (std::find(completedRequestIds->begin(),
+                            completedRequestIds->end(),
+                            *currentRequestId) != completedRequestIds->end()) {
+                return;
+              }
+              completedRequestIds->push_back(*currentRequestId);
+
+              const auto end = std::chrono::steady_clock::now();
+              const double latencyMs = std::chrono::duration<double, std::milli>(
+                end - *currentStart).count();
+              const auto payload = response.getPayload();
+              const std::string responseText(
+                reinterpret_cast<const char*>(payload.data()),
+                payload.size());
+
+              if (*currentMeasured) {
+                results->push_back({*currentRequestId, true, latencyMs, responseText});
+                *csv << csvEscape(*currentRequestId) << ",1,"
+                     << std::fixed << std::setprecision(3) << latencyMs << ","
+                     << csvEscape(responseText) << "\n";
+              }
+
+              ++(*completed);
+              std::cout << "[App_User] benchmark response requestId="
+                        << *currentRequestId
+                        << " latency_ms=" << std::fixed << std::setprecision(3)
+                        << latencyMs
+                        << " payload=" << responseText
+                        << " completed=" << *completed
+                        << "/" << totalCalls << std::endl;
+              scheduler.schedule(ndn::time::milliseconds(benchmarkIntervalMs),
+                                 [runNext] { (*runNext)(); });
+            });
+
+        ndn::Name requestId;
+        if (useBenchmarkCustomSelection) {
+          requestId = user.async_call(
+            benchmarkServiceName,
+            request,
+            ackTimeoutMs,
+            ndn_service_framework::ServiceUser::AckCandidatesHandler(
+              [](const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+                std::vector<ndn_service_framework::AckSelectionCandidate> selected;
+                for (const auto& candidate : candidates) {
+                  if (candidate.ack.getStatus()) {
+                    selected.push_back(candidate);
+                    break;
+                  }
+                }
+                return selected;
+              }),
+            timeoutMs,
+            onTimeout,
+            onResponse);
+        }
+        else {
+          requestId = user.async_call(
+            benchmarkServiceName,
+            request,
+            timeoutMs,
+            onTimeout,
+            onResponse,
+            benchmarkStrategy);
+        }
+
+        *currentRequestId = requestId.toUri();
+        ++(*issued);
+      };
+
+      scheduler.schedule(ndn::time::seconds(2), [runNext, benchmarkStrategy,
+                                                 useBenchmarkCustomSelection] {
+        std::cout << "Starting local NFD service latency benchmark strategy="
+                  << benchmarkStrategyLabel(benchmarkStrategy, useBenchmarkCustomSelection)
+                  << std::endl;
+        (*runNext)();
+      });
+
+      face.processEvents();
+      return exitCode;
+    }
 
     scheduler.schedule(ndn::time::seconds(2), [&] {
       std::cout << "Sending HELLO request..." << std::endl;

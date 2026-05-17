@@ -1,7 +1,10 @@
 #include <ServiceProvider.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <iostream>
+#include <random>
 #include <sstream>
 
 #include <fcntl.h>
@@ -83,17 +86,11 @@ namespace ndn_service_framework
             };
         }
 
-        std::string
-        makeDemoAuthorizationToken(const char* permissionKind,
-                                   const ndn::Name& targetIdentity,
-                                   const ndn::Name& providerName,
-                                   const ndn::Name& serviceName)
+        uint64_t
+        nowMilliseconds()
         {
-            return "DEMO-UNSIGNED-AUTHZ-TOKEN:v1:kind=" +
-                   std::string(permissionKind) +
-                   ":target=" + targetIdentity.toUri() +
-                   ":provider=" + providerName.toUri() +
-                   ":service=" + serviceName.toUri();
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
         }
 
         bool
@@ -132,37 +129,30 @@ namespace ndn_service_framework
         }
 
         bool
-        hasValidAuthorizationProof(const ndn::Name& providerIdentity,
-                                   const ndn::Name& requesterIdentity,
-                                   const ndn::Name& serviceName,
-                                   const ndn::Name& requestId,
-                                   const std::optional<std::string>& providerToken,
-                                   const RequestMessage& requestMessage)
+        hasProviderPermission(const ndn::Name& providerIdentity,
+                              const ndn::Name& serviceName,
+                              const UserPermissionTable& permissionTable)
         {
-            if (!providerToken) {
-                return false;
-            }
+            return permissionTable.queryPermission(
+                ndn::Name(providerIdentity.toUri()).append(serviceName).toUri(),
+                serviceName.toUri()).has_value();
+        }
 
-            const ndn::Name providerServiceName =
-                ndn::Name(providerIdentity.toUri()).append(serviceName);
-            const std::string expectedUserToken =
-                makeDemoAuthorizationToken("user",
-                                           requesterIdentity,
-                                           providerIdentity,
-                                           serviceName);
+        std::string
+        makeOneTimeToken()
+        {
+            static std::atomic<uint64_t> counter{0};
+            static std::random_device randomDevice;
 
-            for (const auto& pair : requestMessage.getTokens()) {
-                if (pair.first != providerServiceName.toUri()) {
-                    continue;
-                }
-
-                if (verifyAuthorizationProof(expectedUserToken, requestId, pair.second) ||
-                    verifyAuthorizationProof(*providerToken, requestId, pair.second)) {
-                    return true;
-                }
-            }
-
-            return false;
+            std::ostringstream os;
+            os << std::hex << nowMilliseconds()
+               << counter.fetch_add(1)
+               << randomDevice()
+               << randomDevice()
+               << randomDevice()
+               << randomDevice()
+               << RandomString(16);
+            return os.str();
         }
     }
 
@@ -531,24 +521,22 @@ namespace ndn_service_framework
     {
         auto parsedV2 = ndn_service_framework::parseRequestNameV2(requestName);
         if (parsedV2) {
-            auto token = UPT.queryPermission(
-                ndn::Name(identity.toUri()).append(parsedV2->serviceName).toUri(),
-                parsedV2->serviceName.toUri());
-            if (!hasValidAuthorizationProof(identity,
-                                            parsedV2->requesterName,
-                                            parsedV2->serviceName,
-                                            parsedV2->requestId,
-                                            token,
-                                            requestMessage)) {
+            if (!hasProviderPermission(identity, parsedV2->serviceName, UPT)) {
                 return makeErrorResponse("Permission denied for " +
                                          parsedV2->serviceName.toUri());
             }
+            if (requestMessage.getUserToken().empty()) {
+                return makeErrorResponse("Missing UserToken for " +
+                                         parsedV2->serviceName.toUri());
+            }
 
-            return dispatchRequest(parsedV2->requesterName,
-                                   identity,
-                                   parsedV2->serviceName,
-                                   parsedV2->requestId,
-                                   requestMessage);
+            auto response = dispatchRequest(parsedV2->requesterName,
+                                            identity,
+                                            parsedV2->serviceName,
+                                            parsedV2->requestId,
+                                            requestMessage);
+            response.setUserToken(requestMessage.getUserToken());
+            return response;
         }
 
         auto parsed = parseRequestNameForUnifiedService(requestName);
@@ -556,24 +544,22 @@ namespace ndn_service_framework
             return makeErrorResponse("Failed to parse request name " + requestName.toUri());
         }
 
-        auto token = UPT.queryPermission(
-            ndn::Name(identity.toUri()).append(parsed->serviceName).toUri(),
-            parsed->serviceName.toUri());
-        if (!hasValidAuthorizationProof(identity,
-                                        parsed->requesterIdentity,
-                                        parsed->serviceName,
-                                        parsed->requestId,
-                                        token,
-                                        requestMessage)) {
+        if (!hasProviderPermission(identity, parsed->serviceName, UPT)) {
             return makeErrorResponse("Permission denied for " +
                                      parsed->serviceName.toUri());
         }
+        if (requestMessage.getUserToken().empty()) {
+            return makeErrorResponse("Missing UserToken for " +
+                                     parsed->serviceName.toUri());
+        }
 
-        return dispatchRequest(parsed->requesterIdentity,
-                               identity,
-                               parsed->serviceName,
-                               parsed->requestId,
-                               requestMessage);
+        auto response = dispatchRequest(parsed->requesterIdentity,
+                                        identity,
+                                        parsed->serviceName,
+                                        parsed->requestId,
+                                        requestMessage);
+        response.setUserToken(requestMessage.getUserToken());
+        return response;
     }
 
     ResponseMessage ServiceProvider::handleDecryptedRequestByName(
@@ -887,11 +873,7 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
         << bloomFilterName.toUri()
         << requestId.toUri());
 
-    auto token = UPT.queryPermission(
-        ndn::Name(identity.toUri()).append(serviceName).toUri(),
-        serviceName.toUri());
-
-    if (!token) {
+    if (!hasProviderPermission(identity, serviceName, UPT)) {
         NDN_LOG_ERROR("Not Serving: " << serviceName);
         return;
     }
@@ -899,16 +881,8 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
     ndn_service_framework::RequestMessage requestMessage;
     requestMessage.WireDecode(block);
 
-    bool isAuthorized = false;
-    isAuthorized = hasValidAuthorizationProof(identity,
-                                              requesterIdentity,
-                                              serviceName,
-                                              requestId,
-                                              token,
-                                              requestMessage);
-
-    if (!isAuthorized) {
-        NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: Permission Denied");
+    if (requestMessage.getUserToken().empty()) {
+        NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: Missing UserToken");
         return;
     }
     NDN_LOG_INFO("OnRequestDecryptionSuccessCallbackV2: Permission Granted to "
@@ -925,6 +899,7 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
                                             serviceName,
                                             requestId,
                                             requestMessage);
+            response.setUserToken(requestMessage.getUserToken());
             ndn::Name responseName = makeResponseNameV2(identity,
                                                         requesterIdentity,
                                                         serviceName,
@@ -953,12 +928,20 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
             }
         }
 
+        const std::string providerToken =
+            decision.status ? makeOneTimeToken() : "";
+        if (decision.status) {
+            pendingProviderTokens[pendingKey] = providerToken;
+        }
+
         PublishRequestAckMessageV2(requesterIdentity,
                                    serviceName,
                                    requestId,
                                    decision.status,
                                    decision.message,
-                                   decision.payload);
+                                   decision.payload,
+                                   requestMessage.getUserToken(),
+                                   providerToken);
         return;
     }
 
@@ -971,11 +954,16 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
         std::make_shared<RequestMessage>(requestMessage);
 
     std::string msg = "Permission Granted";
+    const std::string providerToken = makeOneTimeToken();
+    pendingProviderTokens[pendingKey] = providerToken;
     PublishRequestAckMessageV2(requesterIdentity,
                                serviceName,
                                requestId,
                                true,
-                               msg);
+                               msg,
+                               ndn::Buffer(),
+                               requestMessage.getUserToken(),
+                               providerToken);
 }
 
 void ServiceProvider::OnRequestDecryptionSuccessCallback(
@@ -1009,15 +997,8 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
             << bloomFilterName.toUri()
             << RequestID.toUri());
 
-        // Token permission check
-        auto token = UPT.queryPermission(
-            ndn::Name(identity.toUri())
-                .append(ServiceName)
-                .append(FunctionName)
-                .toUri(),
-            ndn::Name(ServiceName).append(FunctionName).toUri());
-
-        if (!token) {
+        const ndn::Name unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
+        if (!hasProviderPermission(identity, unifiedServiceName, UPT)) {
             NDN_LOG_ERROR("Not Serving: " << ServiceName << " function " << FunctionName);
             return;
         }
@@ -1026,26 +1007,14 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
         ndn_service_framework::RequestMessage requestMessage;
         requestMessage.WireDecode(block);
 
-        // Validate tokens
-        bool isAuthorized = false;
-        const ndn::Name unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
-        isAuthorized = hasValidAuthorizationProof(identity,
-                                                  requesterIdentity,
-                                                  unifiedServiceName,
-                                                  RequestID,
-                                                  token,
-                                                  requestMessage);
-
-        if (!isAuthorized) {
-            NDN_LOG_ERROR("OnRequestDecryptionSuccessCallback: Permission Denied");
+        if (requestMessage.getUserToken().empty()) {
+            NDN_LOG_ERROR("OnRequestDecryptionSuccessCallback: Missing UserToken");
             return;
         }
-        else {
-            NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: Permission Granted to "
-                << requesterIdentity.toUri()
-                << " for " << ServiceName.toUri()
-                << " function " << FunctionName.toUri());
-        }
+        NDN_LOG_INFO("OnRequestDecryptionSuccessCallback: Permission Granted to "
+            << requesterIdentity.toUri()
+            << " for " << ServiceName.toUri()
+            << " function " << FunctionName.toUri());
 
         if (hasService(unifiedServiceName)) {
             NDN_LOG_INFO("Dispatch request using dynamic handler for "
@@ -1057,6 +1026,7 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
                                                 unifiedServiceName,
                                                 RequestID,
                                                 requestMessage);
+                response.setUserToken(requestMessage.getUserToken());
                 ndn::Name responseName = makeResponseName(identity,
                                                           requesterIdentity,
                                                           ServiceName,
@@ -1088,13 +1058,21 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
                 }
             }
 
+            const std::string providerToken =
+                decision.status ? makeOneTimeToken() : "";
+            if (decision.status) {
+                pendingProviderTokens[pendingKey] = providerToken;
+            }
+
             PublishRequestAckMessage(requesterIdentity,
                                      ServiceName,
                                      FunctionName,
                                      RequestID,
                                      decision.status,
                                      decision.message,
-                                     decision.payload);
+                                     decision.payload,
+                                     requestMessage.getUserToken(),
+                                     providerToken);
             return;
         }
 
@@ -1126,12 +1104,17 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
 
         // Send Permission ACK
         std::string msg = "Permission Granted";
+        const std::string providerToken = makeOneTimeToken();
+        pendingProviderTokens[pendingKey] = providerToken;
         PublishRequestAckMessage(requesterIdentity,
                                  ServiceName,
                                  FunctionName,
                                  RequestID,
                                  true,
-                                 msg);
+                                 msg,
+                                 ndn::Buffer(),
+                                 requestMessage.getUserToken(),
+                                 providerToken);
     //});
 }
 
@@ -1241,14 +1224,21 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
 
 
-    void ServiceProvider::PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload)
+    void ServiceProvider::PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload, const std::string& userToken, const std::string& providerToken)
     {
         // log message
         NDN_LOG_INFO("PublishRequestAckMessage: " << requesterIdentity.toUri() << ServiceName.toUri() << FunctionName.toUri() << RequestID.toUri());
+        std::cout << "[ServiceProvider] ACK publish requestId="
+                  << RequestID.toUri()
+                  << " userToken=" << userToken
+                  << " providerToken=" << providerToken
+                  << std::endl;
         // create Permission Ack Message
         RequestAckMessage RequestAckMessage;
         RequestAckMessage.setStatus(status);
         RequestAckMessage.setMessage(msg);
+        RequestAckMessage.setUserToken(userToken);
+        RequestAckMessage.setProviderToken(providerToken);
         if (!payload.empty()) {
             ndn::Buffer ackPayload(payload);
             RequestAckMessage.setPayload(ackPayload, ackPayload.size());
@@ -1264,14 +1254,23 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                      const ndn::Name& requestId,
                                                      bool status,
                                                      const std::string& msg,
-                                                     const ndn::Buffer& payload)
+                                                     const ndn::Buffer& payload,
+                                                     const std::string& userToken,
+                                                     const std::string& providerToken)
     {
         NDN_LOG_INFO("PublishRequestAckMessageV2: " << requesterIdentity.toUri()
                      << serviceName.toUri() << requestId.toUri());
+        std::cout << "[ServiceProvider] ACK publish requestId="
+                  << requestId.toUri()
+                  << " userToken=" << userToken
+                  << " providerToken=" << providerToken
+                  << std::endl;
 
         RequestAckMessage requestAckMessage;
         requestAckMessage.setStatus(status);
         requestAckMessage.setMessage(msg);
+        requestAckMessage.setUserToken(userToken);
+        requestAckMessage.setProviderToken(providerToken);
         if (!payload.empty()) {
             ndn::Buffer ackPayload(payload);
             requestAckMessage.setPayload(ackPayload, ackPayload.size());
@@ -1300,6 +1299,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             if (!coordinationV2->providerName.equals(identity)) {
                 return;
             }
+            std::cout << "[ServiceProvider] coordination received timestampMs="
+                      << nowMilliseconds()
+                      << " requestId=" << coordinationV2->requestId.toUri()
+                      << " providerName=" << coordinationV2->providerName.toUri()
+                      << " requesterName=" << coordinationV2->requesterName.toUri()
+                      << " serviceName=" << coordinationV2->serviceName.toUri()
+                      << std::endl;
 
             if(subscription.data.size() > 0){
                 nacConsumer.consume(subscription.name,
@@ -1350,6 +1356,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
         std::tie(requesterName, providerName, ServiceName, FunctionName, msgId) = results.value();
+        std::cout << "[ServiceProvider] coordination received timestampMs="
+                  << nowMilliseconds()
+                  << " requestId=" << msgId.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " requesterName=" << requesterName.toUri()
+                  << " serviceName=" << ServiceName.toUri()
+                  << std::endl;
         // fetch and decrypt the request, and then PreProcess it to check permisison and publish ACK;
         if(subscription.data.size() > 0){
             nacConsumer.consume(subscription.name,
@@ -1501,6 +1514,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
 
+        auto providerTokenIt = pendingProviderTokens.find(key);
+        if (providerTokenIt == pendingProviderTokens.end() ||
+            message.getProviderToken() != providerTokenIt->second) {
+            NDN_LOG_ERROR("Reject V2 coordination with mismatched ProviderToken for "
+                          << key.toUri());
+            return;
+        }
+
         for (const auto& requestID : message.getRequestIDs()) {
             const ndn::Name requestId(requestID);
             if (!hasService(serviceName)) {
@@ -1513,6 +1534,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                             serviceName,
                                             requestId,
                                             *(it->second));
+            response.setUserToken(it->second->getUserToken());
             ndn::Name responseName = makeResponseNameV2(providerName,
                                                         requesterName,
                                                         serviceName,
@@ -1533,6 +1555,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
 
         pendingRequests.erase(it);
+        pendingProviderTokens.erase(key);
     }
 
 
@@ -1578,6 +1601,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
             auto it = pendingRequests.find(key);
             if (it != pendingRequests.end()) {
+                auto providerTokenIt = pendingProviderTokens.find(key);
+                if (providerTokenIt == pendingProviderTokens.end() ||
+                    message.getProviderToken() != providerTokenIt->second) {
+                    NDN_LOG_ERROR("Reject coordination with mismatched ProviderToken for "
+                                  << key.toUri());
+                    return;
+                }
 
                 for (const auto& requestID : message.getRequestIDs()) {
                     const auto unifiedServiceName = makeUnifiedServiceName(ServiceName, FunctionName);
@@ -1587,6 +1617,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                         unifiedServiceName,
                                                         ndn::Name(requestID),
                                                         *(it->second));
+                        response.setUserToken(it->second->getUserToken());
                         ndn::Name responseName = makeResponseName(providerName,
                                                                   requesterName,
                                                                   ServiceName,
@@ -1613,6 +1644,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
                 // Remove pending record
                 pendingRequests.erase(it);
+                pendingProviderTokens.erase(key);
             }
         // });
     }

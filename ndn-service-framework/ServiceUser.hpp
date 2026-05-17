@@ -307,6 +307,7 @@ namespace ndn_service_framework{
                 std::vector<StoredAck> customSelectedAcks;
                 std::vector<ndn::Name> successfulAckProviders;
                 ndn::Name selectedProvider;
+                std::map<std::string, std::string> providerTokens;
             };
 
             static ndn::Name makeRequestId();

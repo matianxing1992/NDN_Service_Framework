@@ -70,18 +70,6 @@ encryptWireBytesWithContentKeyForCertificate(const ndn::security::Certificate& c
   return encryptedPayload.WireEncode();
 }
 
-std::string
-makeDemoAuthorizationToken(std::string_view permissionKind,
-                           const ndn::Name& targetIdentity,
-                           const std::string& providerName,
-                           const std::string& serviceName)
-{
-  return "DEMO-UNSIGNED-AUTHZ-TOKEN:v1:kind=" + std::string(permissionKind) +
-         ":target=" + targetIdentity.toUri() +
-         ":provider=" + providerName +
-         ":service=" + serviceName;
-}
-
 ndn::Name
 stripTrailingParametersDigest(ndn::Name name)
 {
@@ -385,7 +373,9 @@ ServiceController::buildUserPermissionResponse(const ndn::Name& targetIdentity) 
       PermissionEntry entry;
       entry.setProviderName(providerName);
       entry.setServiceName(service);
-      entry.setToken(makeDemoAuthorizationToken("user", targetIdentity, providerName, service));
+      // Deprecated wire-compatibility field. Invocation authentication uses
+      // per-request UserToken and per-ACK ProviderToken, not controller tokens.
+      entry.setToken("");
       entry.setTtl(0);
       entry.setVersion(1);
       response.addEntry(entry);
@@ -412,8 +402,9 @@ ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdenti
     PermissionEntry entry;
     entry.setProviderName(targetIdentity.toUri());
     entry.setServiceName(service);
-    entry.setToken(makeDemoAuthorizationToken("provider", targetIdentity,
-                                             targetIdentity.toUri(), service));
+    // Deprecated wire-compatibility field. Provider permission presence is
+    // still installed, but no invocation token is issued by the controller.
+    entry.setToken("");
     entry.setTtl(0);
     entry.setVersion(1);
     response.addEntry(entry);

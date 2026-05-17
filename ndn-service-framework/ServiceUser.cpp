@@ -1,8 +1,10 @@
 #include "ServiceUser.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <iostream>
+#include <random>
 #include <sstream>
 
 #include <fcntl.h>
@@ -103,6 +105,8 @@ namespace ndn_service_framework
         {
             return lhs.getStatus() == rhs.getStatus() &&
                    lhs.getMessage() == rhs.getMessage() &&
+                   lhs.getUserToken() == rhs.getUserToken() &&
+                   lhs.getProviderToken() == rhs.getProviderToken() &&
                    payloadEquals(lhs, rhs);
         }
 
@@ -111,6 +115,23 @@ namespace ndn_service_framework
         {
             return std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
+        }
+
+        std::string
+        makeOneTimeToken()
+        {
+            static std::atomic<uint64_t> counter{0};
+            static std::random_device randomDevice;
+
+            std::ostringstream os;
+            os << std::hex << nowMilliseconds()
+               << counter.fetch_add(1)
+               << randomDevice()
+               << randomDevice()
+               << randomDevice()
+               << randomDevice()
+               << RandomString(16);
+            return os.str();
         }
     }
 
@@ -372,12 +393,7 @@ namespace ndn_service_framework
         }
 
         ndn_service_framework::RequestMessage requestMessage;
-        // name->tokens to name->hash(token+requestID)
-        std::map<std::string, std::string> tokens;
-        for (auto pair : pairs){
-            tokens[pair.first] = makeAuthorizationProof(pair.second, RequestID);
-        }
-        requestMessage.setTokens(tokens);
+        requestMessage.setUserToken(makeOneTimeToken());
         requestMessage.setPayload(const_cast<ndn::Buffer&>(payload),payload.size());
         requestMessage.setStrategy(strategy);
         requestMessage.WireEncode().data();
@@ -460,11 +476,13 @@ namespace ndn_service_framework
         }
 
         ndn_service_framework::RequestMessage requestMessage;
-        std::map<std::string, std::string> tokens;
-        for (auto pair : pairs){
-            tokens[pair.first] = makeAuthorizationProof(pair.second, requestId);
+        auto pendingIt = m_pendingCalls.find(requestId);
+        if (pendingIt != m_pendingCalls.end()) {
+            requestMessage = pendingIt->second.requestMessage;
         }
-        requestMessage.setTokens(tokens);
+        if (requestMessage.getUserToken().empty()) {
+            requestMessage.setUserToken(makeOneTimeToken());
+        }
         requestMessage.setPayload(const_cast<ndn::Buffer&>(payload), payload.size());
         requestMessage.setStrategy(strategy);
         requestMessage.WireEncode().data();
@@ -494,11 +512,12 @@ namespace ndn_service_framework
         }
         std::cout << " selected serviceName=" << serviceName.toUri()
                   << " final request name=" << requestName.toUri()
+                  << " userToken=" << requestMessage.getUserToken()
                   << std::endl;
         NDN_LOG_INFO("PublishRequestV2 selected serviceName=" << serviceName.toUri()
                      << " final request name=" << requestName.toUri());
 
-        auto pendingIt = m_pendingCalls.find(requestId);
+        pendingIt = m_pendingCalls.find(requestId);
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.providers = serviceProviderNames;
             pendingIt->second.serviceName = serviceName;
@@ -582,6 +601,10 @@ namespace ndn_service_framework
                     return;
                 }
 
+                std::cout << "[ServiceUser] user timeout timestampMs="
+                          << nowMilliseconds()
+                          << " requestId=" << requestId.toUri()
+                          << std::endl;
                 auto timeoutHandler = pendingCall->second.timeoutHandler;
                 m_pendingCalls.erase(pendingCall);
 
@@ -669,6 +692,10 @@ namespace ndn_service_framework
                     return;
                 }
 
+                std::cout << "[ServiceUser] user timeout timestampMs="
+                          << nowMilliseconds()
+                          << " requestId=" << requestId.toUri()
+                          << std::endl;
                 auto timeoutHandler = pendingCall->second.timeoutHandler;
                 m_pendingCalls.erase(pendingCall);
 
@@ -727,6 +754,10 @@ namespace ndn_service_framework
                     return;
                 }
 
+                std::cout << "[ServiceUser] user timeout timestampMs="
+                          << nowMilliseconds()
+                          << " requestId=" << requestId.toUri()
+                          << std::endl;
                 auto timeoutHandler = pendingCall->second.timeoutHandler;
                 m_pendingCalls.erase(pendingCall);
 
@@ -787,6 +818,10 @@ namespace ndn_service_framework
                     return;
                 }
 
+                std::cout << "[ServiceUser] user timeout timestampMs="
+                          << nowMilliseconds()
+                          << " requestId=" << requestId.toUri()
+                          << std::endl;
                 auto timeoutHandler = pendingCall->second.timeoutHandler;
                 m_pendingCalls.erase(pendingCall);
 
@@ -808,6 +843,10 @@ namespace ndn_service_framework
         }
 
         if (pendingCall->second.responseHandler) {
+            std::cout << "[ServiceUser] RESPONSE accepted requestId="
+                      << requestId.toUri()
+                      << " userToken=" << responseMessage.getUserToken()
+                      << std::endl;
             pendingCall->second.responseHandler(responseMessage);
         }
 
@@ -821,6 +860,15 @@ namespace ndn_service_framework
         const ndn_service_framework::ResponseMessage& responseMessage)
     {
         if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
+            return false;
+        }
+
+        auto pendingCall = m_pendingCalls.find(requestId);
+        const auto& expectedUserToken = pendingCall->second.requestMessage.getUserToken();
+        if (expectedUserToken.empty() ||
+            responseMessage.getUserToken() != expectedUserToken) {
+            NDN_LOG_ERROR("Reject response with mismatched UserToken for requestId="
+                          << requestId.toUri());
             return false;
         }
 
@@ -887,6 +935,26 @@ namespace ndn_service_framework
                 return false;
             }
 
+            const auto& expectedUserToken =
+                pendingCall->second.requestMessage.getUserToken();
+            if (expectedUserToken.empty() ||
+                ackMessage.getUserToken() != expectedUserToken) {
+                NDN_LOG_ERROR("Reject ACK with mismatched UserToken for requestId="
+                              << parsedV2->requestId.toUri()
+                              << " provider=" << parsedV2->providerName.toUri());
+                return false;
+            }
+
+            if (ackMessage.getStatus() && ackMessage.getProviderToken().empty() &&
+                pendingCall->second.strategy != ndn_service_framework::tlv::NoCoordination) {
+                NDN_LOG_ERROR("Reject ACK missing ProviderToken for requestId="
+                              << parsedV2->requestId.toUri()
+                              << " provider=" << parsedV2->providerName.toUri());
+                return false;
+            }
+
+            pendingCall->second.providerTokens[parsedV2->providerName.toUri()] =
+                ackMessage.getProviderToken();
             pendingCall->second.requestAcks.push_back(
                 StoredAck{parsedV2->providerName,
                           parsedV2->serviceName,
@@ -896,7 +964,24 @@ namespace ndn_service_framework
                 pendingCall->second.ackCandidatesHandler) {
                 return true;
             }
+            const bool shouldCoordinateFirstAck =
+                pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
+                pendingCall->second.selectedProvider.empty() &&
+                ackMessage.getStatus();
             evaluateAckSelection(parsedV2->requestId);
+            if (shouldCoordinateFirstAck &&
+                pendingCall->second.selectedProvider.equals(parsedV2->providerName)) {
+                // Avoid publishing coordination re-entrantly from the ACK consume callback.
+                m_scheduler.schedule(ndn::time::milliseconds(1),
+                                     [this,
+                                      providerName = parsedV2->providerName,
+                                      serviceName = parsedV2->serviceName,
+                                      requestId = parsedV2->requestId]() {
+                                         PublishServiceCoordinationMessageV2(providerName,
+                                                                             serviceName,
+                                                                             requestId);
+                                     });
+            }
 
             return true;
         }
@@ -920,6 +1005,25 @@ namespace ndn_service_framework
             return false;
         }
 
+        const auto& expectedUserToken = pendingCall->second.requestMessage.getUserToken();
+        if (expectedUserToken.empty() ||
+            ackMessage.getUserToken() != expectedUserToken) {
+            NDN_LOG_ERROR("Reject ACK with mismatched UserToken for requestId="
+                          << requestId.toUri()
+                          << " provider=" << providerName.toUri());
+            return false;
+        }
+
+        if (ackMessage.getStatus() && ackMessage.getProviderToken().empty() &&
+            pendingCall->second.strategy != ndn_service_framework::tlv::NoCoordination) {
+            NDN_LOG_ERROR("Reject ACK missing ProviderToken for requestId="
+                          << requestId.toUri()
+                          << " provider=" << providerName.toUri());
+            return false;
+        }
+
+        pendingCall->second.providerTokens[providerName.toUri()] =
+            ackMessage.getProviderToken();
         pendingCall->second.requestAcks.push_back(
             StoredAck{providerName,
                       makeUnifiedServiceName(serviceName, functionName),
@@ -929,7 +1033,22 @@ namespace ndn_service_framework
             pendingCall->second.ackCandidatesHandler) {
             return true;
         }
+        const bool shouldCoordinateFirstAck =
+            pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
+            pendingCall->second.selectedProvider.empty() &&
+            ackMessage.getStatus();
         evaluateAckSelection(requestId);
+        if (shouldCoordinateFirstAck &&
+            pendingCall->second.selectedProvider.equals(providerName)) {
+            // Avoid publishing coordination re-entrantly from the ACK consume callback.
+            m_scheduler.schedule(ndn::time::milliseconds(1),
+                                 [this, providerName, serviceName, functionName, requestId]() {
+                                     PublishServiceCoordinationMessage(providerName,
+                                                                       serviceName,
+                                                                       functionName,
+                                                                       requestId);
+                                 });
+        }
 
         return true;
     }
@@ -1339,9 +1458,12 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             ackPayload.size());
         std::cout << "[ServiceUser] ACK received timestampMs="
                   << nowMilliseconds()
+                  << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
                   << " status=" << AckMessage.getStatus()
                   << " message=" << AckMessage.getMessage()
+                  << " userToken=" << AckMessage.getUserToken()
+                  << " providerToken=" << AckMessage.getProviderToken()
                   << " payload=" << ackPayloadText
                   << std::endl;
 
@@ -1357,10 +1479,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                                                       requestID);
         const bool handledByPendingCall = handleRequestAckByName(ackName, AckMessage);
         auto pendingCall = m_pendingCalls.find(requestID);
-        if (handledByPendingCall &&
-            pendingCall != m_pendingCalls.end() &&
-            (pendingCall->second.acksHandler ||
-             pendingCall->second.ackCandidatesHandler)) {
+        if (handledByPendingCall && pendingCall != m_pendingCalls.end()) {
             return;
         }
 
@@ -1390,7 +1509,14 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             PublishServiceCoordinationMessage(providerName, ServiceName, FunctionName, requestID);
         }
         else if (strategy == tlv::FirstResponding) {
-            PublishServiceCoordinationMessage(providerName, ServiceName, FunctionName, requestID);
+            // Avoid publishing coordination re-entrantly from the ACK consume callback.
+            m_scheduler.schedule(ndn::time::milliseconds(1),
+                                 [this, providerName, ServiceName, FunctionName, requestID]() {
+                                     PublishServiceCoordinationMessage(providerName,
+                                                                       ServiceName,
+                                                                       FunctionName,
+                                                                       requestID);
+                                 });
             m_strategyMap.erase(strategyIt);
         }
         else if (strategy == tlv::LoadBalancing) {
@@ -1429,6 +1555,12 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
 
     void ServiceUser::PublishServiceCoordinationMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID)
     {
+        std::cout << "[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
+                  << nowMilliseconds()
+                  << " requestId=" << requestID.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " serviceName=" << ServiceName.toUri()
+                  << std::endl;
         if (FunctionName.empty()) {
             PublishServiceCoordinationMessageV2(providerName, ServiceName, requestID);
             return;
@@ -1439,6 +1571,14 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         // create service coordination message
         ServiceCoordinationMessage coordinationMessage;
         coordinationMessage.setRequestIDs({requestID.toUri()});
+        auto pendingIt = m_pendingCalls.find(requestID);
+        if (pendingIt != m_pendingCalls.end()) {
+            auto tokenIt =
+                pendingIt->second.providerTokens.find(providerName.toUri());
+            if (tokenIt != pendingIt->second.providerTokens.end()) {
+                coordinationMessage.setProviderToken(tokenIt->second);
+            }
+        }
 
         // make service coordination message name
         ndn::Name serviceCoordinationName = makeServiceCoordinationName(identity, providerName, ServiceName, FunctionName, requestID);
@@ -1446,6 +1586,12 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
 
         // publish service coordination message
         PublishMessage(serviceCoordinationName, serviceCoordinationNameWithoutPrefix, coordinationMessage);
+        std::cout << "[ServiceUser] coordination PublishMessage returned timestampMs="
+                  << nowMilliseconds()
+                  << " requestId=" << requestID.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " serviceName=" << ServiceName.toUri()
+                  << std::endl;
     }
 
     void ServiceUser::PublishServiceCoordinationMessageV2(const ndn::Name& providerName,
@@ -1456,9 +1602,23 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                      << providerName.toUri()
                      << serviceName.toUri()
                      << requestId.toUri());
+        std::cout << "[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
+                  << nowMilliseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " serviceName=" << serviceName.toUri()
+                  << std::endl;
 
         ServiceCoordinationMessage coordinationMessage;
         coordinationMessage.setRequestIDs({requestId.toUri()});
+        auto pendingIt = m_pendingCalls.find(requestId);
+        if (pendingIt != m_pendingCalls.end()) {
+            auto tokenIt =
+                pendingIt->second.providerTokens.find(providerName.toUri());
+            if (tokenIt != pendingIt->second.providerTokens.end()) {
+                coordinationMessage.setProviderToken(tokenIt->second);
+            }
+        }
 
         ndn::Name serviceCoordinationName =
             makeServiceCoordinationNameV2(identity, providerName, serviceName, requestId);
@@ -1468,6 +1628,12 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         PublishMessage(serviceCoordinationName,
                        serviceCoordinationNameWithoutPrefix,
                        coordinationMessage);
+        std::cout << "[ServiceUser] coordination PublishMessage returned timestampMs="
+                  << nowMilliseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " serviceName=" << serviceName.toUri()
+                  << std::endl;
     }
 
     void ServiceUser::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)
