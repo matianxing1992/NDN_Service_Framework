@@ -162,14 +162,18 @@ if [[ "${user_status}" -eq 0 ]] &&
    grep -q "Provider A selective ACK handler received request" "${tmpdir}/provider-A.log" &&
    grep -q "Provider A request received timestampMs=" "${tmpdir}/provider-A.log" &&
    grep -q "Provider A publishing HELLO ACK status=1 .*payload=queue=5;gpu=busy;rank=3" "${tmpdir}/provider-A.log" &&
+   grep -q "ACK publish .*providerToken=" "${tmpdir}/provider-A.log" &&
    grep -q "Provider B selective ACK handler received request" "${tmpdir}/provider-B.log" &&
    grep -q "Provider B request received timestampMs=" "${tmpdir}/provider-B.log" &&
    grep -q "Provider B publishing HELLO ACK status=1 .*payload=queue=1;gpu=idle;rank=1" "${tmpdir}/provider-B.log" &&
+   grep -q "ACK publish .*providerToken=" "${tmpdir}/provider-B.log" &&
    grep -q "Provider C selective ACK handler received request" "${tmpdir}/provider-C.log" &&
    grep -q "Provider C request received timestampMs=" "${tmpdir}/provider-C.log" &&
    grep -q "Provider C selective ACK handler rejected request" "${tmpdir}/provider-C.log" &&
    grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/A" "${tmpdir}/user.log" &&
    grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/B" "${tmpdir}/user.log" &&
+   grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/A.*userToken=.*providerToken=" "${tmpdir}/user.log" &&
+   grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/B.*userToken=.*providerToken=" "${tmpdir}/user.log" &&
    grep -q "customSelectionStrategy ran after ackTimeoutMs=500" "${tmpdir}/user.log" &&
    grep -q "customSelectionStrategy candidate providerName=/example/hello/provider/A status=1 .*payload=queue=5;gpu=busy;rank=3" "${tmpdir}/user.log" &&
    grep -q "customSelectionStrategy candidate providerName=/example/hello/provider/B status=1 .*payload=queue=1;gpu=idle;rank=1" "${tmpdir}/user.log" &&

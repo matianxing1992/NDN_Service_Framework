@@ -17,7 +17,8 @@ class UserPermissionTable
 {
 public:
   // Key: service full name, e.g., "/<provider>/<service>/<function>"
-  // Value: (FunctionName, ServiceToken), e.g., ("/<service>/<function>", "token")
+  // Value: (FunctionName, deprecated token). Token is retained only for wire
+  // compatibility; service invocation uses UserToken/ProviderToken instead.
   using UserPermissionMap = boost::bimap<
       boost::bimaps::set_of<std::string>,
       boost::bimaps::multiset_of<std::pair<std::string, std::string>>>;
@@ -46,8 +47,8 @@ public:
     userPermissions.left.erase(serviceName);
   }
 
-  // Search by FunctionName and return all corresponding service full names and tokens
-  // Result: vector of (serviceFullName, token)
+  // Search by FunctionName and return all corresponding service full names.
+  // The second value is the deprecated token field and is normally empty.
   std::vector<std::pair<std::string, std::string>>
   searchByFunctionName(const std::string& functionName) const
   {
@@ -66,7 +67,7 @@ public:
     return result;
   }
 
-  // Query user permission and return optional token
+  // Query permission presence and return the deprecated token field if present.
   // serviceName: full name "/<provider>/<service>/<function>"
   // functionName: "/<service>/<function>"
   std::optional<std::string>

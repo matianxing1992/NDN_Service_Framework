@@ -246,13 +246,15 @@ namespace ndn_service_framework{
 
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
-            void PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload = ndn::Buffer());
+            void PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload = ndn::Buffer(), const std::string& userToken = "", const std::string& providerToken = "");
             void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
                                             const ndn::Name& serviceName,
                                             const ndn::Name& requestId,
                                             bool status,
                                             const std::string& msg,
-                                            const ndn::Buffer& payload = ndn::Buffer());
+                                            const ndn::Buffer& payload = ndn::Buffer(),
+                                            const std::string& userToken = "",
+                                            const std::string& providerToken = "");
     
             void onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -333,6 +335,7 @@ namespace ndn_service_framework{
                 (/<requesterName>/<ServiceName>/<FunctionName>/<RequestID> -> RequestMessage)
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
+            std::map<ndn::Name,std::string> pendingProviderTokens;
 
             ndn::random::RandomNumberEngine random;
 

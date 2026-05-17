@@ -40,21 +40,22 @@ What is verified:
 
 - The controller, user, and provider run with identities and certificates
   created by the example apps.
-- The user and provider fetch controller-issued permissions before executing
+- The user and provider fetch controller-issued permission mappings before executing
   the `/HELLO` service flow.
-- The provider validates the requester's authorization proof before ACK and
-  response publication. The HELLO regressions check for
-  `OnRequestDecryptionSuccessCallbackV2: Permission Granted...`.
+- `ServiceUser` generates a one-time `UserToken`, providers echo it in ACK and
+  response messages, and users reject mismatches.
+- `ServiceProvider` generates a one-time `ProviderToken` in ACK messages, and
+  coordination-based execution requires the selected provider's token.
 - The regressions guard against debug authorization bypasses by checking logs
   and source for `isAuthorized = true`.
 - Unit tests exercise dynamic request handling, V2 message parsing, permission
-  application, and negative authorization behavior.
+  application, and negative token-handshake behavior.
 
 Remaining assumptions or limitations:
 
-- The example regressions use demo authorization tokens and local example trust
-  configuration; they are regression coverage for the framework flow, not a
-  complete production PKI deployment.
+- The example regressions use local example trust configuration; they are
+  regression coverage for the framework flow, not a complete production PKI
+  deployment.
 - The scripts verify successful trust and authorization paths mostly through
   runtime logs.
 - Broader adversarial cases, such as replay, compromised keys, or malicious
@@ -84,6 +85,7 @@ Relevant regression/unit tests:
 - `examples/run_hello_ack_payload_regression.sh`
 - `examples/run_selective_ack_custom_selection_regression.sh`
 - `./build/unit-tests`
+- `examples/run_token_handshake_negative_regression.sh`
 
 What is verified:
 
@@ -217,7 +219,7 @@ What is verified:
 - Providers can register a service-level ACK handler that returns an
   `AckDecision`.
 - The provider publishes `RequestAckMessage` with status, message, and optional
-  payload metadata.
+  payload metadata, plus `UserToken` and `ProviderToken`.
 - The selective ACK regression starts three providers and verifies that A and B
   publish successful ACKs while C rejects the request.
 - The provider saves authorized requests for later execution after coordination
@@ -256,11 +258,13 @@ Relevant regression/unit tests:
 What is verified:
 
 - `RequestAckMessage` carries a binary payload alongside status and message.
+- `RequestAckMessage` carries `UserToken` and `ProviderToken` alongside
+  status, message, and payload.
 - `ServiceProvider::AckDecision` carries ACK metadata as an `ndn::Buffer`.
 - `PublishRequestAckMessageV2` copies ACK payload bytes into the published
   `RequestAckMessage`.
 - `ServiceUser` logs received ACK status, message, payload bytes, and provider
-  identity.
+  identity, plus the token fields used by the handshake.
 - The HELLO ACK payload regression verifies metadata
   `queue=0;gpu=idle;model=hello-v1` from provider publication through user
   collection.

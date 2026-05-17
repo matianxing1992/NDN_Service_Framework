@@ -142,12 +142,6 @@ namespace ndn_service_framework
 
     std::string RandomString(const int len);
 
-    std::string makeAuthorizationProof(const std::string& token,
-                                       const ndn::Name& requestId);
-    bool verifyAuthorizationProof(const std::string& token,
-                                  const ndn::Name& requestId,
-                                  const std::string& proof);
-
     std::optional<std::vector<std::string>> GetAttributesByName(const ndn::Name& name);
 
     // ndn::Block to ndn::span<const uint8_t>

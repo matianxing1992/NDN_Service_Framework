@@ -38,6 +38,8 @@ namespace tlv {
         EncryptedAesKeyType = 167,
         IvType = 168,
         CipherTextType = 169,
+        UserTokenType = 170,
+        ProviderTokenType = 171,
         AllowedServiceListType = 0xF501,
         AllowedServiceType = 0xF502,
     };
@@ -69,10 +71,12 @@ public:
     RequestMessage();
 
     void setTokens(const std::map<std::string, std::string>& tokens);
+    void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
     // FirstResponding = 0, LoadBalancing = 1, All = 2,
     void setStrategy(size_t strategy);
     const std::map<std::string, std::string>& getTokens() const;
+    const std::string& getUserToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
     size_t getStrategy() const;
@@ -82,6 +86,7 @@ public:
 
 private:
     std::map<std::string, std::string> tokens_;
+    std::string userToken_;
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
     size_t strategy_ = tlv::FirstResponding;
@@ -94,9 +99,11 @@ public:
 
     void setStatus(bool status);
     void setErrorInfo(const std::string& errorInfo);
+    void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
     bool getStatus() const;
     const std::string& getErrorInfo() const;
+    const std::string& getUserToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
     void Clear() override;
@@ -106,6 +113,7 @@ public:
 private:
     bool status_;
     std::string errorInfo_;
+    std::string userToken_;
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
     mutable ndn::Block m_wire;
@@ -117,9 +125,13 @@ public:
 
     void setStatus(bool status);
     void setMessage(const std::string& message);
+    void setUserToken(const std::string& userToken);
+    void setProviderToken(const std::string& providerToken);
     void setPayload(ndn::Buffer& payload, size_t size);
     bool getStatus() const;
     const std::string& getMessage() const;
+    const std::string& getUserToken() const;
+    const std::string& getProviderToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
     void Clear() override;
@@ -129,6 +141,8 @@ public:
 private:
     bool status_;
     std::string message_;
+    std::string userToken_;
+    std::string providerToken_;
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
     mutable ndn::Block m_wire;
@@ -139,13 +153,16 @@ public:
     ServiceCoordinationMessage();
 
     void setRequestIDs(const std::vector<std::string>& requestIDs);
+    void setProviderToken(const std::string& providerToken);
     const std::vector<std::string>& getRequestIDs() const;
+    const std::string& getProviderToken() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
 
 private:
     std::vector<std::string> requestIDs_;
+    std::string providerToken_;
     mutable ndn::Block m_wire;
 };
 
