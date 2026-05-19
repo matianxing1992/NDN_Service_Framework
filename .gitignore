@@ -8,3 +8,7 @@
 .waf3-*-*/
 .lock-waf*
 compile_commands.json
+
+# Generated/local outputs
+docs/
+results/

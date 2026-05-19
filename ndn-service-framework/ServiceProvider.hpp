@@ -442,7 +442,6 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
                 const std::string& error);
-
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
             ndn::Name identity;

@@ -34,6 +34,18 @@ namespace ndn_service_framework
             return os.str();
         }
 
+        double
+        percentileLatency(std::vector<double> values, double percentileRank)
+        {
+            if (values.empty()) {
+                return 0.0;
+            }
+            std::sort(values.begin(), values.end());
+            const auto index = static_cast<size_t>(
+                std::ceil((percentileRank / 100.0) * values.size()));
+            return values[std::min(values.size() - 1, index == 0 ? 0 : index - 1)];
+        }
+
         class FileLock
         {
         public:
@@ -308,35 +320,15 @@ namespace ndn_service_framework
 
         m_signingInfo = ndn::security::signingByCertificate(identityCert);
 
-        // Sign interest packets using a certificate
         ndn::svs::SecurityOptions secOpts(m_keyChain);
-        // secOpts.interestSigner->signingInfo.setSigningCertName(cert);
-        // secOpts.interestSigner->signingInfo = m_signingInfo;
-
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
         secOpts.interestSigner->signingInfo.setSigningKeyName(identityCert.getKeyName());
-        // secOpts.interestSigner->signingInfo.setSigningHmacKey("dGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl");
-
-        // Sign data packets using a certificate
-        // secOpts.dataSigner->signingInfo.setSha256Signing();
-        // secOpts.dataSigner->signingInfo.setSigningCertName(cert);
-        // secOpts.dataSigner->signingInfo = m_signingInfo;
-
         secOpts.dataSigner->signingInfo.setSigningCertName(identityCert.getName());
         secOpts.dataSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-
-        // Sign publication packets using a certificate
-        // secOpts.pubSigner->signingInfo.setSigningCertName(cert);
-        // secOpts.pubSigner->signingInfo = m_signingInfo;
-
         secOpts.pubSigner->signingInfo.setSigningCertName(identityCert.getName());
         secOpts.pubSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-
-        /** Validator to validate data and interests (unless using HMAC) */
         secOpts.validator = validator;
-
-        /** Validator to validate encapsulated data */
         secOpts.encapsulatedDataValidator = validator;
 
         // Do not fetch publications older than 10 seconds
@@ -350,9 +342,8 @@ namespace ndn_service_framework
 
         ndn::Name node_id(identity);
         node_id.append("user");
-        int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(),node_id.toUri());
+        int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(), node_id.toUri());
         node_id.append(std::to_string(session_id));
-
         {
             const auto svsLockPath = userScopedLockPath("/tmp/ndnsf-svs-registration");
             FileLock svsRegistrationLock(svsLockPath.c_str());
@@ -1143,6 +1134,12 @@ namespace ndn_service_framework
                 static_cast<double>(m_adaptiveAdmissionIntervalLatencyCount);
         const double targetLatencyMs =
             static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs);
+        const double p95LatencyMs =
+            percentileLatency(m_adaptiveAdmissionIntervalLatenciesMs, 95.0);
+        const double maxLatencyMs =
+            m_adaptiveAdmissionIntervalLatenciesMs.empty() ? 0.0 :
+            *std::max_element(m_adaptiveAdmissionIntervalLatenciesMs.begin(),
+                              m_adaptiveAdmissionIntervalLatenciesMs.end());
         const bool queueCongested =
             (queueBacklogged &&
             m_adaptiveAdmissionInflight >=
@@ -1150,9 +1147,10 @@ namespace ndn_service_framework
         const bool queueSevere =
             m_adaptiveAdmissionQueue.size() >= activeLimit;
         const bool latencyCongested =
-            averageLatencyMs > targetLatencyMs;
+            p95LatencyMs > targetLatencyMs;
         const bool latencySevere =
-            averageLatencyMs > 2.0 * targetLatencyMs;
+            p95LatencyMs > 1.25 * targetLatencyMs ||
+            maxLatencyMs > 1.5 * targetLatencyMs;
         if (queueCongested) {
             m_adaptiveAdmissionIntervalCongested = true;
         }
@@ -1184,8 +1182,8 @@ namespace ndn_service_framework
         }
         else if (m_adaptiveAdmissionIntervalSuccesses > 0 &&
                  !queueBacklogged &&
-                 (averageLatencyMs == 0.0 ||
-                  averageLatencyMs < 0.8 * targetLatencyMs)) {
+                 (p95LatencyMs == 0.0 ||
+                  p95LatencyMs < 0.8 * targetLatencyMs)) {
             m_adaptiveAdmissionWindow = std::min(
                 m_adaptiveAdmissionOptions.maxWindow,
                 m_adaptiveAdmissionWindow + m_adaptiveAdmissionOptions.aiStep);
@@ -1198,6 +1196,9 @@ namespace ndn_service_framework
                   << " successes=" << m_adaptiveAdmissionIntervalSuccesses
                   << " timeouts=" << m_adaptiveAdmissionIntervalTimeouts
                   << " avgLatencyMs=" << averageLatencyMs
+                  << " p95LatencyMs=" << p95LatencyMs
+                  << " maxLatencyMs=" << maxLatencyMs
+                  << " targetLatencyMs=" << targetLatencyMs
                   << " aboveWindow=" << aboveWindow
                   << " queueCongested=" << queueCongested
                   << " queueSevere=" << queueSevere
@@ -1210,6 +1211,7 @@ namespace ndn_service_framework
         m_adaptiveAdmissionIntervalTimeouts = 0;
         m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
         m_adaptiveAdmissionIntervalLatencyCount = 0;
+        m_adaptiveAdmissionIntervalLatenciesMs.clear();
         m_adaptiveAdmissionIntervalCongested = false;
         m_adaptiveAdmissionIntervalSevere = false;
 
@@ -1218,27 +1220,34 @@ namespace ndn_service_framework
     }
 
     void ServiceUser::releaseAdaptiveAdmissionSlot(const ndn::Name& requestId,
-                                                   const PendingCall& pendingCall,
+                                                   PendingCall& pendingCall,
                                                    const char* reason,
                                                    uint64_t terminalTimestampUs)
     {
         if (!m_adaptiveAdmissionOptions.enabled ||
-            !pendingCall.admissionPublished) {
+            !pendingCall.admissionPublished ||
+            pendingCall.admissionReleased) {
             return;
         }
+        pendingCall.admissionReleased = true;
         if (m_adaptiveAdmissionInflight > 0) {
             --m_adaptiveAdmissionInflight;
         }
 
         const std::string reasonText = reason == nullptr ? "" : reason;
         const bool timedOut = pendingCall.timedOut || reasonText == "timeout";
+        const bool admissionRejected = reasonText == "no_provider_selected";
         if (timedOut) {
             ++m_adaptiveAdmissionIntervalTimeouts;
             m_adaptiveAdmissionIntervalCongested = true;
             m_adaptiveAdmissionIntervalSevere = true;
         }
+        else if (admissionRejected) {
+            m_adaptiveAdmissionIntervalCongested = true;
+        }
         else if (pendingCall.hasResponse || reasonText == "response_callback" ||
-                 reasonText == "completed") {
+                 reasonText == "completed" ||
+                 reasonText == "coordination_published") {
             ++m_adaptiveAdmissionIntervalSuccesses;
         }
 
@@ -1249,7 +1258,9 @@ namespace ndn_service_framework
                 static_cast<double>(terminalTimestampUs - pendingCall.publishedAtUs) / 1000.0;
             m_adaptiveAdmissionIntervalLatencySumMs += latencyMs;
             ++m_adaptiveAdmissionIntervalLatencyCount;
-            if (latencyMs > 0.9 * static_cast<double>(pendingCall.timeoutMs)) {
+            m_adaptiveAdmissionIntervalLatenciesMs.push_back(latencyMs);
+            if (reasonText != "coordination_published" &&
+                latencyMs > 0.9 * static_cast<double>(pendingCall.timeoutMs)) {
                 m_adaptiveAdmissionIntervalSevere = true;
             }
         }
@@ -2728,6 +2739,12 @@ namespace ndn_service_framework
                                    "-" : pendingCall->second.selectedProvider.toUri()}});
             }
         }
+        else {
+            releaseAdaptiveAdmissionSlot(requestId,
+                                         pendingCall->second,
+                                         "no_provider_selected",
+                                         pendingCall->second.ackSelectionCompletedAtUs);
+        }
         return selected;
     }
 
@@ -3727,6 +3744,10 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.coordinationPublishedAtUs = nowMicroseconds();
             addUniqueName(pendingIt->second.coordinatedProviders, providerName);
+            releaseAdaptiveAdmissionSlot(requestID,
+                                         pendingIt->second,
+                                         "coordination_published",
+                                         pendingIt->second.coordinationPublishedAtUs);
         }
         updateRequestLifecycleState(requestID, RequestLifecycleState::COORDINATION_PUBLISHED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISHED timestamp_us="
@@ -3827,6 +3848,10 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.coordinationPublishedAtUs = nowMicroseconds();
             addUniqueName(pendingIt->second.coordinatedProviders, providerName);
+            releaseAdaptiveAdmissionSlot(requestId,
+                                         pendingIt->second,
+                                         "coordination_published",
+                                         pendingIt->second.coordinationPublishedAtUs);
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::COORDINATION_PUBLISHED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISHED timestamp_us="

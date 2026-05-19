@@ -252,13 +252,13 @@ struct AdaptiveAdmissionConfig
   bool enabled = false;
   size_t minWindow = 1;
   size_t maxWindow = 512;
-  size_t initialWindow = 32;
+  size_t initialWindow = 16;
   size_t hardInflightLimit = 512;
   size_t aiStep = 4;
   double mdFactor = 0.85;
   double severeMdFactor = 0.75;
   int controlIntervalMs = 500;
-  int targetLatencyMs = 1000;
+  int targetLatencyMs = 350;
 };
 
 std::string
@@ -355,7 +355,7 @@ main(int argc, char** argv)
       1, parseIntOption(argc, argv, "--adaptive-max-window", maxOutstanding)));
     adaptiveAdmission.initialWindow = static_cast<size_t>(std::max(
       1, parseIntOption(argc, argv, "--adaptive-initial-window",
-                        std::min(32, maxOutstanding))));
+                        std::min(16, maxOutstanding))));
     adaptiveAdmission.hardInflightLimit = static_cast<size_t>(std::max(
       1, parseIntOption(argc, argv, "--adaptive-hard-inflight-limit",
                         static_cast<int>(adaptiveAdmission.maxWindow))));
@@ -367,7 +367,7 @@ main(int argc, char** argv)
     adaptiveAdmission.controlIntervalMs = std::max(
       1, parseIntOption(argc, argv, "--adaptive-control-interval-ms", 500));
     adaptiveAdmission.targetLatencyMs = std::max(
-      1, parseIntOption(argc, argv, "--adaptive-target-latency-ms", 1000));
+      1, parseIntOption(argc, argv, "--adaptive-target-latency-ms", 350));
     adaptiveAdmission.maxWindow = std::max(adaptiveAdmission.minWindow,
                                            adaptiveAdmission.maxWindow);
     adaptiveAdmission.hardInflightLimit =
@@ -795,6 +795,7 @@ main(int argc, char** argv)
 
           (*maybeResume)();
           const auto runtimeWindow = user.getAdaptiveAdmissionWindow();
+          const auto runtimeAdmissionInflight = user.getAdaptiveAdmissionInflight();
           const size_t currentPauseThreshold = adaptiveAdmission.enabled ?
             std::max<size_t>(
               1,
@@ -803,18 +804,25 @@ main(int argc, char** argv)
           const size_t activeLimit = adaptiveAdmission.enabled ?
             currentPauseThreshold :
             static_cast<size_t>(maxOutstanding);
+          const bool admissionAtLimit =
+            adaptiveAdmission.enabled && runtimeAdmissionInflight >= activeLimit;
+          const bool pendingResponseAtLimit =
+            adaptiveAdmission.enabled &&
+            states->size() >= static_cast<size_t>(maxOutstanding);
 
           if (adaptiveAdmission.enabled &&
-              (states->size() >= activeLimit || *paused)) {
+              (admissionAtLimit || pendingResponseAtLimit || *paused)) {
             ++(*outstandingLimitSkips);
             ++(*delayedPublications);
             (*sampleOutstanding)();
             (*sampleAdaptive)();
-            if (!performanceMode && states->size() >= activeLimit) {
+            if (!performanceMode && (admissionAtLimit || pendingResponseAtLimit)) {
               std::cout << "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
                         << states->size()
+                        << " admission_inflight=" << runtimeAdmissionInflight
                         << " queued=" << *queuedTasks
                         << " adaptive_window=" << runtimeWindow
+                        << " pending_response_limit=" << maxOutstanding
                         << " ts=" << nowMilliseconds() << std::endl;
             }
             skipCurrentOpenLoopTick();
@@ -827,7 +835,11 @@ main(int argc, char** argv)
             (*sampleAdaptive)();
           }
 
-          if (states->size() >= activeLimit) {
+          const size_t currentLoad = adaptiveAdmission.enabled ?
+            runtimeAdmissionInflight : states->size();
+          if (currentLoad >= activeLimit ||
+              (adaptiveAdmission.enabled &&
+               states->size() >= static_cast<size_t>(maxOutstanding))) {
             ++(*outstandingLimitSkips);
             ++(*delayedPublications);
             (*sampleOutstanding)();
@@ -835,8 +847,10 @@ main(int argc, char** argv)
             if (!performanceMode) {
               std::cout << "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
                         << states->size()
+                        << " admission_inflight=" << runtimeAdmissionInflight
                         << " queued=" << *queuedTasks
                         << " adaptive_window=" << *adaptiveWindow
+                        << " pending_response_limit=" << maxOutstanding
                         << " ts=" << nowMilliseconds() << std::endl;
             }
           }

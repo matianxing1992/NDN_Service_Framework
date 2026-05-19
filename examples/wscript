@@ -25,6 +25,14 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    bld.program(name='App_SvsLatency',
+                target='App_SvsLatency',
+                source=['App_SvsLatency.cpp'],
+                includes=['..'],
+                use='NDN_CXX NDN_SVS BOOST',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     if not bld.env.WITH_EXAMPLES:
         return
 

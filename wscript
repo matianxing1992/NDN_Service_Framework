@@ -67,14 +67,15 @@ def configure(conf):
     local_prefix = os.path.join(conf.path.abspath(), '.local-boost171')
     local_pkg_config_path = os.path.join(local_prefix, 'lib', 'pkgconfig')
     pkg_config_paths = []
-    if os.path.isdir(local_pkg_config_path):
-        pkg_config_paths.append(local_pkg_config_path)
-        conf.env.append_value('LINKFLAGS',
-                              [f'-Wl,-rpath,{os.path.join(local_prefix, "lib")}'])
     if os.environ.get('PKG_CONFIG_PATH'):
         pkg_config_paths.append(os.environ['PKG_CONFIG_PATH'])
     else:
         pkg_config_paths.append(f'{conf.env.LIBDIR}/pkgconfig')
+    if os.path.isdir(local_pkg_config_path):
+        pkg_config_paths.append(local_pkg_config_path)
+        conf.env.append_value('LINKFLAGS',
+                              [f'-Wl,-rpath,{conf.env.LIBDIR}',
+                               f'-Wl,-rpath,{os.path.join(local_prefix, "lib")}'])
     pkg_config_path = os.pathsep.join(pkg_config_paths)
 
     conf.check_cfg(package='libndn-cxx', args=['libndn-cxx >= 0.8.0', '--cflags', '--libs'],

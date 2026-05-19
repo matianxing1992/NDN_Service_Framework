@@ -220,10 +220,10 @@ Built-in strategies remain generic and service-independent:
 ```text
 FirstResponding
 LoadBalancing
-NoCoordination
+AllResponders
 ```
 
-`FirstResponding` should coordinate the first successful ACK as before. `NoCoordination` may accept multiple provider responses.
+`FirstResponding` should coordinate the first successful ACK as before. `AllResponders` coordinates every provider that returned a valid ACK and may accept multiple provider responses.
 
 ## Permission Architecture
 
@@ -242,6 +242,8 @@ Interest signer identity for `PERMISSIONS/USER` or `PERMISSIONS/PROVIDER`.
 The returned Data is signed by the controller identity, and its
 `PermissionResponse` payload is encrypted to the target identity certificate.
 A different requester may fetch the encrypted response but cannot decrypt it.
+User and provider runtimes reject plaintext `PermissionResponse` Data on this
+permission discovery path.
 
 Permission table entries use unified service names:
 
@@ -330,6 +332,7 @@ Authorization and execution:
   - Selection/coordination includes the selected provider's ProviderToken
   - User rejects ACK/response UserToken mismatches
   - Provider rejects coordination ProviderToken mismatches
+  - Provider rejects replayed ProviderTokens for consumed or new request IDs
   - Do not introduce debug bypasses such as isAuthorized = true
   - Provider must install its own provider permission before serving a service
   - Service authorization is enforced by NAC-ABE attributes, one-time token
