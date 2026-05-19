@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <random>
@@ -488,6 +489,75 @@ namespace ndn_service_framework
         return diagnostics;
     }
 
+    void ServiceUser::setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options)
+    {
+        m_adaptiveAdmissionOptions = options;
+        m_adaptiveAdmissionOptions.minWindow = std::max<size_t>(1, m_adaptiveAdmissionOptions.minWindow);
+        m_adaptiveAdmissionOptions.maxWindow =
+            std::max(m_adaptiveAdmissionOptions.minWindow, m_adaptiveAdmissionOptions.maxWindow);
+        m_adaptiveAdmissionOptions.hardInflightLimit =
+            std::max(m_adaptiveAdmissionOptions.minWindow,
+                     m_adaptiveAdmissionOptions.hardInflightLimit);
+        m_adaptiveAdmissionOptions.maxWindow =
+            std::min(m_adaptiveAdmissionOptions.maxWindow,
+                     m_adaptiveAdmissionOptions.hardInflightLimit);
+        m_adaptiveAdmissionOptions.initialWindow =
+            std::max(m_adaptiveAdmissionOptions.minWindow,
+                     std::min(m_adaptiveAdmissionOptions.initialWindow,
+                              m_adaptiveAdmissionOptions.maxWindow));
+        m_adaptiveAdmissionOptions.aiStep = std::max<size_t>(1, m_adaptiveAdmissionOptions.aiStep);
+        if (m_adaptiveAdmissionOptions.mdFactor <= 0.0 ||
+            m_adaptiveAdmissionOptions.mdFactor >= 1.0) {
+            m_adaptiveAdmissionOptions.mdFactor = 0.85;
+        }
+        if (m_adaptiveAdmissionOptions.severeMdFactor <= 0.0 ||
+            m_adaptiveAdmissionOptions.severeMdFactor >= m_adaptiveAdmissionOptions.mdFactor) {
+            m_adaptiveAdmissionOptions.severeMdFactor =
+                std::min(0.5, m_adaptiveAdmissionOptions.mdFactor * 0.7);
+        }
+        m_adaptiveAdmissionOptions.controlIntervalMs =
+            std::max(1, m_adaptiveAdmissionOptions.controlIntervalMs);
+        m_adaptiveAdmissionOptions.targetLatencyMs =
+            std::max(1, m_adaptiveAdmissionOptions.targetLatencyMs);
+        m_adaptiveAdmissionWindow = m_adaptiveAdmissionOptions.enabled ?
+            m_adaptiveAdmissionOptions.initialWindow :
+            m_adaptiveAdmissionOptions.maxWindow;
+        NDN_LOG_WARN("Adaptive admission control: "
+                     << (m_adaptiveAdmissionOptions.enabled ? "enabled" : "disabled")
+                     << " window=" << m_adaptiveAdmissionWindow
+                     << " min=" << m_adaptiveAdmissionOptions.minWindow
+                     << " max=" << m_adaptiveAdmissionOptions.maxWindow
+                     << " hardInflight=" << m_adaptiveAdmissionOptions.hardInflightLimit
+                     << " controlIntervalMs="
+                     << m_adaptiveAdmissionOptions.controlIntervalMs
+                     << " targetLatencyMs="
+                     << m_adaptiveAdmissionOptions.targetLatencyMs);
+        if (m_adaptiveAdmissionOptions.enabled) {
+            scheduleAdaptiveAdmissionControl();
+            drainAdaptiveAdmissionQueue();
+        }
+    }
+
+    ServiceUser::AdaptiveAdmissionOptions ServiceUser::getAdaptiveAdmissionOptions() const
+    {
+        return m_adaptiveAdmissionOptions;
+    }
+
+    size_t ServiceUser::getAdaptiveAdmissionWindow() const
+    {
+        return m_adaptiveAdmissionWindow;
+    }
+
+    size_t ServiceUser::getAdaptiveAdmissionInflight() const
+    {
+        return m_adaptiveAdmissionInflight;
+    }
+
+    size_t ServiceUser::getAdaptiveAdmissionQueueDepth() const
+    {
+        return m_adaptiveAdmissionQueue.size();
+    }
+
     void ServiceUser::updateRequestLifecycleState(const ndn::Name& requestId,
                                                   RequestLifecycleState state,
                                                   const char* cleanupReason)
@@ -827,6 +897,7 @@ namespace ndn_service_framework
                       << " pendingCallsSizeBefore=" << m_pendingCalls.size()
                       << " threadId=" << currentThreadIdForTrace());
         }
+        releaseAdaptiveAdmissionSlot(requestId, pendingCall->second, reason, eraseAtUs);
         m_pendingCalls.erase(pendingCall);
         cleanupPendingCallState(requestId);
     }
@@ -928,6 +999,269 @@ namespace ndn_service_framework
                       << " requestId=" << requestId.toUri());
             finalizeTimedOutPendingCall(requestId);
         });
+    }
+
+    void ServiceUser::admitOrQueuePendingCall(const ndn::Name& requestId,
+                                              bool scheduleAckTimeout,
+                                              bool scheduleImmediateAckTimeout)
+    {
+        auto pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end()) {
+            return;
+        }
+        pendingCall->second.scheduleAckTimeoutAfterPublish = scheduleAckTimeout;
+        pendingCall->second.scheduleImmediateAckTimeoutAfterPublish = scheduleImmediateAckTimeout;
+
+        if (!m_adaptiveAdmissionOptions.enabled) {
+            publishAdmittedPendingCall(requestId);
+            return;
+        }
+
+        const size_t activeLimit = std::max<size_t>(
+            1,
+            std::min(m_adaptiveAdmissionWindow,
+                     m_adaptiveAdmissionOptions.hardInflightLimit));
+        if (m_adaptiveAdmissionInflight >= activeLimit) {
+            updateRequestLifecycleState(requestId, RequestLifecycleState::ADMISSION_DELAYED);
+            m_adaptiveAdmissionQueue.push_back(requestId);
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ADMISSION_QUEUED timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " inflight=" << m_adaptiveAdmissionInflight
+                      << " window=" << m_adaptiveAdmissionWindow
+                      << " hardInflight="
+                      << m_adaptiveAdmissionOptions.hardInflightLimit
+                      << " queueDepth=" << m_adaptiveAdmissionQueue.size());
+            return;
+        }
+
+        publishAdmittedPendingCall(requestId);
+    }
+
+    void ServiceUser::publishAdmittedPendingCall(const ndn::Name& requestId)
+    {
+        auto pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end() || pendingCall->second.admissionPublished) {
+            return;
+        }
+
+        pendingCall->second.admissionPublished = true;
+        if (m_adaptiveAdmissionOptions.enabled) {
+            ++m_adaptiveAdmissionInflight;
+        }
+        updateRequestLifecycleState(requestId, RequestLifecycleState::ADMITTED);
+
+        const auto providers = pendingCall->second.providers;
+        const auto serviceName = pendingCall->second.serviceName;
+        const auto payload = pendingCall->second.requestMessage.getPayload();
+        const auto strategy = pendingCall->second.strategy;
+        const auto timeoutMs = pendingCall->second.timeoutMs;
+        const auto ackTimeoutMs = pendingCall->second.ackTimeoutMs;
+        const bool scheduleAckTimeout = pendingCall->second.scheduleAckTimeoutAfterPublish;
+        const bool scheduleImmediateAckTimeout =
+            pendingCall->second.scheduleImmediateAckTimeoutAfterPublish;
+
+        PublishRequestV2(providers, serviceName, requestId, payload, strategy);
+
+        pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end()) {
+            return;
+        }
+        if (scheduleAckTimeout && !pendingCall->second.ackTimeoutScheduled) {
+            pendingCall->second.ackTimeoutScheduled = true;
+            if (ackTimeoutMs > 0) {
+                m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
+                    handleAckCollectionTimeout(requestId);
+                });
+            }
+            else if (scheduleImmediateAckTimeout) {
+                m_scheduler.schedule(ndn::time::milliseconds(0), [this, requestId]() {
+                    handleAckCollectionTimeout(requestId);
+                });
+            }
+        }
+        if (!pendingCall->second.requestTimeoutScheduled) {
+            pendingCall->second.requestTimeoutScheduled = true;
+            scheduleRequestTimeout(requestId, timeoutMs);
+        }
+    }
+
+    void ServiceUser::drainAdaptiveAdmissionQueue()
+    {
+        if (!m_adaptiveAdmissionOptions.enabled) {
+            return;
+        }
+
+        const size_t activeLimit = std::max<size_t>(
+            1,
+            std::min(m_adaptiveAdmissionWindow,
+                     m_adaptiveAdmissionOptions.hardInflightLimit));
+        while (m_adaptiveAdmissionInflight < activeLimit &&
+               !m_adaptiveAdmissionQueue.empty()) {
+            const ndn::Name requestId = m_adaptiveAdmissionQueue.front();
+            m_adaptiveAdmissionQueue.pop_front();
+            auto pendingCall = m_pendingCalls.find(requestId);
+            if (pendingCall == m_pendingCalls.end() ||
+                pendingCall->second.admissionPublished) {
+                continue;
+            }
+            publishAdmittedPendingCall(requestId);
+        }
+    }
+
+    void ServiceUser::scheduleAdaptiveAdmissionControl()
+    {
+        if (!m_adaptiveAdmissionOptions.enabled ||
+            m_adaptiveAdmissionControlScheduled) {
+            return;
+        }
+        m_adaptiveAdmissionControlScheduled = true;
+        m_scheduler.schedule(
+            ndn::time::milliseconds(m_adaptiveAdmissionOptions.controlIntervalMs),
+            [this]() {
+                m_adaptiveAdmissionControlScheduled = false;
+                controlAdaptiveAdmissionWindow();
+            });
+    }
+
+    void ServiceUser::controlAdaptiveAdmissionWindow()
+    {
+        if (!m_adaptiveAdmissionOptions.enabled) {
+            return;
+        }
+
+        const size_t oldWindow = m_adaptiveAdmissionWindow;
+        const size_t activeLimit = std::max<size_t>(
+            1,
+            std::min(m_adaptiveAdmissionWindow,
+                     m_adaptiveAdmissionOptions.hardInflightLimit));
+        const bool queueBacklogged = !m_adaptiveAdmissionQueue.empty();
+        const bool aboveWindow = m_adaptiveAdmissionInflight > activeLimit;
+        const double averageLatencyMs =
+            m_adaptiveAdmissionIntervalLatencyCount == 0 ? 0.0 :
+            m_adaptiveAdmissionIntervalLatencySumMs /
+                static_cast<double>(m_adaptiveAdmissionIntervalLatencyCount);
+        const double targetLatencyMs =
+            static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs);
+        const bool queueCongested =
+            (queueBacklogged &&
+            m_adaptiveAdmissionInflight >=
+                static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8)));
+        const bool queueSevere =
+            m_adaptiveAdmissionQueue.size() >= activeLimit;
+        const bool latencyCongested =
+            averageLatencyMs > targetLatencyMs;
+        const bool latencySevere =
+            averageLatencyMs > 2.0 * targetLatencyMs;
+        if (queueCongested) {
+            m_adaptiveAdmissionIntervalCongested = true;
+        }
+        if (queueSevere) {
+            m_adaptiveAdmissionIntervalSevere = true;
+        }
+        if (latencyCongested) {
+            m_adaptiveAdmissionIntervalCongested = true;
+        }
+        if (latencySevere) {
+            m_adaptiveAdmissionIntervalSevere = true;
+        }
+
+        if (m_adaptiveAdmissionIntervalTimeouts > 0) {
+            m_adaptiveAdmissionWindow = std::max(
+                m_adaptiveAdmissionOptions.minWindow,
+                static_cast<size_t>(std::ceil(
+                    static_cast<double>(m_adaptiveAdmissionWindow) *
+                    m_adaptiveAdmissionOptions.severeMdFactor)));
+        }
+        else if (m_adaptiveAdmissionIntervalCongested) {
+            const size_t decreaseStep = m_adaptiveAdmissionOptions.aiStep *
+                (m_adaptiveAdmissionIntervalSevere ? 2 : 1);
+            m_adaptiveAdmissionWindow = std::max(
+                m_adaptiveAdmissionOptions.minWindow,
+                m_adaptiveAdmissionWindow > decreaseStep ?
+                    m_adaptiveAdmissionWindow - decreaseStep :
+                    m_adaptiveAdmissionOptions.minWindow);
+        }
+        else if (m_adaptiveAdmissionIntervalSuccesses > 0 &&
+                 !queueBacklogged &&
+                 (averageLatencyMs == 0.0 ||
+                  averageLatencyMs < 0.8 * targetLatencyMs)) {
+            m_adaptiveAdmissionWindow = std::min(
+                m_adaptiveAdmissionOptions.maxWindow,
+                m_adaptiveAdmissionWindow + m_adaptiveAdmissionOptions.aiStep);
+        }
+
+        NDN_LOG_INFO("[NDNSF_ADMISSION] window=" << m_adaptiveAdmissionWindow
+                  << " oldWindow=" << oldWindow
+                  << " inflight=" << m_adaptiveAdmissionInflight
+                  << " queueDepth=" << m_adaptiveAdmissionQueue.size()
+                  << " successes=" << m_adaptiveAdmissionIntervalSuccesses
+                  << " timeouts=" << m_adaptiveAdmissionIntervalTimeouts
+                  << " avgLatencyMs=" << averageLatencyMs
+                  << " aboveWindow=" << aboveWindow
+                  << " queueCongested=" << queueCongested
+                  << " queueSevere=" << queueSevere
+                  << " latencyCongested=" << latencyCongested
+                  << " latencySevere=" << latencySevere
+                  << " congested=" << m_adaptiveAdmissionIntervalCongested
+                  << " severe=" << m_adaptiveAdmissionIntervalSevere);
+
+        m_adaptiveAdmissionIntervalSuccesses = 0;
+        m_adaptiveAdmissionIntervalTimeouts = 0;
+        m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
+        m_adaptiveAdmissionIntervalLatencyCount = 0;
+        m_adaptiveAdmissionIntervalCongested = false;
+        m_adaptiveAdmissionIntervalSevere = false;
+
+        drainAdaptiveAdmissionQueue();
+        scheduleAdaptiveAdmissionControl();
+    }
+
+    void ServiceUser::releaseAdaptiveAdmissionSlot(const ndn::Name& requestId,
+                                                   const PendingCall& pendingCall,
+                                                   const char* reason,
+                                                   uint64_t terminalTimestampUs)
+    {
+        if (!m_adaptiveAdmissionOptions.enabled ||
+            !pendingCall.admissionPublished) {
+            return;
+        }
+        if (m_adaptiveAdmissionInflight > 0) {
+            --m_adaptiveAdmissionInflight;
+        }
+
+        const std::string reasonText = reason == nullptr ? "" : reason;
+        const bool timedOut = pendingCall.timedOut || reasonText == "timeout";
+        if (timedOut) {
+            ++m_adaptiveAdmissionIntervalTimeouts;
+            m_adaptiveAdmissionIntervalCongested = true;
+            m_adaptiveAdmissionIntervalSevere = true;
+        }
+        else if (pendingCall.hasResponse || reasonText == "response_callback" ||
+                 reasonText == "completed") {
+            ++m_adaptiveAdmissionIntervalSuccesses;
+        }
+
+        if (pendingCall.publishedAtUs != 0 &&
+            terminalTimestampUs >= pendingCall.publishedAtUs &&
+            pendingCall.timeoutMs > 0) {
+            const double latencyMs =
+                static_cast<double>(terminalTimestampUs - pendingCall.publishedAtUs) / 1000.0;
+            m_adaptiveAdmissionIntervalLatencySumMs += latencyMs;
+            ++m_adaptiveAdmissionIntervalLatencyCount;
+            if (latencyMs > 0.9 * static_cast<double>(pendingCall.timeoutMs)) {
+                m_adaptiveAdmissionIntervalSevere = true;
+            }
+        }
+
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ADMISSION_RELEASED timestamp_us="
+                  << terminalTimestampUs
+                  << " requestId=" << requestId.toUri()
+                  << " reason=" << reasonText
+                  << " inflight=" << m_adaptiveAdmissionInflight
+                  << " window=" << m_adaptiveAdmissionWindow
+                  << " queueDepth=" << m_adaptiveAdmissionQueue.size());
+        drainAdaptiveAdmissionQueue();
     }
 
     void ServiceUser::logAckMatchAttempt(const ndn::Name& requestId,
@@ -1434,7 +1768,6 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        updateRequestLifecycleState(requestId, RequestLifecycleState::ADMITTED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -1444,15 +1777,7 @@ namespace ndn_service_framework
                              {{"serviceName", serviceName.toUri()}});
         }
 
-        const auto payload = requestMessage.getPayload();
-        PublishRequestV2(providers, serviceName, requestId, payload, strategy);
-
-        if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
-            return requestId;
-        }
-
-        scheduleRequestTimeout(requestId, timeoutMs);
-
+        admitOrQueuePendingCall(requestId, false, false);
         return requestId;
     }
 
@@ -1568,7 +1893,6 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        updateRequestLifecycleState(requestId, RequestLifecycleState::ADMITTED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -1578,25 +1902,7 @@ namespace ndn_service_framework
                              {{"serviceName", serviceName.toUri()}});
         }
 
-        const auto payload = requestMessage.getPayload();
-        PublishRequestV2({},
-                         serviceName,
-                         requestId,
-                         payload,
-                         ndn_service_framework::tlv::FirstResponding);
-
-        if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
-            return requestId;
-        }
-
-        if (ackTimeoutMs > 0) {
-            m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
-                handleAckCollectionTimeout(requestId);
-            });
-        }
-
-        scheduleRequestTimeout(requestId, timeoutMs);
-
+        admitOrQueuePendingCall(requestId, true, false);
         return requestId;
     }
 
@@ -1622,7 +1928,6 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        updateRequestLifecycleState(requestId, RequestLifecycleState::ADMITTED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -1632,30 +1937,7 @@ namespace ndn_service_framework
                              {{"serviceName", serviceName.toUri()}});
         }
 
-        const auto payload = requestMessage.getPayload();
-        PublishRequestV2({},
-                         serviceName,
-                         requestId,
-                         payload,
-                         ndn_service_framework::tlv::FirstResponding);
-
-        if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
-            return requestId;
-        }
-
-        if (ackTimeoutMs > 0) {
-            m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
-                handleAckCollectionTimeout(requestId);
-            });
-        }
-        else {
-            m_scheduler.schedule(ndn::time::milliseconds(0), [this, requestId]() {
-                handleAckCollectionTimeout(requestId);
-            });
-        }
-
-        scheduleRequestTimeout(requestId, timeoutMs);
-
+        admitOrQueuePendingCall(requestId, true, true);
         return requestId;
     }
 
@@ -1684,7 +1966,6 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        updateRequestLifecycleState(requestId, RequestLifecycleState::ADMITTED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -1694,30 +1975,7 @@ namespace ndn_service_framework
                              {{"serviceName", serviceName.toUri()}});
         }
 
-        const auto payload = requestMessage.getPayload();
-        PublishRequestV2(providers,
-                         serviceName,
-                         requestId,
-                         payload,
-                         requestStrategy);
-
-        if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
-            return requestId;
-        }
-
-        if (ackTimeoutMs > 0) {
-            m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
-                handleAckCollectionTimeout(requestId);
-            });
-        }
-        else {
-            m_scheduler.schedule(ndn::time::milliseconds(0), [this, requestId]() {
-                handleAckCollectionTimeout(requestId);
-            });
-        }
-
-        scheduleRequestTimeout(requestId, timeoutMs);
-
+        admitOrQueuePendingCall(requestId, true, true);
         return requestId;
     }
 
@@ -1745,7 +2003,6 @@ namespace ndn_service_framework
             pendingCall.responseHandler = std::move(onResponseHandler);
             m_pendingCalls[requestId] = std::move(pendingCall);
             updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-            updateRequestLifecycleState(requestId, RequestLifecycleState::ADMITTED);
             NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
@@ -1755,19 +2012,7 @@ namespace ndn_service_framework
                                  {{"serviceName", serviceName.toUri()}});
             }
 
-            const auto payload = requestMessage.getPayload();
-            PublishRequestV2(providers,
-                             serviceName,
-                             requestId,
-                             payload,
-                             ndn_service_framework::tlv::FirstResponding);
-
-            if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
-                return requestId;
-            }
-
-            scheduleRequestTimeout(requestId, timeoutMs);
-
+            admitOrQueuePendingCall(requestId, false, false);
             return requestId;
         }
 

@@ -160,14 +160,15 @@ def build_parser():
                         help="Open-loop maximum concurrent outstanding requests")
     parser.add_argument("--adaptive-admission-control", action="store_true",
                         help="Enable App_User adaptive local queue admission control")
-    parser.add_argument("--adaptive-min-window", type=int, default=100)
-    parser.add_argument("--adaptive-max-window", type=int, default=2000)
-    parser.add_argument("--adaptive-initial-window", type=int, default=500)
+    parser.add_argument("--adaptive-min-window", type=int, default=1)
+    parser.add_argument("--adaptive-max-window", type=int, default=512)
+    parser.add_argument("--adaptive-initial-window", type=int, default=32)
     parser.add_argument("--adaptive-hard-inflight-limit", type=int, default=None)
-    parser.add_argument("--adaptive-ai-step", type=int, default=50)
-    parser.add_argument("--adaptive-md-factor", type=float, default=0.7)
-    parser.add_argument("--adaptive-severe-md-factor", type=float, default=0.5)
-    parser.add_argument("--adaptive-control-interval-ms", type=int, default=1000)
+    parser.add_argument("--adaptive-ai-step", type=int, default=4)
+    parser.add_argument("--adaptive-md-factor", type=float, default=0.85)
+    parser.add_argument("--adaptive-severe-md-factor", type=float, default=0.75)
+    parser.add_argument("--adaptive-control-interval-ms", type=int, default=500)
+    parser.add_argument("--adaptive-target-latency-ms", type=int, default=1000)
     parser.add_argument("--adaptive-provider-ack", action="store_true",
                         help="Enable provider-side adaptive ACK admission")
     parser.add_argument("--provider-ack-max-pending", type=int, default=1000)
@@ -316,6 +317,8 @@ def ensure_runtime(args):
             raise RuntimeError("--adaptive-min-window and --adaptive-max-window must be positive")
         if args.adaptive_hard_inflight_limit is not None and args.adaptive_hard_inflight_limit <= 0:
             raise RuntimeError("--adaptive-hard-inflight-limit must be positive")
+        if args.adaptive_target_latency_ms <= 0:
+            raise RuntimeError("--adaptive-target-latency-ms must be positive")
     if args.topology and args.topology_file and args.topology != args.topology_file:
         raise RuntimeError("Use either --topology or --topology-file, not both with different paths")
     topology = topology_file(args)
@@ -1888,12 +1891,19 @@ def parse_key_values(line):
     return result
 
 
-def workload_notes(mode):
+def workload_notes(mode, adaptive_admission=False):
     if mode == "closed-loop":
         return [
             "App_User sends the next request only after the previous response or timeout plus interval_ms.",
             "The offered rate is an interval-derived target, not a guaranteed generated request rate.",
             "Use actual_requests_per_second, computed from PERF_REQUEST_SENT timestamps, as the achieved send rate.",
+        ]
+    if adaptive_admission:
+        return [
+            "App_User uses open-loop rate ticks as an upper bound; ServiceUser owns the adaptive admission window.",
+            "When the runtime window is full, App_User retries without catch-up bursting or applying a second local window controller.",
+            "Use actual_requests_per_second, adaptive_window_* and outstanding_limit_skips to inspect admitted load.",
+            "Low success rate at high rps means saturation/timeout, not necessarily protocol correctness failure.",
         ]
     return [
         "App_User sends on a fixed rate schedule and does not wait for previous requests to finish.",
@@ -2889,7 +2899,8 @@ def parse_results(output_dir, app_csv, request_csv, args, readiness=None):
     post_ack_pipeline = collect_post_ack_pipeline(output_dir, sent.keys())
     summary = {
         "workload_mode": args.workload_mode,
-        "workload_notes": workload_notes(args.workload_mode),
+        "workload_notes": workload_notes(
+            args.workload_mode, getattr(args, "adaptive_admission_control", False)),
         "strategy": args.strategy,
         "providers": len(selected_provider_nodes(args)),
         "user_node": args.user_node,
@@ -3519,7 +3530,8 @@ def dry_run(args):
         log("max_outstanding={}".format(args.max_outstanding))
         log("request_timeout_ms={}".format(args.request_timeout_ms))
         log("drain_seconds={}".format(args.drain_seconds))
-    for note in workload_notes(args.workload_mode):
+    for note in workload_notes(
+            args.workload_mode, getattr(args, "adaptive_admission_control", False)):
         log("workload_note={}".format(note))
     log("strategy={}".format(args.strategy))
     if rates:
@@ -3864,7 +3876,8 @@ def write_aggregate_results(output_dir, summaries, started_at, finished_at, args
             "providers": selected_provider_nodes(args),
         },
         "workload_mode": args.workload_mode,
-        "workload_notes": workload_notes(args.workload_mode),
+        "workload_notes": workload_notes(
+            args.workload_mode, getattr(args, "adaptive_admission_control", False)),
         "strategy": args.strategy,
         "max_total_runtime_seconds": args.max_total_runtime_seconds,
         "wall_clock_runtime_seconds": finished_at - started_at,
@@ -3884,7 +3897,8 @@ def write_aggregate_results(output_dir, summaries, started_at, finished_at, args
         "workload mode: {}".format(args.workload_mode),
         "workload notes:",
     ]
-    lines.extend("  - {}".format(note) for note in workload_notes(args.workload_mode))
+    lines.extend("  - {}".format(note) for note in workload_notes(
+        args.workload_mode, getattr(args, "adaptive_admission_control", False)))
     lines.extend([
         "strategy: {}".format(args.strategy),
         "wall clock runtime seconds: {:.3f}".format(aggregate["wall_clock_runtime_seconds"]),
@@ -4422,7 +4436,7 @@ def app_user_argv(args, app_csv):
             user_args.append("--adaptive-admission-control")
             adaptive_max = (args.adaptive_max_window
                             if args.adaptive_max_window is not None
-                            else 2000)
+                            else args.max_outstanding)
             adaptive_hard = (args.adaptive_hard_inflight_limit
                              if args.adaptive_hard_inflight_limit is not None
                              else adaptive_max)
@@ -4436,6 +4450,8 @@ def app_user_argv(args, app_csv):
                 "--adaptive-severe-md-factor", str(float(args.adaptive_severe_md_factor)),
                 "--adaptive-control-interval-ms",
                 str(int(args.adaptive_control_interval_ms)),
+                "--adaptive-target-latency-ms",
+                str(int(args.adaptive_target_latency_ms)),
             ])
     if args.strategy == "custom-selection":
         user_args.append("--custom-selection")
