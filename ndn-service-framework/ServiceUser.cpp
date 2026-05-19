@@ -392,6 +392,13 @@ namespace ndn_service_framework
                 NDN_LOG_INFO("NDNSF_SVS_PARALLEL_SYNC enabled role=user workers="
                              << workers << " queue=" << queue);
             }
+            if (isTruthyEnv("NDNSF_SVS_SYNC_BATCHING")) {
+                const int windowMs = std::max(0, intEnvOrDefault("NDNSF_SVS_SYNC_BATCH_MS", 5));
+                m_svsps->getSVSync().getCore().setSyncInterestBatching(
+                    true, ndn::time::milliseconds(windowMs));
+                NDN_LOG_INFO("NDNSF_SVS_SYNC_BATCHING enabled role=user windowMs="
+                             << windowMs);
+            }
         }
 
         while(!nacConsumer.readyForDecryption()){

@@ -11,6 +11,8 @@ mode="${SVS_LATENCY_MODE:-echo}"
 parallel_sync="${SVS_PARALLEL_SYNC:-0}"
 parallel_workers="${SVS_PARALLEL_WORKERS:-2}"
 parallel_queue="${SVS_PARALLEL_QUEUE:-128}"
+sync_batching="${SVS_SYNC_BATCHING:-0}"
+sync_batch_ms="${SVS_SYNC_BATCH_MS:-5}"
 
 cd "${repo_root}"
 mkdir -p "${output_dir}"
@@ -36,6 +38,8 @@ mode = ${mode@Q}
 parallel_sync = ${parallel_sync@Q} not in ("", "0", "false", "False", "no", "No")
 parallel_workers = int(${parallel_workers@Q})
 parallel_queue = int(${parallel_queue@Q})
+sync_batching = ${sync_batching@Q} not in ("", "0", "false", "False", "no", "No")
+sync_batch_ms = int(${sync_batch_ms@Q})
 
 def parse_ping_csv(*paths):
     rows = []
@@ -109,28 +113,32 @@ def run_svs_latency(ndn, args, output_dir):
     ping_err_path = output_dir / ("memphis-pub.err" if mode == "oneway" else "memphis-ping.err")
     pong_err_path = output_dir / ("ucla-sub.err" if mode == "oneway" else "ucla-pong.err")
 
+    parallel_args = ("--parallel-sync --parallel-workers {} --parallel-queue {}"
+                     .format(parallel_workers, parallel_queue) if parallel_sync else "")
+    batch_args = ("--sync-batching --sync-batch-ms {}"
+                  .format(sync_batch_ms) if sync_batching else "")
+    extra_args = "{} {}".format(parallel_args, batch_args).strip()
+
     ping_cmd = (
         "export NDN_LOG=ndn_service_framework.AppSvsLatency=INFO:ndn_svs.SyncTimeline=INFO; "
         "exec {app} --role {ping_role} --sync-prefix /example/hello/group "
         "--node-prefix /example/hello/user/svs-latency "
         "--peer-prefix /example/hello/provider/A/svs-latency "
-        "--count {count} --interval-ms {interval_ms} --timeout-ms {timeout_ms} --csv {parallel_args}"
+        "--count {count} --interval-ms {interval_ms} --timeout-ms {timeout_ms} --csv {extra_args}"
     ).format(app=repo_root / "build/examples/App_SvsLatency",
              ping_role="pub" if mode == "oneway" else "ping",
              count=count, interval_ms=interval_ms, timeout_ms=timeout_ms,
-             parallel_args=("--parallel-sync --parallel-workers {} --parallel-queue {}"
-                            .format(parallel_workers, parallel_queue) if parallel_sync else ""))
+             extra_args=extra_args)
     pong_cmd = (
         "export NDN_LOG=ndn_service_framework.AppSvsLatency=INFO:ndn_svs.SyncTimeline=INFO; "
         "exec {app} --role {pong_role} --sync-prefix /example/hello/group "
         "--node-prefix /example/hello/provider/A/svs-latency "
         "--peer-prefix /example/hello/user/svs-latency "
-        "--count {count} --interval-ms {interval_ms} --timeout-ms {timeout_ms} --csv {parallel_args}"
+        "--count {count} --interval-ms {interval_ms} --timeout-ms {timeout_ms} --csv {extra_args}"
     ).format(app=repo_root / "build/examples/App_SvsLatency",
              pong_role="sub" if mode == "oneway" else "pong",
              count=count, interval_ms=interval_ms, timeout_ms=timeout_ms,
-             parallel_args=("--parallel-sync --parallel-workers {} --parallel-queue {}"
-                            .format(parallel_workers, parallel_queue) if parallel_sync else ""))
+             extra_args=extra_args)
 
     processes = []
     with pong_log.open("wb") as pong_out, ping_log.open("wb") as ping_out, \

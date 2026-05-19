@@ -241,6 +241,10 @@ def build_parser():
                         help="Worker count for --svs-parallel-sync-processing")
     parser.add_argument("--svs-parallel-queue", type=int, default=128,
                         help="Bounded queue size for --svs-parallel-sync-processing")
+    parser.add_argument("--svs-sync-batching", action="store_true",
+                        help="Enable experimental ndn-svs local publication-triggered sync batching")
+    parser.add_argument("--svs-sync-batch-ms", type=int, default=5,
+                        help="Batching window in milliseconds for --svs-sync-batching")
     parser.add_argument("--provider-ack-payload", default=None,
                         help="Override benchmark provider ACK payload text for focused diagnostics")
     parser.add_argument("--diag-plaintext-ack", action="store_true",
@@ -1616,6 +1620,9 @@ def app_env(output_dir, session_base, args):
         env["NDNSF_SVS_PARALLEL_SYNC"] = "1"
         env["NDNSF_SVS_PARALLEL_WORKERS"] = str(max(1, args.svs_parallel_workers))
         env["NDNSF_SVS_PARALLEL_QUEUE"] = str(max(1, args.svs_parallel_queue))
+    if getattr(args, "svs_sync_batching", False):
+        env["NDNSF_SVS_SYNC_BATCHING"] = "1"
+        env["NDNSF_SVS_SYNC_BATCH_MS"] = str(max(0, args.svs_sync_batch_ms))
     return env
 
 
