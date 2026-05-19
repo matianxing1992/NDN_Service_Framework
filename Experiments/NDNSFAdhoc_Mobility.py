@@ -143,9 +143,9 @@ def topology():
     # time.sleep(2)
     # csu.cmd('xterm -T "csu" -e "multi-drone-example /muas/csu" &')
     time.sleep(5)
-    # FirstResponding/LoadBalancing/NoCoordination
+    # FirstResponding/LoadBalancing/AllResponders
     
-    ## uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example NoCoordination /muas/uiuc 1 180 /muas/ucla" &')
+    ## uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example AllResponders /muas/uiuc 1 180 /muas/ucla" &')
     
     uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example FirstResponding /muas/uiuc 3 120 /muas/ucla /muas/csu /muas/neu" &')
     # uiuc.cmd('xterm -T "uiuc" -e "multi-gs-example RandomSelection /muas/uiuc 3 600 /muas/ucla /muas/csu /muas/neu" &')

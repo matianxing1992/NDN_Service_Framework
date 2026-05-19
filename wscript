@@ -89,6 +89,9 @@ def configure(conf):
 
     conf.check_cfg(package='libnac-abe', args=['--cflags', '--libs'], uselib_store='NAC-ABE',
                    pkg_config_path=pkg_config_path)
+
+    conf.check_cfg(package='openssl', args=['--cflags', '--libs'], uselib_store='OPENSSL',
+                   pkg_config_path=pkg_config_path)
     
     conf.check_cfg(package='ndnsd', args=['--cflags', '--libs'], uselib_store='NDNSD',
                    pkg_config_path=pkg_config_path)
@@ -136,7 +139,7 @@ def build(bld):
         vnum=VERSION,
         cnum=VERSION,
         source=bld.path.ant_glob('ndn-service-framework/**/*.cpp'),
-        use='NDN_CXX NDN_SVS BOOST PROTOBUF NAC-ABE',
+        use='NDN_CXX NDN_SVS BOOST PROTOBUF NAC-ABE OPENSSL',
         includes='ndn-service-framework .',
         export_includes='ndn-service-framework .',
         install_path='${LIBDIR}')

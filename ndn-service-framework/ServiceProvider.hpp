@@ -10,8 +10,12 @@
 #include "UserPermissionTable.hpp"
 #include "NDNSFMessages.hpp"
 #include "ConfigManager.hpp"
+#include "HybridMessageCrypto.hpp"
+#include "TimelineTrace.hpp"
 
 #include <functional>
+#include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -21,6 +25,13 @@
 
 
 namespace ndn_service_framework{
+
+    struct LargeDataFetchResult
+    {
+        bool success = false;
+        std::vector<uint8_t> plaintext;
+        std::string errorMessage;
+    };
 
     class ServiceProvider
     {
@@ -53,6 +64,43 @@ namespace ndn_service_framework{
             using SimpleRequestHandler =
                 std::function<ResponseMessage(const RequestMessage& requestMessage)>;
 
+            enum class ProviderRequestLifecycleState
+            {
+                REQUEST_OBSERVED,
+                ACK_ADMISSION_CHECKED,
+                ACK_SUPPRESSED_OVERLOAD,
+                ACK_PUBLISHED,
+                COORDINATION_RECEIVED,
+                EXECUTION_STARTED,
+                EXECUTION_DONE,
+                RESPONSE_PUBLISHED,
+                PROVIDER_REQUEST_EXPIRED,
+            };
+
+            struct ProviderRequestLifecycleStatus
+            {
+                ndn::Name requestId;
+                ndn::Name serviceName;
+                ndn::Name providerName;
+                ProviderRequestLifecycleState state =
+                    ProviderRequestLifecycleState::REQUEST_OBSERVED;
+                uint64_t requestObservedTimestampUs = 0;
+                uint64_t ackAdmissionDecisionTimestampUs = 0;
+                uint64_t ackPublishedOrSuppressedTimestampUs = 0;
+                std::string suppressionReason;
+                size_t providerPendingCountAtDecision = 0;
+                uint64_t eventLoopLagUs = 0;
+                uint64_t coordinationLagUs = 0;
+                uint64_t coordinationReceivedTimestampUs = 0;
+                uint64_t executionStartTimestampUs = 0;
+                uint64_t executionDoneTimestampUs = 0;
+                uint64_t responsePublishedTimestampUs = 0;
+                std::string finalStatus;
+            };
+
+            using ProviderRequestLifecycleCallback =
+                std::function<void(const ProviderRequestLifecycleStatus&)>;
+
             struct LocalMockTag
             {
             };
@@ -64,7 +112,7 @@ namespace ndn_service_framework{
                             ndn::security::Certificate identityCert,
                             ndn::security::Certificate attrAuthorityCertificate,
                             std::string trustSchemaPath);
-            virtual ~ServiceProvider() {}
+            virtual ~ServiceProvider();
 
             void init();
 
@@ -76,6 +124,35 @@ namespace ndn_service_framework{
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,
                                                      UserPermissionTable& permissionTable);
+
+            size_t getPendingRequestCountForTesting() const;
+            size_t getPendingProviderTokenCountForTesting() const;
+            size_t getCleanupInvocationCountForTesting() const;
+            size_t getTokenConsumeCountForTesting() const;
+            void setPendingRequestTimeoutGrace(ndn::time::milliseconds grace);
+            void setPerformanceMode(bool enabled);
+            void setHandlerThreads(size_t n);
+            size_t getHandlerThreads() const;
+            size_t getHandlerQueueDepth() const;
+            void setUseTokens(bool enabled);
+            bool getUseTokens() const;
+            void setUseHybridMessageCrypto(bool enabled);
+            bool getUseHybridMessageCrypto() const;
+            HybridCryptoCounters& getHybridCryptoCounters();
+            void setTimelineTrace(bool enabled);
+            void setAdaptiveAckAdmission(bool enabled);
+            void setProviderAckMaxPending(size_t maxPending);
+            void setProviderAckMaxEventLoopLag(ndn::time::milliseconds maxLag);
+            void setProviderAckMaxCoordinationLag(ndn::time::milliseconds maxLag);
+            void setProviderRequestLifecycleCallback(
+                ProviderRequestLifecycleCallback callback);
+            std::optional<ProviderRequestLifecycleStatus>
+            getProviderRequestStatus(const ndn::Name& requestId) const;
+            std::vector<ProviderRequestLifecycleStatus>
+            getActiveProviderRequestStatuses() const;
+            std::map<std::string, uint64_t> getProviderAdmissionCounters() const;
+            static const char* providerRequestLifecycleStateToString(
+                ProviderRequestLifecycleState state);
 
             void UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails);
             
@@ -199,6 +276,10 @@ namespace ndn_service_framework{
             bool hasService(const ndn::Name& serviceName,
                             const ndn::Name& functionName) const;
 
+            LargeDataFetchResult fetchAndDecryptLargeData(
+                const ndn::Name& encryptedDataName,
+                const std::string& serviceName);
+
             ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
                                             const ndn::Name& providerName,
                                             const ndn::Name& serviceName,
@@ -259,6 +340,13 @@ namespace ndn_service_framework{
             void onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
             void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
+            void publishHybridMessage(const ndn::Name& messageName,
+                                      const ndn::Name& messageNameWithoutPrefix,
+                                      AbstractMessage& message);
+            bool decryptHybridMessage(const ndn::Name& messageName,
+                                      const ndn::Block& envelopeBlock,
+                                      std::function<void(const ndn::Buffer&)> onSuccess,
+                                      std::function<void(const std::string&)> onError);
 
             void OnServiceCoordinationMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer & buffer);
             void OnServiceCoordinationMessageDecryptionSuccessCallbackV2(const ndn::Name& requesterName,
@@ -306,6 +394,55 @@ namespace ndn_service_framework{
             static std::optional<ParsedRequestName>
             parseRequestNameForUnifiedService(const ndn::Name& requestName);
 
+            void schedulePendingRequestCleanup(const ndn::Name& pendingKey,
+                                               ndn::time::milliseconds ttl = ndn::time::seconds(30));
+
+            void cleanupPendingRequestState(const ndn::Name& pendingKey);
+
+            bool expirePendingRequestState(const ndn::Name& pendingKey);
+
+            bool shouldSuppressAdaptiveAck(const ndn::Name& requesterIdentity,
+                                           const ndn::Name& serviceName,
+                                           const ndn::Name& requestId);
+            void updateProviderRequestLifecycleState(
+                const ndn::Name& requestId,
+                const ndn::Name& serviceName,
+                ProviderRequestLifecycleState state,
+                const std::string& suppressionReason = "",
+                const std::string& finalStatus = "");
+            bool dispatchAckDecisionAsync(
+                const ndn::Name& requesterIdentity,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage,
+                AckStrategyHandler ackHandler);
+            void finishAckDecisionOnEventLoop(
+                const ndn::Name& requesterIdentity,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage,
+                AckDecision decision);
+            bool dispatchRequestExecutionAsync(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage);
+            void finishRequestExecutionOnEventLoop(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& requestMessage,
+                ResponseMessage response);
+            void publishExecutionFailureOnEventLoop(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& requestMessage,
+                const std::string& error);
+
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
             ndn::Name identity;
@@ -322,6 +459,12 @@ namespace ndn_service_framework{
             //ndn::nacabe::Producer nacProducer;
             ndn::nacabe::CacheProducer nacProducer;
             ndn::security::SigningInfo m_signingInfo;
+            bool m_useHybridMessageCrypto = false;
+            bool m_timelineTrace = false;
+            HybridMessageCrypto m_hybridMessageCrypto;
+            HybridCryptoCounters m_hybridCryptoCounters;
+            SerializedWorkerQueue m_cryptoProduceQueue{"ServiceProvider NAC-ABE produce"};
+            BoundedWorkerPool m_handlerPool{"ServiceProvider application handlers"};
 
             // ChanllengeID->(Token->RequestNameWithoutRequestID)
             std::map<ndn::Name,std::pair<std::string, ndn::Name>> chanllengeRecords;
@@ -336,6 +479,19 @@ namespace ndn_service_framework{
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
             std::map<ndn::Name,std::string> pendingProviderTokens;
+            size_t m_cleanupInvocationCount = 0;
+            size_t m_tokenConsumeCount = 0;
+            ndn::time::milliseconds m_pendingRequestTimeoutGrace{1000};
+            bool m_performanceMode = false;
+            bool m_useTokens = true;
+            bool m_adaptiveAckAdmission = false;
+            size_t m_providerAckMaxPending = 0;
+            ndn::time::milliseconds m_providerAckMaxEventLoopLag{0};
+            ndn::time::milliseconds m_providerAckMaxCoordinationLag{0};
+            std::map<ndn::Name, ProviderRequestLifecycleStatus>
+                m_providerRequestLifecycleStatuses;
+            ProviderRequestLifecycleCallback m_providerRequestLifecycleCallback;
+            std::map<std::string, uint64_t> m_providerAdmissionCounters;
 
             ndn::random::RandomNumberEngine random;
 
