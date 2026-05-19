@@ -46,6 +46,8 @@ What is verified:
   response messages, and users reject mismatches.
 - `ServiceProvider` generates a one-time `ProviderToken` in ACK messages, and
   coordination-based execution requires the selected provider's token.
+- Unit token-handshake coverage rejects same-request ProviderToken replay after
+  execution and old ProviderToken replay against a new request ID.
 - The regressions guard against debug authorization bypasses by checking logs
   and source for `isAuthorized = true`.
 - Unit tests exercise dynamic request handling, V2 message parsing, permission
@@ -58,8 +60,8 @@ Remaining assumptions or limitations:
   deployment.
 - The scripts verify successful trust and authorization paths mostly through
   runtime logs.
-- Broader adversarial cases, such as replay, compromised keys, or malicious
-  controller behavior, are outside these regressions.
+- Broader adversarial cases, such as compromised keys or malicious controller
+  behavior, are outside these regressions.
 
 ## 2. Access Control and Permission Discovery
 
@@ -140,6 +142,8 @@ What is verified:
   publishing it.
 - User and provider runtimes decrypt encrypted permission responses and reject
   responses with the wrong target identity or permission kind.
+- User and provider runtimes reject plaintext `PermissionResponse` Data; the
+  permission discovery path requires `EncryptedPermissionResponse` content.
 - Unit tests verify that a non-target keychain cannot decrypt the encrypted
   permission response.
 - Runtime regressions verify controller logs for encrypted user and provider
@@ -355,10 +359,10 @@ What is verified:
 
 Remaining assumptions or limitations:
 
-- The selected-provider-only regression covers the coordination path. The
-  `NoCoordination` strategy intentionally permits direct response execution and
-  is a different behavior.
+- The selected-provider-only regression covers the coordination path.
+  `AllResponders` also uses ACK collection and coordination, but selects every
+  valid ACK responder instead of one provider.
 - The script verifies non-execution by absence of provider A/C final response
   log lines.
-- The current example checks a single selected provider; multi-selection
-  behavior is supported by the handler type but is not the primary regression.
+- The current custom-selection example checks a single selected provider;
+  multi-selection behavior is covered by the `AllResponders` tests.

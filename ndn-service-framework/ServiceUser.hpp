@@ -191,13 +191,13 @@ namespace ndn_service_framework{
                 bool enabled = false;
                 size_t minWindow = 1;
                 size_t maxWindow = 512;
-                size_t initialWindow = 32;
+                size_t initialWindow = 16;
                 size_t hardInflightLimit = 512;
                 size_t aiStep = 4;
                 double mdFactor = 0.85;
                 double severeMdFactor = 0.75;
                 int controlIntervalMs = 500;
-                int targetLatencyMs = 1000;
+                int targetLatencyMs = 350;
             };
             void setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options);
             AdaptiveAdmissionOptions getAdaptiveAdmissionOptions() const;
@@ -492,6 +492,7 @@ namespace ndn_service_framework{
                 ResponseHandler responseHandler;
                 bool hasResponse = false;
                 bool admissionPublished = false;
+                bool admissionReleased = false;
                 bool ackTimeoutScheduled = false;
                 bool requestTimeoutScheduled = false;
                 bool scheduleAckTimeoutAfterPublish = false;
@@ -548,7 +549,7 @@ namespace ndn_service_framework{
             void scheduleAdaptiveAdmissionControl();
             void controlAdaptiveAdmissionWindow();
             void releaseAdaptiveAdmissionSlot(const ndn::Name& requestId,
-                                              const PendingCall& pendingCall,
+                                              PendingCall& pendingCall,
                                               const char* reason,
                                               uint64_t terminalTimestampUs);
 
@@ -653,6 +654,7 @@ namespace ndn_service_framework{
             uint64_t m_adaptiveAdmissionIntervalTimeouts = 0;
             double m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
             uint64_t m_adaptiveAdmissionIntervalLatencyCount = 0;
+            std::vector<double> m_adaptiveAdmissionIntervalLatenciesMs;
             bool m_adaptiveAdmissionIntervalCongested = false;
             bool m_adaptiveAdmissionIntervalSevere = false;
             std::deque<ndn::Name> m_adaptiveAdmissionQueue;

@@ -308,36 +308,15 @@ namespace ndn_service_framework
 
         m_signingInfo = ndn::security::signingByCertificate(identityCert);
         
-        // Sign interest packets using a certificate
         ndn::svs::SecurityOptions secOpts(m_keyChain);
-        // secOpts.interestSigner->signingInfo.setSigningCertName(cert);
-        //secOpts.interestSigner->signingInfo = m_signingInfo;
-
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
         secOpts.interestSigner->signingInfo.setSigningKeyName(identityCert.getKeyName());
-
-        //secOpts.interestSigner->signingInfo.setSigningHmacKey("dGhpcyBpcyBhIHNlY3JldCBtZXNzYWdl");
-
-        // Sign data packets using a certificate
-        // secOpts.dataSigner->signingInfo.setSha256Signing();
-        // secOpts.dataSigner->signingInfo.setSigningCertName(cert);
-        // secOpts.dataSigner->signingInfo = m_signingInfo;
-
         secOpts.dataSigner->signingInfo.setSigningCertName(identityCert.getName());
         secOpts.dataSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-
-        // Sign publication packets using a certificate
-        // secOpts.pubSigner->signingInfo.setSigningCertName(cert);
-        //secOpts.pubSigner->signingInfo = m_signingInfo;
-
         secOpts.pubSigner->signingInfo.setSigningCertName(identityCert.getName());
         secOpts.pubSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-
-        /** Validator to validate data and interests (unless using HMAC) */
         secOpts.validator = validator;
-
-        /** Validator to validate encapsulated data */
         secOpts.encapsulatedDataValidator = validator;
 
         // Do not fetch publications older than 10 seconds
@@ -351,9 +330,8 @@ namespace ndn_service_framework
 
         ndn::Name node_id(identity);
         node_id.append("provider");
-        int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(),node_id.toUri());
+        int session_id = m_configManager.loadAndIncrement(group_prefix.toUri(), node_id.toUri());
         node_id.append(std::to_string(session_id));
-
         {
             const auto svsLockPath = userScopedLockPath("/tmp/ndnsf-svs-registration");
             FileLock svsRegistrationLock(svsLockPath.c_str());
@@ -2306,6 +2284,14 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
                      << serviceName.toUri());
 
         if (shouldSuppressAdaptiveAck(requesterIdentity, serviceName, requestId)) {
+            AckDecision decision;
+            decision.status = false;
+            decision.message = "Provider overloaded";
+            finishAckDecisionOnEventLoop(requesterIdentity,
+                                         serviceName,
+                                         requestId,
+                                         std::move(requestMessage),
+                                         std::move(decision));
             return;
         }
 
@@ -2349,6 +2335,14 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
                                .append(serviceName)
                                .append(requestId);
     if (shouldSuppressAdaptiveAck(requesterIdentity, serviceName, requestId)) {
+        PublishRequestAckMessageV2(requesterIdentity,
+                                   serviceName,
+                                   requestId,
+                                   false,
+                                   "Provider overloaded",
+                                   ndn::Buffer(),
+                                   m_useTokens ? requestMessage.getUserToken() : "",
+                                   "");
         return;
     }
     pendingRequests[pendingKey] =
