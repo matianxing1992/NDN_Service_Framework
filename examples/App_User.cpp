@@ -250,14 +250,15 @@ struct OpenLoopRequestState
 struct AdaptiveAdmissionConfig
 {
   bool enabled = false;
-  size_t minWindow = 100;
-  size_t maxWindow = 2000;
-  size_t initialWindow = 500;
-  size_t hardInflightLimit = 2000;
-  size_t aiStep = 50;
-  double mdFactor = 0.7;
-  double severeMdFactor = 0.5;
-  int controlIntervalMs = 1000;
+  size_t minWindow = 1;
+  size_t maxWindow = 512;
+  size_t initialWindow = 32;
+  size_t hardInflightLimit = 512;
+  size_t aiStep = 4;
+  double mdFactor = 0.85;
+  double severeMdFactor = 0.75;
+  int controlIntervalMs = 500;
+  int targetLatencyMs = 1000;
 };
 
 std::string
@@ -349,21 +350,24 @@ main(int argc, char** argv)
     AdaptiveAdmissionConfig adaptiveAdmission;
     adaptiveAdmission.enabled = hasFlag(argc, argv, "--adaptive-admission-control");
     adaptiveAdmission.minWindow = static_cast<size_t>(std::max(
-      1, parseIntOption(argc, argv, "--adaptive-min-window", 100)));
+      1, parseIntOption(argc, argv, "--adaptive-min-window", 1)));
     adaptiveAdmission.maxWindow = static_cast<size_t>(std::max(
-      1, parseIntOption(argc, argv, "--adaptive-max-window", 2000)));
+      1, parseIntOption(argc, argv, "--adaptive-max-window", maxOutstanding)));
     adaptiveAdmission.initialWindow = static_cast<size_t>(std::max(
-      1, parseIntOption(argc, argv, "--adaptive-initial-window", 500)));
+      1, parseIntOption(argc, argv, "--adaptive-initial-window",
+                        std::min(32, maxOutstanding))));
     adaptiveAdmission.hardInflightLimit = static_cast<size_t>(std::max(
       1, parseIntOption(argc, argv, "--adaptive-hard-inflight-limit",
                         static_cast<int>(adaptiveAdmission.maxWindow))));
     adaptiveAdmission.aiStep = static_cast<size_t>(std::max(
-      1, parseIntOption(argc, argv, "--adaptive-ai-step", 50)));
-    adaptiveAdmission.mdFactor = parseDoubleOption(argc, argv, "--adaptive-md-factor", 0.7);
+      1, parseIntOption(argc, argv, "--adaptive-ai-step", 4)));
+    adaptiveAdmission.mdFactor = parseDoubleOption(argc, argv, "--adaptive-md-factor", 0.85);
     adaptiveAdmission.severeMdFactor =
       parseDoubleOption(argc, argv, "--adaptive-severe-md-factor", 0.5);
     adaptiveAdmission.controlIntervalMs = std::max(
-      1, parseIntOption(argc, argv, "--adaptive-control-interval-ms", 1000));
+      1, parseIntOption(argc, argv, "--adaptive-control-interval-ms", 500));
+    adaptiveAdmission.targetLatencyMs = std::max(
+      1, parseIntOption(argc, argv, "--adaptive-target-latency-ms", 1000));
     adaptiveAdmission.maxWindow = std::max(adaptiveAdmission.minWindow,
                                            adaptiveAdmission.maxWindow);
     adaptiveAdmission.hardInflightLimit =
@@ -374,7 +378,7 @@ main(int argc, char** argv)
       adaptiveAdmission.minWindow,
       std::min(adaptiveAdmission.initialWindow, adaptiveAdmission.maxWindow));
     if (adaptiveAdmission.mdFactor <= 0.0 || adaptiveAdmission.mdFactor >= 1.0) {
-      adaptiveAdmission.mdFactor = 0.7;
+      adaptiveAdmission.mdFactor = 0.85;
     }
     if (adaptiveAdmission.severeMdFactor <= 0.0 ||
         adaptiveAdmission.severeMdFactor >= adaptiveAdmission.mdFactor) {
@@ -417,11 +421,25 @@ main(int argc, char** argv)
     user.setUseTokens(useTokens);
     user.setUseHybridMessageCrypto(hybridMessageCrypto);
     user.setTimelineTrace(timelineTrace);
+    ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions runtimeAdmission;
+    runtimeAdmission.enabled = adaptiveAdmission.enabled;
+    runtimeAdmission.minWindow = adaptiveAdmission.minWindow;
+    runtimeAdmission.maxWindow = adaptiveAdmission.maxWindow;
+    runtimeAdmission.initialWindow = adaptiveAdmission.initialWindow;
+    runtimeAdmission.hardInflightLimit = adaptiveAdmission.hardInflightLimit;
+    runtimeAdmission.aiStep = adaptiveAdmission.aiStep;
+    runtimeAdmission.mdFactor = adaptiveAdmission.mdFactor;
+    runtimeAdmission.severeMdFactor = adaptiveAdmission.severeMdFactor;
+    runtimeAdmission.controlIntervalMs = adaptiveAdmission.controlIntervalMs;
+    runtimeAdmission.targetLatencyMs = adaptiveAdmission.targetLatencyMs;
+    user.setAdaptiveAdmissionControl(runtimeAdmission);
     std::cout << "[App_User] token_mode="
               << (user.getUseTokens() ? "enabled" : "disabled")
               << " hybridMessageCrypto=" << user.getUseHybridMessageCrypto()
               << " timelineTrace=" << timelineTrace
               << " handlerThreads=" << user.getHandlerThreads()
+              << " adaptiveAdmission=" << adaptiveAdmission.enabled
+              << " adaptiveWindow=" << user.getAdaptiveAdmissionWindow()
               << std::endl;
     user.fetchPermissionsFromController(CONTROLLER_PREFIX);
 
@@ -585,14 +603,18 @@ main(int argc, char** argv)
           *maxOutstandingObserved = std::max(*maxOutstandingObserved, current);
         };
 
-        *sampleAdaptive = [states, queuedTasks, adaptiveWindow, queuedSamples,
+        *sampleAdaptive = [&, states, queuedTasks, adaptiveWindow, queuedSamples,
                            windowSamples, maxQueuedObserved,
                            minAdaptiveWindowObserved, maxAdaptiveWindowObserved]() {
-          queuedSamples->push_back(*queuedTasks);
-          windowSamples->push_back(*adaptiveWindow);
-          *maxQueuedObserved = std::max(*maxQueuedObserved, *queuedTasks);
-          *minAdaptiveWindowObserved = std::min(*minAdaptiveWindowObserved, *adaptiveWindow);
-          *maxAdaptiveWindowObserved = std::max(*maxAdaptiveWindowObserved, *adaptiveWindow);
+          const auto currentQueued = adaptiveAdmission.enabled ?
+            user.getAdaptiveAdmissionQueueDepth() : *queuedTasks;
+          const auto currentWindow = adaptiveAdmission.enabled ?
+            user.getAdaptiveAdmissionWindow() : *adaptiveWindow;
+          queuedSamples->push_back(currentQueued);
+          windowSamples->push_back(currentWindow);
+          *maxQueuedObserved = std::max(*maxQueuedObserved, currentQueued);
+          *minAdaptiveWindowObserved = std::min(*minAdaptiveWindowObserved, currentWindow);
+          *maxAdaptiveWindowObserved = std::max(*maxAdaptiveWindowObserved, currentWindow);
           (void)states;
         };
 
@@ -740,32 +762,72 @@ main(int argc, char** argv)
             return;
           }
 
+          auto scheduleNext = [&](std::chrono::nanoseconds delay) {
+            scheduler.schedule(ndn::time::nanoseconds(delay.count()),
+                               [sendNext] { (*sendNext)(); });
+          };
+          const auto retryDelay = std::chrono::nanoseconds(std::chrono::milliseconds(10));
+          auto skipCurrentOpenLoopTick = [&]() {
+            if (!generating) {
+              return;
+            }
+            uint64_t nextTick = *nextSequence + 1;
+            if (intervalNs > 0) {
+              const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                now - *startTime).count();
+              if (elapsedNs > 0) {
+                nextTick = std::max<uint64_t>(
+                  nextTick,
+                  static_cast<uint64_t>(elapsedNs / intervalNs) + 1);
+              }
+            }
+            *nextSequence = nextTick;
+          };
+          auto delayUntilNextOpenLoopTick = [&]() {
+            if (!generating || intervalNs <= 0) {
+              return retryDelay;
+            }
+            const auto nextDue = *startTime + std::chrono::nanoseconds(
+              intervalNs * static_cast<int64_t>(*nextSequence));
+            return std::max(std::chrono::nanoseconds(0),
+                            nextDue - std::chrono::steady_clock::now());
+          };
+
+          (*maybeResume)();
+          const auto runtimeWindow = user.getAdaptiveAdmissionWindow();
+          const size_t currentPauseThreshold = adaptiveAdmission.enabled ?
+            std::max<size_t>(
+              1,
+              std::min(runtimeWindow, adaptiveAdmission.hardInflightLimit)) :
+            pauseThreshold();
+          const size_t activeLimit = adaptiveAdmission.enabled ?
+            currentPauseThreshold :
+            static_cast<size_t>(maxOutstanding);
+
+          if (adaptiveAdmission.enabled &&
+              (states->size() >= activeLimit || *paused)) {
+            ++(*outstandingLimitSkips);
+            ++(*delayedPublications);
+            (*sampleOutstanding)();
+            (*sampleAdaptive)();
+            if (!performanceMode && states->size() >= activeLimit) {
+              std::cout << "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
+                        << states->size()
+                        << " queued=" << *queuedTasks
+                        << " adaptive_window=" << runtimeWindow
+                        << " ts=" << nowMilliseconds() << std::endl;
+            }
+            skipCurrentOpenLoopTick();
+            scheduleNext(delayUntilNextOpenLoopTick());
+            return;
+          }
+
           if (generating) {
             ++(*queuedTasks);
             (*sampleAdaptive)();
           }
 
-          (*maybeResume)();
-          const size_t currentPauseThreshold = pauseThreshold();
-          if (adaptiveAdmission.enabled &&
-              states->size() >= adaptiveAdmission.hardInflightLimit) {
-            (*maybePause)("hard_inflight_limit");
-          }
-          else if (adaptiveAdmission.enabled && states->size() >= currentPauseThreshold) {
-            (*maybePause)("pause_threshold");
-          }
-
-          const size_t activeLimit = adaptiveAdmission.enabled ?
-            std::min(*adaptiveWindow, adaptiveAdmission.hardInflightLimit) :
-            static_cast<size_t>(maxOutstanding);
-
-          if (adaptiveAdmission.enabled && *paused) {
-            ++(*outstandingLimitSkips);
-            ++(*delayedPublications);
-            (*sampleOutstanding)();
-            (*sampleAdaptive)();
-          }
-          else if (states->size() >= activeLimit) {
+          if (states->size() >= activeLimit) {
             ++(*outstandingLimitSkips);
             ++(*delayedPublications);
             (*sampleOutstanding)();
@@ -816,7 +878,9 @@ main(int argc, char** argv)
                     }
                     ++(*timeoutCount);
                     ++(*intervalTimeouts);
-                    (*maybePause)("timeout");
+                    if (!adaptiveAdmission.enabled) {
+                      (*maybePause)("timeout");
+                    }
                     *csv << csvEscape(requestIdText) << ",0,"
                          << std::fixed << std::setprecision(3) << latencyMs << ",\n";
                     if (!performanceMode) {
@@ -849,7 +913,9 @@ main(int argc, char** argv)
                     if (completedRequestIds->find(requestIdText) != completedRequestIds->end()) {
                       ++(*lateResponseCount);
                       ++(*intervalLateResponses);
-                      (*maybePause)("late_response");
+                      if (!adaptiveAdmission.enabled) {
+                        (*maybePause)("late_response");
+                      }
                       if (!performanceMode) {
                         std::cout << "PERF_LATE_RESPONSE id=" << requestIdText
                                   << " ts=" << nowMilliseconds() << std::endl;
@@ -947,8 +1013,7 @@ main(int argc, char** argv)
           if (!generating && *queuedTasks > 0) {
             delay = std::max(delay, std::chrono::nanoseconds(std::chrono::milliseconds(10)));
           }
-          scheduler.schedule(ndn::time::nanoseconds(delay.count()),
-                             [sendNext] { (*sendNext)(); });
+          scheduleNext(delay);
         };
 
         *controlAdaptiveWindow = [&, states, adaptiveWindow, queuedTasks,
@@ -966,8 +1031,10 @@ main(int argc, char** argv)
                                     diagnostics.ackLatenciesMs.begin(),
                                     diagnostics.ackLatenciesMs.end());
           const double p95AckLatency = percentile(diagnostics.ackLatenciesMs, 95.0);
-          const size_t currentPauseThreshold = pauseThreshold();
-          const bool highInflight = states->size() >= currentPauseThreshold;
+          const size_t runtimeWindow = user.getAdaptiveAdmissionWindow();
+          const size_t runtimeQueueDepth = user.getAdaptiveAdmissionQueueDepth();
+          const size_t runtimeInflight = user.getAdaptiveAdmissionInflight();
+          const bool highInflight = runtimeInflight >= runtimeWindow;
           if (highInflight && *intervalSuccesses == 0) {
             ++(*highInflightNoSuccessIntervals);
           }
@@ -975,7 +1042,7 @@ main(int argc, char** argv)
             *highInflightNoSuccessIntervals = 0;
           }
           const bool blocked =
-            states->size() >= adaptiveAdmission.hardInflightLimit ||
+            runtimeInflight >= adaptiveAdmission.hardInflightLimit ||
             p95Latency > 0.9 * static_cast<double>(requestTimeoutMs) ||
             p95AckLatency > 0.9 * static_cast<double>(ackTimeoutMs) ||
             *intervalTimeouts > 0 ||
@@ -992,7 +1059,7 @@ main(int argc, char** argv)
             *intervalTimeouts > 0 ||
             *intervalLateResponses > 0 ||
             p95Latency > 0.75 * static_cast<double>(requestTimeoutMs) ||
-            (highInflight && *queuedTasks > 0);
+            (highInflight && runtimeQueueDepth > 0);
           const bool healthy =
             *intervalTimeouts == 0 &&
             *intervalLateResponses == 0 &&
@@ -1002,58 +1069,21 @@ main(int argc, char** argv)
             *highInflightNoSuccessIntervals == 0 &&
             p95Latency < 0.5 * static_cast<double>(requestTimeoutMs) &&
             p95AckLatency < 0.5 * static_cast<double>(ackTimeoutMs) &&
-            states->size() < *adaptiveWindow;
+            runtimeInflight < runtimeWindow;
 
           const size_t oldWindow = *adaptiveWindow;
-          if (congested) {
-            const double factor = severe ?
-              adaptiveAdmission.severeMdFactor : adaptiveAdmission.mdFactor;
-            *adaptiveWindow = std::max(
-              adaptiveAdmission.minWindow,
-              static_cast<size_t>(std::ceil(static_cast<double>(*adaptiveWindow) * factor)));
-          }
-          else if (healthy) {
-            *adaptiveWindow = std::min(adaptiveAdmission.maxWindow,
-                                       *adaptiveWindow + adaptiveAdmission.aiStep);
-          }
-
-          if (states->size() >= adaptiveAdmission.hardInflightLimit) {
-            (*maybePause)("hard_inflight_limit");
-          }
-          else if (p95Latency > 0.9 * static_cast<double>(requestTimeoutMs)) {
-            (*maybePause)("request_p95_near_timeout");
-          }
-          else if (p95AckLatency > 0.9 * static_cast<double>(ackTimeoutMs)) {
-            (*maybePause)("ack_p95_near_timeout");
-          }
-          else if (*intervalTimeouts > 0) {
-            (*maybePause)("timeout_interval");
-          }
-          else if (*intervalLateResponses > 0) {
-            (*maybePause)("late_response_interval");
-          }
-          else if (diagnostics.callbackSkippedNoPending > 0) {
-            (*maybePause)("callback_skipped_no_pending");
-          }
-          else if (diagnostics.callbackSkippedTimeout > 0) {
-            (*maybePause)("callback_skipped_timeout");
-          }
-          else if (diagnostics.responseAfterPendingTimeout > 0) {
-            (*maybePause)("response_after_pending_timeout");
-          }
-          else if (*highInflightNoSuccessIntervals >= 3) {
-            (*maybePause)("no_success_high_inflight");
-          }
-          (*maybeResume)();
+          *adaptiveWindow = runtimeWindow;
 
           std::cout << "PERF_ADAPTIVE_WINDOW window=" << *adaptiveWindow
                     << " old_window=" << oldWindow
                     << " queued=" << *queuedTasks
                     << " inflight=" << states->size()
+                    << " runtime_inflight=" << runtimeInflight
+                    << " runtime_queue=" << runtimeQueueDepth
                     << " hard_inflight_limit=" << adaptiveAdmission.hardInflightLimit
                     << " paused=" << *paused
-                    << " pause_threshold=" << currentPauseThreshold
-                    << " resume_threshold=" << resumeThreshold()
+                    << " pause_threshold=" << runtimeWindow
+                    << " resume_threshold=" << runtimeWindow
                     << " p95_ms=" << std::fixed << std::setprecision(3) << p95Latency
                     << " ack_p95_ms=" << p95AckLatency
                     << " timeouts=" << *intervalTimeouts
@@ -1098,6 +1128,7 @@ main(int argc, char** argv)
                     << " adaptive_min_window=" << adaptiveAdmission.minWindow
                     << " adaptive_max_window=" << adaptiveAdmission.maxWindow
                     << " hard_inflight_limit=" << adaptiveAdmission.hardInflightLimit
+                    << " adaptive_target_latency_ms=" << adaptiveAdmission.targetLatencyMs
                     << " request_timeout_ms=" << requestTimeoutMs
                     << " drain_seconds=" << drainSeconds
                     << std::endl;

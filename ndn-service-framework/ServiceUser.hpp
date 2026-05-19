@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <optional>
 #include <string>
@@ -184,6 +185,25 @@ namespace ndn_service_framework{
                 std::vector<double> ackLatenciesMs;
             };
             RuntimeDiagnostics consumeRuntimeDiagnostics();
+
+            struct AdaptiveAdmissionOptions
+            {
+                bool enabled = false;
+                size_t minWindow = 1;
+                size_t maxWindow = 512;
+                size_t initialWindow = 32;
+                size_t hardInflightLimit = 512;
+                size_t aiStep = 4;
+                double mdFactor = 0.85;
+                double severeMdFactor = 0.75;
+                int controlIntervalMs = 500;
+                int targetLatencyMs = 1000;
+            };
+            void setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options);
+            AdaptiveAdmissionOptions getAdaptiveAdmissionOptions() const;
+            size_t getAdaptiveAdmissionWindow() const;
+            size_t getAdaptiveAdmissionInflight() const;
+            size_t getAdaptiveAdmissionQueueDepth() const;
 
             static AckCandidatesHandler makeAckSelectionHandler(
                 AckSelectionStrategy strategy);
@@ -471,6 +491,11 @@ namespace ndn_service_framework{
                 TimeoutHandler timeoutHandler;
                 ResponseHandler responseHandler;
                 bool hasResponse = false;
+                bool admissionPublished = false;
+                bool ackTimeoutScheduled = false;
+                bool requestTimeoutScheduled = false;
+                bool scheduleAckTimeoutAfterPublish = false;
+                bool scheduleImmediateAckTimeoutAfterPublish = false;
                 bool ackWindowExpired = false;
                 bool providerSelected = false;
                 bool timedOut = false;
@@ -515,6 +540,17 @@ namespace ndn_service_framework{
             bool hasReachedLatePipelineStage(const PendingCall& pendingCall) const;
             void scheduleRequestTimeout(const ndn::Name& requestId, int timeoutMs);
             void finalizeTimedOutPendingCall(const ndn::Name& requestId);
+            void admitOrQueuePendingCall(const ndn::Name& requestId,
+                                         bool scheduleAckTimeout,
+                                         bool scheduleImmediateAckTimeout);
+            void publishAdmittedPendingCall(const ndn::Name& requestId);
+            void drainAdaptiveAdmissionQueue();
+            void scheduleAdaptiveAdmissionControl();
+            void controlAdaptiveAdmissionWindow();
+            void releaseAdaptiveAdmissionSlot(const ndn::Name& requestId,
+                                              const PendingCall& pendingCall,
+                                              const char* reason,
+                                              uint64_t terminalTimestampUs);
 
             static bool containsName(const std::vector<ndn::Name>& names,
                                      const ndn::Name& name);
@@ -609,6 +645,17 @@ namespace ndn_service_framework{
             ndn::time::milliseconds m_pendingCallTimeoutGrace{500};
             bool m_performanceMode = false;
             RuntimeDiagnostics m_runtimeDiagnostics;
+            AdaptiveAdmissionOptions m_adaptiveAdmissionOptions;
+            size_t m_adaptiveAdmissionWindow = 512;
+            size_t m_adaptiveAdmissionInflight = 0;
+            bool m_adaptiveAdmissionControlScheduled = false;
+            uint64_t m_adaptiveAdmissionIntervalSuccesses = 0;
+            uint64_t m_adaptiveAdmissionIntervalTimeouts = 0;
+            double m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
+            uint64_t m_adaptiveAdmissionIntervalLatencyCount = 0;
+            bool m_adaptiveAdmissionIntervalCongested = false;
+            bool m_adaptiveAdmissionIntervalSevere = false;
+            std::deque<ndn::Name> m_adaptiveAdmissionQueue;
     };
 }
 
