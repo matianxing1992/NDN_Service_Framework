@@ -133,6 +133,9 @@ printUsage(const char* program)
   NDN_LOG_ERROR("  --interval-ms N         ping interval, default 100");
   NDN_LOG_ERROR("  --startup-ms N          wait before first ping, default 2000");
   NDN_LOG_ERROR("  --timeout-ms N          stop after timeout, default 20000");
+  NDN_LOG_ERROR("  --parallel-sync        enable experimental ndn-svs parallel sync processing");
+  NDN_LOG_ERROR("  --parallel-workers N   worker count for --parallel-sync, default 2");
+  NDN_LOG_ERROR("  --parallel-queue N     bounded queue size for --parallel-sync, default 128");
   NDN_LOG_ERROR("  --csv                   emit SVS_LATENCY_CSV/SVS_ONEWAY_CSV log rows");
 }
 
@@ -163,6 +166,10 @@ main(int argc, char** argv)
   const int intervalMs = getIntArg(argc, argv, "--interval-ms", 100);
   const int startupMs = getIntArg(argc, argv, "--startup-ms", 2000);
   const int timeoutMs = getIntArg(argc, argv, "--timeout-ms", 20000);
+  const bool parallelSync = hasFlag(argc, argv, "--parallel-sync") ||
+                            std::getenv("SVS_PARALLEL_SYNC") != nullptr;
+  const int parallelWorkers = getIntArg(argc, argv, "--parallel-workers", 2);
+  const int parallelQueue = getIntArg(argc, argv, "--parallel-queue", 128);
   const bool csv = hasFlag(argc, argv, "--csv");
 
   if (count <= 0 || intervalMs <= 0 || startupMs < 0 || timeoutMs <= 0) {
@@ -182,6 +189,11 @@ main(int argc, char** argv)
                           [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
                           svsOptions,
                           securityOptions);
+  if (parallelSync) {
+    svs.getSVSync().getCore().setParallelSyncProcessing(true,
+                                                        static_cast<size_t>(parallelWorkers),
+                                                        static_cast<size_t>(parallelQueue));
+  }
 
   ndn::Scheduler scheduler(face.getIoContext());
   std::map<int, uint64_t> sentAtUs;
@@ -345,7 +357,10 @@ main(int argc, char** argv)
                << " nodePrefix=" << nodePrefix
                << " peerPrefix=" << peerPrefix
                << " count=" << count
-               << " intervalMs=" << intervalMs);
+               << " intervalMs=" << intervalMs
+               << " parallelSync=" << (parallelSync ? "yes" : "no")
+               << " parallelWorkers=" << parallelWorkers
+               << " parallelQueue=" << parallelQueue);
 
   while (!g_stop) {
     face.processEvents();
@@ -353,19 +368,67 @@ main(int argc, char** argv)
   }
 
   if (role == "ping") {
+    auto syncStats = svs.getSVSync().getCore().getSyncProcessingStats();
+    NDN_LOG_INFO("SVS_SYNC_STATS role=" << role
+                 << " submitted=" << syncStats.syncJobsSubmitted
+                 << " completed=" << syncStats.syncJobsCompleted
+                 << " dropped=" << syncStats.syncJobsDropped
+                 << " stale=" << syncStats.syncJobsStale
+                 << " queueDepth=" << syncStats.syncWorkerQueueDepth
+                 << " workerMs=" << syncStats.syncWorkerProcessingMs
+                 << " publishMs=" << syncStats.syncMainThreadPublishMs
+                 << " serialMs=" << syncStats.syncInterestSerialHandlerMs
+                 << " parallelTotalMs=" << syncStats.syncInterestParallelTotalMs
+                 << " mainBlockingMs=" << syncStats.syncInterestMainThreadBlockingMs);
     NDN_LOG_INFO("App_SvsLatency summary sent=" << sent
                  << " received=" << received);
     return received == count ? 0 : 1;
   }
   if (role == "pub") {
+    auto syncStats = svs.getSVSync().getCore().getSyncProcessingStats();
+    NDN_LOG_INFO("SVS_SYNC_STATS role=" << role
+                 << " submitted=" << syncStats.syncJobsSubmitted
+                 << " completed=" << syncStats.syncJobsCompleted
+                 << " dropped=" << syncStats.syncJobsDropped
+                 << " stale=" << syncStats.syncJobsStale
+                 << " queueDepth=" << syncStats.syncWorkerQueueDepth
+                 << " workerMs=" << syncStats.syncWorkerProcessingMs
+                 << " publishMs=" << syncStats.syncMainThreadPublishMs
+                 << " serialMs=" << syncStats.syncInterestSerialHandlerMs
+                 << " parallelTotalMs=" << syncStats.syncInterestParallelTotalMs
+                 << " mainBlockingMs=" << syncStats.syncInterestMainThreadBlockingMs);
     NDN_LOG_INFO("App_SvsLatency summary sent=" << sent);
     return sent == count ? 0 : 1;
   }
   if (role == "sub") {
+    auto syncStats = svs.getSVSync().getCore().getSyncProcessingStats();
+    NDN_LOG_INFO("SVS_SYNC_STATS role=" << role
+                 << " submitted=" << syncStats.syncJobsSubmitted
+                 << " completed=" << syncStats.syncJobsCompleted
+                 << " dropped=" << syncStats.syncJobsDropped
+                 << " stale=" << syncStats.syncJobsStale
+                 << " queueDepth=" << syncStats.syncWorkerQueueDepth
+                 << " workerMs=" << syncStats.syncWorkerProcessingMs
+                 << " publishMs=" << syncStats.syncMainThreadPublishMs
+                 << " serialMs=" << syncStats.syncInterestSerialHandlerMs
+                 << " parallelTotalMs=" << syncStats.syncInterestParallelTotalMs
+                 << " mainBlockingMs=" << syncStats.syncInterestMainThreadBlockingMs);
     NDN_LOG_INFO("App_SvsLatency summary received=" << received);
     return received == count ? 0 : 1;
   }
 
+  auto syncStats = svs.getSVSync().getCore().getSyncProcessingStats();
+  NDN_LOG_INFO("SVS_SYNC_STATS role=" << role
+               << " submitted=" << syncStats.syncJobsSubmitted
+               << " completed=" << syncStats.syncJobsCompleted
+               << " dropped=" << syncStats.syncJobsDropped
+               << " stale=" << syncStats.syncJobsStale
+               << " queueDepth=" << syncStats.syncWorkerQueueDepth
+               << " workerMs=" << syncStats.syncWorkerProcessingMs
+               << " publishMs=" << syncStats.syncMainThreadPublishMs
+               << " serialMs=" << syncStats.syncInterestSerialHandlerMs
+               << " parallelTotalMs=" << syncStats.syncInterestParallelTotalMs
+               << " mainBlockingMs=" << syncStats.syncInterestMainThreadBlockingMs);
   NDN_LOG_INFO("App_SvsLatency summary echoed=" << echoed);
   return 0;
 }
