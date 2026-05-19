@@ -136,6 +136,8 @@ printUsage(const char* program)
   NDN_LOG_ERROR("  --parallel-sync        enable experimental ndn-svs parallel sync processing");
   NDN_LOG_ERROR("  --parallel-workers N   worker count for --parallel-sync, default 2");
   NDN_LOG_ERROR("  --parallel-queue N     bounded queue size for --parallel-sync, default 128");
+  NDN_LOG_ERROR("  --sync-batching        coalesce local publication-triggered sync interests");
+  NDN_LOG_ERROR("  --sync-batch-ms N      batching window for --sync-batching, default 5");
   NDN_LOG_ERROR("  --csv                   emit SVS_LATENCY_CSV/SVS_ONEWAY_CSV log rows");
 }
 
@@ -170,10 +172,13 @@ main(int argc, char** argv)
                             std::getenv("SVS_PARALLEL_SYNC") != nullptr;
   const int parallelWorkers = getIntArg(argc, argv, "--parallel-workers", 2);
   const int parallelQueue = getIntArg(argc, argv, "--parallel-queue", 128);
+  const bool syncBatching = hasFlag(argc, argv, "--sync-batching") ||
+                            std::getenv("SVS_SYNC_BATCHING") != nullptr;
+  const int syncBatchMs = getIntArg(argc, argv, "--sync-batch-ms", 5);
   const bool csv = hasFlag(argc, argv, "--csv");
 
-  if (count <= 0 || intervalMs <= 0 || startupMs < 0 || timeoutMs <= 0) {
-    NDN_LOG_ERROR("count, interval-ms, startup-ms, and timeout-ms must be positive");
+  if (count <= 0 || intervalMs <= 0 || startupMs < 0 || timeoutMs <= 0 || syncBatchMs < 0) {
+    NDN_LOG_ERROR("count, interval-ms, startup-ms, timeout-ms, and sync-batch-ms must be valid");
     return 2;
   }
 
@@ -193,6 +198,10 @@ main(int argc, char** argv)
     svs.getSVSync().getCore().setParallelSyncProcessing(true,
                                                         static_cast<size_t>(parallelWorkers),
                                                         static_cast<size_t>(parallelQueue));
+  }
+  if (syncBatching) {
+    svs.getSVSync().getCore().setSyncInterestBatching(true,
+                                                      ndn::time::milliseconds(syncBatchMs));
   }
 
   ndn::Scheduler scheduler(face.getIoContext());
@@ -360,7 +369,9 @@ main(int argc, char** argv)
                << " intervalMs=" << intervalMs
                << " parallelSync=" << (parallelSync ? "yes" : "no")
                << " parallelWorkers=" << parallelWorkers
-               << " parallelQueue=" << parallelQueue);
+               << " parallelQueue=" << parallelQueue
+               << " syncBatching=" << (syncBatching ? "yes" : "no")
+               << " syncBatchMs=" << syncBatchMs);
 
   while (!g_stop) {
     face.processEvents();
