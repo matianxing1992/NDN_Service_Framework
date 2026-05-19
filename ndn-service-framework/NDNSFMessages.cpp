@@ -57,7 +57,9 @@ ndn::Block RequestMessage::WireEncode() const {
     for (const auto& token : tokens_) {
         block.push_back(ndn::makeStringBlock(tlv::TokenType, token.first + "=" + token.second));
     }
-    block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
+    if (!userToken_.empty()) {
+        block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
+    }
     // payload
     ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
     block.push_back(payloadBlock);
@@ -159,7 +161,9 @@ ndn::Block ResponseMessage::WireEncode() const {
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::StatusType, static_cast<int>(status_)));
     // 编码 errorInfo
     block.push_back(ndn::makeStringBlock(tlv::ErrorInfoType, errorInfo_));
-    block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
+    if (!userToken_.empty()) {
+        block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
+    }
     // 编码 payload
     ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
     block.push_back(payloadBlock);
@@ -260,8 +264,12 @@ ndn::Block RequestAckMessage::WireEncode() const {
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::StatusType, static_cast<int>(status_)));
     // 编码 message
     block.push_back(ndn::makeStringBlock(tlv::ErrorInfoType, message_));
-    block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
-    block.push_back(ndn::makeStringBlock(tlv::ProviderTokenType, providerToken_));
+    if (!userToken_.empty()) {
+        block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
+    }
+    if (!providerToken_.empty()) {
+        block.push_back(ndn::makeStringBlock(tlv::ProviderTokenType, providerToken_));
+    }
     // 编码 payload
     ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
     block.push_back(payloadBlock);
@@ -332,7 +340,9 @@ ndn::Block ServiceCoordinationMessage::WireEncode() const {
     for (const auto& id : requestIDs_) {
         block.push_back(ndn::makeStringBlock(tlv::RequestIDType, id));
     }
-    block.push_back(ndn::makeStringBlock(tlv::ProviderTokenType, providerToken_));
+    if (!providerToken_.empty()) {
+        block.push_back(ndn::makeStringBlock(tlv::ProviderTokenType, providerToken_));
+    }
     block.encode();
     m_wire = block;
     return m_wire;
@@ -356,6 +366,105 @@ bool ServiceCoordinationMessage::WireDecode(const ndn::Block& block) {
     }
 
     return true;
+}
+
+HybridMessageEnvelope::HybridMessageEnvelope() {}
+
+void HybridMessageEnvelope::setVersion(size_t version) { version_ = version; }
+void HybridMessageEnvelope::setAlgorithm(const std::string& algorithm) { algorithm_ = algorithm; }
+void HybridMessageEnvelope::setKeyId(const std::string& keyId) { keyId_ = keyId; }
+void HybridMessageEnvelope::setEpochId(const std::string& epochId) { epochId_ = epochId; }
+void HybridMessageEnvelope::setMessageType(const std::string& messageType) { messageType_ = messageType; }
+void HybridMessageEnvelope::setNonce(const ndn::Buffer& nonce) { nonce_ = nonce; }
+void HybridMessageEnvelope::setCipherText(const ndn::Buffer& cipherText) { cipherText_ = cipherText; }
+void HybridMessageEnvelope::setAuthTag(const ndn::Buffer& authTag) { authTag_ = authTag; }
+void HybridMessageEnvelope::setWrappedMessageKey(const ndn::Buffer& wrappedMessageKey) { wrappedMessageKey_ = wrappedMessageKey; }
+
+size_t HybridMessageEnvelope::getVersion() const { return version_; }
+const std::string& HybridMessageEnvelope::getAlgorithm() const { return algorithm_; }
+const std::string& HybridMessageEnvelope::getKeyId() const { return keyId_; }
+const std::string& HybridMessageEnvelope::getEpochId() const { return epochId_; }
+const std::string& HybridMessageEnvelope::getMessageType() const { return messageType_; }
+const ndn::Buffer& HybridMessageEnvelope::getNonce() const { return nonce_; }
+const ndn::Buffer& HybridMessageEnvelope::getCipherText() const { return cipherText_; }
+const ndn::Buffer& HybridMessageEnvelope::getAuthTag() const { return authTag_; }
+const ndn::Buffer& HybridMessageEnvelope::getWrappedMessageKey() const { return wrappedMessageKey_; }
+bool HybridMessageEnvelope::hasWrappedMessageKey() const { return !wrappedMessageKey_.empty(); }
+
+void HybridMessageEnvelope::Clear() {
+    version_ = 1;
+    algorithm_ = "AES-256-GCM";
+    keyId_.clear();
+    epochId_.clear();
+    messageType_.clear();
+    nonce_.clear();
+    cipherText_.clear();
+    authTag_.clear();
+    wrappedMessageKey_.clear();
+    m_wire.reset();
+}
+
+ndn::Block HybridMessageEnvelope::WireEncode() const {
+    if (m_wire.hasWire()) {
+        m_wire.reset();
+    }
+    ndn::Block block(tlv::HybridMessageEnvelopeType);
+    block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, version_));
+    block.push_back(ndn::makeStringBlock(tlv::AlgorithmType, algorithm_));
+    block.push_back(ndn::makeStringBlock(tlv::KeyIdType, keyId_));
+    block.push_back(ndn::makeStringBlock(tlv::EpochIdType, epochId_));
+    block.push_back(ndn::makeStringBlock(tlv::MessageTypeType, messageType_));
+    block.push_back(ndn::makeBinaryBlock(tlv::NonceType, nonce_.begin(), nonce_.end()));
+    block.push_back(ndn::makeBinaryBlock(tlv::CipherTextType, cipherText_.begin(), cipherText_.end()));
+    block.push_back(ndn::makeBinaryBlock(tlv::AuthTagType, authTag_.begin(), authTag_.end()));
+    if (!wrappedMessageKey_.empty()) {
+        block.push_back(ndn::makeBinaryBlock(tlv::WrappedMessageKeyType,
+                                             wrappedMessageKey_.begin(),
+                                             wrappedMessageKey_.end()));
+    }
+    block.encode();
+    m_wire = block;
+    return m_wire;
+}
+
+bool HybridMessageEnvelope::WireDecode(const ndn::Block& block) {
+    Clear();
+    if (block.type() != tlv::HybridMessageEnvelopeType) {
+        return false;
+    }
+    block.parse();
+    for (auto b : block.elements()) {
+        if (b.type() == tlv::VersionType) {
+            version_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::AlgorithmType) {
+            algorithm_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::KeyIdType) {
+            keyId_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::EpochIdType) {
+            epochId_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::MessageTypeType) {
+            messageType_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::NonceType) {
+            nonce_ = ndn::Buffer(b.value(), b.value_size());
+        }
+        else if (b.type() == tlv::CipherTextType) {
+            cipherText_ = ndn::Buffer(b.value(), b.value_size());
+        }
+        else if (b.type() == tlv::AuthTagType) {
+            authTag_ = ndn::Buffer(b.value(), b.value_size());
+        }
+        else if (b.type() == tlv::WrappedMessageKeyType) {
+            wrappedMessageKey_ = ndn::Buffer(b.value(), b.value_size());
+        }
+    }
+    return version_ == 1 && algorithm_ == "AES-256-GCM" &&
+           !keyId_.empty() && !epochId_.empty() && !nonce_.empty() &&
+           !cipherText_.empty() && !authTag_.empty();
 }
 
 PermissionEntry::PermissionEntry() {}

@@ -1,7 +1,8 @@
 #ifndef NDN_SERVICE_FRAMEWORK_BLOOM_FILTER_HPP
 #define NDN_SERVICE_FRAMEWORK_BLOOM_FILTER_HPP
 
-#include <iostream>
+#include "common.hpp"
+
 #include <vector>
 #include <string>
 #include <bitset>
@@ -57,7 +58,7 @@ namespace ndn_service_framework{
         bool fromHexString(const std::string& hexString) {
             // Check if the hexString length is even
             if (hexString.size() % 2 != 0) {
-                std::cerr << "Error: Invalid hexadecimal string length" << std::endl;
+                NDN_LOG_ERROR("Error: Invalid hexadecimal string length");
                 return false;
             }
 
@@ -68,10 +69,10 @@ namespace ndn_service_framework{
                 try {
                     byte = std::stoi(hexString.substr(i, 2), nullptr, 16);
                 } catch (const std::invalid_argument& e) {
-                    std::cerr << "Error: Invalid hexadecimal string - contains non-hexadecimal characters" << std::endl;
+                    NDN_LOG_ERROR("Error: Invalid hexadecimal string - contains non-hexadecimal characters");
                     return false;
                 } catch (const std::out_of_range& e) {
-                    std::cerr << "Error: Invalid hexadecimal string - out of range" << std::endl;
+                    NDN_LOG_ERROR("Error: Invalid hexadecimal string - out of range");
                     return false;
                 }
 
@@ -82,8 +83,8 @@ namespace ndn_service_framework{
             }
             return true;
         }
-                     
+    private:
+        NDN_LOG_MEMBER_DECL();
     };
 }
 #endif // NDN_SERVICE_FRAMEWORK_BLOOM_FILTER_HPP
-

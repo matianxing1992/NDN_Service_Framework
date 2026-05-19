@@ -122,7 +122,7 @@ def topology():
     time.sleep(2)
     drone1.cmd('xterm -T "drone1" -e "multi-drone-example /muas/drone1" &')
     time.sleep(2)
-    # FirstResponding/LoadBalancing/NoCoordination
+    # FirstResponding/LoadBalancing/AllResponders
     gs1.cmd('xterm -T "gs1" -e "multi-gs-example LoadBalancing /muas/gs1 1000 60 /muas/drone1 /muas/drone2 /muas/drone3" &')
     
     # gs1.cmd('wireshark -X lua_script:/usr/local/share/ndn-dissect-wireshark/ndn.lua')

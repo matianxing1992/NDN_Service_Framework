@@ -1,6 +1,7 @@
 #pragma once
 
-#include <iostream>
+#include "common.hpp"
+
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -49,7 +50,7 @@ public:
     // Step 1: 打开文件并加锁
     int fd = open(m_path.c_str(), O_RDWR | O_CREAT, 0666);
     if (fd < 0) {
-      std::cerr << "Cannot open config file: " << m_path << "\n";
+      NDN_LOG_ERROR("Cannot open config file: " << m_path);
       return 0;
     }
 
@@ -79,7 +80,7 @@ public:
           entries.emplace_back(g, n, sid);
         }
         catch (...) {
-          std::cerr << "Invalid line in config: " << line << "\n";
+          NDN_LOG_ERROR("Invalid line in config: " << line);
         }
       }
     }
@@ -154,6 +155,7 @@ private:
 
 
 private:
+  NDN_LOG_MEMBER_DECL();
   std::string m_path;
   std::map<std::pair<std::string, std::string>, int> m_data; // 内存缓存，仅辅助查询
 };

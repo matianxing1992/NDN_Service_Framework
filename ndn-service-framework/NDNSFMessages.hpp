@@ -40,6 +40,13 @@ namespace tlv {
         CipherTextType = 169,
         UserTokenType = 170,
         ProviderTokenType = 171,
+        HybridMessageEnvelopeType = 172,
+        KeyIdType = 173,
+        EpochIdType = 174,
+        NonceType = 175,
+        AuthTagType = 176,
+        WrappedMessageKeyType = 177,
+        MessageTypeType = 178,
         AllowedServiceListType = 0xF501,
         AllowedServiceType = 0xF502,
     };
@@ -48,7 +55,7 @@ namespace tlv {
     enum {
         FirstResponding = 0,
         LoadBalancing = 1,
-        NoCoordination = 2,
+        AllResponders = 2,
     };
 
     enum {
@@ -73,7 +80,7 @@ public:
     void setTokens(const std::map<std::string, std::string>& tokens);
     void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
-    // FirstResponding = 0, LoadBalancing = 1, All = 2,
+    // FirstResponding = 0, LoadBalancing = 1, AllResponders = 2,
     void setStrategy(size_t strategy);
     const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
@@ -163,6 +170,48 @@ public:
 private:
     std::vector<std::string> requestIDs_;
     std::string providerToken_;
+    mutable ndn::Block m_wire;
+};
+
+class HybridMessageEnvelope : public AbstractMessage {
+public:
+    HybridMessageEnvelope();
+
+    void setVersion(size_t version);
+    void setAlgorithm(const std::string& algorithm);
+    void setKeyId(const std::string& keyId);
+    void setEpochId(const std::string& epochId);
+    void setMessageType(const std::string& messageType);
+    void setNonce(const ndn::Buffer& nonce);
+    void setCipherText(const ndn::Buffer& cipherText);
+    void setAuthTag(const ndn::Buffer& authTag);
+    void setWrappedMessageKey(const ndn::Buffer& wrappedMessageKey);
+
+    size_t getVersion() const;
+    const std::string& getAlgorithm() const;
+    const std::string& getKeyId() const;
+    const std::string& getEpochId() const;
+    const std::string& getMessageType() const;
+    const ndn::Buffer& getNonce() const;
+    const ndn::Buffer& getCipherText() const;
+    const ndn::Buffer& getAuthTag() const;
+    const ndn::Buffer& getWrappedMessageKey() const;
+    bool hasWrappedMessageKey() const;
+
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+
+private:
+    size_t version_ = 1;
+    std::string algorithm_ = "AES-256-GCM";
+    std::string keyId_;
+    std::string epochId_;
+    std::string messageType_;
+    ndn::Buffer nonce_;
+    ndn::Buffer cipherText_;
+    ndn::Buffer authTag_;
+    ndn::Buffer wrappedMessageKey_;
     mutable ndn::Block m_wire;
 };
 

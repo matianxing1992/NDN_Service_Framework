@@ -143,6 +143,34 @@ protected:
   }
 
   static ndn::Data
+  makeUnsignedEncryptedPermissionData(const ndn::Name& dataName,
+                                      const PermissionResponse& response,
+                                      const ndn::security::Certificate& recipientCert)
+  {
+    auto encrypted = encryptPermissionResponseForCertificate(response, recipientCert);
+
+    ndn::Data data(dataName);
+    data.setFreshnessPeriod(ndn::time::seconds(2));
+    data.setContent(encrypted.WireEncode());
+    return data;
+  }
+
+  static ndn::Data
+  makeDigestSignedEncryptedPermissionData(const ndn::Name& dataName,
+                                          const PermissionResponse& response,
+                                          const ndn::security::Certificate& recipientCert,
+                                          ndn::security::KeyChain& signerKeyChain)
+  {
+    auto encrypted = encryptPermissionResponseForCertificate(response, recipientCert);
+
+    ndn::Data data(dataName);
+    data.setFreshnessPeriod(ndn::time::seconds(2));
+    data.setContent(encrypted.WireEncode());
+    signerKeyChain.sign(data, ndn::security::signingWithSha256());
+    return data;
+  }
+
+  static ndn::Data
   makeSignedEncryptedPermissionData(const ndn::Name& dataName,
                                     const PermissionResponse& response,
                                     const ndn::security::Certificate& recipientCert,
@@ -153,6 +181,18 @@ protected:
     ndn::Data data(dataName);
     data.setFreshnessPeriod(ndn::time::seconds(2));
     data.setContent(encrypted.WireEncode());
+    signerKeyChain.sign(data);
+    return data;
+  }
+
+  static ndn::Data
+  makeSignedPlaintextPermissionData(const ndn::Name& dataName,
+                                    const PermissionResponse& response,
+                                    ndn::security::KeyChain& signerKeyChain)
+  {
+    ndn::Data data(dataName);
+    data.setFreshnessPeriod(ndn::time::seconds(2));
+    data.setContent(response.WireEncode());
     signerKeyChain.sign(data);
     return data;
   }
@@ -363,6 +403,16 @@ BOOST_FIXTURE_TEST_CASE(ServiceUserPermissionFetchCallbackHandlesEncryptedData,
                                                         permissionTable));
   checkInstalledPermission(permissionTable, providerName, serviceName, token);
 
+  auto plaintextData = makeSignedPlaintextPermissionData(
+    ndn::Name("/test/controller/user-permissions/plaintext"),
+    response,
+    userKeyChain);
+  BOOST_CHECK(!ServiceUser::handlePermissionResponseData(plaintextData,
+                                                         userIdentity,
+                                                         userKeyChain,
+                                                         permissionTable));
+  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+
   auto wrongTarget = makeResponse(ndn::Name("/test/runtime/not-user"),
                                   tlv::UserPermission,
                                   providerName,
@@ -421,6 +471,16 @@ BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedDa
                            serviceName,
                            token);
 
+  auto plaintextData = makeSignedPlaintextPermissionData(
+    ndn::Name("/test/controller/provider-permissions/plaintext"),
+    response,
+    providerKeyChain);
+  BOOST_CHECK(!ServiceProvider::handlePermissionResponseData(plaintextData,
+                                                             providerIdentity,
+                                                             providerKeyChain,
+                                                             permissionTable));
+  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+
   auto wrongTarget = makeResponse(ndn::Name("/test/runtime/not-provider"),
                                   tlv::ProviderPermission,
                                   providerIdentity.toUri(),
@@ -452,6 +512,189 @@ BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedDa
                                                              providerKeyChain,
                                                              permissionTable));
   BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(PermissionResponseDataValidationRejectsForgedData,
+                        EncryptedPermissionResponseFixture)
+{
+  const auto response = makeResponse(userIdentity,
+                                     tlv::UserPermission,
+                                     "/test/provider/camera",
+                                     "/ObjectDetection/YOLOv8",
+                                     "forged-token");
+  const ndn::Name dataName("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice");
+  MessageValidator validator("tests/reject-rsa-data.conf");
+  UserPermissionTable permissionTable;
+
+  auto unsignedData = makeUnsignedEncryptedPermissionData(dataName,
+                                                          response,
+                                                          userCert);
+  bool unsignedFailureCalled = false;
+  validator.validate(
+    unsignedData,
+    [&] (const ndn::Data& validatedData) {
+      BOOST_CHECK(!ServiceUser::handlePermissionResponseData(validatedData,
+                                                             userIdentity,
+                                                             userKeyChain,
+                                                             permissionTable));
+    },
+    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+      unsignedFailureCalled = true;
+    });
+  BOOST_CHECK(unsignedFailureCalled);
+  BOOST_CHECK(permissionTable.dumpAll().empty());
+
+  auto wrongSignedData = makeSignedEncryptedPermissionData(dataName,
+                                                           response,
+                                                           userCert,
+                                                           otherKeyChain);
+  bool wrongSignedFailureCalled = false;
+  bool wrongSignedRejectedBeforeApply = false;
+  validator.validate(
+    wrongSignedData,
+    [&] (const ndn::Data& validatedData) {
+      const auto signerIdentity = ndn::security::extractIdentityFromCertName(
+        validatedData.getSignatureInfo().getKeyLocator().getName());
+      if (signerIdentity != controllerIdentity) {
+        wrongSignedRejectedBeforeApply = true;
+        return;
+      }
+      ServiceUser::handlePermissionResponseData(validatedData,
+                                                userIdentity,
+                                                userKeyChain,
+                                                permissionTable);
+    },
+    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+      wrongSignedFailureCalled = true;
+    });
+  BOOST_CHECK(wrongSignedFailureCalled || wrongSignedRejectedBeforeApply);
+  BOOST_CHECK(permissionTable.dumpAll().empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureAndControllerMismatch,
+                        EncryptedPermissionResponseFixture)
+{
+  const auto response = makeResponse(userIdentity,
+                                     tlv::UserPermission,
+                                     "/test/provider/camera",
+                                     "/ObjectDetection/YOLOv8",
+                                     "controller-token");
+  const ndn::Name dataName("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice");
+  MessageValidator validator("examples/trust-any.conf");
+  UserPermissionTable permissionTable;
+
+  auto digestSignedData = makeDigestSignedEncryptedPermissionData(dataName,
+                                                                  response,
+                                                                  userCert,
+                                                                  controllerKeyChain);
+  bool digestFailureCalled = false;
+  validator.validate(
+    digestSignedData,
+    [&] (const ndn::Data& validatedData) {
+      ServiceUser::handlePermissionResponseData(validatedData,
+                                                userIdentity,
+                                                userKeyChain,
+                                                permissionTable);
+    },
+    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+      digestFailureCalled = true;
+    });
+  BOOST_CHECK(digestFailureCalled);
+  BOOST_CHECK(permissionTable.dumpAll().empty());
+
+  auto controllerSignedData = makeSignedEncryptedPermissionData(dataName,
+                                                                response,
+                                                                userCert,
+                                                                controllerKeyChain);
+  const ndn::Interest wrongControllerInterest(
+    ndn::Name("/test/wrong-controller/NDNSF/PERMISSIONS/USER/test/user/alice"));
+  bool signerMismatchRejected = false;
+  validator.validate(
+    controllerSignedData,
+    [&] (const ndn::Data& validatedData) {
+      const auto expectedController =
+        wrongControllerInterest.getName().getPrefix(2);
+      const auto signerIdentity = ndn::security::extractIdentityFromCertName(
+        validatedData.getSignatureInfo().getKeyLocator().getName());
+      if (signerIdentity != expectedController) {
+        signerMismatchRejected = true;
+        return;
+      }
+      ServiceUser::handlePermissionResponseData(validatedData,
+                                                userIdentity,
+                                                userKeyChain,
+                                                permissionTable);
+    },
+    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+    });
+  BOOST_CHECK(signerMismatchRejected);
+  BOOST_CHECK(permissionTable.dumpAll().empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(MessageValidatorFailureCallbackIsExplicit,
+                        EncryptedPermissionResponseFixture)
+{
+  MessageValidator validator("tests/reject-rsa-data.conf");
+
+  ndn::Data unsignedData(ndn::Name("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice"));
+  unsignedData.setContent("bad");
+
+  bool successCalled = false;
+  bool failureCalled = false;
+  validator.validate(
+    unsignedData,
+    [&] (const ndn::Data&) {
+      successCalled = true;
+    },
+    [&] (const ndn::Data& badData, const ndn::security::ValidationError&) {
+      BOOST_CHECK_EQUAL(badData.getName(), unsignedData.getName());
+      failureCalled = true;
+    });
+
+  BOOST_CHECK(!successCalled);
+  BOOST_CHECK(failureCalled);
+  BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(ValidatorFailureCallbacksAreExactlyOnceAndLeaveNoState,
+                        EncryptedPermissionResponseFixture)
+{
+  MessageValidator validator("tests/reject-rsa-data.conf");
+  UserPermissionTable permissionTable;
+
+  const auto response = makeResponse(userIdentity,
+                                     tlv::UserPermission,
+                                     "/test/provider/camera",
+                                     "/ObjectDetection/YOLOv8",
+                                     "never-installed");
+
+  for (int i = 0; i < 20; ++i) {
+    auto unsignedData = makeUnsignedEncryptedPermissionData(
+      ndn::Name("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice/" +
+                std::to_string(i)),
+      response,
+      userCert);
+    int successCount = 0;
+    int failureCount = 0;
+    validator.validate(
+      unsignedData,
+      [&] (const ndn::Data& validatedData) {
+        ++successCount;
+        ServiceUser::handlePermissionResponseData(validatedData,
+                                                  userIdentity,
+                                                  userKeyChain,
+                                                  permissionTable);
+      },
+      [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+        ++failureCount;
+      });
+
+    BOOST_CHECK_EQUAL(successCount, 0);
+    BOOST_CHECK_EQUAL(failureCount, 1);
+    BOOST_CHECK(permissionTable.dumpAll().empty());
+  }
+
+  BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 20);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

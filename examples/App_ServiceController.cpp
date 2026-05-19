@@ -1,3 +1,4 @@
+#include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 
 #include <ndn-cxx/face.hpp>
@@ -6,6 +7,8 @@
 #include <ndn-cxx/security/validator-config.hpp>
 
 #include <iostream>
+#include <memory>
+#include <string>
 
 namespace {
 
@@ -31,13 +34,37 @@ getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity
 
 } // namespace
 
+bool
+hasFlag(int argc, char** argv, const std::string& option)
+{
+  for (int i = 1; i < argc; ++i) {
+    if (argv[i] == option) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string
+getOption(int argc, char** argv, const std::string& option, const std::string& fallback)
+{
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (argv[i] == option) {
+      return argv[i + 1];
+    }
+  }
+  return fallback;
+}
+
 int
-main()
+main(int argc, char** argv)
 {
   try {
     ndn::Face face;
     ndn::KeyChain keyChain;
     ndn::ValidatorConfig validator(face);
+    const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
+    const std::string policyFile = getOption(argc, argv, "--policy-file", "examples/hello.policies");
 
     auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(CONTROLLER_PREFIX));
@@ -49,11 +76,24 @@ main()
 
     validator.load("examples/trust-any.conf");
 
+    std::cout << "[App_ServiceController] authority identity="
+              << controllerCert.getIdentity().toUri()
+              << " serveCertificates=" << serveCertificates
+              << " dkeyPrefix="
+              << ndn::Name(controllerCert.getIdentity()).append("DKEY").toUri()
+              << std::endl;
+
+    std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
+    if (serveCertificates) {
+      certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
+        face, keyChain, controllerCert.getName());
+    }
+
     ndn_service_framework::ServiceController controller(
       face,
       controllerCert,
       validator,
-      "examples/hello.policies");
+      policyFile);
     controller.setControllerPrefix(CONTROLLER_PREFIX);
 
     std::cout << "ServiceController started..." << std::endl;

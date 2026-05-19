@@ -2,10 +2,13 @@
 #include "utils.hpp"
 
 #include <ndn-cxx/security/transform.hpp>
+#include <ndn-cxx/util/logger.hpp>
 
 #include <string_view>
 
 namespace ndn_service_framework {
+
+NDN_LOG_INIT(ndn_service_framework.ServiceController);
 
 namespace {
 
@@ -126,7 +129,7 @@ void ServiceController::run()
 void ServiceController::loadConfigFiles()
 {
   if (fs::is_regular_file(m_configFilePath)) {
-    std::cout << "Loading config file: " << m_configFilePath << std::endl;
+    NDN_LOG_INFO("Loading config file: " << m_configFilePath);
 
     PolicyParser parser;
     auto policies = parser.parsePolicyFile(m_configFilePath);
@@ -137,7 +140,7 @@ void ServiceController::loadConfigFiles()
                           policies.second.begin(), policies.second.end());
   }
   else {
-    std::cerr << "Error: " << m_configFilePath << " is not a valid file." << std::endl;
+    NDN_LOG_ERROR("Error: " << m_configFilePath << " is not a valid file.");
   }
 }
 
@@ -177,13 +180,13 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
                     .getDefaultKey()
                     .getDefaultCertificate();
       m_aa.addNewPolicy(cert, abePolicy);
-      std::cout << "Add ABE policy: " << abePolicy
-                << " for identity (cert): " << identity << std::endl;
+      NDN_LOG_INFO("Add ABE policy: " << abePolicy
+                << " for identity (cert): " << identity);
     }
     catch (const std::exception&) {
       m_aa.addNewPolicy(ndn::Name(identity), abePolicy);
-      std::cout << "Add ABE policy (fallback): " << abePolicy
-                << " for identity: " << identity << std::endl;
+      NDN_LOG_INFO("Add ABE policy (fallback): " << abePolicy
+                << " for identity: " << identity);
     }
   }
 }
@@ -287,7 +290,7 @@ void ServiceController::registerInterestHandlers()
     },
     ndn::RegisterPrefixSuccessCallback(),
     [](const ndn::Name& p, const std::string& reason) {
-      std::cerr << "Failed to register prefix " << p << " reason=" << reason << std::endl;
+      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
     });
 
   m_face.setInterestFilter(
@@ -297,7 +300,7 @@ void ServiceController::registerInterestHandlers()
     },
     ndn::RegisterPrefixSuccessCallback(),
     [](const ndn::Name& p, const std::string& reason) {
-      std::cerr << "Failed to register prefix " << p << " reason=" << reason << std::endl;
+      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
     });
 
   m_face.setInterestFilter(
@@ -307,7 +310,7 @@ void ServiceController::registerInterestHandlers()
     },
     ndn::RegisterPrefixSuccessCallback(),
     [](const ndn::Name& p, const std::string& reason) {
-      std::cerr << "Failed to register prefix " << p << " reason=" << reason << std::endl;
+      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
     });
 
   m_face.setInterestFilter(
@@ -317,14 +320,14 @@ void ServiceController::registerInterestHandlers()
     },
     ndn::RegisterPrefixSuccessCallback(),
     [](const ndn::Name& p, const std::string& reason) {
-      std::cerr << "Failed to register prefix " << p << " reason=" << reason << std::endl;
+      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
     });
 
-  std::cout << "ServiceController listening on:\n"
-            << "  " << m_prefixServiceAccess << "\n"
-            << "  " << m_prefixServiceProvision << "\n"
-            << "  " << m_prefixUserPermissions << "\n"
-            << "  " << m_prefixProviderPermissions << std::endl;
+  NDN_LOG_INFO("ServiceController listening on:\n"
+            << "  " << m_prefixServiceAccess 
+            << "  " << m_prefixServiceProvision 
+            << "  " << m_prefixUserPermissions 
+            << "  " << m_prefixProviderPermissions);
 
   m_isRegistered = true;
 }
@@ -521,19 +524,17 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
         signerCert = getSignerCertificateFromInterest(validatedInterest);
       }
       catch (const std::exception& e) {
-        std::cerr << "[SERVICEACCESS] authorization failed: requested="
+        NDN_LOG_ERROR("[SERVICEACCESS] authorization failed: requested="
                   << userName
                   << " signer=<unknown>"
-                  << " error=" << e.what()
-                  << std::endl;
+                  << " error=" << e.what());
         return;
       }
 
       if (!identitiesMatch(signerIdentity, userName)) {
-        std::cerr << "[SERVICEACCESS] authorization failed: requested="
+        NDN_LOG_ERROR("[SERVICEACCESS] authorization failed: requested="
                   << userName
-                  << " signer=" << signerIdentity
-                  << std::endl;
+                  << " signer=" << signerIdentity);
         return;
       }
 
@@ -559,16 +560,15 @@ void ServiceController::onServiceAccessInterest(const ndn::InterestFilter&,
       m_keyChain.sign(data);
       m_face.put(data);
 
-      std::cout << "[SERVICEACCESS] Reply to " << userUri
+      NDN_LOG_INFO("[SERVICEACCESS] Reply to " << userUri
                 << " services=" << services.size()
                 << " data=" << data.getName()
-                << " encryptedFor=" << signerCert.getName()
-                << std::endl;
+                << " encryptedFor=" << signerCert.getName());
     },
     // failed
     [this](const ndn::Interest& badInterest, const ndn::security::ValidationError& err) {
-      std::cerr << "[SERVICEACCESS] Interest validation failed: "
-                << err << " name=" << badInterest.getName() << std::endl;
+      NDN_LOG_ERROR("[SERVICEACCESS] Interest validation failed: "
+                << err << " name=" << badInterest.getName());
     });
 }
 
@@ -592,19 +592,17 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
         signerCert = getSignerCertificateFromInterest(validatedInterest);
       }
       catch (const std::exception& e) {
-        std::cerr << "[SERVICEPROVISION] authorization failed: requested="
+        NDN_LOG_ERROR("[SERVICEPROVISION] authorization failed: requested="
                   << providerName
                   << " signer=<unknown>"
-                  << " error=" << e.what()
-                  << std::endl;
+                  << " error=" << e.what());
         return;
       }
 
       if (!identitiesMatch(signerIdentity, providerName)) {
-        std::cerr << "[SERVICEPROVISION] authorization failed: requested="
+        NDN_LOG_ERROR("[SERVICEPROVISION] authorization failed: requested="
                   << providerName
-                  << " signer=" << signerIdentity
-                  << std::endl;
+                  << " signer=" << signerIdentity);
         return;
       }
 
@@ -628,16 +626,15 @@ void ServiceController::onServiceProvisionInterest(const ndn::InterestFilter&,
       m_keyChain.sign(data);
       m_face.put(data);
 
-      std::cout << "[SERVICEPROVISION] Reply to " << providerUri
+      NDN_LOG_INFO("[SERVICEPROVISION] Reply to " << providerUri
                 << " services=" << services.size()
                 << " data=" << data.getName()
-                << " encryptedFor=" << signerCert.getName()
-                << std::endl;
+                << " encryptedFor=" << signerCert.getName());
     },
     // failed
     [this](const ndn::Interest& badInterest, const ndn::security::ValidationError& err) {
-      std::cerr << "[SERVICEPROVISION] Interest validation failed: "
-                << err << " name=" << badInterest.getName() << std::endl;
+      NDN_LOG_ERROR("[SERVICEPROVISION] Interest validation failed: "
+                << err << " name=" << badInterest.getName());
     });
 }
 
@@ -656,10 +653,9 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
     encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
   }
   catch (const std::exception& e) {
-    std::cerr << "[PERMISSIONS/USER] Refusing to reply without encrypting for target="
+    NDN_LOG_ERROR("[PERMISSIONS/USER] Refusing to reply without encrypting for target="
               << targetIdentity.toUri()
-              << " error=" << e.what()
-              << std::endl;
+              << " error=" << e.what());
     return;
   }
 
@@ -673,12 +669,11 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
     ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
   m_face.put(data);
 
-  std::cout << "[PERMISSIONS/USER] Encrypted reply target="
+  NDN_LOG_INFO("[PERMISSIONS/USER] Encrypted reply target="
             << targetIdentity.toUri()
             << " entries=" << response.getEntries().size()
             << " data=" << data.getName()
-            << " payload=" << encryptedResponse.toString()
-            << std::endl;
+            << " payload=" << encryptedResponse.toString());
 }
 
 void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&,
@@ -696,10 +691,9 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
     encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
   }
   catch (const std::exception& e) {
-    std::cerr << "[PERMISSIONS/PROVIDER] Refusing to reply without encrypting for target="
+    NDN_LOG_ERROR("[PERMISSIONS/PROVIDER] Refusing to reply without encrypting for target="
               << targetIdentity.toUri()
-              << " error=" << e.what()
-              << std::endl;
+              << " error=" << e.what());
     return;
   }
 
@@ -713,12 +707,11 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
     ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
   m_face.put(data);
 
-  std::cout << "[PERMISSIONS/PROVIDER] Encrypted reply target="
+  NDN_LOG_INFO("[PERMISSIONS/PROVIDER] Encrypted reply target="
             << targetIdentity.toUri()
             << " entries=" << response.getEntries().size()
             << " data=" << data.getName()
-            << " payload=" << encryptedResponse.toString()
-            << std::endl;
+            << " payload=" << encryptedResponse.toString());
 }
 
 } // namespace ndn_service_framework

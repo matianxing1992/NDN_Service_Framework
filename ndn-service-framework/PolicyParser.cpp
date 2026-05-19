@@ -1,6 +1,10 @@
 #include "PolicyParser.hpp"
 
+#include <ndn-cxx/util/logger.hpp>
+
 namespace ndn_service_framework {
+
+NDN_LOG_INIT(ndn_service_framework.PolicyParser);
 
 std::pair<std::vector<ProviderPolicy>, std::vector<UserPolicy>> PolicyParser::parsePolicyFile(const std::string& filename) {
     std::ifstream file(filename);
@@ -8,7 +12,7 @@ std::pair<std::vector<ProviderPolicy>, std::vector<UserPolicy>> PolicyParser::pa
     std::vector<UserPolicy> userPolicies;
 
     if (!file.is_open()) {
-        std::cerr << "Error opening file: " << filename << std::endl;
+        NDN_LOG_ERROR("Error opening file: " << filename);
         return { {}, {} };
     }
 
@@ -16,7 +20,7 @@ std::pair<std::vector<ProviderPolicy>, std::vector<UserPolicy>> PolicyParser::pa
     try {
         pt::read_info(file, pt);
     } catch (const pt::info_parser_error& e) {
-        std::cerr << "Error parsing file: " << e.what() << std::endl;
+        NDN_LOG_ERROR("Error parsing file: " << e.what());
         return { {}, {} };
     }
 

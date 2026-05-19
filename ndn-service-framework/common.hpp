@@ -8,6 +8,10 @@
 #include <memory>
 #include <thread>
 #include <stdexcept>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <vector>
 #include <ndn-cxx/face.hpp>
 #include <ndn-svs/svspubsub.hpp>
 #include <ndn-svs/security-options.hpp>
@@ -39,6 +43,7 @@
 
 #include <map>
 #include <mutex>
+#include <atomic>
 
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/post.hpp>
@@ -54,6 +59,254 @@
 
 
 namespace ndn_service_framework{
+
+    struct HybridCryptoCounters
+    {
+        std::atomic<uint64_t> hybrid_key_epoch_created{0};
+        std::atomic<uint64_t> hybrid_key_rotation_age{0};
+        std::atomic<uint64_t> hybrid_key_rotation_uses{0};
+        std::atomic<uint64_t> nac_abe_key_wrap_count{0};
+        std::atomic<uint64_t> nac_abe_key_unwrap_count{0};
+        std::atomic<uint64_t> symmetric_encrypt_count{0};
+        std::atomic<uint64_t> symmetric_decrypt_count{0};
+        std::atomic<uint64_t> key_cache_hit_count{0};
+        std::atomic<uint64_t> key_cache_miss_count{0};
+        std::atomic<uint64_t> auth_decrypt_failure_count{0};
+        std::atomic<uint64_t> user_token_symmetric_encrypt_count{0};
+        std::atomic<uint64_t> user_token_symmetric_decrypt_count{0};
+        std::atomic<uint64_t> provider_token_symmetric_encrypt_count{0};
+        std::atomic<uint64_t> provider_token_symmetric_decrypt_count{0};
+        std::atomic<uint64_t> legacy_token_nac_abe_encrypt_count{0};
+        std::atomic<uint64_t> legacy_token_nac_abe_decrypt_count{0};
+    };
+
+    class SerializedWorkerQueue
+    {
+    public:
+        explicit SerializedWorkerQueue(std::string name, size_t maxQueueSize = 1024)
+            : m_name(std::move(name))
+            , m_maxQueueSize(maxQueueSize == 0 ? 1 : maxQueueSize)
+            , m_worker([this] { run(); })
+        {
+        }
+
+        ~SerializedWorkerQueue()
+        {
+            shutdown();
+        }
+
+        SerializedWorkerQueue(const SerializedWorkerQueue&) = delete;
+        SerializedWorkerQueue& operator=(const SerializedWorkerQueue&) = delete;
+
+        bool
+        post(std::function<void()> task)
+        {
+            if (!task) {
+                return false;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_stopping || m_tasks.size() >= m_maxQueueSize) {
+                    return false;
+                }
+                m_tasks.emplace_back(std::move(task));
+            }
+            m_cv.notify_one();
+            return true;
+        }
+
+        void
+        shutdown()
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_stopping) {
+                    return;
+                }
+                m_stopping = true;
+            }
+            m_cv.notify_one();
+            if (m_worker.joinable()) {
+                m_worker.join();
+            }
+        }
+
+    private:
+        void
+        run()
+        {
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(m_mutex);
+                    m_cv.wait(lock, [this] {
+                        return m_stopping || !m_tasks.empty();
+                    });
+                    if (m_stopping && m_tasks.empty()) {
+                        return;
+                    }
+                    task = std::move(m_tasks.front());
+                    m_tasks.pop_front();
+                }
+
+                try {
+                    task();
+                }
+                catch (const std::exception& e) {
+                    NDN_LOG_ERROR(m_name << " task failed: " << e.what());
+                }
+                catch (...) {
+                    NDN_LOG_ERROR(m_name << " task failed with unknown exception");
+                }
+            }
+        }
+
+    private:
+        NDN_LOG_MEMBER_DECL();
+        std::string m_name;
+        size_t m_maxQueueSize;
+        std::mutex m_mutex;
+        std::condition_variable m_cv;
+        std::deque<std::function<void()>> m_tasks;
+        bool m_stopping = false;
+        std::thread m_worker;
+    };
+
+    class BoundedWorkerPool
+    {
+    public:
+        explicit BoundedWorkerPool(std::string name, size_t maxQueueSize = 1024)
+            : m_name(std::move(name))
+            , m_maxQueueSize(maxQueueSize == 0 ? 1 : maxQueueSize)
+        {
+        }
+
+        ~BoundedWorkerPool()
+        {
+            shutdown();
+        }
+
+        BoundedWorkerPool(const BoundedWorkerPool&) = delete;
+        BoundedWorkerPool& operator=(const BoundedWorkerPool&) = delete;
+
+        void
+        setThreadCount(size_t threadCount)
+        {
+            shutdown();
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_stopping = false;
+                m_threadCount = threadCount;
+            }
+            if (threadCount == 0) {
+                return;
+            }
+            m_workers.reserve(threadCount);
+            for (size_t i = 0; i < threadCount; ++i) {
+                m_workers.emplace_back([this] { run(); });
+            }
+        }
+
+        size_t
+        getThreadCount() const
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            return m_threadCount;
+        }
+
+        size_t
+        getQueueSize() const
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            return m_tasks.size();
+        }
+
+        bool
+        post(std::function<void()> task)
+        {
+            if (!task) {
+                return false;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_threadCount == 0) {
+                    return false;
+                }
+                if (m_stopping || m_tasks.size() >= m_maxQueueSize) {
+                    return false;
+                }
+                m_tasks.emplace_back(std::move(task));
+            }
+            m_cv.notify_one();
+            return true;
+        }
+
+        void
+        shutdown()
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_stopping && m_workers.empty()) {
+                    return;
+                }
+                m_stopping = true;
+            }
+            m_cv.notify_all();
+            for (auto& worker : m_workers) {
+                if (worker.joinable()) {
+                    worker.join();
+                }
+            }
+            m_workers.clear();
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_threadCount = 0;
+            }
+        }
+
+    private:
+        void
+        run()
+        {
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(m_mutex);
+                    m_cv.wait(lock, [this] {
+                        return m_stopping || !m_tasks.empty();
+                    });
+                    if (m_stopping && m_tasks.empty()) {
+                        return;
+                    }
+                    task = std::move(m_tasks.front());
+                    m_tasks.pop_front();
+                }
+
+                try {
+                    task();
+                }
+                catch (const std::exception& e) {
+                    NDN_LOG_ERROR(m_name << " task failed: " << e.what());
+                }
+                catch (...) {
+                    NDN_LOG_ERROR(m_name << " task failed with unknown exception");
+                }
+            }
+        }
+
+    private:
+        NDN_LOG_MEMBER_DECL();
+        std::string m_name;
+        size_t m_maxQueueSize;
+        mutable std::mutex m_mutex;
+        std::condition_variable m_cv;
+        std::deque<std::function<void()>> m_tasks;
+        std::vector<std::thread> m_workers;
+        size_t m_threadCount = 0;
+        bool m_stopping = true;
+    };
 
     class OptionalServiceDiscovery
     {
@@ -106,6 +359,12 @@ namespace ndn_service_framework{
             m_validator.load(trustSchemaPath);
         }
 
+        size_t
+        getFailureCountForTesting() const
+        {
+            return m_failureCount.load();
+        }
+
         /**
          * @brief Asynchronously validate @p data
          *
@@ -116,6 +375,23 @@ namespace ndn_service_framework{
                  const ndn::security::DataValidationSuccessCallback &successCb,
                  const ndn::security::DataValidationFailureCallback &failureCb) override
         {
+            const auto sigType = data.getSignatureType();
+            if ((sigType != ndn::tlv::SignatureSha256WithRsa &&
+                 sigType != ndn::tlv::SignatureSha256WithEcdsa) ||
+                !data.getSignatureInfo().hasKeyLocator()) {
+                ndn::security::ValidationError error(
+                    ndn::security::ValidationError::MALFORMED_SIGNATURE,
+                    "Data must have an RSA/ECDSA signature with KeyLocator");
+                NDN_LOG_ERROR("MessageValidator Data validation failed name="
+                              << data.getName()
+                              << " reason=" << error);
+                ++m_failureCount;
+                if (failureCb) {
+                    failureCb(data, error);
+                }
+                return;
+            }
+
             m_validator.validate(
                 data, 
                 [&](const ndn::Data &)
@@ -124,7 +400,13 @@ namespace ndn_service_framework{
                 },
                 [&](const ndn::Data& data, const ndn::security::ValidationError& error) 
                 {
-                    //failureCb(data,error);
+                    NDN_LOG_ERROR("MessageValidator Data validation failed name="
+                                  << data.getName()
+                                  << " reason=" << error);
+                    ++m_failureCount;
+                    if (failureCb) {
+                        failureCb(data, error);
+                    }
                 });
         }
 
@@ -139,8 +421,6 @@ namespace ndn_service_framework{
                  const ndn::security::InterestValidationFailureCallback &failureCb) override
         {
             // successCb(interest); 
-            // std::cout<<interest.getSignatureInfo()->getTime()->time_since_epoch().count()<<std::endl;
-            // std::cout<< interest.getSignatureInfo()->getKeyLocator().getName().toUri() <<std::endl;
             m_validator.validate(
                 interest, 
                 [&](const ndn::Interest& interest)
@@ -149,14 +429,22 @@ namespace ndn_service_framework{
                 },
                 [&](const ndn::Interest& interest, const ndn::security::ValidationError& error) 
                 {
-                    //failureCb(interest,error);
+                    NDN_LOG_ERROR("MessageValidator Interest validation failed name="
+                                  << interest.getName()
+                                  << " reason=" << error);
+                    ++m_failureCount;
+                    if (failureCb) {
+                        failureCb(interest, error);
+                    }
                 });
 
         }
 
     private:
+        NDN_LOG_MEMBER_DECL();
         ndn::Face m_face;
         ndn::ValidatorConfig m_validator{m_face};
+        std::atomic<size_t> m_failureCount{0};
     };
 
     /**
