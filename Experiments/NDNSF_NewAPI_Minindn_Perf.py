@@ -235,6 +235,12 @@ def build_parser():
                         help="Enable harness-only NDNSF_CRYPTO_DIAG timing logs")
     parser.add_argument("--timeline-trace", action="store_true",
                         help="Pass --timeline-trace to App_User and App_Provider and enable timeline trace logs")
+    parser.add_argument("--svs-parallel-sync-processing", action="store_true",
+                        help="Enable experimental ndn-svs parallel Sync Interest processing in App_User/App_Provider")
+    parser.add_argument("--svs-parallel-workers", type=int, default=2,
+                        help="Worker count for --svs-parallel-sync-processing")
+    parser.add_argument("--svs-parallel-queue", type=int, default=128,
+                        help="Bounded queue size for --svs-parallel-sync-processing")
     parser.add_argument("--provider-ack-payload", default=None,
                         help="Override benchmark provider ACK payload text for focused diagnostics")
     parser.add_argument("--diag-plaintext-ack", action="store_true",
@@ -1606,6 +1612,10 @@ def app_env(output_dir, session_base, args):
     if getattr(args, "diag_plaintext_response", False):
         env["NDNSF_CRYPTO_DIAG"] = "1"
         env["NDNSF_DIAG_PLAINTEXT_RESPONSE"] = "1"
+    if getattr(args, "svs_parallel_sync_processing", False):
+        env["NDNSF_SVS_PARALLEL_SYNC"] = "1"
+        env["NDNSF_SVS_PARALLEL_WORKERS"] = str(max(1, args.svs_parallel_workers))
+        env["NDNSF_SVS_PARALLEL_QUEUE"] = str(max(1, args.svs_parallel_queue))
     return env
 
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <random>
@@ -58,6 +59,35 @@ namespace ndn_service_framework
         userScopedLockPath(const std::string& base)
         {
             return base + "-" + std::to_string(getuid()) + ".lock";
+        }
+
+        bool
+        isTruthyEnv(const char* name)
+        {
+            const char* value = std::getenv(name);
+            if (value == nullptr) {
+                return false;
+            }
+            std::string text(value);
+            std::transform(text.begin(), text.end(), text.begin(),
+                           [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return !(text.empty() || text == "0" || text == "false" ||
+                     text == "no" || text == "off");
+        }
+
+        int
+        intEnvOrDefault(const char* name, int fallback)
+        {
+            const char* value = std::getenv(name);
+            if (value == nullptr || *value == '\0') {
+                return fallback;
+            }
+            try {
+                return std::stoi(value);
+            }
+            catch (const std::exception&) {
+                return fallback;
+            }
         }
 
         ndn::Buffer
@@ -342,6 +372,14 @@ namespace ndn_service_framework
                 std::bind(&ServiceProvider::onMissingData, this, _1),
                 opts,
                 secOpts);
+            if (isTruthyEnv("NDNSF_SVS_PARALLEL_SYNC")) {
+                const int workers = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 2));
+                const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 128));
+                m_svsps->getSVSync().getCore().setParallelSyncProcessing(
+                    true, static_cast<size_t>(workers), static_cast<size_t>(queue));
+                NDN_LOG_INFO("NDNSF_SVS_PARALLEL_SYNC enabled role=provider workers="
+                             << workers << " queue=" << queue);
+            }
         }
 
         while(!nacConsumer.readyForDecryption()){
@@ -390,6 +428,20 @@ namespace ndn_service_framework
 
     ServiceProvider::~ServiceProvider()
     {
+        if (m_svsps != nullptr) {
+            const auto stats = m_svsps->getSVSync().getCore().getSyncProcessingStats();
+            NDN_LOG_INFO("NDNSF_SVS_SYNC_STATS role=provider"
+                         << " submitted=" << stats.syncJobsSubmitted
+                         << " completed=" << stats.syncJobsCompleted
+                         << " dropped=" << stats.syncJobsDropped
+                         << " stale=" << stats.syncJobsStale
+                         << " queueDepth=" << stats.syncWorkerQueueDepth
+                         << " workerMs=" << stats.syncWorkerProcessingMs
+                         << " publishMs=" << stats.syncMainThreadPublishMs
+                         << " serialMs=" << stats.syncInterestSerialHandlerMs
+                         << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
+                         << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs);
+        }
         m_handlerPool.shutdown();
     }
 
