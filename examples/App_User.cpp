@@ -812,6 +812,9 @@ main(int argc, char** argv)
 
           if (adaptiveAdmission.enabled &&
               (admissionAtLimit || pendingResponseAtLimit || *paused)) {
+            if (admissionAtLimit) {
+              user.recordAdaptiveAdmissionBackpressure();
+            }
             ++(*outstandingLimitSkips);
             ++(*delayedPublications);
             (*sampleOutstanding)();
@@ -840,6 +843,9 @@ main(int argc, char** argv)
           if (currentLoad >= activeLimit ||
               (adaptiveAdmission.enabled &&
                states->size() >= static_cast<size_t>(maxOutstanding))) {
+            if (adaptiveAdmission.enabled && currentLoad >= activeLimit) {
+              user.recordAdaptiveAdmissionBackpressure();
+            }
             ++(*outstandingLimitSkips);
             ++(*delayedPublications);
             (*sampleOutstanding)();

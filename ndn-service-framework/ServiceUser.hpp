@@ -204,6 +204,7 @@ namespace ndn_service_framework{
             size_t getAdaptiveAdmissionWindow() const;
             size_t getAdaptiveAdmissionInflight() const;
             size_t getAdaptiveAdmissionQueueDepth() const;
+            void recordAdaptiveAdmissionBackpressure();
 
             static AckCandidatesHandler makeAckSelectionHandler(
                 AckSelectionStrategy strategy);
@@ -652,9 +653,12 @@ namespace ndn_service_framework{
             bool m_adaptiveAdmissionControlScheduled = false;
             uint64_t m_adaptiveAdmissionIntervalSuccesses = 0;
             uint64_t m_adaptiveAdmissionIntervalTimeouts = 0;
+            uint64_t m_adaptiveAdmissionIntervalBackpressure = 0;
             double m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
             uint64_t m_adaptiveAdmissionIntervalLatencyCount = 0;
             std::vector<double> m_adaptiveAdmissionIntervalLatenciesMs;
+            double m_adaptiveAdmissionBaselineLatencyMs = 0.0;
+            double m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
             bool m_adaptiveAdmissionIntervalCongested = false;
             bool m_adaptiveAdmissionIntervalSevere = false;
             std::deque<ndn::Name> m_adaptiveAdmissionQueue;
