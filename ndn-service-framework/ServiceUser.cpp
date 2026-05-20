@@ -572,6 +572,8 @@ namespace ndn_service_framework
         m_adaptiveAdmissionWindow = m_adaptiveAdmissionOptions.enabled ?
             m_adaptiveAdmissionOptions.initialWindow :
             m_adaptiveAdmissionOptions.maxWindow;
+        m_adaptiveAdmissionBaselineLatencyMs = 0.0;
+        m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
         NDN_LOG_WARN("Adaptive admission control: "
                      << (m_adaptiveAdmissionOptions.enabled ? "enabled" : "disabled")
                      << " window=" << m_adaptiveAdmissionWindow
@@ -606,6 +608,13 @@ namespace ndn_service_framework
     size_t ServiceUser::getAdaptiveAdmissionQueueDepth() const
     {
         return m_adaptiveAdmissionQueue.size();
+    }
+
+    void ServiceUser::recordAdaptiveAdmissionBackpressure()
+    {
+        if (m_adaptiveAdmissionOptions.enabled) {
+            ++m_adaptiveAdmissionIntervalBackpressure;
+        }
     }
 
     void ServiceUser::updateRequestLifecycleState(const ndn::Name& requestId,
@@ -1193,33 +1202,54 @@ namespace ndn_service_framework
                 static_cast<double>(m_adaptiveAdmissionIntervalLatencyCount);
         const double targetLatencyMs =
             static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs);
+        const double p50LatencyMs =
+            percentileLatency(m_adaptiveAdmissionIntervalLatenciesMs, 50.0);
         const double p95LatencyMs =
             percentileLatency(m_adaptiveAdmissionIntervalLatenciesMs, 95.0);
         const double maxLatencyMs =
             m_adaptiveAdmissionIntervalLatenciesMs.empty() ? 0.0 :
             *std::max_element(m_adaptiveAdmissionIntervalLatenciesMs.begin(),
                               m_adaptiveAdmissionIntervalLatenciesMs.end());
-        const bool queueCongested =
+        if (p50LatencyMs > 0.0) {
+            if (m_adaptiveAdmissionBaselineLatencyMs <= 0.0) {
+                m_adaptiveAdmissionBaselineLatencyMs = p50LatencyMs;
+            }
+            else if (p50LatencyMs < m_adaptiveAdmissionBaselineLatencyMs) {
+                m_adaptiveAdmissionBaselineLatencyMs =
+                    0.80 * m_adaptiveAdmissionBaselineLatencyMs +
+                    0.20 * p50LatencyMs;
+            }
+            else {
+                m_adaptiveAdmissionBaselineLatencyMs =
+                    0.98 * m_adaptiveAdmissionBaselineLatencyMs +
+                    0.02 * p50LatencyMs;
+            }
+        }
+        const double queueDelayMs =
+            p95LatencyMs > 0.0 && m_adaptiveAdmissionBaselineLatencyMs > 0.0 ?
+            std::max(0.0, p95LatencyMs - m_adaptiveAdmissionBaselineLatencyMs) :
+            0.0;
+        const double queueDelayGradientMs =
+            queueDelayMs - m_adaptiveAdmissionPreviousQueueDelayMs;
+        const double queueDelayTargetMs = std::max(50.0, 0.35 * targetLatencyMs);
+        const double queueDelaySevereMs = std::max(100.0, 0.75 * targetLatencyMs);
+        const bool queuePressure =
             (queueBacklogged &&
             m_adaptiveAdmissionInflight >=
                 static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8)));
         const bool queueSevere =
-            m_adaptiveAdmissionQueue.size() >= activeLimit;
+            m_adaptiveAdmissionQueue.size() >= m_adaptiveAdmissionOptions.hardInflightLimit;
+        const bool demandBacklogged =
+            queueBacklogged || m_adaptiveAdmissionIntervalBackpressure > 0;
         const bool latencyCongested =
-            p95LatencyMs > targetLatencyMs;
+            queueDelayMs > queueDelayTargetMs && queueDelayGradientMs > 0.0;
         const bool latencySevere =
-            p95LatencyMs > 1.25 * targetLatencyMs ||
-            maxLatencyMs > 1.5 * targetLatencyMs;
-        if (queueCongested) {
-            m_adaptiveAdmissionIntervalCongested = true;
-        }
-        if (queueSevere) {
-            m_adaptiveAdmissionIntervalSevere = true;
-        }
+            queueDelayMs > queueDelaySevereMs ||
+            (maxLatencyMs > 0.0 && maxLatencyMs > 2.0 * targetLatencyMs);
         if (latencyCongested) {
             m_adaptiveAdmissionIntervalCongested = true;
         }
-        if (latencySevere) {
+        if (latencySevere || queueSevere) {
             m_adaptiveAdmissionIntervalSevere = true;
         }
 
@@ -1240,8 +1270,12 @@ namespace ndn_service_framework
                     m_adaptiveAdmissionOptions.minWindow);
         }
         else if (m_adaptiveAdmissionIntervalSuccesses > 0 &&
-                 !queueBacklogged &&
-                 (p95LatencyMs == 0.0 ||
+                 (p95LatencyMs == 0.0 || queueDelayMs < queueDelayTargetMs ||
+                  queueDelayGradientMs <= -10.0) &&
+                 (queuePressure ||
+                  demandBacklogged ||
+                  m_adaptiveAdmissionInflight >=
+                    static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8)) ||
                   p95LatencyMs < 0.8 * targetLatencyMs)) {
             m_adaptiveAdmissionWindow = std::min(
                 m_adaptiveAdmissionOptions.maxWindow,
@@ -1252,14 +1286,23 @@ namespace ndn_service_framework
                   << " oldWindow=" << oldWindow
                   << " inflight=" << m_adaptiveAdmissionInflight
                   << " queueDepth=" << m_adaptiveAdmissionQueue.size()
+                  << " backpressure="
+                  << m_adaptiveAdmissionIntervalBackpressure
                   << " successes=" << m_adaptiveAdmissionIntervalSuccesses
                   << " timeouts=" << m_adaptiveAdmissionIntervalTimeouts
                   << " avgLatencyMs=" << averageLatencyMs
+                  << " p50LatencyMs=" << p50LatencyMs
                   << " p95LatencyMs=" << p95LatencyMs
                   << " maxLatencyMs=" << maxLatencyMs
                   << " targetLatencyMs=" << targetLatencyMs
+                  << " baselineLatencyMs="
+                  << m_adaptiveAdmissionBaselineLatencyMs
+                  << " queueDelayMs=" << queueDelayMs
+                  << " queueDelayGradientMs=" << queueDelayGradientMs
+                  << " queueDelayTargetMs=" << queueDelayTargetMs
+                  << " queueDelaySevereMs=" << queueDelaySevereMs
                   << " aboveWindow=" << aboveWindow
-                  << " queueCongested=" << queueCongested
+                  << " queuePressure=" << queuePressure
                   << " queueSevere=" << queueSevere
                   << " latencyCongested=" << latencyCongested
                   << " latencySevere=" << latencySevere
@@ -1268,11 +1311,13 @@ namespace ndn_service_framework
 
         m_adaptiveAdmissionIntervalSuccesses = 0;
         m_adaptiveAdmissionIntervalTimeouts = 0;
+        m_adaptiveAdmissionIntervalBackpressure = 0;
         m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
         m_adaptiveAdmissionIntervalLatencyCount = 0;
         m_adaptiveAdmissionIntervalLatenciesMs.clear();
         m_adaptiveAdmissionIntervalCongested = false;
         m_adaptiveAdmissionIntervalSevere = false;
+        m_adaptiveAdmissionPreviousQueueDelayMs = queueDelayMs;
 
         drainAdaptiveAdmissionQueue();
         scheduleAdaptiveAdmissionControl();
@@ -1305,8 +1350,7 @@ namespace ndn_service_framework
             m_adaptiveAdmissionIntervalCongested = true;
         }
         else if (pendingCall.hasResponse || reasonText == "response_callback" ||
-                 reasonText == "completed" ||
-                 reasonText == "coordination_published") {
+                 reasonText == "completed") {
             ++m_adaptiveAdmissionIntervalSuccesses;
         }
 
@@ -1318,8 +1362,7 @@ namespace ndn_service_framework
             m_adaptiveAdmissionIntervalLatencySumMs += latencyMs;
             ++m_adaptiveAdmissionIntervalLatencyCount;
             m_adaptiveAdmissionIntervalLatenciesMs.push_back(latencyMs);
-            if (reasonText != "coordination_published" &&
-                latencyMs > 0.9 * static_cast<double>(pendingCall.timeoutMs)) {
+            if (latencyMs > 0.9 * static_cast<double>(pendingCall.timeoutMs)) {
                 m_adaptiveAdmissionIntervalSevere = true;
             }
         }
@@ -3803,10 +3846,6 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.coordinationPublishedAtUs = nowMicroseconds();
             addUniqueName(pendingIt->second.coordinatedProviders, providerName);
-            releaseAdaptiveAdmissionSlot(requestID,
-                                         pendingIt->second,
-                                         "coordination_published",
-                                         pendingIt->second.coordinationPublishedAtUs);
         }
         updateRequestLifecycleState(requestID, RequestLifecycleState::COORDINATION_PUBLISHED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISHED timestamp_us="
@@ -3907,10 +3946,6 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.coordinationPublishedAtUs = nowMicroseconds();
             addUniqueName(pendingIt->second.coordinatedProviders, providerName);
-            releaseAdaptiveAdmissionSlot(requestId,
-                                         pendingIt->second,
-                                         "coordination_published",
-                                         pendingIt->second.coordinationPublishedAtUs);
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::COORDINATION_PUBLISHED);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISHED timestamp_us="
