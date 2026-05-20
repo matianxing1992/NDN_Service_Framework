@@ -237,10 +237,24 @@ def build_parser():
                         help="Pass --timeline-trace to App_User and App_Provider and enable timeline trace logs")
     parser.add_argument("--svs-parallel-sync-processing", action="store_true",
                         help="Enable experimental ndn-svs parallel Sync Interest processing in App_User/App_Provider")
-    parser.add_argument("--svs-parallel-workers", type=int, default=2,
+    parser.add_argument("--svs-parallel-workers", type=int, default=4,
                         help="Worker count for --svs-parallel-sync-processing")
     parser.add_argument("--svs-parallel-queue", type=int, default=128,
                         help="Bounded queue size for --svs-parallel-sync-processing")
+    parser.add_argument("--svs-sync-publish", action="store_true",
+                        help="Use synchronous SVSPubSub::publish instead of default publishAsync")
+    parser.add_argument("--svs-disable-parallel-production", action="store_true",
+                        help="Disable default ndn-svs parallel Sync Interest production")
+    parser.add_argument("--svs-parallel-production-workers", type=int, default=None,
+                        help="Override NDNSF_SVS_PARALLEL_PRODUCTION worker count")
+    parser.add_argument("--svs-parallel-production-signing", action="store_true",
+                        help="Enable signing parallel Sync production Interests in worker threads")
+    parser.add_argument("--svs-disable-parallel-production-signing", action="store_true",
+                        help="Disable default worker-thread signing for parallel Sync production")
+    parser.add_argument("--svs-parallel-production-extra-block", action="store_true",
+                        help="Build Sync production ApplicationParameters in worker threads")
+    parser.add_argument("--svs-disable-parallel-production-extra-block", action="store_true",
+                        help="Disable default worker-thread ApplicationParameters construction")
     parser.add_argument("--svs-sync-batching", action="store_true",
                         help="Enable experimental ndn-svs local publication-triggered sync batching")
     parser.add_argument("--svs-sync-batch-ms", type=int, default=5,
@@ -1620,6 +1634,21 @@ def app_env(output_dir, session_base, args):
         env["NDNSF_SVS_PARALLEL_SYNC"] = "1"
         env["NDNSF_SVS_PARALLEL_WORKERS"] = str(max(1, args.svs_parallel_workers))
         env["NDNSF_SVS_PARALLEL_QUEUE"] = str(max(1, args.svs_parallel_queue))
+    if getattr(args, "svs_sync_publish", False):
+        env["NDNSF_SVS_ASYNC_PUBLISH"] = "0"
+    if getattr(args, "svs_disable_parallel_production", False):
+        env["NDNSF_SVS_PARALLEL_PRODUCTION"] = "0"
+    elif getattr(args, "svs_parallel_production_workers", None) is not None:
+        env["NDNSF_SVS_PARALLEL_PRODUCTION"] = str(
+            max(1, args.svs_parallel_production_workers))
+    if getattr(args, "svs_disable_parallel_production_signing", False):
+        env["NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING"] = "0"
+    elif getattr(args, "svs_parallel_production_signing", False):
+        env["NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING"] = "1"
+    if getattr(args, "svs_disable_parallel_production_extra_block", False):
+        env["NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK"] = "0"
+    elif getattr(args, "svs_parallel_production_extra_block", False):
+        env["NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK"] = "1"
     if getattr(args, "svs_sync_batching", False):
         env["NDNSF_SVS_SYNC_BATCHING"] = "1"
         env["NDNSF_SVS_SYNC_BATCH_MS"] = str(max(0, args.svs_sync_batch_ms))

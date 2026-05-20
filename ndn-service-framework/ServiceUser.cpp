@@ -106,6 +106,26 @@ namespace ndn_service_framework
         }
 
         bool
+        useAsyncSvsPublish()
+        {
+            return std::getenv("NDNSF_SVS_ASYNC_PUBLISH") == nullptr ||
+                   isTruthyEnv("NDNSF_SVS_ASYNC_PUBLISH");
+        }
+
+        void
+        publishSvs(const std::shared_ptr<ndn::svs::SVSPubSub>& svs,
+                   const ndn::Name& name,
+                   const ndn::Block& content)
+        {
+            if (useAsyncSvsPublish()) {
+                svs->publishAsync(name, content);
+            }
+            else {
+                svs->publish(name, content);
+            }
+        }
+
+        bool
         decodeEncryptedPermissionResponseFromDataContent(
             const ndn::Data& data,
             EncryptedPermissionResponse& response)
@@ -384,16 +404,40 @@ namespace ndn_service_framework
                 std::bind(&ServiceUser::onMissingData, this, _1),
                 opts,
                 secOpts);
+            NDN_LOG_INFO("NDNSF_SVS_ASYNC_PUBLISH role=user "
+                         << (useAsyncSvsPublish() ? "enabled" : "disabled"));
             const bool enableParallelSync =
                 std::getenv("NDNSF_SVS_PARALLEL_SYNC") == nullptr ||
                 isTruthyEnv("NDNSF_SVS_PARALLEL_SYNC");
             if (enableParallelSync) {
-                const int workers = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 2));
+                const int workers = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 4));
                 const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 256));
                 m_svsps->getSVSync().getCore().setParallelSyncProcessing(
                     true, static_cast<size_t>(workers), static_cast<size_t>(queue));
                 NDN_LOG_INFO("NDNSF_SVS_PARALLEL_SYNC enabled role=user workers="
                              << workers << " queue=" << queue);
+            }
+            const bool enableParallelProduction =
+                std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION") == nullptr ||
+                isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION");
+            if (enableParallelProduction) {
+                const int workers = std::max(
+                    1, intEnvOrDefault("NDNSF_SVS_PARALLEL_PRODUCTION",
+                                       intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 4)));
+                const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 256));
+                const bool signInWorker =
+                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING") == nullptr ||
+                    isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING");
+                const bool extraBlockInWorker =
+                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK") == nullptr ||
+                    isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK");
+                m_svsps->getSVSync().getCore().setParallelSyncProduction(
+                    true, static_cast<size_t>(workers), static_cast<size_t>(queue),
+                    signInWorker, extraBlockInWorker);
+                NDN_LOG_INFO("NDNSF_SVS_PARALLEL_PRODUCTION enabled role=user workers="
+                             << workers << " queue=" << queue
+                             << " signInWorker=" << signInWorker
+                             << " extraBlockInWorker=" << extraBlockInWorker);
             }
             if (isTruthyEnv("NDNSF_SVS_SYNC_BATCHING")) {
                 const int windowMs = std::max(0, intEnvOrDefault("NDNSF_SVS_SYNC_BATCH_MS", 5));
@@ -4197,7 +4241,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                                           {"mode", "hybrid"}});
                     }
                 }
-                m_svsps->publish(messageName, contentBlock);
+                publishSvs(m_svsps, messageName, contentBlock);
                 if (m_timelineTrace) {
                     ndn::Name rid;
                     ndn::Name svc;
@@ -4421,7 +4465,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                                               {"messageName", messageName.toUri()}});
                         }
                     }
-                    m_svsps->publish(messageName, contentBlock);
+                    publishSvs(m_svsps, messageName, contentBlock);
                     if (m_timelineTrace) {
                         ndn::Name requestId;
                         ndn::Name serviceName;
@@ -4548,7 +4592,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                              {{"serviceName", timelineServiceName.toUri()},
                               {"messageName", messageName.toUri()}});
         }
-        m_svsps->publish(messageName, contentBlock);
+        publishSvs(m_svsps, messageName, contentBlock);
         if (m_timelineTrace && !timelineRequestId.empty()) {
             logTimelineTrace("user", stage + "_publish_done", timelineRequestId,
                              {{"serviceName", timelineServiceName.toUri()},
