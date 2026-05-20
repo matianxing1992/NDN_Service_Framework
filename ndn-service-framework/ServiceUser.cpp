@@ -1290,9 +1290,12 @@ namespace ndn_service_framework
                   m_adaptiveAdmissionInflight >=
                     static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8)) ||
                   p95LatencyMs < 0.8 * targetLatencyMs)) {
+            const size_t increaseStep = demandBacklogged ?
+                std::max<size_t>(1, m_adaptiveAdmissionOptions.aiStep / 2) :
+                m_adaptiveAdmissionOptions.aiStep;
             m_adaptiveAdmissionWindow = std::min(
                 m_adaptiveAdmissionOptions.maxWindow,
-                m_adaptiveAdmissionWindow + m_adaptiveAdmissionOptions.aiStep);
+                m_adaptiveAdmissionWindow + increaseStep);
         }
 
         NDN_LOG_INFO("[NDNSF_ADMISSION] window=" << m_adaptiveAdmissionWindow
