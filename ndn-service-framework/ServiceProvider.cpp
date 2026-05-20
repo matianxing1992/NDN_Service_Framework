@@ -90,6 +90,26 @@ namespace ndn_service_framework
             }
         }
 
+        bool
+        useAsyncSvsPublish()
+        {
+            return std::getenv("NDNSF_SVS_ASYNC_PUBLISH") == nullptr ||
+                   isTruthyEnv("NDNSF_SVS_ASYNC_PUBLISH");
+        }
+
+        void
+        publishSvs(const std::shared_ptr<ndn::svs::SVSPubSub>& svs,
+                   const ndn::Name& name,
+                   const ndn::Block& content)
+        {
+            if (useAsyncSvsPublish()) {
+                svs->publishAsync(name, content);
+            }
+            else {
+                svs->publish(name, content);
+            }
+        }
+
         ndn::Buffer
         blockToPayloadBuffer(const ndn::Block& block)
         {
@@ -372,16 +392,40 @@ namespace ndn_service_framework
                 std::bind(&ServiceProvider::onMissingData, this, _1),
                 opts,
                 secOpts);
+            NDN_LOG_INFO("NDNSF_SVS_ASYNC_PUBLISH role=provider "
+                         << (useAsyncSvsPublish() ? "enabled" : "disabled"));
             const bool enableParallelSync =
                 std::getenv("NDNSF_SVS_PARALLEL_SYNC") == nullptr ||
                 isTruthyEnv("NDNSF_SVS_PARALLEL_SYNC");
             if (enableParallelSync) {
-                const int workers = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 2));
+                const int workers = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 4));
                 const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 256));
                 m_svsps->getSVSync().getCore().setParallelSyncProcessing(
                     true, static_cast<size_t>(workers), static_cast<size_t>(queue));
                 NDN_LOG_INFO("NDNSF_SVS_PARALLEL_SYNC enabled role=provider workers="
                              << workers << " queue=" << queue);
+            }
+            const bool enableParallelProduction =
+                std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION") == nullptr ||
+                isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION");
+            if (enableParallelProduction) {
+                const int workers = std::max(
+                    1, intEnvOrDefault("NDNSF_SVS_PARALLEL_PRODUCTION",
+                                       intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 4)));
+                const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 256));
+                const bool signInWorker =
+                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING") == nullptr ||
+                    isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING");
+                const bool extraBlockInWorker =
+                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK") == nullptr ||
+                    isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK");
+                m_svsps->getSVSync().getCore().setParallelSyncProduction(
+                    true, static_cast<size_t>(workers), static_cast<size_t>(queue),
+                    signInWorker, extraBlockInWorker);
+                NDN_LOG_INFO("NDNSF_SVS_PARALLEL_PRODUCTION enabled role=provider workers="
+                             << workers << " queue=" << queue
+                             << " signInWorker=" << signInWorker
+                             << " extraBlockInWorker=" << extraBlockInWorker);
             }
             if (isTruthyEnv("NDNSF_SVS_SYNC_BATCHING")) {
                 const int windowMs = std::max(0, intEnvOrDefault("NDNSF_SVS_SYNC_BATCH_MS", 5));
@@ -1523,7 +1567,7 @@ namespace ndn_service_framework
                                           {"mode", "hybrid"}});
                     }
                 }
-                m_svsps->publish(messageName, contentBlock);
+                publishSvs(m_svsps, messageName, contentBlock);
                 if (m_timelineTrace) {
                     ndn::Name rid;
                     ndn::Name svc;
@@ -1771,7 +1815,7 @@ namespace ndn_service_framework
                                               {"messageName", messageName.toUri()}});
                         }
                     }
-                    m_svsps->publish(messageName, contentBlock);
+                    publishSvs(m_svsps, messageName, contentBlock);
                     if (m_timelineTrace) {
                         ndn::Name rid;
                         ndn::Name svc;
@@ -1896,7 +1940,7 @@ namespace ndn_service_framework
                                  {{"serviceName", timelineServiceName.toUri()},
                                   {"messageName", messageName.toUri()}});
             }
-            m_svsps->publish(messageName, contentBlock);
+            publishSvs(m_svsps, messageName, contentBlock);
             if (m_timelineTrace && !timelineRequestId.empty()) {
                 logTimelineTrace("provider", stage + "_publish_done", timelineRequestId,
                                  {{"serviceName", timelineServiceName.toUri()},
@@ -2035,7 +2079,7 @@ namespace ndn_service_framework
                                                       {"messageName", messageName.toUri()}});
                                 }
                             }
-                            m_svsps->publish(messageName, contentBlock);
+                            publishSvs(m_svsps, messageName, contentBlock);
                             if (m_timelineTrace) {
                                 if (auto response = parseResponseNameV2(messageName)) {
                                     logTimelineTrace("provider", "response_publish_done",
@@ -2615,11 +2659,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 //         // ndn::BufferPtr contentBuffer = ndn_service_framework::CombineSegmentsIntoBuffer(contentData);
 //         // ndn::BufferPtr ckBuffer = ndn_service_framework::CombineSegmentsIntoBuffer(ckData);
 
-//         m_svsps->publish(responseName);
-//         //m_svsps->publish(responseName, ndn::make_span(reinterpret_cast<const uint8_t *>(contentBuffer->data()), contentBuffer->size()));
+//         m_svsps->publishAsync(responseName);
+//         //m_svsps->publishAsync(responseName, ndn::make_span(reinterpret_cast<const uint8_t *>(contentBuffer->data()), contentBuffer->size()));
 //         NDN_LOG_INFO("Publish Encrypted response" << contentData.at(0)->getName().getPrefix(-1));
-//         //m_svsps->publish(ckData.at(0)->getName().getPrefix(-1));
-//         //m_svsps->publish(ckData.at(0)->getName().getPrefix(-1), ndn::make_span(reinterpret_cast<const uint8_t *>(ckBuffer->data()), ckBuffer->size()));
+//         //m_svsps->publishAsync(ckData.at(0)->getName().getPrefix(-1));
+//         //m_svsps->publishAsync(ckData.at(0)->getName().getPrefix(-1), ndn::make_span(reinterpret_cast<const uint8_t *>(ckBuffer->data()), ckBuffer->size()));
 //         //NDN_LOG_INFO("ServiceProvider_Drone::PublishResponse CK" << ckData.at(0)->getName().getPrefix(-1));
 //     }
 
