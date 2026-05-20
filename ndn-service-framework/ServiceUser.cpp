@@ -574,6 +574,7 @@ namespace ndn_service_framework
             m_adaptiveAdmissionOptions.maxWindow;
         m_adaptiveAdmissionBaselineLatencyMs = 0.0;
         m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
+        m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
         NDN_LOG_WARN("Adaptive admission control: "
                      << (m_adaptiveAdmissionOptions.enabled ? "enabled" : "disabled")
                      << " window=" << m_adaptiveAdmissionWindow
@@ -1233,6 +1234,12 @@ namespace ndn_service_framework
             queueDelayMs - m_adaptiveAdmissionPreviousQueueDelayMs;
         const double queueDelayTargetMs = std::max(50.0, 0.35 * targetLatencyMs);
         const double queueDelaySevereMs = std::max(100.0, 0.75 * targetLatencyMs);
+        if (queueDelayMs > queueDelayTargetMs) {
+            ++m_adaptiveAdmissionQueueDelayOverTargetIntervals;
+        }
+        else {
+            m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
+        }
         const bool queuePressure =
             (queueBacklogged &&
             m_adaptiveAdmissionInflight >=
@@ -1242,7 +1249,10 @@ namespace ndn_service_framework
         const bool demandBacklogged =
             queueBacklogged || m_adaptiveAdmissionIntervalBackpressure > 0;
         const bool latencyCongested =
-            queueDelayMs > queueDelayTargetMs && queueDelayGradientMs > 0.0;
+            queueDelayMs > queueDelayTargetMs &&
+            (queueDelayGradientMs > 0.0 ||
+             (demandBacklogged &&
+              m_adaptiveAdmissionQueueDelayOverTargetIntervals >= 2));
         const bool latencySevere =
             queueDelayMs > queueDelaySevereMs ||
             (maxLatencyMs > 0.0 && maxLatencyMs > 2.0 * targetLatencyMs);
@@ -1270,8 +1280,11 @@ namespace ndn_service_framework
                     m_adaptiveAdmissionOptions.minWindow);
         }
         else if (m_adaptiveAdmissionIntervalSuccesses > 0 &&
-                 (p95LatencyMs == 0.0 || queueDelayMs < queueDelayTargetMs ||
-                  queueDelayGradientMs <= -10.0) &&
+                 (p95LatencyMs == 0.0 ||
+                  queueDelayMs < 0.85 * queueDelayTargetMs ||
+                  (!demandBacklogged &&
+                   queueDelayMs < queueDelayTargetMs &&
+                   queueDelayGradientMs <= -10.0)) &&
                  (queuePressure ||
                   demandBacklogged ||
                   m_adaptiveAdmissionInflight >=
@@ -1301,6 +1314,8 @@ namespace ndn_service_framework
                   << " queueDelayGradientMs=" << queueDelayGradientMs
                   << " queueDelayTargetMs=" << queueDelayTargetMs
                   << " queueDelaySevereMs=" << queueDelaySevereMs
+                  << " queueDelayOverTargetIntervals="
+                  << m_adaptiveAdmissionQueueDelayOverTargetIntervals
                   << " aboveWindow=" << aboveWindow
                   << " queuePressure=" << queuePressure
                   << " queueSevere=" << queueSevere
