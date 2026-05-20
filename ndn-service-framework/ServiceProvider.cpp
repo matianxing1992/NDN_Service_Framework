@@ -372,9 +372,12 @@ namespace ndn_service_framework
                 std::bind(&ServiceProvider::onMissingData, this, _1),
                 opts,
                 secOpts);
-            if (isTruthyEnv("NDNSF_SVS_PARALLEL_SYNC")) {
+            const bool enableParallelSync =
+                std::getenv("NDNSF_SVS_PARALLEL_SYNC") == nullptr ||
+                isTruthyEnv("NDNSF_SVS_PARALLEL_SYNC");
+            if (enableParallelSync) {
                 const int workers = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 2));
-                const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 128));
+                const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 256));
                 m_svsps->getSVSync().getCore().setParallelSyncProcessing(
                     true, static_cast<size_t>(workers), static_cast<size_t>(queue));
                 NDN_LOG_INFO("NDNSF_SVS_PARALLEL_SYNC enabled role=provider workers="
