@@ -659,6 +659,7 @@ namespace ndn_service_framework{
             std::vector<double> m_adaptiveAdmissionIntervalLatenciesMs;
             double m_adaptiveAdmissionBaselineLatencyMs = 0.0;
             double m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
+            size_t m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
             bool m_adaptiveAdmissionIntervalCongested = false;
             bool m_adaptiveAdmissionIntervalSevere = false;
             std::deque<ndn::Name> m_adaptiveAdmissionQueue;
