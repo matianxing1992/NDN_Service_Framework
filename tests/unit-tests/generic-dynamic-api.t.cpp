@@ -574,6 +574,81 @@ BOOST_AUTO_TEST_CASE(PreparedAsyncCallPreservesOpaquePayloadAndRequestId)
                               ServiceUser::ResponseHandler([] (const ResponseMessage&) {})).empty());
 }
 
+BOOST_AUTO_TEST_CASE(AdaptiveAdmissionControlWarnsAtSoftLimitAndRejectsAtHardLimit)
+{
+  ndn::security::KeyChain keyChain("pib-memory:adaptive-admission-queue",
+                                   "tpm-memory:adaptive-admission-queue");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/admission");
+  const ndn::Name providerName("/test/provider/admission");
+  const ndn::Name serviceName("/HELLO");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-admission"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+
+  ServiceUser::AdaptiveAdmissionOptions options;
+  options.enabled = true;
+  options.minWindow = 1;
+  options.maxWindow = 1;
+  options.initialWindow = 1;
+  options.hardInflightLimit = 1;
+  options.softQueueLimit = 1;
+  options.hardQueueLimit = 1;
+  user.setAdaptiveAdmissionControl(options);
+
+  size_t published = 0;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage&, size_t) {
+      ++published;
+    });
+
+  size_t admissionWarnings = 0;
+  size_t admissionRejects = 0;
+  size_t lastRemainingHardSlots = 99;
+  user.setAdmissionControlWarningHandler(
+    [&] (const ServiceUser::AdmissionControlStatus& status) {
+      lastRemainingHardSlots = status.remainingHardSlots;
+      ++admissionWarnings;
+    });
+  user.setAdmissionControlRejectHandler(
+    [&] (const ServiceUser::AdmissionControlStatus& status) {
+      lastRemainingHardSlots = status.remainingHardSlots;
+      ++admissionRejects;
+    });
+
+  RequestMessage request;
+  const std::string payloadText = "HELLO";
+  ndn::Buffer payload(reinterpret_cast<const uint8_t*>(payloadText.data()),
+                      payloadText.size());
+  request.setPayload(payload, payload.size());
+
+  size_t timeoutCallbacks = 0;
+  auto timeout = [&] (const ndn::Name&) { ++timeoutCallbacks; };
+  auto response = [] (const ResponseMessage&) {};
+
+  const auto first = user.async_call({providerName}, serviceName, request, 100, timeout, response);
+  const auto second = user.async_call({providerName}, serviceName, request, 100, timeout, response);
+  const auto third = user.async_call({providerName}, serviceName, request, 100, timeout, response);
+
+  BOOST_CHECK(!first.empty());
+  BOOST_CHECK(!second.empty());
+  BOOST_CHECK(!third.empty());
+  BOOST_CHECK_EQUAL(published, 1);
+  BOOST_CHECK_EQUAL(user.getAdaptiveAdmissionInflight(), 1);
+  BOOST_CHECK_EQUAL(user.getAdaptiveAdmissionQueueDepth(), 1);
+  BOOST_CHECK_EQUAL(admissionWarnings, 1);
+  BOOST_CHECK_EQUAL(admissionRejects, 1);
+  BOOST_CHECK_EQUAL(lastRemainingHardSlots, 0);
+  BOOST_CHECK_EQUAL(timeoutCallbacks, 0);
+
+  const auto rejectedStatus = user.getRequestStatus(third);
+  BOOST_REQUIRE(rejectedStatus);
+  BOOST_CHECK_EQUAL(ServiceUser::requestLifecycleStateToString(rejectedStatus->state),
+                    std::string("ADMISSION_REJECTED"));
+  BOOST_CHECK_EQUAL(rejectedStatus->finalCleanupReason, "admission_queue_full");
+}
+
 BOOST_AUTO_TEST_CASE(LargeDataNamePayloadRemainsOpaqueAcrossPreparedAsyncCall)
 {
   ndn::security::KeyChain keyChain("pib-memory:large-data-name-opaque",

@@ -126,11 +126,33 @@ HybridMessageCrypto::markSendKeyWrapped(const std::string& keyId)
     m_wrappedSendKeys.insert(keyId);
 }
 
+void
+HybridMessageCrypto::cacheWrappedSendKey(const std::string& keyId,
+                                         const ndn::Buffer& wrappedKey)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_wrappedSendKeysById[keyId] = wrappedKey;
+    m_wrappedSendKeys.insert(keyId);
+}
+
+bool
+HybridMessageCrypto::getWrappedSendKey(const std::string& keyId,
+                                       ndn::Buffer& wrappedKey) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_wrappedSendKeysById.find(keyId);
+    if (it == m_wrappedSendKeysById.end()) {
+        return false;
+    }
+    wrappedKey = it->second;
+    return true;
+}
+
 bool
 HybridMessageCrypto::shouldAttachWrappedKey(const std::string& keyId) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_wrappedSendKeys.find(keyId) == m_wrappedSendKeys.end();
+    return m_wrappedSendKeysById.find(keyId) == m_wrappedSendKeysById.end();
 }
 
 ndn::Name

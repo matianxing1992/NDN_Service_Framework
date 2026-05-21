@@ -77,6 +77,26 @@ private:
   std::string m_label;
 };
 
+ndn_service_framework::PermissionResponse
+makePermissionResponse(const ndn::Name& targetIdentity,
+                       size_t permissionKind,
+                       const ndn::Name& providerName,
+                       const ndn::Name& serviceName)
+{
+  ndn_service_framework::PermissionEntry entry;
+  entry.setProviderName(providerName.toUri());
+  entry.setServiceName(serviceName.toUri());
+  entry.setToken("");
+  entry.setTtl(0);
+  entry.setVersion(1);
+
+  ndn_service_framework::PermissionResponse response;
+  response.setTargetIdentity(targetIdentity.toUri());
+  response.setPermissionKind(permissionKind);
+  response.addEntry(entry);
+  return response;
+}
+
 ndn::security::Certificate
 makeIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
 {
@@ -112,10 +132,21 @@ main()
     providerCert,
     aaCert,
     "examples/trust-any.conf");
+  user.setHandlerThreads(0);
 
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
+  user.applyPermissionResponse(
+    makePermissionResponse(user.getName(),
+                           ndn_service_framework::tlv::UserPermission,
+                           provider.getName(),
+                           serviceName));
+  provider.applyPermissionResponse(
+    makePermissionResponse(provider.getName(),
+                           ndn_service_framework::tlv::ProviderPermission,
+                           provider.getName(),
+                           serviceName));
 
-  provider.addHandler<ObjectDetectionRequest, ObjectDetectionResponse>(
+  provider.RegisterService<ObjectDetectionRequest, ObjectDetectionResponse>(
     serviceName,
     std::function<void(const ndn::Name&,
                        const ObjectDetectionRequest&,
@@ -149,6 +180,7 @@ main()
         parsedRequest->serviceName,
         requestId);
 
+      response.setUserToken(requestMessage.getUserToken());
       user.handleDecryptedResponseByName(responseName, response);
     });
 
@@ -156,21 +188,20 @@ main()
   ObjectDetectionRequest request;
   request.setImage("local-frame");
 
-  const std::vector<ndn::Name> providers{provider.getName()};
-  user.asyncCall<ObjectDetectionRequest, ObjectDetectionResponse>(
-    providers,
+  user.AsyncCall<ObjectDetectionRequest, ObjectDetectionResponse>(
     serviceName,
     request,
+    100,
+    ndnsf::strategy::FirstResponding,
+    1000,
     std::function<void(const ObjectDetectionResponse&)>(
       [&](const ObjectDetectionResponse& response) {
         gotResponse = true;
         std::cout << "user received label " << response.getLabel() << "\n";
       }),
-    std::function<void()>([] {
+    std::function<void(const ndn::Name&)>([](const ndn::Name&) {
       std::cerr << "request timed out\n";
-    }),
-    1000,
-    ndn_service_framework::tlv::FirstResponding);
+    }));
 
   return gotResponse ? 0 : 1;
 }

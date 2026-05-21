@@ -35,8 +35,8 @@ public:
     static constexpr size_t MESSAGE_KEY_SIZE = 32;
     static constexpr size_t NONCE_SIZE = 12;
     static constexpr size_t TAG_SIZE = 16;
-    static constexpr size_t MAX_EPOCH_USES = 100;
-    static constexpr auto MAX_EPOCH_AGE = std::chrono::seconds(10);
+    static constexpr size_t MAX_EPOCH_USES = 10000;
+    static constexpr auto MAX_EPOCH_AGE = std::chrono::seconds(60);
 
     HybridMessageKey getOrCreateSendKey(const ndn::Name& serviceName,
                                         const ndn::Name& senderPrefix,
@@ -53,6 +53,10 @@ public:
                         HybridCryptoCounters& counters);
 
     void markSendKeyWrapped(const std::string& keyId);
+    void cacheWrappedSendKey(const std::string& keyId,
+                             const ndn::Buffer& wrappedKey);
+    bool getWrappedSendKey(const std::string& keyId,
+                           ndn::Buffer& wrappedKey) const;
     bool shouldAttachWrappedKey(const std::string& keyId) const;
 
 private:
@@ -72,6 +76,7 @@ private:
     mutable std::mutex m_mutex;
     std::map<std::string, HybridMessageKey> m_sendKeys;
     std::map<std::string, CachedKey> m_receiveKeys;
+    std::map<std::string, ndn::Buffer> m_wrappedSendKeysById;
     std::set<std::string> m_wrappedSendKeys;
 };
 

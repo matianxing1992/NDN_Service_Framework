@@ -152,6 +152,9 @@ parseMetadataInt(const std::string& payload, const std::string& key, int fallbac
   }
 }
 
+std::string
+providerLabel(const ndn::Name& providerName);
+
 size_t
 parseBenchmarkStrategy(const std::string& strategy)
 {
@@ -168,9 +171,12 @@ parseBenchmarkStrategy(const std::string& strategy)
 }
 
 std::string
-benchmarkStrategyLabel(size_t strategy, bool customSelection)
+benchmarkStrategyLabel(size_t strategy, bool customSelection, bool randomSelection)
 {
   if (customSelection) {
+    return "custom-selection";
+  }
+  if (randomSelection) {
     return "random-selection";
   }
   if (strategy == ndn_service_framework::tlv::AllResponders) {
@@ -181,6 +187,135 @@ benchmarkStrategyLabel(size_t strategy, bool customSelection)
   }
   return "first-responding";
 }
+
+class RankQueueSelectionPolicy final : public ndnsf::AckSelectionPolicy
+{
+public:
+  RankQueueSelectionPolicy(int ackTimeoutMs, bool performanceMode)
+    : m_ackTimeoutMs(ackTimeoutMs)
+    , m_performanceMode(performanceMode)
+  {
+  }
+
+  std::vector<ndnsf::ProviderId>
+  select(const std::vector<ndnsf::AckCandidate>& candidates) const override
+  {
+    if (!m_performanceMode) {
+      std::cout << "customSelectionStrategy ran after ackTimeoutMs="
+                << m_ackTimeoutMs
+                << " candidateCount=" << candidates.size() << std::endl;
+    }
+
+    std::vector<ndnsf::AckCandidate> selected;
+    int bestBacklog = std::numeric_limits<int>::max();
+    int bestQueue = std::numeric_limits<int>::max();
+    for (const auto& candidate : candidates) {
+      const auto payload = candidate.ack.getPayload();
+      const std::string payloadText(
+        reinterpret_cast<const char*>(payload.data()),
+        payload.size());
+
+      if (!candidate.ack.getStatus()) {
+        if (!m_performanceMode) {
+          std::cout << "customSelectionStrategy rejected provider="
+                    << providerLabel(candidate.providerName)
+                    << " status=0" << std::endl;
+        }
+        continue;
+      }
+
+      const int rank = parseMetadataInt(payloadText, "rank",
+                                        std::numeric_limits<int>::max());
+      const int queue = parseMetadataInt(payloadText, "queue",
+                                         std::numeric_limits<int>::max());
+      const int backlog = parseMetadataInt(payloadText, "backlog", queue);
+      const int processed10s = parseMetadataInt(payloadText, "processed10s", 0);
+      if (!m_performanceMode) {
+        std::cout << "collected ACK payload provider="
+                  << providerLabel(candidate.providerName)
+                  << " backlog=" << backlog
+                  << " processed10s=" << processed10s
+                  << " queue=" << queue
+                  << " rank=" << rank << std::endl;
+      }
+      if (selected.empty() ||
+          backlog < bestBacklog ||
+          (backlog == bestBacklog && queue < bestQueue)) {
+        selected.clear();
+        selected.push_back(candidate);
+        bestBacklog = backlog;
+        bestQueue = queue;
+      }
+      else if (backlog == bestBacklog &&
+               queue == bestQueue) {
+        selected.push_back(candidate);
+      }
+    }
+
+    if (selected.size() > 1) {
+      auto chosen = selected.front();
+      size_t bestSelectionCount = std::numeric_limits<size_t>::max();
+      for (const auto& candidate : selected) {
+        const auto provider = candidate.providerName.toUri();
+        const auto countIt = m_selectionCounts.find(provider);
+        const size_t count =
+          countIt == m_selectionCounts.end() ? 0 : countIt->second;
+        if (count < bestSelectionCount) {
+          bestSelectionCount = count;
+          chosen = candidate;
+        }
+      }
+      selected.clear();
+      selected.push_back(chosen);
+    }
+    if (!selected.empty()) {
+      const auto provider = selected.front().providerName.toUri();
+      ++m_selectionCounts[provider];
+    }
+    if (!selected.empty() && !m_performanceMode) {
+      std::cout << "customSelectionStrategy selected providerName="
+                << selected.front().providerName.toUri() << std::endl;
+    }
+    if (selected.empty()) {
+      return {};
+    }
+    return {selected.front().providerName};
+  }
+
+private:
+  int m_ackTimeoutMs = 0;
+  bool m_performanceMode = false;
+  mutable std::map<std::string, size_t> m_selectionCounts;
+};
+
+std::shared_ptr<const ndnsf::AckSelectionPolicy>
+makeRankQueueSelectionPolicy(int ackTimeoutMs, bool performanceMode)
+{
+  return std::make_shared<RankQueueSelectionPolicy>(ackTimeoutMs,
+                                                    performanceMode);
+}
+
+class FunctionalAckSelectionPolicy final : public ndnsf::AckSelectionPolicy
+{
+public:
+  using Selector =
+    std::function<std::vector<ndnsf::ProviderId>(
+      const std::vector<ndnsf::AckCandidate>&)>;
+
+  explicit FunctionalAckSelectionPolicy(Selector selector)
+    : m_selector(std::move(selector))
+  {
+  }
+
+  std::vector<ndnsf::ProviderId>
+  select(const std::vector<ndnsf::AckCandidate>& candidates) const override
+  {
+    return m_selector ? m_selector(candidates) : std::vector<ndnsf::ProviderId>{};
+  }
+
+private:
+  Selector m_selector;
+};
 
 uint64_t
 nowMilliseconds()
@@ -259,6 +394,16 @@ struct AdaptiveAdmissionConfig
   double severeMdFactor = 0.75;
   int controlIntervalMs = 500;
   int targetLatencyMs = 350;
+  int hardTargetLatencyMs = 500;
+  size_t softQueueLimit = 32;
+  size_t hardQueueLimit = 128;
+  int warningBackoffMs = 0;
+  int rejectBackoffMs = 100;
+  bool queueAwarePause = true;
+  bool useRecommendedRate = true;
+  size_t warningResumeQueueDepth = 0;
+  size_t rejectResumeQueueDepth = 0;
+  int queuePausePollMs = 10;
 };
 
 std::string
@@ -326,7 +471,7 @@ main(int argc, char** argv)
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
-    const bool hybridMessageCrypto = hasFlag(argc, argv, "--hybrid-message-crypto");
+    const bool hybridMessageCrypto = !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string workloadMode = getOption(argc, argv, "--workload-mode", "closed-loop");
@@ -336,7 +481,7 @@ main(int argc, char** argv)
     const int ackTimeoutMs = parseIntOption(argc, argv, "--ack-timeout-ms", 3000);
     const int timeoutMs = parseIntOption(argc, argv, "--timeout-ms", 5000);
     const int requestTimeoutMs = parseIntOption(argc, argv, "--request-timeout-ms", timeoutMs);
-    const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", 0);
+    const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", -1);
     const double rateRps = parseDoubleOption(argc, argv, "--rate-rps", 1.0);
     const int openLoopDurationSeconds = parseIntOption(argc, argv, "--duration", 10);
     const int maxOutstanding = parseIntOption(
@@ -368,6 +513,28 @@ main(int argc, char** argv)
       1, parseIntOption(argc, argv, "--adaptive-control-interval-ms", 500));
     adaptiveAdmission.targetLatencyMs = std::max(
       1, parseIntOption(argc, argv, "--adaptive-target-latency-ms", 350));
+    adaptiveAdmission.hardTargetLatencyMs = std::max(
+      adaptiveAdmission.targetLatencyMs,
+      parseIntOption(argc, argv, "--adaptive-hard-target-latency-ms", 500));
+    adaptiveAdmission.hardQueueLimit = static_cast<size_t>(std::max(
+      1, parseIntOption(argc, argv, "--adaptive-hard-queue-limit",
+                        parseIntOption(argc, argv, "--adaptive-max-queue-depth",
+                                       128))));
+    const int defaultSoftQueueLimit = static_cast<int>(std::min<size_t>(
+      32, std::max<size_t>(1, adaptiveAdmission.hardQueueLimit / 4)));
+    adaptiveAdmission.softQueueLimit = static_cast<size_t>(std::max(
+      1, parseIntOption(argc, argv, "--adaptive-soft-queue-limit",
+                        defaultSoftQueueLimit)));
+    adaptiveAdmission.warningBackoffMs = std::max(
+      0, parseIntOption(argc, argv, "--adaptive-warning-backoff-ms", 0));
+    adaptiveAdmission.rejectBackoffMs = std::max(
+      0, parseIntOption(argc, argv, "--adaptive-reject-backoff-ms", 100));
+    adaptiveAdmission.queueAwarePause =
+      !hasFlag(argc, argv, "--disable-adaptive-queue-aware-pause");
+    adaptiveAdmission.useRecommendedRate =
+      !hasFlag(argc, argv, "--disable-adaptive-recommended-rate");
+    adaptiveAdmission.queuePausePollMs = std::max(
+      1, parseIntOption(argc, argv, "--adaptive-queue-pause-poll-ms", 10));
     adaptiveAdmission.maxWindow = std::max(adaptiveAdmission.minWindow,
                                            adaptiveAdmission.maxWindow);
     adaptiveAdmission.hardInflightLimit =
@@ -377,6 +544,21 @@ main(int argc, char** argv)
     adaptiveAdmission.initialWindow = std::max(
       adaptiveAdmission.minWindow,
       std::min(adaptiveAdmission.initialWindow, adaptiveAdmission.maxWindow));
+    adaptiveAdmission.softQueueLimit =
+      std::min(adaptiveAdmission.softQueueLimit,
+               adaptiveAdmission.hardQueueLimit);
+    adaptiveAdmission.warningResumeQueueDepth = static_cast<size_t>(std::max(
+      0, parseIntOption(argc, argv, "--adaptive-warning-resume-queue-depth",
+                        static_cast<int>(adaptiveAdmission.softQueueLimit / 2))));
+    adaptiveAdmission.rejectResumeQueueDepth = static_cast<size_t>(std::max(
+      0, parseIntOption(argc, argv, "--adaptive-reject-resume-queue-depth",
+                        static_cast<int>(adaptiveAdmission.softQueueLimit / 4))));
+    adaptiveAdmission.warningResumeQueueDepth =
+      std::min(adaptiveAdmission.warningResumeQueueDepth,
+               adaptiveAdmission.softQueueLimit);
+    adaptiveAdmission.rejectResumeQueueDepth =
+      std::min(adaptiveAdmission.rejectResumeQueueDepth,
+               adaptiveAdmission.warningResumeQueueDepth);
     if (adaptiveAdmission.mdFactor <= 0.0 || adaptiveAdmission.mdFactor >= 1.0) {
       adaptiveAdmission.mdFactor = 0.85;
     }
@@ -416,8 +598,9 @@ main(int argc, char** argv)
 
     user.init();
     user.setPerformanceMode(performanceMode);
-    user.setHandlerThreads(
-      handlerThreads > 0 ? static_cast<size_t>(handlerThreads) : 0);
+    if (handlerThreads >= 0) {
+      user.setHandlerThreads(static_cast<size_t>(handlerThreads));
+    }
     user.setUseTokens(useTokens);
     user.setUseHybridMessageCrypto(hybridMessageCrypto);
     user.setTimelineTrace(timelineTrace);
@@ -432,6 +615,9 @@ main(int argc, char** argv)
     runtimeAdmission.severeMdFactor = adaptiveAdmission.severeMdFactor;
     runtimeAdmission.controlIntervalMs = adaptiveAdmission.controlIntervalMs;
     runtimeAdmission.targetLatencyMs = adaptiveAdmission.targetLatencyMs;
+    runtimeAdmission.hardTargetLatencyMs = adaptiveAdmission.hardTargetLatencyMs;
+    runtimeAdmission.softQueueLimit = adaptiveAdmission.softQueueLimit;
+    runtimeAdmission.hardQueueLimit = adaptiveAdmission.hardQueueLimit;
     user.setAdaptiveAdmissionControl(runtimeAdmission);
     std::cout << "[App_User] token_mode="
               << (user.getUseTokens() ? "enabled" : "disabled")
@@ -440,6 +626,8 @@ main(int argc, char** argv)
               << " handlerThreads=" << user.getHandlerThreads()
               << " adaptiveAdmission=" << adaptiveAdmission.enabled
               << " adaptiveWindow=" << user.getAdaptiveAdmissionWindow()
+              << " adaptiveSoftQueueLimit=" << adaptiveAdmission.softQueueLimit
+              << " adaptiveHardQueueLimit=" << adaptiveAdmission.hardQueueLimit
               << std::endl;
     user.fetchPermissionsFromController(CONTROLLER_PREFIX);
 
@@ -547,7 +735,8 @@ main(int argc, char** argv)
 
         const ndn::Name benchmarkServiceName(serviceNameText);
         const bool useBenchmarkCustomSelection =
-          benchmarkStrategyText == "custom-selection" || benchmarkStrategyText == "custom" ||
+          benchmarkStrategyText == "custom-selection" || benchmarkStrategyText == "custom";
+        const bool useBenchmarkRandomSelection =
           benchmarkStrategyText == "random-selection" || benchmarkStrategyText == "random";
         const size_t benchmarkStrategy = parseBenchmarkStrategy(benchmarkStrategyText);
         const auto intervalNs = static_cast<int64_t>(
@@ -559,6 +748,7 @@ main(int argc, char** argv)
         auto sendStopped = std::make_shared<bool>(false);
         auto states = std::make_shared<std::map<std::string, std::shared_ptr<OpenLoopRequestState>>>();
         auto completedRequestIds = std::make_shared<std::set<std::string>>();
+        auto admissionRejectedRequestIds = std::make_shared<std::set<std::string>>();
         auto sentCount = std::make_shared<uint64_t>(0);
         auto successCount = std::make_shared<uint64_t>(0);
         auto timeoutCount = std::make_shared<uint64_t>(0);
@@ -577,6 +767,34 @@ main(int argc, char** argv)
         auto minAdaptiveWindowObserved = std::make_shared<size_t>(*adaptiveWindow);
         auto maxAdaptiveWindowObserved = std::make_shared<size_t>(*adaptiveWindow);
         auto delayedPublications = std::make_shared<uint64_t>(0);
+        auto admissionControlWarnings = std::make_shared<uint64_t>(0);
+        auto admissionControlRejects = std::make_shared<uint64_t>(0);
+        auto minAdmissionHardQueueRemaining = std::make_shared<size_t>(
+          adaptiveAdmission.hardQueueLimit);
+        auto admissionBackoffUntil = std::make_shared<std::chrono::steady_clock::time_point>(
+          std::chrono::steady_clock::time_point::min());
+        auto admissionBackoffEvents = std::make_shared<uint64_t>(0);
+        auto admissionWarningBackoffEvents = std::make_shared<uint64_t>(0);
+        auto admissionRejectBackoffEvents = std::make_shared<uint64_t>(0);
+        auto totalAdmissionBackoffMs = std::make_shared<uint64_t>(0);
+        auto admissionQueuePauseActive = std::make_shared<bool>(false);
+        auto admissionQueuePauseReason = std::make_shared<std::string>();
+        auto admissionQueuePauseResumeDepth = std::make_shared<size_t>(0);
+        auto admissionQueuePauseStartedAt =
+          std::make_shared<std::chrono::steady_clock::time_point>();
+        auto admissionQueuePauseEvents = std::make_shared<uint64_t>(0);
+        auto admissionQueuePauseResumes = std::make_shared<uint64_t>(0);
+        auto admissionQueuePauseSkips = std::make_shared<uint64_t>(0);
+        auto admissionWarningQueuePauses = std::make_shared<uint64_t>(0);
+        auto admissionRejectQueuePauses = std::make_shared<uint64_t>(0);
+        auto totalAdmissionQueuePausedMs = std::make_shared<uint64_t>(0);
+        auto nextAdmissionRecommendedSendAt =
+          std::make_shared<std::chrono::steady_clock::time_point>(
+            std::chrono::steady_clock::time_point::min());
+        auto admissionRecommendedRateSkips = std::make_shared<uint64_t>(0);
+        auto admissionRecommendedRateMin =
+          std::make_shared<double>(std::numeric_limits<double>::max());
+        auto admissionRecommendedRateMax = std::make_shared<double>(0.0);
         auto intervalTimeouts = std::make_shared<uint64_t>(0);
         auto intervalLateResponses = std::make_shared<uint64_t>(0);
         auto intervalSuccesses = std::make_shared<uint64_t>(0);
@@ -596,6 +814,120 @@ main(int argc, char** argv)
         auto controlAdaptiveWindow = std::make_shared<std::function<void()>>();
         auto sendNext = std::make_shared<std::function<void()>>();
         auto maybeFinish = std::make_shared<std::function<void()>>();
+
+        user.setAdmissionControlWarningHandler(
+          [admissionControlWarnings,
+           minAdmissionHardQueueRemaining,
+           admissionBackoffUntil,
+           admissionBackoffEvents,
+           admissionWarningBackoffEvents,
+           totalAdmissionBackoffMs,
+           admissionQueuePauseActive,
+           admissionQueuePauseReason,
+           admissionQueuePauseResumeDepth,
+           admissionQueuePauseStartedAt,
+           admissionQueuePauseEvents,
+           admissionWarningQueuePauses,
+           adaptiveAdmission,
+           performanceMode](
+            const ndn_service_framework::ServiceUser::AdmissionControlStatus& status) {
+            ++(*admissionControlWarnings);
+            *minAdmissionHardQueueRemaining =
+              std::min(*minAdmissionHardQueueRemaining, status.remainingHardSlots);
+            if (adaptiveAdmission.warningBackoffMs > 0) {
+              const auto now = std::chrono::steady_clock::now();
+              const auto until = now + std::chrono::milliseconds(
+                adaptiveAdmission.warningBackoffMs);
+              if (until > *admissionBackoffUntil) {
+                *admissionBackoffUntil = until;
+              }
+              ++(*admissionBackoffEvents);
+              ++(*admissionWarningBackoffEvents);
+              *totalAdmissionBackoffMs +=
+                static_cast<uint64_t>(adaptiveAdmission.warningBackoffMs);
+            }
+            // Soft-limit warnings are advisory: record them and apply the
+            // small warning backoff above, but keep admission flowing. A full
+            // queue-aware pause is reserved for hard-limit rejects, otherwise
+            // short runs spend too much time draining from soft/2.
+            if (!performanceMode) {
+              std::cout << "PERF_ADMISSION_WARNING"
+                        << " depth=" << status.queueDepth
+                        << " soft_limit=" << status.softQueueLimit
+                        << " hard_limit=" << status.hardQueueLimit
+                        << " remaining_hard=" << status.remainingHardSlots
+                        << " queue_pause=0"
+                        << " resume_depth="
+                        << adaptiveAdmission.warningResumeQueueDepth
+                        << " reason=" << status.reason
+                        << " request_id=" << status.requestId.toUri()
+                        << " ts=" << nowMilliseconds() << std::endl;
+            }
+          });
+        user.setAdmissionControlRejectHandler(
+          [admissionControlRejects,
+           minAdmissionHardQueueRemaining,
+           admissionRejectedRequestIds,
+           admissionBackoffUntil,
+           admissionBackoffEvents,
+           admissionRejectBackoffEvents,
+           totalAdmissionBackoffMs,
+           admissionQueuePauseActive,
+           admissionQueuePauseReason,
+           admissionQueuePauseResumeDepth,
+           admissionQueuePauseStartedAt,
+           admissionQueuePauseEvents,
+           admissionRejectQueuePauses,
+           states,
+           completedRequestIds,
+           adaptiveAdmission,
+           performanceMode](
+            const ndn_service_framework::ServiceUser::AdmissionControlStatus& status) {
+            ++(*admissionControlRejects);
+            *minAdmissionHardQueueRemaining =
+              std::min(*minAdmissionHardQueueRemaining, status.remainingHardSlots);
+            const std::string requestIdText = status.requestId.toUri();
+            admissionRejectedRequestIds->insert(requestIdText);
+            states->erase(requestIdText);
+            completedRequestIds->insert(requestIdText);
+            const bool hardReject = status.reason != "admission_window_full";
+            if (hardReject && adaptiveAdmission.rejectBackoffMs > 0) {
+              const auto now = std::chrono::steady_clock::now();
+              const auto until = now + std::chrono::milliseconds(
+                adaptiveAdmission.rejectBackoffMs);
+              if (until > *admissionBackoffUntil) {
+                *admissionBackoffUntil = until;
+              }
+              ++(*admissionBackoffEvents);
+              ++(*admissionRejectBackoffEvents);
+              *totalAdmissionBackoffMs +=
+                static_cast<uint64_t>(adaptiveAdmission.rejectBackoffMs);
+            }
+            if (hardReject && adaptiveAdmission.queueAwarePause) {
+              if (!*admissionQueuePauseActive) {
+                ++(*admissionQueuePauseEvents);
+                *admissionQueuePauseStartedAt = std::chrono::steady_clock::now();
+              }
+              *admissionQueuePauseActive = true;
+              *admissionQueuePauseReason = "reject";
+              *admissionQueuePauseResumeDepth =
+                adaptiveAdmission.rejectResumeQueueDepth;
+              ++(*admissionRejectQueuePauses);
+            }
+            if (!performanceMode) {
+              std::cout << "PERF_ADMISSION_REJECT"
+                        << " depth=" << status.queueDepth
+                        << " soft_limit=" << status.softQueueLimit
+                        << " hard_limit=" << status.hardQueueLimit
+                        << " remaining_hard=" << status.remainingHardSlots
+                        << " queue_pause=" << (adaptiveAdmission.queueAwarePause ? 1 : 0)
+                        << " resume_depth="
+                        << adaptiveAdmission.rejectResumeQueueDepth
+                        << " reason=" << status.reason
+                        << " request_id=" << status.requestId.toUri()
+                        << " ts=" << nowMilliseconds() << std::endl;
+            }
+          });
 
         *sampleOutstanding = [states, outstandingSamples, maxOutstandingObserved]() {
           const auto current = states->size();
@@ -700,6 +1032,16 @@ main(int argc, char** argv)
               reportedPausedMs += static_cast<uint64_t>(pausedForMs);
             }
           }
+          uint64_t reportedAdmissionQueuePausedMs = *totalAdmissionQueuePausedMs;
+          if (*admissionQueuePauseActive) {
+            const auto pausedForMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() -
+              *admissionQueuePauseStartedAt).count();
+            if (pausedForMs > 0) {
+              reportedAdmissionQueuePausedMs +=
+                static_cast<uint64_t>(pausedForMs);
+            }
+          }
 
           std::cout << std::fixed << std::setprecision(3)
                     << "OPEN_LOOP_SUMMARY sent=" << *sentCount
@@ -718,6 +1060,48 @@ main(int argc, char** argv)
                     << " adaptive_window_min=" << *minAdaptiveWindowObserved
                     << " adaptive_window_max=" << *maxAdaptiveWindowObserved
                     << " hard_inflight_limit=" << adaptiveAdmission.hardInflightLimit
+                    << " admission_soft_queue_limit=" << adaptiveAdmission.softQueueLimit
+                    << " admission_hard_queue_limit=" << adaptiveAdmission.hardQueueLimit
+                    << " admission_control_warnings=" << *admissionControlWarnings
+                    << " admission_control_rejects=" << *admissionControlRejects
+                    << " admission_hard_queue_min_remaining="
+                    << *minAdmissionHardQueueRemaining
+                    << " admission_backoff_events=" << *admissionBackoffEvents
+                    << " admission_warning_backoff_events="
+                    << *admissionWarningBackoffEvents
+                    << " admission_reject_backoff_events="
+                    << *admissionRejectBackoffEvents
+                    << " total_admission_backoff_ms="
+                    << *totalAdmissionBackoffMs
+                    << " admission_queue_pause_enabled="
+                    << adaptiveAdmission.queueAwarePause
+                    << " admission_warning_resume_queue_depth="
+                    << adaptiveAdmission.warningResumeQueueDepth
+                    << " admission_reject_resume_queue_depth="
+                    << adaptiveAdmission.rejectResumeQueueDepth
+                    << " admission_queue_pause_events="
+                    << *admissionQueuePauseEvents
+                    << " admission_queue_pause_resumes="
+                    << *admissionQueuePauseResumes
+                    << " admission_queue_pause_skips="
+                    << *admissionQueuePauseSkips
+                    << " admission_warning_queue_pauses="
+                    << *admissionWarningQueuePauses
+                    << " admission_reject_queue_pauses="
+                    << *admissionRejectQueuePauses
+                    << " total_admission_queue_paused_ms="
+                    << reportedAdmissionQueuePausedMs
+                    << " admission_queue_pause_active="
+                    << *admissionQueuePauseActive
+                    << " admission_recommended_rate_skips="
+                    << *admissionRecommendedRateSkips
+                    << " admission_recommended_rate_min="
+                    << (*admissionRecommendedRateMin == std::numeric_limits<double>::max() ?
+                        0.0 : *admissionRecommendedRateMin)
+                    << " admission_recommended_rate_max="
+                    << *admissionRecommendedRateMax
+                    << " admission_recommended_rate_final="
+                    << user.getAdaptiveAdmissionRecommendedRateRps()
                     << " pause_count=" << *pauseCount
                     << " total_paused_ms=" << reportedPausedMs
                     << " paused_state=" << *paused
@@ -747,7 +1131,8 @@ main(int argc, char** argv)
           face.getIoContext().stop();
         };
 
-        *sendNext = [&, csv, benchmarkServiceName, useBenchmarkCustomSelection, benchmarkStrategy,
+        *sendNext = [&, csv, benchmarkServiceName, useBenchmarkCustomSelection,
+                     useBenchmarkRandomSelection, benchmarkStrategy,
                      intervalNs, startTime, stopSendingAt, drainDeadline, nextSequence,
                      sendStopped, states, completedRequestIds, sentCount, successCount,
                      timeoutCount, lateResponseCount, outstandingLimitSkips, latencies,
@@ -767,21 +1152,44 @@ main(int argc, char** argv)
                                [sendNext] { (*sendNext)(); });
           };
           const auto retryDelay = std::chrono::nanoseconds(std::chrono::milliseconds(10));
-          auto skipCurrentOpenLoopTick = [&]() {
+          auto accrueOpenLoopTicks = [&]() {
             if (!generating) {
               return;
             }
-            uint64_t nextTick = *nextSequence + 1;
+            uint64_t dueExclusive = *nextSequence + 1;
             if (intervalNs > 0) {
               const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 now - *startTime).count();
               if (elapsedNs > 0) {
-                nextTick = std::max<uint64_t>(
-                  nextTick,
+                dueExclusive = std::max<uint64_t>(
+                  dueExclusive,
                   static_cast<uint64_t>(elapsedNs / intervalNs) + 1);
               }
             }
-            *nextSequence = nextTick;
+            if (dueExclusive <= *nextSequence) {
+              return;
+            }
+            const uint64_t dueTicks = dueExclusive - *nextSequence;
+            const size_t creditLimit = adaptiveAdmission.enabled ?
+              std::max<size_t>(
+                4,
+                std::min<size_t>(
+                  adaptiveAdmission.hardQueueLimit,
+                  static_cast<size_t>(std::ceil(std::max(1.0, rateRps) * 0.25)))) :
+              static_cast<size_t>(maxOutstanding);
+            const size_t room = *queuedTasks >= creditLimit ?
+              0 : creditLimit - *queuedTasks;
+            const size_t acceptedTicks = static_cast<size_t>(
+              std::min<uint64_t>(dueTicks, static_cast<uint64_t>(room)));
+            if (acceptedTicks > 0) {
+              *queuedTasks += acceptedTicks;
+              (*sampleAdaptive)();
+            }
+            if (dueTicks > static_cast<uint64_t>(acceptedTicks)) {
+              *delayedPublications +=
+                static_cast<uint64_t>(dueTicks - acceptedTicks);
+            }
+            *nextSequence = dueExclusive;
           };
           auto delayUntilNextOpenLoopTick = [&]() {
             if (!generating || intervalNs <= 0) {
@@ -794,32 +1202,133 @@ main(int argc, char** argv)
           };
 
           (*maybeResume)();
+          accrueOpenLoopTicks();
+          if (adaptiveAdmission.enabled && adaptiveAdmission.useRecommendedRate) {
+            const double recommendedRate = user.getAdaptiveAdmissionRecommendedRateRps();
+            if (recommendedRate > 0.0) {
+              *admissionRecommendedRateMin =
+                std::min(*admissionRecommendedRateMin, recommendedRate);
+              *admissionRecommendedRateMax =
+                std::max(*admissionRecommendedRateMax, recommendedRate);
+            }
+            if (recommendedRate > 0.0 && recommendedRate < rateRps &&
+                now < *nextAdmissionRecommendedSendAt) {
+              const size_t runtimeQueueDepth =
+                user.getAdaptiveAdmissionQueueDepth();
+              const size_t runtimeWindow =
+                std::max<size_t>(1, user.getAdaptiveAdmissionWindow());
+              const size_t runtimeInflight =
+                user.getAdaptiveAdmissionInflight();
+              const bool queuePressure =
+                runtimeQueueDepth >= adaptiveAdmission.softQueueLimit;
+              const bool inflightQueuePressure =
+                runtimeInflight >= runtimeWindow &&
+                runtimeQueueDepth >= adaptiveAdmission.warningResumeQueueDepth;
+              const bool enforceSoftPacing =
+                *admissionQueuePauseActive || queuePressure || inflightQueuePressure;
+              if (!enforceSoftPacing) {
+                *nextAdmissionRecommendedSendAt =
+                  std::chrono::steady_clock::time_point::min();
+              }
+              else {
+              ++(*delayedPublications);
+              ++(*admissionRecommendedRateSkips);
+              user.recordAdaptiveAdmissionBackpressure();
+              (*sampleOutstanding)();
+              (*sampleAdaptive)();
+              if (!performanceMode) {
+                const auto remainingMs =
+                  std::chrono::duration_cast<std::chrono::milliseconds>(
+                    *nextAdmissionRecommendedSendAt - now).count();
+                std::cout << "PERF_ADMISSION_RECOMMENDED_RATE_PAUSED"
+                          << " recommended_rps=" << recommendedRate
+                          << " offered_rps=" << rateRps
+                          << " remaining_ms=" << remainingMs
+                          << " queue_depth=" << runtimeQueueDepth
+                          << " inflight=" << runtimeInflight
+                          << " adaptive_window=" << runtimeWindow
+                          << " queued_credit=" << *queuedTasks
+                          << " ts=" << nowMilliseconds() << std::endl;
+              }
+              scheduleNext(*nextAdmissionRecommendedSendAt - now);
+              return;
+              }
+            }
+          }
+          if (adaptiveAdmission.enabled && adaptiveAdmission.queueAwarePause &&
+              *admissionQueuePauseActive) {
+            const size_t runtimeQueueDepth = user.getAdaptiveAdmissionQueueDepth();
+            const bool queueRecovered =
+              runtimeQueueDepth <= *admissionQueuePauseResumeDepth;
+            const bool minBackoffElapsed = now >= *admissionBackoffUntil;
+            if (queueRecovered && minBackoffElapsed) {
+              *admissionQueuePauseActive = false;
+              ++(*admissionQueuePauseResumes);
+              const auto pausedForMs =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() -
+                  *admissionQueuePauseStartedAt).count();
+              if (pausedForMs > 0) {
+                *totalAdmissionQueuePausedMs +=
+                  static_cast<uint64_t>(pausedForMs);
+              }
+              if (!performanceMode) {
+                std::cout << "PERF_ADMISSION_QUEUE_RESUMED"
+                          << " reason=" << *admissionQueuePauseReason
+                          << " queue_depth=" << runtimeQueueDepth
+                          << " resume_depth=" << *admissionQueuePauseResumeDepth
+                          << " paused_ms=" << pausedForMs
+                          << " ts=" << nowMilliseconds() << std::endl;
+              }
+            }
+            else {
+              ++(*delayedPublications);
+              ++(*admissionQueuePauseSkips);
+              (*sampleOutstanding)();
+              (*sampleAdaptive)();
+              if (!performanceMode) {
+                const auto remainingBackoffMs = minBackoffElapsed ? 0 :
+                  std::chrono::duration_cast<std::chrono::milliseconds>(
+                    *admissionBackoffUntil - now).count();
+                std::cout << "PERF_ADMISSION_QUEUE_PAUSED"
+                          << " reason=" << *admissionQueuePauseReason
+                          << " queue_depth=" << runtimeQueueDepth
+                          << " resume_depth=" << *admissionQueuePauseResumeDepth
+                          << " remaining_backoff_ms=" << remainingBackoffMs
+                          << " queued_credit=" << *queuedTasks
+                          << " ts=" << nowMilliseconds() << std::endl;
+              }
+              scheduleNext(std::chrono::milliseconds(
+                adaptiveAdmission.queuePausePollMs));
+              return;
+            }
+          }
+          if (adaptiveAdmission.enabled && now < *admissionBackoffUntil) {
+            ++(*delayedPublications);
+            (*sampleOutstanding)();
+            (*sampleAdaptive)();
+            if (!performanceMode) {
+              const auto backoffMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                *admissionBackoffUntil - now).count();
+              std::cout << "PERF_ADMISSION_BACKOFF"
+                        << " remaining_ms=" << backoffMs
+                        << " queued_credit=" << *queuedTasks
+                        << " ts=" << nowMilliseconds() << std::endl;
+            }
+            scheduleNext(*admissionBackoffUntil - now);
+            return;
+          }
           const auto runtimeWindow = user.getAdaptiveAdmissionWindow();
           const auto runtimeAdmissionInflight = user.getAdaptiveAdmissionInflight();
-          const size_t currentPauseThreshold = adaptiveAdmission.enabled ?
-            std::max<size_t>(
-              1,
-              std::min(runtimeWindow, adaptiveAdmission.hardInflightLimit)) :
-            pauseThreshold();
-          const size_t activeLimit = adaptiveAdmission.enabled ?
-            currentPauseThreshold :
-            static_cast<size_t>(maxOutstanding);
-          const bool admissionAtLimit =
-            adaptiveAdmission.enabled && runtimeAdmissionInflight >= activeLimit;
           const bool pendingResponseAtLimit =
-            adaptiveAdmission.enabled &&
             states->size() >= static_cast<size_t>(maxOutstanding);
 
-          if (adaptiveAdmission.enabled &&
-              (admissionAtLimit || pendingResponseAtLimit || *paused)) {
-            if (admissionAtLimit) {
-              user.recordAdaptiveAdmissionBackpressure();
-            }
+          if (pendingResponseAtLimit || (!adaptiveAdmission.enabled && *paused)) {
             ++(*outstandingLimitSkips);
             ++(*delayedPublications);
             (*sampleOutstanding)();
             (*sampleAdaptive)();
-            if (!performanceMode && (admissionAtLimit || pendingResponseAtLimit)) {
+            if (!performanceMode && pendingResponseAtLimit) {
               std::cout << "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
                         << states->size()
                         << " admission_inflight=" << runtimeAdmissionInflight
@@ -828,39 +1337,11 @@ main(int argc, char** argv)
                         << " pending_response_limit=" << maxOutstanding
                         << " ts=" << nowMilliseconds() << std::endl;
             }
-            skipCurrentOpenLoopTick();
             scheduleNext(delayUntilNextOpenLoopTick());
             return;
           }
 
-          if (generating) {
-            ++(*queuedTasks);
-            (*sampleAdaptive)();
-          }
-
-          const size_t currentLoad = adaptiveAdmission.enabled ?
-            runtimeAdmissionInflight : states->size();
-          if (currentLoad >= activeLimit ||
-              (adaptiveAdmission.enabled &&
-               states->size() >= static_cast<size_t>(maxOutstanding))) {
-            if (adaptiveAdmission.enabled && currentLoad >= activeLimit) {
-              user.recordAdaptiveAdmissionBackpressure();
-            }
-            ++(*outstandingLimitSkips);
-            ++(*delayedPublications);
-            (*sampleOutstanding)();
-            (*sampleAdaptive)();
-            if (!performanceMode) {
-              std::cout << "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
-                        << states->size()
-                        << " admission_inflight=" << runtimeAdmissionInflight
-                        << " queued=" << *queuedTasks
-                        << " adaptive_window=" << *adaptiveWindow
-                        << " pending_response_limit=" << maxOutstanding
-                        << " ts=" << nowMilliseconds() << std::endl;
-            }
-          }
-          else if (*queuedTasks > 0) {
+          if (*queuedTasks > 0) {
             const std::string requestText = "HELLO";
             ndn::Buffer requestPayload(
               reinterpret_cast<const uint8_t*>(requestText.data()),
@@ -868,7 +1349,7 @@ main(int argc, char** argv)
 
             ndn_service_framework::RequestMessage request;
             request.setPayload(requestPayload, requestPayload.size());
-            request.setStrategy(useBenchmarkCustomSelection ?
+            request.setStrategy((useBenchmarkCustomSelection || useBenchmarkRandomSelection) ?
                                 static_cast<size_t>(ndn_service_framework::tlv::FirstResponding) :
                                 benchmarkStrategy);
 
@@ -967,51 +1448,46 @@ main(int argc, char** argv)
                   });
               });
 
-            ndn::Name requestId;
+            std::shared_ptr<const ndnsf::AckSelectionPolicy> selectionPolicy;
             if (useBenchmarkCustomSelection) {
-              requestId = user.async_call(
-                std::vector<ndn::Name>{},
-                benchmarkServiceName,
-                request,
-                ackTimeoutMs,
-                ndn_service_framework::ServiceUser::AckSelectionStrategy::RandomSelection,
-                requestTimeoutMs,
-                onTimeout,
-                onResponse);
+              selectionPolicy = makeRankQueueSelectionPolicy(ackTimeoutMs, performanceMode);
             }
-            else if (benchmarkStrategy == ndn_service_framework::tlv::FirstResponding) {
-              requestId = user.async_call(
-                std::vector<ndn::Name>{},
-                benchmarkServiceName,
-                request,
-                ackTimeoutMs,
-                ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
-                requestTimeoutMs,
-                onTimeout,
-                onResponse);
+            else if (useBenchmarkRandomSelection ||
+                     benchmarkStrategy == ndn_service_framework::tlv::LoadBalancing) {
+              selectionPolicy = ndnsf::strategy::LoadBalancing;
             }
             else if (benchmarkStrategy == ndn_service_framework::tlv::AllResponders) {
-              requestId = user.async_call(
-                std::vector<ndn::Name>{},
-                benchmarkServiceName,
-                request,
-                ackTimeoutMs,
-                ndn_service_framework::ServiceUser::AckSelectionStrategy::AllResponders,
-                requestTimeoutMs,
-                onTimeout,
-                onResponse);
+              selectionPolicy = ndnsf::strategy::AllResponders;
             }
             else {
-              requestId = user.async_call(
-                benchmarkServiceName,
-                request,
-                requestTimeoutMs,
-                onTimeout,
-                onResponse,
-                benchmarkStrategy);
+              selectionPolicy = ndnsf::strategy::FirstResponding;
             }
 
+            ndn::Name requestId = user.AsyncCall(
+              benchmarkServiceName,
+              request.getPayload(),
+              ackTimeoutMs,
+              selectionPolicy,
+              requestTimeoutMs,
+              onResponse,
+              onTimeout);
+
             state->requestId = requestId.toUri();
+            const bool admissionRejected =
+              admissionRejectedRequestIds->erase(state->requestId) > 0;
+            if (admissionRejected || state->requestId.empty()) {
+              if (*queuedTasks > 0) {
+                --(*queuedTasks);
+              }
+              (*sampleOutstanding)();
+              (*sampleAdaptive)();
+              if (!performanceMode && !state->requestId.empty()) {
+                std::cout << "PERF_REQUEST_ADMISSION_REJECTED id=" << state->requestId
+                          << " ts=" << nowMilliseconds() << std::endl;
+              }
+              scheduleNext(delayUntilNextOpenLoopTick());
+              return;
+            }
             (*states)[state->requestId] = state;
             if (*queuedTasks > 0) {
               --(*queuedTasks);
@@ -1023,15 +1499,30 @@ main(int argc, char** argv)
               std::cout << "PERF_REQUEST_SENT id=" << state->requestId
                         << " ts=" << nowMilliseconds() << std::endl;
             }
+            if (adaptiveAdmission.enabled && adaptiveAdmission.useRecommendedRate) {
+              const double recommendedRate = user.getAdaptiveAdmissionRecommendedRateRps();
+              if (recommendedRate > 0.0 && recommendedRate < rateRps) {
+                *nextAdmissionRecommendedSendAt =
+                  std::chrono::steady_clock::now() +
+                  std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(1.0 / recommendedRate));
+              }
+              else {
+                *nextAdmissionRecommendedSendAt =
+                  std::chrono::steady_clock::time_point::min();
+              }
+            }
           }
 
-          ++(*nextSequence);
           const auto nextDue = *startTime + std::chrono::nanoseconds(
             intervalNs * static_cast<int64_t>(*nextSequence));
           auto delay = std::max(std::chrono::nanoseconds(0),
                                 nextDue - std::chrono::steady_clock::now());
-          if (!generating && *queuedTasks > 0) {
-            delay = std::max(delay, std::chrono::nanoseconds(std::chrono::milliseconds(10)));
+          if (*queuedTasks > 0) {
+            delay = std::chrono::nanoseconds(0);
+          }
+          else if (!generating) {
+            delay = std::chrono::nanoseconds(std::chrono::milliseconds(10));
           }
           scheduleNext(delay);
         };
@@ -1134,12 +1625,15 @@ main(int argc, char** argv)
         scheduler.schedule(ndn::time::seconds(2), [&, startTime, stopSendingAt,
                                                    drainDeadline, sendNext,
                                                    benchmarkStrategy,
-                                                   useBenchmarkCustomSelection] {
+                                                   useBenchmarkCustomSelection,
+                                                   useBenchmarkRandomSelection] {
           *startTime = std::chrono::steady_clock::now();
           *stopSendingAt = *startTime + std::chrono::seconds(openLoopDurationSeconds);
           *drainDeadline = *stopSendingAt + std::chrono::seconds(drainSeconds);
           std::cout << "Starting open-loop benchmark strategy="
-                    << benchmarkStrategyLabel(benchmarkStrategy, useBenchmarkCustomSelection)
+                    << benchmarkStrategyLabel(benchmarkStrategy,
+                                              useBenchmarkCustomSelection,
+                                              useBenchmarkRandomSelection)
                     << " rate_rps=" << std::fixed << std::setprecision(3) << rateRps
                     << " duration_s=" << openLoopDurationSeconds
                     << " max_inflight=" << maxOutstanding
@@ -1148,6 +1642,22 @@ main(int argc, char** argv)
                     << " adaptive_min_window=" << adaptiveAdmission.minWindow
                     << " adaptive_max_window=" << adaptiveAdmission.maxWindow
                     << " hard_inflight_limit=" << adaptiveAdmission.hardInflightLimit
+                    << " admission_soft_queue_limit=" << adaptiveAdmission.softQueueLimit
+                    << " admission_hard_queue_limit=" << adaptiveAdmission.hardQueueLimit
+                    << " admission_warning_backoff_ms="
+                    << adaptiveAdmission.warningBackoffMs
+                    << " admission_reject_backoff_ms="
+                    << adaptiveAdmission.rejectBackoffMs
+                    << " admission_queue_aware_pause="
+                    << adaptiveAdmission.queueAwarePause
+                    << " admission_use_recommended_rate="
+                    << adaptiveAdmission.useRecommendedRate
+                    << " adaptive_hard_target_latency_ms="
+                    << adaptiveAdmission.hardTargetLatencyMs
+                    << " admission_warning_resume_queue_depth="
+                    << adaptiveAdmission.warningResumeQueueDepth
+                    << " admission_reject_resume_queue_depth="
+                    << adaptiveAdmission.rejectResumeQueueDepth
                     << " adaptive_target_latency_ms=" << adaptiveAdmission.targetLatencyMs
                     << " request_timeout_ms=" << requestTimeoutMs
                     << " drain_seconds=" << drainSeconds
@@ -1191,13 +1701,15 @@ main(int argc, char** argv)
       const int totalCalls = benchmarkWarmup + benchmarkCount;
       const ndn::Name benchmarkServiceName(serviceNameText);
       const bool useBenchmarkCustomSelection =
-        benchmarkStrategyText == "custom-selection" || benchmarkStrategyText == "custom" ||
+        benchmarkStrategyText == "custom-selection" || benchmarkStrategyText == "custom";
+      const bool useBenchmarkRandomSelection =
         benchmarkStrategyText == "random-selection" || benchmarkStrategyText == "random";
       const size_t benchmarkStrategy = parseBenchmarkStrategy(benchmarkStrategyText);
 
       *runNext = [&, csv, results, issued, completed, timedOut, completedRequestIds, currentStart,
                   currentMeasured, currentRequestId, runNext, totalCalls,
-                  benchmarkServiceName, useBenchmarkCustomSelection, benchmarkStrategy]() {
+                  benchmarkServiceName, useBenchmarkCustomSelection,
+                  useBenchmarkRandomSelection, benchmarkStrategy]() {
         if (*issued >= totalCalls) {
           const int success = static_cast<int>(results->size());
           const int timeout = *timedOut;
@@ -1230,7 +1742,8 @@ main(int argc, char** argv)
                     << "p95_ms=" << percentile(latencies, 95.0) << "\n"
                     << "p99_ms=" << percentile(latencies, 99.0) << "\n"
                     << "strategy=" << benchmarkStrategyLabel(benchmarkStrategy,
-                                                              useBenchmarkCustomSelection) << "\n"
+                                                              useBenchmarkCustomSelection,
+                                                              useBenchmarkRandomSelection) << "\n"
                     << "pendingCalls_remaining=" << user.getPendingCallCount() << "\n"
                     << "csv=" << outputCsv << std::endl;
 
@@ -1257,7 +1770,7 @@ main(int argc, char** argv)
 
         ndn_service_framework::RequestMessage request;
         request.setPayload(requestPayload, requestPayload.size());
-        request.setStrategy(useBenchmarkCustomSelection ?
+        request.setStrategy((useBenchmarkCustomSelection || useBenchmarkRandomSelection) ?
                             static_cast<size_t>(ndn_service_framework::tlv::FirstResponding) :
                             benchmarkStrategy);
 
@@ -1335,49 +1848,29 @@ main(int argc, char** argv)
                                  [runNext] { (*runNext)(); });
             });
 
-        ndn::Name requestId;
+        std::shared_ptr<const ndnsf::AckSelectionPolicy> selectionPolicy;
         if (useBenchmarkCustomSelection) {
-          requestId = user.async_call(
-            std::vector<ndn::Name>{},
-            benchmarkServiceName,
-            request,
-            ackTimeoutMs,
-            ndn_service_framework::ServiceUser::AckSelectionStrategy::RandomSelection,
-            timeoutMs,
-            onTimeout,
-            onResponse);
+          selectionPolicy = makeRankQueueSelectionPolicy(ackTimeoutMs, performanceMode);
         }
-        else if (benchmarkStrategy == ndn_service_framework::tlv::FirstResponding) {
-          requestId = user.async_call(
-            std::vector<ndn::Name>{},
-            benchmarkServiceName,
-            request,
-            ackTimeoutMs,
-            ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
-            timeoutMs,
-            onTimeout,
-            onResponse);
+        else if (useBenchmarkRandomSelection ||
+                 benchmarkStrategy == ndn_service_framework::tlv::LoadBalancing) {
+          selectionPolicy = ndnsf::strategy::LoadBalancing;
         }
         else if (benchmarkStrategy == ndn_service_framework::tlv::AllResponders) {
-          requestId = user.async_call(
-            std::vector<ndn::Name>{},
-            benchmarkServiceName,
-            request,
-            ackTimeoutMs,
-            ndn_service_framework::ServiceUser::AckSelectionStrategy::AllResponders,
-            timeoutMs,
-            onTimeout,
-            onResponse);
+          selectionPolicy = ndnsf::strategy::AllResponders;
         }
         else {
-          requestId = user.async_call(
-            benchmarkServiceName,
-            request,
-            timeoutMs,
-            onTimeout,
-            onResponse,
-            benchmarkStrategy);
+          selectionPolicy = ndnsf::strategy::FirstResponding;
         }
+
+        ndn::Name requestId = user.AsyncCall(
+          benchmarkServiceName,
+          request.getPayload(),
+          ackTimeoutMs,
+          selectionPolicy,
+          timeoutMs,
+          onResponse,
+          onTimeout);
 
         *currentRequestId = requestId.toUri();
         std::cout << "PERF_REQUEST_SENT id=" << *currentRequestId
@@ -1386,9 +1879,12 @@ main(int argc, char** argv)
       };
 
       scheduler.schedule(ndn::time::seconds(2), [runNext, benchmarkStrategy,
-                                                 useBenchmarkCustomSelection] {
+                                                 useBenchmarkCustomSelection,
+                                                 useBenchmarkRandomSelection] {
         std::cout << "Starting local NFD service latency benchmark strategy="
-                  << benchmarkStrategyLabel(benchmarkStrategy, useBenchmarkCustomSelection)
+                  << benchmarkStrategyLabel(benchmarkStrategy,
+                                            useBenchmarkCustomSelection,
+                                            useBenchmarkRandomSelection)
                   << std::endl;
         (*runNext)();
       });
@@ -1433,85 +1929,80 @@ main(int argc, char** argv)
         });
 
       if (useCustomSelection) {
-        const std::vector<ndn::Name> providers = {
-          ndn::Name(PROVIDER_IDENTITY).append("A"),
-          ndn::Name(PROVIDER_IDENTITY).append("B"),
-          ndn::Name(PROVIDER_IDENTITY).append("C")
-        };
-        user.async_call(
-          providers,
-          ndn::Name("/HELLO"),
-          request,
-          ackTimeoutMs,
-          ndn_service_framework::ServiceUser::AckCandidatesHandler(
-            [ackTimeoutMs](const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
-              std::cout << "customSelectionStrategy ran after ackTimeoutMs="
-                        << ackTimeoutMs
-                        << " candidateCount=" << candidates.size() << std::endl;
+        auto selectionPolicy = std::make_shared<FunctionalAckSelectionPolicy>(
+          [ackTimeoutMs](const std::vector<ndnsf::AckCandidate>& candidates) {
+            std::cout << "customSelectionStrategy ran after ackTimeoutMs="
+                      << ackTimeoutMs
+                      << " candidateCount=" << candidates.size() << std::endl;
 
-              std::vector<ndn_service_framework::AckSelectionCandidate> selected;
-              int bestRank = std::numeric_limits<int>::max();
-              int bestQueue = std::numeric_limits<int>::max();
-              for (const auto& candidate : candidates) {
-                const auto payload = candidate.ack.getPayload();
-                const std::string payloadText(
-                  reinterpret_cast<const char*>(payload.data()),
-                  payload.size());
-                std::cout << "customSelectionStrategy candidate providerName="
-                          << candidate.providerName.toUri()
-                          << " status=" << candidate.ack.getStatus()
-                          << " message=" << candidate.ack.getMessage()
-                          << " payload=" << payloadText << std::endl;
-                std::cout << "customSelectionStrategy ACK received timestampMs="
-                          << nowMilliseconds()
-                          << " providerName=" << candidate.providerName.toUri()
-                          << std::endl;
+            std::vector<ndnsf::AckCandidate> selected;
+            int bestRank = std::numeric_limits<int>::max();
+            int bestQueue = std::numeric_limits<int>::max();
+            for (const auto& candidate : candidates) {
+              const auto payload = candidate.ack.getPayload();
+              const std::string payloadText(
+                reinterpret_cast<const char*>(payload.data()),
+                payload.size());
+              std::cout << "customSelectionStrategy candidate providerName="
+                        << candidate.providerName.toUri()
+                        << " status=" << candidate.ack.getStatus()
+                        << " message=" << candidate.ack.getMessage()
+                        << " payload=" << payloadText << std::endl;
+              std::cout << "customSelectionStrategy ACK received timestampMs="
+                        << nowMilliseconds()
+                        << " providerName=" << candidate.providerName.toUri()
+                        << std::endl;
 
-                if (!candidate.ack.getStatus()) {
-                  std::cout << "customSelectionStrategy rejected provider="
-                            << providerLabel(candidate.providerName)
-                            << " status=0" << std::endl;
-                  continue;
-                }
-
-                const int rank = parseMetadataInt(payloadText, "rank",
-                                                  std::numeric_limits<int>::max());
-                const int queue = parseMetadataInt(payloadText, "queue",
-                                                   std::numeric_limits<int>::max());
-                std::cout << "collected ACK payload provider="
+              if (!candidate.ack.getStatus()) {
+                std::cout << "customSelectionStrategy rejected provider="
                           << providerLabel(candidate.providerName)
-                          << " queue=" << queue
-                          << " rank=" << rank << std::endl;
-                if (selected.empty() ||
-                    rank < bestRank ||
-                    (rank == bestRank && queue < bestQueue)) {
-                  selected.clear();
-                  selected.push_back(candidate);
-                  bestRank = rank;
-                  bestQueue = queue;
-                }
+                          << " status=0" << std::endl;
+                continue;
               }
 
-              if (!selected.empty()) {
-                std::cout << "customSelectionStrategy selected providerName="
-                          << selected.front().providerName.toUri() << std::endl;
+              const int rank = parseMetadataInt(payloadText, "rank",
+                                                std::numeric_limits<int>::max());
+              const int queue = parseMetadataInt(payloadText, "queue",
+                                                 std::numeric_limits<int>::max());
+              std::cout << "collected ACK payload provider="
+                        << providerLabel(candidate.providerName)
+                        << " queue=" << queue
+                        << " rank=" << rank << std::endl;
+              if (selected.empty() ||
+                  rank < bestRank ||
+                  (rank == bestRank && queue < bestQueue)) {
+                selected.clear();
+                selected.push_back(candidate);
+                bestRank = rank;
+                bestQueue = queue;
               }
-              return selected;
-            }),
+            }
+
+            if (!selected.empty()) {
+              std::cout << "customSelectionStrategy selected providerName="
+                        << selected.front().providerName.toUri() << std::endl;
+              return std::vector<ndnsf::ProviderId>{selected.front().providerName};
+            }
+            return std::vector<ndnsf::ProviderId>{};
+          });
+        user.AsyncCall(
+          ndn::Name("/HELLO"),
+          request.getPayload(),
+          ackTimeoutMs,
+          selectionPolicy,
           20000,
-          onTimeout,
-          onResponse);
+          onResponse,
+          onTimeout);
       }
       else {
-        user.async_call(
-          std::vector<ndn::Name>{},
+        user.AsyncCall(
           ndn::Name("/HELLO"),
-          request,
+          request.getPayload(),
           ackTimeoutMs,
-          ndn_service_framework::ServiceUser::AckSelectionStrategy::RandomSelection,
+          ndnsf::strategy::LoadBalancing,
           20000,
-          onTimeout,
-          onResponse);
+          onResponse,
+          onTimeout);
       }
     });
 
