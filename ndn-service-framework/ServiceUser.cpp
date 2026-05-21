@@ -1317,27 +1317,13 @@ namespace ndn_service_framework
 
         const size_t activeLimit = getEffectiveAdaptiveAdmissionWindow();
         if (m_adaptiveAdmissionInflight >= activeLimit) {
-            const size_t jitterQueueLimit = std::max<size_t>(
-                2,
-                std::min<size_t>(
-                    8,
-                    static_cast<size_t>(std::ceil(
-                        static_cast<double>(activeLimit) * 0.15))));
-            const size_t effectiveHardQueueLimit = std::max<size_t>(
-                1, std::min(m_adaptiveAdmissionOptions.hardQueueLimit,
-                            jitterQueueLimit));
-            const size_t effectiveSoftQueueLimit = std::max<size_t>(
-                1,
-                std::min(effectiveHardQueueLimit,
-                         std::max<size_t>(1,
-                                          effectiveHardQueueLimit / 2)));
+            const auto queueLimits =
+                getEffectiveAdaptiveAdmissionQueueLimits(activeLimit);
+            const size_t effectiveSoftQueueLimit = queueLimits.first;
+            const size_t effectiveHardQueueLimit = queueLimits.second;
             if (m_adaptiveAdmissionQueue.size() >= effectiveHardQueueLimit) {
-                const bool configuredHardQueueFull =
-                    effectiveHardQueueLimit >= m_adaptiveAdmissionOptions.hardQueueLimit;
                 rejectPendingCallByAdmission(requestId,
-                                             configuredHardQueueFull ?
-                                             "admission_queue_full" :
-                                             "admission_window_full",
+                                             "admission_queue_full",
                                              effectiveSoftQueueLimit,
                                              effectiveHardQueueLimit);
                 return;
@@ -1365,6 +1351,58 @@ namespace ndn_service_framework
         }
 
         publishAdmittedPendingCall(requestId);
+    }
+
+    std::pair<size_t, size_t>
+    ServiceUser::getEffectiveAdaptiveAdmissionQueueLimits(size_t activeLimit) const
+    {
+        const size_t configuredHard =
+            std::max<size_t>(1, m_adaptiveAdmissionOptions.hardQueueLimit);
+        const size_t configuredSoft =
+            std::max<size_t>(1, std::min(m_adaptiveAdmissionOptions.softQueueLimit,
+                                         configuredHard));
+
+        const double baselineLatencyMs =
+            m_adaptiveAdmissionBaselineLatencyMs > 0.0 ?
+            m_adaptiveAdmissionBaselineLatencyMs :
+            static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs);
+        const double completionRateRps =
+            m_adaptiveAdmissionCompletionRateEmaRps > 0.0 ?
+            m_adaptiveAdmissionCompletionRateEmaRps :
+            (baselineLatencyMs > 0.0 ?
+             1000.0 * static_cast<double>(std::max<size_t>(1, activeLimit)) /
+             baselineLatencyMs :
+             0.0);
+
+        const double queueDelayBudgetMs =
+            std::min(
+                500.0,
+                std::max(
+                    100.0,
+                    0.35 * std::max(
+                        baselineLatencyMs,
+                        static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs))));
+        const size_t delayBudgetQueue =
+            completionRateRps > 0.0 ?
+            static_cast<size_t>(std::ceil(completionRateRps *
+                                          queueDelayBudgetMs / 1000.0)) :
+            0;
+
+        const size_t cwndBudgetQueue =
+            std::max<size_t>(4, static_cast<size_t>(std::ceil(
+                                    static_cast<double>(std::max<size_t>(1, activeLimit)) *
+                                    0.5)));
+        const size_t dynamicHard =
+            std::max<size_t>(4, std::min(cwndBudgetQueue,
+                                         std::max<size_t>(4, delayBudgetQueue)));
+        const size_t effectiveHard =
+            std::max<size_t>(1, std::min(configuredHard, dynamicHard));
+        const size_t dynamicSoft =
+            std::max<size_t>(1, static_cast<size_t>(std::ceil(
+                                    static_cast<double>(effectiveHard) * 0.5)));
+        const size_t effectiveSoft =
+            std::max<size_t>(1, std::min(configuredSoft, dynamicSoft));
+        return {effectiveSoft, effectiveHard};
     }
 
     ServiceUser::AdmissionControlStatus
@@ -3646,10 +3684,15 @@ namespace ndn_service_framework
             }
         }
         else {
-            releaseAdaptiveAdmissionSlot(requestId,
-                                         pendingCall->second,
-                                         "no_provider_selected",
-                                         pendingCall->second.ackSelectionCompletedAtUs);
+            // ACK selection without a provider is not terminal: late ACKs may
+            // still arrive and trigger coordination. Keep the admission slot
+            // until the call completes or times out so overload is reflected
+            // in the user-side controller instead of admitting more work.
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_NO_PROVIDER_PENDING"
+                      << " timestamp_us=" << pendingCall->second.ackSelectionCompletedAtUs
+                      << " requestId=" << requestId.toUri()
+                      << " ackCount=" << pendingCall->second.requestAcks.size()
+                      << " timeoutMs=" << pendingCall->second.timeoutMs);
         }
         return selected;
     }
