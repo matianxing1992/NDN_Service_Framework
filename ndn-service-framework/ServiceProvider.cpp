@@ -339,7 +339,8 @@ namespace ndn_service_framework
         m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
         NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=provider workers="
                      << m_handlerPool.getThreadCount());
-        if (std::getenv("NDNSF_DISABLE_NDNSD") == nullptr) {
+        if (isTruthyEnv("NDNSF_ENABLE_NDNSD") &&
+            std::getenv("NDNSF_DISABLE_NDNSD") == nullptr) {
             m_ServiceDiscovery.enable(group_prefix,
                                       identity,
                                       m_face,
