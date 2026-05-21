@@ -6,14 +6,19 @@
 #include <ndn-cxx/security/key-params.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -114,6 +119,26 @@ parseIntOption(int argc, char** argv, const std::string& option, int fallback)
   }
 }
 
+int
+parseMetadataInt(const std::string& payload, const std::string& key, int fallback)
+{
+  const std::string marker = key + "=";
+  const auto start = payload.find(marker);
+  if (start == std::string::npos) {
+    return fallback;
+  }
+
+  const auto valueStart = start + marker.size();
+  const auto valueEnd = payload.find(';', valueStart);
+  const auto value = payload.substr(valueStart, valueEnd - valueStart);
+  try {
+    return std::stoi(value);
+  }
+  catch (const std::exception&) {
+    return fallback;
+  }
+}
+
 uint64_t
 nowMilliseconds()
 {
@@ -142,7 +167,7 @@ main(int argc, char** argv)
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
-    const bool hybridMessageCrypto = hasFlag(argc, argv, "--hybrid-message-crypto");
+    const bool hybridMessageCrypto = !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool adaptiveProviderAck = hasFlag(argc, argv, "--adaptive-provider-ack");
     const bool dkBootstrapOnly = hasFlag(argc, argv, "--dk-bootstrap-only");
@@ -172,7 +197,9 @@ main(int argc, char** argv)
       argc, argv, "--provider-ack-max-event-loop-lag-ms", 0);
     const int providerAckMaxCoordinationLagMs = parseIntOption(
       argc, argv, "--provider-ack-max-coordination-lag-ms", 0);
-    const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", 0);
+    const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", -1);
+    const int providerRequestDelayMs = parseIntOption(
+      argc, argv, "--provider-request-delay-ms", 5);
     const std::string providerLifecycleCsv =
       getOption(argc, argv, "--provider-lifecycle-csv", "");
 
@@ -194,6 +221,7 @@ main(int argc, char** argv)
               << " providerAckMaxEventLoopLagMs=" << providerAckMaxEventLoopLagMs
               << " providerAckMaxCoordinationLagMs=" << providerAckMaxCoordinationLagMs
               << " handlerThreads=" << handlerThreads
+              << " providerRequestDelayMs=" << providerRequestDelayMs
               << " dkBootstrapOnly=" << dkBootstrapOnly
               << " serveCertificates=" << serveCertificates
               << " ackStatus=" << ackStatus
@@ -226,8 +254,9 @@ main(int argc, char** argv)
       ndn::time::milliseconds(std::max(0, providerAckMaxEventLoopLagMs)));
     provider.setProviderAckMaxCoordinationLag(
       ndn::time::milliseconds(std::max(0, providerAckMaxCoordinationLagMs)));
-    provider.setHandlerThreads(
-      handlerThreads > 0 ? static_cast<size_t>(handlerThreads) : 0);
+    if (handlerThreads >= 0) {
+      provider.setHandlerThreads(static_cast<size_t>(handlerThreads));
+    }
     std::shared_ptr<std::ofstream> providerLifecycleStream;
     if (benchmark && !providerLifecycleCsv.empty()) {
       providerLifecycleStream =
@@ -274,10 +303,16 @@ main(int argc, char** argv)
       return 0;
     }
 
-    provider.addService(
+    auto executingRequests = std::make_shared<std::atomic<size_t>>(0);
+    auto completionTimes =
+      std::make_shared<std::deque<std::chrono::steady_clock::time_point>>();
+    auto completionTimesMutex = std::make_shared<std::mutex>();
+
+    provider.RegisterService(
       ndn::Name("/HELLO"),
       ndn_service_framework::ServiceProvider::AckStrategyHandler(
-        [providerLabel, ackStatus, ackMessage, ackPayloadText, performanceMode](
+        [providerLabel, ackStatus, ackMessage, ackPayloadText, performanceMode,
+         &provider, executingRequests, completionTimes, completionTimesMutex](
           const ndn_service_framework::RequestMessage&) {
           if (!performanceMode) {
             std::cout << "Provider " << providerLabel
@@ -291,7 +326,26 @@ main(int argc, char** argv)
                       << " selective ACK handler rejected request" << std::endl;
           }
 
-          const std::string metadata = ackPayloadText;
+          const auto now = std::chrono::steady_clock::now();
+          size_t processed10s = 0;
+          {
+            std::lock_guard<std::mutex> lock(*completionTimesMutex);
+            while (!completionTimes->empty() &&
+                   now - completionTimes->front() > std::chrono::seconds(10)) {
+              completionTimes->pop_front();
+            }
+            processed10s = completionTimes->size();
+          }
+
+          const size_t backlog =
+            provider.getSelectedOutstandingRequestCountForTesting();
+          const int rank = parseMetadataInt(ackPayloadText, "rank", 1);
+          std::ostringstream metadataStream;
+          metadataStream << "backlog=" << backlog
+                         << ";processed10s=" << processed10s
+                         << ";queue=" << backlog
+                         << ";rank=" << rank;
+          const std::string metadata = metadataStream.str();
           ndn::Buffer ackPayload(
             reinterpret_cast<const uint8_t*>(metadata.data()),
             metadata.size());
@@ -315,7 +369,8 @@ main(int argc, char** argv)
         const ndn::Name&,
         const ndn::Name&,
         const ndn_service_framework::RequestMessage&)>(
-        [providerLabel, responseText, performanceMode](
+        [providerLabel, responseText, performanceMode, providerRequestDelayMs,
+         executingRequests, completionTimes, completionTimesMutex](
           const ndn::Name&,
           const ndn::Name&,
           const ndn::Name& serviceName,
@@ -331,6 +386,17 @@ main(int argc, char** argv)
             response.setStatus(false);
             response.setErrorInfo("Unexpected payload for " + serviceName.toUri());
             return response;
+          }
+
+          executingRequests->fetch_add(1, std::memory_order_relaxed);
+          if (providerRequestDelayMs > 0) {
+            std::this_thread::sleep_for(
+              std::chrono::milliseconds(providerRequestDelayMs));
+          }
+          executingRequests->fetch_sub(1, std::memory_order_relaxed);
+          {
+            std::lock_guard<std::mutex> lock(*completionTimesMutex);
+            completionTimes->push_back(std::chrono::steady_clock::now());
           }
 
           if (!performanceMode) {

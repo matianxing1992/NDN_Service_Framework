@@ -169,13 +169,34 @@ def build_parser():
     parser.add_argument("--adaptive-severe-md-factor", type=float, default=0.75)
     parser.add_argument("--adaptive-control-interval-ms", type=int, default=500)
     parser.add_argument("--adaptive-target-latency-ms", type=int, default=350)
+    parser.add_argument("--adaptive-hard-target-latency-ms", type=int, default=500)
+    parser.add_argument("--adaptive-soft-queue-limit", type=int, default=None,
+                        help="Pass --adaptive-soft-queue-limit to App_User; default keeps App_User latency-first default")
+    parser.add_argument("--adaptive-hard-queue-limit", type=int, default=None,
+                        help="Pass --adaptive-hard-queue-limit to App_User; default keeps App_User latency-first default")
+    parser.add_argument("--adaptive-warning-backoff-ms", type=int, default=None,
+                        help="Pass --adaptive-warning-backoff-ms to App_User")
+    parser.add_argument("--adaptive-reject-backoff-ms", type=int, default=None,
+                        help="Pass --adaptive-reject-backoff-ms to App_User")
+    parser.add_argument("--disable-adaptive-queue-aware-pause", action="store_true",
+                        help="Disable App_User queue-depth based pause/resume after admission warning/reject")
+    parser.add_argument("--disable-adaptive-recommended-rate", action="store_true",
+                        help="Disable App_User pacing by ServiceUser recommended request rate")
+    parser.add_argument("--adaptive-warning-resume-queue-depth", type=int, default=None,
+                        help="Pass --adaptive-warning-resume-queue-depth to App_User")
+    parser.add_argument("--adaptive-reject-resume-queue-depth", type=int, default=None,
+                        help="Pass --adaptive-reject-resume-queue-depth to App_User")
+    parser.add_argument("--adaptive-queue-pause-poll-ms", type=int, default=None,
+                        help="Pass --adaptive-queue-pause-poll-ms to App_User")
     parser.add_argument("--adaptive-provider-ack", action="store_true",
                         help="Enable provider-side adaptive ACK admission")
     parser.add_argument("--provider-ack-max-pending", type=int, default=1000)
     parser.add_argument("--provider-ack-max-event-loop-lag-ms", type=int, default=0)
     parser.add_argument("--provider-ack-max-coordination-lag-ms", type=int, default=0)
-    parser.add_argument("--handler-threads", type=int, default=0,
-                        help="Pass --handler-threads to App_User and App_Provider; 0 keeps inline callbacks")
+    parser.add_argument("--provider-request-delay-ms-series", default="",
+                        help="Comma-separated provider processing delays in ms, e.g., 5,20,40")
+    parser.add_argument("--handler-threads", type=int, default=-1,
+                        help="Pass --handler-threads to App_User and App_Provider; -1 keeps app default")
     parser.add_argument("--request-timeout-ms", type=int, default=5000,
                         help="Open-loop per-request timeout")
     parser.add_argument("--drain-seconds", type=int, default=10,
@@ -230,7 +251,9 @@ def build_parser():
     parser.add_argument("--disable-tokens", action="store_true",
                         help="Pass --disable-tokens to App_User and App_Provider")
     parser.add_argument("--hybrid-message-crypto", action="store_true",
-                        help="Pass --hybrid-message-crypto to App_User and App_Provider")
+                        help="Compatibility no-op; hybrid message crypto is enabled by default")
+    parser.add_argument("--disable-hybrid-message-crypto", action="store_true",
+                        help="Pass --disable-hybrid-message-crypto to App_User and App_Provider")
     parser.add_argument("--crypto-diagnostics", action="store_true",
                         help="Enable harness-only NDNSF_CRYPTO_DIAG timing logs")
     parser.add_argument("--timeline-trace", action="store_true",
@@ -326,8 +349,8 @@ def ensure_runtime(args):
         raise RuntimeError("--per-rate-duration must be positive")
     if args.max_total_runtime_seconds <= 0:
         raise RuntimeError("--max-total-runtime-seconds must be positive")
-    if args.handler_threads < 0:
-        raise RuntimeError("--handler-threads must be non-negative")
+    if args.handler_threads < -1:
+        raise RuntimeError("--handler-threads must be >= -1")
     if args.workload_mode == "open-loop":
         if args.rate_rps is None:
             args.rate_rps = 1.0
@@ -505,7 +528,11 @@ def configure_static_routes(ndn, args):
                                   ndn_name_join(provider_prefix, "KEY"),
                                   "/example/hello/group"])
     routing_helper.addOrigin([ndn.net[provider_node_names[0]]], [CONNECTIVITY_PREFIX])
-    routing_helper.calculateNPossibleRoutes()
+    # Use deterministic shortest-path routes for performance experiments.
+    # calculateNPossibleRoutes() installs multiple next hops per prefix; with
+    # multicast strategy on the SVS/NDNSF prefixes, that makes the effective
+    # memphis<->ucla path vary between runs and adds tens of ms of latency noise.
+    routing_helper.calculateRoutes()
 
     for node in ndn.net.hosts:
         for prefix in dict.fromkeys([
@@ -2912,6 +2939,30 @@ def parse_results(output_dir, app_csv, request_csv, args, readiness=None):
     adaptive_window_min = parse_int_like(open_loop_summary.get("adaptive_window_min"), 0)
     adaptive_window_max = parse_int_like(open_loop_summary.get("adaptive_window_max"), 0)
     hard_inflight_limit = parse_int_like(open_loop_summary.get("hard_inflight_limit"), 0)
+    admission_control_warnings = parse_int_like(
+        open_loop_summary.get("admission_control_warnings"), 0)
+    admission_control_rejects = parse_int_like(
+        open_loop_summary.get("admission_control_rejects"), 0)
+    admission_queue_pause_events = parse_int_like(
+        open_loop_summary.get("admission_queue_pause_events"), 0)
+    admission_queue_pause_resumes = parse_int_like(
+        open_loop_summary.get("admission_queue_pause_resumes"), 0)
+    admission_queue_pause_skips = parse_int_like(
+        open_loop_summary.get("admission_queue_pause_skips"), 0)
+    total_admission_queue_paused_ms = parse_int_like(
+        open_loop_summary.get("total_admission_queue_paused_ms"), 0)
+    admission_warning_resume_queue_depth = parse_int_like(
+        open_loop_summary.get("admission_warning_resume_queue_depth"), 0)
+    admission_reject_resume_queue_depth = parse_int_like(
+        open_loop_summary.get("admission_reject_resume_queue_depth"), 0)
+    admission_recommended_rate_skips = parse_int_like(
+        open_loop_summary.get("admission_recommended_rate_skips"), 0)
+    admission_recommended_rate_min = parse_float_like(
+        open_loop_summary.get("admission_recommended_rate_min"), 0.0)
+    admission_recommended_rate_max = parse_float_like(
+        open_loop_summary.get("admission_recommended_rate_max"), 0.0)
+    admission_recommended_rate_final = parse_float_like(
+        open_loop_summary.get("admission_recommended_rate_final"), 0.0)
     pause_count = parse_int_like(open_loop_summary.get("pause_count"), 0)
     total_paused_ms = parse_int_like(open_loop_summary.get("total_paused_ms"), 0)
     paused_state_transitions = parse_int_like(
@@ -2985,6 +3036,18 @@ def parse_results(output_dir, app_csv, request_csv, args, readiness=None):
         "adaptive_window_min": adaptive_window_min,
         "adaptive_window_max": adaptive_window_max,
         "hard_inflight_limit": hard_inflight_limit,
+        "admission_control_warnings": admission_control_warnings,
+        "admission_control_rejects": admission_control_rejects,
+        "admission_queue_pause_events": admission_queue_pause_events,
+        "admission_queue_pause_resumes": admission_queue_pause_resumes,
+        "admission_queue_pause_skips": admission_queue_pause_skips,
+        "total_admission_queue_paused_ms": total_admission_queue_paused_ms,
+        "admission_warning_resume_queue_depth": admission_warning_resume_queue_depth,
+        "admission_reject_resume_queue_depth": admission_reject_resume_queue_depth,
+        "admission_recommended_rate_skips": admission_recommended_rate_skips,
+        "admission_recommended_rate_min": admission_recommended_rate_min,
+        "admission_recommended_rate_max": admission_recommended_rate_max,
+        "admission_recommended_rate_final": admission_recommended_rate_final,
         "pause_count": pause_count,
         "total_paused_ms": total_paused_ms,
         "paused_state_transitions": paused_state_transitions,
@@ -3616,7 +3679,7 @@ def dry_run(args):
     log("nfd_log_level={}".format(args.nfd_log_level))
     log("debug_ack={}".format(args.debug_ack))
     log("disable_tokens={}".format(args.disable_tokens))
-    log("hybrid_message_crypto={}".format(args.hybrid_message_crypto))
+    log("hybrid_message_crypto={}".format(not args.disable_hybrid_message_crypto))
     log("dk_forwarding_check={}".format(args.dk_forwarding_check))
     log("dk_diagnostic_node={}".format(args.dk_diagnostic_node))
     log("dk_bootstrap_check={}".format(args.dk_bootstrap_check))
@@ -3822,6 +3885,25 @@ def aggregate_csv_row(summary):
         "adaptive_window_min": summary.get("adaptive_window_min", 0),
         "adaptive_window_max": summary.get("adaptive_window_max", 0),
         "hard_inflight_limit": summary.get("hard_inflight_limit", 0),
+        "admission_control_warnings": summary.get("admission_control_warnings", 0),
+        "admission_control_rejects": summary.get("admission_control_rejects", 0),
+        "admission_queue_pause_events": summary.get("admission_queue_pause_events", 0),
+        "admission_queue_pause_resumes": summary.get("admission_queue_pause_resumes", 0),
+        "admission_queue_pause_skips": summary.get("admission_queue_pause_skips", 0),
+        "total_admission_queue_paused_ms": summary.get(
+            "total_admission_queue_paused_ms", 0),
+        "admission_warning_resume_queue_depth": summary.get(
+            "admission_warning_resume_queue_depth", 0),
+        "admission_reject_resume_queue_depth": summary.get(
+            "admission_reject_resume_queue_depth", 0),
+        "admission_recommended_rate_skips": summary.get(
+            "admission_recommended_rate_skips", 0),
+        "admission_recommended_rate_min": "{:.3f}".format(
+            float(summary.get("admission_recommended_rate_min", 0.0))),
+        "admission_recommended_rate_max": "{:.3f}".format(
+            float(summary.get("admission_recommended_rate_max", 0.0))),
+        "admission_recommended_rate_final": "{:.3f}".format(
+            float(summary.get("admission_recommended_rate_final", 0.0))),
         "pause_count": summary.get("pause_count", 0),
         "total_paused_ms": summary.get("total_paused_ms", 0),
         "paused_state_transitions": summary.get("paused_state_transitions", 0),
@@ -4019,7 +4101,17 @@ def write_aggregate_results(output_dir, summaries, started_at, finished_at, args
         "user_queued_task_p50", "user_queued_task_p95", "user_queued_task_max",
         "adaptive_window_p50", "adaptive_window_p95",
         "adaptive_window_min", "adaptive_window_max",
-        "hard_inflight_limit", "pause_count", "total_paused_ms",
+        "hard_inflight_limit",
+        "admission_control_warnings", "admission_control_rejects",
+        "admission_queue_pause_events", "admission_queue_pause_resumes",
+        "admission_queue_pause_skips", "total_admission_queue_paused_ms",
+        "admission_warning_resume_queue_depth",
+        "admission_reject_resume_queue_depth",
+        "admission_recommended_rate_skips",
+        "admission_recommended_rate_min",
+        "admission_recommended_rate_max",
+        "admission_recommended_rate_final",
+        "pause_count", "total_paused_ms",
         "paused_state_transitions", "pause_reason_counters",
         "in_flight_p50", "in_flight_p95", "in_flight_max", "ack_p95_ms",
         "user_delayed_publications", "provider_ack_suppression_count",
@@ -4130,9 +4222,10 @@ def start_controller(ndn, output_dir, session_base, processes, args):
 def provider_argv(args, provider_id, index, output_dir=None):
     rank = index + 1
     queue = (index + 1) * 3
-    if args.strategy == "custom-selection" and provider_id == "B":
-        rank = 1
-        queue = 1
+    delay_series = [
+        int(float(value)) for value in parse_csv_list(
+            getattr(args, "provider_request_delay_ms_series", ""))
+    ]
     argv = [
         "--benchmark",
         "--provider-id", provider_id,
@@ -4145,6 +4238,9 @@ def provider_argv(args, provider_id, index, output_dir=None):
         "--provider-lifecycle-csv",
         str((output_dir or Path(".")).resolve() / "provider-{}-lifecycle.csv".format(provider_id)),
     ]
+    if delay_series:
+        delay_ms = delay_series[min(index, len(delay_series) - 1)]
+        argv.extend(["--provider-request-delay-ms", str(delay_ms)])
     if getattr(args, "adaptive_provider_ack", False):
         argv.append("--adaptive-provider-ack")
         argv.extend([
@@ -4154,11 +4250,13 @@ def provider_argv(args, provider_id, index, output_dir=None):
             "--provider-ack-max-coordination-lag-ms",
             str(int(args.provider_ack_max_coordination_lag_ms)),
         ])
-    if getattr(args, "handler_threads", 0) > 0:
+    if getattr(args, "handler_threads", -1) >= 0:
         argv.extend(["--handler-threads", str(int(args.handler_threads))])
     if getattr(args, "disable_tokens", False):
         argv.append("--disable-tokens")
-    if getattr(args, "hybrid_message_crypto", False):
+    if getattr(args, "disable_hybrid_message_crypto", False):
+        argv.append("--disable-hybrid-message-crypto")
+    elif getattr(args, "hybrid_message_crypto", False):
         argv.append("--hybrid-message-crypto")
     if getattr(args, "timeline_trace", False):
         argv.append("--timeline-trace")
@@ -4498,16 +4596,59 @@ def app_user_argv(args, app_csv):
                 str(int(args.adaptive_control_interval_ms)),
                 "--adaptive-target-latency-ms",
                 str(int(args.adaptive_target_latency_ms)),
+                "--adaptive-hard-target-latency-ms",
+                str(int(args.adaptive_hard_target_latency_ms)),
             ])
+            if args.adaptive_soft_queue_limit is not None:
+                user_args.extend([
+                    "--adaptive-soft-queue-limit",
+                    str(int(args.adaptive_soft_queue_limit)),
+                ])
+            if args.adaptive_hard_queue_limit is not None:
+                user_args.extend([
+                    "--adaptive-hard-queue-limit",
+                    str(int(args.adaptive_hard_queue_limit)),
+                ])
+            if args.adaptive_warning_backoff_ms is not None:
+                user_args.extend([
+                    "--adaptive-warning-backoff-ms",
+                    str(int(args.adaptive_warning_backoff_ms)),
+                ])
+            if args.adaptive_reject_backoff_ms is not None:
+                user_args.extend([
+                    "--adaptive-reject-backoff-ms",
+                    str(int(args.adaptive_reject_backoff_ms)),
+                ])
+            if args.disable_adaptive_queue_aware_pause:
+                user_args.append("--disable-adaptive-queue-aware-pause")
+            if args.disable_adaptive_recommended_rate:
+                user_args.append("--disable-adaptive-recommended-rate")
+            if args.adaptive_warning_resume_queue_depth is not None:
+                user_args.extend([
+                    "--adaptive-warning-resume-queue-depth",
+                    str(int(args.adaptive_warning_resume_queue_depth)),
+                ])
+            if args.adaptive_reject_resume_queue_depth is not None:
+                user_args.extend([
+                    "--adaptive-reject-resume-queue-depth",
+                    str(int(args.adaptive_reject_resume_queue_depth)),
+                ])
+            if args.adaptive_queue_pause_poll_ms is not None:
+                user_args.extend([
+                    "--adaptive-queue-pause-poll-ms",
+                    str(int(args.adaptive_queue_pause_poll_ms)),
+                ])
     if args.strategy == "custom-selection":
         user_args.append("--custom-selection")
     if getattr(args, "performance_mode", False):
         user_args.append("--performance-mode")
-    if getattr(args, "handler_threads", 0) > 0:
+    if getattr(args, "handler_threads", -1) >= 0:
         user_args.extend(["--handler-threads", str(int(args.handler_threads))])
     if getattr(args, "disable_tokens", False):
         user_args.append("--disable-tokens")
-    if getattr(args, "hybrid_message_crypto", False):
+    if getattr(args, "disable_hybrid_message_crypto", False):
+        user_args.append("--disable-hybrid-message-crypto")
+    elif getattr(args, "hybrid_message_crypto", False):
         user_args.append("--hybrid-message-crypto")
     if getattr(args, "timeline_trace", False):
         user_args.append("--timeline-trace")

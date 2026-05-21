@@ -90,6 +90,16 @@ namespace ndn_service_framework
             }
         }
 
+        size_t
+        defaultNdnsfWorkerThreads()
+        {
+            if (std::getenv("NDNSF_HANDLER_THREADS") == nullptr) {
+                return 4;
+            }
+            return static_cast<size_t>(
+                std::max(0, intEnvOrDefault("NDNSF_HANDLER_THREADS", 4)));
+        }
+
         bool
         useAsyncSvsPublish()
         {
@@ -326,6 +336,9 @@ namespace ndn_service_framework
         random(ndn::random::getRandomNumberEngine()),
         m_IMS(6000)
     {
+        m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
+        NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=provider workers="
+                     << m_handlerPool.getThreadCount());
         if (std::getenv("NDNSF_DISABLE_NDNSD") == nullptr) {
             m_ServiceDiscovery.enable(group_prefix,
                                       identity,
@@ -496,6 +509,7 @@ namespace ndn_service_framework
                          << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
                          << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs);
         }
+        m_cryptoProduceQueue.shutdown();
         m_handlerPool.shutdown();
     }
 
@@ -637,6 +651,19 @@ namespace ndn_service_framework
                    std::move(requestHandler));
     }
 
+    void ServiceProvider::RegisterService(const ServiceName& serviceName,
+                                          AckStrategyHandler ackHandler,
+                                          RequestHandler requestHandler)
+    {
+        addService(serviceName, std::move(ackHandler), std::move(requestHandler));
+    }
+
+    void ServiceProvider::RegisterService(const ServiceName& serviceName,
+                                          RequestHandler requestHandler)
+    {
+        addService(serviceName, std::move(requestHandler));
+    }
+
     void ServiceProvider::setAckStrategyHandler(const ndn::Name& serviceName,
                                                 AckStrategyHandler ackHandler)
     {
@@ -683,6 +710,11 @@ namespace ndn_service_framework
         return pendingRequests.size();
     }
 
+    size_t ServiceProvider::getSelectedOutstandingRequestCountForTesting() const
+    {
+        return m_selectedOutstandingRequests.load(std::memory_order_relaxed);
+    }
+
     size_t ServiceProvider::getPendingProviderTokenCountForTesting() const
     {
         return pendingProviderTokens.size();
@@ -711,7 +743,7 @@ namespace ndn_service_framework
     void ServiceProvider::setHandlerThreads(size_t n)
     {
         m_handlerPool.setThreadCount(n);
-        NDN_LOG_WARN("Application handler worker threads: " << n);
+        NDN_LOG_WARN("NDNSF provider worker threads: " << n);
     }
 
     size_t ServiceProvider::getHandlerThreads() const
@@ -1174,6 +1206,15 @@ namespace ndn_service_framework
             updateProviderRequestLifecycleState(
                 requestId, serviceName,
                 ProviderRequestLifecycleState::RESPONSE_PUBLISHED);
+            size_t selectedOutstanding =
+                m_selectedOutstandingRequests.load(std::memory_order_relaxed);
+            while (selectedOutstanding > 0 &&
+                   !m_selectedOutstandingRequests.compare_exchange_weak(
+                       selectedOutstanding,
+                       selectedOutstanding - 1,
+                       std::memory_order_relaxed,
+                       std::memory_order_relaxed)) {
+            }
         }
         catch (const std::exception& e) {
             NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=RESPONSE_PUBLISH_FAILED timestamp_us="
@@ -1182,6 +1223,15 @@ namespace ndn_service_framework
                       << " serviceName=" << serviceName.toUri()
                       << " responseName=" << responseName.toUri()
                       << " error=" << e.what());
+            size_t selectedOutstanding =
+                m_selectedOutstandingRequests.load(std::memory_order_relaxed);
+            while (selectedOutstanding > 0 &&
+                   !m_selectedOutstandingRequests.compare_exchange_weak(
+                       selectedOutstanding,
+                       selectedOutstanding - 1,
+                       std::memory_order_relaxed,
+                       std::memory_order_relaxed)) {
+            }
             throw;
         }
     }
@@ -1438,6 +1488,7 @@ namespace ndn_service_framework
             serviceName, senderPrefix, accessAttribute, messageType, m_hybridCryptoCounters);
 
         const auto plaintextBlock = message.WireEncode();
+        auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
         const auto ad = hybridAssociatedData(messageName, messageType, requestId,
                                             serviceName, senderPrefix,
                                             key.keyId, key.epochId);
@@ -1455,34 +1506,12 @@ namespace ndn_service_framework
                               {"messageName", messageName.toUri()},
                               {"mode", "hybrid"}});
         }
-        const auto aesStartUs = timelineSteadyMicroseconds();
-        auto encrypted = hybridAesGcmEncrypt(
-            key.key,
-            ndn::span<const uint8_t>(&*plaintextBlock.begin(), plaintextBlock.size()),
-            ndn::span<const uint8_t>(ad.data(), ad.size()));
-        const auto aesEndUs = timelineSteadyMicroseconds();
-        if (m_timelineTrace) {
-            logTimelineTrace("provider", "aes_gcm_encrypt_done", requestId,
-                             {{"serviceName", serviceName.toUri()},
-                              {"messageType", messageType},
-                              {"duration_us", std::to_string(aesEndUs >= aesStartUs ?
-                                                             aesEndUs - aesStartUs : 0)}});
-        }
-        envelope.setNonce(encrypted.nonce);
-        envelope.setCipherText(encrypted.ciphertext);
-        envelope.setAuthTag(encrypted.tag);
-        ++m_hybridCryptoCounters.symmetric_encrypt_count;
-        if (m_useTokens) {
-            if (messageType == "ACK") {
-                ++m_hybridCryptoCounters.provider_token_symmetric_encrypt_count;
-                ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
-            }
-            if (messageType == "RESPONSE") {
-                ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
-            }
-        }
 
-        if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
+        ndn::Buffer cachedWrappedKey;
+        if (m_hybridMessageCrypto.getWrappedSendKey(key.keyId, cachedWrappedKey)) {
+            envelope.setWrappedMessageKey(cachedWrappedKey);
+        }
+        else if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
             if (m_timelineTrace) {
                 logTimelineTrace("provider", "wrapped_key_attached", requestId,
                                  {{"value", "true"},
@@ -1502,7 +1531,8 @@ namespace ndn_service_framework
             auto wrapped = mergeDataContents(contentData);
             envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
             serveDataWithIMS(contentData, ckData);
-            m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+            m_hybridMessageCrypto.cacheWrappedSendKey(key.keyId,
+                                                      envelope.getWrappedMessageKey());
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             const auto wrapEndUs = timelineSteadyMicroseconds();
             if (m_timelineTrace) {
@@ -1519,26 +1549,74 @@ namespace ndn_service_framework
                               {"serviceName", serviceName.toUri()},
                               {"messageType", messageType}});
         }
-        if (m_timelineTrace) {
-            logTimelineTrace("provider", cryptoStageForName(messageName) + "_crypto_done",
-                             requestId,
-                             {{"serviceName", serviceName.toUri()},
-                              {"messageName", messageName.toUri()},
-                              {"mode", "hybrid"}});
-        }
 
-        auto envelopeBlock = envelope.WireEncode();
-        auto buffer = ndn::Buffer(envelopeBlock.begin(), envelopeBlock.end());
-        const auto queuedAtUs = nowMicroseconds();
-        NDN_LOG_DEBUG("[NDNSF_HYBRID] role=provider event=HYBRID_PUBLISH"
-                  << " messageName=" << messageName.toUri()
-                  << " messageType=" << messageType
-                  << " keyId=" << key.keyId
-                  << " epochId=" << key.epochId
-                  << " wrappedKeyAttached=" << envelope.hasWrappedMessageKey()
-                  << " ciphertextBytes=" << encrypted.ciphertext.size());
-        m_face.getIoContext().post(
-            [this, messageName, queuedAtUs, buffer = std::move(buffer)]() mutable {
+        auto encryptAndPost = [this, messageName, requestId, serviceName, messageType,
+                               keyId = key.keyId, epochId = key.epochId,
+                               keyBytes = key.key, ad = std::move(ad),
+                               plaintext = std::move(plaintext),
+                               envelope = std::move(envelope)]() mutable {
+            const auto aesStartUs = timelineSteadyMicroseconds();
+            ndn::Buffer buffer;
+            size_t ciphertextBytes = 0;
+            bool wrappedKeyAttached = envelope.hasWrappedMessageKey();
+            std::string error;
+            try {
+                auto encrypted = hybridAesGcmEncrypt(
+                    keyBytes,
+                    ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+                    ndn::span<const uint8_t>(ad.data(), ad.size()));
+                envelope.setNonce(encrypted.nonce);
+                envelope.setCipherText(encrypted.ciphertext);
+                envelope.setAuthTag(encrypted.tag);
+                ciphertextBytes = encrypted.ciphertext.size();
+                auto envelopeBlock = envelope.WireEncode();
+                buffer = ndn::Buffer(envelopeBlock.begin(), envelopeBlock.end());
+            }
+            catch (const std::exception& e) {
+                error = e.what();
+            }
+            const auto aesEndUs = timelineSteadyMicroseconds();
+            m_face.getIoContext().post(
+                [this, messageName, requestId, serviceName, messageType,
+                 keyId, epochId, aesStartUs, aesEndUs, wrappedKeyAttached,
+                 ciphertextBytes, error = std::move(error),
+                 buffer = std::move(buffer)]() mutable {
+                if (!error.empty()) {
+                    NDN_LOG_ERROR("[NDNSF_HYBRID] role=provider event=HYBRID_PUBLISH_FAILED"
+                                  << " messageName=" << messageName.toUri()
+                                  << " reason=" << error);
+                    return;
+                }
+                if (m_timelineTrace) {
+                    logTimelineTrace("provider", "aes_gcm_encrypt_done", requestId,
+                                     {{"serviceName", serviceName.toUri()},
+                                      {"messageType", messageType},
+                                      {"duration_us", std::to_string(aesEndUs >= aesStartUs ?
+                                                                     aesEndUs - aesStartUs : 0)}});
+                    logTimelineTrace("provider", cryptoStageForName(messageName) + "_crypto_done",
+                                     requestId,
+                                     {{"serviceName", serviceName.toUri()},
+                                      {"messageName", messageName.toUri()},
+                                      {"mode", "hybrid"}});
+                }
+                ++m_hybridCryptoCounters.symmetric_encrypt_count;
+                if (m_useTokens) {
+                    if (messageType == "ACK") {
+                        ++m_hybridCryptoCounters.provider_token_symmetric_encrypt_count;
+                        ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
+                    }
+                    if (messageType == "RESPONSE") {
+                        ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
+                    }
+                }
+                const auto queuedAtUs = nowMicroseconds();
+                NDN_LOG_DEBUG("[NDNSF_HYBRID] role=provider event=HYBRID_PUBLISH"
+                              << " messageName=" << messageName.toUri()
+                              << " messageType=" << messageType
+                              << " keyId=" << keyId
+                              << " epochId=" << epochId
+                              << " wrappedKeyAttached=" << wrappedKeyAttached
+                              << " ciphertextBytes=" << ciphertextBytes);
                 ndn::Block contentBlock(buffer);
                 const auto beginUs = nowMicroseconds();
                 NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SVS_PUBLISH_BEGIN timestamp_us="
@@ -1588,6 +1666,11 @@ namespace ndn_service_framework
                     }
                 }
             });
+        };
+        if (m_handlerPool.getThreadCount() == 0 ||
+            !m_handlerPool.post(encryptAndPost)) {
+            encryptAndPost();
+        }
     }
 
     bool ServiceProvider::decryptHybridMessage(const ndn::Name& messageName,
@@ -1623,27 +1706,40 @@ namespace ndn_service_framework
             const auto ad = hybridAssociatedData(messageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
                                                 envelope.getKeyId(), envelope.getEpochId());
-            ndn::Buffer plaintext;
-            if (!hybridAesGcmDecrypt(key, envelope,
-                                     ndn::span<const uint8_t>(ad.data(), ad.size()),
-                                     plaintext)) {
-                ++m_hybridCryptoCounters.auth_decrypt_failure_count;
-                if (onError) {
-                    onError("hybrid AES-GCM authentication failed");
-                }
-                return;
-            }
-            ++m_hybridCryptoCounters.symmetric_decrypt_count;
-            if (m_useTokens) {
-                if (envelope.getMessageType() == "REQUEST") {
-                    ++m_hybridCryptoCounters.user_token_symmetric_decrypt_count;
-                }
-                if (envelope.getMessageType() == "COORDINATION") {
-                    ++m_hybridCryptoCounters.provider_token_symmetric_decrypt_count;
-                }
-            }
-            if (onSuccess) {
-                onSuccess(plaintext);
+            auto decryptAndPost = [this, key, envelope, ad,
+                                   onSuccess = std::move(onSuccess),
+                                   onError = std::move(onError)]() mutable {
+                ndn::Buffer plaintext;
+                const bool ok = hybridAesGcmDecrypt(
+                    key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), plaintext);
+                m_face.getIoContext().post(
+                    [this, ok, envelope, plaintext = std::move(plaintext),
+                     onSuccess = std::move(onSuccess),
+                     onError = std::move(onError)]() mutable {
+                    if (!ok) {
+                        ++m_hybridCryptoCounters.auth_decrypt_failure_count;
+                        if (onError) {
+                            onError("hybrid AES-GCM authentication failed");
+                        }
+                        return;
+                    }
+                    ++m_hybridCryptoCounters.symmetric_decrypt_count;
+                    if (m_useTokens) {
+                        if (envelope.getMessageType() == "REQUEST") {
+                            ++m_hybridCryptoCounters.user_token_symmetric_decrypt_count;
+                        }
+                        if (envelope.getMessageType() == "COORDINATION") {
+                            ++m_hybridCryptoCounters.provider_token_symmetric_decrypt_count;
+                        }
+                    }
+                    if (onSuccess) {
+                        onSuccess(plaintext);
+                    }
+                });
+            };
+            if (m_handlerPool.getThreadCount() == 0 ||
+                !m_handlerPool.post(decryptAndPost)) {
+                decryptAndPost();
             }
         };
 
@@ -1762,7 +1858,6 @@ namespace ndn_service_framework
                              {{"serviceName", timelineServiceName.toUri()},
                               {"messageName", messageName.toUri()}});
         }
-        const bool isAck = stage == "ack";
         if (usePlaintext) {
             const auto encryptEndUs = nowMicroseconds();
             if (m_timelineTrace && !timelineRequestId.empty()) {
@@ -1845,6 +1940,7 @@ namespace ndn_service_framework
         }
 
         std::vector<uint8_t> plaintext(plaintextBlock.begin(), plaintextBlock.end());
+        const bool isAck = stage == "ack";
         if (isAck) {
             ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
             NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=PRODUCE_STARTED timestamp_us="
@@ -1874,14 +1970,6 @@ namespace ndn_service_framework
                               "synchronous-ack", "success",
                               encryptStartUs, encryptEndUs,
                               messageName, plaintext.size());
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=PRODUCE_COMPLETED timestamp_us="
-                          << encryptEndUs
-                          << " providerName=" << identity.toUri()
-                          << " messageName=" << messageName.toUri()
-                          << " stage=" << stage
-                          << " mode=synchronous-ack"
-                          << " contentSegments=" << contentData.size()
-                          << " ckSegments=" << ckData.size());
             }
             catch (const std::exception& e) {
                 const auto encryptEndUs = nowMicroseconds();
@@ -1898,33 +1986,10 @@ namespace ndn_service_framework
             if (buffer.empty()) {
                 NDN_LOG_ERROR("NAC-ABE produce returned empty content for "
                               << messageName.toUri());
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=PRODUCE_EMPTY_CONTENT timestamp_us="
-                          << nowMicroseconds()
-                          << " providerName=" << identity.toUri()
-                          << " messageName=" << messageName.toUri()
-                          << " stage=" << stage
-                          << " mode=synchronous-ack"
-                          << " contentSegments=" << contentData.size()
-                          << " ckSegments=" << ckData.size());
                 return;
             }
             const auto queuedAtUs = nowMicroseconds();
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SVS_PUBLISH_QUEUED timestamp_us="
-                      << queuedAtUs
-                      << " providerName=" << identity.toUri()
-                      << " messageName=" << messageName.toUri()
-                      << " contentBytes=" << buffer.size()
-                      << " contentSegments=" << contentData.size()
-                      << " ckSegments=" << ckData.size()
-                      << " mode=synchronous-ack");
             serveDataWithIMS(contentData, ckData);
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=IMS_INSERT_DONE timestamp_us="
-                      << nowMicroseconds()
-                      << " providerName=" << identity.toUri()
-                      << " messageName=" << messageName.toUri()
-                      << " contentSegments=" << contentData.size()
-                      << " ckSegments=" << ckData.size()
-                      << " mode=synchronous-ack");
             ndn::Block contentBlock(buffer);
             const auto beginUs = nowMicroseconds();
             NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SVS_PUBLISH_BEGIN timestamp_us="
@@ -2339,10 +2404,65 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
     const ndn::Buffer& buffer)
 {
     auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
+    auto decodeAndFinish = [this, requesterIdentity, serviceName, bloomFilterName,
+                            requestId, raw]() mutable {
+        ndn_service_framework::RequestMessage requestMessage;
+        try {
+            ndn::Block block(ndn::span<const uint8_t>(raw->data(), raw->size()));
+            if (!requestMessage.WireDecode(block)) {
+                NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: RequestMessage decode failed");
+                return;
+            }
+        }
+        catch (const std::exception& e) {
+            NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: RequestMessage decode failed: "
+                          << e.what());
+            return;
+        }
 
-    auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
-    auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
+        m_face.getIoContext().post(
+            [this, requesterIdentity, serviceName, bloomFilterName, requestId,
+             raw,
+             requestMessage = std::move(requestMessage)]() mutable {
+                finishDecodedRequestOnEventLoop(requesterIdentity,
+                                                serviceName,
+                                                bloomFilterName,
+                                                requestId,
+                                                std::move(requestMessage));
+            });
+    };
 
+    if (m_handlerPool.getThreadCount() != 0 &&
+        m_handlerPool.post(std::move(decodeAndFinish))) {
+        return;
+    }
+
+    try {
+        ndn::Block block(buffer);
+        ndn_service_framework::RequestMessage requestMessage;
+        if (!requestMessage.WireDecode(block)) {
+            NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: RequestMessage decode failed");
+            return;
+        }
+        finishDecodedRequestOnEventLoop(requesterIdentity,
+                                        serviceName,
+                                        bloomFilterName,
+                                        requestId,
+                                        std::move(requestMessage));
+    }
+    catch (const std::exception& e) {
+        NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: RequestMessage decode failed: "
+                      << e.what());
+    }
+}
+
+void ServiceProvider::finishDecodedRequestOnEventLoop(
+    const ndn::Name& requesterIdentity,
+    const ndn::Name& serviceName,
+    const ndn::Name& bloomFilterName,
+    const ndn::Name& requestId,
+    ndn_service_framework::RequestMessage requestMessage)
+{
     NDN_LOG_INFO("OnRequestDecryptionSuccessCallbackV2: "
         << requesterIdentity.toUri()
         << serviceName.toUri()
@@ -2368,9 +2488,6 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
         NDN_LOG_ERROR("Not Serving: " << serviceName);
         return;
     }
-
-    ndn_service_framework::RequestMessage requestMessage;
-    requestMessage.WireDecode(block);
 
     if (m_useTokens && requestMessage.getUserToken().empty()) {
         NDN_LOG_ERROR("OnRequestDecryptionSuccessCallbackV2: Missing UserToken");
@@ -3288,6 +3405,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             updateProviderRequestLifecycleState(
                 requestId, serviceName,
                 ProviderRequestLifecycleState::EXECUTION_STARTED);
+            m_selectedOutstandingRequests.fetch_add(1, std::memory_order_relaxed);
             RequestMessage requestCopy = *(it->second);
             if (dispatchRequestExecutionAsync(requesterName,
                                               providerName,

@@ -105,6 +105,26 @@ namespace ndn_service_framework
             }
         }
 
+        size_t
+        defaultNdnsfWorkerThreads()
+        {
+            if (std::getenv("NDNSF_HANDLER_THREADS") == nullptr) {
+                return 4;
+            }
+            return static_cast<size_t>(
+                std::max(0, intEnvOrDefault("NDNSF_HANDLER_THREADS", 4)));
+        }
+
+        size_t
+        defaultAckProcessingThreads()
+        {
+            if (std::getenv("NDNSF_ACK_THREADS") == nullptr) {
+                return defaultNdnsfWorkerThreads();
+            }
+            return static_cast<size_t>(
+                std::max(0, intEnvOrDefault("NDNSF_ACK_THREADS", 4)));
+        }
+
         bool
         useAsyncSvsPublish()
         {
@@ -336,6 +356,78 @@ namespace ndn_service_framework
         }
     }
 
+    namespace
+    {
+        class FirstRespondingPolicy final : public AckSelectionPolicy
+        {
+        public:
+            std::vector<ProviderId>
+            select(const std::vector<AckCandidate>& candidates) const override
+            {
+                for (const auto& candidate : candidates) {
+                    if (candidate.ack.getStatus()) {
+                        return {candidate.providerName};
+                    }
+                }
+                return {};
+            }
+        };
+
+        class LoadBalancingPolicy final : public AckSelectionPolicy
+        {
+        public:
+            std::vector<ProviderId>
+            select(const std::vector<AckCandidate>& candidates) const override
+            {
+                std::vector<ProviderId> validProviders;
+                for (const auto& candidate : candidates) {
+                    if (candidate.ack.getStatus()) {
+                        validProviders.push_back(candidate.providerName);
+                    }
+                }
+                if (validProviders.empty()) {
+                    return {};
+                }
+
+                static thread_local std::mt19937 generator(std::random_device{}());
+                std::uniform_int_distribution<size_t> distribution(0, validProviders.size() - 1);
+                return {validProviders[distribution(generator)]};
+            }
+        };
+
+        class AllRespondersPolicy final : public AckSelectionPolicy
+        {
+        public:
+            std::vector<ProviderId>
+            select(const std::vector<AckCandidate>& candidates) const override
+            {
+                std::vector<ProviderId> selected;
+                for (const auto& candidate : candidates) {
+                    if (candidate.ack.getStatus()) {
+                        selected.push_back(candidate.providerName);
+                    }
+                }
+                return selected;
+            }
+
+            size_t
+            requestStrategy() const override
+            {
+                return ndn_service_framework::tlv::AllResponders;
+            }
+        };
+    }
+
+    namespace strategy
+    {
+        const std::shared_ptr<const AckSelectionPolicy> FirstResponding =
+            std::make_shared<FirstRespondingPolicy>();
+        const std::shared_ptr<const AckSelectionPolicy> LoadBalancing =
+            std::make_shared<LoadBalancingPolicy>();
+        const std::shared_ptr<const AckSelectionPolicy> AllResponders =
+            std::make_shared<AllRespondersPolicy>();
+    }
+
     ServiceUser::ServiceUser(ndn::Face &face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) : 
         m_face(face),
         m_scheduler(m_face.getIoContext()),
@@ -347,6 +439,12 @@ namespace ndn_service_framework
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         m_IMS(6000)
     {
+        m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
+        NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=user workers="
+                     << m_handlerPool.getThreadCount());
+        m_ackProcessingPool.setThreadCount(defaultAckProcessingThreads());
+        NDN_LOG_INFO("NDNSF_ACK_THREADS role=user workers="
+                     << m_ackProcessingPool.getThreadCount());
         if (std::getenv("NDNSF_DISABLE_NDNSD") == nullptr) {
             m_ServiceDiscovery.enable(group_prefix,
                                       identity,
@@ -502,6 +600,8 @@ namespace ndn_service_framework
                          << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
                          << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs);
         }
+        m_cryptoProduceQueue.shutdown();
+        m_ackProcessingPool.shutdown();
         m_handlerPool.shutdown();
     }
 
@@ -515,10 +615,20 @@ namespace ndn_service_framework
         m_requestLifecycleCallback = std::move(callback);
     }
 
+    void ServiceUser::setAdmissionControlWarningHandler(AdmissionControlWarningHandler handler)
+    {
+        m_admissionControlWarningHandler = std::move(handler);
+    }
+
+    void ServiceUser::setAdmissionControlRejectHandler(AdmissionControlRejectHandler handler)
+    {
+        m_admissionControlRejectHandler = std::move(handler);
+    }
+
     void ServiceUser::setHandlerThreads(size_t n)
     {
         m_handlerPool.setThreadCount(n);
-        NDN_LOG_WARN("Response callback worker threads: " << n);
+        NDN_LOG_WARN("NDNSF user worker threads: " << n);
     }
 
     size_t ServiceUser::getHandlerThreads() const
@@ -529,6 +639,22 @@ namespace ndn_service_framework
     size_t ServiceUser::getHandlerQueueDepth() const
     {
         return m_handlerPool.getQueueSize();
+    }
+
+    void ServiceUser::setAckProcessingThreads(size_t n)
+    {
+        m_ackProcessingPool.setThreadCount(n);
+        NDN_LOG_WARN("NDNSF user ACK processing threads: " << n);
+    }
+
+    size_t ServiceUser::getAckProcessingThreads() const
+    {
+        return m_ackProcessingPool.getThreadCount();
+    }
+
+    size_t ServiceUser::getAckProcessingQueueDepth() const
+    {
+        return m_ackProcessingPool.getQueueSize();
     }
 
     const char* ServiceUser::requestLifecycleStateToString(RequestLifecycleState state)
@@ -545,6 +671,7 @@ namespace ndn_service_framework
         case RequestLifecycleState::RESPONSE_DECRYPTED: return "RESPONSE_DECRYPTED";
         case RequestLifecycleState::CALLBACK_FIRED: return "CALLBACK_FIRED";
         case RequestLifecycleState::COMPLETED: return "COMPLETED";
+        case RequestLifecycleState::ADMISSION_REJECTED: return "ADMISSION_REJECTED";
         case RequestLifecycleState::TIMED_OUT: return "TIMED_OUT";
         case RequestLifecycleState::CANCELLED_OR_DROPPED: return "CANCELLED_OR_DROPPED";
         }
@@ -616,11 +743,59 @@ namespace ndn_service_framework
             std::max(1, m_adaptiveAdmissionOptions.controlIntervalMs);
         m_adaptiveAdmissionOptions.targetLatencyMs =
             std::max(1, m_adaptiveAdmissionOptions.targetLatencyMs);
+        m_adaptiveAdmissionOptions.hardTargetLatencyMs =
+            std::max(m_adaptiveAdmissionOptions.targetLatencyMs,
+                     m_adaptiveAdmissionOptions.hardTargetLatencyMs);
+        if (m_adaptiveAdmissionOptions.minRecommendedRateRps <= 0.0) {
+            m_adaptiveAdmissionOptions.minRecommendedRateRps = 1.0;
+        }
+        if (m_adaptiveAdmissionOptions.initialRecommendedRateRps <= 0.0) {
+            const double initialLatencyBudgetMs =
+                static_cast<double>(m_adaptiveAdmissionOptions.hardTargetLatencyMs);
+            m_adaptiveAdmissionOptions.initialRecommendedRateRps = std::max(
+                m_adaptiveAdmissionOptions.minRecommendedRateRps,
+                1000.0 * static_cast<double>(m_adaptiveAdmissionOptions.initialWindow) /
+                    std::max(1.0, initialLatencyBudgetMs));
+        }
+        if (m_adaptiveAdmissionOptions.maxRecommendedRateRps > 0.0 &&
+            m_adaptiveAdmissionOptions.maxRecommendedRateRps <
+                m_adaptiveAdmissionOptions.minRecommendedRateRps) {
+            m_adaptiveAdmissionOptions.maxRecommendedRateRps =
+                m_adaptiveAdmissionOptions.minRecommendedRateRps;
+        }
+        if (m_adaptiveAdmissionOptions.maxRecommendedRateRps > 0.0) {
+            m_adaptiveAdmissionOptions.initialRecommendedRateRps = std::min(
+                m_adaptiveAdmissionOptions.initialRecommendedRateRps,
+                m_adaptiveAdmissionOptions.maxRecommendedRateRps);
+        }
+        if (m_adaptiveAdmissionOptions.hardQueueLimit == 0) {
+            m_adaptiveAdmissionOptions.hardQueueLimit = 128;
+        }
+        if (m_adaptiveAdmissionOptions.softQueueLimit == 0 ||
+            m_adaptiveAdmissionOptions.softQueueLimit >
+                m_adaptiveAdmissionOptions.hardQueueLimit) {
+            m_adaptiveAdmissionOptions.softQueueLimit = std::min<size_t>(
+                m_adaptiveAdmissionOptions.hardQueueLimit,
+                std::max<size_t>(1, std::min<size_t>(
+                    32, m_adaptiveAdmissionOptions.hardQueueLimit / 4)));
+        }
         m_adaptiveAdmissionWindow = m_adaptiveAdmissionOptions.enabled ?
             m_adaptiveAdmissionOptions.initialWindow :
             m_adaptiveAdmissionOptions.maxWindow;
+        m_adaptiveAdmissionSlowStartThreshold =
+            m_adaptiveAdmissionOptions.maxWindow;
         m_adaptiveAdmissionBaselineLatencyMs = 0.0;
         m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
+        m_adaptiveAdmissionPreviousAverageLatencyMs = 0.0;
+        m_adaptiveAdmissionPreviousP95LatencyMs = 0.0;
+        m_adaptiveAdmissionCompletionRateEmaRps = 0.0;
+        m_adaptiveAdmissionRecommendedRateRps =
+            m_adaptiveAdmissionOptions.rateRecommendationEnabled ?
+            m_adaptiveAdmissionOptions.initialRecommendedRateRps : 0.0;
+        m_adaptiveAdmissionLatencyRisingIntervals = 0;
+        m_adaptiveAdmissionAverageLatencyRisingIntervals = 0;
+        m_adaptiveAdmissionRecoveryIntervals = 0;
+        m_adaptiveAdmissionSuccessfulControlIntervals = 0;
         m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
         NDN_LOG_WARN("Adaptive admission control: "
                      << (m_adaptiveAdmissionOptions.enabled ? "enabled" : "disabled")
@@ -628,10 +803,14 @@ namespace ndn_service_framework
                      << " min=" << m_adaptiveAdmissionOptions.minWindow
                      << " max=" << m_adaptiveAdmissionOptions.maxWindow
                      << " hardInflight=" << m_adaptiveAdmissionOptions.hardInflightLimit
+                     << " softQueueLimit=" << m_adaptiveAdmissionOptions.softQueueLimit
+                     << " hardQueueLimit=" << m_adaptiveAdmissionOptions.hardQueueLimit
                      << " controlIntervalMs="
                      << m_adaptiveAdmissionOptions.controlIntervalMs
                      << " targetLatencyMs="
-                     << m_adaptiveAdmissionOptions.targetLatencyMs);
+                     << m_adaptiveAdmissionOptions.targetLatencyMs
+                     << " hardTargetLatencyMs="
+                     << m_adaptiveAdmissionOptions.hardTargetLatencyMs);
         if (m_adaptiveAdmissionOptions.enabled) {
             scheduleAdaptiveAdmissionControl();
             drainAdaptiveAdmissionQueue();
@@ -656,6 +835,11 @@ namespace ndn_service_framework
     size_t ServiceUser::getAdaptiveAdmissionQueueDepth() const
     {
         return m_adaptiveAdmissionQueue.size();
+    }
+
+    double ServiceUser::getAdaptiveAdmissionRecommendedRateRps() const
+    {
+        return m_adaptiveAdmissionRecommendedRateRps;
     }
 
     void ServiceUser::recordAdaptiveAdmissionBackpressure()
@@ -744,6 +928,9 @@ namespace ndn_service_framework
             status.callbackTimestampUs = nowUs;
             break;
         case RequestLifecycleState::COMPLETED:
+            status.completionTimestampUs = nowUs;
+            break;
+        case RequestLifecycleState::ADMISSION_REJECTED:
             status.completionTimestampUs = nowUs;
             break;
         case RequestLifecycleState::TIMED_OUT:
@@ -972,6 +1159,9 @@ namespace ndn_service_framework
         if (record.completed || std::string(reason) == "response_callback") {
             updateRequestLifecycleState(requestId, RequestLifecycleState::COMPLETED, reason);
         }
+        else if (std::string(reason) == "admission_queue_full") {
+            updateRequestLifecycleState(requestId, RequestLifecycleState::ADMISSION_REJECTED, reason);
+        }
         else if (record.timedOut) {
             updateRequestLifecycleState(requestId, RequestLifecycleState::TIMED_OUT, reason);
         }
@@ -1124,18 +1314,49 @@ namespace ndn_service_framework
             return;
         }
 
-        const size_t activeLimit = std::max<size_t>(
-            1,
-            std::min(m_adaptiveAdmissionWindow,
-                     m_adaptiveAdmissionOptions.hardInflightLimit));
+        const size_t activeLimit = getEffectiveAdaptiveAdmissionWindow();
         if (m_adaptiveAdmissionInflight >= activeLimit) {
+            const size_t jitterQueueLimit = std::max<size_t>(
+                2,
+                std::min<size_t>(
+                    8,
+                    static_cast<size_t>(std::ceil(
+                        static_cast<double>(activeLimit) * 0.15))));
+            const size_t effectiveHardQueueLimit = std::max<size_t>(
+                1, std::min(m_adaptiveAdmissionOptions.hardQueueLimit,
+                            jitterQueueLimit));
+            const size_t effectiveSoftQueueLimit = std::max<size_t>(
+                1,
+                std::min(effectiveHardQueueLimit,
+                         std::max<size_t>(1,
+                                          effectiveHardQueueLimit / 2)));
+            if (m_adaptiveAdmissionQueue.size() >= effectiveHardQueueLimit) {
+                const bool configuredHardQueueFull =
+                    effectiveHardQueueLimit >= m_adaptiveAdmissionOptions.hardQueueLimit;
+                rejectPendingCallByAdmission(requestId,
+                                             configuredHardQueueFull ?
+                                             "admission_queue_full" :
+                                             "admission_window_full",
+                                             effectiveSoftQueueLimit,
+                                             effectiveHardQueueLimit);
+                return;
+            }
             updateRequestLifecycleState(requestId, RequestLifecycleState::ADMISSION_DELAYED);
             m_adaptiveAdmissionQueue.push_back(requestId);
+            if (m_adaptiveAdmissionQueue.size() >= effectiveSoftQueueLimit) {
+                notifyAdmissionControlWarning(requestId,
+                                              m_adaptiveAdmissionQueue.size(),
+                                              "admission_queue_soft_limit",
+                                              effectiveSoftQueueLimit,
+                                              effectiveHardQueueLimit);
+            }
             NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ADMISSION_QUEUED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " inflight=" << m_adaptiveAdmissionInflight
                       << " window=" << m_adaptiveAdmissionWindow
+                      << " effectiveSoftQueueLimit=" << effectiveSoftQueueLimit
+                      << " effectiveHardQueueLimit=" << effectiveHardQueueLimit
                       << " hardInflight="
                       << m_adaptiveAdmissionOptions.hardInflightLimit
                       << " queueDepth=" << m_adaptiveAdmissionQueue.size());
@@ -1143,6 +1364,103 @@ namespace ndn_service_framework
         }
 
         publishAdmittedPendingCall(requestId);
+    }
+
+    ServiceUser::AdmissionControlStatus
+    ServiceUser::makeAdmissionControlStatus(const ndn::Name& requestId,
+                                            size_t queueDepth,
+                                            const char* reason,
+                                            size_t softQueueLimit,
+                                            size_t hardQueueLimit) const
+    {
+        AdmissionControlStatus status;
+        status.requestId = requestId;
+        status.queueDepth = queueDepth;
+        status.softQueueLimit =
+            softQueueLimit == 0 ? m_adaptiveAdmissionOptions.softQueueLimit :
+            softQueueLimit;
+        status.hardQueueLimit =
+            hardQueueLimit == 0 ? m_adaptiveAdmissionOptions.hardQueueLimit :
+            hardQueueLimit;
+        status.remainingHardSlots =
+            queueDepth >= status.hardQueueLimit ? 0 : status.hardQueueLimit - queueDepth;
+        status.reason = reason;
+        return status;
+    }
+
+    void ServiceUser::notifyAdmissionControlWarning(const ndn::Name& requestId,
+                                                    size_t queueDepth,
+                                                    const char* reason,
+                                                    size_t softQueueLimit,
+                                                    size_t hardQueueLimit)
+    {
+        const size_t effectiveSoftQueueLimit =
+            softQueueLimit == 0 ? m_adaptiveAdmissionOptions.softQueueLimit :
+            softQueueLimit;
+        const size_t effectiveHardQueueLimit =
+            hardQueueLimit == 0 ? m_adaptiveAdmissionOptions.hardQueueLimit :
+            hardQueueLimit;
+        if (queueDepth < effectiveSoftQueueLimit) {
+            return;
+        }
+
+        auto status = makeAdmissionControlStatus(requestId, queueDepth, reason,
+                                                effectiveSoftQueueLimit,
+                                                effectiveHardQueueLimit);
+        ++m_adaptiveAdmissionIntervalQueueWarnings;
+        ++m_adaptiveAdmissionIntervalBackpressure;
+        if (queueDepth >= std::max<size_t>(
+                m_adaptiveAdmissionOptions.softQueueLimit,
+                static_cast<size_t>(std::ceil(
+                    static_cast<double>(m_adaptiveAdmissionOptions.hardQueueLimit) * 0.75)))) {
+            m_adaptiveAdmissionIntervalSevere = true;
+        }
+        NDN_LOG_WARN("[NDNSF_ADMISSION_WARNING] requestId=" << requestId.toUri()
+                     << " depth=" << queueDepth
+                     << " softLimit=" << status.softQueueLimit
+                     << " hardLimit=" << status.hardQueueLimit
+                     << " remainingHard=" << status.remainingHardSlots
+                     << " reason=" << reason);
+
+        if (m_admissionControlWarningHandler) {
+            m_admissionControlWarningHandler(status);
+        }
+    }
+
+    void ServiceUser::rejectPendingCallByAdmission(const ndn::Name& requestId,
+                                                   const char* reason,
+                                                   size_t softQueueLimit,
+                                                   size_t hardQueueLimit)
+    {
+        auto pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end()) {
+            return;
+        }
+
+        auto status = makeAdmissionControlStatus(requestId,
+                                                m_adaptiveAdmissionQueue.size(),
+                                                reason,
+                                                softQueueLimit,
+                                                hardQueueLimit);
+        NDN_LOG_WARN("[NDNSF_ADMISSION_REJECT] requestId=" << requestId.toUri()
+                     << " depth=" << status.queueDepth
+                     << " softLimit=" << status.softQueueLimit
+                     << " hardLimit=" << status.hardQueueLimit
+                     << " remainingHard=" << status.remainingHardSlots
+                     << " reason=" << reason);
+        if (m_admissionControlRejectHandler) {
+            m_admissionControlRejectHandler(status);
+        }
+        updateRequestLifecycleState(requestId,
+                                    RequestLifecycleState::ADMISSION_REJECTED,
+                                    reason);
+        NDN_LOG_WARN("[NDNSF_TRACE] role=user event=ADMISSION_REJECTED timestamp_us="
+                     << nowMicroseconds()
+                     << " requestId=" << requestId.toUri()
+                     << " queueDepth=" << m_adaptiveAdmissionQueue.size()
+                     << " hardQueueLimit=" << m_adaptiveAdmissionOptions.hardQueueLimit
+                     << " reason=" << reason);
+        erasePendingCallWithTrace(requestId, pendingCall, reason);
     }
 
     void ServiceUser::publishAdmittedPendingCall(const ndn::Name& requestId)
@@ -1167,6 +1485,8 @@ namespace ndn_service_framework
         const bool scheduleAckTimeout = pendingCall->second.scheduleAckTimeoutAfterPublish;
         const bool scheduleImmediateAckTimeout =
             pendingCall->second.scheduleImmediateAckTimeoutAfterPublish;
+        pendingCall->second.learnedAckProviderCountAtPublish =
+            getRecentAckProviderCount(serviceName, nowMicroseconds());
 
         PublishRequestV2(providers, serviceName, requestId, payload, strategy);
 
@@ -1177,6 +1497,9 @@ namespace ndn_service_framework
         if (scheduleAckTimeout && !pendingCall->second.ackTimeoutScheduled) {
             pendingCall->second.ackTimeoutScheduled = true;
             if (ackTimeoutMs > 0) {
+                pendingCall->second.ackWindowDeadlineUs =
+                    pendingCall->second.publishedAtUs +
+                    static_cast<uint64_t>(ackTimeoutMs) * 1000;
                 m_scheduler.schedule(ndn::time::milliseconds(ackTimeoutMs), [this, requestId]() {
                     handleAckCollectionTimeout(requestId);
                 });
@@ -1193,16 +1516,28 @@ namespace ndn_service_framework
         }
     }
 
+    size_t ServiceUser::getEffectiveAdaptiveAdmissionWindow() const
+    {
+        size_t activeLimit = std::max<size_t>(
+            1,
+            std::min(m_adaptiveAdmissionWindow,
+                     m_adaptiveAdmissionOptions.hardInflightLimit));
+        if (m_adaptiveAdmissionOptions.rateRecommendationEnabled &&
+            m_adaptiveAdmissionSuccessfulControlIntervals < 2) {
+            activeLimit = std::min(
+                activeLimit,
+                std::max<size_t>(m_adaptiveAdmissionOptions.minWindow, 4));
+        }
+        return activeLimit;
+    }
+
     void ServiceUser::drainAdaptiveAdmissionQueue()
     {
         if (!m_adaptiveAdmissionOptions.enabled) {
             return;
         }
 
-        const size_t activeLimit = std::max<size_t>(
-            1,
-            std::min(m_adaptiveAdmissionWindow,
-                     m_adaptiveAdmissionOptions.hardInflightLimit));
+        const size_t activeLimit = getEffectiveAdaptiveAdmissionWindow();
         while (m_adaptiveAdmissionInflight < activeLimit &&
                !m_adaptiveAdmissionQueue.empty()) {
             const ndn::Name requestId = m_adaptiveAdmissionQueue.front();
@@ -1238,10 +1573,7 @@ namespace ndn_service_framework
         }
 
         const size_t oldWindow = m_adaptiveAdmissionWindow;
-        const size_t activeLimit = std::max<size_t>(
-            1,
-            std::min(m_adaptiveAdmissionWindow,
-                     m_adaptiveAdmissionOptions.hardInflightLimit));
+        const size_t activeLimit = getEffectiveAdaptiveAdmissionWindow();
         const bool queueBacklogged = !m_adaptiveAdmissionQueue.empty();
         const bool aboveWindow = m_adaptiveAdmissionInflight > activeLimit;
         const double averageLatencyMs =
@@ -1250,6 +1582,8 @@ namespace ndn_service_framework
                 static_cast<double>(m_adaptiveAdmissionIntervalLatencyCount);
         const double targetLatencyMs =
             static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs);
+        const double hardTargetLatencyMs =
+            static_cast<double>(m_adaptiveAdmissionOptions.hardTargetLatencyMs);
         const double p50LatencyMs =
             percentileLatency(m_adaptiveAdmissionIntervalLatenciesMs, 50.0);
         const double p95LatencyMs =
@@ -1258,7 +1592,9 @@ namespace ndn_service_framework
             m_adaptiveAdmissionIntervalLatenciesMs.empty() ? 0.0 :
             *std::max_element(m_adaptiveAdmissionIntervalLatenciesMs.begin(),
                               m_adaptiveAdmissionIntervalLatenciesMs.end());
-        if (p50LatencyMs > 0.0) {
+        if (p50LatencyMs > 0.0 &&
+            (p50LatencyMs < hardTargetLatencyMs ||
+             m_adaptiveAdmissionBaselineLatencyMs > 0.0)) {
             if (m_adaptiveAdmissionBaselineLatencyMs <= 0.0) {
                 m_adaptiveAdmissionBaselineLatencyMs = p50LatencyMs;
             }
@@ -1279,67 +1615,228 @@ namespace ndn_service_framework
             0.0;
         const double queueDelayGradientMs =
             queueDelayMs - m_adaptiveAdmissionPreviousQueueDelayMs;
-        const double queueDelayTargetMs = std::max(50.0, 0.35 * targetLatencyMs);
-        const double queueDelaySevereMs = std::max(100.0, 0.75 * targetLatencyMs);
+        const double queueDelayTargetMs =
+            m_adaptiveAdmissionBaselineLatencyMs > 0.0 ?
+            std::max(50.0, targetLatencyMs - m_adaptiveAdmissionBaselineLatencyMs) :
+            std::max(50.0, 0.35 * targetLatencyMs);
+        const double queueDelaySevereMs =
+            m_adaptiveAdmissionBaselineLatencyMs > 0.0 ?
+            std::max(queueDelayTargetMs + 50.0,
+                     hardTargetLatencyMs - m_adaptiveAdmissionBaselineLatencyMs) :
+            std::max(queueDelayTargetMs + 50.0, 0.75 * hardTargetLatencyMs);
+        const double intervalSeconds = std::max(
+            0.001,
+            static_cast<double>(m_adaptiveAdmissionOptions.controlIntervalMs) /
+                1000.0);
+        const double completionRateRps =
+            static_cast<double>(m_adaptiveAdmissionIntervalSuccesses) /
+            intervalSeconds;
+        if (completionRateRps > 0.0) {
+            if (m_adaptiveAdmissionCompletionRateEmaRps <= 0.0) {
+                m_adaptiveAdmissionCompletionRateEmaRps = completionRateRps;
+            }
+            else {
+                m_adaptiveAdmissionCompletionRateEmaRps =
+                    0.70 * m_adaptiveAdmissionCompletionRateEmaRps +
+                    0.30 * completionRateRps;
+            }
+        }
+        if (m_adaptiveAdmissionIntervalSuccesses > 0) {
+            ++m_adaptiveAdmissionSuccessfulControlIntervals;
+        }
+        const bool latencySamplesWarmed =
+            m_adaptiveAdmissionSuccessfulControlIntervals >= 3;
+        const bool latencyBaselineTrusted =
+            latencySamplesWarmed && m_adaptiveAdmissionBaselineLatencyMs > 0.0;
         if (queueDelayMs > queueDelayTargetMs) {
             ++m_adaptiveAdmissionQueueDelayOverTargetIntervals;
         }
         else {
             m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
         }
+        const bool queuePastSoftLimit =
+            m_adaptiveAdmissionQueue.size() >= m_adaptiveAdmissionOptions.softQueueLimit;
         const bool queuePressure =
             (queueBacklogged &&
             m_adaptiveAdmissionInflight >=
                 static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8)));
         const bool queueSevere =
-            m_adaptiveAdmissionQueue.size() >= m_adaptiveAdmissionOptions.hardInflightLimit;
+            m_adaptiveAdmissionQueue.size() >= std::max<size_t>(
+                m_adaptiveAdmissionOptions.softQueueLimit,
+                static_cast<size_t>(std::ceil(
+                    static_cast<double>(m_adaptiveAdmissionOptions.hardQueueLimit) * 0.75)));
         const bool demandBacklogged =
             queueBacklogged || m_adaptiveAdmissionIntervalBackpressure > 0;
-        const bool latencyCongested =
+        const double averageLatencyGradientMs =
+            averageLatencyMs > 0.0 &&
+            m_adaptiveAdmissionPreviousAverageLatencyMs > 0.0 ?
+            averageLatencyMs - m_adaptiveAdmissionPreviousAverageLatencyMs : 0.0;
+        const bool averageLatencySignificantlyRising =
+            averageLatencyMs > 0.0 &&
+            m_adaptiveAdmissionPreviousAverageLatencyMs > 0.0 &&
+            averageLatencyGradientMs >
+                std::max(35.0,
+                         0.12 * m_adaptiveAdmissionPreviousAverageLatencyMs);
+        const bool averageLatencyStable =
+            averageLatencyMs == 0.0 ||
+            m_adaptiveAdmissionPreviousAverageLatencyMs <= 0.0 ||
+            averageLatencyGradientMs <=
+                std::max(25.0,
+                         0.08 * m_adaptiveAdmissionPreviousAverageLatencyMs);
+        const bool averageLatencyFalling =
+            averageLatencyMs > 0.0 &&
+            m_adaptiveAdmissionPreviousAverageLatencyMs > 0.0 &&
+            averageLatencyGradientMs <=
+                -std::max(15.0,
+                          0.05 * m_adaptiveAdmissionPreviousAverageLatencyMs);
+        if (averageLatencySignificantlyRising && demandBacklogged) {
+            ++m_adaptiveAdmissionAverageLatencyRisingIntervals;
+        }
+        else if (averageLatencyStable || averageLatencyFalling ||
+                 !demandBacklogged) {
+            m_adaptiveAdmissionAverageLatencyRisingIntervals = 0;
+        }
+        const bool latencyRising =
+            p95LatencyMs > 0.0 &&
+            m_adaptiveAdmissionPreviousP95LatencyMs > 0.0 &&
+            p95LatencyMs >
+                (m_adaptiveAdmissionPreviousP95LatencyMs +
+                 std::max(30.0, 0.10 * m_adaptiveAdmissionPreviousP95LatencyMs));
+        const bool latencyWithinStableRegion =
+            averageLatencyStable &&
+            (averageLatencyMs == 0.0 ||
+             averageLatencyMs < hardTargetLatencyMs ||
+             averageLatencyFalling);
+        if ((averageLatencySignificantlyRising ||
+             (latencyRising && queueDelayGradientMs > 0.0)) &&
+            !latencyWithinStableRegion) {
+            ++m_adaptiveAdmissionLatencyRisingIntervals;
+        }
+        else if (latencyWithinStableRegion ||
+                 averageLatencyFalling ||
+                 queueDelayGradientMs <= 0.0 ||
+                 (p95LatencyMs > 0.0 &&
+                  m_adaptiveAdmissionPreviousP95LatencyMs > 0.0 &&
+                  p95LatencyMs < m_adaptiveAdmissionPreviousP95LatencyMs)) {
+            m_adaptiveAdmissionLatencyRisingIntervals = 0;
+        }
+        const bool queueDelayBuilding =
+            demandBacklogged &&
             queueDelayMs > queueDelayTargetMs &&
-            (queueDelayGradientMs > 0.0 ||
-             (demandBacklogged &&
-              m_adaptiveAdmissionQueueDelayOverTargetIntervals >= 2));
+            queueDelayGradientMs > std::max(10.0, 0.10 * queueDelayTargetMs) &&
+            (averageLatencySignificantlyRising ||
+             m_adaptiveAdmissionAverageLatencyRisingIntervals >= 2);
+        const bool latencyStable =
+            latencyWithinStableRegion ||
+            (averageLatencyStable &&
+             !queueDelayBuilding &&
+             m_adaptiveAdmissionAverageLatencyRisingIntervals == 0);
+        const bool latencyCongested =
+            demandBacklogged &&
+            latencyBaselineTrusted &&
+            !latencyStable &&
+            (m_adaptiveAdmissionLatencyRisingIntervals >= 2 ||
+             m_adaptiveAdmissionAverageLatencyRisingIntervals >= 2 ||
+             m_adaptiveAdmissionQueueDelayOverTargetIntervals >= 3);
         const bool latencySevere =
-            queueDelayMs > queueDelaySevereMs ||
-            (maxLatencyMs > 0.0 && maxLatencyMs > 2.0 * targetLatencyMs);
+            demandBacklogged &&
+            latencyBaselineTrusted &&
+            queueDelayMs > queueDelaySevereMs &&
+            (averageLatencyMs > hardTargetLatencyMs ||
+             p95LatencyMs > 2.0 * hardTargetLatencyMs);
+        const bool tailLatencyDebt =
+            demandBacklogged &&
+            latencyBaselineTrusted &&
+            p95LatencyMs > hardTargetLatencyMs &&
+            queueDelayMs > queueDelaySevereMs;
+        const bool recoveryMode = false;
         if (latencyCongested) {
             m_adaptiveAdmissionIntervalCongested = true;
         }
         if (latencySevere || queueSevere) {
             m_adaptiveAdmissionIntervalSevere = true;
         }
+        const double lowQueueAllowanceMs =
+            std::min(75.0, std::max(25.0, 0.50 * queueDelayTargetMs));
+        const double latencyBudgetMs =
+            m_adaptiveAdmissionBaselineLatencyMs > 0.0 ?
+            std::max(m_adaptiveAdmissionBaselineLatencyMs + lowQueueAllowanceMs,
+                     p50LatencyMs > 0.0 ? p50LatencyMs : 0.0) :
+            targetLatencyMs;
+        const bool lossSignal =
+            m_adaptiveAdmissionIntervalTimeouts > 0 || queueSevere;
+        const bool ecnSignal =
+            m_adaptiveAdmissionIntervalQueueWarnings > 0 || queuePastSoftLimit;
+        const bool hardDelaySignal = latencySevere || tailLatencyDebt;
+        const bool delaySignal =
+            latencyCongested || queueDelayBuilding ||
+            (latencyBaselineTrusted &&
+             m_adaptiveAdmissionQueueDelayOverTargetIntervals >= 3 &&
+             !averageLatencyFalling);
 
-        if (m_adaptiveAdmissionIntervalTimeouts > 0) {
+        if (lossSignal || hardDelaySignal) {
+            const double factor =
+                lossSignal ?
+                m_adaptiveAdmissionOptions.severeMdFactor :
+                m_adaptiveAdmissionOptions.mdFactor;
+            m_adaptiveAdmissionSlowStartThreshold = std::max(
+                m_adaptiveAdmissionOptions.minWindow,
+                static_cast<size_t>(std::ceil(
+                    static_cast<double>(m_adaptiveAdmissionWindow) * factor)));
+            m_adaptiveAdmissionWindow = std::max(
+                m_adaptiveAdmissionOptions.minWindow,
+                m_adaptiveAdmissionSlowStartThreshold);
+        }
+        else if (delaySignal || ecnSignal) {
+            m_adaptiveAdmissionSlowStartThreshold = std::max(
+                m_adaptiveAdmissionOptions.minWindow,
+                m_adaptiveAdmissionWindow);
+            const double factor = delaySignal ? 0.85 : 0.92;
             m_adaptiveAdmissionWindow = std::max(
                 m_adaptiveAdmissionOptions.minWindow,
                 static_cast<size_t>(std::ceil(
-                    static_cast<double>(m_adaptiveAdmissionWindow) *
-                    m_adaptiveAdmissionOptions.severeMdFactor)));
-        }
-        else if (m_adaptiveAdmissionIntervalCongested) {
-            const size_t decreaseStep = m_adaptiveAdmissionOptions.aiStep *
-                (m_adaptiveAdmissionIntervalSevere ? 2 : 1);
-            m_adaptiveAdmissionWindow = std::max(
-                m_adaptiveAdmissionOptions.minWindow,
-                m_adaptiveAdmissionWindow > decreaseStep ?
-                    m_adaptiveAdmissionWindow - decreaseStep :
-                    m_adaptiveAdmissionOptions.minWindow);
+                    static_cast<double>(m_adaptiveAdmissionWindow) * factor)));
         }
         else if (m_adaptiveAdmissionIntervalSuccesses > 0 &&
-                 (p95LatencyMs == 0.0 ||
-                  queueDelayMs < 0.85 * queueDelayTargetMs ||
-                  (!demandBacklogged &&
-                   queueDelayMs < queueDelayTargetMs &&
-                   queueDelayGradientMs <= -10.0)) &&
-                 (queuePressure ||
-                  demandBacklogged ||
+                 (demandBacklogged || queuePressure ||
                   m_adaptiveAdmissionInflight >=
-                    static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8)) ||
-                  p95LatencyMs < 0.8 * targetLatencyMs)) {
+                    static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8))) &&
+                 (latencyStable || averageLatencyStable || !latencyBaselineTrusted)) {
+            const bool slowStart =
+                m_adaptiveAdmissionWindow <
+                m_adaptiveAdmissionSlowStartThreshold;
+            const size_t growthStep = slowStart ?
+                std::max<size_t>(
+                    m_adaptiveAdmissionOptions.aiStep,
+                    std::min<size_t>(
+                        m_adaptiveAdmissionOptions.aiStep * 4,
+                        std::max<size_t>(
+                            1, m_adaptiveAdmissionIntervalSuccesses / 2))) :
+                m_adaptiveAdmissionOptions.aiStep;
             m_adaptiveAdmissionWindow = std::min(
                 m_adaptiveAdmissionOptions.maxWindow,
-                m_adaptiveAdmissionWindow + m_adaptiveAdmissionOptions.aiStep);
+                m_adaptiveAdmissionWindow + growthStep);
+        }
+
+        if (m_adaptiveAdmissionOptions.rateRecommendationEnabled) {
+            const double recommendedLatencyMs =
+                averageLatencyMs > 0.0 ? averageLatencyMs :
+                p50LatencyMs > 0.0 ? p50LatencyMs :
+                m_adaptiveAdmissionBaselineLatencyMs > 0.0 ?
+                    m_adaptiveAdmissionBaselineLatencyMs :
+                    targetLatencyMs;
+            double recommendedRate =
+                1000.0 * static_cast<double>(m_adaptiveAdmissionWindow) /
+                std::max(1.0, recommendedLatencyMs);
+            recommendedRate = std::max(
+                m_adaptiveAdmissionOptions.minRecommendedRateRps,
+                recommendedRate);
+            if (m_adaptiveAdmissionOptions.maxRecommendedRateRps > 0.0) {
+                recommendedRate = std::min(
+                    recommendedRate,
+                    m_adaptiveAdmissionOptions.maxRecommendedRateRps);
+            }
+            m_adaptiveAdmissionRecommendedRateRps = recommendedRate;
         }
 
         NDN_LOG_INFO("[NDNSF_ADMISSION] window=" << m_adaptiveAdmissionWindow
@@ -1348,13 +1845,17 @@ namespace ndn_service_framework
                   << " queueDepth=" << m_adaptiveAdmissionQueue.size()
                   << " backpressure="
                   << m_adaptiveAdmissionIntervalBackpressure
+                  << " queueWarnings="
+                  << m_adaptiveAdmissionIntervalQueueWarnings
                   << " successes=" << m_adaptiveAdmissionIntervalSuccesses
                   << " timeouts=" << m_adaptiveAdmissionIntervalTimeouts
                   << " avgLatencyMs=" << averageLatencyMs
+                  << " avgLatencyGradientMs=" << averageLatencyGradientMs
                   << " p50LatencyMs=" << p50LatencyMs
                   << " p95LatencyMs=" << p95LatencyMs
                   << " maxLatencyMs=" << maxLatencyMs
                   << " targetLatencyMs=" << targetLatencyMs
+                  << " hardTargetLatencyMs=" << hardTargetLatencyMs
                   << " baselineLatencyMs="
                   << m_adaptiveAdmissionBaselineLatencyMs
                   << " queueDelayMs=" << queueDelayMs
@@ -1363,7 +1864,33 @@ namespace ndn_service_framework
                   << " queueDelaySevereMs=" << queueDelaySevereMs
                   << " queueDelayOverTargetIntervals="
                   << m_adaptiveAdmissionQueueDelayOverTargetIntervals
+                  << " queueDelayBuilding=" << queueDelayBuilding
+                  << " lowQueueAllowanceMs=" << lowQueueAllowanceMs
+                  << " latencyBudgetMs=" << latencyBudgetMs
+                  << " completionRateRps=" << completionRateRps
+                  << " completionRateEmaRps="
+                  << m_adaptiveAdmissionCompletionRateEmaRps
+                  << " recommendedRateRps="
+                  << m_adaptiveAdmissionRecommendedRateRps
+                  << " warmedIntervals="
+                  << m_adaptiveAdmissionSuccessfulControlIntervals
+                  << " latencyBaselineTrusted="
+                  << latencyBaselineTrusted
+                  << " latencyWithinStableRegion="
+                  << latencyWithinStableRegion
+                  << " latencyRising=" << latencyRising
+                  << " latencyStable=" << latencyStable
+                  << " latencyRisingIntervals="
+                  << m_adaptiveAdmissionLatencyRisingIntervals
+                  << " averageLatencyStable=" << averageLatencyStable
+                  << " averageLatencyRisingIntervals="
+                  << m_adaptiveAdmissionAverageLatencyRisingIntervals
+                  << " tailLatencyDebt=" << tailLatencyDebt
+                  << " recoveryMode=" << recoveryMode
+                  << " recoveryIntervals="
+                  << m_adaptiveAdmissionRecoveryIntervals
                   << " aboveWindow=" << aboveWindow
+                  << " queuePastSoftLimit=" << queuePastSoftLimit
                   << " queuePressure=" << queuePressure
                   << " queueSevere=" << queueSevere
                   << " latencyCongested=" << latencyCongested
@@ -1374,12 +1901,19 @@ namespace ndn_service_framework
         m_adaptiveAdmissionIntervalSuccesses = 0;
         m_adaptiveAdmissionIntervalTimeouts = 0;
         m_adaptiveAdmissionIntervalBackpressure = 0;
+        m_adaptiveAdmissionIntervalQueueWarnings = 0;
         m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
         m_adaptiveAdmissionIntervalLatencyCount = 0;
         m_adaptiveAdmissionIntervalLatenciesMs.clear();
         m_adaptiveAdmissionIntervalCongested = false;
         m_adaptiveAdmissionIntervalSevere = false;
         m_adaptiveAdmissionPreviousQueueDelayMs = queueDelayMs;
+        if (averageLatencyMs > 0.0) {
+            m_adaptiveAdmissionPreviousAverageLatencyMs = averageLatencyMs;
+        }
+        if (p95LatencyMs > 0.0) {
+            m_adaptiveAdmissionPreviousP95LatencyMs = p95LatencyMs;
+        }
 
         drainAdaptiveAdmissionQueue();
         scheduleAdaptiveAdmissionControl();
@@ -2212,6 +2746,52 @@ namespace ndn_service_framework
                           requestStrategy);
     }
 
+    ndn::Name ServiceUser::AsyncCall(const ServiceName& service,
+                                     const RequestPayload& request,
+                                     int ackCollectionTimeMs,
+                                     std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
+                                     int timeoutMs,
+                                     ResponseHandler onResponse,
+                                     TimeoutHandler onTimeout)
+    {
+        if (!selectionPolicy) {
+            selectionPolicy = strategy::FirstResponding;
+        }
+        const size_t requestStrategy = selectionPolicy->requestStrategy();
+
+        ndn_service_framework::RequestMessage requestMessage;
+        auto payload = request;
+        requestMessage.setPayload(payload, payload.size());
+        requestMessage.setStrategy(requestStrategy);
+
+        AckCandidatesHandler handler =
+            [selectionPolicy = std::move(selectionPolicy)](
+                const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+                std::vector<ndn_service_framework::AckSelectionCandidate> selectedCandidates;
+                const auto selectedProviders = selectionPolicy->select(candidates);
+                for (const auto& provider : selectedProviders) {
+                    for (const auto& candidate : candidates) {
+                        if (candidate.providerName.equals(provider) &&
+                            candidate.ack.getStatus()) {
+                            selectedCandidates.push_back(candidate);
+                            break;
+                        }
+                    }
+                }
+                return selectedCandidates;
+            };
+
+        return async_call({},
+                          service,
+                          std::move(requestMessage),
+                          ackCollectionTimeMs,
+                          std::move(handler),
+                          timeoutMs,
+                          std::move(onTimeout),
+                          std::move(onResponse),
+                          requestStrategy);
+    }
+
     void ServiceUser::handleResponse(const ndn::Name& requestId,
                                      const ndn::Name& providerName,
                                      const ndn_service_framework::ResponseMessage& responseMessage)
@@ -2425,6 +3005,56 @@ namespace ndn_service_framework
         return handleDecryptedResponseByName(responseName, responseMessage);
     }
 
+    void ServiceUser::dispatchDecryptedResponseByName(const ndn::Name& responseName,
+                                                      const ndn::Name& requestId,
+                                                      const ndn::Buffer& buffer)
+    {
+        auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
+        auto decodeAndFinish = [this, responseName, requestId, raw]() mutable {
+            ndn_service_framework::ResponseMessage responseMessage;
+            try {
+                ndn::Block block(ndn::span<const uint8_t>(raw->data(), raw->size()));
+                if (!responseMessage.WireDecode(block)) {
+                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_FAILED timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " reason=wire_decode_failed");
+                    return;
+                }
+            }
+            catch (const std::exception& e) {
+                NDN_LOG_ERROR("ResponseMessage decode failed: " << e.what());
+                return;
+            }
+
+            m_face.getIoContext().post(
+                [this, responseName, requestId,
+                 raw,
+                 responseMessage = std::move(responseMessage)]() mutable {
+                    finishDecryptedResponseByName(responseName, requestId,
+                                                  std::move(responseMessage));
+                });
+        };
+
+        if (m_handlerPool.getThreadCount() == 0 ||
+            !m_handlerPool.post(std::move(decodeAndFinish))) {
+            ndn::Block block(buffer);
+            if (!handleDecryptedResponseByName(responseName, block)) {
+                NDN_LOG_INFO("OnResponse: no pending async callback for " << responseName);
+            }
+        }
+    }
+
+    void ServiceUser::finishDecryptedResponseByName(
+        const ndn::Name& responseName,
+        const ndn::Name&,
+        ndn_service_framework::ResponseMessage responseMessage)
+    {
+        if (!handleDecryptedResponseByName(responseName, responseMessage)) {
+            NDN_LOG_INFO("OnResponse: no pending async callback for " << responseName);
+        }
+    }
+
     bool ServiceUser::handleRequestAckByName(
         const ndn::Name& ackName,
         const ndn_service_framework::RequestAckMessage& ackMessage)
@@ -2432,6 +3062,28 @@ namespace ndn_service_framework
         auto parsedV2 = ndn_service_framework::parseRequestAckNameV2(ackName);
         if (parsedV2) {
             const auto ackReceiveUs = nowMicroseconds();
+            auto completeAckDecrypt = [this, requestId = parsedV2->requestId]() {
+                auto pending = m_pendingCalls.find(requestId);
+                if (pending == m_pendingCalls.end()) {
+                    return false;
+                }
+                if ((pending->second.acksHandler ||
+                     pending->second.ackCandidatesHandler) &&
+                    pending->second.ackDecryptsInFlight > 0) {
+                    --pending->second.ackDecryptsInFlight;
+                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_DECRYPT_IN_FLIGHT_DONE timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " inFlight=" << pending->second.ackDecryptsInFlight
+                              << " ackWindowExpired=" << pending->second.ackWindowExpired);
+                }
+                return (pending->second.acksHandler ||
+                        pending->second.ackCandidatesHandler) &&
+                       pending->second.ackWindowExpired &&
+                       pending->second.ackDecryptsInFlight == 0 &&
+                       !pending->second.providerSelected &&
+                       pending->second.selectedProvider.empty();
+            };
             logAckMatchAttempt(parsedV2->requestId,
                                ackName,
                                parsedV2->providerName,
@@ -2485,6 +3137,9 @@ namespace ndn_service_framework
                 NDN_LOG_ERROR("Reject ACK with mismatched UserToken for requestId="
                               << parsedV2->requestId.toUri()
                               << " provider=" << parsedV2->providerName.toUri());
+                if (completeAckDecrypt()) {
+                    evaluateAckSelection(parsedV2->requestId);
+                }
                 return false;
             }
 
@@ -2497,6 +3152,9 @@ namespace ndn_service_framework
                 NDN_LOG_ERROR("Reject ACK missing ProviderToken for requestId="
                               << parsedV2->requestId.toUri()
                               << " provider=" << parsedV2->providerName.toUri());
+                if (completeAckDecrypt()) {
+                    evaluateAckSelection(parsedV2->requestId);
+                }
                 return false;
             }
 
@@ -2543,7 +3201,28 @@ namespace ndn_service_framework
             if (pendingCall->second.acksHandler ||
                 pendingCall->second.ackCandidatesHandler) {
                 if (pendingCall->second.ackWindowExpired) {
-                    selectLateAckAfterAckTimeout(pendingCall->second, storedAck);
+                    if (completeAckDecrypt()) {
+                        evaluateAckSelection(parsedV2->requestId);
+                    }
+                    return true;
+                }
+                completeAckDecrypt();
+                std::set<ndn::Name> ackProviders;
+                for (const auto& ack : pendingCall->second.requestAcks) {
+                    ackProviders.insert(ack.providerName);
+                }
+                const size_t learnedProviderCount =
+                    pendingCall->second.learnedAckProviderCountAtPublish;
+                if (learnedProviderCount > 0 &&
+                    ackProviders.size() >= learnedProviderCount) {
+                    pendingCall->second.ackWindowExpired = true;
+                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << parsedV2->requestId.toUri()
+                              << " ackProviderCount=" << ackProviders.size()
+                              << " learnedProviderCount="
+                              << learnedProviderCount);
+                    evaluateAckSelection(parsedV2->requestId);
                 }
                 return true;
             }
@@ -2712,6 +3391,25 @@ namespace ndn_service_framework
             if (pendingCall->second.ackWindowExpired) {
                 selectLateAckAfterAckTimeout(pendingCall->second, storedAck);
             }
+            else {
+                std::set<ndn::Name> ackProviders;
+                for (const auto& ack : pendingCall->second.requestAcks) {
+                    ackProviders.insert(ack.providerName);
+                }
+                const size_t learnedProviderCount =
+                    pendingCall->second.learnedAckProviderCountAtPublish;
+                if (learnedProviderCount > 0 &&
+                    ackProviders.size() >= learnedProviderCount) {
+                    pendingCall->second.ackWindowExpired = true;
+                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " ackProviderCount=" << ackProviders.size()
+                              << " learnedProviderCount="
+                              << learnedProviderCount);
+                    evaluateAckSelection(requestId);
+                }
+            }
             return true;
         }
         if (pendingCall->second.ackWindowExpired) {
@@ -2814,6 +3512,49 @@ namespace ndn_service_framework
             unified.append(component);
         }
         return unified;
+    }
+
+    void ServiceUser::recordObservedAckProvider(const ndn::Name& serviceName,
+                                                const ndn::Name& providerName,
+                                                uint64_t timestampUs)
+    {
+        if (serviceName.empty() || providerName.empty()) {
+            return;
+        }
+
+        auto& providers = m_recentAckProvidersByService[serviceName];
+        providers[providerName.toUri()] = timestampUs;
+        constexpr uint64_t OBSERVATION_WINDOW_US = 60ULL * 1000ULL * 1000ULL;
+        for (auto it = providers.begin(); it != providers.end();) {
+            if (timestampUs >= it->second &&
+                timestampUs - it->second > OBSERVATION_WINDOW_US) {
+                it = providers.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    }
+
+    size_t ServiceUser::getRecentAckProviderCount(const ndn::Name& serviceName,
+                                                  uint64_t nowUs)
+    {
+        auto providers = m_recentAckProvidersByService.find(serviceName);
+        if (providers == m_recentAckProvidersByService.end()) {
+            return 0;
+        }
+
+        constexpr uint64_t OBSERVATION_WINDOW_US = 60ULL * 1000ULL * 1000ULL;
+        for (auto it = providers->second.begin(); it != providers->second.end();) {
+            if (nowUs >= it->second &&
+                nowUs - it->second > OBSERVATION_WINDOW_US) {
+                it = providers->second.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+        return providers->second.size();
     }
 
     bool ServiceUser::evaluateAckSelection(const ndn::Name& requestId)
@@ -2929,6 +3670,21 @@ namespace ndn_service_framework
         }
 
         pendingCall->second.ackWindowExpired = true;
+        if ((pendingCall->second.acksHandler ||
+             pendingCall->second.ackCandidatesHandler) &&
+            pendingCall->second.ackDecryptsInFlight > 0 &&
+            pendingCall->second.ackSelectionDeferrals < 5) {
+            ++pendingCall->second.ackSelectionDeferrals;
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_DEFERRED_IN_FLIGHT timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " inFlight=" << pendingCall->second.ackDecryptsInFlight
+                      << " deferrals=" << pendingCall->second.ackSelectionDeferrals);
+            m_scheduler.schedule(ndn::time::milliseconds(20), [this, requestId]() {
+                handleAckCollectionTimeout(requestId);
+            });
+            return false;
+        }
         return evaluateAckSelection(requestId);
     }
 
@@ -3212,6 +3968,9 @@ namespace ndn_service_framework
         auto ackV2 = parseRequestAckNameV2(subscription.name);
         if (ackV2) {
             const auto ackReceiveUs = nowMicroseconds();
+            recordObservedAckProvider(ackV2->serviceName,
+                                      ackV2->providerName,
+                                      ackReceiveUs);
             if (m_timelineTrace) {
                 logTimelineTrace("user", "first_ack_observed", ackV2->requestId,
                                  {{"providerName", ackV2->providerName.toUri()},
@@ -3257,6 +4016,34 @@ namespace ndn_service_framework
                 NDN_LOG_TRACE("Skip decrypting irrelevant V2 ACK: "
                               << subscription.name);
                 return;
+            }
+
+            const bool collectAckCandidates =
+                pendingCall->second.acksHandler ||
+                pendingCall->second.ackCandidatesHandler;
+            if (collectAckCandidates) {
+                const auto deadlineUs = pendingCall->second.ackWindowDeadlineUs;
+                if (pendingCall->second.ackWindowExpired &&
+                    deadlineUs > 0 &&
+                    ackReceiveUs > deadlineUs) {
+                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SKIPPED_AFTER_ACK_WINDOW timestamp_us="
+                              << ackReceiveUs
+                              << " requestId=" << ackV2->requestId.toUri()
+                              << " ackName=" << subscription.name.toUri()
+                              << " providerName=" << ackV2->providerName.toUri()
+                              << " deadlineUs=" << deadlineUs);
+                    return;
+                }
+                if (deadlineUs == 0 || ackReceiveUs <= deadlineUs) {
+                    ++pendingCall->second.ackDecryptsInFlight;
+                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_DECRYPT_IN_FLIGHT timestamp_us="
+                              << ackReceiveUs
+                              << " requestId=" << ackV2->requestId.toUri()
+                              << " ackName=" << subscription.name.toUri()
+                              << " providerName=" << ackV2->providerName.toUri()
+                              << " inFlight=" << pendingCall->second.ackDecryptsInFlight
+                              << " deadlineUs=" << deadlineUs);
+                }
             }
 
             if(subscription.data.size() > 0){
@@ -3604,10 +4391,7 @@ namespace ndn_service_framework
                       << decryptEndUs
                       << " requestId=" << RequestId.toUri()
                       << " responseName=" << responseName.toUri());
-            ndn::Block responseBlock(buffer);
-            if (!handleDecryptedResponseByName(responseName, responseBlock)) {
-                NDN_LOG_INFO("OnResponse: no pending async callback for " << responseName);
-            }
+            dispatchDecryptedResponseByName(responseName, RequestId, buffer);
         };
         auto onError = [this, providerName, ServiceName, FunctionName, RequestId,
                         responseName, decryptStartUs](const std::string& error) {
@@ -3657,10 +4441,7 @@ namespace ndn_service_framework
                           << decryptEndUs
                           << " requestId=" << RequestId.toUri()
                           << " responseName=" << responseName.toUri());
-                ndn::Block responseBlock(plaintext);
-                if (!handleDecryptedResponseByName(responseName, responseBlock)) {
-                    NDN_LOG_INFO("OnResponse: no pending async callback for " << responseName);
-                }
+                dispatchDecryptedResponseByName(responseName, RequestId, plaintext);
                 return;
             }
             if (m_useHybridMessageCrypto &&
@@ -3690,44 +4471,59 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
     const ndn::Name& requestID,
     const ndn::Buffer& buffer)
 {
-    // Copy raw bytes across thread boundary (DO NOT pass Block/Buffer)
     auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
-
-    // ndnsf::post([this,
-    //              providerName,
-    //              ServiceName,
-    //              FunctionName,
-    //              requestID,
-    //              raw]() mutable
-    // {
-        // Reconstruct TLV block safely
-        ndn::Block block(ndn::span<const uint8_t>(raw->data(), raw->size()));
-
+    auto decodeAndPost = [this, providerName, ServiceName, FunctionName, requestID, raw]() mutable {
+        RequestAckMessage AckMessage;
+        std::string error;
         try {
-            block.parse();
+            ndn::Block block(ndn::span<const uint8_t>(raw->data(), raw->size()));
+            if (!AckMessage.WireDecode(block)) {
+                error = "wire_decode_failed";
+            }
         }
         catch (const std::exception& e) {
-            NDN_LOG_ERROR("OnRequestAckDecryptionSuccessCallback: Failed to parse Block: " << e.what());
-            return;
+            error = e.what();
         }
 
-        // Logging
+        m_face.getIoContext().post(
+            [this, providerName, ServiceName, FunctionName, requestID,
+             AckMessage = std::move(AckMessage), error = std::move(error)]() mutable {
+                if (!error.empty()) {
+                    NDN_LOG_ERROR("RequestAckMessage decode failed: " << error);
+                    auto pendingCall = m_pendingCalls.find(requestID);
+                    if (pendingCall != m_pendingCalls.end() &&
+                        (pendingCall->second.acksHandler ||
+                         pendingCall->second.ackCandidatesHandler) &&
+                        pendingCall->second.ackDecryptsInFlight > 0) {
+                        --pendingCall->second.ackDecryptsInFlight;
+                    }
+                    return;
+                }
+                finishRequestAckOnEventLoop(providerName, ServiceName, FunctionName,
+                                            requestID, std::move(AckMessage));
+            });
+    };
+
+    const bool queued =
+        m_ackProcessingPool.getThreadCount() != 0 &&
+        m_ackProcessingPool.post(decodeAndPost);
+    if (!queued) {
+        decodeAndPost();
+    }
+}
+
+void ServiceUser::finishRequestAckOnEventLoop(
+    const ndn::Name& providerName,
+    const ndn::Name& ServiceName,
+    const ndn::Name& FunctionName,
+    const ndn::Name& requestID,
+    ndn_service_framework::RequestAckMessage AckMessage)
+{
         NDN_LOG_INFO("OnRequestAckDecryptionSuccessCallback: "
                      << providerName.toUri() << " "
                      << ServiceName.toUri() << " "
                      << FunctionName.toUri() << " "
                      << requestID.toUri());
-
-        // Decode Permission Ack message
-        RequestAckMessage AckMessage;
-        try {
-            AckMessage.WireDecode(block);
-        }
-        catch (const std::exception& e) {
-            NDN_LOG_ERROR("RequestAckMessage decode failed: " << e.what());
-            return;
-        }
-
         const auto ackPayload = AckMessage.getPayload();
         const std::string ackPayloadText(
             reinterpret_cast<const char*>(ackPayload.data()),
@@ -3820,7 +4616,6 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             NDN_LOG_ERROR("Invalid strategy: " << strategy);
             return;
         }
-    // });
 }
 
 
@@ -3829,6 +4624,13 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
     {
         // log error
         NDN_LOG_ERROR("OnRequestAckDecryptionErrorCallback: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri() << " with error: " << error);
+        auto pendingCall = m_pendingCalls.find(requestID);
+        if (pendingCall != m_pendingCalls.end() &&
+            (pendingCall->second.acksHandler ||
+             pendingCall->second.ackCandidatesHandler) &&
+            pendingCall->second.ackDecryptsInFlight > 0) {
+            --pendingCall->second.ackDecryptsInFlight;
+        }
     }
 
     void ServiceUser::PublishServiceCoordinationMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID)
@@ -4116,6 +4918,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             serviceName, senderPrefix, accessAttribute, messageType, m_hybridCryptoCounters);
 
         const auto plaintextBlock = message.WireEncode();
+        auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
         const ndn::Buffer ad = hybridAssociatedData(messageName, messageType, requestId,
                                                     serviceName, senderPrefix,
                                                     key.keyId, key.epochId);
@@ -4132,33 +4935,12 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                               {"messageName", messageName.toUri()},
                               {"mode", "hybrid"}});
         }
-        const auto aesStartUs = timelineSteadyMicroseconds();
-        auto encrypted = hybridAesGcmEncrypt(
-            key.key,
-            ndn::span<const uint8_t>(&*plaintextBlock.begin(), plaintextBlock.size()),
-            ndn::span<const uint8_t>(ad.data(), ad.size()));
-        const auto aesEndUs = timelineSteadyMicroseconds();
-        if (m_timelineTrace) {
-            logTimelineTrace("user", "aes_gcm_encrypt_done", requestId,
-                             {{"serviceName", serviceName.toUri()},
-                              {"messageType", messageType},
-                              {"duration_us", std::to_string(aesEndUs >= aesStartUs ?
-                                                             aesEndUs - aesStartUs : 0)}});
-        }
-        envelope.setNonce(encrypted.nonce);
-        envelope.setCipherText(encrypted.ciphertext);
-        envelope.setAuthTag(encrypted.tag);
-        ++m_hybridCryptoCounters.symmetric_encrypt_count;
-        if (m_useTokens) {
-            if (messageType == "REQUEST" || messageType == "RESPONSE") {
-                ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
-            }
-            if (messageType == "ACK" || messageType == "COORDINATION") {
-                ++m_hybridCryptoCounters.provider_token_symmetric_encrypt_count;
-            }
-        }
 
-        if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
+        ndn::Buffer cachedWrappedKey;
+        if (m_hybridMessageCrypto.getWrappedSendKey(key.keyId, cachedWrappedKey)) {
+            envelope.setWrappedMessageKey(cachedWrappedKey);
+        }
+        else if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
             if (m_timelineTrace) {
                 logTimelineTrace("user", "wrapped_key_attached", requestId,
                                  {{"value", "true"},
@@ -4178,7 +4960,8 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             auto wrapped = mergeDataContents(contentData);
             envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
             serveDataWithIMS(contentData, ckData);
-            m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+            m_hybridMessageCrypto.cacheWrappedSendKey(key.keyId,
+                                                      envelope.getWrappedMessageKey());
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             const auto wrapEndUs = timelineSteadyMicroseconds();
             if (m_timelineTrace) {
@@ -4195,25 +4978,73 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                               {"serviceName", serviceName.toUri()},
                               {"messageType", messageType}});
         }
-        if (m_timelineTrace) {
-            logTimelineTrace("user", cryptoStageForName(messageName) + "_crypto_done", requestId,
-                             {{"serviceName", serviceName.toUri()},
-                              {"messageName", messageName.toUri()},
-                              {"mode", "hybrid"}});
-        }
 
-        auto envelopeBlock = envelope.WireEncode();
-        auto buffer = ndn::Buffer(envelopeBlock.begin(), envelopeBlock.end());
-        const auto queuedAtUs = nowMicroseconds();
-        NDN_LOG_DEBUG("[NDNSF_HYBRID] role=user event=HYBRID_PUBLISH"
-                  << " messageName=" << messageName.toUri()
-                  << " messageType=" << messageType
-                  << " keyId=" << key.keyId
-                  << " epochId=" << key.epochId
-                  << " wrappedKeyAttached=" << envelope.hasWrappedMessageKey()
-                  << " ciphertextBytes=" << encrypted.ciphertext.size());
-        m_face.getIoContext().post(
-            [this, messageName, queuedAtUs, buffer = std::move(buffer)]() mutable {
+        auto encryptAndPost = [this, messageName, requestId, serviceName, messageType,
+                               keyId = key.keyId, epochId = key.epochId,
+                               keyBytes = key.key, ad = std::move(ad),
+                               plaintext = std::move(plaintext),
+                               envelope = std::move(envelope)]() mutable {
+            const auto aesStartUs = timelineSteadyMicroseconds();
+            ndn::Buffer buffer;
+            size_t ciphertextBytes = 0;
+            bool wrappedKeyAttached = envelope.hasWrappedMessageKey();
+            std::string error;
+            try {
+                auto encrypted = hybridAesGcmEncrypt(
+                    keyBytes,
+                    ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+                    ndn::span<const uint8_t>(ad.data(), ad.size()));
+                envelope.setNonce(encrypted.nonce);
+                envelope.setCipherText(encrypted.ciphertext);
+                envelope.setAuthTag(encrypted.tag);
+                ciphertextBytes = encrypted.ciphertext.size();
+                auto envelopeBlock = envelope.WireEncode();
+                buffer = ndn::Buffer(envelopeBlock.begin(), envelopeBlock.end());
+            }
+            catch (const std::exception& e) {
+                error = e.what();
+            }
+            const auto aesEndUs = timelineSteadyMicroseconds();
+            m_face.getIoContext().post(
+                [this, messageName, requestId, serviceName, messageType,
+                 keyId, epochId, aesStartUs, aesEndUs, wrappedKeyAttached,
+                 ciphertextBytes, error = std::move(error),
+                 buffer = std::move(buffer)]() mutable {
+                if (!error.empty()) {
+                    NDN_LOG_ERROR("[NDNSF_HYBRID] role=user event=HYBRID_PUBLISH_FAILED"
+                                  << " messageName=" << messageName.toUri()
+                                  << " reason=" << error);
+                    return;
+                }
+                if (m_timelineTrace) {
+                    logTimelineTrace("user", "aes_gcm_encrypt_done", requestId,
+                                     {{"serviceName", serviceName.toUri()},
+                                      {"messageType", messageType},
+                                      {"duration_us", std::to_string(aesEndUs >= aesStartUs ?
+                                                                     aesEndUs - aesStartUs : 0)}});
+                    logTimelineTrace("user", cryptoStageForName(messageName) + "_crypto_done",
+                                     requestId,
+                                     {{"serviceName", serviceName.toUri()},
+                                      {"messageName", messageName.toUri()},
+                                      {"mode", "hybrid"}});
+                }
+                ++m_hybridCryptoCounters.symmetric_encrypt_count;
+                if (m_useTokens) {
+                    if (messageType == "REQUEST" || messageType == "RESPONSE") {
+                        ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
+                    }
+                    if (messageType == "ACK" || messageType == "COORDINATION") {
+                        ++m_hybridCryptoCounters.provider_token_symmetric_encrypt_count;
+                    }
+                }
+                const auto queuedAtUs = nowMicroseconds();
+                NDN_LOG_DEBUG("[NDNSF_HYBRID] role=user event=HYBRID_PUBLISH"
+                              << " messageName=" << messageName.toUri()
+                              << " messageType=" << messageType
+                              << " keyId=" << keyId
+                              << " epochId=" << epochId
+                              << " wrappedKeyAttached=" << wrappedKeyAttached
+                              << " ciphertextBytes=" << ciphertextBytes);
                 ndn::Block contentBlock(buffer);
                 const auto beginUs = nowMicroseconds();
                 NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_BEGIN timestamp_us="
@@ -4262,6 +5093,11 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                     }
                 }
             });
+        };
+        if (m_handlerPool.getThreadCount() == 0 ||
+            !m_handlerPool.post(encryptAndPost)) {
+            encryptAndPost();
+        }
     }
 
     bool ServiceUser::decryptHybridMessage(const ndn::Name& messageName,
@@ -4297,28 +5133,43 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             const auto ad = hybridAssociatedData(messageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
                                                 envelope.getKeyId(), envelope.getEpochId());
-            ndn::Buffer plaintext;
-            if (!hybridAesGcmDecrypt(key, envelope,
-                                     ndn::span<const uint8_t>(ad.data(), ad.size()),
-                                     plaintext)) {
-                ++m_hybridCryptoCounters.auth_decrypt_failure_count;
-                if (onError) {
-                    onError("hybrid AES-GCM authentication failed");
-                }
-                return;
-            }
-            ++m_hybridCryptoCounters.symmetric_decrypt_count;
-            if (m_useTokens) {
-                if (envelope.getMessageType() == "ACK") {
-                    ++m_hybridCryptoCounters.provider_token_symmetric_decrypt_count;
-                    ++m_hybridCryptoCounters.user_token_symmetric_decrypt_count;
-                }
-                if (envelope.getMessageType() == "RESPONSE") {
-                    ++m_hybridCryptoCounters.user_token_symmetric_decrypt_count;
-                }
-            }
-            if (onSuccess) {
-                onSuccess(plaintext);
+            auto decryptAndPost = [this, key, envelope, ad,
+                                   onSuccess = std::move(onSuccess),
+                                   onError = std::move(onError)]() mutable {
+                ndn::Buffer plaintext;
+                const bool ok = hybridAesGcmDecrypt(
+                    key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), plaintext);
+                m_face.getIoContext().post(
+                    [this, ok, envelope, plaintext = std::move(plaintext),
+                     onSuccess = std::move(onSuccess),
+                     onError = std::move(onError)]() mutable {
+                    if (!ok) {
+                        ++m_hybridCryptoCounters.auth_decrypt_failure_count;
+                        if (onError) {
+                            onError("hybrid AES-GCM authentication failed");
+                        }
+                        return;
+                    }
+                    ++m_hybridCryptoCounters.symmetric_decrypt_count;
+                    if (m_useTokens) {
+                        if (envelope.getMessageType() == "ACK") {
+                            ++m_hybridCryptoCounters.provider_token_symmetric_decrypt_count;
+                            ++m_hybridCryptoCounters.user_token_symmetric_decrypt_count;
+                        }
+                        if (envelope.getMessageType() == "RESPONSE") {
+                            ++m_hybridCryptoCounters.user_token_symmetric_decrypt_count;
+                        }
+                    }
+                    if (onSuccess) {
+                        onSuccess(plaintext);
+                    }
+                });
+            };
+            BoundedWorkerPool& decryptPool =
+                envelope.getMessageType() == "ACK" ? m_ackProcessingPool : m_handlerPool;
+            if (decryptPool.getThreadCount() == 0 ||
+                !decryptPool.post(decryptAndPost)) {
+                decryptAndPost();
             }
         };
 
@@ -4676,5 +5527,18 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
                   << " requestID=" << RequestID.toUri()
                   << " error=" << msg);
         NDN_LOG_ERROR("OnResponseDecryptionErrorCallback: " << serviceProviderName << ServiceName << FunctionName << RequestID << " with error: " << msg);
+    }
+}
+
+namespace ndnsf
+{
+    namespace strategy
+    {
+        extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
+            FirstResponding = ndn_service_framework::strategy::FirstResponding;
+        extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
+            LoadBalancing = ndn_service_framework::strategy::LoadBalancing;
+        extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
+            AllResponders = ndn_service_framework::strategy::AllResponders;
     }
 }

@@ -26,6 +26,10 @@
 
 namespace ndn_service_framework{
 
+    using RequestPayload = ndn::Buffer;
+    using ResponsePayload = ndn::Buffer;
+    using ServiceName = ndn::Name;
+
     struct LargeDataFetchResult
     {
         bool success = false;
@@ -126,6 +130,7 @@ namespace ndn_service_framework{
                                                      UserPermissionTable& permissionTable);
 
             size_t getPendingRequestCountForTesting() const;
+            size_t getSelectedOutstandingRequestCountForTesting() const;
             size_t getPendingProviderTokenCountForTesting() const;
             size_t getCleanupInvocationCountForTesting() const;
             size_t getTokenConsumeCountForTesting() const;
@@ -204,6 +209,13 @@ namespace ndn_service_framework{
                             const ndn::Name& functionName,
                             RequestHandler requestHandler);
 
+            void RegisterService(const ServiceName& serviceName,
+                                 AckStrategyHandler ackHandler,
+                                 RequestHandler requestHandler);
+
+            void RegisterService(const ServiceName& serviceName,
+                                 RequestHandler requestHandler);
+
             void setAckStrategyHandler(const ndn::Name& serviceName,
                                        AckStrategyHandler ackHandler);
 
@@ -269,6 +281,15 @@ namespace ndn_service_framework{
             {
                 addHandler<RequestT, ResponseT>(makeUnifiedServiceName(serviceName, functionName),
                                                 std::move(handler));
+            }
+
+            template<typename RequestT, typename ResponseT>
+            void RegisterService(const ServiceName& serviceName,
+                                 std::function<void(const ndn::Name& requesterIdentity,
+                                                    const RequestT& request,
+                                                    ResponseT& response)> handler)
+            {
+                addHandler<RequestT, ResponseT>(serviceName, std::move(handler));
             }
 
             bool hasService(const ndn::Name& serviceName) const;
@@ -422,6 +443,12 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
                 AckDecision decision);
+            void finishDecodedRequestOnEventLoop(
+                const ndn::Name& requesterIdentity,
+                const ndn::Name& serviceName,
+                const ndn::Name& bloomFilterName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage);
             bool dispatchRequestExecutionAsync(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -458,7 +485,7 @@ namespace ndn_service_framework{
             //ndn::nacabe::Producer nacProducer;
             ndn::nacabe::CacheProducer nacProducer;
             ndn::security::SigningInfo m_signingInfo;
-            bool m_useHybridMessageCrypto = false;
+            bool m_useHybridMessageCrypto = true;
             bool m_timelineTrace = false;
             HybridMessageCrypto m_hybridMessageCrypto;
             HybridCryptoCounters m_hybridCryptoCounters;
@@ -478,6 +505,7 @@ namespace ndn_service_framework{
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
             std::map<ndn::Name,std::string> pendingProviderTokens;
+            std::atomic<size_t> m_selectedOutstandingRequests{0};
             size_t m_cleanupInvocationCount = 0;
             size_t m_tokenConsumeCount = 0;
             ndn::time::milliseconds m_pendingRequestTimeoutGrace{1000};

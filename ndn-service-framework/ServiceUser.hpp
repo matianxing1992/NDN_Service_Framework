@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -38,6 +39,35 @@ namespace ndn_service_framework{
         ndn::Name requestId;
         ndn_service_framework::RequestAckMessage ack;
     };
+
+    using ProviderId = ndn::Name;
+    using ServiceName = ndn::Name;
+    using RequestId = ndn::Name;
+    using RequestPayload = ndn::Buffer;
+    using ResponsePayload = ndn::Buffer;
+    using AckCandidate = AckSelectionCandidate;
+
+    class AckSelectionPolicy
+    {
+    public:
+        virtual std::vector<ProviderId>
+        select(const std::vector<AckCandidate>& candidates) const = 0;
+
+        virtual size_t
+        requestStrategy() const
+        {
+            return ndn_service_framework::tlv::FirstResponding;
+        }
+
+        virtual ~AckSelectionPolicy() = default;
+    };
+
+    namespace strategy
+    {
+        extern const std::shared_ptr<const AckSelectionPolicy> FirstResponding;
+        extern const std::shared_ptr<const AckSelectionPolicy> LoadBalancing;
+        extern const std::shared_ptr<const AckSelectionPolicy> AllResponders;
+    }
 
     struct PreparedServiceRequest
     {
@@ -94,6 +124,7 @@ namespace ndn_service_framework{
                 RESPONSE_DECRYPTED,
                 CALLBACK_FIRED,
                 COMPLETED,
+                ADMISSION_REJECTED,
                 TIMED_OUT,
                 CANCELLED_OR_DROPPED,
             };
@@ -125,6 +156,22 @@ namespace ndn_service_framework{
 
             using RequestLifecycleCallback =
                 std::function<void(const RequestLifecycleStatus&)>;
+
+            struct AdmissionControlStatus
+            {
+                ndn::Name requestId;
+                size_t queueDepth = 0;
+                size_t softQueueLimit = 0;
+                size_t hardQueueLimit = 0;
+                size_t remainingHardSlots = 0;
+                std::string reason;
+            };
+
+            using AdmissionControlWarningHandler =
+                std::function<void(const AdmissionControlStatus&)>;
+
+            using AdmissionControlRejectHandler =
+                std::function<void(const AdmissionControlStatus&)>;
 
             using RequestPublisher =
                 std::function<void(const ndn::Name& requestId,
@@ -161,6 +208,8 @@ namespace ndn_service_framework{
                                                      UserPermissionTable& permissionTable);
             void setRequestPublisher(RequestPublisher publisher);
             void setRequestLifecycleCallback(RequestLifecycleCallback callback);
+            void setAdmissionControlWarningHandler(AdmissionControlWarningHandler handler);
+            void setAdmissionControlRejectHandler(AdmissionControlRejectHandler handler);
             std::optional<RequestLifecycleStatus>
             getRequestStatus(const ndn::Name& requestId) const;
             std::vector<RequestLifecycleStatus> getActiveRequestStatuses() const;
@@ -171,6 +220,9 @@ namespace ndn_service_framework{
             void setHandlerThreads(size_t n);
             size_t getHandlerThreads() const;
             size_t getHandlerQueueDepth() const;
+            void setAckProcessingThreads(size_t n);
+            size_t getAckProcessingThreads() const;
+            size_t getAckProcessingQueueDepth() const;
             void setUseTokens(bool enabled);
             bool getUseTokens() const;
             void setUseHybridMessageCrypto(bool enabled);
@@ -198,12 +250,20 @@ namespace ndn_service_framework{
                 double severeMdFactor = 0.75;
                 int controlIntervalMs = 500;
                 int targetLatencyMs = 350;
+                int hardTargetLatencyMs = 500;
+                size_t softQueueLimit = 32;
+                size_t hardQueueLimit = 128;
+                bool rateRecommendationEnabled = true;
+                double initialRecommendedRateRps = 0.0;
+                double minRecommendedRateRps = 1.0;
+                double maxRecommendedRateRps = 0.0;
             };
             void setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options);
             AdaptiveAdmissionOptions getAdaptiveAdmissionOptions() const;
             size_t getAdaptiveAdmissionWindow() const;
             size_t getAdaptiveAdmissionInflight() const;
             size_t getAdaptiveAdmissionQueueDepth() const;
+            double getAdaptiveAdmissionRecommendedRateRps() const;
             void recordAdaptiveAdmissionBackpressure();
 
             static AckCandidatesHandler makeAckSelectionHandler(
@@ -310,6 +370,53 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 
+            ndn::Name AsyncCall(const ServiceName& service,
+                                const RequestPayload& request,
+                                int ackCollectionTimeMs,
+                                std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
+                                int timeoutMs,
+                                ResponseHandler onResponse,
+                                TimeoutHandler onTimeout);
+
+            template<typename RequestT, typename ResponseT>
+            ndn::Name AsyncCall(const ServiceName& service,
+                                const RequestT& request,
+                                int ackCollectionTimeMs,
+                                std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
+                                int timeoutMs,
+                                std::function<void(const ResponseT&)> onResponse,
+                                std::function<void(const RequestId&)> onTimeout)
+            {
+                std::string requestBytes;
+                if (!request.SerializeToString(&requestBytes)) {
+                    return ndn::Name();
+                }
+
+                RequestPayload payload(
+                    reinterpret_cast<const uint8_t*>(requestBytes.data()),
+                    requestBytes.size());
+
+                return AsyncCall(
+                    service,
+                    payload,
+                    ackCollectionTimeMs,
+                    std::move(selectionPolicy),
+                    timeoutMs,
+                    [response = std::move(onResponse)](
+                        const ndn_service_framework::ResponseMessage& responseMessage) {
+                        const auto responsePayload = responseMessage.getPayload();
+                        ResponseT typedResponse;
+                        if (!typedResponse.ParseFromArray(responsePayload.data(),
+                                                          responsePayload.size())) {
+                            return;
+                        }
+                        if (response) {
+                            response(typedResponse);
+                        }
+                    },
+                    std::move(onTimeout));
+            }
+
             template<typename RequestT, typename ResponseT>
             ndn::Name asyncCall(const std::vector<ndn::Name>& providers,
                                 const ndn::Name& serviceName,
@@ -400,6 +507,17 @@ namespace ndn_service_framework{
 
             bool handleRequestAckByName(const ndn::Name& ackName,
                                         const ndn::Block& ackBlock);
+            void dispatchDecryptedResponseByName(const ndn::Name& responseName,
+                                                 const ndn::Name& requestId,
+                                                 const ndn::Buffer& buffer);
+            void finishDecryptedResponseByName(const ndn::Name& responseName,
+                                               const ndn::Name& requestId,
+                                               ndn_service_framework::ResponseMessage responseMessage);
+            void finishRequestAckOnEventLoop(const ndn::Name& providerName,
+                                             const ndn::Name& ServiceName,
+                                             const ndn::Name& FunctionName,
+                                             const ndn::Name& requestID,
+                                             ndn_service_framework::RequestAckMessage AckMessage);
 
             virtual void OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -480,6 +598,7 @@ namespace ndn_service_framework{
                 uint64_t createdAtUs = 0;
                 uint64_t publishedAtUs = 0;
                 uint64_t firstAckAtUs = 0;
+                uint64_t ackWindowDeadlineUs = 0;
                 uint64_t ackSelectionAtUs = 0;
                 uint64_t ackSelectionCompletedAtUs = 0;
                 uint64_t coordinationScheduledAtUs = 0;
@@ -502,6 +621,9 @@ namespace ndn_service_framework{
                 bool providerSelected = false;
                 bool timedOut = false;
                 bool timeoutGraceActive = false;
+                size_t ackDecryptsInFlight = 0;
+                size_t ackSelectionDeferrals = 0;
+                size_t learnedAckProviderCountAtPublish = 0;
                 std::vector<StoredAck> requestAcks;
                 std::vector<StoredAck> customSelectedAcks;
                 std::vector<ndn::Name> successfulAckProviders;
@@ -540,18 +662,38 @@ namespace ndn_service_framework{
 
             bool evaluateBuiltInAckSelection(PendingCall& pendingCall);
             bool hasReachedLatePipelineStage(const PendingCall& pendingCall) const;
+            void recordObservedAckProvider(const ndn::Name& serviceName,
+                                           const ndn::Name& providerName,
+                                           uint64_t timestampUs);
+            size_t getRecentAckProviderCount(const ndn::Name& serviceName,
+                                             uint64_t nowUs);
             void scheduleRequestTimeout(const ndn::Name& requestId, int timeoutMs);
             void finalizeTimedOutPendingCall(const ndn::Name& requestId);
             void admitOrQueuePendingCall(const ndn::Name& requestId,
                                          bool scheduleAckTimeout,
                                          bool scheduleImmediateAckTimeout);
+            AdmissionControlStatus makeAdmissionControlStatus(const ndn::Name& requestId,
+                                                              size_t queueDepth,
+                                                              const char* reason,
+                                                              size_t softQueueLimit = 0,
+                                                              size_t hardQueueLimit = 0) const;
+            void notifyAdmissionControlWarning(const ndn::Name& requestId,
+                                               size_t queueDepth,
+                                               const char* reason,
+                                               size_t softQueueLimit = 0,
+                                               size_t hardQueueLimit = 0);
+            void rejectPendingCallByAdmission(const ndn::Name& requestId,
+                                              const char* reason,
+                                              size_t softQueueLimit = 0,
+                                              size_t hardQueueLimit = 0);
             void publishAdmittedPendingCall(const ndn::Name& requestId);
             void drainAdaptiveAdmissionQueue();
             void scheduleAdaptiveAdmissionControl();
             void controlAdaptiveAdmissionWindow();
+            size_t getEffectiveAdaptiveAdmissionWindow() const;
             void releaseAdaptiveAdmissionSlot(const ndn::Name& requestId,
-                                              PendingCall& pendingCall,
-                                              const char* reason,
+                                               PendingCall& pendingCall,
+                                               const char* reason,
                                               uint64_t terminalTimestampUs);
 
             static bool containsName(const std::vector<ndn::Name>& names,
@@ -615,12 +757,13 @@ namespace ndn_service_framework{
             ndn::nacabe::CacheProducer nacProducer;
             ndn::security::SigningInfo m_signingInfo;
             bool m_useTokens = true;
-            bool m_useHybridMessageCrypto = false;
+            bool m_useHybridMessageCrypto = true;
             bool m_timelineTrace = false;
             HybridMessageCrypto m_hybridMessageCrypto;
             HybridCryptoCounters m_hybridCryptoCounters;
             SerializedWorkerQueue m_cryptoProduceQueue{"ServiceUser NAC-ABE produce"};
             BoundedWorkerPool m_handlerPool{"ServiceUser response callbacks"};
+            BoundedWorkerPool m_ackProcessingPool{"ServiceUser ACK processing"};
 
             ndn::InMemoryStorageFifo m_IMS;
             std::mutex _cache_mutex;
@@ -640,30 +783,65 @@ namespace ndn_service_framework{
             std::mutex svs_mutex;
 
             std::map<ndn::Name, PendingCall> m_pendingCalls;
+            std::map<ndn::Name, std::map<std::string, uint64_t>>
+                m_recentAckProvidersByService;
             std::map<ndn::Name, PendingCallTraceRecord> m_pendingCallTraceHistory;
             std::map<ndn::Name, RequestLifecycleStatus> m_requestLifecycleStatuses;
             RequestLifecycleCallback m_requestLifecycleCallback;
+            AdmissionControlWarningHandler m_admissionControlWarningHandler;
+            AdmissionControlRejectHandler m_admissionControlRejectHandler;
             RequestPublisher m_requestPublisher;
             ndn::time::milliseconds m_pendingCallTimeoutGrace{500};
             bool m_performanceMode = false;
             RuntimeDiagnostics m_runtimeDiagnostics;
             AdaptiveAdmissionOptions m_adaptiveAdmissionOptions;
             size_t m_adaptiveAdmissionWindow = 512;
+            size_t m_adaptiveAdmissionSlowStartThreshold = 512;
             size_t m_adaptiveAdmissionInflight = 0;
             bool m_adaptiveAdmissionControlScheduled = false;
             uint64_t m_adaptiveAdmissionIntervalSuccesses = 0;
             uint64_t m_adaptiveAdmissionIntervalTimeouts = 0;
             uint64_t m_adaptiveAdmissionIntervalBackpressure = 0;
+            uint64_t m_adaptiveAdmissionIntervalQueueWarnings = 0;
             double m_adaptiveAdmissionIntervalLatencySumMs = 0.0;
             uint64_t m_adaptiveAdmissionIntervalLatencyCount = 0;
             std::vector<double> m_adaptiveAdmissionIntervalLatenciesMs;
             double m_adaptiveAdmissionBaselineLatencyMs = 0.0;
             double m_adaptiveAdmissionPreviousQueueDelayMs = 0.0;
+            double m_adaptiveAdmissionPreviousAverageLatencyMs = 0.0;
+            double m_adaptiveAdmissionPreviousP95LatencyMs = 0.0;
+            double m_adaptiveAdmissionCompletionRateEmaRps = 0.0;
+            double m_adaptiveAdmissionRecommendedRateRps = 0.0;
+            size_t m_adaptiveAdmissionLatencyRisingIntervals = 0;
+            size_t m_adaptiveAdmissionAverageLatencyRisingIntervals = 0;
+            size_t m_adaptiveAdmissionRecoveryIntervals = 0;
+            size_t m_adaptiveAdmissionSuccessfulControlIntervals = 0;
             size_t m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
             bool m_adaptiveAdmissionIntervalCongested = false;
             bool m_adaptiveAdmissionIntervalSevere = false;
             std::deque<ndn::Name> m_adaptiveAdmissionQueue;
     };
+}
+
+namespace ndnsf
+{
+    using ProviderId = ndn_service_framework::ProviderId;
+    using ServiceName = ndn_service_framework::ServiceName;
+    using RequestId = ndn_service_framework::RequestId;
+    using RequestPayload = ndn_service_framework::RequestPayload;
+    using ResponsePayload = ndn_service_framework::ResponsePayload;
+    using AckCandidate = ndn_service_framework::AckCandidate;
+    using AckSelectionPolicy = ndn_service_framework::AckSelectionPolicy;
+
+    namespace strategy
+    {
+        extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
+            FirstResponding;
+        extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
+            LoadBalancing;
+        extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
+            AllResponders;
+    }
 }
 
 #endif
