@@ -672,6 +672,8 @@ namespace ndn_service_framework{
             void admitOrQueuePendingCall(const ndn::Name& requestId,
                                          bool scheduleAckTimeout,
                                          bool scheduleImmediateAckTimeout);
+            std::pair<size_t, size_t>
+            getEffectiveAdaptiveAdmissionQueueLimits(size_t activeLimit) const;
             AdmissionControlStatus makeAdmissionControlStatus(const ndn::Name& requestId,
                                                               size_t queueDepth,
                                                               const char* reason,
