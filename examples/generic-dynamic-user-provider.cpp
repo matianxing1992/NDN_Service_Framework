@@ -188,7 +188,7 @@ main()
   ObjectDetectionRequest request;
   request.setImage("local-frame");
 
-  user.AsyncCall<ObjectDetectionRequest, ObjectDetectionResponse>(
+  user.RequestService<ObjectDetectionRequest, ObjectDetectionResponse>(
     serviceName,
     request,
     100,

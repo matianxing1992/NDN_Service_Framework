@@ -2495,7 +2495,7 @@ namespace ndn_service_framework
         return result;
     }
 
-    ndn::Name ServiceUser::startAsyncCallWithRequestId(
+    ndn::Name ServiceUser::startRequestServiceWithRequestId(
         const ndn::Name& requestId,
         const std::vector<ndn::Name>& providers,
         const ndn::Name& serviceName,
@@ -2529,14 +2529,14 @@ namespace ndn_service_framework
         return requestId;
     }
 
-    ndn::Name ServiceUser::async_call(const PreparedServiceRequest& ctx,
+    ndn::Name ServiceUser::RequestService(const PreparedServiceRequest& ctx,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int timeoutMs,
                                       TimeoutHandler onTimeout,
                                       ResponseHandler onResponseHandler,
                                       size_t strategy)
     {
-        return async_call(ctx,
+        return RequestService(ctx,
                           {},
                           std::move(requestMessage),
                           timeoutMs,
@@ -2545,7 +2545,7 @@ namespace ndn_service_framework
                           strategy);
     }
 
-    ndn::Name ServiceUser::async_call(const PreparedServiceRequest& ctx,
+    ndn::Name ServiceUser::RequestService(const PreparedServiceRequest& ctx,
                                       const std::vector<ndn::Name>& providers,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int timeoutMs,
@@ -2557,7 +2557,7 @@ namespace ndn_service_framework
             return ndn::Name();
         }
         ctx.used = true;
-        return startAsyncCallWithRequestId(ctx.requestId,
+        return startRequestServiceWithRequestId(ctx.requestId,
                                            providers,
                                            ctx.serviceName,
                                            std::move(requestMessage),
@@ -2567,7 +2567,7 @@ namespace ndn_service_framework
                                            strategy);
     }
 
-    ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
+    ndn::Name ServiceUser::RequestService(const std::vector<ndn::Name>& providers,
                                       const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int timeoutMs,
@@ -2575,7 +2575,7 @@ namespace ndn_service_framework
                                       ResponseHandler onResponseHandler,
                                       size_t strategy)
     {
-        return startAsyncCallWithRequestId(makeRequestId(),
+        return startRequestServiceWithRequestId(makeRequestId(),
                                            providers,
                                            serviceName,
                                            std::move(requestMessage),
@@ -2585,7 +2585,7 @@ namespace ndn_service_framework
                                            strategy);
     }
 
-    ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
+    ndn::Name ServiceUser::RequestService(const std::vector<ndn::Name>& providers,
                                       const ndn::Name& serviceName,
                                       const ndn::Name& functionName,
                                       ndn_service_framework::RequestMessage requestMessage,
@@ -2594,7 +2594,7 @@ namespace ndn_service_framework
                                       ResponseHandler onResponseHandler,
                                       size_t strategy)
     {
-        return async_call(providers,
+        return RequestService(providers,
                           makeUnifiedServiceName(serviceName, functionName),
                           std::move(requestMessage),
                           timeoutMs,
@@ -2603,14 +2603,14 @@ namespace ndn_service_framework
                           strategy);
     }
 
-    ndn::Name ServiceUser::async_call(const ndn::Name& serviceName,
+    ndn::Name ServiceUser::RequestService(const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int timeoutMs,
                                       TimeoutHandler onTimeout,
                                       ResponseHandler onResponseHandler,
                                       size_t strategy)
     {
-        return async_call({},
+        return RequestService({},
                           serviceName,
                           std::move(requestMessage),
                           timeoutMs,
@@ -2619,7 +2619,7 @@ namespace ndn_service_framework
                           strategy);
     }
 
-    ndn::Name ServiceUser::async_call(const ndn::Name& serviceName,
+    ndn::Name ServiceUser::RequestService(const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int ackTimeoutMs,
                                       AcksHandler onAcksHandler,
@@ -2654,7 +2654,7 @@ namespace ndn_service_framework
         return requestId;
     }
 
-    ndn::Name ServiceUser::async_call(const ndn::Name& serviceName,
+    ndn::Name ServiceUser::RequestService(const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int ackTimeoutMs,
                                       AckCandidatesHandler onAcksHandler,
@@ -2689,7 +2689,7 @@ namespace ndn_service_framework
         return requestId;
     }
 
-    ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
+    ndn::Name ServiceUser::RequestService(const std::vector<ndn::Name>& providers,
                                       const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int ackTimeoutMs,
@@ -2727,7 +2727,7 @@ namespace ndn_service_framework
         return requestId;
     }
 
-    ndn::Name ServiceUser::async_call(const std::vector<ndn::Name>& providers,
+    ndn::Name ServiceUser::RequestService(const std::vector<ndn::Name>& providers,
                                       const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int ackTimeoutMs,
@@ -2774,7 +2774,7 @@ namespace ndn_service_framework
             ndn_service_framework::tlv::AllResponders :
             ndn_service_framework::tlv::FirstResponding;
 
-        return async_call(providers,
+        return RequestService(providers,
                           serviceName,
                           std::move(requestMessage),
                           ackTimeoutMs,
@@ -2785,13 +2785,14 @@ namespace ndn_service_framework
                           requestStrategy);
     }
 
-    ndn::Name ServiceUser::AsyncCall(const ServiceName& service,
-                                     const RequestPayload& request,
-                                     int ackCollectionTimeMs,
-                                     std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
-                                     int timeoutMs,
-                                     ResponseHandler onResponse,
-                                     TimeoutHandler onTimeout)
+    ndn::Name ServiceUser::RequestService(
+        const ServiceName& service,
+        const RequestPayload& request,
+        int ackCollectionTimeMs,
+        std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
+        int timeoutMs,
+        ResponseHandler onResponse,
+        TimeoutHandler onTimeout)
     {
         if (!selectionPolicy) {
             selectionPolicy = strategy::FirstResponding;
@@ -2820,7 +2821,7 @@ namespace ndn_service_framework
                 return selectedCandidates;
             };
 
-        return async_call({},
+        return RequestService({},
                           service,
                           std::move(requestMessage),
                           ackCollectionTimeMs,
@@ -3079,7 +3080,7 @@ namespace ndn_service_framework
             !m_handlerPool.post(std::move(decodeAndFinish))) {
             ndn::Block block(buffer);
             if (!handleDecryptedResponseByName(responseName, block)) {
-                NDN_LOG_INFO("OnResponse: no pending async callback for " << responseName);
+                NDN_LOG_DEBUG("OnResponse: no pending async callback for " << responseName);
             }
         }
     }
@@ -3090,7 +3091,7 @@ namespace ndn_service_framework
         ndn_service_framework::ResponseMessage responseMessage)
     {
         if (!handleDecryptedResponseByName(responseName, responseMessage)) {
-            NDN_LOG_INFO("OnResponse: no pending async callback for " << responseName);
+            NDN_LOG_DEBUG("OnResponse: no pending async callback for " << responseName);
         }
     }
 
@@ -4007,7 +4008,7 @@ namespace ndn_service_framework
             return;
         }
         // log message
-        NDN_LOG_INFO("OnRequestAck: " << subscription.name);
+        NDN_LOG_DEBUG("OnRequestAck: " << subscription.name);
 
         auto ackV2 = parseRequestAckNameV2(subscription.name);
         if (ackV2) {
@@ -4356,7 +4357,7 @@ namespace ndn_service_framework
             return;
         }
 
-        NDN_LOG_INFO("OnResponse: " << subscription.name);
+        NDN_LOG_DEBUG("OnResponse: " << subscription.name);
 
         ndn::Name requesterName, providerName, ServiceName, FunctionName, RequestId;
         auto resultsV2 = ndn_service_framework::parseResponseNameV2(subscription.name);
@@ -4563,7 +4564,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
     const ndn::Name& requestID,
     ndn_service_framework::RequestAckMessage AckMessage)
 {
-        NDN_LOG_INFO("OnRequestAckDecryptionSuccessCallback: "
+        NDN_LOG_DEBUG("OnRequestAckDecryptionSuccessCallback: "
                      << providerName.toUri() << " "
                      << ServiceName.toUri() << " "
                      << FunctionName.toUri() << " "
@@ -4572,7 +4573,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         const std::string ackPayloadText(
             reinterpret_cast<const char*>(ackPayload.data()),
             ackPayload.size());
-        NDN_LOG_INFO("[ServiceUser] ACK received timestampMs="
+        NDN_LOG_DEBUG("[ServiceUser] ACK received timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
@@ -4679,7 +4680,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
     void ServiceUser::PublishServiceCoordinationMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID)
     {
-        NDN_LOG_INFO("[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
+        NDN_LOG_DEBUG("[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
@@ -4690,7 +4691,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
 
         // log message
-        NDN_LOG_INFO("PublishServiceCoordinationMessage: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri());
+        NDN_LOG_DEBUG("PublishServiceCoordinationMessage: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri());
         // create service coordination message
         ServiceCoordinationMessage coordinationMessage;
         coordinationMessage.setRequestIDs({requestID.toUri()});
@@ -4762,7 +4763,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << makeUnifiedServiceName(ServiceName, FunctionName).toUri()
                   << " messageName=" << serviceCoordinationName.toUri());
-        NDN_LOG_INFO("[ServiceUser] coordination PublishMessage returned timestampMs="
+        NDN_LOG_DEBUG("[ServiceUser] coordination PublishMessage returned timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
@@ -4773,11 +4774,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                                           const ndn::Name& serviceName,
                                                           const ndn::Name& requestId)
     {
-        NDN_LOG_INFO("PublishServiceCoordinationMessageV2: "
+        NDN_LOG_DEBUG("PublishServiceCoordinationMessageV2: "
                      << providerName.toUri()
                      << serviceName.toUri()
                      << requestId.toUri());
-        NDN_LOG_INFO("[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
+        NDN_LOG_DEBUG("[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -4862,7 +4863,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri()
                   << " messageName=" << serviceCoordinationName.toUri());
-        NDN_LOG_INFO("[ServiceUser] coordination PublishMessage returned timestampMs="
+        NDN_LOG_DEBUG("[ServiceUser] coordination PublishMessage returned timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()

@@ -2895,8 +2895,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload, const std::string& userToken, const std::string& providerToken)
     {
         // log message
-        NDN_LOG_INFO("PublishRequestAckMessage: " << requesterIdentity.toUri() << ServiceName.toUri() << FunctionName.toUri() << RequestID.toUri());
-        NDN_LOG_INFO("[ServiceProvider] ACK publish requestId="
+        NDN_LOG_DEBUG("PublishRequestAckMessage: " << requesterIdentity.toUri() << ServiceName.toUri() << FunctionName.toUri() << RequestID.toUri());
+        NDN_LOG_DEBUG("[ServiceProvider] ACK publish requestId="
                   << RequestID.toUri()
                   << " userToken=" << userToken
                   << " providerToken=" << providerToken);
@@ -2925,9 +2925,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                      const std::string& userToken,
                                                      const std::string& providerToken)
     {
-        NDN_LOG_INFO("PublishRequestAckMessageV2: " << requesterIdentity.toUri()
+        NDN_LOG_DEBUG("PublishRequestAckMessageV2: " << requesterIdentity.toUri()
                      << serviceName.toUri() << requestId.toUri());
-        NDN_LOG_INFO("[ServiceProvider] ACK publish requestId="
+        NDN_LOG_DEBUG("[ServiceProvider] ACK publish requestId="
                   << requestId.toUri()
                   << " userToken=" << userToken
                   << " providerToken=" << providerToken);
@@ -2966,8 +2966,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
         if(!isFresh(subscription)) return;
-        // log message
-        NDN_LOG_INFO("Received Service Coordination Message: " << subscription.name.toUri());
 
         auto coordinationV2 =
             ndn_service_framework::parseServiceCoordinationNameV2(subscription.name);
@@ -2975,7 +2973,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             if (!coordinationV2->providerName.equals(identity)) {
                 return;
             }
-            NDN_LOG_INFO("[ServiceProvider] coordination received timestampMs="
+            NDN_LOG_DEBUG("Received Service Coordination Message: "
+                          << subscription.name.toUri());
+            NDN_LOG_DEBUG("[ServiceProvider] coordination received timestampMs="
                       << nowMilliseconds()
                       << " requestId=" << coordinationV2->requestId.toUri()
                       << " providerName=" << coordinationV2->providerName.toUri()
@@ -3184,7 +3184,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
         std::tie(requesterName, providerName, ServiceName, FunctionName, msgId) = results.value();
-        NDN_LOG_INFO("[ServiceProvider] coordination received timestampMs="
+        if (!providerName.equals(identity)) {
+            return;
+        }
+        NDN_LOG_DEBUG("Received Service Coordination Message: "
+                      << subscription.name.toUri());
+        NDN_LOG_DEBUG("[ServiceProvider] coordination received timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << msgId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -3317,7 +3322,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
         auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
 
-        NDN_LOG_INFO("OnServiceCoordinationMessageDecryptionSuccessCallbackV2: "
+        NDN_LOG_DEBUG("OnServiceCoordinationMessageDecryptionSuccessCallbackV2: "
             << requesterName.toUri()
             << providerName.toUri()
             << serviceName.toUri()
@@ -3456,7 +3461,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
             auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
 
-            NDN_LOG_INFO("OnServiceCoordinationMessageDecryptionSuccessCallback: "
+            NDN_LOG_DEBUG("OnServiceCoordinationMessageDecryptionSuccessCallback: "
                 << requesterName.toUri()
                 << providerName.toUri()
                 << ServiceName.toUri()

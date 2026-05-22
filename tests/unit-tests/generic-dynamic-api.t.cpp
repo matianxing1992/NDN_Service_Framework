@@ -415,7 +415,7 @@ runLocalFlow(LocalServiceUser& user,
   DynamicRequest request;
   request.setPayload(requestPayload);
 
-  const auto requestId = user.asyncCall<DynamicRequest, DynamicResponse>(
+  const auto requestId = user.RequestService<DynamicRequest, DynamicResponse>(
     {providerName},
     serviceName,
     request,
@@ -513,7 +513,7 @@ BOOST_AUTO_TEST_CASE(PreparedServiceRequestOnlyCreatesContext)
   BOOST_CHECK(!user.hasPendingCall(ctx.requestId));
 }
 
-BOOST_AUTO_TEST_CASE(PreparedAsyncCallPreservesOpaquePayloadAndRequestId)
+BOOST_AUTO_TEST_CASE(PreparedRequestServicePreservesOpaquePayloadAndRequestId)
 {
   ndn::security::KeyChain keyChain("pib-memory:prepared-opaque",
                                    "tpm-memory:prepared-opaque");
@@ -556,7 +556,7 @@ BOOST_AUTO_TEST_CASE(PreparedAsyncCallPreservesOpaquePayloadAndRequestId)
                              payloadText.begin()));
     });
 
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     ctx,
     {providerName},
     request,
@@ -567,7 +567,7 @@ BOOST_AUTO_TEST_CASE(PreparedAsyncCallPreservesOpaquePayloadAndRequestId)
   BOOST_CHECK_EQUAL(requestId, ctx.requestId);
   BOOST_CHECK(published);
   BOOST_CHECK(user.hasPendingCall(ctx.requestId));
-  BOOST_CHECK(user.async_call(ctx,
+  BOOST_CHECK(user.RequestService(ctx,
                               RequestMessage(),
                               100,
                               ServiceUser::TimeoutHandler([] (const ndn::Name&) {}),
@@ -627,9 +627,9 @@ BOOST_AUTO_TEST_CASE(AdaptiveAdmissionControlWarnsAtSoftLimitAndRejectsAtHardLim
   auto timeout = [&] (const ndn::Name&) { ++timeoutCallbacks; };
   auto response = [] (const ResponseMessage&) {};
 
-  const auto first = user.async_call({providerName}, serviceName, request, 100, timeout, response);
-  const auto second = user.async_call({providerName}, serviceName, request, 100, timeout, response);
-  const auto third = user.async_call({providerName}, serviceName, request, 100, timeout, response);
+  const auto first = user.RequestService({providerName}, serviceName, request, 100, timeout, response);
+  const auto second = user.RequestService({providerName}, serviceName, request, 100, timeout, response);
+  const auto third = user.RequestService({providerName}, serviceName, request, 100, timeout, response);
 
   BOOST_CHECK(!first.empty());
   BOOST_CHECK(!second.empty());
@@ -649,7 +649,7 @@ BOOST_AUTO_TEST_CASE(AdaptiveAdmissionControlWarnsAtSoftLimitAndRejectsAtHardLim
   BOOST_CHECK_EQUAL(rejectedStatus->finalCleanupReason, "admission_queue_full");
 }
 
-BOOST_AUTO_TEST_CASE(LargeDataNamePayloadRemainsOpaqueAcrossPreparedAsyncCall)
+BOOST_AUTO_TEST_CASE(LargeDataNamePayloadRemainsOpaqueAcrossPreparedRequestService)
 {
   ndn::security::KeyChain keyChain("pib-memory:large-data-name-opaque",
                                    "tpm-memory:large-data-name-opaque");
@@ -688,7 +688,7 @@ BOOST_AUTO_TEST_CASE(LargeDataNamePayloadRemainsOpaqueAcrossPreparedAsyncCall)
                              encryptedDataNameUri.begin()));
     });
 
-  const auto preparedRequestId = user.async_call(
+  const auto preparedRequestId = user.RequestService(
     ctx,
     {providerName},
     request,
@@ -701,7 +701,7 @@ BOOST_AUTO_TEST_CASE(LargeDataNamePayloadRemainsOpaqueAcrossPreparedAsyncCall)
 
   RequestMessage legacyRequest;
   legacyRequest.setPayload(payload, payload.size());
-  const auto legacyRequestId = user.async_call(
+  const auto legacyRequestId = user.RequestService(
     {providerName},
     serviceName,
     legacyRequest,
@@ -798,7 +798,7 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_CHECK_EQUAL(parsedResponse->requestId, requestId);
 }
 
-BOOST_AUTO_TEST_CASE(AddHandlerAsyncCallDispatchResponseAndAck)
+BOOST_AUTO_TEST_CASE(AddHandlerRequestServiceDispatchResponseAndAck)
 {
   ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:generic-dynamic-api", "tpm-memory:generic-dynamic-api");
@@ -1076,7 +1076,7 @@ BOOST_AUTO_TEST_CASE(LateAckAfterAckTimeoutSelectsProviderBeforeRequestTimeout)
     });
 
   bool timeoutCalled = false;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerName}, serviceName, RequestMessage(), 5,
     ServiceUser::AckSelectionStrategy::RandomSelection,
     100,
@@ -1119,7 +1119,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingSelectsFirstAckBeforeAckTimeout)
     });
 
   bool timeoutCalled = false;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerA, providerB}, serviceName, RequestMessage(), 100,
     ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
     500,
@@ -1161,7 +1161,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingSelectsFirstAckAfterNominalAckTimeout)
     });
 
   bool timeoutCalled = false;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerName}, serviceName, RequestMessage(), 5,
     ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
     100,
@@ -1203,7 +1203,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingIgnoresAckTimeoutCompletely)
     });
 
   bool timeoutCalled = false;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerName}, serviceName, RequestMessage(), 5,
     ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
     200,
@@ -1247,7 +1247,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingLateAckAfterRequestTimeoutIsIgnored)
     });
 
   bool timeoutCalled = false;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerName}, serviceName, RequestMessage(), 5,
     ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
     20,
@@ -1287,7 +1287,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingAckAfterProviderSelectedIsIgnored)
       publishedRequest = requestMessage;
     });
 
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerA, providerB}, serviceName, RequestMessage(), 100,
     ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
     500,
@@ -1333,7 +1333,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingV2AckCallbackDoesNotFallThroughToLegacySelec
       publishedRequest = requestMessage;
     });
 
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerA, providerB}, serviceName, RequestMessage(), 100,
     ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
     500,
@@ -1350,6 +1350,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingV2AckCallbackDoesNotFallThroughToLegacySelec
                                              ndn::Name(),
                                              requestId,
                                              firstAckBuffer);
+  pumpFace(face, 50_ms);
   BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerA);
   BOOST_CHECK(user.hasLegacyStrategyState(requestId));
 
@@ -1361,6 +1362,7 @@ BOOST_AUTO_TEST_CASE(FirstRespondingV2AckCallbackDoesNotFallThroughToLegacySelec
                                              ndn::Name(),
                                              requestId,
                                              secondAckBuffer);
+  pumpFace(face, 50_ms);
   BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerA);
   BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 1);
   BOOST_CHECK(user.hasLegacyStrategyState(requestId));
@@ -1388,7 +1390,7 @@ BOOST_AUTO_TEST_CASE(LateAckAfterRequestTimeoutIsIgnored)
     });
 
   bool timeoutCalled = false;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerName}, serviceName, RequestMessage(), 5,
     ServiceUser::AckSelectionStrategy::RandomSelection,
     20,
@@ -1428,7 +1430,7 @@ BOOST_AUTO_TEST_CASE(AckAfterProviderSelectedIsIgnored)
       publishedRequest = requestMessage;
     });
 
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerA, providerB}, serviceName, RequestMessage(), 5,
     ServiceUser::AckSelectionStrategy::RandomSelection,
     100,
@@ -1475,7 +1477,7 @@ BOOST_AUTO_TEST_CASE(RandomSelectionMultipleAcksWithinWindowSelectsOneCandidate)
       publishedRequest = requestMessage;
     });
 
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerA, providerB}, serviceName, RequestMessage(), 30,
     ServiceUser::AckSelectionStrategy::RandomSelection,
     100,
@@ -1523,7 +1525,7 @@ BOOST_AUTO_TEST_CASE(RandomSelectionIgnoresFailedAcksAndKeepsPendingForLateSucce
     });
 
   bool timeoutCalled = false;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerA, providerB}, serviceName, RequestMessage(), 30,
     ServiceUser::AckSelectionStrategy::RandomSelection,
     100,
@@ -1814,7 +1816,7 @@ BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckCoordinationRespons
 
   int responseCallbacks = 0;
   RequestMessage request;
-  const auto requestId = user.async_call(
+  const auto requestId = user.RequestService(
     {providerName},
     serviceName,
     request,
@@ -2339,7 +2341,7 @@ BOOST_AUTO_TEST_CASE(AllRespondersSelectsAndCoordinatesEveryValidAckResponder)
     });
 
   RequestMessage request;
-  auto requestId = user.async_call(
+  auto requestId = user.RequestService(
     providers,
     serviceName,
     request,
@@ -2468,7 +2470,7 @@ BOOST_AUTO_TEST_CASE(AllRespondersHandlesMultipleSelectedProviderResponses)
 
   int responseCallbacks = 0;
   RequestMessage request;
-  auto requestId = user.async_call(
+  auto requestId = user.RequestService(
     providers,
     serviceName,
     request,

@@ -304,7 +304,7 @@ BOOST_AUTO_TEST_CASE(DummyFacesDeliverV2RequestPublication)
   BOOST_CHECK_EQUAL(receivedProducerPrefix, userNode);
 }
 
-BOOST_AUTO_TEST_CASE(ServiceUserAsyncCallReachesProviderAndReturnsResponse)
+BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
 {
   boost::asio::io_context ioA;
   boost::asio::io_context ioB;
@@ -476,7 +476,7 @@ BOOST_AUTO_TEST_CASE(ServiceUserAsyncCallReachesProviderAndReturnsResponse)
   DynamicRequest request;
   request.setPayload("frame-bytes");
 
-  const auto requestId = user.asyncCall<DynamicRequest, DynamicResponse>(
+  const auto requestId = user.RequestService<DynamicRequest, DynamicResponse>(
     {provider.getName()},
     serviceName,
     request,
