@@ -18,6 +18,7 @@
 #include <thread>
 #include <future>
 #include <chrono>
+#include <random>
 
 #include <functional>
 #include <fstream>
@@ -26,6 +27,7 @@
 #include <cstdlib>
 #include <map>
 #include <streambuf>
+#include <algorithm>
 
 using namespace ndn;
 
@@ -48,10 +50,18 @@ std::ostream& nscLog()
 class rpcProducer
 {
 public:
-    rpcProducer(char *provider, char *service, char *function, int serviceDelayMs = 0) : m_face(m_ioService),
+    rpcProducer(char *provider, char *service, char *function,
+                int serviceDelayMs = 0,
+                double failureProbability = 0.0,
+                int epochMs = 10000,
+                uint32_t seed = 100) : m_face(m_ioService),
                     m_scheduler(m_ioService),
                     PRODUCER_IDENTITY(provider),
-                    m_serviceDelayMs(serviceDelayMs)
+                    m_serviceDelayMs(serviceDelayMs),
+                    m_failureProbability(std::max(0.0, std::min(1.0, failureProbability))),
+                    m_epochMs(std::max(1, epochMs)),
+                    m_seed(seed),
+                    m_startedAt(std::chrono::steady_clock::now())
     {
         BASE = PRODUCER_IDENTITY + std::string(service);
         FUNCTION = BASE + std::string(function);
@@ -78,6 +88,10 @@ private:
     Scheduler m_scheduler;
     KeyChain m_keyChain;
     int m_serviceDelayMs = 0;
+    double m_failureProbability = 0.0;
+    int m_epochMs = 10000;
+    uint32_t m_seed = 100;
+    std::chrono::steady_clock::time_point m_startedAt;
     const double WAIT_TIME_FACTOR = .75;
 
     //Naming Scheme
@@ -124,6 +138,12 @@ private:
     {
         nscLog() << "Received Notification at: " << interestFil.getPrefix() << std::endl;
 
+        if (isUnavailable()) {
+            std::cout << "NSC_PRODUCER_SUPPRESS provider=" << PRODUCER_IDENTITY
+                      << " epoch=" << currentEpoch() << std::endl;
+            return;
+        }
+
         if (verifyInterestSignature(interest, CONSUMER_IDENTITY))
         {
             std::string consumerInputParam = extractInterestParam(interest);
@@ -136,6 +156,30 @@ private:
             nscLog() << "Sending response to notification" << std::endl;
             nscLog() << "------------------------" << std::endl;
         }
+    }
+
+    uint64_t currentEpoch() const
+    {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_startedAt).count();
+        return static_cast<uint64_t>(elapsed / m_epochMs);
+    }
+
+    bool isUnavailable() const
+    {
+        if (m_failureProbability <= 0.0) {
+            return false;
+        }
+        const auto epoch = currentEpoch();
+        std::seed_seq seq{
+            m_seed,
+            static_cast<uint32_t>(epoch),
+            static_cast<uint32_t>(epoch >> 32),
+            0x9e3779b9u
+        };
+        std::mt19937 rng(seq);
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        return dist(rng) < m_failureProbability;
     }
 
     //Request Consumer Input based on Parameter in Notification Interest
@@ -442,13 +486,19 @@ int main(int argc, char **argv)
 {
     try
     {
-        if (argc != 4 && argc != 5)
+        if (argc < 4 || argc > 8)
         {
-            nscLog() << "Usage: ./producer <provider> <service> <function> [service_delay_ms]" << std::endl;
+            nscLog() << "Usage: ./producer <provider> <service> <function> "
+                     << "[service_delay_ms] [failure_probability] [epoch_ms] [seed]"
+                     << std::endl;
             exit(1);
         }
-        int serviceDelayMs = argc == 5 ? std::stoi(argv[4]) : 0;
-        rpcProducer producer(argv[1], argv[2], argv[3], serviceDelayMs);
+        int serviceDelayMs = argc >= 5 ? std::stoi(argv[4]) : 0;
+        double failureProbability = argc >= 6 ? std::stod(argv[5]) : 0.0;
+        int epochMs = argc >= 7 ? std::stoi(argv[6]) : 10000;
+        uint32_t seed = argc >= 8 ? static_cast<uint32_t>(std::stoul(argv[7])) : 100;
+        rpcProducer producer(argv[1], argv[2], argv[3],
+                             serviceDelayMs, failureProbability, epochMs, seed);
         producer.run();
         return 0;
     }

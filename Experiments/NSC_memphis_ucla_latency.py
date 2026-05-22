@@ -43,6 +43,9 @@ def run():
     parser.add_argument("--rate-series", default="10,50,100")
     parser.add_argument("--duration-s", type=float, default=10.0)
     parser.add_argument("--warmup-s", type=float, default=5.0)
+    parser.add_argument("--failure-probability", type=float, default=0.0)
+    parser.add_argument("--epoch-ms", type=int, default=10000)
+    parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--output-dir", default="")
     args = parser.parse_args()
 
@@ -87,7 +90,8 @@ def run():
         producer_log = output_dir / "producer.log"
         producer_cmd = (
             f"{nsc_dir / 'producer'} /muas/{args.server_node} "
-            f"/FlightControl /ManualControl {args.service_delay_ms}"
+            f"/FlightControl /ManualControl {args.service_delay_ms} "
+            f"{args.failure_probability} {args.epoch_ms} {args.seed}"
         )
         with producer_log.open("w") as out:
             producer_proc = getPopen(ndn.net[args.server_node], producer_cmd, stdout=out, stderr=out)
@@ -136,6 +140,9 @@ def run():
             "service_delay_ms": args.service_delay_ms,
             "duration_s": args.duration_s,
             "warmup_s": args.warmup_s,
+            "failure_probability": args.failure_probability,
+            "epoch_ms": args.epoch_ms,
+            "seed": args.seed,
             "summaries": summaries,
             "output_dir": str(output_dir),
         }

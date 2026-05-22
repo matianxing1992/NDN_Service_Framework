@@ -102,6 +102,9 @@ def run():
     parser.add_argument("--timeout-s", type=float, default=20.0)
     parser.add_argument("--warmup-s", type=float, default=5.0)
     parser.add_argument("--server-workers", type=int, default=32)
+    parser.add_argument("--failure-probability", type=float, default=0.0)
+    parser.add_argument("--epoch-ms", type=int, default=10000)
+    parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--output-dir", default="")
     args = parser.parse_args()
 
@@ -148,7 +151,9 @@ def run():
         server_cmd = (
             f"python3 {grpc_dir / 'greeter_server.py'} "
             f"--bind 0.0.0.0:50051 --delay-ms {args.delay_ms} "
-            f"--workers {args.server_workers} --quiet"
+            f"--workers {args.server_workers} --quiet "
+            f"--failure-probability {args.failure_probability} "
+            f"--epoch-ms {args.epoch_ms} --seed {args.seed}"
         )
         client_cmd = (
             f"python3 {grpc_dir / 'greeter_client.py'} "
@@ -190,6 +195,9 @@ def run():
             "duration_s": args.duration_s,
             "warmup_s": args.warmup_s,
             "server_workers": args.server_workers,
+            "failure_probability": args.failure_probability,
+            "epoch_ms": args.epoch_ms,
+            "seed": args.seed,
             "summary_line": summary_line,
             "output_dir": str(output_dir),
         }

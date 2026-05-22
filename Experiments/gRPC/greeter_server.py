@@ -2,17 +2,32 @@ import grpc
 from concurrent import futures
 import argparse
 import time
+import random
 import helloworld_pb2
 import helloworld_pb2_grpc
 
 class Greeter(helloworld_pb2_grpc.GreeterServicer):
-    def __init__(self, delay_ms=0, quiet=False):
+    def __init__(self, delay_ms=0, quiet=False, failure_probability=0.0,
+                 epoch_ms=10000, seed=100):
         self.delay_s = max(0, delay_ms) / 1000.0
         self.quiet = quiet
+        self.failure_probability = max(0.0, min(1.0, failure_probability))
+        self.epoch_s = max(0.001, epoch_ms / 1000.0)
+        self.seed = seed
+        self.started_at = time.monotonic()
+
+    def unavailable(self):
+        if self.failure_probability <= 0:
+            return False
+        epoch = int((time.monotonic() - self.started_at) / self.epoch_s)
+        rng = random.Random((self.seed << 16) ^ epoch ^ 0x9e3779b9)
+        return rng.random() < self.failure_probability
 
     def SayHello(self, request, context):
         if not self.quiet:
             print("Received request: " + request.name)
+        if self.unavailable():
+            context.abort(grpc.StatusCode.UNAVAILABLE, "intermittent provider unavailable")
         if self.delay_s > 0:
             time.sleep(self.delay_s)
         return helloworld_pb2.HelloReply(message='Hello, {}'.format(request.name))
@@ -23,6 +38,9 @@ def serve():
     parser.add_argument("--delay-ms", type=int, default=0)
     parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--failure-probability", type=float, default=0.0)
+    parser.add_argument("--epoch-ms", type=int, default=10000)
+    parser.add_argument("--seed", type=int, default=100)
     args = parser.parse_args()
 
     # 读取证书文件
@@ -42,14 +60,17 @@ def serve():
 
     # 创建 gRPC 服务器
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.workers))
-    helloworld_pb2_grpc.add_GreeterServicer_to_server(Greeter(args.delay_ms, args.quiet), server)
+    helloworld_pb2_grpc.add_GreeterServicer_to_server(
+        Greeter(args.delay_ms, args.quiet, args.failure_probability,
+                args.epoch_ms, args.seed), server)
     
     # 绑定服务器到指定端口并启用安全通道
     # server.add_secure_port('10.0.0.58:50051', server_credentials)
     server.add_insecure_port(args.bind)
     
     server.start()
-    print(f"GRPC_SERVER_READY bind={args.bind} delay_ms={args.delay_ms}", flush=True)
+    print(f"GRPC_SERVER_READY bind={args.bind} delay_ms={args.delay_ms} "
+          f"failure_probability={args.failure_probability}", flush=True)
 
     try:
         while True:

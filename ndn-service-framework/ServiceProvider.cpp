@@ -1035,6 +1035,19 @@ namespace ndn_service_framework
         ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())
                                    .append(serviceName)
                                    .append(requestId);
+        if (decision.suppressAck) {
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=ACK_SUPPRESSED timestamp_us="
+                      << nowMicroseconds()
+                      << " providerName=" << identity.toUri()
+                      << " requestId=" << requestId.toUri()
+                      << " serviceName=" << serviceName.toUri()
+                      << " reason=" << decision.message);
+            updateProviderRequestLifecycleState(
+                requestId, serviceName,
+                ProviderRequestLifecycleState::ACK_SUPPRESSED_OVERLOAD,
+                decision.message.empty() ? "ACK suppressed" : decision.message);
+            return;
+        }
         if (decision.status) {
             pendingRequests[pendingKey] =
                 std::make_shared<RequestMessage>(requestMessage);
