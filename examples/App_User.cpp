@@ -1183,6 +1183,17 @@ main(int argc, char** argv)
               return;
             }
             const uint64_t dueTicks = dueExclusive - *nextSequence;
+            if (!adaptiveAdmission.enabled) {
+              if (*queuedTasks == 0) {
+                *queuedTasks = 1;
+                (*sampleAdaptive)();
+              }
+              if (dueTicks > 1) {
+                *delayedPublications += dueTicks - 1;
+              }
+              *nextSequence = dueExclusive;
+              return;
+            }
             const size_t creditLimit = adaptiveAdmission.enabled ?
               std::max<size_t>(
                 4,

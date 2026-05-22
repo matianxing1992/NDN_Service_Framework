@@ -1508,11 +1508,7 @@ namespace ndn_service_framework
                               {"mode", "hybrid"}});
         }
 
-        ndn::Buffer cachedWrappedKey;
-        if (m_hybridMessageCrypto.getWrappedSendKey(key.keyId, cachedWrappedKey)) {
-            envelope.setWrappedMessageKey(cachedWrappedKey);
-        }
-        else if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
+        if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
             if (m_timelineTrace) {
                 logTimelineTrace("provider", "wrapped_key_attached", requestId,
                                  {{"value", "true"},
@@ -1532,8 +1528,7 @@ namespace ndn_service_framework
             auto wrapped = mergeDataContents(contentData);
             envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
             serveDataWithIMS(contentData, ckData);
-            m_hybridMessageCrypto.cacheWrappedSendKey(key.keyId,
-                                                      envelope.getWrappedMessageKey());
+            m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             const auto wrapEndUs = timelineSteadyMicroseconds();
             if (m_timelineTrace) {
@@ -1751,30 +1746,23 @@ namespace ndn_service_framework
             return true;
         }
         if (!envelope.hasWrappedMessageKey()) {
-            auto retry = std::make_shared<std::function<void(size_t)>>();
-            *retry = [this,
-                      keyId = envelope.getKeyId(),
-                      finish,
-                      onError,
-                      retry](size_t remaining) mutable {
-                ndn::Buffer retryKey;
-                if (m_hybridMessageCrypto.findReceiveKey(keyId, retryKey,
-                                                         m_hybridCryptoCounters)) {
-                    finish(retryKey);
-                    return;
-                }
-                if (remaining == 0) {
+            ndn::Name keyDataName = senderPrefix;
+            keyDataName.append(ndn::Name(envelope.getKeyId()));
+            ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
+            nacConsumer.consume(
+                keyDataName,
+                [this, envelope, finish = std::move(finish)](const ndn::Buffer& unwrappedKey) mutable {
+                    m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
+                                                          envelope.getEpochId(),
+                                                          unwrappedKey);
+                    finish(unwrappedKey);
+                },
+                [onError = std::move(onError), keyDataName](const std::string& error) {
                     if (onError) {
-                        onError("hybrid key cache miss and no wrapped MessageKey attached");
+                        onError("hybrid MessageKey fetch failed " +
+                                keyDataName.toUri() + ": " + error);
                     }
-                    return;
-                }
-                m_scheduler.schedule(ndn::time::milliseconds(25),
-                                     [retry, remaining] {
-                                         (*retry)(remaining - 1);
-                                     });
-            };
-            (*retry)(40);
+                });
             return true;
         }
 
