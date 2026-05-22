@@ -100,6 +100,8 @@ def run():
     parser.add_argument("--rate-rps", type=float, default=0.0)
     parser.add_argument("--duration-s", type=float, default=0.0)
     parser.add_argument("--timeout-s", type=float, default=20.0)
+    parser.add_argument("--warmup-s", type=float, default=5.0)
+    parser.add_argument("--server-workers", type=int, default=32)
     parser.add_argument("--output-dir", default="")
     args = parser.parse_args()
 
@@ -145,13 +147,14 @@ def run():
         client_log = output_dir / "client.log"
         server_cmd = (
             f"python3 {grpc_dir / 'greeter_server.py'} "
-            f"--bind 0.0.0.0:50051 --delay-ms {args.delay_ms}"
+            f"--bind 0.0.0.0:50051 --delay-ms {args.delay_ms} "
+            f"--workers {args.server_workers} --quiet"
         )
         client_cmd = (
             f"python3 {grpc_dir / 'greeter_client.py'} "
             f"--target {server_ip}:50051 --count {args.count} "
             f"--rate-rps {args.rate_rps} --duration-s {args.duration_s} "
-            f"--timeout-s {args.timeout_s}"
+            f"--timeout-s {args.timeout_s} --warmup-s {args.warmup_s} --quiet"
         )
 
         with server_log.open("w") as out:
@@ -165,7 +168,8 @@ def run():
 
         with client_log.open("w") as out:
             client_proc = getPopen(client, client_cmd, stdout=out, stderr=out)
-            rc = client_proc.wait(timeout=max(30, int(args.timeout_s * args.count + 10)))
+            run_budget_s = args.duration_s if args.duration_s > 0 else args.timeout_s * args.count
+            rc = client_proc.wait(timeout=max(30, int(run_budget_s + args.timeout_s + 10)))
         if rc != 0:
             raise RuntimeError(f"gRPC client failed rc={rc}; see {client_log}")
 
@@ -184,6 +188,8 @@ def run():
             "count": args.count,
             "rate_rps": args.rate_rps,
             "duration_s": args.duration_s,
+            "warmup_s": args.warmup_s,
+            "server_workers": args.server_workers,
             "summary_line": summary_line,
             "output_dir": str(output_dir),
         }

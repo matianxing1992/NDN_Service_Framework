@@ -42,6 +42,7 @@ def run():
     parser.add_argument("--service-delay-ms", type=int, default=5)
     parser.add_argument("--rate-series", default="10,50,100")
     parser.add_argument("--duration-s", type=float, default=10.0)
+    parser.add_argument("--warmup-s", type=float, default=5.0)
     parser.add_argument("--output-dir", default="")
     args = parser.parse_args()
 
@@ -96,17 +97,18 @@ def run():
         for rate in rates:
             interval_ms = max(1, int(round(1000.0 / rate)))
             count = max(1, int(round(args.duration_s * rate)))
+            warmup_count = max(0, int(round(args.warmup_s * rate)))
             rate_label = str(rate).rstrip("0").rstrip(".")
             run_id = f"run{int(time.time() * 1000)}_r{rate_label}".replace(".", "_")
             client_log = output_dir / f"consumer_rate_{rate_label}.log"
             consumer_cmd = (
                 f"{nsc_dir / 'consumer'} /muas/{args.client_node} /muas/{args.server_node} "
-                f"/FlightControl /ManualControl {interval_ms} {count} {run_id}"
+                f"/FlightControl /ManualControl {interval_ms} {count} {run_id} {warmup_count}"
             )
-            info(f"Running NSC rate={rate_label} rps count={count} interval_ms={interval_ms}\n")
+            info(f"Running NSC rate={rate_label} rps count={count} warmup_count={warmup_count} interval_ms={interval_ms}\n")
             with client_log.open("w") as out:
                 consumer_proc = getPopen(ndn.net[args.client_node], consumer_cmd, stdout=out, stderr=out)
-                consumer_proc.wait(timeout=int(args.duration_s + 35))
+                consumer_proc.wait(timeout=int(args.duration_s + args.warmup_s + 35))
             summary_line = ""
             for line in client_log.read_text(errors="replace").splitlines():
                 if line.startswith("NSC_CLIENT_SUMMARY"):
@@ -119,6 +121,8 @@ def run():
                 "offered_rps": rate,
                 "actual_rps": actual_rps,
                 "interval_ms": interval_ms,
+                "warmup_s": args.warmup_s,
+                "warmup_count": warmup_count,
                 "run_id": run_id,
                 "duration_s": args.duration_s,
                 "client_log": str(client_log),
@@ -131,6 +135,7 @@ def run():
             "server_node": args.server_node,
             "service_delay_ms": args.service_delay_ms,
             "duration_s": args.duration_s,
+            "warmup_s": args.warmup_s,
             "summaries": summaries,
             "output_dir": str(output_dir),
         }

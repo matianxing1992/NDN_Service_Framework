@@ -6,11 +6,13 @@ import helloworld_pb2
 import helloworld_pb2_grpc
 
 class Greeter(helloworld_pb2_grpc.GreeterServicer):
-    def __init__(self, delay_ms=0):
+    def __init__(self, delay_ms=0, quiet=False):
         self.delay_s = max(0, delay_ms) / 1000.0
+        self.quiet = quiet
 
     def SayHello(self, request, context):
-        print("Received request: " + request.name)
+        if not self.quiet:
+            print("Received request: " + request.name)
         if self.delay_s > 0:
             time.sleep(self.delay_s)
         return helloworld_pb2.HelloReply(message='Hello, {}'.format(request.name))
@@ -19,6 +21,8 @@ def serve():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bind", default="0.0.0.0:50051")
     parser.add_argument("--delay-ms", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=32)
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     # 读取证书文件
@@ -37,8 +41,8 @@ def serve():
     # )
 
     # 创建 gRPC 服务器
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    helloworld_pb2_grpc.add_GreeterServicer_to_server(Greeter(args.delay_ms), server)
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.workers))
+    helloworld_pb2_grpc.add_GreeterServicer_to_server(Greeter(args.delay_ms, args.quiet), server)
     
     # 绑定服务器到指定端口并启用安全通道
     # server.add_secure_port('10.0.0.58:50051', server_credentials)

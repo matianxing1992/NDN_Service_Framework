@@ -1353,47 +1353,18 @@ namespace ndn_service_framework
             std::max<size_t>(1, std::min(m_adaptiveAdmissionOptions.softQueueLimit,
                                          configuredHard));
 
-        const double baselineLatencyMs =
-            m_adaptiveAdmissionBaselineLatencyMs > 0.0 ?
-            m_adaptiveAdmissionBaselineLatencyMs :
-            static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs);
-        const double completionRateRps =
-            m_adaptiveAdmissionCompletionRateEmaRps > 0.0 ?
-            m_adaptiveAdmissionCompletionRateEmaRps :
-            (baselineLatencyMs > 0.0 ?
-             1000.0 * static_cast<double>(std::max<size_t>(1, activeLimit)) /
-             baselineLatencyMs :
-             0.0);
-
-        const double queueDelayBudgetMs =
-            std::min(
-                500.0,
-                std::max(
-                    100.0,
-                    0.35 * std::max(
-                        baselineLatencyMs,
-                        static_cast<double>(m_adaptiveAdmissionOptions.targetLatencyMs))));
-        const size_t delayBudgetQueue =
-            completionRateRps > 0.0 ?
-            static_cast<size_t>(std::ceil(completionRateRps *
-                                          queueDelayBudgetMs / 1000.0)) :
-            0;
-
-        const size_t cwndBudgetQueue =
-            std::max<size_t>(4, static_cast<size_t>(std::ceil(
-                                    static_cast<double>(std::max<size_t>(1, activeLimit)) *
-                                    0.5)));
-        const size_t dynamicHard =
-            std::max<size_t>(4, std::min(cwndBudgetQueue,
-                                         std::max<size_t>(4, delayBudgetQueue)));
-        const size_t effectiveHard =
-            std::max<size_t>(1, std::min(configuredHard, dynamicHard));
-        const size_t dynamicSoft =
-            std::max<size_t>(1, static_cast<size_t>(std::ceil(
-                                    static_cast<double>(effectiveHard) * 0.5)));
-        const size_t effectiveSoft =
-            std::max<size_t>(1, std::min(configuredSoft, dynamicSoft));
-        return {effectiveSoft, effectiveHard};
+        const size_t active = std::max<size_t>(1, activeLimit);
+        const size_t dynamicHard = std::max<size_t>(
+            active,
+            std::min<size_t>(
+                configuredHard,
+                std::max<size_t>(active * 2, 8)));
+        const size_t dynamicSoft = std::max<size_t>(
+            1,
+            std::min<size_t>(
+                configuredSoft,
+                std::max<size_t>(active, dynamicHard / 2)));
+        return {std::min(dynamicSoft, dynamicHard), dynamicHard};
     }
 
     ServiceUser::AdmissionControlStatus
@@ -1552,11 +1523,12 @@ namespace ndn_service_framework
             1,
             std::min(m_adaptiveAdmissionWindow,
                      m_adaptiveAdmissionOptions.hardInflightLimit));
-        if (m_adaptiveAdmissionOptions.rateRecommendationEnabled &&
-            m_adaptiveAdmissionSuccessfulControlIntervals < 2) {
-            activeLimit = std::min(
-                activeLimit,
-                std::max<size_t>(m_adaptiveAdmissionOptions.minWindow, 4));
+        if (m_adaptiveAdmissionSuccessfulControlIntervals < 3) {
+            const size_t startupProbeLimit = std::min(
+                m_adaptiveAdmissionOptions.maxWindow,
+                std::max(activeLimit, m_adaptiveAdmissionOptions.initialWindow * 3));
+            activeLimit = std::min(startupProbeLimit,
+                                   m_adaptiveAdmissionOptions.hardInflightLimit);
         }
         return activeLimit;
     }
@@ -1797,6 +1769,7 @@ namespace ndn_service_framework
             m_adaptiveAdmissionIntervalTimeouts > 0 || queueSevere;
         const bool ecnSignal =
             m_adaptiveAdmissionIntervalQueueWarnings > 0 || queuePastSoftLimit;
+        const bool ecnCongestionSignal = ecnSignal && !latencyStable;
         const bool hardDelaySignal = latencySevere || tailLatencyDebt;
         const bool delaySignal =
             latencyCongested || queueDelayBuilding ||
@@ -1817,7 +1790,7 @@ namespace ndn_service_framework
                 m_adaptiveAdmissionOptions.minWindow,
                 m_adaptiveAdmissionSlowStartThreshold);
         }
-        else if (delaySignal || ecnSignal) {
+        else if (delaySignal || ecnCongestionSignal) {
             m_adaptiveAdmissionSlowStartThreshold = std::max(
                 m_adaptiveAdmissionOptions.minWindow,
                 m_adaptiveAdmissionWindow);
