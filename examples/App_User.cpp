@@ -471,7 +471,8 @@ main(int argc, char** argv)
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
-    const bool hybridMessageCrypto = !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
+    const bool hybridMessageCrypto = hasFlag(argc, argv, "--hybrid-message-crypto") &&
+      !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string workloadMode = getOption(argc, argv, "--workload-mode", "closed-loop");
