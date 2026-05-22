@@ -250,10 +250,6 @@ def build_parser():
                         help="Enable App_User reduced per-request benchmark logging")
     parser.add_argument("--disable-tokens", action="store_true",
                         help="Pass --disable-tokens to App_User and App_Provider")
-    parser.add_argument("--hybrid-message-crypto", action="store_true",
-                        help="Pass --hybrid-message-crypto to App_User and App_Provider")
-    parser.add_argument("--disable-hybrid-message-crypto", action="store_true",
-                        help="Pass --disable-hybrid-message-crypto to App_User and App_Provider")
     parser.add_argument("--crypto-diagnostics", action="store_true",
                         help="Enable harness-only NDNSF_CRYPTO_DIAG timing logs")
     parser.add_argument("--timeline-trace", action="store_true",
@@ -3679,7 +3675,7 @@ def dry_run(args):
     log("nfd_log_level={}".format(args.nfd_log_level))
     log("debug_ack={}".format(args.debug_ack))
     log("disable_tokens={}".format(args.disable_tokens))
-    log("hybrid_message_crypto={}".format(not args.disable_hybrid_message_crypto))
+    log("hybrid_message_crypto=always_enabled")
     log("dk_forwarding_check={}".format(args.dk_forwarding_check))
     log("dk_diagnostic_node={}".format(args.dk_diagnostic_node))
     log("dk_bootstrap_check={}".format(args.dk_bootstrap_check))
@@ -4254,10 +4250,6 @@ def provider_argv(args, provider_id, index, output_dir=None):
         argv.extend(["--handler-threads", str(int(args.handler_threads))])
     if getattr(args, "disable_tokens", False):
         argv.append("--disable-tokens")
-    if getattr(args, "disable_hybrid_message_crypto", False):
-        argv.append("--disable-hybrid-message-crypto")
-    elif getattr(args, "hybrid_message_crypto", False):
-        argv.append("--hybrid-message-crypto")
     if getattr(args, "timeline_trace", False):
         argv.append("--timeline-trace")
     return argv
@@ -4646,10 +4638,6 @@ def app_user_argv(args, app_csv):
         user_args.extend(["--handler-threads", str(int(args.handler_threads))])
     if getattr(args, "disable_tokens", False):
         user_args.append("--disable-tokens")
-    if getattr(args, "disable_hybrid_message_crypto", False):
-        user_args.append("--disable-hybrid-message-crypto")
-    elif getattr(args, "hybrid_message_crypto", False):
-        user_args.append("--hybrid-message-crypto")
     if getattr(args, "timeline_trace", False):
         user_args.append("--timeline-trace")
     return user_args

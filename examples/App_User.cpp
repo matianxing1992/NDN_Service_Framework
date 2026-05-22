@@ -471,8 +471,6 @@ main(int argc, char** argv)
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
-    const bool hybridMessageCrypto = hasFlag(argc, argv, "--hybrid-message-crypto") &&
-      !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string workloadMode = getOption(argc, argv, "--workload-mode", "closed-loop");
@@ -603,7 +601,6 @@ main(int argc, char** argv)
       user.setHandlerThreads(static_cast<size_t>(handlerThreads));
     }
     user.setUseTokens(useTokens);
-    user.setUseHybridMessageCrypto(hybridMessageCrypto);
     user.setTimelineTrace(timelineTrace);
     ndn_service_framework::ServiceUser::AdaptiveAdmissionOptions runtimeAdmission;
     runtimeAdmission.enabled = adaptiveAdmission.enabled;
@@ -622,7 +619,7 @@ main(int argc, char** argv)
     user.setAdaptiveAdmissionControl(runtimeAdmission);
     std::cout << "[App_User] token_mode="
               << (user.getUseTokens() ? "enabled" : "disabled")
-              << " hybridMessageCrypto=" << user.getUseHybridMessageCrypto()
+              << " hybridMessageCrypto=enabled"
               << " timelineTrace=" << timelineTrace
               << " handlerThreads=" << user.getHandlerThreads()
               << " adaptiveAdmission=" << adaptiveAdmission.enabled
