@@ -296,14 +296,14 @@ namespace ndn_service_framework{
                 const std::string& objectLabel = "",
                 const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
-            ndn::Name async_call(const PreparedServiceRequest& ctx,
+            ndn::Name RequestService(const PreparedServiceRequest& ctx,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int timeoutMs,
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 
-            ndn::Name async_call(const PreparedServiceRequest& ctx,
+            ndn::Name RequestService(const PreparedServiceRequest& ctx,
                                  const std::vector<ndn::Name>& providers,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int timeoutMs,
@@ -311,7 +311,7 @@ namespace ndn_service_framework{
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 
-            ndn::Name async_call(const std::vector<ndn::Name>& providers,
+            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
                                  const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int timeoutMs,
@@ -319,7 +319,7 @@ namespace ndn_service_framework{
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 
-            ndn::Name async_call(const std::vector<ndn::Name>& providers,
+            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
                                  const ndn::Name& serviceName,
                                  const ndn::Name& functionName,
                                  ndn_service_framework::RequestMessage requestMessage,
@@ -328,14 +328,14 @@ namespace ndn_service_framework{
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 
-            ndn::Name async_call(const ndn::Name& serviceName,
+            ndn::Name RequestService(const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int timeoutMs,
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 
-            ndn::Name async_call(const ndn::Name& serviceName,
+            ndn::Name RequestService(const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int ackTimeoutMs,
                                  AcksHandler onAcksHandler,
@@ -343,7 +343,7 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 
-            ndn::Name async_call(const ndn::Name& serviceName,
+            ndn::Name RequestService(const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int ackTimeoutMs,
                                  AckCandidatesHandler onAcksHandler,
@@ -351,7 +351,7 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 
-            ndn::Name async_call(const std::vector<ndn::Name>& providers,
+            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
                                  const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int ackTimeoutMs,
@@ -361,7 +361,7 @@ namespace ndn_service_framework{
                                  ResponseHandler onResponseHandler,
                                  size_t requestStrategy = ndn_service_framework::tlv::FirstResponding);
 
-            ndn::Name async_call(const std::vector<ndn::Name>& providers,
+            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
                                  const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int ackTimeoutMs,
@@ -370,22 +370,22 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 
-            ndn::Name AsyncCall(const ServiceName& service,
-                                const RequestPayload& request,
-                                int ackCollectionTimeMs,
-                                std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
-                                int timeoutMs,
-                                ResponseHandler onResponse,
-                                TimeoutHandler onTimeout);
+            ndn::Name RequestService(const ServiceName& service,
+                                     const RequestPayload& request,
+                                     int ackCollectionTimeMs,
+                                     std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
+                                     int timeoutMs,
+                                     ResponseHandler onResponse,
+                                     TimeoutHandler onTimeout);
 
             template<typename RequestT, typename ResponseT>
-            ndn::Name AsyncCall(const ServiceName& service,
-                                const RequestT& request,
-                                int ackCollectionTimeMs,
-                                std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
-                                int timeoutMs,
-                                std::function<void(const ResponseT&)> onResponse,
-                                std::function<void(const RequestId&)> onTimeout)
+            ndn::Name RequestService(const ServiceName& service,
+                                     const RequestT& request,
+                                     int ackCollectionTimeMs,
+                                     std::shared_ptr<const AckSelectionPolicy> selectionPolicy,
+                                     int timeoutMs,
+                                     std::function<void(const ResponseT&)> onResponse,
+                                     std::function<void(const RequestId&)> onTimeout)
             {
                 std::string requestBytes;
                 if (!request.SerializeToString(&requestBytes)) {
@@ -396,7 +396,7 @@ namespace ndn_service_framework{
                     reinterpret_cast<const uint8_t*>(requestBytes.data()),
                     requestBytes.size());
 
-                return AsyncCall(
+                return RequestService(
                     service,
                     payload,
                     ackCollectionTimeMs,
@@ -418,13 +418,13 @@ namespace ndn_service_framework{
             }
 
             template<typename RequestT, typename ResponseT>
-            ndn::Name asyncCall(const std::vector<ndn::Name>& providers,
-                                const ndn::Name& serviceName,
-                                const RequestT& request,
-                                std::function<void(const ResponseT&)> onResponse,
-                                std::function<void()> onTimeout,
-                                int timeoutMs,
-                                size_t strategy = ndn_service_framework::tlv::FirstResponding)
+            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
+                                     const ndn::Name& serviceName,
+                                     const RequestT& request,
+                                     std::function<void(const ResponseT&)> onResponse,
+                                     std::function<void()> onTimeout,
+                                     int timeoutMs,
+                                     size_t strategy = ndn_service_framework::tlv::FirstResponding)
             {
                 std::string requestBytes;
                 if (!request.SerializeToString(&requestBytes)) {
@@ -438,7 +438,7 @@ namespace ndn_service_framework{
                 requestMessage.setPayload(payload, payload.size());
                 requestMessage.setStrategy(strategy);
 
-                return async_call(providers,
+                return RequestService(providers,
                                   serviceName,
                                   std::move(requestMessage),
                                   timeoutMs,
@@ -464,22 +464,23 @@ namespace ndn_service_framework{
             }
 
             template<typename RequestT, typename ResponseT>
-            ndn::Name asyncCall(const std::vector<ndn::Name>& providers,
-                                const ndn::Name& serviceName,
-                                const ndn::Name& functionName,
-                                const RequestT& request,
-                                std::function<void(const ResponseT&)> onResponse,
-                                std::function<void()> onTimeout,
-                                int timeoutMs,
-                                size_t strategy = ndn_service_framework::tlv::FirstResponding)
+            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
+                                     const ndn::Name& serviceName,
+                                     const ndn::Name& functionName,
+                                     const RequestT& request,
+                                     std::function<void(const ResponseT&)> onResponse,
+                                     std::function<void()> onTimeout,
+                                     int timeoutMs,
+                                     size_t strategy = ndn_service_framework::tlv::FirstResponding)
             {
-                return asyncCall<RequestT, ResponseT>(providers,
-                                                      makeUnifiedServiceName(serviceName, functionName),
-                                                      request,
-                                                      std::move(onResponse),
-                                                      std::move(onTimeout),
-                                                      timeoutMs,
-                                                      strategy);
+                return RequestService<RequestT, ResponseT>(
+                    providers,
+                    makeUnifiedServiceName(serviceName, functionName),
+                    request,
+                    std::move(onResponse),
+                    std::move(onTimeout),
+                    timeoutMs,
+                    strategy);
             }
 
             void handleResponse(const ndn::Name& requestId,
@@ -710,7 +711,7 @@ namespace ndn_service_framework{
                 const PendingCall& pendingCall,
                 const ndn_service_framework::RequestAckMessage& ackMessage);
 
-            ndn::Name startAsyncCallWithRequestId(const ndn::Name& requestId,
+            ndn::Name startRequestServiceWithRequestId(const ndn::Name& requestId,
                                                   const std::vector<ndn::Name>& providers,
                                                   const ndn::Name& serviceName,
                                                   ndn_service_framework::RequestMessage requestMessage,

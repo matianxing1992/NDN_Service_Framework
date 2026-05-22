@@ -15,7 +15,7 @@ provider.addHandler<RequestT, ResponseT>(
 Preferred user API:
 
 ```cpp
-user.asyncCall<RequestT, ResponseT>(
+user.RequestService<RequestT, ResponseT>(
     providers,
     ndn::Name("/ObjectDetection/YOLOv8"),
     request,
@@ -34,8 +34,8 @@ Examples should demonstrate the current dynamic runtime API:
 ```cpp
 provider.addService(ndn::Name("/HELLO"), ackHandler, requestHandler);
 provider.addHandler<RequestT, ResponseT>(serviceName, handler);
-user.async_call(serviceName, request, ackTimeoutMs, selector, timeoutMs, onTimeout, onResponse);
-user.asyncCall<RequestT, ResponseT>(providers, serviceName, request, onResponse, onTimeout, timeoutMs, strategy);
+user.RequestService(serviceName, request, ackTimeoutMs, selector, timeoutMs, onTimeout, onResponse);
+user.RequestService<RequestT, ResponseT>(providers, serviceName, request, onResponse, onTimeout, timeoutMs, strategy);
 ```
 
 Do not add new examples that depend on generated service users, generated service providers, generated service/stub classes, or service-specific framework message types. Application data belongs in `RequestMessage.payload` and `ResponseMessage.payload`, or in app-defined typed request/response objects wrapped by the generic helpers.

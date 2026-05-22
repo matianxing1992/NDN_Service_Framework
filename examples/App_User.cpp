@@ -800,6 +800,21 @@ main(int argc, char** argv)
         auto intervalSuccesses = std::make_shared<uint64_t>(0);
         auto intervalLatencies = std::make_shared<std::vector<double>>();
         auto ackLatencySamples = std::make_shared<std::vector<double>>();
+        std::shared_ptr<const ndnsf::AckSelectionPolicy> benchmarkSelectionPolicy;
+        if (useBenchmarkCustomSelection) {
+          benchmarkSelectionPolicy =
+            makeRankQueueSelectionPolicy(ackTimeoutMs, performanceMode);
+        }
+        else if (useBenchmarkRandomSelection ||
+                 benchmarkStrategy == ndn_service_framework::tlv::LoadBalancing) {
+          benchmarkSelectionPolicy = ndnsf::strategy::LoadBalancing;
+        }
+        else if (benchmarkStrategy == ndn_service_framework::tlv::AllResponders) {
+          benchmarkSelectionPolicy = ndnsf::strategy::AllResponders;
+        }
+        else {
+          benchmarkSelectionPolicy = ndnsf::strategy::FirstResponding;
+        }
         auto paused = std::make_shared<bool>(false);
         auto pauseCount = std::make_shared<uint64_t>(0);
         auto pauseTransitions = std::make_shared<uint64_t>(0);
@@ -1448,26 +1463,11 @@ main(int argc, char** argv)
                   });
               });
 
-            std::shared_ptr<const ndnsf::AckSelectionPolicy> selectionPolicy;
-            if (useBenchmarkCustomSelection) {
-              selectionPolicy = makeRankQueueSelectionPolicy(ackTimeoutMs, performanceMode);
-            }
-            else if (useBenchmarkRandomSelection ||
-                     benchmarkStrategy == ndn_service_framework::tlv::LoadBalancing) {
-              selectionPolicy = ndnsf::strategy::LoadBalancing;
-            }
-            else if (benchmarkStrategy == ndn_service_framework::tlv::AllResponders) {
-              selectionPolicy = ndnsf::strategy::AllResponders;
-            }
-            else {
-              selectionPolicy = ndnsf::strategy::FirstResponding;
-            }
-
-            ndn::Name requestId = user.AsyncCall(
+            ndn::Name requestId = user.RequestService(
               benchmarkServiceName,
               request.getPayload(),
               ackTimeoutMs,
-              selectionPolicy,
+              benchmarkSelectionPolicy,
               requestTimeoutMs,
               onResponse,
               onTimeout);
@@ -1863,7 +1863,7 @@ main(int argc, char** argv)
           selectionPolicy = ndnsf::strategy::FirstResponding;
         }
 
-        ndn::Name requestId = user.AsyncCall(
+        ndn::Name requestId = user.RequestService(
           benchmarkServiceName,
           request.getPayload(),
           ackTimeoutMs,
@@ -1985,7 +1985,7 @@ main(int argc, char** argv)
             }
             return std::vector<ndnsf::ProviderId>{};
           });
-        user.AsyncCall(
+        user.RequestService(
           ndn::Name("/HELLO"),
           request.getPayload(),
           ackTimeoutMs,
@@ -1995,7 +1995,7 @@ main(int argc, char** argv)
           onTimeout);
       }
       else {
-        user.AsyncCall(
+        user.RequestService(
           ndn::Name("/HELLO"),
           request.getPayload(),
           ackTimeoutMs,

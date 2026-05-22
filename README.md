@@ -51,7 +51,7 @@ ndn_service_framework::ServiceUser user(
 ObjectDetectionRequest request;
 request.set_image("frame-bytes");
 
-user.asyncCall<ObjectDetectionRequest, ObjectDetectionResponse>(
+user.RequestService<ObjectDetectionRequest, ObjectDetectionResponse>(
   providers,
   ndn::Name("/ObjectDetection/YOLOv8"),
   request,
@@ -171,7 +171,7 @@ through another mechanism.
 
 3.6 Example:
 
-`/examples/generic-dynamic-user-provider.cpp` is the minimal generic dynamic example. It uses `ServiceProvider::addHandler<RequestT, ResponseT>` and `ServiceUser::asyncCall<RequestT, ResponseT>` directly, without generated service users, generated service providers, generated services, or stubs. It uses local/mock request publication so it can demonstrate the request/response flow without requiring real NFD/network.
+`/examples/generic-dynamic-user-provider.cpp` is the minimal generic dynamic example. It uses `ServiceProvider::addHandler<RequestT, ResponseT>` and `ServiceUser::RequestService<RequestT, ResponseT>` directly, without generated service users, generated service providers, generated services, or stubs. It uses local/mock request publication so it can demonstrate the request/response flow without requiring real NFD/network.
 
 Build it with:
 
