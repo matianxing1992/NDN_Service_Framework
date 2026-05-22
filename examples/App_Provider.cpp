@@ -167,7 +167,8 @@ main(int argc, char** argv)
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
-    const bool hybridMessageCrypto = !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
+    const bool hybridMessageCrypto = hasFlag(argc, argv, "--hybrid-message-crypto") &&
+      !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool adaptiveProviderAck = hasFlag(argc, argv, "--adaptive-provider-ack");
     const bool dkBootstrapOnly = hasFlag(argc, argv, "--dk-bootstrap-only");
@@ -199,7 +200,7 @@ main(int argc, char** argv)
       argc, argv, "--provider-ack-max-coordination-lag-ms", 0);
     const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", -1);
     const int providerRequestDelayMs = parseIntOption(
-      argc, argv, "--provider-request-delay-ms", 5);
+      argc, argv, "--provider-request-delay-ms", 0);
     const std::string providerLifecycleCsv =
       getOption(argc, argv, "--provider-lifecycle-csv", "");
 

@@ -109,20 +109,20 @@ namespace ndn_service_framework
         defaultNdnsfWorkerThreads()
         {
             if (std::getenv("NDNSF_HANDLER_THREADS") == nullptr) {
-                return 4;
+                return 0;
             }
             return static_cast<size_t>(
-                std::max(0, intEnvOrDefault("NDNSF_HANDLER_THREADS", 4)));
+                std::max(0, intEnvOrDefault("NDNSF_HANDLER_THREADS", 0)));
         }
 
         size_t
         defaultAckProcessingThreads()
         {
             if (std::getenv("NDNSF_ACK_THREADS") == nullptr) {
-                return defaultNdnsfWorkerThreads();
+                return 0;
             }
             return static_cast<size_t>(
-                std::max(0, intEnvOrDefault("NDNSF_ACK_THREADS", 4)));
+                std::max(0, intEnvOrDefault("NDNSF_ACK_THREADS", 0)));
         }
 
         bool

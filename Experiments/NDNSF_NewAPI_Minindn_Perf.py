@@ -251,7 +251,7 @@ def build_parser():
     parser.add_argument("--disable-tokens", action="store_true",
                         help="Pass --disable-tokens to App_User and App_Provider")
     parser.add_argument("--hybrid-message-crypto", action="store_true",
-                        help="Compatibility no-op; hybrid message crypto is enabled by default")
+                        help="Pass --hybrid-message-crypto to App_User and App_Provider")
     parser.add_argument("--disable-hybrid-message-crypto", action="store_true",
                         help="Pass --disable-hybrid-message-crypto to App_User and App_Provider")
     parser.add_argument("--crypto-diagnostics", action="store_true",
