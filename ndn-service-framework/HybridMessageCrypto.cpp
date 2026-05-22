@@ -152,7 +152,7 @@ bool
 HybridMessageCrypto::shouldAttachWrappedKey(const std::string& keyId) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_wrappedSendKeysById.find(keyId) == m_wrappedSendKeysById.end();
+    return m_wrappedSendKeys.find(keyId) == m_wrappedSendKeys.end();
 }
 
 ndn::Name

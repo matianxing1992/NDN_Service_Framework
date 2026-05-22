@@ -1643,6 +1643,9 @@ def app_env(output_dir, session_base, args):
         "NDNSF_SESSION_BASE": str(session_base),
         "NDN_LOG": ndn_log,
     }
+    for name in ("NDNSF_HANDLER_THREADS", "NDNSF_ACK_THREADS"):
+        if name in os.environ:
+            env[name] = os.environ[name]
     if getattr(args, "crypto_diagnostics", False):
         env["NDNSF_CRYPTO_DIAG"] = "1"
     if getattr(args, "timeline_trace", False):
