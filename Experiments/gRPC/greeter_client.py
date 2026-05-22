@@ -1,21 +1,20 @@
-import grpc
 import asyncio
 import argparse
-from datetime import datetime
 import time
+import grpc
 import helloworld_pb2
 import helloworld_pb2_grpc
 
 # 路径根据你的实际环境调整
 CERT_PATH = '/home/tianxing/NDN/ndn-service-framework/Experiments/gRPC'
 
-async def send_request(stub, i, timeout_s):
-    start_time = datetime.now()
+async def send_request(stub, i, timeout_s, quiet=False, measured=True):
+    start_time = time.perf_counter()
     response = await stub.SayHello(helloworld_pb2.HelloRequest(name=f"Test-{i}"),
                                    timeout=timeout_s)
-    end_time = datetime.now()
-    latency = (end_time - start_time).total_seconds() * 1000
-    print(f"request={i} latency_ms={latency:.3f} message={response.message}", flush=True)
+    latency = (time.perf_counter() - start_time) * 1000
+    if not quiet and measured:
+        print(f"request={i} latency_ms={latency:.3f} message={response.message}", flush=True)
     return latency
 
 async def run():
@@ -26,6 +25,8 @@ async def run():
     parser.add_argument("--rate-rps", type=float, default=0.0)
     parser.add_argument("--duration-s", type=float, default=0.0)
     parser.add_argument("--timeout-s", type=float, default=20.0)
+    parser.add_argument("--warmup-s", type=float, default=0.0)
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     # 读取证书
@@ -44,8 +45,31 @@ async def run():
     # )
 
     # 异步安全通道（如果需要使用安全连接则替换下行）
-    async with grpc.aio.insecure_channel(args.target) as channel:
+    channel_options = [
+        ("grpc.max_concurrent_streams", 1024),
+        ("grpc.keepalive_time_ms", 10000),
+        ("grpc.keepalive_timeout_ms", 5000),
+        ("grpc.http2.max_pings_without_data", 0),
+    ]
+    async with grpc.aio.insecure_channel(args.target, options=channel_options) as channel:
+        await channel.channel_ready()
         stub = helloworld_pb2_grpc.GreeterStub(channel)
+
+        if args.rate_rps > 0 and args.warmup_s > 0:
+            warmup_interval_s = 1.0 / args.rate_rps
+            warmup_start = time.monotonic()
+            next_send = warmup_start
+            warmup_tasks = []
+            i = 0
+            while time.monotonic() - warmup_start < args.warmup_s:
+                now = time.monotonic()
+                if now < next_send:
+                    await asyncio.sleep(next_send - now)
+                warmup_tasks.append(asyncio.create_task(
+                    send_request(stub, -i - 1, args.timeout_s, quiet=True, measured=False)))
+                i += 1
+                next_send += warmup_interval_s
+            await asyncio.gather(*warmup_tasks, return_exceptions=True)
 
         latencies = []
         if args.rate_rps > 0 and args.duration_s > 0:
@@ -58,7 +82,8 @@ async def run():
                 now = time.monotonic()
                 if now < next_send:
                     await asyncio.sleep(next_send - now)
-                tasks.append(asyncio.create_task(send_request(stub, i, args.timeout_s)))
+                tasks.append(asyncio.create_task(
+                    send_request(stub, i, args.timeout_s, quiet=args.quiet)))
                 i += 1
                 next_send += interval_s
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -76,7 +101,7 @@ async def run():
                   flush=True)
         else:
             for i in range(args.count):
-                latencies.append(await send_request(stub, i, args.timeout_s))
+                latencies.append(await send_request(stub, i, args.timeout_s, quiet=args.quiet))
                 if args.interval_ms > 0 and i + 1 < args.count:
                     await asyncio.sleep(args.interval_ms / 1000.0)
 

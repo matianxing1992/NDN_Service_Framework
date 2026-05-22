@@ -531,6 +531,7 @@ main(int argc, char** argv)
     adaptiveAdmission.queueAwarePause =
       !hasFlag(argc, argv, "--disable-adaptive-queue-aware-pause");
     adaptiveAdmission.useRecommendedRate =
+      hasFlag(argc, argv, "--enable-adaptive-recommended-rate") &&
       !hasFlag(argc, argv, "--disable-adaptive-recommended-rate");
     adaptiveAdmission.queuePausePollMs = std::max(
       1, parseIntOption(argc, argv, "--adaptive-queue-pause-poll-ms", 10));
@@ -1203,8 +1204,12 @@ main(int argc, char** argv)
               static_cast<size_t>(maxOutstanding);
             const size_t room = *queuedTasks >= creditLimit ?
               0 : creditLimit - *queuedTasks;
+            const uint64_t perDispatchLimit = 1;
             const size_t acceptedTicks = static_cast<size_t>(
-              std::min<uint64_t>(dueTicks, static_cast<uint64_t>(room)));
+              std::min<uint64_t>(
+                dueTicks,
+                std::min<uint64_t>(static_cast<uint64_t>(room),
+                                   perDispatchLimit)));
             if (acceptedTicks > 0) {
               *queuedTasks += acceptedTicks;
               (*sampleAdaptive)();
