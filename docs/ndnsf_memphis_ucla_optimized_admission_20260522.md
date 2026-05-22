@@ -31,11 +31,12 @@ AdaptiveAdmission default path regression.
   mandatory pacing unless explicitly requested.
 - The benchmark sender does not burst all accumulated open-loop credits after an
   admission pause; it admits at most one queued tick per dispatch.
-- `ServiceUser` bounds its admission queue relative to the active admission
+- `ServiceUser` derives its admission queue limits from the current admission
   window, preventing a small window from hiding a large queue and producing
   multi-second latency.
-- `ServiceUser` allows a short startup probe before the latency baseline is
-  established, avoiding cold-start self-throttling.
+- `ServiceUser` allows a short startup inflight probe before the latency
+  baseline is established, but queue limits are still derived from the real
+  admission window rather than the temporary probe limit.
 - Soft queue warnings only trigger multiplicative decrease when latency is not
   stable; stable queue pressure alone is no longer treated as congestion.
 
@@ -60,20 +61,29 @@ class:
 
 Concretely, NDNSF uses a window-based controller similar in spirit to
 congestion control. The user maintains an admission window that bounds the
-number of outstanding service requests. In the implementation used in our
-experiments, AdaptiveAdmission is enabled by default. The window starts at 16
-requests, with a minimum of 1 and a maximum of 512 outstanding requests, and the
+number of outstanding service requests. In our implementation,
+AdaptiveAdmission is enabled by default and starts with an initial window of 16
+requests, with a minimum window of 1 and a maximum window of 512. The
 controller is updated every 500 ms using recent completion, timeout,
 queue-depth, and latency observations. When requests complete successfully and
-the observed delay remains stable, the window is increased additively by 4
-requests per control interval; during the initial probing phase, it may grow by
-up to 16 requests per interval depending on recent successful completions. The
-framework also maintains a bounded admission queue with a default soft threshold
-of 32 requests and a hard threshold of 128 requests, while the effective queue
-bound is further constrained by the current admission window to avoid hiding
-excessive delay behind a small window. When latency shows persistent growth,
-the window is multiplicatively reduced by a factor of 0.85. Under severe
-congestion signals, such as timeouts or near-full queues, the window is reduced
-more aggressively using a factor of 0.5. New requests may be delayed once the
-soft threshold is reached and rejected once the hard threshold is reached,
-preventing unbounded queue buildup and latency collapse.
+the observed delay remains stable, the window is increased using an adaptive
+additive step $\mathrm{clamp}(0.25W, 4, 16)$ per control interval, where $W$ is
+the current admission window. This allows the controller to ramp up faster when
+additional capacity is available, while bounding the probing rate to avoid
+sudden queue buildup. When latency shows persistent growth, the window is
+multiplicatively reduced by a factor of 0.85; under severe congestion signals,
+such as timeouts or near-full queues, it is reduced more aggressively by a
+factor of 0.5.
+
+To avoid fixed queue thresholds that are insensitive to runtime capacity,
+NDNSF derives its admission-queue limits from the current admission window. The
+hard queue limit is computed as $\mathrm{clamp}(16 + 2W, 32, 256)$, where $W$
+is the current admission window. The soft queue limit is set to 50\% of the
+hard limit. Reaching the soft limit triggers early congestion feedback and
+request pacing, while reaching the hard limit causes new requests to be
+rejected or deferred to protect the service pipeline. During the first few
+control intervals, the implementation may temporarily allow a small startup
+inflight probe to avoid cold-start self-throttling, but queue limits continue
+to use the real admission window. This design allows the buffering allowance to
+grow only when the controller has already inferred higher service capacity,
+while keeping queue buildup and tail latency bounded under overload.

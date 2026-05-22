@@ -395,16 +395,36 @@ struct AdaptiveAdmissionConfig
   int controlIntervalMs = 500;
   int targetLatencyMs = 350;
   int hardTargetLatencyMs = 500;
-  size_t softQueueLimit = 32;
-  size_t hardQueueLimit = 128;
+  size_t softQueueLimit = 0;
+  size_t hardQueueLimit = 0;
   int warningBackoffMs = 0;
-  int rejectBackoffMs = 100;
-  bool queueAwarePause = true;
+  int rejectBackoffMs = 0;
+  bool queueAwarePause = false;
   bool useRecommendedRate = true;
   size_t warningResumeQueueDepth = 0;
   size_t rejectResumeQueueDepth = 0;
   int queuePausePollMs = 10;
 };
+
+std::pair<size_t, size_t>
+adaptiveQueueLimitsForWindow(size_t window, size_t softLimitCap, size_t hardLimitCap)
+{
+  const size_t active = std::max<size_t>(1, window);
+  const size_t scaledHard = active > (std::numeric_limits<size_t>::max() - 16) / 2 ?
+    std::numeric_limits<size_t>::max() : 16 + active * 2;
+  size_t hardLimit = std::min<size_t>(256, std::max<size_t>(32, scaledHard));
+  if (hardLimitCap > 0) {
+    hardLimit = std::min(hardLimit, hardLimitCap);
+  }
+  hardLimit = std::max<size_t>(1, hardLimit);
+
+  size_t softLimit = std::max<size_t>(
+    1, static_cast<size_t>(std::ceil(static_cast<double>(hardLimit) * 0.5)));
+  if (softLimitCap > 0) {
+    softLimit = std::min(softLimit, softLimitCap);
+  }
+  return {std::min(softLimit, hardLimit), hardLimit};
+}
 
 std::string
 formatCounters(const std::map<std::string, uint64_t>& counters)
@@ -517,19 +537,17 @@ main(int argc, char** argv)
       adaptiveAdmission.targetLatencyMs,
       parseIntOption(argc, argv, "--adaptive-hard-target-latency-ms", 500));
     adaptiveAdmission.hardQueueLimit = static_cast<size_t>(std::max(
-      1, parseIntOption(argc, argv, "--adaptive-hard-queue-limit",
+      0, parseIntOption(argc, argv, "--adaptive-hard-queue-limit",
                         parseIntOption(argc, argv, "--adaptive-max-queue-depth",
-                                       128))));
-    const int defaultSoftQueueLimit = static_cast<int>(std::min<size_t>(
-      32, std::max<size_t>(1, adaptiveAdmission.hardQueueLimit / 4)));
+                                       0))));
     adaptiveAdmission.softQueueLimit = static_cast<size_t>(std::max(
-      1, parseIntOption(argc, argv, "--adaptive-soft-queue-limit",
-                        defaultSoftQueueLimit)));
+      0, parseIntOption(argc, argv, "--adaptive-soft-queue-limit", 0)));
     adaptiveAdmission.warningBackoffMs = std::max(
       0, parseIntOption(argc, argv, "--adaptive-warning-backoff-ms", 0));
     adaptiveAdmission.rejectBackoffMs = std::max(
-      0, parseIntOption(argc, argv, "--adaptive-reject-backoff-ms", 100));
+      0, parseIntOption(argc, argv, "--adaptive-reject-backoff-ms", 0));
     adaptiveAdmission.queueAwarePause =
+      hasFlag(argc, argv, "--enable-adaptive-queue-aware-pause") &&
       !hasFlag(argc, argv, "--disable-adaptive-queue-aware-pause");
     adaptiveAdmission.useRecommendedRate =
       hasFlag(argc, argv, "--enable-adaptive-recommended-rate") &&
@@ -545,18 +563,25 @@ main(int argc, char** argv)
     adaptiveAdmission.initialWindow = std::max(
       adaptiveAdmission.minWindow,
       std::min(adaptiveAdmission.initialWindow, adaptiveAdmission.maxWindow));
-    adaptiveAdmission.softQueueLimit =
-      std::min(adaptiveAdmission.softQueueLimit,
-               adaptiveAdmission.hardQueueLimit);
+    if (adaptiveAdmission.softQueueLimit > 0 &&
+        adaptiveAdmission.hardQueueLimit > 0) {
+      adaptiveAdmission.softQueueLimit =
+        std::min(adaptiveAdmission.softQueueLimit,
+                 adaptiveAdmission.hardQueueLimit);
+    }
+    const auto initialQueueLimits = adaptiveQueueLimitsForWindow(
+      adaptiveAdmission.initialWindow,
+      adaptiveAdmission.softQueueLimit,
+      adaptiveAdmission.hardQueueLimit);
     adaptiveAdmission.warningResumeQueueDepth = static_cast<size_t>(std::max(
       0, parseIntOption(argc, argv, "--adaptive-warning-resume-queue-depth",
-                        static_cast<int>(adaptiveAdmission.softQueueLimit / 2))));
+                        static_cast<int>(initialQueueLimits.first / 2))));
     adaptiveAdmission.rejectResumeQueueDepth = static_cast<size_t>(std::max(
       0, parseIntOption(argc, argv, "--adaptive-reject-resume-queue-depth",
-                        static_cast<int>(adaptiveAdmission.softQueueLimit / 4))));
+                        static_cast<int>(initialQueueLimits.first / 4))));
     adaptiveAdmission.warningResumeQueueDepth =
       std::min(adaptiveAdmission.warningResumeQueueDepth,
-               adaptiveAdmission.softQueueLimit);
+               initialQueueLimits.first);
     adaptiveAdmission.rejectResumeQueueDepth =
       std::min(adaptiveAdmission.rejectResumeQueueDepth,
                adaptiveAdmission.warningResumeQueueDepth);
@@ -626,8 +651,14 @@ main(int argc, char** argv)
               << " handlerThreads=" << user.getHandlerThreads()
               << " adaptiveAdmission=" << adaptiveAdmission.enabled
               << " adaptiveWindow=" << user.getAdaptiveAdmissionWindow()
-              << " adaptiveSoftQueueLimit=" << adaptiveAdmission.softQueueLimit
-              << " adaptiveHardQueueLimit=" << adaptiveAdmission.hardQueueLimit
+              << " adaptiveSoftQueueLimit="
+              << adaptiveQueueLimitsForWindow(user.getAdaptiveAdmissionWindow(),
+                                              adaptiveAdmission.softQueueLimit,
+                                              adaptiveAdmission.hardQueueLimit).first
+              << " adaptiveHardQueueLimit="
+              << adaptiveQueueLimitsForWindow(user.getAdaptiveAdmissionWindow(),
+                                              adaptiveAdmission.softQueueLimit,
+                                              adaptiveAdmission.hardQueueLimit).second
               << std::endl;
     user.fetchPermissionsFromController(CONTROLLER_PREFIX);
 
@@ -770,7 +801,9 @@ main(int argc, char** argv)
         auto admissionControlWarnings = std::make_shared<uint64_t>(0);
         auto admissionControlRejects = std::make_shared<uint64_t>(0);
         auto minAdmissionHardQueueRemaining = std::make_shared<size_t>(
-          adaptiveAdmission.hardQueueLimit);
+          adaptiveQueueLimitsForWindow(*adaptiveWindow,
+                                       adaptiveAdmission.softQueueLimit,
+                                       adaptiveAdmission.hardQueueLimit).second);
         auto admissionBackoffUntil = std::make_shared<std::chrono::steady_clock::time_point>(
           std::chrono::steady_clock::time_point::min());
         auto admissionBackoffEvents = std::make_shared<uint64_t>(0);
@@ -862,9 +895,7 @@ main(int argc, char** argv)
                 static_cast<uint64_t>(adaptiveAdmission.warningBackoffMs);
             }
             // Soft-limit warnings are advisory: record them and apply the
-            // small warning backoff above, but keep admission flowing. A full
-            // queue-aware pause is reserved for hard-limit rejects, otherwise
-            // short runs spend too much time draining from soft/2.
+            // optional warning backoff above, but keep admission flowing.
             if (!performanceMode) {
               std::cout << "PERF_ADMISSION_WARNING"
                         << " depth=" << status.queueDepth
@@ -1057,6 +1088,10 @@ main(int argc, char** argv)
                 static_cast<uint64_t>(pausedForMs);
             }
           }
+          const auto summaryQueueLimits = adaptiveQueueLimitsForWindow(
+            user.getAdaptiveAdmissionWindow(),
+            adaptiveAdmission.softQueueLimit,
+            adaptiveAdmission.hardQueueLimit);
 
           std::cout << std::fixed << std::setprecision(3)
                     << "OPEN_LOOP_SUMMARY sent=" << *sentCount
@@ -1075,8 +1110,8 @@ main(int argc, char** argv)
                     << " adaptive_window_min=" << *minAdaptiveWindowObserved
                     << " adaptive_window_max=" << *maxAdaptiveWindowObserved
                     << " hard_inflight_limit=" << adaptiveAdmission.hardInflightLimit
-                    << " admission_soft_queue_limit=" << adaptiveAdmission.softQueueLimit
-                    << " admission_hard_queue_limit=" << adaptiveAdmission.hardQueueLimit
+                    << " admission_soft_queue_limit=" << summaryQueueLimits.first
+                    << " admission_hard_queue_limit=" << summaryQueueLimits.second
                     << " admission_control_warnings=" << *admissionControlWarnings
                     << " admission_control_rejects=" << *admissionControlRejects
                     << " admission_hard_queue_min_remaining="
@@ -1196,11 +1231,15 @@ main(int argc, char** argv)
               *nextSequence = dueExclusive;
               return;
             }
+            const auto currentQueueLimits = adaptiveQueueLimitsForWindow(
+              user.getAdaptiveAdmissionWindow(),
+              adaptiveAdmission.softQueueLimit,
+              adaptiveAdmission.hardQueueLimit);
             const size_t creditLimit = adaptiveAdmission.enabled ?
               std::max<size_t>(
                 4,
                 std::min<size_t>(
-                  adaptiveAdmission.hardQueueLimit,
+                  currentQueueLimits.second,
                   static_cast<size_t>(std::ceil(std::max(1.0, rateRps) * 0.25)))) :
               static_cast<size_t>(maxOutstanding);
             const size_t room = *queuedTasks >= creditLimit ?
@@ -1249,8 +1288,12 @@ main(int argc, char** argv)
                 std::max<size_t>(1, user.getAdaptiveAdmissionWindow());
               const size_t runtimeInflight =
                 user.getAdaptiveAdmissionInflight();
+              const auto runtimeQueueLimits = adaptiveQueueLimitsForWindow(
+                runtimeWindow,
+                adaptiveAdmission.softQueueLimit,
+                adaptiveAdmission.hardQueueLimit);
               const bool queuePressure =
-                runtimeQueueDepth >= adaptiveAdmission.softQueueLimit;
+                runtimeQueueDepth >= runtimeQueueLimits.first;
               const bool inflightQueuePressure =
                 runtimeInflight >= runtimeWindow &&
                 runtimeQueueDepth >= adaptiveAdmission.warningResumeQueueDepth;
@@ -1645,6 +1688,10 @@ main(int argc, char** argv)
           *startTime = std::chrono::steady_clock::now();
           *stopSendingAt = *startTime + std::chrono::seconds(openLoopDurationSeconds);
           *drainDeadline = *stopSendingAt + std::chrono::seconds(drainSeconds);
+          const auto startQueueLimits = adaptiveQueueLimitsForWindow(
+            *adaptiveWindow,
+            adaptiveAdmission.softQueueLimit,
+            adaptiveAdmission.hardQueueLimit);
           std::cout << "Starting open-loop benchmark strategy="
                     << benchmarkStrategyLabel(benchmarkStrategy,
                                               useBenchmarkCustomSelection,
@@ -1657,8 +1704,8 @@ main(int argc, char** argv)
                     << " adaptive_min_window=" << adaptiveAdmission.minWindow
                     << " adaptive_max_window=" << adaptiveAdmission.maxWindow
                     << " hard_inflight_limit=" << adaptiveAdmission.hardInflightLimit
-                    << " admission_soft_queue_limit=" << adaptiveAdmission.softQueueLimit
-                    << " admission_hard_queue_limit=" << adaptiveAdmission.hardQueueLimit
+                    << " admission_soft_queue_limit=" << startQueueLimits.first
+                    << " admission_hard_queue_limit=" << startQueueLimits.second
                     << " admission_warning_backoff_ms="
                     << adaptiveAdmission.warningBackoffMs
                     << " admission_reject_backoff_ms="

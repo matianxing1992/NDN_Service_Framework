@@ -249,8 +249,8 @@ namespace ndn_service_framework{
                 int controlIntervalMs = 500;
                 int targetLatencyMs = 350;
                 int hardTargetLatencyMs = 500;
-                size_t softQueueLimit = 32;
-                size_t hardQueueLimit = 128;
+                size_t softQueueLimit = 0;
+                size_t hardQueueLimit = 0;
                 bool rateRecommendationEnabled = true;
                 double initialRecommendedRateRps = 0.0;
                 double minRecommendedRateRps = 1.0;
