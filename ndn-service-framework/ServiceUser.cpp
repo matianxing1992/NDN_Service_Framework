@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -772,16 +773,12 @@ namespace ndn_service_framework
                 m_adaptiveAdmissionOptions.initialRecommendedRateRps,
                 m_adaptiveAdmissionOptions.maxRecommendedRateRps);
         }
-        if (m_adaptiveAdmissionOptions.hardQueueLimit == 0) {
-            m_adaptiveAdmissionOptions.hardQueueLimit = 128;
-        }
-        if (m_adaptiveAdmissionOptions.softQueueLimit == 0 ||
+        if (m_adaptiveAdmissionOptions.softQueueLimit > 0 &&
+            m_adaptiveAdmissionOptions.hardQueueLimit > 0 &&
             m_adaptiveAdmissionOptions.softQueueLimit >
                 m_adaptiveAdmissionOptions.hardQueueLimit) {
-            m_adaptiveAdmissionOptions.softQueueLimit = std::min<size_t>(
-                m_adaptiveAdmissionOptions.hardQueueLimit,
-                std::max<size_t>(1, std::min<size_t>(
-                    32, m_adaptiveAdmissionOptions.hardQueueLimit / 4)));
+            m_adaptiveAdmissionOptions.softQueueLimit =
+                m_adaptiveAdmissionOptions.hardQueueLimit;
         }
         m_adaptiveAdmissionWindow = m_adaptiveAdmissionOptions.enabled ?
             m_adaptiveAdmissionOptions.initialWindow :
@@ -807,8 +804,8 @@ namespace ndn_service_framework
                      << " min=" << m_adaptiveAdmissionOptions.minWindow
                      << " max=" << m_adaptiveAdmissionOptions.maxWindow
                      << " hardInflight=" << m_adaptiveAdmissionOptions.hardInflightLimit
-                     << " softQueueLimit=" << m_adaptiveAdmissionOptions.softQueueLimit
-                     << " hardQueueLimit=" << m_adaptiveAdmissionOptions.hardQueueLimit
+                     << " softQueueLimitCap=" << m_adaptiveAdmissionOptions.softQueueLimit
+                     << " hardQueueLimitCap=" << m_adaptiveAdmissionOptions.hardQueueLimit
                      << " controlIntervalMs="
                      << m_adaptiveAdmissionOptions.controlIntervalMs
                      << " targetLatencyMs="
@@ -1309,7 +1306,7 @@ namespace ndn_service_framework
         const size_t activeLimit = getEffectiveAdaptiveAdmissionWindow();
         if (m_adaptiveAdmissionInflight >= activeLimit) {
             const auto queueLimits =
-                getEffectiveAdaptiveAdmissionQueueLimits(activeLimit);
+                getEffectiveAdaptiveAdmissionQueueLimits(m_adaptiveAdmissionWindow);
             const size_t effectiveSoftQueueLimit = queueLimits.first;
             const size_t effectiveHardQueueLimit = queueLimits.second;
             if (m_adaptiveAdmissionQueue.size() >= effectiveHardQueueLimit) {
@@ -1347,23 +1344,22 @@ namespace ndn_service_framework
     std::pair<size_t, size_t>
     ServiceUser::getEffectiveAdaptiveAdmissionQueueLimits(size_t activeLimit) const
     {
-        const size_t configuredHard =
-            std::max<size_t>(1, m_adaptiveAdmissionOptions.hardQueueLimit);
-        const size_t configuredSoft =
-            std::max<size_t>(1, std::min(m_adaptiveAdmissionOptions.softQueueLimit,
-                                         configuredHard));
-
         const size_t active = std::max<size_t>(1, activeLimit);
-        const size_t dynamicHard = std::max<size_t>(
-            active,
-            std::min<size_t>(
-                configuredHard,
-                std::max<size_t>(active * 2, 8)));
-        const size_t dynamicSoft = std::max<size_t>(
-            1,
-            std::min<size_t>(
-                configuredSoft,
-                std::max<size_t>(active, dynamicHard / 2)));
+        const size_t scaledHard = active > (std::numeric_limits<size_t>::max() - 16) / 2 ?
+            std::numeric_limits<size_t>::max() : 16 + active * 2;
+        size_t dynamicHard = std::min<size_t>(256, std::max<size_t>(32, scaledHard));
+        if (m_adaptiveAdmissionOptions.hardQueueLimit > 0) {
+            dynamicHard = std::min(dynamicHard,
+                                   m_adaptiveAdmissionOptions.hardQueueLimit);
+        }
+        dynamicHard = std::max<size_t>(1, dynamicHard);
+
+        size_t dynamicSoft = std::max<size_t>(
+            1, static_cast<size_t>(std::ceil(static_cast<double>(dynamicHard) * 0.5)));
+        if (m_adaptiveAdmissionOptions.softQueueLimit > 0) {
+            dynamicSoft = std::min(dynamicSoft,
+                                   m_adaptiveAdmissionOptions.softQueueLimit);
+        }
         return {std::min(dynamicSoft, dynamicHard), dynamicHard};
     }
 
@@ -1377,12 +1373,18 @@ namespace ndn_service_framework
         AdmissionControlStatus status;
         status.requestId = requestId;
         status.queueDepth = queueDepth;
-        status.softQueueLimit =
-            softQueueLimit == 0 ? m_adaptiveAdmissionOptions.softQueueLimit :
-            softQueueLimit;
-        status.hardQueueLimit =
-            hardQueueLimit == 0 ? m_adaptiveAdmissionOptions.hardQueueLimit :
-            hardQueueLimit;
+        if (softQueueLimit == 0 || hardQueueLimit == 0) {
+            const auto effectiveLimits = getEffectiveAdaptiveAdmissionQueueLimits(
+                m_adaptiveAdmissionWindow);
+            if (softQueueLimit == 0) {
+                softQueueLimit = effectiveLimits.first;
+            }
+            if (hardQueueLimit == 0) {
+                hardQueueLimit = effectiveLimits.second;
+            }
+        }
+        status.softQueueLimit = softQueueLimit;
+        status.hardQueueLimit = hardQueueLimit;
         status.remainingHardSlots =
             queueDepth >= status.hardQueueLimit ? 0 : status.hardQueueLimit - queueDepth;
         status.reason = reason;
@@ -1395,12 +1397,18 @@ namespace ndn_service_framework
                                                     size_t softQueueLimit,
                                                     size_t hardQueueLimit)
     {
-        const size_t effectiveSoftQueueLimit =
-            softQueueLimit == 0 ? m_adaptiveAdmissionOptions.softQueueLimit :
-            softQueueLimit;
-        const size_t effectiveHardQueueLimit =
-            hardQueueLimit == 0 ? m_adaptiveAdmissionOptions.hardQueueLimit :
-            hardQueueLimit;
+        if (softQueueLimit == 0 || hardQueueLimit == 0) {
+            const auto effectiveLimits = getEffectiveAdaptiveAdmissionQueueLimits(
+                m_adaptiveAdmissionWindow);
+            if (softQueueLimit == 0) {
+                softQueueLimit = effectiveLimits.first;
+            }
+            if (hardQueueLimit == 0) {
+                hardQueueLimit = effectiveLimits.second;
+            }
+        }
+        const size_t effectiveSoftQueueLimit = softQueueLimit;
+        const size_t effectiveHardQueueLimit = hardQueueLimit;
         if (queueDepth < effectiveSoftQueueLimit) {
             return;
         }
@@ -1411,9 +1419,9 @@ namespace ndn_service_framework
         ++m_adaptiveAdmissionIntervalQueueWarnings;
         ++m_adaptiveAdmissionIntervalBackpressure;
         if (queueDepth >= std::max<size_t>(
-                m_adaptiveAdmissionOptions.softQueueLimit,
+                effectiveSoftQueueLimit,
                 static_cast<size_t>(std::ceil(
-                    static_cast<double>(m_adaptiveAdmissionOptions.hardQueueLimit) * 0.75)))) {
+                    static_cast<double>(effectiveHardQueueLimit) * 0.75)))) {
             m_adaptiveAdmissionIntervalSevere = true;
         }
         NDN_LOG_WARN("[NDNSF_ADMISSION_WARNING] requestId=" << requestId.toUri()
@@ -1459,7 +1467,7 @@ namespace ndn_service_framework
                      << nowMicroseconds()
                      << " requestId=" << requestId.toUri()
                      << " queueDepth=" << m_adaptiveAdmissionQueue.size()
-                     << " hardQueueLimit=" << m_adaptiveAdmissionOptions.hardQueueLimit
+                     << " hardQueueLimit=" << status.hardQueueLimit
                      << " reason=" << reason);
         erasePendingCallWithTrace(requestId, pendingCall, reason);
     }
@@ -1657,17 +1665,21 @@ namespace ndn_service_framework
         else {
             m_adaptiveAdmissionQueueDelayOverTargetIntervals = 0;
         }
+        const auto queueLimits =
+            getEffectiveAdaptiveAdmissionQueueLimits(m_adaptiveAdmissionWindow);
+        const size_t effectiveSoftQueueLimit = queueLimits.first;
+        const size_t effectiveHardQueueLimit = queueLimits.second;
         const bool queuePastSoftLimit =
-            m_adaptiveAdmissionQueue.size() >= m_adaptiveAdmissionOptions.softQueueLimit;
+            m_adaptiveAdmissionQueue.size() >= effectiveSoftQueueLimit;
         const bool queuePressure =
             (queueBacklogged &&
             m_adaptiveAdmissionInflight >=
                 static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8)));
         const bool queueSevere =
             m_adaptiveAdmissionQueue.size() >= std::max<size_t>(
-                m_adaptiveAdmissionOptions.softQueueLimit,
+                effectiveSoftQueueLimit,
                 static_cast<size_t>(std::ceil(
-                    static_cast<double>(m_adaptiveAdmissionOptions.hardQueueLimit) * 0.75)));
+                    static_cast<double>(effectiveHardQueueLimit) * 0.75)));
         const bool demandBacklogged =
             queueBacklogged || m_adaptiveAdmissionIntervalBackpressure > 0;
         const double averageLatencyGradientMs =
@@ -1806,17 +1818,12 @@ namespace ndn_service_framework
                   m_adaptiveAdmissionInflight >=
                     static_cast<size_t>(std::ceil(static_cast<double>(activeLimit) * 0.8))) &&
                  (latencyStable || averageLatencyStable || !latencyBaselineTrusted)) {
-            const bool slowStart =
-                m_adaptiveAdmissionWindow <
-                m_adaptiveAdmissionSlowStartThreshold;
-            const size_t growthStep = slowStart ?
-                std::max<size_t>(
-                    m_adaptiveAdmissionOptions.aiStep,
-                    std::min<size_t>(
-                        m_adaptiveAdmissionOptions.aiStep * 4,
-                        std::max<size_t>(
-                            1, m_adaptiveAdmissionIntervalSuccesses / 2))) :
-                m_adaptiveAdmissionOptions.aiStep;
+            const size_t growthStep = std::max<size_t>(
+                m_adaptiveAdmissionOptions.aiStep,
+                std::min<size_t>(
+                    m_adaptiveAdmissionOptions.aiStep * 4,
+                    static_cast<size_t>(std::ceil(
+                        static_cast<double>(m_adaptiveAdmissionWindow) * 0.25))));
             m_adaptiveAdmissionWindow = std::min(
                 m_adaptiveAdmissionOptions.maxWindow,
                 m_adaptiveAdmissionWindow + growthStep);
