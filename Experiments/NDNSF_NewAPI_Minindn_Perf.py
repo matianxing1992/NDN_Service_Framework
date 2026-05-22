@@ -159,14 +159,16 @@ def build_parser():
     parser.add_argument("--max-outstanding", type=int, default=512,
                         help="Open-loop maximum concurrent outstanding requests")
     parser.add_argument("--adaptive-admission-control", action="store_true",
-                        help="Enable App_User adaptive local queue admission control")
+                        help="Explicitly enable App_User adaptive local queue admission control; enabled by default")
+    parser.add_argument("--disable-adaptive-admission-control", action="store_true",
+                        help="Disable App_User adaptive local queue admission control")
     parser.add_argument("--adaptive-min-window", type=int, default=1)
     parser.add_argument("--adaptive-max-window", type=int, default=512)
     parser.add_argument("--adaptive-initial-window", type=int, default=16)
     parser.add_argument("--adaptive-hard-inflight-limit", type=int, default=None)
     parser.add_argument("--adaptive-ai-step", type=int, default=4)
     parser.add_argument("--adaptive-md-factor", type=float, default=0.85)
-    parser.add_argument("--adaptive-severe-md-factor", type=float, default=0.75)
+    parser.add_argument("--adaptive-severe-md-factor", type=float, default=0.5)
     parser.add_argument("--adaptive-control-interval-ms", type=int, default=500)
     parser.add_argument("--adaptive-target-latency-ms", type=int, default=350)
     parser.add_argument("--adaptive-hard-target-latency-ms", type=int, default=500)
@@ -4571,8 +4573,10 @@ def app_user_argv(args, app_csv):
             "--request-timeout-ms", str(int(args.request_timeout_ms)),
             "--drain-seconds", str(int(args.drain_seconds)),
         ])
-        if getattr(args, "adaptive_admission_control", False):
-            user_args.append("--adaptive-admission-control")
+        if getattr(args, "disable_adaptive_admission_control", False):
+            user_args.append("--disable-adaptive-admission-control")
+        if (getattr(args, "adaptive_admission_control", False) or
+                not getattr(args, "disable_adaptive_admission_control", False)):
             adaptive_max = (args.adaptive_max_window
                             if args.adaptive_max_window is not None
                             else args.max_outstanding)

@@ -384,14 +384,14 @@ struct OpenLoopRequestState
 
 struct AdaptiveAdmissionConfig
 {
-  bool enabled = false;
+  bool enabled = true;
   size_t minWindow = 1;
   size_t maxWindow = 512;
   size_t initialWindow = 16;
   size_t hardInflightLimit = 512;
   size_t aiStep = 4;
   double mdFactor = 0.85;
-  double severeMdFactor = 0.75;
+  double severeMdFactor = 0.5;
   int controlIntervalMs = 500;
   int targetLatencyMs = 350;
   int hardTargetLatencyMs = 500;
@@ -492,7 +492,8 @@ main(int argc, char** argv)
     const std::string largeDataNameFile =
       getOption(argc, argv, "--large-data-name-file", "");
     AdaptiveAdmissionConfig adaptiveAdmission;
-    adaptiveAdmission.enabled = hasFlag(argc, argv, "--adaptive-admission-control");
+    adaptiveAdmission.enabled =
+      !hasFlag(argc, argv, "--disable-adaptive-admission-control");
     adaptiveAdmission.minWindow = static_cast<size_t>(std::max(
       1, parseIntOption(argc, argv, "--adaptive-min-window", 1)));
     adaptiveAdmission.maxWindow = static_cast<size_t>(std::max(
