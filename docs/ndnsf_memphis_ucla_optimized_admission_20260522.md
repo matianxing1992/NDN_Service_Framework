@@ -18,9 +18,10 @@ AdaptiveAdmission default path regression.
 - Drain time: 10 s
 - Provider certificates served: enabled
 - Performance mode: enabled
-- Handler threads: `NDNSF_HANDLER_THREADS=2`
-- ACK threads: `NDNSF_ACK_THREADS=2`
-- AdaptiveAdmission: enabled with default parameters
+- Handler threads: 2 by default, override with `NDNSF_HANDLER_THREADS`
+- ACK threads: 2 by default, override with `NDNSF_ACK_THREADS`
+- AdaptiveAdmission: enabled by default, disable with
+  `--disable-adaptive-admission-control` in `App_User`
 - Recommended-rate hard pacing: disabled by default; opt in with
   `--enable-adaptive-recommended-rate`
 
@@ -40,6 +41,8 @@ AdaptiveAdmission default path regression.
 
 ## Quick Validation Result
 
+These values are now the implementation defaults unless explicitly overridden.
+
 Results directory:
 `results/fixed_ndnsf_admission_startup_ecnfix_10_50_70_30s_20260522_142309`
 
@@ -52,3 +55,25 @@ Results directory:
 For comparison, the rebuilt no-admission sanity run returned to the same latency
 class:
 `results/fixed_ndnsf_no_admission_10_30_50_70_30s_20260522_140530`.
+
+## Paper Text
+
+Concretely, NDNSF uses a window-based controller similar in spirit to
+congestion control. The user maintains an admission window that bounds the
+number of outstanding service requests. In the implementation used in our
+experiments, AdaptiveAdmission is enabled by default. The window starts at 16
+requests, with a minimum of 1 and a maximum of 512 outstanding requests, and the
+controller is updated every 500 ms using recent completion, timeout,
+queue-depth, and latency observations. When requests complete successfully and
+the observed delay remains stable, the window is increased additively by 4
+requests per control interval; during the initial probing phase, it may grow by
+up to 16 requests per interval depending on recent successful completions. The
+framework also maintains a bounded admission queue with a default soft threshold
+of 32 requests and a hard threshold of 128 requests, while the effective queue
+bound is further constrained by the current admission window to avoid hiding
+excessive delay behind a small window. When latency shows persistent growth,
+the window is multiplicatively reduced by a factor of 0.85. Under severe
+congestion signals, such as timeouts or near-full queues, the window is reduced
+more aggressively using a factor of 0.5. New requests may be delayed once the
+soft threshold is reached and rejected once the hard threshold is reached,
+preventing unbounded queue buildup and latency collapse.

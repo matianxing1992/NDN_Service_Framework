@@ -238,14 +238,14 @@ namespace ndn_service_framework{
 
             struct AdaptiveAdmissionOptions
             {
-                bool enabled = false;
+                bool enabled = true;
                 size_t minWindow = 1;
                 size_t maxWindow = 512;
                 size_t initialWindow = 16;
                 size_t hardInflightLimit = 512;
                 size_t aiStep = 4;
                 double mdFactor = 0.85;
-                double severeMdFactor = 0.75;
+                double severeMdFactor = 0.5;
                 int controlIntervalMs = 500;
                 int targetLatencyMs = 350;
                 int hardTargetLatencyMs = 500;
@@ -797,7 +797,7 @@ namespace ndn_service_framework{
             bool m_performanceMode = false;
             RuntimeDiagnostics m_runtimeDiagnostics;
             AdaptiveAdmissionOptions m_adaptiveAdmissionOptions;
-            size_t m_adaptiveAdmissionWindow = 512;
+            size_t m_adaptiveAdmissionWindow = 16;
             size_t m_adaptiveAdmissionSlowStartThreshold = 512;
             size_t m_adaptiveAdmissionInflight = 0;
             bool m_adaptiveAdmissionControlScheduled = false;
