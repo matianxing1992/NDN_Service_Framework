@@ -167,8 +167,6 @@ main(int argc, char** argv)
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
-    const bool hybridMessageCrypto = hasFlag(argc, argv, "--hybrid-message-crypto") &&
-      !hasFlag(argc, argv, "--disable-hybrid-message-crypto");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool adaptiveProviderAck = hasFlag(argc, argv, "--adaptive-provider-ack");
     const bool dkBootstrapOnly = hasFlag(argc, argv, "--dk-bootstrap-only");
@@ -215,7 +213,7 @@ main(int argc, char** argv)
               << " benchmark=" << benchmark
               << " performanceMode=" << performanceMode
               << " tokenMode=" << (useTokens ? "enabled" : "disabled")
-              << " hybridMessageCrypto=" << hybridMessageCrypto
+              << " hybridMessageCrypto=enabled"
               << " timelineTrace=" << timelineTrace
               << " adaptiveProviderAck=" << adaptiveProviderAck
               << " providerAckMaxPending=" << providerAckMaxPending
@@ -246,7 +244,6 @@ main(int argc, char** argv)
       "examples/trust-any.conf");
     provider.setPerformanceMode(performanceMode);
     provider.setUseTokens(useTokens);
-    provider.setUseHybridMessageCrypto(hybridMessageCrypto);
     provider.setTimelineTrace(timelineTrace);
     provider.setAdaptiveAckAdmission(adaptiveProviderAck);
     provider.setProviderAckMaxPending(

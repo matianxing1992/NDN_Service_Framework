@@ -225,8 +225,6 @@ namespace ndn_service_framework{
             size_t getAckProcessingQueueDepth() const;
             void setUseTokens(bool enabled);
             bool getUseTokens() const;
-            void setUseHybridMessageCrypto(bool enabled);
-            bool getUseHybridMessageCrypto() const;
             HybridCryptoCounters& getHybridCryptoCounters();
             void setTimelineTrace(bool enabled);
             struct RuntimeDiagnostics
@@ -558,6 +556,8 @@ namespace ndn_service_framework{
             void publishHybridMessage(const ndn::Name& messageName,
                                       const ndn::Name& messageNameWithoutPrefix,
                                       AbstractMessage& message);
+            void publishHybridEncodedMessage(const ndn::Name& messageName,
+                                             ndn::Buffer plaintext);
             bool decryptHybridMessage(const ndn::Name& messageName,
                                       const ndn::Block& envelopeBlock,
                                       std::function<void(const ndn::Buffer&)> onSuccess,
@@ -760,7 +760,6 @@ namespace ndn_service_framework{
             ndn::nacabe::CacheProducer nacProducer;
             ndn::security::SigningInfo m_signingInfo;
             bool m_useTokens = true;
-            bool m_useHybridMessageCrypto = true;
             bool m_timelineTrace = false;
             HybridMessageCrypto m_hybridMessageCrypto;
             HybridCryptoCounters m_hybridCryptoCounters;

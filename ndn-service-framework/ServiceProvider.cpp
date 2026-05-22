@@ -112,6 +112,9 @@ namespace ndn_service_framework
                    const ndn::Name& name,
                    const ndn::Block& content)
         {
+            if (svs == nullptr) {
+                return;
+            }
             if (useAsyncSvsPublish()) {
                 svs->publishAsync(name, content);
             }
@@ -767,18 +770,6 @@ namespace ndn_service_framework
     bool ServiceProvider::getUseTokens() const
     {
         return m_useTokens;
-    }
-
-    void ServiceProvider::setUseHybridMessageCrypto(bool enabled)
-    {
-        m_useHybridMessageCrypto = enabled;
-        NDN_LOG_WARN("Hybrid message crypto: "
-                     << (m_useHybridMessageCrypto ? "enabled" : "disabled"));
-    }
-
-    bool ServiceProvider::getUseHybridMessageCrypto() const
-    {
-        return m_useHybridMessageCrypto;
     }
 
     void ServiceProvider::setTimelineTrace(bool enabled)
@@ -1467,6 +1458,17 @@ namespace ndn_service_framework
                                                const ndn::Name&,
                                                AbstractMessage& message)
     {
+        const auto plaintextBlock = message.WireEncode();
+        auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
+        m_face.getIoContext().post(
+            [this, messageName, plaintext = std::move(plaintext)]() mutable {
+                publishHybridEncodedMessage(messageName, std::move(plaintext));
+            });
+    }
+
+    void ServiceProvider::publishHybridEncodedMessage(const ndn::Name& messageName,
+                                                      ndn::Buffer plaintext)
+    {
         ndn::Name serviceName;
         ndn::Name requestId;
         ndn::Name senderPrefix = identity;
@@ -1488,8 +1490,6 @@ namespace ndn_service_framework
         auto key = m_hybridMessageCrypto.getOrCreateSendKey(
             serviceName, senderPrefix, accessAttribute, messageType, m_hybridCryptoCounters);
 
-        const auto plaintextBlock = message.WireEncode();
-        auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
         const auto ad = hybridAssociatedData(messageName, messageType, requestId,
                                             serviceName, senderPrefix,
                                             key.keyId, key.epochId);
@@ -1834,10 +1834,8 @@ namespace ndn_service_framework
         }
         NDN_LOG_INFO("GetAttributesByName: messageName=" << messageName.toUri()
                      << " attributes=" << formatAttributesForLog(*results));
-        if (m_useHybridMessageCrypto) {
-            publishHybridMessage(messageName, messageNameWithoutPrefix, message);
-            return;
-        }
+        publishHybridMessage(messageName, messageNameWithoutPrefix, message);
+        return;
         const auto stage = cryptoStageForName(messageName);
         ndn::Name timelineRequestId;
         ndn::Name timelineServiceName;
@@ -2055,7 +2053,11 @@ namespace ndn_service_framework
                         if (m_timelineTrace) {
                             ndn::Name rid;
                             ndn::Name svc;
-                            if (auto response = parseResponseNameV2(messageName)) {
+                            if (auto ack = parseRequestAckNameV2(messageName)) {
+                                rid = ack->requestId;
+                                svc = ack->serviceName;
+                            }
+                            else if (auto response = parseResponseNameV2(messageName)) {
                                 rid = response->requestId;
                                 svc = response->serviceName;
                             }
@@ -2138,19 +2140,39 @@ namespace ndn_service_framework
                                       << " eventLoopLagUs=" << (beginUs >= queuedAtUs ?
                                                                  beginUs - queuedAtUs : 0));
                             if (m_timelineTrace) {
-                                if (auto response = parseResponseNameV2(messageName)) {
-                                    logTimelineTrace("provider", "response_publish_start",
-                                                     response->requestId,
-                                                     {{"serviceName", response->serviceName.toUri()},
+                                ndn::Name requestId;
+                                ndn::Name serviceName;
+                                if (auto ack = parseRequestAckNameV2(messageName)) {
+                                    requestId = ack->requestId;
+                                    serviceName = ack->serviceName;
+                                }
+                                else if (auto response = parseResponseNameV2(messageName)) {
+                                    requestId = response->requestId;
+                                    serviceName = response->serviceName;
+                                }
+                                if (!requestId.empty()) {
+                                    logTimelineTrace("provider", cryptoStageForName(messageName) + "_publish_start",
+                                                     requestId,
+                                                     {{"serviceName", serviceName.toUri()},
                                                       {"messageName", messageName.toUri()}});
                                 }
                             }
                             publishSvs(m_svsps, messageName, contentBlock);
                             if (m_timelineTrace) {
-                                if (auto response = parseResponseNameV2(messageName)) {
-                                    logTimelineTrace("provider", "response_publish_done",
-                                                     response->requestId,
-                                                     {{"serviceName", response->serviceName.toUri()},
+                                ndn::Name requestId;
+                                ndn::Name serviceName;
+                                if (auto ack = parseRequestAckNameV2(messageName)) {
+                                    requestId = ack->requestId;
+                                    serviceName = ack->serviceName;
+                                }
+                                else if (auto response = parseResponseNameV2(messageName)) {
+                                    requestId = response->requestId;
+                                    serviceName = response->serviceName;
+                                }
+                                if (!requestId.empty()) {
+                                    logTimelineTrace("provider", cryptoStageForName(messageName) + "_publish_done",
+                                                     requestId,
+                                                     {{"serviceName", serviceName.toUri()},
                                                       {"messageName", messageName.toUri()}});
                                 }
                             }
@@ -2277,8 +2299,7 @@ namespace ndn_service_framework
                                          requestV2->requestId,
                                          {{"serviceName", requestV2->serviceName.toUri()}});
                     }
-                    if (m_useHybridMessageCrypto &&
-                        decryptHybridMessage(subscription.name,
+                    if (decryptHybridMessage(subscription.name,
                                              ndn::Block(subscription.data),
                                              std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
                                                        this,
@@ -2296,6 +2317,12 @@ namespace ndn_service_framework
                                                        _1))) {
                         return;
                     }
+                    OnRequestDecryptionErrorCallback(requestV2->requesterName,
+                                                     requestV2->serviceName,
+                                                     ndn::Name(),
+                                                     requestV2->requestId,
+                                                     "invalid hybrid request envelope");
+                    return;
                     nacConsumer.consume(subscription.name,
                                         ndn::Block(subscription.data),
                                         std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
@@ -2787,7 +2814,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     bool ServiceProvider::replyFromIMS(const ndn::Interest &interest)
     {
-        auto data = m_IMS.find(interest.getName());
+        std::shared_ptr<const ndn::Data> data;
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            data = m_IMS.find(interest.getName());
+        }
         if (data != nullptr)
         {
             NDN_LOG_TRACE("Reply from IMS: " << interest.getName().toUri());
@@ -3004,8 +3035,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << " providerName=" << coordinationV2->providerName.toUri()
                           << " serviceName=" << coordinationV2->serviceName.toUri()
                           << " coordinationName=" << subscription.name.toUri());
-                if (m_useHybridMessageCrypto &&
-                    decryptHybridMessage(
+                if (decryptHybridMessage(
                         subscription.name,
                         ndn::Block(subscription.data),
                         [this, requesterName = coordinationV2->requesterName,
@@ -3051,6 +3081,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                         })) {
                     return;
                 }
+                OnServiceCoordinationMessageDecryptionErrorCallback(
+                    coordinationV2->requesterName,
+                    coordinationV2->providerName,
+                    coordinationV2->serviceName,
+                    ndn::Name(),
+                    coordinationV2->requestId,
+                    "invalid hybrid coordination envelope");
+                return;
                 nacConsumer.consume(subscription.name,
                                     ndn::Block(subscription.data),
                                     [this, requesterName = coordinationV2->requesterName,

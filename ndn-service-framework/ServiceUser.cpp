@@ -137,6 +137,9 @@ namespace ndn_service_framework
                    const ndn::Name& name,
                    const ndn::Block& content)
         {
+            if (svs == nullptr) {
+                return;
+            }
             if (useAsyncSvsPublish()) {
                 svs->publishAsync(name, content);
             }
@@ -996,18 +999,6 @@ namespace ndn_service_framework
     bool ServiceUser::getUseTokens() const
     {
         return m_useTokens;
-    }
-
-    void ServiceUser::setUseHybridMessageCrypto(bool enabled)
-    {
-        m_useHybridMessageCrypto = enabled;
-        NDN_LOG_WARN("Hybrid message crypto: "
-                     << (m_useHybridMessageCrypto ? "enabled" : "disabled"));
-    }
-
-    bool ServiceUser::getUseHybridMessageCrypto() const
-    {
-        return m_useHybridMessageCrypto;
     }
 
     void ServiceUser::setTimelineTrace(bool enabled)
@@ -4111,8 +4102,7 @@ namespace ndn_service_framework
                                                           plaintext);
                     return;
                 }
-                if (m_useHybridMessageCrypto &&
-                    decryptHybridMessage(
+                if (decryptHybridMessage(
                         subscription.name,
                         ndn::Block(subscription.data),
                         [this, providerName = ackV2->providerName,
@@ -4155,6 +4145,12 @@ namespace ndn_service_framework
                         })) {
                     return;
                 }
+                OnRequestAckDecryptionErrorCallback(ackV2->providerName,
+                                                    ackV2->serviceName,
+                                                    ndn::Name(),
+                                                    ackV2->requestId,
+                                                    "invalid hybrid ACK envelope");
+                return;
                 nacConsumer.consume(
                             ndn::Name(subscription.name),
                             ndn::Block(subscription.data),
@@ -4489,13 +4485,14 @@ namespace ndn_service_framework
                 dispatchDecryptedResponseByName(responseName, RequestId, plaintext);
                 return;
             }
-            if (m_useHybridMessageCrypto &&
-                decryptHybridMessage(responseName,
+            if (decryptHybridMessage(responseName,
                                      ndn::Block(subscription.data),
                                      onSuccess,
                                      onError)) {
                 return;
             }
+            onError("invalid hybrid response envelope");
+            return;
             nacConsumer.consume(
                         ndn::Name(subscription.name),
                         ndn::Block(subscription.data),
@@ -4898,14 +4895,22 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
     bool ServiceUser::replyFromIMS(const ndn::Interest &interest)
     {
-        auto data = m_IMS.find(interest.getName());
+        std::shared_ptr<const ndn::Data> data;
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            data = m_IMS.find(interest.getName());
+        }
         if (data != nullptr)
         {
             NDN_LOG_TRACE("Reply from IMS: " << interest.getName().toUri());
             m_face.put(*data);
         }else{
-            m_IMS.size();
-            NDN_LOG_TRACE("Not Found In IMS: " << interest.getName().toUri()<<" SIZE: "<< m_IMS.size());
+            size_t imsSize = 0;
+            {
+                std::lock_guard<std::mutex> lock(_cache_mutex);
+                imsSize = m_IMS.size();
+            }
+            NDN_LOG_TRACE("Not Found In IMS: " << interest.getName().toUri()<<" SIZE: "<< imsSize);
         }
         return false;
     }
@@ -4941,6 +4946,17 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                            const ndn::Name&,
                                            AbstractMessage& message)
     {
+        const auto plaintextBlock = message.WireEncode();
+        auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
+        m_face.getIoContext().post(
+            [this, messageName, plaintext = std::move(plaintext)]() mutable {
+                publishHybridEncodedMessage(messageName, std::move(plaintext));
+            });
+    }
+
+    void ServiceUser::publishHybridEncodedMessage(const ndn::Name& messageName,
+                                                  ndn::Buffer plaintext)
+    {
         ndn::Name serviceName;
         ndn::Name requestId;
         ndn::Name senderPrefix = identity;
@@ -4962,8 +4978,6 @@ void ServiceUser::finishRequestAckOnEventLoop(
         auto key = m_hybridMessageCrypto.getOrCreateSendKey(
             serviceName, senderPrefix, accessAttribute, messageType, m_hybridCryptoCounters);
 
-        const auto plaintextBlock = message.WireEncode();
-        auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
         const ndn::Buffer ad = hybridAssociatedData(messageName, messageType, requestId,
                                                     serviceName, senderPrefix,
                                                     key.keyId, key.epochId);
@@ -5286,10 +5300,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         NDN_LOG_INFO("GetAttributesByName: messageName=" << messageName.toUri()
                      << " attributes=" << formatAttributesForLog(*results));
-        if (m_useHybridMessageCrypto) {
-            publishHybridMessage(messageName, messageNameWithoutPrefix, message);
-            return;
-        }
+        publishHybridMessage(messageName, messageNameWithoutPrefix, message);
+        return;
         const auto stage = cryptoStageForName(messageName);
         ndn::Name timelineRequestId;
         ndn::Name timelineServiceName;
