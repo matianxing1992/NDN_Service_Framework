@@ -33,6 +33,22 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    bld.program(name='App_IntermittentProvider',
+                target='App_IntermittentProvider',
+                source=['App_IntermittentProvider.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='App_IntermittentUser',
+                target='App_IntermittentUser',
+                source=['App_IntermittentUser.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     if not bld.env.WITH_EXAMPLES:
         return
 

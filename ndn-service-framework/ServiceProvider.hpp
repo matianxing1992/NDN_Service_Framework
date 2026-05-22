@@ -45,6 +45,7 @@ namespace ndn_service_framework{
             struct AckDecision
             {
                 bool status = false;
+                bool suppressAck = false;
                 std::string message;
                 ndn::Buffer payload;
             };
