@@ -49,6 +49,22 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    bld.program(name='App_WifiMobilityProvider',
+                target='App_WifiMobilityProvider',
+                source=['App_IntermittentProvider.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='App_WifiMobilityUser',
+                target='App_WifiMobilityUser',
+                source=['App_IntermittentUser.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     if not bld.env.WITH_EXAMPLES:
         return
 

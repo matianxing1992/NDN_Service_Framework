@@ -27,6 +27,7 @@ async def run():
     parser.add_argument("--timeout-s", type=float, default=20.0)
     parser.add_argument("--warmup-s", type=float, default=0.0)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--skip-channel-ready", action="store_true")
     args = parser.parse_args()
 
     # 读取证书
@@ -52,7 +53,8 @@ async def run():
         ("grpc.http2.max_pings_without_data", 0),
     ]
     async with grpc.aio.insecure_channel(args.target, options=channel_options) as channel:
-        await channel.channel_ready()
+        if not args.skip_channel_ready:
+            await channel.channel_ready()
         stub = helloworld_pb2_grpc.GreeterStub(channel)
 
         if args.rate_rps > 0 and args.warmup_s > 0:

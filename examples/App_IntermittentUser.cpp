@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -151,7 +152,16 @@ main(int argc, char** argv)
     const int startupDelayMs = parseIntOption(argc, argv, "--startup-delay-ms", 2500);
     const int ackTimeoutMs = parseIntOption(argc, argv, "--ack-timeout-ms", 200);
     const int requestTimeoutMs = parseIntOption(argc, argv, "--timeout-ms", 5000);
+    const std::string strategyName = getOption(argc, argv, "--strategy", "first-responding");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
+    std::shared_ptr<const ndn_service_framework::AckSelectionPolicy> selectionStrategy =
+      ndn_service_framework::strategy::FirstResponding;
+    if (strategyName == "all-responders") {
+      selectionStrategy = ndn_service_framework::strategy::AllResponders;
+    }
+    else if (strategyName == "load-balancing") {
+      selectionStrategy = ndn_service_framework::strategy::LoadBalancing;
+    }
 
     ndn::Face face;
     ndn::Scheduler scheduler(face.getIoContext());
@@ -190,6 +200,8 @@ main(int argc, char** argv)
       size_t timeout = 0;
       size_t badResponse = 0;
       std::set<std::string> outstanding;
+      std::set<std::string> completed;
+      std::mutex mutex;
       std::chrono::steady_clock::time_point firstSend;
       std::chrono::steady_clock::time_point lastSend;
     };
@@ -204,6 +216,7 @@ main(int argc, char** argv)
 
     auto finishIfDone = std::make_shared<std::function<void()>>();
     *finishIfDone = [&, counters, stoppedSending] {
+      std::lock_guard<std::mutex> lock(counters->mutex);
       const auto completed =
         counters->success + counters->timeout + counters->badResponse;
       if (*stoppedSending && completed >= counters->accepted) {
@@ -222,37 +235,67 @@ main(int argc, char** argv)
         return;
       }
 
-      auto requestPayload = makeBuffer("HELLO");
-      ++counters->sent;
-      if (counters->accepted == 0) {
-        counters->firstSend = now;
+      {
+        std::lock_guard<std::mutex> lock(counters->mutex);
+        ++counters->sent;
+        if (counters->accepted == 0) {
+          counters->firstSend = now;
+        }
+        counters->lastSend = now;
       }
-      counters->lastSend = now;
 
+      auto requestPayload = makeBuffer("HELLO");
+      auto requestKey = std::make_shared<std::string>();
       ndn::Name requestId = user.RequestService(
         serviceName,
         requestPayload,
         ackTimeoutMs,
-        ndn_service_framework::strategy::FirstResponding,
+        selectionStrategy,
         requestTimeoutMs,
-        [counters, finishIfDone](const ndn_service_framework::ResponseMessage& response) {
-          if (response.getStatus() && payloadToString(response) == "HELLO") {
-            ++counters->success;
+        [counters, finishIfDone, requestKey](const ndn_service_framework::ResponseMessage& response) {
+          bool shouldFinish = false;
+          {
+            std::lock_guard<std::mutex> lock(counters->mutex);
+            if (requestKey->empty() || counters->completed.count(*requestKey) != 0) {
+              return;
+            }
+            counters->completed.insert(*requestKey);
+            counters->outstanding.erase(*requestKey);
+            if (response.getStatus() && payloadToString(response) == "HELLO") {
+              ++counters->success;
+            }
+            else {
+              ++counters->badResponse;
+            }
+            shouldFinish = true;
           }
-          else {
-            ++counters->badResponse;
+          if (shouldFinish) {
+            (*finishIfDone)();
           }
-          (*finishIfDone)();
         },
         [counters, finishIfDone](const ndn_service_framework::RequestId& requestId) {
-          ++counters->timeout;
-          counters->outstanding.erase(requestId.toUri());
-          (*finishIfDone)();
+          bool shouldFinish = false;
+          {
+            const auto key = requestId.toUri();
+            std::lock_guard<std::mutex> lock(counters->mutex);
+            if (counters->completed.count(key) != 0) {
+              return;
+            }
+            counters->completed.insert(key);
+            ++counters->timeout;
+            counters->outstanding.erase(key);
+            shouldFinish = true;
+          }
+          if (shouldFinish) {
+            (*finishIfDone)();
+          }
         });
 
       if (!requestId.empty()) {
+        *requestKey = requestId.toUri();
+        std::lock_guard<std::mutex> lock(counters->mutex);
         ++counters->accepted;
-        counters->outstanding.insert(requestId.toUri());
+        counters->outstanding.insert(*requestKey);
       }
       scheduler.schedule(interval, [sendOne] { (*sendOne)(); });
     };
@@ -262,6 +305,7 @@ main(int argc, char** argv)
               << " durationMs=" << durationMs
               << " ackTimeoutMs=" << ackTimeoutMs
               << " timeoutMs=" << requestTimeoutMs
+              << " strategy=" << strategyName
               << " adaptiveAdmission=disabled"
               << std::endl;
 
@@ -269,27 +313,42 @@ main(int argc, char** argv)
                        [sendOne] { (*sendOne)(); });
     face.processEvents();
 
+    size_t sent = 0;
+    size_t accepted = 0;
+    size_t success = 0;
+    size_t timeout = 0;
+    size_t badResponse = 0;
+    size_t completed = 0;
+    std::chrono::steady_clock::time_point firstSend;
+    std::chrono::steady_clock::time_point lastSend;
+    {
+      std::lock_guard<std::mutex> lock(counters->mutex);
+      sent = counters->sent;
+      accepted = counters->accepted;
+      success = counters->success;
+      timeout = counters->timeout;
+      badResponse = counters->badResponse;
+      completed = counters->completed.size();
+      firstSend = counters->firstSend;
+      lastSend = counters->lastSend;
+    }
     const double seconds =
-      std::max(0.001, std::chrono::duration<double>(
-        counters->lastSend - counters->firstSend).count());
-    const auto completed = counters->success + counters->timeout + counters->badResponse;
+      std::max(0.001, std::chrono::duration<double>(lastSend - firstSend).count());
     const double successRate =
-      counters->sent == 0 ? 0.0 : 100.0 * static_cast<double>(counters->success) /
-                                  static_cast<double>(counters->sent);
+      sent == 0 ? 0.0 : 100.0 * static_cast<double>(success) / static_cast<double>(sent);
     const double timeoutRate =
-      counters->sent == 0 ? 0.0 : 100.0 * static_cast<double>(counters->timeout) /
-                                  static_cast<double>(counters->sent);
+      sent == 0 ? 0.0 : 100.0 * static_cast<double>(timeout) / static_cast<double>(sent);
 
     std::cout << std::fixed << std::setprecision(2)
               << "INTERMITTENT_USER_SUMMARY"
               << " offered_rps=" << rateRps
-              << " actual_rps=" << (static_cast<double>(counters->accepted) / seconds)
-              << " sent=" << counters->sent
-              << " accepted=" << counters->accepted
+              << " actual_rps=" << (static_cast<double>(accepted) / seconds)
+              << " sent=" << sent
+              << " accepted=" << accepted
               << " completed=" << completed
-              << " success=" << counters->success
-              << " timeout=" << counters->timeout
-              << " bad_response=" << counters->badResponse
+              << " success=" << success
+              << " timeout=" << timeout
+              << " bad_response=" << badResponse
               << " success_rate=" << successRate
               << " timeout_rate=" << timeoutRate
               << std::endl;

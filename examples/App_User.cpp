@@ -207,8 +207,8 @@ public:
     }
 
     std::vector<ndnsf::AckCandidate> selected;
-    int bestBacklog = std::numeric_limits<int>::max();
     int bestQueue = std::numeric_limits<int>::max();
+    int bestBacklog = std::numeric_limits<int>::max();
     for (const auto& candidate : candidates) {
       const auto payload = candidate.ack.getPayload();
       const std::string payloadText(
@@ -239,15 +239,15 @@ public:
                   << " rank=" << rank << std::endl;
       }
       if (selected.empty() ||
-          backlog < bestBacklog ||
-          (backlog == bestBacklog && queue < bestQueue)) {
+          queue < bestQueue ||
+          (queue == bestQueue && backlog < bestBacklog)) {
         selected.clear();
         selected.push_back(candidate);
-        bestBacklog = backlog;
         bestQueue = queue;
+        bestBacklog = backlog;
       }
-      else if (backlog == bestBacklog &&
-               queue == bestQueue) {
+      else if (queue == bestQueue &&
+               backlog == bestBacklog) {
         selected.push_back(candidate);
       }
     }

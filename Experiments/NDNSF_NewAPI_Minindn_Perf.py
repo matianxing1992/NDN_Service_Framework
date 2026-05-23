@@ -199,6 +199,8 @@ def build_parser():
                         help="Comma-separated provider processing delays in ms, e.g., 5,20,40")
     parser.add_argument("--handler-threads", type=int, default=-1,
                         help="Pass --handler-threads to App_User and App_Provider; -1 keeps app default")
+    parser.add_argument("--ack-threads", type=int, default=-1,
+                        help="Set NDNSF_ACK_THREADS for user/provider ACK processing; -1 keeps app default")
     parser.add_argument("--request-timeout-ms", type=int, default=5000,
                         help="Open-loop per-request timeout")
     parser.add_argument("--drain-seconds", type=int, default=10,
@@ -1648,6 +1650,8 @@ def app_env(output_dir, session_base, args):
     for name in ("NDNSF_HANDLER_THREADS", "NDNSF_ACK_THREADS"):
         if name in os.environ:
             env[name] = os.environ[name]
+    if getattr(args, "ack_threads", -1) >= 0:
+        env["NDNSF_ACK_THREADS"] = str(max(0, int(args.ack_threads)))
     if getattr(args, "crypto_diagnostics", False):
         env["NDNSF_CRYPTO_DIAG"] = "1"
     if getattr(args, "timeline_trace", False):
