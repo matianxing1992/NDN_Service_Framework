@@ -140,6 +140,9 @@ namespace ndn_service_framework{
             void setHandlerThreads(size_t n);
             size_t getHandlerThreads() const;
             size_t getHandlerQueueDepth() const;
+            void setAckThreads(size_t n);
+            size_t getAckThreads() const;
+            size_t getAckQueueDepth() const;
             void setUseTokens(bool enabled);
             bool getUseTokens() const;
             HybridCryptoCounters& getHybridCryptoCounters();
@@ -491,6 +494,7 @@ namespace ndn_service_framework{
             HybridCryptoCounters m_hybridCryptoCounters;
             SerializedWorkerQueue m_cryptoProduceQueue{"ServiceProvider NAC-ABE produce"};
             BoundedWorkerPool m_handlerPool{"ServiceProvider application handlers"};
+            BoundedWorkerPool m_ackPool{"ServiceProvider ACK handlers"};
 
             // ChanllengeID->(Token->RequestNameWithoutRequestID)
             std::map<ndn::Name,std::pair<std::string, ndn::Name>> chanllengeRecords;

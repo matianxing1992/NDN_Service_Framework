@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <sstream>
@@ -141,11 +142,13 @@ public:
   IntermittentAvailability(double probability,
                            int epochMs,
                            int rejectMs,
-                           uint32_t seed)
+                           uint32_t seed,
+                           std::string availabilityFile = "")
     : m_probability(probability)
     , m_epochMs(std::max(1, epochMs))
     , m_rejectMs(std::max(0, rejectMs))
     , m_seed(seed)
+    , m_availabilityFile(std::move(availabilityFile))
     , m_started(std::chrono::steady_clock::now())
   {
   }
@@ -161,6 +164,12 @@ public:
   bool
   isUnavailable() const
   {
+    if (!m_availabilityFile.empty()) {
+      std::ifstream input(m_availabilityFile);
+      char value = '1';
+      input >> value;
+      return value == '0';
+    }
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - m_started).count();
     const auto epoch = static_cast<uint64_t>(elapsed / m_epochMs);
@@ -188,6 +197,7 @@ private:
   int m_epochMs;
   int m_rejectMs;
   uint32_t m_seed;
+  std::string m_availabilityFile;
   std::chrono::steady_clock::time_point m_started;
 };
 
@@ -210,6 +220,7 @@ main(int argc, char** argv)
     const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", 4);
     const auto seed = static_cast<uint32_t>(
       parseIntOption(argc, argv, "--seed", 1000 + static_cast<int>(providerId[0])));
+    const std::string availabilityFile = getOption(argc, argv, "--availability-file", "");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
 
     ndn::Face face;
@@ -228,7 +239,7 @@ main(int argc, char** argv)
     }
 
     IntermittentAvailability availability(
-      failureProbability, epochMs, rejectMs, seed);
+      failureProbability, epochMs, rejectMs, seed, availabilityFile);
 
     ndn_service_framework::ServiceProvider provider(
       face, GROUP_PREFIX, providerCert, controllerCert, "examples/trust-any.conf");

@@ -100,6 +100,16 @@ namespace ndn_service_framework
                 std::max(0, intEnvOrDefault("NDNSF_HANDLER_THREADS", 0)));
         }
 
+        size_t
+        defaultNdnsfAckThreads()
+        {
+            if (std::getenv("NDNSF_ACK_THREADS") == nullptr) {
+                return 2;
+            }
+            return static_cast<size_t>(
+                std::max(0, intEnvOrDefault("NDNSF_ACK_THREADS", 0)));
+        }
+
         bool
         useAsyncSvsPublish()
         {
@@ -340,8 +350,11 @@ namespace ndn_service_framework
         m_IMS(6000)
     {
         m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
+        m_ackPool.setThreadCount(defaultNdnsfAckThreads());
         NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=provider workers="
                      << m_handlerPool.getThreadCount());
+        NDN_LOG_INFO("NDNSF_ACK_THREADS role=provider workers="
+                     << m_ackPool.getThreadCount());
         if (isTruthyEnv("NDNSF_ENABLE_NDNSD") &&
             std::getenv("NDNSF_DISABLE_NDNSD") == nullptr) {
             m_ServiceDiscovery.enable(group_prefix,
@@ -514,6 +527,7 @@ namespace ndn_service_framework
                          << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs);
         }
         m_cryptoProduceQueue.shutdown();
+        m_ackPool.shutdown();
         m_handlerPool.shutdown();
     }
 
@@ -760,6 +774,22 @@ namespace ndn_service_framework
         return m_handlerPool.getQueueSize();
     }
 
+    void ServiceProvider::setAckThreads(size_t n)
+    {
+        m_ackPool.setThreadCount(n);
+        NDN_LOG_WARN("NDNSF provider ACK worker threads: " << n);
+    }
+
+    size_t ServiceProvider::getAckThreads() const
+    {
+        return m_ackPool.getThreadCount();
+    }
+
+    size_t ServiceProvider::getAckQueueDepth() const
+    {
+        return m_ackPool.getQueueSize();
+    }
+
     void ServiceProvider::setUseTokens(bool enabled)
     {
         m_useTokens = enabled;
@@ -969,11 +999,11 @@ namespace ndn_service_framework
         RequestMessage requestMessage,
         AckStrategyHandler ackHandler)
     {
-        if (m_handlerPool.getThreadCount() == 0 || !ackHandler) {
+        if (m_ackPool.getThreadCount() == 0 || !ackHandler) {
             return false;
         }
 
-        const bool queued = m_handlerPool.post(
+        const bool queued = m_ackPool.post(
             [this,
              requesterIdentity,
              serviceName,
@@ -1073,6 +1103,7 @@ namespace ndn_service_framework
                   << " status=" << decision.status
                   << " payloadBytes=" << decision.payload.size()
                   << " providerTokenPresent=" << !providerToken.empty()
+                  << " ackQueueDepth=" << m_ackPool.getQueueSize()
                   << " handlerQueueDepth=" << m_handlerPool.getQueueSize());
         PublishRequestAckMessageV2(requesterIdentity,
                                    serviceName,

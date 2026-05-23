@@ -197,6 +197,7 @@ main(int argc, char** argv)
     const int providerAckMaxCoordinationLagMs = parseIntOption(
       argc, argv, "--provider-ack-max-coordination-lag-ms", 0);
     const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", -1);
+    const int ackThreads = parseIntOption(argc, argv, "--ack-threads", -1);
     const int providerRequestDelayMs = parseIntOption(
       argc, argv, "--provider-request-delay-ms", 0);
     const std::string providerLifecycleCsv =
@@ -254,6 +255,9 @@ main(int argc, char** argv)
       ndn::time::milliseconds(std::max(0, providerAckMaxCoordinationLagMs)));
     if (handlerThreads >= 0) {
       provider.setHandlerThreads(static_cast<size_t>(handlerThreads));
+    }
+    if (ackThreads >= 0) {
+      provider.setAckThreads(static_cast<size_t>(ackThreads));
     }
     std::shared_ptr<std::ofstream> providerLifecycleStream;
     if (benchmark && !providerLifecycleCsv.empty()) {
