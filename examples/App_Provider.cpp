@@ -242,7 +242,7 @@ main(int argc, char** argv)
       GROUP_PREFIX,
       providerCert,
       controllerCert,
-      "examples/trust-any.conf");
+      "examples/trust-schema.conf");
     provider.setPerformanceMode(performanceMode);
     provider.setUseTokens(useTokens);
     provider.setTimelineTrace(timelineTrace);

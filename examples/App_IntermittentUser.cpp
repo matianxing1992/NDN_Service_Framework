@@ -183,7 +183,7 @@ main(int argc, char** argv)
     }
 
     ndn_service_framework::ServiceUser user(
-      face, GROUP_PREFIX, userCert, controllerCert, "examples/trust-any.conf");
+      face, GROUP_PREFIX, userCert, controllerCert, "examples/trust-schema.conf");
     user.init();
     user.setPerformanceMode(true);
     user.setUseTokens(true);

@@ -46,6 +46,8 @@ namespace ndn_service_framework{
     using RequestPayload = ndn::Buffer;
     using ResponsePayload = ndn::Buffer;
     using AckCandidate = AckSelectionCandidate;
+    using CollaborationRole = std::string;
+    using KeyScope = std::string;
 
     class AckSelectionPolicy
     {
@@ -68,6 +70,65 @@ namespace ndn_service_framework{
         extern const std::shared_ptr<const AckSelectionPolicy> LoadBalancing;
         extern const std::shared_ptr<const AckSelectionPolicy> AllResponders;
     }
+
+    struct CollaborationRoleSpec
+    {
+        CollaborationRole role;
+        ServiceName service;
+        ndn::Name requiredArtifact;
+        bool allowDynamicProvisioning = false;
+        int provisioningTimeoutMs = 30000;
+        ndn::Buffer appRequirement;
+        size_t minProviders = 1;
+        size_t maxProviders = 1;
+    };
+
+    struct CollaborationKeyScope
+    {
+        KeyScope name;
+        std::vector<CollaborationRole> roles;
+    };
+
+    struct CollaborationDependency
+    {
+        std::vector<CollaborationRole> producers;
+        std::vector<CollaborationRole> consumers;
+        KeyScope keyScope;
+        ndn::Name topicPrefix;
+        bool required = true;
+    };
+
+    struct SelectedParticipant
+    {
+        CollaborationRole role;
+        ServiceName service;
+        ProviderId provider;
+        ndn::Name assignedArtifact;
+        bool requiresProvisioning = false;
+        int provisioningTimeoutMs = 0;
+        ndn::Buffer assignmentPayload;
+        AckCandidate ack;
+    };
+
+    class ParticipantSelectionPolicy
+    {
+    public:
+        virtual std::vector<SelectedParticipant>
+        select(const std::vector<AckCandidate>& candidates,
+               const std::vector<CollaborationRoleSpec>& roles) const = 0;
+
+        virtual ~ParticipantSelectionPolicy() = default;
+    };
+
+    struct CollaborationPlan
+    {
+        int ackCollectionTimeMs = 200;
+        int timeoutMs = 5000;
+        std::vector<CollaborationRoleSpec> roles;
+        std::vector<CollaborationKeyScope> keyScopes;
+        std::vector<CollaborationDependency> dependencies;
+        std::shared_ptr<const ParticipantSelectionPolicy> participantSelector;
+    };
 
     struct PreparedServiceRequest
     {
@@ -202,6 +263,7 @@ namespace ndn_service_framework{
 
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
+            size_t getCurrentPolicyEpoch() const;
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,
@@ -376,6 +438,12 @@ namespace ndn_service_framework{
                                      ResponseHandler onResponse,
                                      TimeoutHandler onTimeout);
 
+            ndn::Name RequestCollaboration(const ServiceName& service,
+                                           const RequestPayload& initialRequest,
+                                           CollaborationPlan plan,
+                                           ResponseHandler onFinalResponse,
+                                           TimeoutHandler onTimeout);
+
             template<typename RequestT, typename ResponseT>
             ndn::Name RequestService(const ServiceName& service,
                                      const RequestT& request,
@@ -524,8 +592,13 @@ namespace ndn_service_framework{
             void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
 
             void onPermissionResponseData(const ndn::Interest& interest,
-                                          const ndn::Data& data);
+                                           const ndn::Data& data);
             void onPermissionResponseTimeout(const ndn::Interest& interest);
+            void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix);
+            void onPolicyManifestData(const ndn::Interest& interest,
+                                      const ndn::Data& data);
+            void onPolicyManifestTimeout(const ndn::Interest& interest);
+            bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
 
             void OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
@@ -633,6 +706,9 @@ namespace ndn_service_framework{
                 std::vector<ndn::Name> responseProviders;
                 ndn::Name selectedProvider;
                 std::map<std::string, std::string> providerTokens;
+                bool isCollaboration = false;
+                CollaborationPlan collaborationPlan;
+                std::map<std::string, ndn::Buffer> collaborationAssignments;
             };
 
             struct PendingCallTraceRecord
@@ -761,6 +837,9 @@ namespace ndn_service_framework{
             ndn::security::SigningInfo m_signingInfo;
             bool m_useTokens = true;
             bool m_timelineTrace = false;
+            size_t m_currentPolicyEpoch = 0;
+            size_t m_requiredKeyEpoch = 0;
+            uint64_t m_policyGracePeriodMs = 0;
             HybridMessageCrypto m_hybridMessageCrypto;
             HybridCryptoCounters m_hybridCryptoCounters;
             SerializedWorkerQueue m_cryptoProduceQueue{"ServiceUser NAC-ABE produce"};

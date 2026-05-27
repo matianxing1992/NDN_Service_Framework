@@ -89,6 +89,7 @@ private:
   ndn::Block makeAllowedServiceListTlv(const std::vector<std::string>& services) const;
   PermissionResponse buildUserPermissionResponse(const ndn::Name& targetIdentity) const;
   PermissionResponse buildProviderPermissionResponse(const ndn::Name& targetIdentity) const;
+  PolicyManifest buildPolicyManifest() const;
   ndn::security::Certificate getTargetIdentityCertificate(const ndn::Name& targetIdentity) const;
 
   // ===== signer-based encryption =====
@@ -105,6 +106,7 @@ private:
   void onServiceProvisionInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
   void onUserPermissionsInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
   void onProviderPermissionsInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
+  void onPolicyManifestInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
 
 private:
   std::string m_configFilePath;
@@ -128,6 +130,11 @@ private:
   ndn::Name m_prefixServiceProvision;
   ndn::Name m_prefixUserPermissions;
   ndn::Name m_prefixProviderPermissions;
+  ndn::Name m_prefixPolicyManifest;
+  size_t m_policyEpoch = 1;
+  size_t m_requiredKeyEpoch = 1;
+  uint64_t m_policyValidFromMs = 0;
+  uint64_t m_policyGracePeriodMs = 0;
 
   // policies loaded from config
   std::vector<ProviderPolicy> m_providerPolicies;

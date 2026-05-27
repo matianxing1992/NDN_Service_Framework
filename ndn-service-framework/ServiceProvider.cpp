@@ -117,6 +117,78 @@ namespace ndn_service_framework
                    isTruthyEnv("NDNSF_SVS_ASYNC_PUBLISH");
         }
 
+        int
+        hexValue(char c)
+        {
+            if (c >= '0' && c <= '9') {
+                return c - '0';
+            }
+            if (c >= 'a' && c <= 'f') {
+                return 10 + c - 'a';
+            }
+            if (c >= 'A' && c <= 'F') {
+                return 10 + c - 'A';
+            }
+            return -1;
+        }
+
+        ndn::Buffer
+        hexDecode(const std::string& text)
+        {
+            if (text.size() % 2 != 0) {
+                return {};
+            }
+            ndn::Buffer out(text.size() / 2);
+            for (size_t i = 0; i < out.size(); ++i) {
+                const int hi = hexValue(text[i * 2]);
+                const int lo = hexValue(text[i * 2 + 1]);
+                if (hi < 0 || lo < 0) {
+                    return {};
+                }
+                out[i] = static_cast<uint8_t>((hi << 4) | lo);
+            }
+            return out;
+        }
+
+        std::map<std::string, std::string>
+        parseSemicolonFields(const ndn::Buffer& payload)
+        {
+            std::map<std::string, std::string> fields;
+            const std::string text(reinterpret_cast<const char*>(payload.data()),
+                                   payload.size());
+            size_t pos = 0;
+            while (pos < text.size()) {
+                const auto eq = text.find('=', pos);
+                if (eq == std::string::npos) {
+                    break;
+                }
+                const auto end = text.find(';', eq + 1);
+                fields[text.substr(pos, eq - pos)] =
+                    text.substr(eq + 1,
+                                (end == std::string::npos ? text.size() : end) - eq - 1);
+                if (end == std::string::npos) {
+                    break;
+                }
+                pos = end + 1;
+            }
+            return fields;
+        }
+
+        ndn::Buffer
+        collaborationAssociatedData(const ndn::Name& dataName,
+                                    const ndn::Name& requestId,
+                                    const CollaborationDataMessage& message,
+                                    const std::string& keyId,
+                                    const std::string& epochId)
+        {
+            const std::string text =
+                dataName.toUri() + "|COLLAB|" + requestId.toUri() + "|" +
+                message.getKeyScope() + "|" + message.getTopic().toUri() + "|" +
+                message.getProducerRole() + "|" +
+                std::to_string(message.getSequence()) + "|" + keyId + "|" + epochId;
+            return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+        }
+
         void
         publishSvs(const std::shared_ptr<ndn::svs::SVSPubSub>& svs,
                    const ndn::Name& name,
@@ -291,6 +363,29 @@ namespace ndn_service_framework
             return permissionTable.queryPermission(
                 ndn::Name(providerIdentity.toUri()).append(serviceName).toUri(),
                 serviceName.toUri()).has_value();
+        }
+
+        ndn::Name
+        makeCollaborationRolePermissionName(const ndn::Name& serviceName,
+                                            const std::string& role)
+        {
+            ndn::Name roleName(serviceName);
+            roleName.append("ROLE").append(role);
+            return roleName;
+        }
+
+        bool
+        hasProviderCollaborationRolePermission(
+            const ndn::Name& providerIdentity,
+            const ndn::Name& serviceName,
+            const std::string& role,
+            const UserPermissionTable& permissionTable)
+        {
+            const auto rolePermission =
+                makeCollaborationRolePermissionName(serviceName, role);
+            return permissionTable.queryPermission(
+                ndn::Name(providerIdentity.toUri()).append(rolePermission).toUri(),
+                rolePermission.toUri()).has_value();
         }
 
         std::string
@@ -680,6 +775,211 @@ namespace ndn_service_framework
                                           RequestHandler requestHandler)
     {
         addService(serviceName, std::move(requestHandler));
+    }
+
+    void ServiceProvider::addCollaborationHandler(const ndn::Name& serviceName,
+                                                  AckStrategyHandler ackHandler,
+                                                  CollaborationHandler handler)
+    {
+        addCollaborationHandler(serviceName,
+                                std::vector<CollaborationRole>{},
+                                std::move(ackHandler),
+                                std::move(handler));
+    }
+
+    void ServiceProvider::addCollaborationHandler(const ndn::Name& serviceName,
+                                                  std::vector<CollaborationRole> allowedRoles,
+                                                  AckStrategyHandler ackHandler,
+                                                  CollaborationHandler handler)
+    {
+        m_collaborationServices[serviceName] =
+            {std::move(ackHandler), std::move(handler), std::move(allowedRoles)};
+        const auto serviceUri = serviceName.toUri();
+        if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
+            m_serviceNames.end()) {
+            m_serviceNames.push_back(serviceUri);
+        }
+        NDN_LOG_INFO("Registered collaboration handler for " << serviceUri);
+    }
+
+    void ServiceProvider::addCollaborationHandler(const ndn::Name& serviceName,
+                                                  CollaborationHandler handler)
+    {
+        addCollaborationHandler(serviceName,
+                                AckStrategyHandler{},
+                                std::move(handler));
+    }
+
+    void ServiceProvider::addCollaborationHandler(const ndn::Name& serviceName,
+                                                  std::vector<CollaborationRole> allowedRoles,
+                                                  CollaborationHandler handler)
+    {
+        addCollaborationHandler(serviceName,
+                                std::move(allowedRoles),
+                                AckStrategyHandler{},
+                                std::move(handler));
+    }
+
+    ServiceProvider::CollaborationContext::CollaborationContext(
+        ServiceProvider& provider,
+        ndn::Name requesterName,
+        ndn::Name requestId,
+        RequestMessage requestMessage,
+        CollaborationAssignment assignment)
+        : m_provider(provider)
+        , m_requesterName(std::move(requesterName))
+        , m_requestId(std::move(requestId))
+        , m_requestMessage(std::move(requestMessage))
+        , m_assignment(std::move(assignment))
+    {
+    }
+
+    SessionId ServiceProvider::CollaborationContext::sessionId() const
+    {
+        return m_requestId.toUri();
+    }
+
+    CollaborationRole ServiceProvider::CollaborationContext::role() const
+    {
+        return m_assignment.role;
+    }
+
+    ndn::Name ServiceProvider::CollaborationContext::localProvider() const
+    {
+        return m_provider.identity;
+    }
+
+    const ServiceProvider::CollaborationAssignment&
+    ServiceProvider::CollaborationContext::assignment() const
+    {
+        return m_assignment;
+    }
+
+    bool ServiceProvider::CollaborationContext::hasArtifact(const ndn::Name& artifactName) const
+    {
+        std::lock_guard<std::mutex> lock(m_provider.m_collaborationMutex);
+        if (m_provider.m_collaborationArtifacts.count(
+                m_assignment.assignedArtifact.toUri()) != 0) {
+            return true;
+        }
+        return !m_assignment.artifactPayload.empty() &&
+               !m_assignment.assignedArtifact.empty() &&
+               m_assignment.assignedArtifact.equals(artifactName);
+    }
+
+    bool ServiceProvider::CollaborationContext::fetchArtifact(const ndn::Name& artifactName, int)
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_provider.m_collaborationMutex);
+            if (m_provider.m_collaborationArtifacts.count(artifactName.toUri()) != 0) {
+                return true;
+            }
+            if (m_assignment.assignedArtifact.equals(artifactName) &&
+                !m_assignment.artifactPayload.empty()) {
+                m_provider.m_collaborationArtifacts[artifactName.toUri()] =
+                    m_assignment.artifactPayload;
+                return true;
+            }
+        }
+
+        if (!m_assignment.assignedArtifact.equals(artifactName) ||
+            m_assignment.artifactDataName.empty()) {
+            return false;
+        }
+
+        NDN_LOG_ERROR("Collaboration artifact " << artifactName.toUri()
+                      << " was not prefetched before handler execution");
+        return false;
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::getArtifact(const ndn::Name& artifactName) const
+    {
+        std::lock_guard<std::mutex> lock(m_provider.m_collaborationMutex);
+        auto it = m_provider.m_collaborationArtifacts.find(artifactName.toUri());
+        if (it == m_provider.m_collaborationArtifacts.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    void ServiceProvider::CollaborationContext::fail(const std::string& reason)
+    {
+        NDN_LOG_ERROR("Collaboration role " << m_assignment.role
+                      << " failed: " << reason);
+    }
+
+    void ServiceProvider::CollaborationContext::publish(
+        KeyScope keyScope,
+        Topic topic,
+        const ndn::Buffer& payload)
+    {
+        m_provider.publishCollaborationData(m_requesterName,
+                                            m_requestId,
+                                            m_assignment.role,
+                                            keyScope,
+                                            topic,
+                                            payload);
+    }
+
+    void ServiceProvider::CollaborationContext::subscribe(
+        KeyScope keyScope,
+        Topic topicPrefix,
+        std::function<void(const CollaborationData&)> onData)
+    {
+        m_provider.addCollaborationSubscription(m_requestId,
+                                                std::move(keyScope),
+                                                std::move(topicPrefix),
+                                                std::move(onData));
+    }
+
+    void ServiceProvider::CollaborationContext::subscribe(
+        KeyScope keyScope,
+        Topic topicPrefix,
+        std::function<void(CollaborationContext&, const CollaborationData&)> onData)
+    {
+        m_provider.addCollaborationSubscription(m_requesterName,
+                                                m_requestId,
+                                                m_requestMessage,
+                                                m_assignment,
+                                                std::move(keyScope),
+                                                std::move(topicPrefix),
+                                                std::move(onData));
+    }
+
+    std::optional<ServiceProvider::CollaborationData>
+    ServiceProvider::CollaborationContext::waitOne(KeyScope keyScope,
+                                                   Topic topicPrefix,
+                                                   int timeoutMs)
+    {
+        auto data = waitFor(std::move(keyScope), std::move(topicPrefix), 1, timeoutMs);
+        if (data.empty()) {
+            return std::nullopt;
+        }
+        return data.front();
+    }
+
+    std::vector<ServiceProvider::CollaborationData>
+    ServiceProvider::CollaborationContext::waitFor(KeyScope keyScope,
+                                                   Topic topicPrefix,
+                                                   size_t minCount,
+                                                   int timeoutMs)
+    {
+        return m_provider.waitForCollaborationData(m_requestId,
+                                                   keyScope,
+                                                   topicPrefix,
+                                                   minCount,
+                                                   timeoutMs);
+    }
+
+    void ServiceProvider::CollaborationContext::publishFinalResponse(
+        const ndn::Buffer& payload)
+    {
+        m_provider.publishCollaborationFinalResponse(m_requesterName,
+                                                     m_assignment.service,
+                                                     m_requestId,
+                                                     m_requestMessage,
+                                                     payload);
     }
 
     void ServiceProvider::setAckStrategyHandler(const ndn::Name& serviceName,
@@ -1184,6 +1484,131 @@ namespace ndn_service_framework
         return true;
     }
 
+    bool ServiceProvider::dispatchCollaborationExecutionAsync(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        RequestMessage requestMessage,
+        CollaborationAssignment assignment)
+    {
+        auto service = m_collaborationServices.find(serviceName);
+        if (service == m_collaborationServices.end() || !service->second.handler) {
+            return false;
+        }
+
+        const auto handler = service->second.handler;
+        if (!service->second.allowedRoles.empty() &&
+            std::find(service->second.allowedRoles.begin(),
+                      service->second.allowedRoles.end(),
+                      assignment.role) == service->second.allowedRoles.end()) {
+            NDN_LOG_WARN("Reject collaboration assignment for "
+                         << serviceName.toUri()
+                         << ": role " << assignment.role
+                         << " is not registered on provider "
+                         << identity.toUri());
+            publishExecutionFailureOnEventLoop(
+                requesterName,
+                providerName,
+                serviceName,
+                requestId,
+                requestMessage,
+                "Provider is not authorized for collaboration role " + assignment.role);
+            return true;
+        }
+        if (!service->second.allowedRoles.empty() &&
+            !hasProviderCollaborationRolePermission(identity, serviceName,
+                                                    assignment.role, UPT)) {
+            NDN_LOG_WARN("Reject collaboration assignment for "
+                         << serviceName.toUri()
+                         << ": role " << assignment.role
+                         << " is not authorized by provider permission for "
+                         << identity.toUri());
+            publishExecutionFailureOnEventLoop(
+                requesterName,
+                providerName,
+                serviceName,
+                requestId,
+                requestMessage,
+                "Provider lacks controller-authorized collaboration role " +
+                    assignment.role);
+            return true;
+        }
+        auto assignmentForPreparation = assignment;
+        auto assignmentForHandler = std::move(assignment);
+        prepareCollaborationAssignmentAsync(
+            requestId,
+            std::move(assignmentForPreparation),
+            [this,
+             requesterName,
+             providerName,
+             serviceName,
+             requestId,
+             requestMessage,
+             assignment = std::move(assignmentForHandler),
+             handler](bool ready, std::string error) mutable {
+                if (!ready) {
+                    publishExecutionFailureOnEventLoop(
+                        requesterName,
+                        providerName,
+                        serviceName,
+                        requestId,
+                        requestMessage,
+                        "Collaboration assignment preparation failed: " + error);
+                    return;
+                }
+
+                auto runHandler =
+                    [this,
+                     requesterName,
+                     serviceName,
+                     requestId,
+                     requestMessage,
+                     assignment = std::move(assignment),
+                     handler]() mutable {
+                        try {
+                            CollaborationContext ctx(*this,
+                                                     requesterName,
+                                                     requestId,
+                                                     requestMessage,
+                                                     std::move(assignment));
+                            handler(ctx, requestMessage);
+                        }
+                        catch (const std::exception& e) {
+                            NDN_LOG_ERROR("Collaboration handler failed for "
+                                          << serviceName.toUri() << ": " << e.what());
+                        }
+                        catch (...) {
+                            NDN_LOG_ERROR("Collaboration handler failed for "
+                                          << serviceName.toUri());
+                        }
+                        m_face.getIoContext().post(
+                            [this, requestId, serviceName] {
+                                updateProviderRequestLifecycleState(
+                                    requestId, serviceName,
+                                    ProviderRequestLifecycleState::EXECUTION_DONE);
+                            });
+                    };
+
+                if (m_handlerPool.getThreadCount() == 0) {
+                    runHandler();
+                    return;
+                }
+
+                const bool queued = m_handlerPool.post(std::move(runHandler));
+                if (!queued) {
+                    publishExecutionFailureOnEventLoop(
+                        requesterName,
+                        providerName,
+                        serviceName,
+                        requestId,
+                        requestMessage,
+                        "Collaboration handler queue full");
+                }
+            });
+        return true;
+    }
+
     void ServiceProvider::finishRequestExecutionOnEventLoop(
         const ndn::Name& requesterName,
         const ndn::Name& providerName,
@@ -1212,6 +1637,7 @@ namespace ndn_service_framework
         if (m_useTokens) {
             response.setUserToken(requestMessage.getUserToken());
         }
+        response.setPolicyEpoch(m_currentPolicyEpoch);
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=RESPONSE_DISPATCHED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -1289,6 +1715,756 @@ namespace ndn_service_framework
                                           std::move(response));
     }
 
+    void ServiceProvider::publishCollaborationData(
+        const ndn::Name& requesterName,
+        const ndn::Name& requestId,
+        const std::string& producerRole,
+        const std::string& keyScope,
+        const ndn::Name& topic,
+        const ndn::Buffer& payload)
+    {
+        const uint64_t sequence =
+            m_collaborationSequence.fetch_add(1, std::memory_order_relaxed);
+        CollaborationDataMessage message;
+        message.setKeyScope(keyScope);
+        message.setTopic(topic);
+        message.setProducerRole(producerRole);
+        message.setSequence(sequence);
+        message.setPayload(payload);
+
+        ndn::Name name = makeCollaborationDataName(identity,
+                                                   requesterName,
+                                                   requestId,
+                                                   keyScope,
+                                                   topic,
+                                                   sequence);
+        ndn::Buffer scopeKey;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto requestIt = m_collaborationScopeKeysByRequest.find(requestId);
+            if (requestIt != m_collaborationScopeKeysByRequest.end()) {
+                auto keyIt = requestIt->second.find(keyScope);
+                if (keyIt != requestIt->second.end()) {
+                    scopeKey = keyIt->second;
+                }
+            }
+        }
+        if (scopeKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+            NDN_LOG_ERROR("Missing collaboration scope key for request "
+                          << requestId.toUri() << " scope=" << keyScope);
+            return;
+        }
+
+        auto encryptAndPublish = [this,
+                                  name,
+                                  requestId,
+                                  scopeKey = std::move(scopeKey),
+                                  plaintext = payload,
+                                  message = std::move(message)]() mutable {
+            HybridMessageEnvelope envelope;
+            const std::string keyId = "collab|" + requestId.toUri() + "|" +
+                                      message.getKeyScope();
+            const std::string epochId = "session";
+            envelope.setKeyId(keyId);
+            envelope.setEpochId(epochId);
+            envelope.setMessageType("COLLAB");
+
+            std::string error;
+            ndn::Buffer encoded;
+            try {
+                auto ad = collaborationAssociatedData(name, requestId,
+                                                      message, keyId, epochId);
+                auto encrypted = hybridAesGcmEncrypt(
+                    scopeKey,
+                    ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+                    ndn::span<const uint8_t>(ad.data(), ad.size()));
+                envelope.setNonce(encrypted.nonce);
+                envelope.setCipherText(encrypted.ciphertext);
+                envelope.setAuthTag(encrypted.tag);
+                auto envelopeBlock = envelope.WireEncode();
+                message.setPayload(ndn::Buffer(envelopeBlock.begin(),
+                                               envelopeBlock.end()));
+                auto block = message.WireEncode();
+                encoded = ndn::Buffer(block.begin(), block.end());
+            }
+            catch (const std::exception& e) {
+                error = e.what();
+            }
+
+            m_face.getIoContext().post(
+                [this, name, encoded = std::move(encoded),
+                 error = std::move(error)]() mutable {
+                    if (!error.empty()) {
+                        NDN_LOG_ERROR("Collaboration data encryption failed for "
+                                      << name.toUri() << ": " << error);
+                        return;
+                    }
+                    ndn::Block block(encoded);
+                    publishSvs(m_svsps, name, block);
+                });
+        };
+        if (m_handlerPool.getThreadCount() == 0 ||
+            !m_handlerPool.post(encryptAndPublish)) {
+            encryptAndPublish();
+        }
+    }
+
+    void ServiceProvider::publishCollaborationFinalResponse(
+        const ndn::Name& requesterName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        const RequestMessage& requestMessage,
+        const ndn::Buffer& payload)
+    {
+        ResponseMessage response;
+        response.setStatus(true);
+        ndn::Buffer responsePayload(payload);
+        response.setPayload(responsePayload, responsePayload.size());
+        if (m_useTokens) {
+            response.setUserToken(requestMessage.getUserToken());
+        }
+        response.setPolicyEpoch(m_currentPolicyEpoch);
+        m_face.getIoContext().post(
+            [this,
+             requesterName,
+             serviceName,
+             requestId,
+             requestMessage,
+             response = std::move(response)]() mutable {
+                finishRequestExecutionOnEventLoop(requesterName,
+                                                  identity,
+                                                  serviceName,
+                                                  requestId,
+                                                  requestMessage,
+                                                  std::move(response));
+            });
+    }
+
+    void ServiceProvider::deliverCollaborationData(const CollaborationData& data)
+    {
+        std::vector<std::function<void(const CollaborationData&)>> callbacks;
+        std::vector<CollaborationSubscription> contextCallbacks;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            const ndn::Name requestId(data.sessionId);
+            m_collaborationDataByRequest[requestId].push_back(data);
+            for (const auto& subscription : m_collaborationSubscriptions) {
+                if (!subscription.requestId.equals(requestId)) {
+                    continue;
+                }
+                if (subscription.keyScope != data.keyScope) {
+                    continue;
+                }
+                if (!subscription.topicPrefix.isPrefixOf(data.topic)) {
+                    continue;
+                }
+                if (subscription.onData) {
+                    callbacks.push_back(subscription.onData);
+                }
+                if (subscription.onContextData) {
+                    contextCallbacks.push_back(subscription);
+                }
+            }
+        }
+        m_collaborationCv.notify_all();
+        for (auto& callback : callbacks) {
+            auto invoke = [callback = std::move(callback), data]() {
+                callback(data);
+            };
+            if (m_handlerPool.getThreadCount() == 0 ||
+                !m_handlerPool.post(invoke)) {
+                invoke();
+            }
+        }
+        for (auto& subscription : contextCallbacks) {
+            auto invoke = [this, subscription = std::move(subscription), data]() mutable {
+                CollaborationContext ctx(*this,
+                                         subscription.requesterName,
+                                         subscription.requestId,
+                                         subscription.requestMessage,
+                                         subscription.assignment);
+                subscription.onContextData(ctx, data);
+            };
+            if (m_handlerPool.getThreadCount() == 0 ||
+                !m_handlerPool.post(invoke)) {
+                invoke();
+            }
+        }
+    }
+
+    void ServiceProvider::addCollaborationSubscription(
+        const ndn::Name& requestId,
+        KeyScope keyScope,
+        Topic topicPrefix,
+        std::function<void(const CollaborationData&)> onData)
+    {
+        if (!onData) {
+            return;
+        }
+
+        std::vector<CollaborationData> existing;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            CollaborationSubscription subscription;
+            subscription.requestId = requestId;
+            subscription.keyScope = std::move(keyScope);
+            subscription.topicPrefix = std::move(topicPrefix);
+            subscription.onData = onData;
+
+            auto it = m_collaborationDataByRequest.find(requestId);
+            if (it != m_collaborationDataByRequest.end()) {
+                for (const auto& data : it->second) {
+                    if (data.keyScope == subscription.keyScope &&
+                        subscription.topicPrefix.isPrefixOf(data.topic)) {
+                        existing.push_back(data);
+                    }
+                }
+            }
+            m_collaborationSubscriptions.push_back(std::move(subscription));
+        }
+
+        for (const auto& data : existing) {
+            auto invoke = [onData, data]() {
+                onData(data);
+            };
+            if (m_handlerPool.getThreadCount() == 0 ||
+                !m_handlerPool.post(invoke)) {
+                invoke();
+            }
+        }
+    }
+
+    void ServiceProvider::addCollaborationSubscription(
+        const ndn::Name& requesterName,
+        const ndn::Name& requestId,
+        RequestMessage requestMessage,
+        CollaborationAssignment assignment,
+        KeyScope keyScope,
+        Topic topicPrefix,
+        std::function<void(CollaborationContext&, const CollaborationData&)> onData)
+    {
+        if (!onData) {
+            return;
+        }
+
+        std::vector<CollaborationData> existing;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            CollaborationSubscription subscription;
+            subscription.requesterName = requesterName;
+            subscription.requestId = requestId;
+            subscription.keyScope = std::move(keyScope);
+            subscription.topicPrefix = std::move(topicPrefix);
+            subscription.requestMessage = requestMessage;
+            subscription.assignment = assignment;
+            subscription.onContextData = onData;
+
+            auto it = m_collaborationDataByRequest.find(requestId);
+            if (it != m_collaborationDataByRequest.end()) {
+                for (const auto& data : it->second) {
+                    if (data.keyScope == subscription.keyScope &&
+                        subscription.topicPrefix.isPrefixOf(data.topic)) {
+                        existing.push_back(data);
+                    }
+                }
+            }
+            m_collaborationSubscriptions.push_back(std::move(subscription));
+        }
+
+        for (const auto& data : existing) {
+            auto invoke = [this,
+                           requesterName,
+                           requestId,
+                           requestMessage,
+                           assignment,
+                           onData,
+                           data]() mutable {
+                CollaborationContext ctx(*this,
+                                         requesterName,
+                                         requestId,
+                                         requestMessage,
+                                         assignment);
+                onData(ctx, data);
+            };
+            if (m_handlerPool.getThreadCount() == 0 ||
+                !m_handlerPool.post(invoke)) {
+                invoke();
+            }
+        }
+    }
+
+    void ServiceProvider::prepareCollaborationAssignmentAsync(
+        const ndn::Name& requestId,
+        CollaborationAssignment assignment,
+        std::function<void(bool, std::string)> onReady)
+    {
+        struct FetchState
+        {
+            ndn::Name requestId;
+            CollaborationAssignment assignment;
+            std::function<void(bool, std::string)> onReady;
+            size_t pending = 0;
+            bool failed = false;
+            std::string error;
+            std::map<KeyScope, ndn::Buffer> fetchedKeys;
+            ndn::Buffer fetchedArtifact;
+        };
+
+        auto state = std::make_shared<FetchState>();
+        state->requestId = requestId;
+        state->assignment = std::move(assignment);
+        state->onReady = std::move(onReady);
+
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto& scopeKeys = m_collaborationScopeKeysByRequest[requestId];
+            for (const auto& entry : state->assignment.scopeKeys) {
+                scopeKeys[entry.first] = entry.second;
+            }
+            auto& scopeKeyDataNames =
+                m_collaborationScopeKeyDataNamesByRequest[requestId];
+            for (const auto& entry : state->assignment.scopeKeyDataNames) {
+                if (!entry.second.empty()) {
+                    scopeKeyDataNames[entry.first] = entry.second;
+                }
+            }
+            if (!state->assignment.assignedArtifact.empty() &&
+                !state->assignment.artifactPayload.empty()) {
+                m_collaborationArtifacts[state->assignment.assignedArtifact.toUri()] =
+                    state->assignment.artifactPayload;
+            }
+        }
+
+        std::map<KeyScope, ndn::Name> keysToFetch;
+        bool needsArtifactFetch = false;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            const auto keyIt = m_collaborationScopeKeysByRequest.find(requestId);
+            for (const auto& entry : state->assignment.scopeKeyDataNames) {
+                if (entry.second.empty()) {
+                    continue;
+                }
+                if (keyIt != m_collaborationScopeKeysByRequest.end() &&
+                    keyIt->second.count(entry.first) != 0) {
+                    continue;
+                }
+                keysToFetch[entry.first] = entry.second;
+            }
+            needsArtifactFetch =
+                !state->assignment.assignedArtifact.empty() &&
+                !state->assignment.artifactDataName.empty() &&
+                m_collaborationArtifacts.count(
+                    state->assignment.assignedArtifact.toUri()) == 0;
+        }
+
+        state->pending = keysToFetch.size() + (needsArtifactFetch ? 1 : 0);
+
+        auto finishIfReady = [this, state]() mutable {
+            if (state->pending != 0) {
+                return;
+            }
+
+            std::vector<PendingEncryptedCollaborationData> pending;
+            {
+                std::lock_guard<std::mutex> lock(m_collaborationMutex);
+                auto& scopeKeys = m_collaborationScopeKeysByRequest[state->requestId];
+                for (auto& entry : state->fetchedKeys) {
+                    scopeKeys[entry.first] = std::move(entry.second);
+                }
+                if (!state->fetchedArtifact.empty() &&
+                    !state->assignment.assignedArtifact.empty()) {
+                    m_collaborationArtifacts[state->assignment.assignedArtifact.toUri()] =
+                        std::move(state->fetchedArtifact);
+                }
+                auto pendingIt =
+                    m_pendingEncryptedCollaborationData.find(state->requestId);
+                if (pendingIt != m_pendingEncryptedCollaborationData.end()) {
+                    pending = std::move(pendingIt->second);
+                    m_pendingEncryptedCollaborationData.erase(pendingIt);
+                }
+            }
+
+            for (const auto& item : pending) {
+                decryptCollaborationDataOrQueue(item.dataName,
+                                                item.requestId,
+                                                item.producer,
+                                                item.message);
+            }
+
+            state->onReady(!state->failed, state->error);
+        };
+
+        auto startFetch = [this, state, finishIfReady](
+                              const ndn::Name& dataName,
+                              std::function<void(const ndn::Buffer&)> onPlaintext) mutable {
+            ndn::Interest interest(dataName);
+            interest.setCanBePrefix(true);
+            interest.setMustBeFresh(true);
+            interest.setInterestLifetime(ndn::time::seconds(4));
+
+            try {
+                nacConsumer.consume(
+                    interest,
+                    [state, onPlaintext = std::move(onPlaintext), finishIfReady](
+                        const ndn::Buffer& buffer) mutable {
+                        onPlaintext(buffer);
+                        if (state->pending > 0) {
+                            --state->pending;
+                        }
+                        finishIfReady();
+                    },
+                    [state, dataName, finishIfReady](const std::string& reason) mutable {
+                        state->failed = true;
+                        if (!state->error.empty()) {
+                            state->error += "; ";
+                        }
+                        state->error += dataName.toUri() + ": " + reason;
+                        if (state->pending > 0) {
+                            --state->pending;
+                        }
+                        finishIfReady();
+                    });
+            }
+            catch (const std::exception& e) {
+                state->failed = true;
+                if (!state->error.empty()) {
+                    state->error += "; ";
+                }
+                state->error += dataName.toUri() + ": " + e.what();
+                if (state->pending > 0) {
+                    --state->pending;
+                }
+                finishIfReady();
+            }
+        };
+
+        for (const auto& entry : keysToFetch) {
+            startFetch(entry.second,
+                       [state, keyScope = entry.first](const ndn::Buffer& buffer) {
+                           if (buffer.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                               state->failed = true;
+                               if (!state->error.empty()) {
+                                   state->error += "; ";
+                               }
+                               state->error += "invalid collaboration scope key " +
+                                               keyScope;
+                               return;
+                           }
+                           state->fetchedKeys[keyScope] = buffer;
+                       });
+        }
+
+        if (needsArtifactFetch) {
+            startFetch(state->assignment.artifactDataName,
+                       [state](const ndn::Buffer& buffer) {
+                           state->fetchedArtifact = buffer;
+                       });
+        }
+
+        finishIfReady();
+    }
+
+    void ServiceProvider::decryptCollaborationDataOrQueue(
+        const ndn::Name& dataName,
+        const ndn::Name& requestId,
+        const ndn::Name& producer,
+        const CollaborationDataMessage& message)
+    {
+        ndn::Buffer scopeKey;
+        bool needScopeKeyFetch = false;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto requestIt = m_collaborationScopeKeysByRequest.find(requestId);
+            if (requestIt != m_collaborationScopeKeysByRequest.end()) {
+                auto keyIt = requestIt->second.find(message.getKeyScope());
+                if (keyIt != requestIt->second.end()) {
+                    scopeKey = keyIt->second;
+                }
+            }
+            if (scopeKey.empty()) {
+                m_pendingEncryptedCollaborationData[requestId].push_back(
+                    PendingEncryptedCollaborationData{dataName, requestId,
+                                                      producer, message});
+                needScopeKeyFetch = true;
+            }
+        }
+        if (needScopeKeyFetch) {
+            maybeFetchCollaborationScopeKey(requestId, message.getKeyScope());
+            return;
+        }
+        if (scopeKey.empty()) {
+            return;
+        }
+
+        auto decryptAndDeliver = [this, dataName, requestId, producer,
+                                  scopeKey = std::move(scopeKey),
+                                  message]() mutable {
+            CollaborationData data;
+            data.sessionId = requestId.toUri();
+            data.keyScope = message.getKeyScope();
+            data.topic = message.getTopic();
+            data.producer = producer;
+            data.producerRole = message.getProducerRole();
+            data.sequence = message.getSequence();
+
+            bool ok = false;
+            try {
+                ndn::Block envelopeBlock(message.getPayload());
+                HybridMessageEnvelope envelope;
+                if (envelope.WireDecode(envelopeBlock)) {
+                    auto ad = collaborationAssociatedData(dataName,
+                                                          requestId,
+                                                          message,
+                                                          envelope.getKeyId(),
+                                                          envelope.getEpochId());
+                    ok = hybridAesGcmDecrypt(
+                        scopeKey,
+                        envelope,
+                        ndn::span<const uint8_t>(ad.data(), ad.size()),
+                        data.payload);
+                }
+            }
+            catch (const std::exception&) {
+                ok = false;
+            }
+
+            m_face.getIoContext().post(
+                [this, ok, data = std::move(data), dataName]() mutable {
+                    if (!ok) {
+                        NDN_LOG_ERROR("Collaboration data authentication failed for "
+                                      << dataName.toUri());
+                        return;
+                    }
+                    deliverCollaborationData(data);
+                });
+        };
+        if (m_handlerPool.getThreadCount() == 0 ||
+            !m_handlerPool.post(decryptAndDeliver)) {
+            decryptAndDeliver();
+        }
+    }
+
+    bool ServiceProvider::maybeFetchCollaborationScopeKey(
+        const ndn::Name& requestId,
+        const KeyScope& keyScope)
+    {
+        ndn::Name keyDataName;
+        const std::string fetchKey = requestId.toUri() + "|" + keyScope;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto cachedIt = m_collaborationScopeKeysByRequest.find(requestId);
+            if (cachedIt != m_collaborationScopeKeysByRequest.end() &&
+                cachedIt->second.count(keyScope) != 0) {
+                return false;
+            }
+            auto namesIt = m_collaborationScopeKeyDataNamesByRequest.find(requestId);
+            if (namesIt == m_collaborationScopeKeyDataNamesByRequest.end()) {
+                return false;
+            }
+            auto nameIt = namesIt->second.find(keyScope);
+            if (nameIt == namesIt->second.end() || nameIt->second.empty()) {
+                return false;
+            }
+            if (!m_collaborationScopeKeyFetchesInFlight.insert(fetchKey).second) {
+                return false;
+            }
+            keyDataName = nameIt->second;
+        }
+
+        ndn::Interest interest(keyDataName);
+        interest.setCanBePrefix(true);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::seconds(4));
+
+        m_face.getIoContext().post(
+            [this, interest, requestId, keyScope, fetchKey]() mutable {
+                try {
+                    nacConsumer.consume(
+                        interest,
+                        [this, requestId, keyScope, fetchKey](
+                            const ndn::Buffer& buffer) {
+                            std::vector<PendingEncryptedCollaborationData> pending;
+                            {
+                                std::lock_guard<std::mutex> lock(m_collaborationMutex);
+                                m_collaborationScopeKeyFetchesInFlight.erase(fetchKey);
+                                if (buffer.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                                    NDN_LOG_ERROR("Fetched invalid collaboration scope key for "
+                                                  << requestId.toUri()
+                                                  << " scope=" << keyScope);
+                                    return;
+                                }
+                                m_collaborationScopeKeysByRequest[requestId][keyScope] =
+                                    buffer;
+                                auto pendingIt =
+                                    m_pendingEncryptedCollaborationData.find(requestId);
+                                if (pendingIt != m_pendingEncryptedCollaborationData.end()) {
+                                    pending = std::move(pendingIt->second);
+                                    m_pendingEncryptedCollaborationData.erase(pendingIt);
+                                }
+                            }
+                            for (const auto& item : pending) {
+                                decryptCollaborationDataOrQueue(item.dataName,
+                                                                item.requestId,
+                                                                item.producer,
+                                                                item.message);
+                            }
+                        },
+                        [this, requestId, keyScope, fetchKey](
+                            const std::string& reason) {
+                            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+                            m_collaborationScopeKeyFetchesInFlight.erase(fetchKey);
+                            NDN_LOG_ERROR("Failed to fetch collaboration scope key for "
+                                          << requestId.toUri()
+                                          << " scope=" << keyScope
+                                          << ": " << reason);
+                        });
+                }
+                catch (const std::exception& e) {
+                    std::lock_guard<std::mutex> lock(m_collaborationMutex);
+                    m_collaborationScopeKeyFetchesInFlight.erase(fetchKey);
+                    NDN_LOG_ERROR("Failed to start collaboration scope key fetch for "
+                                  << requestId.toUri()
+                                  << " scope=" << keyScope
+                                  << ": " << e.what());
+                }
+            });
+        return true;
+    }
+
+    std::vector<ServiceProvider::CollaborationData>
+    ServiceProvider::waitForCollaborationData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& topicPrefix,
+        size_t minCount,
+        int timeoutMs)
+    {
+        auto matches = [&] {
+            std::vector<CollaborationData> result;
+            auto it = m_collaborationDataByRequest.find(requestId);
+            if (it == m_collaborationDataByRequest.end()) {
+                return result;
+            }
+            for (const auto& data : it->second) {
+                if (data.keyScope != keyScope) {
+                    continue;
+                }
+                if (!topicPrefix.isPrefixOf(data.topic)) {
+                    continue;
+                }
+                result.push_back(data);
+            }
+            return result;
+        };
+
+        std::unique_lock<std::mutex> lock(m_collaborationMutex);
+        auto current = matches();
+        if (current.size() >= minCount) {
+            return current;
+        }
+        m_collaborationCv.wait_for(
+            lock,
+            std::chrono::milliseconds(timeoutMs),
+            [&] {
+                current = matches();
+                return current.size() >= minCount;
+            });
+        return current;
+    }
+
+    void ServiceProvider::onCollaborationDataMessage(
+        const ndn::svs::SVSPubSub::SubscriptionData& subscription)
+    {
+        if (!isFresh(subscription)) {
+            return;
+        }
+        auto parsed = parseCollaborationDataName(subscription.name);
+        if (!parsed) {
+            return;
+        }
+        if (parsed->producerName.equals(identity)) {
+            return;
+        }
+        CollaborationDataMessage message;
+        try {
+            ndn::Block block(subscription.data);
+            if (!message.WireDecode(block)) {
+                return;
+            }
+        }
+        catch (const std::exception&) {
+            return;
+        }
+
+        decryptCollaborationDataOrQueue(subscription.name,
+                                        parsed->requestId,
+                                        parsed->producerName,
+                                        message);
+    }
+
+    ServiceProvider::CollaborationAssignment
+    ServiceProvider::parseCollaborationAssignment(const ndn::Name& serviceName,
+                                                  const ndn::Buffer& payload)
+    {
+        CollaborationAssignment assignment;
+        assignment.service = serviceName;
+        assignment.assignmentPayload = payload;
+        if (payload.empty()) {
+            assignment.role = serviceName.toUri();
+            return assignment;
+        }
+
+        const auto fields = parseSemicolonFields(payload);
+        auto readField = [&fields](const std::string& key) {
+            auto it = fields.find(key);
+            return it == fields.end() ? std::string() : it->second;
+        };
+
+        assignment.role = readField("role");
+        if (assignment.role.empty()) {
+            assignment.role = serviceName.toUri();
+        }
+        const auto artifact = readField("artifact");
+        if (!artifact.empty()) {
+            assignment.assignedArtifact = ndn::Name(artifact);
+        }
+        const auto artifactDataName = readField("artifactDataName");
+        if (!artifactDataName.empty()) {
+            assignment.artifactDataName = ndn::Name(artifactDataName);
+        }
+        assignment.requiresProvisioning =
+            readField("requiresProvisioning") == "1";
+        const auto timeout = readField("provisioningTimeoutMs");
+        if (!timeout.empty()) {
+            try {
+                assignment.provisioningTimeoutMs = std::stoi(timeout);
+            }
+            catch (const std::exception&) {
+                assignment.provisioningTimeoutMs = 0;
+            }
+        }
+        for (const auto& field : fields) {
+            static const std::string prefix = "scopeKey.";
+            if (field.first.rfind(prefix, 0) == 0) {
+                auto key = hexDecode(field.second);
+                if (key.size() == HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+                    assignment.scopeKeys[field.first.substr(prefix.size())] =
+                        std::move(key);
+                }
+            }
+            static const std::string keyDataPrefix = "scopeKeyData.";
+            if (field.first.rfind(keyDataPrefix, 0) == 0 && !field.second.empty()) {
+                assignment.scopeKeyDataNames[field.first.substr(keyDataPrefix.size())] =
+                    ndn::Name(field.second);
+            }
+        }
+        const auto artifactData = readField("artifactData");
+        if (!artifactData.empty()) {
+            assignment.artifactPayload = hexDecode(artifactData);
+        }
+        return assignment;
+    }
+
     bool ServiceProvider::hasService(const ndn::Name& serviceName,
                                      const ndn::Name& functionName) const
     {
@@ -1340,6 +2516,10 @@ namespace ndn_service_framework
     {
         auto parsedV2 = ndn_service_framework::parseRequestNameV2(requestName);
         if (parsedV2) {
+            if (!isAcceptablePolicyEpoch(requestMessage.getPolicyEpoch())) {
+                return makeErrorResponse("Stale policy epoch for " +
+                                         parsedV2->serviceName.toUri());
+            }
             if (!hasProviderPermission(identity, parsedV2->serviceName, UPT)) {
                 return makeErrorResponse("Permission denied for " +
                                          parsedV2->serviceName.toUri());
@@ -1361,12 +2541,18 @@ namespace ndn_service_framework
             if (m_useTokens) {
                 response.setUserToken(requestMessage.getUserToken());
             }
+            response.setPolicyEpoch(m_currentPolicyEpoch);
             return response;
         }
 
         auto parsed = parseRequestNameForUnifiedService(requestName);
         if (!parsed) {
             return makeErrorResponse("Failed to parse request name " + requestName.toUri());
+        }
+
+        if (!isAcceptablePolicyEpoch(requestMessage.getPolicyEpoch())) {
+            return makeErrorResponse("Stale policy epoch for " +
+                                     parsed->serviceName.toUri());
         }
 
         if (!hasProviderPermission(identity, parsed->serviceName, UPT)) {
@@ -1390,6 +2576,7 @@ namespace ndn_service_framework
         if (m_useTokens) {
             response.setUserToken(requestMessage.getUserToken());
         }
+        response.setPolicyEpoch(m_currentPolicyEpoch);
         return response;
     }
 
@@ -2544,6 +3731,14 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         requestId, serviceName,
         ProviderRequestLifecycleState::REQUEST_OBSERVED);
 
+    if (!isAcceptablePolicyEpoch(requestMessage.getPolicyEpoch())) {
+        NDN_LOG_ERROR("Reject request with stale policy epoch requestId="
+                      << requestId.toUri()
+                      << " receivedEpoch=" << requestMessage.getPolicyEpoch()
+                      << " currentEpoch=" << m_currentPolicyEpoch);
+        return;
+    }
+
     if (!hasProviderPermission(identity, serviceName, UPT)) {
         NDN_LOG_ERROR("Not Serving: " << serviceName);
         return;
@@ -2562,7 +3757,8 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                  << requesterIdentity.toUri()
                  << " for " << serviceName.toUri());
 
-    if (hasService(serviceName)) {
+    if (hasService(serviceName) ||
+        m_collaborationServices.find(serviceName) != m_collaborationServices.end()) {
         NDN_LOG_INFO("Dispatch request using V2 dynamic handler for "
                      << serviceName.toUri());
 
@@ -2579,21 +3775,30 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         }
 
         auto service = m_services.find(serviceName);
+        auto collabService = m_collaborationServices.find(serviceName);
         AckDecision decision = makeDefaultAckDecision();
+        AckStrategyHandler ackHandler;
         if (service != m_services.end() && service->second.ackHandler) {
-            auto ackHandler = service->second.ackHandler;
+            ackHandler = service->second.ackHandler;
+        }
+        else if (collabService != m_collaborationServices.end() &&
+                 collabService->second.ackHandler) {
+            ackHandler = collabService->second.ackHandler;
+        }
+        if (ackHandler) {
             if (m_timelineTrace) {
                 logTimelineTrace("provider", "ack_decision_start", requestId,
                                  {{"serviceName", serviceName.toUri()}});
             }
+            auto asyncAckHandler = ackHandler;
             if (dispatchAckDecisionAsync(requesterIdentity,
                                          serviceName,
                                          requestId,
                                          requestMessage,
-                                         std::move(ackHandler))) {
+                                         std::move(asyncAckHandler))) {
                 return;
             }
-            decision = service->second.ackHandler(requestMessage);
+            decision = ackHandler(requestMessage);
             if (m_timelineTrace) {
                 logTimelineTrace("provider", "ack_decision_done", requestId,
                                  {{"serviceName", serviceName.toUri()},
@@ -2797,7 +4002,24 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                   << " expectedController=" << expectedController->toUri());
                     return;
                 }
-                handlePermissionResponseData(validatedData, identity, m_keyChain, UPT);
+                EncryptedPermissionResponse encryptedResponse;
+                if (decodeEncryptedPermissionResponseFromDataContent(validatedData, encryptedResponse)) {
+                    try {
+                        auto response =
+                            decryptPermissionResponseWithKeyChain(encryptedResponse, m_keyChain);
+                        if (response.getTargetIdentity() != identity.toUri()) {
+                            NDN_LOG_ERROR("Ignoring PermissionResponse for unexpected targetIdentity="
+                                          << response.getTargetIdentity()
+                                          << " expected=" << identity.toUri());
+                            return;
+                        }
+                        applyPermissionResponse(response);
+                    }
+                    catch (const std::exception& e) {
+                        NDN_LOG_ERROR("Failed to install PermissionResponse epoch: "
+                                      << e.what());
+                    }
+                }
             },
             [](const ndn::Data& badData, const ndn::security::ValidationError& error) {
                 NDN_LOG_ERROR("PermissionResponse Data validation failed: "
@@ -2808,6 +4030,69 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::onPermissionResponseTimeout(const ndn::Interest& interest)
     {
         NDN_LOG_ERROR("PermissionResponse timeout: " << interest.getName());
+    }
+
+    void ServiceProvider::fetchPolicyManifestFromController(const ndn::Name& controllerPrefix)
+    {
+        ndn::Name interestName(controllerPrefix);
+        interestName.append(ndn::Name("/NDNSF/POLICY-MANIFEST"));
+
+        ndn::Interest interest(interestName);
+        interest.setCanBePrefix(false);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::seconds(4));
+
+        NDN_LOG_INFO("Fetch policy manifest: " << interestName);
+        m_face.expressInterest(
+            interest,
+            std::bind(&ServiceProvider::onPolicyManifestData, this, _1, _2),
+            [this](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                onPolicyManifestTimeout(interest);
+            },
+            std::bind(&ServiceProvider::onPolicyManifestTimeout, this, _1));
+    }
+
+    void ServiceProvider::onPolicyManifestData(const ndn::Interest& interest,
+                                               const ndn::Data& data)
+    {
+        const auto expectedController = extractPermissionControllerIdentity(interest);
+        validator->validate(
+            data,
+            [this, expectedController](const ndn::Data& validatedData) {
+                if (expectedController &&
+                    !isSignedByIdentity(validatedData, *expectedController)) {
+                    NDN_LOG_ERROR("PolicyManifest Data signer mismatch: "
+                                  << validatedData.getName()
+                                  << " expectedController=" << expectedController->toUri());
+                    return;
+                }
+                PolicyManifest manifest;
+                const auto& content = validatedData.getContent();
+                bool ok = content.type() == tlv::PolicyManifestType ?
+                    manifest.WireDecode(content) : false;
+                if (!ok) {
+                    auto [parsed, block] = ndn::Block::fromBuffer(
+                        ndn::span<const uint8_t>(content.value(), content.value_size()));
+                    ok = parsed && manifest.WireDecode(block);
+                }
+                if (!ok) {
+                    NDN_LOG_ERROR("PolicyManifest decode failed: " << validatedData.getName());
+                    return;
+                }
+                m_currentPolicyEpoch = manifest.getPolicyEpoch();
+                m_requiredKeyEpoch = manifest.getRequiredKeyEpoch();
+                m_policyGracePeriodMs = manifest.getGracePeriodMs();
+                NDN_LOG_INFO("Installed PolicyManifest " << manifest.toString());
+            },
+            [](const ndn::Data& badData, const ndn::security::ValidationError& error) {
+                NDN_LOG_ERROR("PolicyManifest Data validation failed: "
+                              << badData.getName() << " reason=" << error);
+            });
+    }
+
+    void ServiceProvider::onPolicyManifestTimeout(const ndn::Interest& interest)
+    {
+        NDN_LOG_ERROR("PolicyManifest timeout: " << interest.getName());
     }
 
 // void ServiceProvider::PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
@@ -3010,6 +4295,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         requestAckMessage.setMessage(msg);
         requestAckMessage.setUserToken(userToken);
         requestAckMessage.setProviderToken(providerToken);
+        requestAckMessage.setPolicyEpoch(m_currentPolicyEpoch);
         if (!payload.empty()) {
             ndn::Buffer ackPayload(payload);
             requestAckMessage.setPayload(ackPayload, ackPayload.size());
@@ -3289,6 +4575,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     void ServiceProvider::fetchPermissionsFromController(const ndn::Name& controllerPrefix)
     {
+        fetchPolicyManifestFromController(controllerPrefix);
+
         ndn::Name interestName(controllerPrefix);
         interestName.append(ndn::Name("/NDNSF/PERMISSIONS/PROVIDER"));
         interestName.append(identity);
@@ -3316,7 +4604,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
 
+        m_currentPolicyEpoch = response.getPolicyEpoch();
+
         for (const auto& entry : response.getEntries()) {
+            if (entry.getVersion() != 0 && entry.getVersion() != m_currentPolicyEpoch) {
+                NDN_LOG_WARN("Permission entry epoch differs from response epoch provider="
+                             << entry.getProviderName()
+                             << " service=" << entry.getServiceName()
+                             << " entryEpoch=" << entry.getVersion()
+                             << " responseEpoch=" << m_currentPolicyEpoch);
+            }
             ndn::Name providerServiceName(entry.getProviderName());
             providerServiceName.append(ndn::Name(entry.getServiceName()));
             UPT.insertPermission(providerServiceName.toUri(),
@@ -3324,8 +4621,20 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                  entry.getToken());
             NDN_LOG_INFO("Installed provider permission provider="
                          << entry.getProviderName()
-                         << " service=" << entry.getServiceName());
+                         << " service=" << entry.getServiceName()
+                         << " policyEpoch=" << entry.getVersion());
         }
+    }
+
+    size_t ServiceProvider::getCurrentPolicyEpoch() const
+    {
+        return m_currentPolicyEpoch;
+    }
+
+    bool ServiceProvider::isAcceptablePolicyEpoch(size_t messageEpoch) const
+    {
+        return m_currentPolicyEpoch == 0 || messageEpoch == 0 ||
+               messageEpoch == m_currentPolicyEpoch;
     }
 
     bool ServiceProvider::handlePermissionResponseData(const ndn::Data& data,
@@ -3387,6 +4696,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         const ndn::Name& msgId,
         const ndn::Buffer& buffer)
     {
+        if (!providerName.equals(identity)) {
+            NDN_LOG_WARN("Ignore V2 coordination for non-local provider "
+                         << providerName.toUri()
+                         << " at " << identity.toUri());
+            return;
+        }
+
         auto raw = std::make_shared<std::vector<uint8_t>>(buffer.begin(), buffer.end());
 
         auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
@@ -3409,6 +4725,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
         ServiceCoordinationMessage message;
         message.WireDecode(block);
+        if (!isAcceptablePolicyEpoch(message.getPolicyEpoch())) {
+            NDN_LOG_ERROR("Reject V2 coordination with stale policy epoch for "
+                          << msgId.toUri()
+                          << " receivedEpoch=" << message.getPolicyEpoch()
+                          << " currentEpoch=" << m_currentPolicyEpoch);
+            return;
+        }
 
         auto key = ndn::Name(requesterName.toUri())
                     .append(serviceName)
@@ -3461,7 +4784,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
         for (const auto& requestID : message.getRequestIDs()) {
             const ndn::Name requestId(requestID);
-            if (!hasService(serviceName)) {
+            auto collabService = m_collaborationServices.find(serviceName);
+            if (!hasService(serviceName) &&
+                collabService == m_collaborationServices.end()) {
                 NDN_LOG_INFO("No V2 dynamic handler for " << serviceName.toUri());
                 continue;
             }
@@ -3483,6 +4808,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 ProviderRequestLifecycleState::EXECUTION_STARTED);
             m_selectedOutstandingRequests.fetch_add(1, std::memory_order_relaxed);
             RequestMessage requestCopy = *(it->second);
+            if (collabService != m_collaborationServices.end()) {
+                auto assignment =
+                    parseCollaborationAssignment(serviceName,
+                                                 message.getAssignmentPayload());
+                if (dispatchCollaborationExecutionAsync(requesterName,
+                                                        providerName,
+                                                        serviceName,
+                                                        requestId,
+                                                        requestCopy,
+                                                        std::move(assignment))) {
+                    continue;
+                }
+            }
             if (dispatchRequestExecutionAsync(requesterName,
                                               providerName,
                                               serviceName,
@@ -3573,6 +4911,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                         if (m_useTokens) {
                             response.setUserToken(it->second->getUserToken());
                         }
+                        response.setPolicyEpoch(m_currentPolicyEpoch);
                         ndn::Name responseName = makeResponseName(providerName,
                                                                   requesterName,
                                                                   ServiceName,
@@ -3641,6 +4980,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                         std::bind(&ServiceProvider::onServiceCoordinationMessage, this, _1),
                                         true, false);
         }
+        std::string collabRegex = "^(<>*)<NDNSF><COLLAB>(<>*)$";
+        NDN_LOG_INFO(collabRegex);
+        m_svsps->subscribeWithRegex(ndn::Regex(collabRegex),
+                                    std::bind(&ServiceProvider::onCollaborationDataMessage, this, _1),
+                                    true, false);
     }
 
     bool ServiceProvider::isFresh(const ndn::svs::SVSPubSub::SubscriptionData& subscription)

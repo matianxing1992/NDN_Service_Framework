@@ -620,7 +620,7 @@ main(int argc, char** argv)
       GROUP_PREFIX,
       userCert,
       controllerCert,
-      "examples/trust-any.conf");
+      "examples/trust-schema.conf");
 
     user.init();
     user.setPerformanceMode(performanceMode);

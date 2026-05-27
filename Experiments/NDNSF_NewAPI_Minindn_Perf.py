@@ -1235,7 +1235,7 @@ def write_svs_prefix_report(output_dir, provider_count, session_base, label):
             "session_id": entries.get((SVS_GROUP_PREFIX, svs_node_prefix("user")), str(session_base)),
             "data_prefix": svs_data_prefix("user"),
             "signing_identity": "/example/hello/user",
-            "validator_config_path": "examples/trust-any.conf",
+            "validator_config_path": "examples/trust-schema.conf",
             "paths": home_notes,
         }
     }
@@ -1248,7 +1248,7 @@ def write_svs_prefix_report(output_dir, provider_count, session_base, label):
             "session_id": entries.get((SVS_GROUP_PREFIX, node_name), str(session_base)),
             "data_prefix": svs_data_prefix("provider", provider_id),
             "signing_identity": "/example/hello/provider/{}".format(provider_id),
-            "validator_config_path": "examples/trust-any.conf",
+            "validator_config_path": "examples/trust-schema.conf",
             "paths": home_notes,
         }
     report = {
@@ -1733,7 +1733,7 @@ def write_app_launch_diagnostics(log_file, node, name, session_base, started_us)
         "[MiniNDN Harness] node/session name={} / sessionBase={}".format(node_prefix, session_base),
         "[MiniNDN Harness] data prefix={}".format(svs_data_prefix(role, provider_id)),
         "[MiniNDN Harness] signing identity={}".format(signing_identity),
-        "[MiniNDN Harness] validator config path=examples/trust-any.conf",
+        "[MiniNDN Harness] validator config path=examples/trust-schema.conf",
         "[MiniNDN Harness] HOME={}".format(node.params["params"]["homeDir"]),
         "[MiniNDN Harness] PIB={}".format(
             Path(node.params["params"]["homeDir"]) / ".ndn" / "pib"),

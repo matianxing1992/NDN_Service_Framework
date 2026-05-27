@@ -822,29 +822,49 @@ BOOST_AUTO_TEST_CASE(MessageTokenFieldsRoundTrip)
 {
   RequestMessage request;
   request.setUserToken("user-token");
+  request.setPolicyEpoch(42);
   RequestMessage decodedRequest;
   BOOST_CHECK(decodedRequest.WireDecode(request.WireEncode()));
   BOOST_CHECK_EQUAL(decodedRequest.getUserToken(), "user-token");
+  BOOST_CHECK_EQUAL(decodedRequest.getPolicyEpoch(), 42);
 
   RequestAckMessage ack;
   ack.setUserToken("user-token");
   ack.setProviderToken("provider-token");
+  ack.setPolicyEpoch(42);
   RequestAckMessage decodedAck;
   BOOST_CHECK(decodedAck.WireDecode(ack.WireEncode()));
   BOOST_CHECK_EQUAL(decodedAck.getUserToken(), "user-token");
   BOOST_CHECK_EQUAL(decodedAck.getProviderToken(), "provider-token");
+  BOOST_CHECK_EQUAL(decodedAck.getPolicyEpoch(), 42);
 
   ServiceCoordinationMessage coordination;
   coordination.setProviderToken("provider-token");
+  coordination.setPolicyEpoch(42);
   ServiceCoordinationMessage decodedCoordination;
   BOOST_CHECK(decodedCoordination.WireDecode(coordination.WireEncode()));
   BOOST_CHECK_EQUAL(decodedCoordination.getProviderToken(), "provider-token");
+  BOOST_CHECK_EQUAL(decodedCoordination.getPolicyEpoch(), 42);
 
   ResponseMessage response;
   response.setUserToken("user-token");
+  response.setPolicyEpoch(42);
   ResponseMessage decodedResponse;
   BOOST_CHECK(decodedResponse.WireDecode(response.WireEncode()));
   BOOST_CHECK_EQUAL(decodedResponse.getUserToken(), "user-token");
+  BOOST_CHECK_EQUAL(decodedResponse.getPolicyEpoch(), 42);
+
+  PolicyManifest manifest;
+  manifest.setPolicyEpoch(42);
+  manifest.setValidFromMs(1234);
+  manifest.setGracePeriodMs(5000);
+  manifest.setRequiredKeyEpoch(43);
+  PolicyManifest decodedManifest;
+  BOOST_CHECK(decodedManifest.WireDecode(manifest.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedManifest.getPolicyEpoch(), 42);
+  BOOST_CHECK_EQUAL(decodedManifest.getValidFromMs(), 1234);
+  BOOST_CHECK_EQUAL(decodedManifest.getGracePeriodMs(), 5000);
+  BOOST_CHECK_EQUAL(decodedManifest.getRequiredKeyEpoch(), 43);
 }
 
 BOOST_AUTO_TEST_CASE(HybridMessageEnvelopeProtectsRequestPayloadAndUserToken)

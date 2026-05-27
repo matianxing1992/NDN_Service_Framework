@@ -74,7 +74,7 @@ main(int argc, char** argv)
     getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("C"));
     getOrCreateIdentity(keyChain, USER_IDENTITY);
 
-    validator.load("examples/trust-any.conf");
+    validator.load("examples/trust-schema.conf");
 
     std::cout << "[App_ServiceController] authority identity="
               << controllerCert.getIdentity().toUri()

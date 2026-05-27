@@ -123,7 +123,7 @@ main()
     ndn::Name("/example/group"),
     userCert,
     aaCert,
-    "examples/trust-any.conf");
+    "examples/trust-schema.conf");
 
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{},
@@ -131,7 +131,7 @@ main()
     ndn::Name("/example/group"),
     providerCert,
     aaCert,
-    "examples/trust-any.conf");
+    "examples/trust-schema.conf");
   user.setHandlerThreads(0);
 
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
