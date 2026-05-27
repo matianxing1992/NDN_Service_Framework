@@ -209,15 +209,6 @@ BOOST_AUTO_TEST_CASE(DummyFacesDeliverV2RequestPublication)
 
   ndn::DummyClientFace faceA(ioA, keyChain, faceOptions);
   ndn::DummyClientFace faceB(ioB, keyChain, faceOptions);
-  faceA.linkTo(faceB);
-  auto forwardAInterest = faceA.onSendInterest.connect(
-    [&] (const ndn::Interest& interest) { faceB.receive(interest); });
-  auto forwardBInterest = faceB.onSendInterest.connect(
-    [&] (const ndn::Interest& interest) { faceA.receive(interest); });
-  auto forwardAData = faceA.onSendData.connect(
-    [&] (const ndn::Data& data) { faceB.receive(data); });
-  auto forwardBData = faceB.onSendData.connect(
-    [&] (const ndn::Data& data) { faceA.receive(data); });
 
   auto securityOptions = makeTestSecurityOptions(keyChain);
   ndn::svs::SVSPubSubOptions svsOptions;
@@ -239,6 +230,16 @@ BOOST_AUTO_TEST_CASE(DummyFacesDeliverV2RequestPublication)
                                      [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
                                      svsOptions,
                                      securityOptions);
+
+  faceA.linkTo(faceB);
+  auto forwardAInterest = faceA.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) { faceB.receive(interest); });
+  auto forwardBInterest = faceB.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) { faceA.receive(interest); });
+  auto forwardAData = faceA.onSendData.connect(
+    [&] (const ndn::Data& data) { faceB.receive(data); });
+  auto forwardBData = faceB.onSendData.connect(
+    [&] (const ndn::Data& data) { faceA.receive(data); });
 
   const ndn::Name requester("/test/user/alice");
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
@@ -316,15 +317,6 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
 
   ndn::DummyClientFace userFace(ioA, keyChain, faceOptions);
   ndn::DummyClientFace providerFace(ioB, keyChain, faceOptions);
-  userFace.linkTo(providerFace);
-  auto forwardUserInterest = userFace.onSendInterest.connect(
-    [&] (const ndn::Interest& interest) { providerFace.receive(interest); });
-  auto forwardProviderInterest = providerFace.onSendInterest.connect(
-    [&] (const ndn::Interest& interest) { userFace.receive(interest); });
-  auto forwardUserData = userFace.onSendData.connect(
-    [&] (const ndn::Data& data) { providerFace.receive(data); });
-  auto forwardProviderData = providerFace.onSendData.connect(
-    [&] (const ndn::Data& data) { userFace.receive(data); });
 
   auto securityOptions = makeTestSecurityOptions(keyChain);
   ndn::svs::SVSPubSubOptions svsOptions;
@@ -346,6 +338,16 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
                                      [] (const std::vector<ndn::svs::MissingDataInfo>&) {},
                                      svsOptions,
                                      securityOptions);
+
+  userFace.linkTo(providerFace);
+  auto forwardUserInterest = userFace.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) { providerFace.receive(interest); });
+  auto forwardProviderInterest = providerFace.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) { userFace.receive(interest); });
+  auto forwardUserData = userFace.onSendData.connect(
+    [&] (const ndn::Data& data) { providerFace.receive(data); });
+  auto forwardProviderData = providerFace.onSendData.connect(
+    [&] (const ndn::Data& data) { userFace.receive(data); });
 
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/test/user/alice"));
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/test/provider/camera"));
