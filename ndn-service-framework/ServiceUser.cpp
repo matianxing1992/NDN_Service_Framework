@@ -563,6 +563,12 @@ namespace ndn_service_framework
                 std::bind(&ServiceUser::onMissingData, this, _1),
                 opts,
                 secOpts);
+            const int suppressionMs =
+                std::max(0, intEnvOrDefault("NDNSF_SVS_MAX_SUPPRESSION_MS", 50));
+            m_svsps->getSVSync().getCore().setMaxSuppressionTime(
+                ndn::time::milliseconds(suppressionMs));
+            NDN_LOG_INFO("NDNSF_SVS_MAX_SUPPRESSION_MS role=user value="
+                         << suppressionMs);
             NDN_LOG_INFO("NDNSF_SVS_ASYNC_PUBLISH role=user "
                          << (useAsyncSvsPublish() ? "enabled" : "disabled"));
             const bool enableParallelSync =
@@ -2849,6 +2855,23 @@ namespace ndn_service_framework
         if (!selectionPolicy) {
             selectionPolicy = strategy::FirstResponding;
         }
+
+        if (selectionPolicy.get() == strategy::FirstResponding.get()) {
+            ndn_service_framework::RequestMessage requestMessage;
+            auto payload = request;
+            requestMessage.setPayload(payload, payload.size());
+            requestMessage.setStrategy(ndn_service_framework::tlv::FirstResponding);
+
+            return RequestService({},
+                              service,
+                              std::move(requestMessage),
+                              ackCollectionTimeMs,
+                              AckSelectionStrategy::FirstRespondingSelection,
+                              timeoutMs,
+                              std::move(onTimeout),
+                              std::move(onResponse));
+        }
+
         const size_t requestStrategy = selectionPolicy->requestStrategy();
 
         ndn_service_framework::RequestMessage requestMessage;

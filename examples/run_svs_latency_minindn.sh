@@ -13,6 +13,9 @@ parallel_workers="${SVS_PARALLEL_WORKERS:-2}"
 parallel_queue="${SVS_PARALLEL_QUEUE:-128}"
 sync_batching="${SVS_SYNC_BATCHING:-0}"
 sync_batch_ms="${SVS_SYNC_BATCH_MS:-5}"
+max_suppression_ms="${SVS_MAX_SUPPRESSION_MS:-}"
+svs_strategy="${SVS_LATENCY_STRATEGY:-}"
+svs_log="${SVS_LATENCY_NDN_LOG:-ndn_service_framework.AppSvsLatency=INFO:ndn_svs.SyncTimeline=INFO}"
 
 cd "${repo_root}"
 mkdir -p "${output_dir}"
@@ -40,6 +43,9 @@ parallel_workers = int(${parallel_workers@Q})
 parallel_queue = int(${parallel_queue@Q})
 sync_batching = ${sync_batching@Q} not in ("", "0", "false", "False", "no", "No")
 sync_batch_ms = int(${sync_batch_ms@Q})
+max_suppression_ms = ${max_suppression_ms@Q}
+svs_strategy = ${svs_strategy@Q}
+svs_log = ${svs_log@Q}
 
 def parse_ping_csv(*paths):
     rows = []
@@ -117,10 +123,12 @@ def run_svs_latency(ndn, args, output_dir):
                      .format(parallel_workers, parallel_queue) if parallel_sync else "")
     batch_args = ("--sync-batching --sync-batch-ms {}"
                   .format(sync_batch_ms) if sync_batching else "")
-    extra_args = "{} {}".format(parallel_args, batch_args).strip()
+    suppression_args = ("--max-suppression-ms {}"
+                        .format(max_suppression_ms) if max_suppression_ms != "" else "")
+    extra_args = "{} {} {}".format(parallel_args, batch_args, suppression_args).strip()
 
     ping_cmd = (
-        "export NDN_LOG=ndn_service_framework.AppSvsLatency=INFO:ndn_svs.SyncTimeline=INFO; "
+        "export NDN_LOG={svs_log}; "
         "exec {app} --role {ping_role} --sync-prefix /example/hello/group "
         "--node-prefix /example/hello/user/svs-latency "
         "--peer-prefix /example/hello/provider/A/svs-latency "
@@ -128,9 +136,9 @@ def run_svs_latency(ndn, args, output_dir):
     ).format(app=repo_root / "build/examples/App_SvsLatency",
              ping_role="pub" if mode == "oneway" else "ping",
              count=count, interval_ms=interval_ms, timeout_ms=timeout_ms,
-             extra_args=extra_args)
+             extra_args=extra_args, svs_log=svs_log)
     pong_cmd = (
-        "export NDN_LOG=ndn_service_framework.AppSvsLatency=INFO:ndn_svs.SyncTimeline=INFO; "
+        "export NDN_LOG={svs_log}; "
         "exec {app} --role {pong_role} --sync-prefix /example/hello/group "
         "--node-prefix /example/hello/provider/A/svs-latency "
         "--peer-prefix /example/hello/user/svs-latency "
@@ -138,7 +146,7 @@ def run_svs_latency(ndn, args, output_dir):
     ).format(app=repo_root / "build/examples/App_SvsLatency",
              pong_role="sub" if mode == "oneway" else "pong",
              count=count, interval_ms=interval_ms, timeout_ms=timeout_ms,
-             extra_args=extra_args)
+             extra_args=extra_args, svs_log=svs_log)
 
     processes = []
     with pong_log.open("wb") as pong_out, ping_log.open("wb") as ping_out, \
@@ -228,6 +236,10 @@ def main():
         perf.AppManager(ndn, ndn.net.hosts, perf.Nlsr)
         time.sleep(2)
         perf.configure_static_routes(ndn, args)
+        if svs_strategy:
+            strategy = perf.Nfdc.STRATEGY_BEST_ROUTE if svs_strategy == "best-route" else perf.Nfdc.STRATEGY_MULTICAST
+            for node in ndn.net.hosts:
+                perf.Nfdc.setStrategy(node, "/example/hello/group", strategy)
         perf.advertise_nlsr_prefixes(ndn, args)
         perf.wait_for_nlsr_convergence(ndn, args, output_dir)
         run_svs_latency(ndn, args, output_dir)
