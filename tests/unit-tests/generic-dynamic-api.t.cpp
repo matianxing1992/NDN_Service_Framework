@@ -154,13 +154,13 @@ public:
   }
 
   std::vector<ndn::Name>
-  getCoordinatedProviders(const ndn::Name& requestId) const
+  getSelectionPublishedProviders(const ndn::Name& requestId) const
   {
     const auto pending = m_pendingCalls.find(requestId);
     if (pending == m_pendingCalls.end()) {
       return {};
     }
-    return pending->second.coordinatedProviders;
+    return pending->second.selectionPublishedProviders;
   }
 
   bool
@@ -449,12 +449,12 @@ makeRequestMessageWithUserToken(const std::string& payload,
 }
 
 ndn::Buffer
-makeCoordinationBuffer(const ndn::Name& requestId, const std::string& providerToken)
+makeSelectionBuffer(const ndn::Name& requestId, const std::string& providerToken)
 {
-  ServiceCoordinationMessage coordination;
-  coordination.setRequestIDs({requestId.toUri()});
-  coordination.setProviderToken(providerToken);
-  auto block = coordination.WireEncode();
+  ServiceSelectionMessage selection;
+  selection.setRequestIDs({requestId.toUri()});
+  selection.setProviderToken(providerToken);
+  auto block = selection.WireEncode();
   return ndn::Buffer(block.data(), block.size());
 }
 
@@ -838,13 +838,13 @@ BOOST_AUTO_TEST_CASE(MessageTokenFieldsRoundTrip)
   BOOST_CHECK_EQUAL(decodedAck.getProviderToken(), "provider-token");
   BOOST_CHECK_EQUAL(decodedAck.getPolicyEpoch(), 42);
 
-  ServiceCoordinationMessage coordination;
-  coordination.setProviderToken("provider-token");
-  coordination.setPolicyEpoch(42);
-  ServiceCoordinationMessage decodedCoordination;
-  BOOST_CHECK(decodedCoordination.WireDecode(coordination.WireEncode()));
-  BOOST_CHECK_EQUAL(decodedCoordination.getProviderToken(), "provider-token");
-  BOOST_CHECK_EQUAL(decodedCoordination.getPolicyEpoch(), 42);
+  ServiceSelectionMessage selection;
+  selection.setProviderToken("provider-token");
+  selection.setPolicyEpoch(42);
+  ServiceSelectionMessage decodedSelection;
+  BOOST_CHECK(decodedSelection.WireDecode(selection.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedSelection.getProviderToken(), "provider-token");
+  BOOST_CHECK_EQUAL(decodedSelection.getPolicyEpoch(), 42);
 
   ResponseMessage response;
   response.setUserToken("user-token");
@@ -1671,40 +1671,40 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
                                          requestMessage,
                                          "provider-token");
 
-  ServiceCoordinationMessage wrongCoordination;
-  wrongCoordination.setRequestIDs({requestId.toUri()});
-  wrongCoordination.setProviderToken("wrong-provider-token");
-  auto wrongCoordinationBlock = wrongCoordination.WireEncode();
-  ndn::Buffer wrongCoordinationBuffer(wrongCoordinationBlock.data(),
-                                      wrongCoordinationBlock.size());
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  ServiceSelectionMessage wrongSelection;
+  wrongSelection.setRequestIDs({requestId.toUri()});
+  wrongSelection.setProviderToken("wrong-provider-token");
+  auto wrongSelectionBlock = wrongSelection.WireEncode();
+  ndn::Buffer wrongSelectionBuffer(wrongSelectionBlock.data(),
+                                      wrongSelectionBlock.size());
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
     requestId,
-    wrongCoordinationBuffer);
+    wrongSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 0);
 
-  ServiceCoordinationMessage goodCoordination;
-  goodCoordination.setRequestIDs({requestId.toUri()});
-  goodCoordination.setProviderToken("provider-token");
-  auto goodCoordinationBlock = goodCoordination.WireEncode();
-  ndn::Buffer goodCoordinationBuffer(goodCoordinationBlock.data(),
-                                     goodCoordinationBlock.size());
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  ServiceSelectionMessage goodSelection;
+  goodSelection.setRequestIDs({requestId.toUri()});
+  goodSelection.setProviderToken("provider-token");
+  auto goodSelectionBlock = goodSelection.WireEncode();
+  ndn::Buffer goodSelectionBuffer(goodSelectionBlock.data(),
+                                     goodSelectionBlock.size());
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
     requestId,
-    goodCoordinationBuffer);
+    goodSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
 
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
     requestId,
-    goodCoordinationBuffer);
+    goodSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
 
   const ndn::Name replayedRequestId("/request-token-negative-new");
@@ -1713,13 +1713,13 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
                                          replayedRequestId,
                                          requestMessage,
                                          "new-provider-token");
-  ServiceCoordinationMessage replayedOldTokenCoordination;
-  replayedOldTokenCoordination.setRequestIDs({replayedRequestId.toUri()});
-  replayedOldTokenCoordination.setProviderToken("provider-token");
-  auto replayedOldTokenBlock = replayedOldTokenCoordination.WireEncode();
+  ServiceSelectionMessage replayedOldTokenSelection;
+  replayedOldTokenSelection.setRequestIDs({replayedRequestId.toUri()});
+  replayedOldTokenSelection.setProviderToken("provider-token");
+  auto replayedOldTokenBlock = replayedOldTokenSelection.WireEncode();
   ndn::Buffer replayedOldTokenBuffer(replayedOldTokenBlock.data(),
                                      replayedOldTokenBlock.size());
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
@@ -1759,7 +1759,7 @@ BOOST_AUTO_TEST_CASE(TokenModeDefaultsToEnabledAndPreservesChecks)
   BOOST_CHECK(!user.handleRequestAckByName(ackName, missingProviderTokenAck));
 }
 
-BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckCoordinationResponsePath)
+BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckSelectionResponsePath)
 {
   ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:token-mode-disabled",
@@ -1851,12 +1851,12 @@ BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckCoordinationRespons
     tlv::FirstResponding);
 
   BOOST_CHECK_EQUAL(requestId, publishedRequestId);
-  auto coordinationBuffer = makeCoordinationBuffer(requestId, "");
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(requesterName,
+  auto selectionBuffer = makeSelectionBuffer(requestId, "");
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
                                                                   providerName,
                                                                   serviceName,
                                                                   requestId,
-                                                                  coordinationBuffer);
+                                                                  selectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
 
   ResponseMessage response;
@@ -1927,7 +1927,7 @@ BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
     tokenlessAck));
 }
 
-BOOST_AUTO_TEST_CASE(ProviderTokenCleanupExpiresUncoordinatedAckState)
+BOOST_AUTO_TEST_CASE(ProviderTokenCleanupExpiresUnselectedAckState)
 {
   ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:provider-token-cleanup",
@@ -1977,18 +1977,18 @@ BOOST_AUTO_TEST_CASE(ProviderTokenCleanupExpiresUncoordinatedAckState)
   BOOST_CHECK(!provider.hasPendingRequestForTokenTest(requesterName, serviceName, requestId));
   BOOST_CHECK(!provider.hasPendingProviderTokenForTest(requesterName, serviceName, requestId));
 
-  ServiceCoordinationMessage staleCoordination;
-  staleCoordination.setRequestIDs({requestId.toUri()});
-  staleCoordination.setProviderToken("provider-token");
-  auto staleCoordinationBlock = staleCoordination.WireEncode();
-  ndn::Buffer staleCoordinationBuffer(staleCoordinationBlock.data(),
-                                      staleCoordinationBlock.size());
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  ServiceSelectionMessage staleSelection;
+  staleSelection.setRequestIDs({requestId.toUri()});
+  staleSelection.setProviderToken("provider-token");
+  auto staleSelectionBlock = staleSelection.WireEncode();
+  ndn::Buffer staleSelectionBuffer(staleSelectionBlock.data(),
+                                      staleSelectionBlock.size());
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
     requestId,
-    staleCoordinationBuffer);
+    staleSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 0);
 
   const ndn::Name consumedRequestId("/request-token-cleanup-consumed");
@@ -1997,26 +1997,26 @@ BOOST_AUTO_TEST_CASE(ProviderTokenCleanupExpiresUncoordinatedAckState)
                                          consumedRequestId,
                                          requestMessage,
                                          "fresh-provider-token");
-  ServiceCoordinationMessage goodCoordination;
-  goodCoordination.setRequestIDs({consumedRequestId.toUri()});
-  goodCoordination.setProviderToken("fresh-provider-token");
-  auto goodCoordinationBlock = goodCoordination.WireEncode();
-  ndn::Buffer goodCoordinationBuffer(goodCoordinationBlock.data(),
-                                     goodCoordinationBlock.size());
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  ServiceSelectionMessage goodSelection;
+  goodSelection.setRequestIDs({consumedRequestId.toUri()});
+  goodSelection.setProviderToken("fresh-provider-token");
+  auto goodSelectionBlock = goodSelection.WireEncode();
+  ndn::Buffer goodSelectionBuffer(goodSelectionBlock.data(),
+                                     goodSelectionBlock.size());
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
     consumedRequestId,
-    goodCoordinationBuffer);
+    goodSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
 
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
     consumedRequestId,
-    goodCoordinationBuffer);
+    goodSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
 }
 
@@ -2062,8 +2062,8 @@ BOOST_AUTO_TEST_CASE(ProviderTokenAdversarialRejectionAndRestartBehavior)
                                          requestMessage,
                                          "expected-token");
 
-  auto randomTokenBuffer = makeCoordinationBuffer(requestId, "random-token");
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  auto randomTokenBuffer = makeSelectionBuffer(requestId, "random-token");
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
@@ -2076,8 +2076,8 @@ BOOST_AUTO_TEST_CASE(ProviderTokenAdversarialRejectionAndRestartBehavior)
   BOOST_CHECK(provider.expirePendingRequestStateForTest(requesterName, serviceName, requestId));
   BOOST_CHECK_EQUAL(provider.getCleanupInvocationCountForTesting(), 1);
 
-  auto expiredTokenBuffer = makeCoordinationBuffer(requestId, "expected-token");
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  auto expiredTokenBuffer = makeSelectionBuffer(requestId, "expected-token");
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
@@ -2104,7 +2104,7 @@ BOOST_AUTO_TEST_CASE(ProviderTokenAdversarialRejectionAndRestartBehavior)
         response.setStatus(true);
         return response;
       }));
-  restartedProvider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  restartedProvider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
@@ -2171,19 +2171,19 @@ BOOST_AUTO_TEST_CASE(ProviderStateCleanupEdgeCases)
   BOOST_CHECK_EQUAL(provider.getPendingProviderTokenCountForTesting(), 0);
   BOOST_CHECK_EQUAL(provider.getCleanupInvocationCountForTesting(), 25);
 
-  const ndn::Name coordinatedRequestId("/cleanup-during-success");
+  const ndn::Name selectedRequestId("/cleanup-during-success");
   provider.addPendingRequestForTokenTest(requesterName,
                                          serviceName,
-                                         coordinatedRequestId,
+                                         selectedRequestId,
                                          requestMessage,
                                          "live-token");
-  auto liveCoordinationBuffer = makeCoordinationBuffer(coordinatedRequestId, "live-token");
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+  auto liveSelectionBuffer = makeSelectionBuffer(selectedRequestId, "live-token");
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
     requesterName,
     providerName,
     serviceName,
-    coordinatedRequestId,
-    liveCoordinationBuffer);
+    selectedRequestId,
+    liveSelectionBuffer);
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
   BOOST_CHECK_EQUAL(provider.getTokenConsumeCountForTesting(), 1);
   BOOST_CHECK_EQUAL(provider.getPendingRequestCountForTesting(), 0);
@@ -2191,7 +2191,7 @@ BOOST_AUTO_TEST_CASE(ProviderStateCleanupEdgeCases)
   BOOST_CHECK(!provider.expirePendingRequestStateForTest(
     requesterName,
     serviceName,
-    coordinatedRequestId));
+    selectedRequestId));
   BOOST_CHECK_EQUAL(provider.getCleanupInvocationCountForTesting(), 26);
 
   for (int cycle = 0; cycle < 5; ++cycle) {
@@ -2269,8 +2269,8 @@ BOOST_AUTO_TEST_CASE(ProviderStateLightweightStressIsDeterministic)
   for (int i : order) {
     const ndn::Name requestId("/stress-" + std::to_string(i));
     if (i % 5 == 0) {
-      auto wrongBuffer = makeCoordinationBuffer(requestId, "wrong-token");
-      provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+      auto wrongBuffer = makeSelectionBuffer(requestId, "wrong-token");
+      provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
         requesterName,
         providerName,
         serviceName,
@@ -2283,9 +2283,9 @@ BOOST_AUTO_TEST_CASE(ProviderStateLightweightStressIsDeterministic)
                                                             serviceName,
                                                             requestId));
       ++expectedExpirations;
-      auto expiredBuffer = makeCoordinationBuffer(requestId,
+      auto expiredBuffer = makeSelectionBuffer(requestId,
                                                   "stress-token-" + std::to_string(i));
-      provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+      provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
         requesterName,
         providerName,
         serviceName,
@@ -2294,15 +2294,15 @@ BOOST_AUTO_TEST_CASE(ProviderStateLightweightStressIsDeterministic)
       continue;
     }
 
-    auto buffer = makeCoordinationBuffer(requestId, "stress-token-" + std::to_string(i));
-    provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+    auto buffer = makeSelectionBuffer(requestId, "stress-token-" + std::to_string(i));
+    provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
       requesterName,
       providerName,
       serviceName,
       requestId,
       buffer);
     ++expectedCompletions;
-    provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+    provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
       requesterName,
       providerName,
       serviceName,
@@ -2318,10 +2318,10 @@ BOOST_AUTO_TEST_CASE(ProviderStateLightweightStressIsDeterministic)
 BOOST_CHECK_EQUAL(provider.getPendingProviderTokenCountForTesting(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(AllRespondersSelectsAndCoordinatesEveryValidAckResponder)
+BOOST_AUTO_TEST_CASE(AllSelectedPublishesSelectionForEveryValidAckResponder)
 {
-  ndn::security::KeyChain keyChain("pib-memory:all-responders-selection",
-                                   "tpm-memory:all-responders-selection");
+  ndn::security::KeyChain keyChain("pib-memory:all-selected-selection",
+                                   "tpm-memory:all-selected-selection");
   ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name serviceName("/HELLO");
@@ -2331,7 +2331,7 @@ BOOST_AUTO_TEST_CASE(AllRespondersSelectsAndCoordinatesEveryValidAckResponder)
     ndn::Name("/test/provider/c")
   };
   auto userCert = makeRsaIdentity(keyChain, requesterName);
-  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-responders-selection"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-selected-selection"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
 
   ndn::Name publishedRequestId;
@@ -2343,7 +2343,7 @@ BOOST_AUTO_TEST_CASE(AllRespondersSelectsAndCoordinatesEveryValidAckResponder)
          const RequestMessage& requestMessage,
          size_t strategy) {
       publishedRequestId = requestId;
-      BOOST_CHECK_EQUAL(strategy, tlv::AllResponders);
+      BOOST_CHECK_EQUAL(strategy, tlv::AllSelected);
 
       auto ackA = makeSuccessAckForRequest(requestMessage, "provider-token-a");
       auto ackB = makeSuccessAckForRequest(requestMessage, "provider-token-b");
@@ -2366,10 +2366,10 @@ BOOST_AUTO_TEST_CASE(AllRespondersSelectsAndCoordinatesEveryValidAckResponder)
     serviceName,
     request,
     1,
-    ServiceUser::AckSelectionStrategy::AllResponders,
+    ServiceUser::AckSelectionStrategy::AllSelected,
     1000,
     ServiceUser::TimeoutHandler([] (const ndn::Name&) {
-      BOOST_FAIL("AllResponders selection test should not time out");
+      BOOST_FAIL("AllSelected selection test should not time out");
     }),
     ServiceUser::ResponseHandler([] (const ResponseMessage&) {}));
 
@@ -2382,24 +2382,24 @@ BOOST_AUTO_TEST_CASE(AllRespondersSelectsAndCoordinatesEveryValidAckResponder)
   BOOST_CHECK(namesContain(selected, providers[1]));
   BOOST_CHECK(!namesContain(selected, providers[2]));
 
-  const auto coordinated = user.getCoordinatedProviders(requestId);
-  BOOST_REQUIRE_EQUAL(coordinated.size(), 2);
-  BOOST_CHECK(namesContain(coordinated, providers[0]));
-  BOOST_CHECK(namesContain(coordinated, providers[1]));
-  BOOST_CHECK(!namesContain(coordinated, providers[2]));
+  const auto selectedForPublication = user.getSelectionPublishedProviders(requestId);
+  BOOST_REQUIRE_EQUAL(selectedForPublication.size(), 2);
+  BOOST_CHECK(namesContain(selectedForPublication, providers[0]));
+  BOOST_CHECK(namesContain(selectedForPublication, providers[1]));
+  BOOST_CHECK(!namesContain(selectedForPublication, providers[2]));
 }
 
-BOOST_AUTO_TEST_CASE(AllRespondersProvidersExecuteOnlyAfterCoordination)
+BOOST_AUTO_TEST_CASE(AllSelectedProvidersExecuteOnlyAfterSelection)
 {
-  ndn::security::KeyChain keyChain("pib-memory:all-responders-provider-coordination",
-                                   "tpm-memory:all-responders-provider-coordination");
+  ndn::security::KeyChain keyChain("pib-memory:all-selected-provider-selection",
+                                   "tpm-memory:all-selected-provider-selection");
   ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/a");
   const ndn::Name serviceName("/HELLO");
-  const ndn::Name requestId("/request-all-responders-provider");
+  const ndn::Name requestId("/request-all-selected-provider");
   auto providerCert = makeRsaIdentity(keyChain, providerName);
-  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-responders-provider"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-selected-provider"));
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
@@ -2421,7 +2421,7 @@ BOOST_AUTO_TEST_CASE(AllRespondersProvidersExecuteOnlyAfterCoordination)
       }));
 
   RequestMessage request = makeRequestMessageWithUserToken("hello");
-  request.setStrategy(tlv::AllResponders);
+  request.setStrategy(tlv::AllSelected);
   auto requestBlock = request.WireEncode();
   ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
 
@@ -2433,12 +2433,12 @@ BOOST_AUTO_TEST_CASE(AllRespondersProvidersExecuteOnlyAfterCoordination)
   BOOST_CHECK_EQUAL(executions, 0);
   BOOST_CHECK(provider.hasPendingRequestForTokenTest(requesterName, serviceName, requestId));
 
-  auto coordinationBuffer = makeCoordinationBuffer(requestId, "provider-token");
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(requesterName,
+  auto selectionBuffer = makeSelectionBuffer(requestId, "provider-token");
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
                                                                   providerName,
                                                                   serviceName,
                                                                   requestId,
-                                                                  coordinationBuffer);
+                                                                  selectionBuffer);
   BOOST_CHECK_EQUAL(executions, 0);
 
   provider.addPendingRequestForTokenTest(requesterName,
@@ -2446,18 +2446,18 @@ BOOST_AUTO_TEST_CASE(AllRespondersProvidersExecuteOnlyAfterCoordination)
                                          requestId,
                                          request,
                                          "provider-token");
-  provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(requesterName,
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
                                                                   providerName,
                                                                   serviceName,
                                                                   requestId,
-                                                                  coordinationBuffer);
+                                                                  selectionBuffer);
   BOOST_CHECK_EQUAL(executions, 1);
 }
 
-BOOST_AUTO_TEST_CASE(AllRespondersHandlesMultipleSelectedProviderResponses)
+BOOST_AUTO_TEST_CASE(AllSelectedHandlesMultipleSelectedProviderResponses)
 {
-  ndn::security::KeyChain keyChain("pib-memory:all-responders-responses",
-                                   "tpm-memory:all-responders-responses");
+  ndn::security::KeyChain keyChain("pib-memory:all-selected-responses",
+                                   "tpm-memory:all-selected-responses");
   ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name serviceName("/HELLO");
@@ -2466,7 +2466,7 @@ BOOST_AUTO_TEST_CASE(AllRespondersHandlesMultipleSelectedProviderResponses)
     ndn::Name("/test/provider/b")
   };
   auto userCert = makeRsaIdentity(keyChain, requesterName);
-  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-responders-responses"));
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-selected-responses"));
   LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
 
   ndn::Name publishedRequestId;
@@ -2495,10 +2495,10 @@ BOOST_AUTO_TEST_CASE(AllRespondersHandlesMultipleSelectedProviderResponses)
     serviceName,
     request,
     1,
-    ServiceUser::AckSelectionStrategy::AllResponders,
+    ServiceUser::AckSelectionStrategy::AllSelected,
     1000,
     ServiceUser::TimeoutHandler([] (const ndn::Name&) {
-      BOOST_FAIL("AllResponders response test should not time out");
+      BOOST_FAIL("AllSelected response test should not time out");
     }),
     ServiceUser::ResponseHandler([&] (const ResponseMessage&) {
       ++responseCallbacks;
@@ -2761,12 +2761,12 @@ BOOST_AUTO_TEST_CASE(ProviderHandlerExecutionCanRunOffEventLoopAndInParallel)
                                            requestId,
                                            request,
                                            "provider-token");
-    auto coordinationBuffer = makeCoordinationBuffer(requestId, "provider-token");
-    provider.OnServiceCoordinationMessageDecryptionSuccessCallbackV2(requesterName,
+    auto selectionBuffer = makeSelectionBuffer(requestId, "provider-token");
+    provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
                                                                     providerName,
                                                                     serviceName,
                                                                     requestId,
-                                                                    coordinationBuffer);
+                                                                    selectionBuffer);
   }
 
   for (int i = 0; i < 20 && executed < 2; ++i) {

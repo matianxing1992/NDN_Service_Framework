@@ -4,6 +4,7 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/util/logger.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +17,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <set>
 #include <sstream>
@@ -28,6 +30,8 @@
 #include <unistd.h>
 
 namespace {
+
+NDN_LOG_INIT(ndn_service_framework.AppUser);
 
 const ndn::Name GROUP_PREFIX("/example/hello/group");
 const ndn::Name CONTROLLER_PREFIX("/example/hello/controller");
@@ -62,6 +66,40 @@ public:
 
 private:
   int m_fd = -1;
+};
+
+class SampledLogGate
+{
+public:
+  explicit SampledLogGate(size_t maxPerSecond)
+    : m_maxPerSecond(maxPerSecond)
+  {
+  }
+
+  bool
+  allow()
+  {
+    using clock = std::chrono::steady_clock;
+    const auto second = std::chrono::duration_cast<std::chrono::seconds>(
+      clock::now().time_since_epoch()).count();
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (second != m_second) {
+      m_second = second;
+      m_count = 0;
+    }
+    if (m_count >= m_maxPerSecond) {
+      return false;
+    }
+    ++m_count;
+    return true;
+  }
+
+private:
+  const size_t m_maxPerSecond;
+  int64_t m_second = -1;
+  size_t m_count = 0;
+  std::mutex m_mutex;
 };
 
 ndn::security::Certificate
@@ -158,14 +196,14 @@ providerLabel(const ndn::Name& providerName);
 size_t
 parseBenchmarkStrategy(const std::string& strategy)
 {
-  if (strategy == "all-responders" || strategy == "AllResponders") {
-    return ndn_service_framework::tlv::AllResponders;
+  if (strategy == "all-selected" || strategy == "AllSelected") {
+    return ndn_service_framework::tlv::AllSelected;
   }
   if (strategy == "first-responding" || strategy == "FirstResponding") {
     return ndn_service_framework::tlv::FirstResponding;
   }
-  if (strategy == "load-balancing" || strategy == "LoadBalancing") {
-    return ndn_service_framework::tlv::LoadBalancing;
+  if (strategy == "random-selection" || strategy == "RandomSelection") {
+    return ndn_service_framework::tlv::RandomSelection;
   }
   return ndn_service_framework::tlv::FirstResponding;
 }
@@ -179,11 +217,11 @@ benchmarkStrategyLabel(size_t strategy, bool customSelection, bool randomSelecti
   if (randomSelection) {
     return "random-selection";
   }
-  if (strategy == ndn_service_framework::tlv::AllResponders) {
-    return "all-responders";
+  if (strategy == ndn_service_framework::tlv::AllSelected) {
+    return "all-selected";
   }
-  if (strategy == ndn_service_framework::tlv::LoadBalancing) {
-    return "load-balancing";
+  if (strategy == ndn_service_framework::tlv::RandomSelection) {
+    return "random-selection";
   }
   return "first-responding";
 }
@@ -201,9 +239,9 @@ public:
   select(const std::vector<ndnsf::AckCandidate>& candidates) const override
   {
     if (!m_performanceMode) {
-      std::cout << "customSelectionStrategy ran after ackTimeoutMs="
+      NDN_LOG_INFO( "customSelectionStrategy ran after ackTimeoutMs="
                 << m_ackTimeoutMs
-                << " candidateCount=" << candidates.size() << std::endl;
+                << " candidateCount=" << candidates.size());
     }
 
     std::vector<ndnsf::AckCandidate> selected;
@@ -217,9 +255,9 @@ public:
 
       if (!candidate.ack.getStatus()) {
         if (!m_performanceMode) {
-          std::cout << "customSelectionStrategy rejected provider="
+          NDN_LOG_INFO( "customSelectionStrategy rejected provider="
                     << providerLabel(candidate.providerName)
-                    << " status=0" << std::endl;
+                    << " status=0");
         }
         continue;
       }
@@ -231,12 +269,12 @@ public:
       const int backlog = parseMetadataInt(payloadText, "backlog", queue);
       const int processed10s = parseMetadataInt(payloadText, "processed10s", 0);
       if (!m_performanceMode) {
-        std::cout << "collected ACK payload provider="
+        NDN_LOG_INFO( "collected ACK payload provider="
                   << providerLabel(candidate.providerName)
                   << " backlog=" << backlog
                   << " processed10s=" << processed10s
                   << " queue=" << queue
-                  << " rank=" << rank << std::endl;
+                  << " rank=" << rank);
       }
       if (selected.empty() ||
           queue < bestQueue ||
@@ -273,8 +311,8 @@ public:
       ++m_selectionCounts[provider];
     }
     if (!selected.empty() && !m_performanceMode) {
-      std::cout << "customSelectionStrategy selected providerName="
-                << selected.front().providerName.toUri() << std::endl;
+      NDN_LOG_INFO( "customSelectionStrategy selected providerName="
+                << selected.front().providerName.toUri());
     }
     if (selected.empty()) {
       return {};
@@ -490,6 +528,7 @@ main(int argc, char** argv)
     const bool useCustomSelection = hasFlag(argc, argv, "--custom-selection");
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
+    auto perfLogGate = std::make_shared<SampledLogGate>(10);
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
@@ -644,7 +683,7 @@ main(int argc, char** argv)
     runtimeAdmission.softQueueLimit = adaptiveAdmission.softQueueLimit;
     runtimeAdmission.hardQueueLimit = adaptiveAdmission.hardQueueLimit;
     user.setAdaptiveAdmissionControl(runtimeAdmission);
-    std::cout << "[App_User] token_mode="
+    NDN_LOG_INFO( "[App_User] token_mode="
               << (user.getUseTokens() ? "enabled" : "disabled")
               << " hybridMessageCrypto=enabled"
               << " timelineTrace=" << timelineTrace
@@ -659,7 +698,7 @@ main(int argc, char** argv)
               << adaptiveQueueLimitsForWindow(user.getAdaptiveAdmissionWindow(),
                                               adaptiveAdmission.softQueueLimit,
                                               adaptiveAdmission.hardQueueLimit).second
-              << std::endl;
+             );
     user.fetchPermissionsFromController(CONTROLLER_PREFIX);
 
     int exitCode = 0;
@@ -679,11 +718,11 @@ main(int argc, char** argv)
           return;
         }
 
-        std::cout << "LARGE_DATA_PUBLISH_SUCCESS name="
+        NDN_LOG_INFO( "LARGE_DATA_PUBLISH_SUCCESS name="
                   << result.encryptedDataName.toUri()
                   << " requestId=" << ctx.requestId.toUri()
                   << " objectId=" << result.objectId
-                  << std::endl;
+                 );
 
         if (!largeDataNameFile.empty()) {
           std::ofstream output(largeDataNameFile);
@@ -697,7 +736,7 @@ main(int argc, char** argv)
           output << result.encryptedDataName.toUri() << std::endl;
         }
 
-        std::cout << "LARGE_DATA_PUBLISH_SERVING" << std::endl;
+        NDN_LOG_INFO( "LARGE_DATA_PUBLISH_SERVING");
       });
 
       face.processEvents();
@@ -731,7 +770,7 @@ main(int argc, char** argv)
             << "application_task_id,request_id,service_name,state,selected_provider,"
             << "enqueue_timestamp_us,admission_timestamp_us,publish_timestamp_us,"
             << "ack_matched_timestamp_us,provider_selection_timestamp_us,"
-            << "coordination_publish_timestamp_us,response_observed_timestamp_us,"
+            << "selection_publish_timestamp_us,response_observed_timestamp_us,"
             << "response_decrypted_timestamp_us,callback_timestamp_us,"
             << "completion_timestamp_us,timeout_timestamp_us,queued_duration_ms,"
             << "inflight_duration_ms,end_to_end_latency_ms,"
@@ -749,7 +788,7 @@ main(int argc, char** argv)
                 << status.publishTimestampUs << ","
                 << status.ackMatchedTimestampUs << ","
                 << status.providerSelectionTimestampUs << ","
-                << status.coordinationPublishTimestampUs << ","
+                << status.selectionPublishTimestampUs << ","
                 << status.responseObservedTimestampUs << ","
                 << status.responseDecryptedTimestampUs << ","
                 << status.callbackTimestampUs << ","
@@ -781,6 +820,10 @@ main(int argc, char** argv)
         auto completedRequestIds = std::make_shared<std::set<std::string>>();
         auto admissionRejectedRequestIds = std::make_shared<std::set<std::string>>();
         auto sentCount = std::make_shared<uint64_t>(0);
+        auto firstRequestSentAt =
+          std::make_shared<std::chrono::steady_clock::time_point>();
+        auto lastRequestSentAt =
+          std::make_shared<std::chrono::steady_clock::time_point>();
         auto successCount = std::make_shared<uint64_t>(0);
         auto timeoutCount = std::make_shared<uint64_t>(0);
         auto lateResponseCount = std::make_shared<uint64_t>(0);
@@ -839,11 +882,11 @@ main(int argc, char** argv)
             makeRankQueueSelectionPolicy(ackTimeoutMs, performanceMode);
         }
         else if (useBenchmarkRandomSelection ||
-                 benchmarkStrategy == ndn_service_framework::tlv::LoadBalancing) {
-          benchmarkSelectionPolicy = ndnsf::strategy::LoadBalancing;
+                 benchmarkStrategy == ndn_service_framework::tlv::RandomSelection) {
+          benchmarkSelectionPolicy = ndnsf::strategy::RandomSelection;
         }
-        else if (benchmarkStrategy == ndn_service_framework::tlv::AllResponders) {
-          benchmarkSelectionPolicy = ndnsf::strategy::AllResponders;
+        else if (benchmarkStrategy == ndn_service_framework::tlv::AllSelected) {
+          benchmarkSelectionPolicy = ndnsf::strategy::AllSelected;
         }
         else {
           benchmarkSelectionPolicy = ndnsf::strategy::FirstResponding;
@@ -877,7 +920,8 @@ main(int argc, char** argv)
            admissionQueuePauseEvents,
            admissionWarningQueuePauses,
            adaptiveAdmission,
-           performanceMode](
+           performanceMode,
+           perfLogGate](
             const ndn_service_framework::ServiceUser::AdmissionControlStatus& status) {
             ++(*admissionControlWarnings);
             *minAdmissionHardQueueRemaining =
@@ -896,8 +940,8 @@ main(int argc, char** argv)
             }
             // Soft-limit warnings are advisory: record them and apply the
             // optional warning backoff above, but keep admission flowing.
-            if (!performanceMode) {
-              std::cout << "PERF_ADMISSION_WARNING"
+            if (!performanceMode && perfLogGate->allow()) {
+              NDN_LOG_INFO( "PERF_ADMISSION_WARNING"
                         << " depth=" << status.queueDepth
                         << " soft_limit=" << status.softQueueLimit
                         << " hard_limit=" << status.hardQueueLimit
@@ -907,7 +951,7 @@ main(int argc, char** argv)
                         << adaptiveAdmission.warningResumeQueueDepth
                         << " reason=" << status.reason
                         << " request_id=" << status.requestId.toUri()
-                        << " ts=" << nowMilliseconds() << std::endl;
+                        << " ts=" << nowMilliseconds());
             }
           });
         user.setAdmissionControlRejectHandler(
@@ -927,7 +971,8 @@ main(int argc, char** argv)
            states,
            completedRequestIds,
            adaptiveAdmission,
-           performanceMode](
+           performanceMode,
+           perfLogGate](
             const ndn_service_framework::ServiceUser::AdmissionControlStatus& status) {
             ++(*admissionControlRejects);
             *minAdmissionHardQueueRemaining =
@@ -960,8 +1005,8 @@ main(int argc, char** argv)
                 adaptiveAdmission.rejectResumeQueueDepth;
               ++(*admissionRejectQueuePauses);
             }
-            if (!performanceMode) {
-              std::cout << "PERF_ADMISSION_REJECT"
+            if (!performanceMode && perfLogGate->allow()) {
+              NDN_LOG_INFO( "PERF_ADMISSION_REJECT"
                         << " depth=" << status.queueDepth
                         << " soft_limit=" << status.softQueueLimit
                         << " hard_limit=" << status.hardQueueLimit
@@ -971,7 +1016,7 @@ main(int argc, char** argv)
                         << adaptiveAdmission.rejectResumeQueueDepth
                         << " reason=" << status.reason
                         << " request_id=" << status.requestId.toUri()
-                        << " ts=" << nowMilliseconds() << std::endl;
+                        << " ts=" << nowMilliseconds());
             }
           });
 
@@ -1019,13 +1064,13 @@ main(int argc, char** argv)
           ++(*pauseCount);
           ++(*pauseTransitions);
           *pauseStartedAt = std::chrono::steady_clock::now();
-          std::cout << "PERF_ADMISSION_PAUSED reason=" << reason
+          NDN_LOG_INFO( "PERF_ADMISSION_PAUSED reason=" << reason
                     << " inflight=" << states->size()
                     << " queued=" << *queuedTasks
                     << " adaptive_window=" << *adaptiveWindow
                     << " hard_inflight_limit=" << adaptiveAdmission.hardInflightLimit
                     << " pause_threshold=" << pauseThreshold()
-                    << " ts=" << nowMilliseconds() << std::endl;
+                    << " ts=" << nowMilliseconds());
         };
 
         *maybeResume = [&, paused, pauseTransitions, totalPausedMs, pauseStartedAt,
@@ -1040,13 +1085,13 @@ main(int argc, char** argv)
           if (pausedForMs > 0) {
             *totalPausedMs += static_cast<uint64_t>(pausedForMs);
           }
-          std::cout << "PERF_ADMISSION_RESUMED"
+          NDN_LOG_INFO( "PERF_ADMISSION_RESUMED"
                     << " inflight=" << states->size()
                     << " queued=" << *queuedTasks
                     << " adaptive_window=" << *adaptiveWindow
                     << " resume_threshold=" << resumeThreshold()
                     << " paused_ms=" << pausedForMs
-                    << " ts=" << nowMilliseconds() << std::endl;
+                    << " ts=" << nowMilliseconds());
         };
 
         *maybeFinish = [&, csv, states, sendStopped, drainDeadline, sentCount, successCount,
@@ -1068,8 +1113,15 @@ main(int argc, char** argv)
           }
           const double configuredDurationSeconds =
             std::chrono::duration<double>(*stopSendingAt - *startTime).count();
-          const double achievedRps = configuredDurationSeconds > 0.0 ?
-            static_cast<double>(*sentCount) / configuredDurationSeconds : 0.0;
+          double sendWindowSeconds = 0.0;
+          if (*sentCount >= 2) {
+            sendWindowSeconds =
+              std::chrono::duration<double>(*lastRequestSentAt - *firstRequestSentAt).count();
+          }
+          const double achievedRps = sendWindowSeconds > 0.0 ?
+            static_cast<double>(*sentCount - 1) / sendWindowSeconds :
+            (configuredDurationSeconds > 0.0 ?
+             static_cast<double>(*sentCount) / configuredDurationSeconds : 0.0);
           uint64_t reportedPausedMs = *totalPausedMs;
           if (*paused) {
             const auto pausedForMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1093,7 +1145,7 @@ main(int argc, char** argv)
             adaptiveAdmission.softQueueLimit,
             adaptiveAdmission.hardQueueLimit);
 
-          std::cout << std::fixed << std::setprecision(3)
+          NDN_LOG_INFO( std::fixed << std::setprecision(3)
                     << "OPEN_LOOP_SUMMARY sent=" << *sentCount
                     << " success=" << *successCount
                     << " timeout=" << *timeoutCount
@@ -1162,6 +1214,7 @@ main(int argc, char** argv)
                     << " in_flight_max=" << *maxOutstandingObserved
                     << " target_rps=" << rateRps
                     << " achieved_rps=" << achievedRps
+                    << " send_window_s=" << sendWindowSeconds
                     << " remaining_outstanding=" << states->size()
                     << " median_outstanding=" << medianSize(*outstandingSamples)
                     << " p95_outstanding=" << percentileSize(*outstandingSamples, 95.0)
@@ -1172,7 +1225,7 @@ main(int argc, char** argv)
                     << " p99_ms=" << percentile(*latencies, 99.0)
                     << " ack_p95_ms=" << percentile(*ackLatencySamples, 95.0)
                     << " csv=" << outputCsv
-                    << std::endl;
+                   );
           csv->flush();
           if (lifecycleCsv && *lifecycleCsv) {
             lifecycleCsv->flush();
@@ -1206,7 +1259,7 @@ main(int argc, char** argv)
             if (!generating) {
               return;
             }
-            uint64_t dueExclusive = *nextSequence + 1;
+            uint64_t dueExclusive = *nextSequence;
             if (intervalNs > 0) {
               const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 now - *startTime).count();
@@ -1221,12 +1274,17 @@ main(int argc, char** argv)
             }
             const uint64_t dueTicks = dueExclusive - *nextSequence;
             if (!adaptiveAdmission.enabled) {
-              if (*queuedTasks == 0) {
-                *queuedTasks = 1;
+              const size_t creditLimit = static_cast<size_t>(maxOutstanding);
+              const size_t room = *queuedTasks >= creditLimit ?
+                0 : creditLimit - *queuedTasks;
+              const size_t acceptedTicks = static_cast<size_t>(
+                std::min<uint64_t>(dueTicks, static_cast<uint64_t>(room)));
+              if (acceptedTicks > 0) {
+                *queuedTasks += acceptedTicks;
                 (*sampleAdaptive)();
               }
-              if (dueTicks > 1) {
-                *delayedPublications += dueTicks - 1;
+              if (dueTicks > static_cast<uint64_t>(acceptedTicks)) {
+                *delayedPublications += dueTicks - acceptedTicks;
               }
               *nextSequence = dueExclusive;
               return;
@@ -1309,11 +1367,11 @@ main(int argc, char** argv)
               user.recordAdaptiveAdmissionBackpressure();
               (*sampleOutstanding)();
               (*sampleAdaptive)();
-              if (!performanceMode) {
+              if (!performanceMode && perfLogGate->allow()) {
                 const auto remainingMs =
                   std::chrono::duration_cast<std::chrono::milliseconds>(
                     *nextAdmissionRecommendedSendAt - now).count();
-                std::cout << "PERF_ADMISSION_RECOMMENDED_RATE_PAUSED"
+                NDN_LOG_INFO( "PERF_ADMISSION_RECOMMENDED_RATE_PAUSED"
                           << " recommended_rps=" << recommendedRate
                           << " offered_rps=" << rateRps
                           << " remaining_ms=" << remainingMs
@@ -1321,7 +1379,7 @@ main(int argc, char** argv)
                           << " inflight=" << runtimeInflight
                           << " adaptive_window=" << runtimeWindow
                           << " queued_credit=" << *queuedTasks
-                          << " ts=" << nowMilliseconds() << std::endl;
+                          << " ts=" << nowMilliseconds());
               }
               scheduleNext(*nextAdmissionRecommendedSendAt - now);
               return;
@@ -1345,13 +1403,13 @@ main(int argc, char** argv)
                 *totalAdmissionQueuePausedMs +=
                   static_cast<uint64_t>(pausedForMs);
               }
-              if (!performanceMode) {
-                std::cout << "PERF_ADMISSION_QUEUE_RESUMED"
+              if (!performanceMode && perfLogGate->allow()) {
+                NDN_LOG_INFO( "PERF_ADMISSION_QUEUE_RESUMED"
                           << " reason=" << *admissionQueuePauseReason
                           << " queue_depth=" << runtimeQueueDepth
                           << " resume_depth=" << *admissionQueuePauseResumeDepth
                           << " paused_ms=" << pausedForMs
-                          << " ts=" << nowMilliseconds() << std::endl;
+                          << " ts=" << nowMilliseconds());
               }
             }
             else {
@@ -1359,17 +1417,17 @@ main(int argc, char** argv)
               ++(*admissionQueuePauseSkips);
               (*sampleOutstanding)();
               (*sampleAdaptive)();
-              if (!performanceMode) {
+              if (!performanceMode && perfLogGate->allow()) {
                 const auto remainingBackoffMs = minBackoffElapsed ? 0 :
                   std::chrono::duration_cast<std::chrono::milliseconds>(
                     *admissionBackoffUntil - now).count();
-                std::cout << "PERF_ADMISSION_QUEUE_PAUSED"
+                NDN_LOG_INFO( "PERF_ADMISSION_QUEUE_PAUSED"
                           << " reason=" << *admissionQueuePauseReason
                           << " queue_depth=" << runtimeQueueDepth
                           << " resume_depth=" << *admissionQueuePauseResumeDepth
                           << " remaining_backoff_ms=" << remainingBackoffMs
                           << " queued_credit=" << *queuedTasks
-                          << " ts=" << nowMilliseconds() << std::endl;
+                          << " ts=" << nowMilliseconds());
               }
               scheduleNext(std::chrono::milliseconds(
                 adaptiveAdmission.queuePausePollMs));
@@ -1380,13 +1438,13 @@ main(int argc, char** argv)
             ++(*delayedPublications);
             (*sampleOutstanding)();
             (*sampleAdaptive)();
-            if (!performanceMode) {
+            if (!performanceMode && perfLogGate->allow()) {
               const auto backoffMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 *admissionBackoffUntil - now).count();
-              std::cout << "PERF_ADMISSION_BACKOFF"
+              NDN_LOG_INFO( "PERF_ADMISSION_BACKOFF"
                         << " remaining_ms=" << backoffMs
                         << " queued_credit=" << *queuedTasks
-                        << " ts=" << nowMilliseconds() << std::endl;
+                        << " ts=" << nowMilliseconds());
             }
             scheduleNext(*admissionBackoffUntil - now);
             return;
@@ -1396,19 +1454,19 @@ main(int argc, char** argv)
           const bool pendingResponseAtLimit =
             states->size() >= static_cast<size_t>(maxOutstanding);
 
-          if (pendingResponseAtLimit || (!adaptiveAdmission.enabled && *paused)) {
+          if (pendingResponseAtLimit) {
             ++(*outstandingLimitSkips);
             ++(*delayedPublications);
             (*sampleOutstanding)();
             (*sampleAdaptive)();
             if (!performanceMode && pendingResponseAtLimit) {
-              std::cout << "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
+              NDN_LOG_INFO( "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
                         << states->size()
                         << " admission_inflight=" << runtimeAdmissionInflight
                         << " queued=" << *queuedTasks
                         << " adaptive_window=" << runtimeWindow
                         << " pending_response_limit=" << maxOutstanding
-                        << " ts=" << nowMilliseconds() << std::endl;
+                        << " ts=" << nowMilliseconds());
             }
             scheduleNext(delayUntilNextOpenLoopTick());
             return;
@@ -1452,14 +1510,15 @@ main(int argc, char** argv)
                     }
                     ++(*timeoutCount);
                     ++(*intervalTimeouts);
-                    if (!adaptiveAdmission.enabled) {
-                      (*maybePause)("timeout");
-                    }
+                    // In no-admission benchmark mode, timeouts are recorded
+                    // but must not trigger an additional app-side congestion
+                    // pause; otherwise the "no admission" baseline is still
+                    // self-throttled by the traffic generator.
                     *csv << csvEscape(requestIdText) << ",0,"
                          << std::fixed << std::setprecision(3) << latencyMs << ",\n";
-                    if (!performanceMode) {
-                      std::cout << "PERF_REQUEST_TIMEOUT id=" << requestIdText
-                                << " ts=" << nowMilliseconds() << std::endl;
+                    if (!performanceMode && perfLogGate->allow()) {
+                      NDN_LOG_INFO( "PERF_REQUEST_TIMEOUT id=" << requestIdText
+                                << " ts=" << nowMilliseconds());
                     }
                     (*sampleOutstanding)();
                     (*sampleAdaptive)();
@@ -1487,12 +1546,11 @@ main(int argc, char** argv)
                     if (completedRequestIds->find(requestIdText) != completedRequestIds->end()) {
                       ++(*lateResponseCount);
                       ++(*intervalLateResponses);
-                      if (!adaptiveAdmission.enabled) {
-                        (*maybePause)("late_response");
-                      }
-                      if (!performanceMode) {
-                        std::cout << "PERF_LATE_RESPONSE id=" << requestIdText
-                                  << " ts=" << nowMilliseconds() << std::endl;
+                      // Same as timeout handling above: late responses are
+                      // measured, not converted into admission-like pacing.
+                      if (!performanceMode && perfLogGate->allow()) {
+                        NDN_LOG_INFO( "PERF_LATE_RESPONSE id=" << requestIdText
+                                  << " ts=" << nowMilliseconds());
                       }
                       return;
                     }
@@ -1507,12 +1565,12 @@ main(int argc, char** argv)
                     *csv << csvEscape(requestIdText) << ",1,"
                          << std::fixed << std::setprecision(3) << latencyMs << ","
                          << csvEscape(responseText) << "\n";
-                    if (!performanceMode) {
-                      std::cout << "PERF_RESPONSE_RECEIVED id=" << requestIdText
+                    if (!performanceMode && perfLogGate->allow()) {
+                      NDN_LOG_INFO( "PERF_RESPONSE_RECEIVED id=" << requestIdText
                                 << " provider=" << state->selectedProvider
                                 << " latency_ms=" << std::fixed << std::setprecision(3)
                                 << latencyMs
-                                << " ts=" << nowMilliseconds() << std::endl;
+                                << " ts=" << nowMilliseconds());
                     }
                     states->erase(requestIdText);
                     (*sampleOutstanding)();
@@ -1540,8 +1598,8 @@ main(int argc, char** argv)
               (*sampleOutstanding)();
               (*sampleAdaptive)();
               if (!performanceMode && !state->requestId.empty()) {
-                std::cout << "PERF_REQUEST_ADMISSION_REJECTED id=" << state->requestId
-                          << " ts=" << nowMilliseconds() << std::endl;
+                NDN_LOG_INFO( "PERF_REQUEST_ADMISSION_REJECTED id=" << state->requestId
+                          << " ts=" << nowMilliseconds());
               }
               scheduleNext(delayUntilNextOpenLoopTick());
               return;
@@ -1550,12 +1608,16 @@ main(int argc, char** argv)
             if (*queuedTasks > 0) {
               --(*queuedTasks);
             }
+            if (*sentCount == 0) {
+              *firstRequestSentAt = now;
+            }
+            *lastRequestSentAt = now;
             ++(*sentCount);
             (*sampleOutstanding)();
             (*sampleAdaptive)();
-            if (!performanceMode) {
-              std::cout << "PERF_REQUEST_SENT id=" << state->requestId
-                        << " ts=" << nowMilliseconds() << std::endl;
+            if (!performanceMode && perfLogGate->allow()) {
+              NDN_LOG_INFO( "PERF_REQUEST_SENT id=" << state->requestId
+                        << " ts=" << nowMilliseconds());
             }
             if (adaptiveAdmission.enabled && adaptiveAdmission.useRecommendedRate) {
               const double recommendedRate = user.getAdaptiveAdmissionRecommendedRateRps();
@@ -1643,7 +1705,7 @@ main(int argc, char** argv)
           const size_t oldWindow = *adaptiveWindow;
           *adaptiveWindow = runtimeWindow;
 
-          std::cout << "PERF_ADAPTIVE_WINDOW window=" << *adaptiveWindow
+          NDN_LOG_INFO( "PERF_ADAPTIVE_WINDOW window=" << *adaptiveWindow
                     << " old_window=" << oldWindow
                     << " queued=" << *queuedTasks
                     << " inflight=" << states->size()
@@ -1669,7 +1731,7 @@ main(int argc, char** argv)
                     << " blocked=" << blocked
                     << " congested=" << congested
                     << " healthy=" << healthy
-                    << " ts=" << nowMilliseconds() << std::endl;
+                    << " ts=" << nowMilliseconds());
 
           *intervalTimeouts = 0;
           *intervalLateResponses = 0;
@@ -1692,7 +1754,7 @@ main(int argc, char** argv)
             *adaptiveWindow,
             adaptiveAdmission.softQueueLimit,
             adaptiveAdmission.hardQueueLimit);
-          std::cout << "Starting open-loop benchmark strategy="
+          NDN_LOG_INFO( "Starting open-loop benchmark strategy="
                     << benchmarkStrategyLabel(benchmarkStrategy,
                                               useBenchmarkCustomSelection,
                                               useBenchmarkRandomSelection)
@@ -1723,7 +1785,7 @@ main(int argc, char** argv)
                     << " adaptive_target_latency_ms=" << adaptiveAdmission.targetLatencyMs
                     << " request_timeout_ms=" << requestTimeoutMs
                     << " drain_seconds=" << drainSeconds
-                    << std::endl;
+                   );
           if (adaptiveAdmission.enabled) {
             scheduler.schedule(ndn::time::milliseconds(adaptiveAdmission.controlIntervalMs),
                                [controlAdaptiveWindow] { (*controlAdaptiveWindow)(); });
@@ -1793,7 +1855,7 @@ main(int argc, char** argv)
             max = *std::max_element(latencies.begin(), latencies.end());
           }
 
-          std::cout << std::fixed << std::setprecision(3)
+          NDN_LOG_INFO( std::fixed << std::setprecision(3)
                     << "count=" << benchmarkCount << "\n"
                     << "success=" << success << "\n"
                     << "timeout=" << timeout << "\n"
@@ -1807,15 +1869,15 @@ main(int argc, char** argv)
                                                               useBenchmarkCustomSelection,
                                                               useBenchmarkRandomSelection) << "\n"
                     << "pendingCalls_remaining=" << user.getPendingCallCount() << "\n"
-                    << "csv=" << outputCsv << std::endl;
+                    << "csv=" << outputCsv);
 
           csv->flush();
           if (success == benchmarkCount && timeout == 0) {
-            std::cout << "LOCAL_NFD_SERVICE_LATENCY_BENCHMARK=PASS" << std::endl;
+            NDN_LOG_INFO( "LOCAL_NFD_SERVICE_LATENCY_BENCHMARK=PASS");
             exitCode = 0;
           }
           else {
-            std::cout << "LOCAL_NFD_SERVICE_LATENCY_BENCHMARK=FAIL" << std::endl;
+            NDN_LOG_INFO( "LOCAL_NFD_SERVICE_LATENCY_BENCHMARK=FAIL");
             exitCode = 1;
           }
           face.getIoContext().stop();
@@ -1858,13 +1920,13 @@ main(int argc, char** argv)
               }
 
               ++(*completed);
-              std::cout << "PERF_REQUEST_TIMEOUT id="
+              NDN_LOG_INFO( "PERF_REQUEST_TIMEOUT id="
                         << timedOutRequestId.toUri()
-                        << " ts=" << nowMilliseconds() << std::endl;
-              std::cout << "[App_User] benchmark timeout requestId="
+                        << " ts=" << nowMilliseconds());
+              NDN_LOG_INFO( "[App_User] benchmark timeout requestId="
                         << timedOutRequestId.toUri()
                         << " completed=" << *completed
-                        << "/" << totalCalls << std::endl;
+                        << "/" << totalCalls);
               scheduler.schedule(ndn::time::milliseconds(benchmarkIntervalMs),
                                  [runNext] { (*runNext)(); });
             });
@@ -1894,18 +1956,18 @@ main(int argc, char** argv)
               }
 
               ++(*completed);
-              std::cout << "PERF_RESPONSE_RECEIVED id=" << *currentRequestId
+              NDN_LOG_INFO( "PERF_RESPONSE_RECEIVED id=" << *currentRequestId
                         << " provider=-"
                         << " latency_ms=" << std::fixed << std::setprecision(3)
                         << latencyMs
-                        << " ts=" << nowMilliseconds() << std::endl;
-              std::cout << "[App_User] benchmark response requestId="
+                        << " ts=" << nowMilliseconds());
+              NDN_LOG_INFO( "[App_User] benchmark response requestId="
                         << *currentRequestId
                         << " latency_ms=" << std::fixed << std::setprecision(3)
                         << latencyMs
                         << " payload=" << responseText
                         << " completed=" << *completed
-                        << "/" << totalCalls << std::endl;
+                        << "/" << totalCalls);
               scheduler.schedule(ndn::time::milliseconds(benchmarkIntervalMs),
                                  [runNext] { (*runNext)(); });
             });
@@ -1915,11 +1977,11 @@ main(int argc, char** argv)
           selectionPolicy = makeRankQueueSelectionPolicy(ackTimeoutMs, performanceMode);
         }
         else if (useBenchmarkRandomSelection ||
-                 benchmarkStrategy == ndn_service_framework::tlv::LoadBalancing) {
-          selectionPolicy = ndnsf::strategy::LoadBalancing;
+                 benchmarkStrategy == ndn_service_framework::tlv::RandomSelection) {
+          selectionPolicy = ndnsf::strategy::RandomSelection;
         }
-        else if (benchmarkStrategy == ndn_service_framework::tlv::AllResponders) {
-          selectionPolicy = ndnsf::strategy::AllResponders;
+        else if (benchmarkStrategy == ndn_service_framework::tlv::AllSelected) {
+          selectionPolicy = ndnsf::strategy::AllSelected;
         }
         else {
           selectionPolicy = ndnsf::strategy::FirstResponding;
@@ -1935,19 +1997,19 @@ main(int argc, char** argv)
           onTimeout);
 
         *currentRequestId = requestId.toUri();
-        std::cout << "PERF_REQUEST_SENT id=" << *currentRequestId
-                  << " ts=" << nowMilliseconds() << std::endl;
+        NDN_LOG_INFO( "PERF_REQUEST_SENT id=" << *currentRequestId
+                  << " ts=" << nowMilliseconds());
         ++(*issued);
       };
 
       scheduler.schedule(ndn::time::seconds(2), [runNext, benchmarkStrategy,
                                                  useBenchmarkCustomSelection,
                                                  useBenchmarkRandomSelection] {
-        std::cout << "Starting local NFD service latency benchmark strategy="
+        NDN_LOG_INFO( "Starting local NFD service latency benchmark strategy="
                   << benchmarkStrategyLabel(benchmarkStrategy,
                                             useBenchmarkCustomSelection,
                                             useBenchmarkRandomSelection)
-                  << std::endl;
+                 );
         (*runNext)();
       });
 
@@ -1956,13 +2018,13 @@ main(int argc, char** argv)
     }
 
     scheduler.schedule(ndn::time::seconds(2), [&] {
-      std::cout << "Sending HELLO request..." << std::endl;
-      std::cout << "[App_User] selected providerName="
-                << PROVIDER_IDENTITY.toUri() << std::endl;
-      std::cout << "[App_User] selected serviceName=/HELLO" << std::endl;
-      std::cout << "[App_User] final request name="
+      NDN_LOG_INFO( "Sending HELLO request...");
+      NDN_LOG_INFO( "[App_User] selected providerName="
+                << PROVIDER_IDENTITY.toUri());
+      NDN_LOG_INFO( "[App_User] selected serviceName=/HELLO");
+      NDN_LOG_INFO( "[App_User] final request name="
                    "/example/hello/user/NDNSF/REQUEST/1/HELLO/<bloomFilter>/<requestId>"
-                << std::endl;
+               );
 
       const std::string requestText = "HELLO";
       ndn::Buffer requestPayload(
@@ -1983,9 +2045,9 @@ main(int argc, char** argv)
           const std::string responseText(
             reinterpret_cast<const char*>(payload.data()),
             payload.size());
-          std::cout << "Received response: " << responseText << std::endl;
+          NDN_LOG_INFO( "Received response: " << responseText);
           if (!expectedResponse.empty() && responseText == expectedResponse) {
-            std::cout << "SELECTIVE_ACK_CUSTOM_SELECTION_REGRESSION=PASS" << std::endl;
+            NDN_LOG_INFO( "SELECTIVE_ACK_CUSTOM_SELECTION_REGRESSION=PASS");
           }
           face.getIoContext().stop();
         });
@@ -1993,9 +2055,9 @@ main(int argc, char** argv)
       if (useCustomSelection) {
         auto selectionPolicy = std::make_shared<FunctionalAckSelectionPolicy>(
           [ackTimeoutMs](const std::vector<ndnsf::AckCandidate>& candidates) {
-            std::cout << "customSelectionStrategy ran after ackTimeoutMs="
+            NDN_LOG_INFO( "customSelectionStrategy ran after ackTimeoutMs="
                       << ackTimeoutMs
-                      << " candidateCount=" << candidates.size() << std::endl;
+                      << " candidateCount=" << candidates.size());
 
             std::vector<ndnsf::AckCandidate> selected;
             int bestRank = std::numeric_limits<int>::max();
@@ -2005,20 +2067,20 @@ main(int argc, char** argv)
               const std::string payloadText(
                 reinterpret_cast<const char*>(payload.data()),
                 payload.size());
-              std::cout << "customSelectionStrategy candidate providerName="
+              NDN_LOG_INFO( "customSelectionStrategy candidate providerName="
                         << candidate.providerName.toUri()
                         << " status=" << candidate.ack.getStatus()
                         << " message=" << candidate.ack.getMessage()
-                        << " payload=" << payloadText << std::endl;
-              std::cout << "customSelectionStrategy ACK received timestampMs="
+                        << " payload=" << payloadText);
+              NDN_LOG_INFO( "customSelectionStrategy ACK received timestampMs="
                         << nowMilliseconds()
                         << " providerName=" << candidate.providerName.toUri()
-                        << std::endl;
+                       );
 
               if (!candidate.ack.getStatus()) {
-                std::cout << "customSelectionStrategy rejected provider="
+                NDN_LOG_INFO( "customSelectionStrategy rejected provider="
                           << providerLabel(candidate.providerName)
-                          << " status=0" << std::endl;
+                          << " status=0");
                 continue;
               }
 
@@ -2026,10 +2088,10 @@ main(int argc, char** argv)
                                                 std::numeric_limits<int>::max());
               const int queue = parseMetadataInt(payloadText, "queue",
                                                  std::numeric_limits<int>::max());
-              std::cout << "collected ACK payload provider="
+              NDN_LOG_INFO( "collected ACK payload provider="
                         << providerLabel(candidate.providerName)
                         << " queue=" << queue
-                        << " rank=" << rank << std::endl;
+                        << " rank=" << rank);
               if (selected.empty() ||
                   rank < bestRank ||
                   (rank == bestRank && queue < bestQueue)) {
@@ -2041,8 +2103,8 @@ main(int argc, char** argv)
             }
 
             if (!selected.empty()) {
-              std::cout << "customSelectionStrategy selected providerName="
-                        << selected.front().providerName.toUri() << std::endl;
+              NDN_LOG_INFO( "customSelectionStrategy selected providerName="
+                        << selected.front().providerName.toUri());
               return std::vector<ndnsf::ProviderId>{selected.front().providerName};
             }
             return std::vector<ndnsf::ProviderId>{};
@@ -2061,7 +2123,7 @@ main(int argc, char** argv)
           ndn::Name("/HELLO"),
           request.getPayload(),
           ackTimeoutMs,
-          ndnsf::strategy::LoadBalancing,
+          ndnsf::strategy::RandomSelection,
           20000,
           onResponse,
           onTimeout);

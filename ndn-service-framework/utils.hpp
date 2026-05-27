@@ -21,7 +21,7 @@ namespace ndn_service_framework
     extern std::string requestRegexString;
     extern std::string responseRegexString;
     extern std::string RequestAckRegexString;
-    extern std::string serviceCoordinationRegexString;
+    extern std::string serviceSelectionRegexString;
     extern std::string permissionTokenRegexString;
 
     std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
@@ -44,10 +44,10 @@ namespace ndn_service_framework
     ndn::Name makeRequestAckNameWithoutPrefix(const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &ChallengeID);
 
     std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseServiceCoordinationName(ndn::Name serviceCoordinationName);
+    parseServiceSelectionName(ndn::Name serviceSelectionName);
 
-    ndn::Name makeServiceCoordinationName(const ndn::Name &requesterName, const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
-    ndn::Name makeServiceCoordinationNameWithoutPrefix(const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
+    ndn::Name makeServiceSelectionName(const ndn::Name &requesterName, const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
+    ndn::Name makeServiceSelectionNameWithoutPrefix(const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
 
     struct RequestNameV2
     {
@@ -73,7 +73,7 @@ namespace ndn_service_framework
         ndn::Name requestId;
     };
 
-    struct ServiceCoordinationNameV2
+    struct ServiceSelectionNameV2
     {
         ndn::Name requesterName;
         ndn::Name providerName;
@@ -92,7 +92,7 @@ namespace ndn_service_framework
     };
 
     // V2 wire names use one unified serviceName endpoint path, never ServiceName + FunctionName.
-    // NAC-ABE attributes follow message direction: REQUEST/COORDINATION use
+    // NAC-ABE attributes follow message direction: REQUEST/SELECTION use
     // /SERVICE/<serviceName>; RESPONSE/ACK use /PERMISSION/<serviceName>.
     // Request:
     //   /<requester>/NDNSF/REQUEST/<serviceComponentCount>/<serviceName...>/<bloomFilter>/<requestId>
@@ -100,8 +100,8 @@ namespace ndn_service_framework
     //   /<provider>/NDNSF/RESPONSE/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
     // ACK:
     //   /<provider>/NDNSF/ACK/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
-    // Coordination:
-    //   /<requester>/NDNSF/COORDINATION/<providerComponentCount>/<provider...>/<serviceComponentCount>/<serviceName...>/<requestId>
+    // Selection:
+    //   /<requester>/NDNSF/SELECTION/<providerComponentCount>/<provider...>/<serviceComponentCount>/<serviceName...>/<requestId>
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
                                 const ndn::Name& serviceName,
                                 const ndn::Name& bloomFilter,
@@ -129,15 +129,15 @@ namespace ndn_service_framework
                                                 const ndn::Name& requestId);
     std::optional<RequestAckNameV2> parseRequestAckNameV2(const ndn::Name& requestAckName);
 
-    ndn::Name makeServiceCoordinationNameV2(const ndn::Name& requesterName,
+    ndn::Name makeServiceSelectionNameV2(const ndn::Name& requesterName,
                                             const ndn::Name& providerName,
                                             const ndn::Name& serviceName,
                                             const ndn::Name& requestId);
-    ndn::Name makeServiceCoordinationNameWithoutPrefixV2(const ndn::Name& providerName,
+    ndn::Name makeServiceSelectionNameWithoutPrefixV2(const ndn::Name& providerName,
                                                          const ndn::Name& serviceName,
                                                          const ndn::Name& requestId);
-    std::optional<ServiceCoordinationNameV2>
-    parseServiceCoordinationNameV2(const ndn::Name& serviceCoordinationName);
+    std::optional<ServiceSelectionNameV2>
+    parseServiceSelectionNameV2(const ndn::Name& serviceSelectionName);
 
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
                                         const ndn::Name& requesterName,

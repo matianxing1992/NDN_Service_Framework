@@ -4,6 +4,7 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/util/logger.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +26,8 @@
 #include <unistd.h>
 
 namespace {
+
+NDN_LOG_INIT(ndn_service_framework.AppProvider);
 
 const ndn::Name GROUP_PREFIX("/example/hello/group");
 const ndn::Name CONTROLLER_PREFIX("/example/hello/controller");
@@ -58,6 +61,40 @@ public:
 
 private:
   int m_fd = -1;
+};
+
+class SampledLogGate
+{
+public:
+  explicit SampledLogGate(size_t maxPerSecond)
+    : m_maxPerSecond(maxPerSecond)
+  {
+  }
+
+  bool
+  allow()
+  {
+    using clock = std::chrono::steady_clock;
+    const auto second = std::chrono::duration_cast<std::chrono::seconds>(
+      clock::now().time_since_epoch()).count();
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (second != m_second) {
+      m_second = second;
+      m_count = 0;
+    }
+    if (m_count >= m_maxPerSecond) {
+      return false;
+    }
+    ++m_count;
+    return true;
+  }
+
+private:
+  const size_t m_maxPerSecond;
+  int64_t m_second = -1;
+  size_t m_count = 0;
+  std::mutex m_mutex;
 };
 
 ndn::security::Certificate
@@ -166,6 +203,7 @@ main(int argc, char** argv)
     const std::string providerId = getOption(argc, argv, "--provider-id", "");
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
+    auto perfLogGate = std::make_shared<SampledLogGate>(10);
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
     const bool timelineTrace = hasFlag(argc, argv, "--timeline-trace");
     const bool adaptiveProviderAck = hasFlag(argc, argv, "--adaptive-provider-ack");
@@ -194,8 +232,8 @@ main(int argc, char** argv)
       argc, argv, "--provider-ack-max-pending", 1000);
     const int providerAckMaxEventLoopLagMs = parseIntOption(
       argc, argv, "--provider-ack-max-event-loop-lag-ms", 0);
-    const int providerAckMaxCoordinationLagMs = parseIntOption(
-      argc, argv, "--provider-ack-max-coordination-lag-ms", 0);
+    const int providerAckMaxSelectionLagMs = parseIntOption(
+      argc, argv, "--provider-ack-max-selection-lag-ms", 0);
     const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", -1);
     const int ackThreads = parseIntOption(argc, argv, "--ack-threads", -1);
     const int providerRequestDelayMs = parseIntOption(
@@ -208,7 +246,7 @@ main(int argc, char** argv)
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
     keyChainInitLock.unlock();
 
-    std::cout << "[App_Provider] provider identity="
+    NDN_LOG_INFO( "[App_Provider] provider identity="
               << providerIdentity.toUri()
               << " providerId=" << providerLabel
               << " benchmark=" << benchmark
@@ -219,7 +257,7 @@ main(int argc, char** argv)
               << " adaptiveProviderAck=" << adaptiveProviderAck
               << " providerAckMaxPending=" << providerAckMaxPending
               << " providerAckMaxEventLoopLagMs=" << providerAckMaxEventLoopLagMs
-              << " providerAckMaxCoordinationLagMs=" << providerAckMaxCoordinationLagMs
+              << " providerAckMaxSelectionLagMs=" << providerAckMaxSelectionLagMs
               << " handlerThreads=" << handlerThreads
               << " providerRequestDelayMs=" << providerRequestDelayMs
               << " dkBootstrapOnly=" << dkBootstrapOnly
@@ -227,7 +265,7 @@ main(int argc, char** argv)
               << " ackStatus=" << ackStatus
               << " ackPayload=" << ackPayloadText
               << " responsePayload=" << responseText
-              << std::endl;
+             );
 
     const auto routeRegistrationLockPath =
       userScopedLockPath("/tmp/ndnsf-provider-route-registration");
@@ -251,8 +289,8 @@ main(int argc, char** argv)
       providerAckMaxPending > 0 ? static_cast<size_t>(providerAckMaxPending) : 0);
     provider.setProviderAckMaxEventLoopLag(
       ndn::time::milliseconds(std::max(0, providerAckMaxEventLoopLagMs)));
-    provider.setProviderAckMaxCoordinationLag(
-      ndn::time::milliseconds(std::max(0, providerAckMaxCoordinationLagMs)));
+    provider.setProviderAckMaxSelectionLag(
+      ndn::time::milliseconds(std::max(0, providerAckMaxSelectionLagMs)));
     if (handlerThreads >= 0) {
       provider.setHandlerThreads(static_cast<size_t>(handlerThreads));
     }
@@ -269,7 +307,7 @@ main(int argc, char** argv)
           << "request_observed_timestamp_us,ack_admission_decision_timestamp_us,"
           << "ack_published_or_suppressed_timestamp_us,suppression_reason,"
           << "provider_pending_count_at_decision,event_loop_lag_us,"
-          << "coordination_lag_us,coordination_received_timestamp_us,"
+          << "selection_lag_us,selection_received_timestamp_us,"
           << "execution_start_timestamp_us,execution_done_timestamp_us,"
           << "response_published_timestamp_us,final_status\n";
         provider.setProviderRequestLifecycleCallback(
@@ -286,8 +324,8 @@ main(int argc, char** argv)
               << status.suppressionReason << ","
               << status.providerPendingCountAtDecision << ","
               << status.eventLoopLagUs << ","
-              << status.coordinationLagUs << ","
-              << status.coordinationReceivedTimestampUs << ","
+              << status.selectionLagUs << ","
+              << status.selectionReceivedTimestampUs << ","
               << status.executionStartTimestampUs << ","
               << status.executionDoneTimestampUs << ","
               << status.responsePublishedTimestampUs << ","
@@ -298,10 +336,10 @@ main(int argc, char** argv)
     routeRegistrationLock.unlock();
 
     if (dkBootstrapOnly) {
-      std::cout << "DK_BOOTSTRAP_ONLY success=1 provider="
+      NDN_LOG_INFO( "DK_BOOTSTRAP_ONLY success=1 provider="
                 << providerIdentity.toUri()
                 << " authority=" << controllerCert.getIdentity().toUri()
-                << std::endl;
+               );
       return 0;
     }
 
@@ -313,19 +351,19 @@ main(int argc, char** argv)
     provider.RegisterService(
       ndn::Name("/HELLO"),
       ndn_service_framework::ServiceProvider::AckStrategyHandler(
-        [providerLabel, ackStatus, ackMessage, ackPayloadText, performanceMode,
+        [providerLabel, ackStatus, ackMessage, ackPayloadText, performanceMode, perfLogGate,
          &provider, executingRequests, completionTimes, completionTimesMutex](
           const ndn_service_framework::RequestMessage&) {
-          if (!performanceMode) {
-            std::cout << "Provider " << providerLabel
-                      << " selective ACK handler received request" << std::endl;
-            std::cout << "Provider " << providerLabel
-                      << " request received timestampMs=" << nowMilliseconds()
-                      << std::endl;
+          const bool logThisRequest = !performanceMode && perfLogGate->allow();
+          if (logThisRequest) {
+            NDN_LOG_INFO("Provider " << providerLabel
+                         << " selective ACK handler received request");
+            NDN_LOG_INFO("Provider " << providerLabel
+                         << " request received timestampMs=" << nowMilliseconds());
           }
-          if (!ackStatus) {
-            std::cout << "Provider " << providerLabel
-                      << " selective ACK handler rejected request" << std::endl;
+          if (!ackStatus && logThisRequest) {
+            NDN_LOG_INFO("Provider " << providerLabel
+                         << " selective ACK handler rejected request");
           }
 
           const auto now = std::chrono::steady_clock::now();
@@ -356,12 +394,12 @@ main(int argc, char** argv)
           decision.status = ackStatus;
           decision.message = ackMessage;
           decision.payload = ackPayload;
-          if (!performanceMode) {
-            std::cout << "Provider " << providerLabel
-                      << " publishing HELLO ACK status=" << decision.status
-                      << " message=" << decision.message
-                      << " payload=" << metadata << std::endl;
-            std::cout << "Publishing HELLO ACK payload: " << metadata << std::endl;
+          if (logThisRequest) {
+            NDN_LOG_INFO("Provider " << providerLabel
+                         << " publishing HELLO ACK status=" << decision.status
+                         << " message=" << decision.message
+                         << " payload=" << metadata);
+            NDN_LOG_INFO("Publishing HELLO ACK payload: " << metadata);
           }
           return decision;
         }),
@@ -371,7 +409,7 @@ main(int argc, char** argv)
         const ndn::Name&,
         const ndn::Name&,
         const ndn_service_framework::RequestMessage&)>(
-        [providerLabel, responseText, performanceMode, providerRequestDelayMs,
+        [providerLabel, responseText, performanceMode, perfLogGate, providerRequestDelayMs,
          executingRequests, completionTimes, completionTimesMutex](
           const ndn::Name&,
           const ndn::Name&,
@@ -401,12 +439,12 @@ main(int argc, char** argv)
             completionTimes->push_back(std::chrono::steady_clock::now());
           }
 
-          if (!performanceMode) {
-            std::cout << "Received HELLO request" << std::endl;
-            std::cout << "Provider " << providerLabel
-                      << " executing selected request" << std::endl;
-            std::cout << "Provider " << providerLabel
-                      << " publishing final response: " << responseText << std::endl;
+          if (!performanceMode && perfLogGate->allow()) {
+            NDN_LOG_INFO("Received HELLO request");
+            NDN_LOG_INFO("Provider " << providerLabel
+                         << " executing selected request");
+            NDN_LOG_INFO("Provider " << providerLabel
+                         << " publishing final response: " << responseText);
           }
 
           ndn::Buffer responsePayload(
@@ -433,8 +471,8 @@ main(int argc, char** argv)
         provider.fetchAndDecryptLargeData(ndn::Name(largeDataNameText), "/HELLO");
       if (expectLargeDataFailure) {
         if (!result.success && !result.errorMessage.empty()) {
-          std::cout << "LARGE_DATA_UNAUTHORIZED_FAILURE_CLEAN error="
-                    << result.errorMessage << std::endl;
+          NDN_LOG_INFO( "LARGE_DATA_UNAUTHORIZED_FAILURE_CLEAN error="
+                    << result.errorMessage);
           return 0;
         }
         std::cerr << "LARGE_DATA_UNAUTHORIZED_FAILURE_EXPECTED success="
@@ -458,13 +496,13 @@ main(int argc, char** argv)
         return 1;
       }
 
-      std::cout << "LARGE_DATA_FETCH_SUCCESS plaintext="
-                << plaintext << std::endl;
+      NDN_LOG_INFO( "LARGE_DATA_FETCH_SUCCESS plaintext="
+                << plaintext);
       return 0;
     }
 
-    std::cout << "Provider " << providerLabel
-              << " registered service /HELLO" << std::endl;
+    NDN_LOG_INFO( "Provider " << providerLabel
+              << " registered service /HELLO");
     face.processEvents();
     return 0;
   }

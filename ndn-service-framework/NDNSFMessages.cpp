@@ -353,41 +353,41 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
     return true;
 }
 
-ServiceCoordinationMessage::ServiceCoordinationMessage() {}
+ServiceSelectionMessage::ServiceSelectionMessage() {}
 
-void ServiceCoordinationMessage::setRequestIDs(const std::vector<std::string>& requestIDs) {
+void ServiceSelectionMessage::setRequestIDs(const std::vector<std::string>& requestIDs) {
     requestIDs_ = requestIDs;
 }
 
-void ServiceCoordinationMessage::setProviderToken(const std::string& providerToken) {
+void ServiceSelectionMessage::setProviderToken(const std::string& providerToken) {
     providerToken_ = providerToken;
 }
 
-void ServiceCoordinationMessage::setAssignmentPayload(const ndn::Buffer& payload) {
+void ServiceSelectionMessage::setAssignmentPayload(const ndn::Buffer& payload) {
     assignmentPayload_ = payload;
 }
 
-void ServiceCoordinationMessage::setPolicyEpoch(size_t policyEpoch) {
+void ServiceSelectionMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
 }
 
-const std::vector<std::string>& ServiceCoordinationMessage::getRequestIDs() const {
+const std::vector<std::string>& ServiceSelectionMessage::getRequestIDs() const {
     return requestIDs_;
 }
 
-const std::string& ServiceCoordinationMessage::getProviderToken() const {
+const std::string& ServiceSelectionMessage::getProviderToken() const {
     return providerToken_;
 }
 
-const ndn::Buffer& ServiceCoordinationMessage::getAssignmentPayload() const {
+const ndn::Buffer& ServiceSelectionMessage::getAssignmentPayload() const {
     return assignmentPayload_;
 }
 
-size_t ServiceCoordinationMessage::getPolicyEpoch() const {
+size_t ServiceSelectionMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
-void ServiceCoordinationMessage::Clear() {
+void ServiceSelectionMessage::Clear() {
     requestIDs_.clear();
     providerToken_.clear();
     assignmentPayload_.clear();
@@ -395,7 +395,7 @@ void ServiceCoordinationMessage::Clear() {
     m_wire.reset();
 }
 
-ndn::Block ServiceCoordinationMessage::WireEncode() const {
+ndn::Block ServiceSelectionMessage::WireEncode() const {
     if (m_wire.hasWire()) {
         m_wire.reset();
     }
@@ -419,7 +419,7 @@ ndn::Block ServiceCoordinationMessage::WireEncode() const {
     return m_wire;
 }
 
-bool ServiceCoordinationMessage::WireDecode(const ndn::Block& block) {
+bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
     Clear(); // 清除已初始化的值
 
     if (block.type() != tlv::ServiceSelectionMessageType) {

@@ -278,7 +278,7 @@ hybridMessageTypeForName(const ndn::Name& name)
     for (const auto& component : name) {
         const auto text = component.toUri();
         if (text == "REQUEST" || text == "ACK" ||
-            text == "COORDINATION" || text == "RESPONSE") {
+            text == "SELECTION" || text == "RESPONSE") {
             return text;
         }
     }
@@ -289,7 +289,7 @@ std::string
 hybridAccessAttributeForName(const ndn::Name& name, const ndn::Name& serviceName)
 {
     const auto type = hybridMessageTypeForName(name);
-    if (type == "REQUEST" || type == "COORDINATION") {
+    if (type == "REQUEST" || type == "SELECTION") {
         return "/SERVICE" + serviceName.toUri();
     }
     return "/PERMISSION" + serviceName.toUri();

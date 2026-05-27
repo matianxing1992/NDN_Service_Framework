@@ -51,7 +51,7 @@ tail -n 180 "${tmpdir}/user.log"
 
 if [[ "${user_status}" -eq 0 ]] &&
    grep -q "GetAttributesByName: messageName=.*/NDNSF/REQUEST/1/HELLO/.* attributes=/SERVICE/HELLO" "${tmpdir}/user.log" &&
-   grep -q "GetAttributesByName: messageName=.*/NDNSF/COORDINATION/3/example/hello/provider/1/HELLO/.* attributes=/SERVICE/HELLO" "${tmpdir}/user.log" &&
+   grep -q "GetAttributesByName: messageName=.*/NDNSF/SELECTION/3/example/hello/provider/1/HELLO/.* attributes=/SERVICE/HELLO" "${tmpdir}/user.log" &&
    grep -q "GetAttributesByName: messageName=.*/NDNSF/ACK/3/example/hello/user/1/HELLO/.* attributes=/PERMISSION/HELLO" "${tmpdir}/provider.log" &&
    grep -q "GetAttributesByName: messageName=.*/NDNSF/RESPONSE/3/example/hello/user/1/HELLO/.* attributes=/PERMISSION/HELLO" "${tmpdir}/provider.log" &&
    grep -q "Received response: HELLO" "${tmpdir}/user.log"; then

@@ -356,13 +356,13 @@ if __name__ == '__main__':
     # time.sleep(2)
     # drone4.cmd('xterm -T "drone4" -e "multi-drone-example /muas/drone4" &')
     # time.sleep(10)
-    # gs1.cmd('xterm -T "gs1" -e "multi-gs-example AllResponders /muas/gs1 200 1000 /muas/drone1 /muas/drone2 /muas/drone3 /muas/drone4 /muas/drone5" &')
-    # memphis.cmd('xterm -T "NDNSF Client memphis" -e "multi-gs-example AllResponders /muas/memphis 50 60 /muas/ucla /muas/caida /muas/neu" &')
+    # gs1.cmd('xterm -T "gs1" -e "multi-gs-example AllSelected /muas/gs1 200 1000 /muas/drone1 /muas/drone2 /muas/drone3 /muas/drone4 /muas/drone5" &')
+    # memphis.cmd('xterm -T "NDNSF Client memphis" -e "multi-gs-example AllSelected /muas/memphis 50 60 /muas/ucla /muas/caida /muas/neu" &')
     # arizona uiuc
     
     frequency = 150
     time_in_seconds = 60
-    strategy = "AllResponders"
+    strategy = "AllSelected"
     # strategy = "FirstResponding"
     # strategy = "RandomSelection"
     clients = ['memphis']

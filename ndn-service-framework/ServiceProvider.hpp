@@ -156,7 +156,7 @@ namespace ndn_service_framework{
                 ACK_ADMISSION_CHECKED,
                 ACK_SUPPRESSED_OVERLOAD,
                 ACK_PUBLISHED,
-                COORDINATION_RECEIVED,
+                SELECTION_RECEIVED,
                 EXECUTION_STARTED,
                 EXECUTION_DONE,
                 RESPONSE_PUBLISHED,
@@ -176,8 +176,8 @@ namespace ndn_service_framework{
                 std::string suppressionReason;
                 size_t providerPendingCountAtDecision = 0;
                 uint64_t eventLoopLagUs = 0;
-                uint64_t coordinationLagUs = 0;
-                uint64_t coordinationReceivedTimestampUs = 0;
+                uint64_t selectionLagUs = 0;
+                uint64_t selectionReceivedTimestampUs = 0;
                 uint64_t executionStartTimestampUs = 0;
                 uint64_t executionDoneTimestampUs = 0;
                 uint64_t responsePublishedTimestampUs = 0;
@@ -232,7 +232,7 @@ namespace ndn_service_framework{
             void setAdaptiveAckAdmission(bool enabled);
             void setProviderAckMaxPending(size_t maxPending);
             void setProviderAckMaxEventLoopLag(ndn::time::milliseconds maxLag);
-            void setProviderAckMaxCoordinationLag(ndn::time::milliseconds maxLag);
+            void setProviderAckMaxSelectionLag(ndn::time::milliseconds maxLag);
             void setProviderRequestLifecycleCallback(
                 ProviderRequestLifecycleCallback callback);
             std::optional<ProviderRequestLifecycleStatus>
@@ -247,7 +247,7 @@ namespace ndn_service_framework{
             
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
-            // After receiving service coordination message, this function is called to consumeRequest.
+            // After receiving service selection message, this function is called to consumeRequest.
             // Generic dynamic providers can rely on this safe default; legacy generated providers
             // may still override it for service-specific dispatch.
             virtual void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, RequestMessage& requestMessage);
@@ -463,7 +463,7 @@ namespace ndn_service_framework{
                                             const std::string& userToken = "",
                                             const std::string& providerToken = "");
     
-            void onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
+            void onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
             void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
             void publishHybridMessage(const ndn::Name& messageName,
@@ -476,14 +476,14 @@ namespace ndn_service_framework{
                                       std::function<void(const ndn::Buffer&)> onSuccess,
                                       std::function<void(const std::string&)> onError);
 
-            void OnServiceCoordinationMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer & buffer);
-            void OnServiceCoordinationMessageDecryptionSuccessCallbackV2(const ndn::Name& requesterName,
+            void OnServiceSelectionMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer & buffer);
+            void OnServiceSelectionMessageDecryptionSuccessCallbackV2(const ndn::Name& requesterName,
                                                                           const ndn::Name& providerName,
                                                                           const ndn::Name& serviceName,
                                                                           const ndn::Name& msgId,
                                                                           const ndn::Buffer& buffer);
 
-            void OnServiceCoordinationMessageDecryptionErrorCallback(const ndn::Name& requesterName,const ndn::Name &providerName, const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& msgID,const std::string & reason);
+            void OnServiceSelectionMessageDecryptionErrorCallback(const ndn::Name& requesterName,const ndn::Name &providerName, const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& msgID,const std::string & reason);
             
             // Register NDNSF Messages in the ndn-svs
             void registerNDNSFMessages();
@@ -695,7 +695,7 @@ namespace ndn_service_framework{
             std::map<ndn::Name,ndn::Name> unauthorizedRequestMap;
 
             /*
-                pending requests waiting for Service Coordination Message;
+                pending requests waiting for Service Selection Message;
                 (/<requesterName>/<ServiceName>/<FunctionName>/<RequestID> -> RequestMessage)
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
@@ -720,7 +720,7 @@ namespace ndn_service_framework{
             bool m_adaptiveAckAdmission = false;
             size_t m_providerAckMaxPending = 0;
             ndn::time::milliseconds m_providerAckMaxEventLoopLag{0};
-            ndn::time::milliseconds m_providerAckMaxCoordinationLag{0};
+            ndn::time::milliseconds m_providerAckMaxSelectionLag{0};
             std::map<ndn::Name, ProviderRequestLifecycleStatus>
                 m_providerRequestLifecycleStatuses;
             ProviderRequestLifecycleCallback m_providerRequestLifecycleCallback;

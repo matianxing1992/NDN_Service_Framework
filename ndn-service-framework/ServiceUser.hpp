@@ -67,8 +67,8 @@ namespace ndn_service_framework{
     namespace strategy
     {
         extern const std::shared_ptr<const AckSelectionPolicy> FirstResponding;
-        extern const std::shared_ptr<const AckSelectionPolicy> LoadBalancing;
-        extern const std::shared_ptr<const AckSelectionPolicy> AllResponders;
+        extern const std::shared_ptr<const AckSelectionPolicy> RandomSelection;
+        extern const std::shared_ptr<const AckSelectionPolicy> AllSelected;
     }
 
     struct CollaborationRoleSpec
@@ -162,7 +162,7 @@ namespace ndn_service_framework{
             {
                 FirstRespondingSelection,
                 RandomSelection,
-                AllResponders,
+                AllSelected,
                 CustomSelectionStrategy,
             };
 
@@ -180,7 +180,7 @@ namespace ndn_service_framework{
                 REQUEST_PUBLISHED,
                 ACK_MATCHED,
                 PROVIDER_SELECTED,
-                COORDINATION_PUBLISHED,
+                SELECTION_PUBLISHED,
                 RESPONSE_OBSERVED,
                 RESPONSE_DECRYPTED,
                 CALLBACK_FIRED,
@@ -202,7 +202,7 @@ namespace ndn_service_framework{
                 uint64_t publishTimestampUs = 0;
                 uint64_t ackMatchedTimestampUs = 0;
                 uint64_t providerSelectionTimestampUs = 0;
-                uint64_t coordinationPublishTimestampUs = 0;
+                uint64_t selectionPublishTimestampUs = 0;
                 uint64_t responseObservedTimestampUs = 0;
                 uint64_t responseDecryptedTimestampUs = 0;
                 uint64_t callbackTimestampUs = 0;
@@ -606,8 +606,8 @@ namespace ndn_service_framework{
 
             void OnRequestAckDecryptionErrorCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID, const std::string &error) ;
 
-            void PublishServiceCoordinationMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID) ;
-            void PublishServiceCoordinationMessageV2(const ndn::Name& providerName,
+            void PublishServiceSelectionMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID) ;
+            void PublishServiceSelectionMessageV2(const ndn::Name& providerName,
                                                      const ndn::Name& serviceName,
                                                      const ndn::Name& requestId);
 
@@ -675,8 +675,8 @@ namespace ndn_service_framework{
                 uint64_t ackWindowDeadlineUs = 0;
                 uint64_t ackSelectionAtUs = 0;
                 uint64_t ackSelectionCompletedAtUs = 0;
-                uint64_t coordinationScheduledAtUs = 0;
-                uint64_t coordinationPublishedAtUs = 0;
+                uint64_t selectionScheduledAtUs = 0;
+                uint64_t selectionPublishedAtUs = 0;
                 uint64_t responseObservedAtUs = 0;
                 uint64_t responseDecryptedAtUs = 0;
                 uint64_t responseValidatedAtUs = 0;
@@ -701,7 +701,7 @@ namespace ndn_service_framework{
                 std::vector<StoredAck> requestAcks;
                 std::vector<StoredAck> customSelectedAcks;
                 std::vector<ndn::Name> successfulAckProviders;
-                std::vector<ndn::Name> coordinatedProviders;
+                std::vector<ndn::Name> selectionPublishedProviders;
                 std::vector<ndn::Name> expectedResponseProviders;
                 std::vector<ndn::Name> responseProviders;
                 ndn::Name selectedProvider;
@@ -781,7 +781,7 @@ namespace ndn_service_framework{
             static void addUniqueName(std::vector<ndn::Name>& names,
                                       const ndn::Name& name);
 
-            static ndn::Name selectLoadBalancingProvider(const std::vector<ndn::Name>& providers);
+            static ndn::Name selectRandomProvider(const std::vector<ndn::Name>& providers);
 
             static const StoredAck* findStoredAck(
                 const PendingCall& pendingCall,
@@ -919,9 +919,9 @@ namespace ndnsf
         extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
             FirstResponding;
         extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
-            LoadBalancing;
+            RandomSelection;
         extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
-            AllResponders;
+            AllSelected;
     }
 }
 

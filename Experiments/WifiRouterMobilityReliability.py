@@ -336,7 +336,7 @@ def run_ndnsf(ndn, output_dir, args):
                 "--duration-ms", str(args.duration_s * 1000),
                 "--ack-timeout-ms", str(args.ack_timeout_ms),
                 "--timeout-ms", str(args.timeout_ms),
-                "--strategy", "all-responders",
+                "--strategy", "all-selected",
                 "--startup-delay-ms", "2000",
             ]), output_dir, env)
         processes.append((user, lf, user_log))

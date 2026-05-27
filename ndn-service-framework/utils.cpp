@@ -11,7 +11,7 @@ namespace ndn_service_framework
     std::string requestRegexString = "^(<>+)<NDNSF><REQUEST>(<>)(<>)(<>)(<>)";
     std::string responseRegexString = "^(<>+)<NDNSF><RESPONSE>(<>+)(<>)(<>)(<>)$";
     std::string RequestAckRegexString = "^(<>+)<NDNSF><ACK>(<>*)(<>)(<>)(<>)$";
-    std::string serviceCoordinationRegexString = "^(<>+)<NDNSF><COORDINATION>(<>+)(<>)(<>)(<>)$";
+    std::string serviceSelectionRegexString = "^(<>+)<NDNSF><SELECTION>(<>+)(<>)(<>)(<>)$";
     std::string permissionTokenRegexString = "^(<>+)<NDNSF><TOKEN>(<>)(<>)(<>)$";
 
     namespace
@@ -233,18 +233,18 @@ namespace ndn_service_framework
     }
 
     std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseServiceCoordinationName(ndn::Name ServiceCoordinationName)
+    parseServiceSelectionName(ndn::Name ServiceSelectionName)
     {
-        std::shared_ptr<ndn::Regex> serviceCoordinationMatch = std::make_shared<ndn::Regex>(serviceCoordinationRegexString);
-        bool res = serviceCoordinationMatch->match(ServiceCoordinationName);
+        std::shared_ptr<ndn::Regex> serviceSelectionMatch = std::make_shared<ndn::Regex>(serviceSelectionRegexString);
+        bool res = serviceSelectionMatch->match(ServiceSelectionName);
         if (res)
         {
             return std::make_tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>(
-                serviceCoordinationMatch->expand("\\1"),
-                serviceCoordinationMatch->expand("\\2"),
-                serviceCoordinationMatch->expand("\\3"),
-                serviceCoordinationMatch->expand("\\4"),
-                serviceCoordinationMatch->expand("\\5"));
+                serviceSelectionMatch->expand("\\1"),
+                serviceSelectionMatch->expand("\\2"),
+                serviceSelectionMatch->expand("\\3"),
+                serviceSelectionMatch->expand("\\4"),
+                serviceSelectionMatch->expand("\\5"));
         }
         else
         {
@@ -252,20 +252,20 @@ namespace ndn_service_framework
         }
     }
 
-    ndn::Name makeServiceCoordinationName(const ndn::Name &requesterName, const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID)
+    ndn::Name makeServiceSelectionName(const ndn::Name &requesterName, const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID)
     {
-        ndn::Name serviceCoordinationName;
-        serviceCoordinationName.append(requesterName).append(ndn::Name("/NDNSF/COORDINATION")).append(ServiceProviderName).append(ServiceName)
+        ndn::Name serviceSelectionName;
+        serviceSelectionName.append(requesterName).append(ndn::Name("/NDNSF/SELECTION")).append(ServiceProviderName).append(ServiceName)
             .append(FunctionName).append(msgID);
-        return serviceCoordinationName;
+        return serviceSelectionName;
     }
 
-    ndn::Name makeServiceCoordinationNameWithoutPrefix(const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID)
+    ndn::Name makeServiceSelectionNameWithoutPrefix(const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID)
     {
-        ndn::Name serviceCoordinationName;
-        serviceCoordinationName.append(ndn::Name("/NDNSF/COORDINATION")).append(ServiceProviderName).append(ServiceName)
+        ndn::Name serviceSelectionName;
+        serviceSelectionName.append(ndn::Name("/NDNSF/SELECTION")).append(ServiceProviderName).append(ServiceName)
             .append(FunctionName).append(msgID);
-        return serviceCoordinationName;
+        return serviceSelectionName;
     }
 
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
@@ -403,51 +403,51 @@ namespace ndn_service_framework
             getSubNameByComponentCount(requestAckName, index, 1)};
     }
 
-    ndn::Name makeServiceCoordinationNameV2(const ndn::Name& requesterName,
+    ndn::Name makeServiceSelectionNameV2(const ndn::Name& requesterName,
                                             const ndn::Name& providerName,
                                             const ndn::Name& serviceName,
                                             const ndn::Name& requestId)
     {
-        ndn::Name serviceCoordinationName;
-        serviceCoordinationName.append(requesterName).append(ndn::Name("/NDNSF/COORDINATION"));
-        appendCountedName(serviceCoordinationName, providerName);
-        appendCountedName(serviceCoordinationName, serviceName);
-        serviceCoordinationName.append(requestId);
-        return serviceCoordinationName;
+        ndn::Name serviceSelectionName;
+        serviceSelectionName.append(requesterName).append(ndn::Name("/NDNSF/SELECTION"));
+        appendCountedName(serviceSelectionName, providerName);
+        appendCountedName(serviceSelectionName, serviceName);
+        serviceSelectionName.append(requestId);
+        return serviceSelectionName;
     }
 
-    ndn::Name makeServiceCoordinationNameWithoutPrefixV2(const ndn::Name& providerName,
+    ndn::Name makeServiceSelectionNameWithoutPrefixV2(const ndn::Name& providerName,
                                                          const ndn::Name& serviceName,
                                                          const ndn::Name& requestId)
     {
-        ndn::Name serviceCoordinationName;
-        serviceCoordinationName.append(ndn::Name("/NDNSF/COORDINATION"));
-        appendCountedName(serviceCoordinationName, providerName);
-        appendCountedName(serviceCoordinationName, serviceName);
-        serviceCoordinationName.append(requestId);
-        return serviceCoordinationName;
+        ndn::Name serviceSelectionName;
+        serviceSelectionName.append(ndn::Name("/NDNSF/SELECTION"));
+        appendCountedName(serviceSelectionName, providerName);
+        appendCountedName(serviceSelectionName, serviceName);
+        serviceSelectionName.append(requestId);
+        return serviceSelectionName;
     }
 
-    std::optional<ServiceCoordinationNameV2>
-    parseServiceCoordinationNameV2(const ndn::Name& serviceCoordinationName)
+    std::optional<ServiceSelectionNameV2>
+    parseServiceSelectionNameV2(const ndn::Name& serviceSelectionName)
     {
-        auto marker = findNdnsfMessageMarker(serviceCoordinationName, "COORDINATION");
+        auto marker = findNdnsfMessageMarker(serviceSelectionName, "SELECTION");
         if (!marker) {
             return std::nullopt;
         }
 
         size_t index = *marker + 2;
-        auto providerName = parseCountedName(serviceCoordinationName, index);
-        auto serviceName = parseCountedName(serviceCoordinationName, index);
-        if (!providerName || !serviceName || index + 1 != serviceCoordinationName.size()) {
+        auto providerName = parseCountedName(serviceSelectionName, index);
+        auto serviceName = parseCountedName(serviceSelectionName, index);
+        if (!providerName || !serviceName || index + 1 != serviceSelectionName.size()) {
             return std::nullopt;
         }
 
-        return ServiceCoordinationNameV2{
-            getSubNameByComponentCount(serviceCoordinationName, 0, *marker),
+        return ServiceSelectionNameV2{
+            getSubNameByComponentCount(serviceSelectionName, 0, *marker),
             *providerName,
             *serviceName,
-            getSubNameByComponentCount(serviceCoordinationName, index, 1)};
+            getSubNameByComponentCount(serviceSelectionName, index, 1)};
     }
 
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
@@ -589,7 +589,7 @@ namespace ndn_service_framework
     std::optional<std::vector<std::string>> GetAttributesByName(const ndn::Name& name)
     {
         // V2 NAC-ABE routing is intentionally service-scoped:
-        // requests and coordination require /SERVICE/<service>, while
+        // requests and selection require /SERVICE/<service>, while
         // responses and ACKs require /PERMISSION/<service>.
         if (auto requestV2 = parseRequestNameV2(name)) {
             return std::vector<std::string>{"/SERVICE" + requestV2->serviceName.toUri()};
@@ -600,14 +600,14 @@ namespace ndn_service_framework
         if (auto ackV2 = parseRequestAckNameV2(name)) {
             return std::vector<std::string>{"/PERMISSION" + ackV2->serviceName.toUri()};
         }
-        if (auto coordinationV2 = parseServiceCoordinationNameV2(name)) {
-            return std::vector<std::string>{"/SERVICE" + coordinationV2->serviceName.toUri()};
+        if (auto selectionV2 = parseServiceSelectionNameV2(name)) {
+            return std::vector<std::string>{"/SERVICE" + selectionV2->serviceName.toUri()};
         }
 
         std::shared_ptr<ndn::Regex> requestMatch = std::make_shared<ndn::Regex>(requestRegexString);
         std::shared_ptr<ndn::Regex> responseMatch = std::make_shared<ndn::Regex>(responseRegexString);
         std::shared_ptr<ndn::Regex> RequestAckMatch = std::make_shared<ndn::Regex>(RequestAckRegexString);
-        std::shared_ptr<ndn::Regex> serviceCoordinationMatch = std::make_shared<ndn::Regex>(serviceCoordinationRegexString);
+        std::shared_ptr<ndn::Regex> serviceSelectionMatch = std::make_shared<ndn::Regex>(serviceSelectionRegexString);
         std::shared_ptr<ndn::Regex> permissionTokenMatch = std::make_shared<ndn::Regex>(permissionTokenRegexString);
         
         std::vector<std::string> matchedAttributes;
@@ -630,10 +630,10 @@ namespace ndn_service_framework
             matchedAttributes.push_back("/ID"+RequestAckMatch->expand("\\2").toUri());
             return matchedAttributes;
         }
-        else if (serviceCoordinationMatch->match(name))
+        else if (serviceSelectionMatch->match(name))
         {
             // attributes:{"/SERVICE/<serviceName>/<fucntionName>"}
-            matchedAttributes.push_back("/SERVICE"+serviceCoordinationMatch->expand("\\3").toUri()+serviceCoordinationMatch->expand("\\4").toUri());
+            matchedAttributes.push_back("/SERVICE"+serviceSelectionMatch->expand("\\3").toUri()+serviceSelectionMatch->expand("\\4").toUri());
             return matchedAttributes;
         }
         else if (permissionTokenMatch->match(name))

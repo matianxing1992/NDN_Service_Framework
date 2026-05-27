@@ -194,7 +194,7 @@ def build_parser():
                         help="Enable provider-side adaptive ACK admission")
     parser.add_argument("--provider-ack-max-pending", type=int, default=1000)
     parser.add_argument("--provider-ack-max-event-loop-lag-ms", type=int, default=0)
-    parser.add_argument("--provider-ack-max-coordination-lag-ms", type=int, default=0)
+    parser.add_argument("--provider-ack-max-selection-lag-ms", type=int, default=0)
     parser.add_argument("--provider-request-delay-ms-series", default="",
                         help="Comma-separated provider processing delays in ms, e.g., 5,20,40")
     parser.add_argument("--handler-threads", type=int, default=-1,
@@ -210,8 +210,8 @@ def build_parser():
     parser.add_argument("--max-total-runtime-seconds", type=int, default=180,
                         help="Maximum wall-clock runtime budget for --rate-series workload subtests")
     parser.add_argument("--strategy", default="custom-selection",
-                        choices=["first-responding", "custom-selection", "random-selection",
-                                 "no-coordination", "load-balancing"],
+                        choices=["first-responding", "custom-selection",
+                                 "random-selection", "all-selected"],
                         help="App_User benchmark strategy")
     parser.add_argument("--ack-timeout-ms", type=int, default=1000,
                         help="ACK collection timeout for custom selection")
@@ -1634,7 +1634,7 @@ def app_env(output_dir, session_base, args):
     if getattr(args, "timeline_trace", False):
         ndn_log = os.environ.get(
             "NDN_LOG",
-            "ndn_service_framework.*=DEBUG:ndn_service_framework.TimelineTrace=DEBUG:ndnsvs.*=INFO")
+            "ndn_service_framework.*=DEBUG:ndn_service_framework.TimelineTrace=DEBUG:ndn_svs.*=TRACE")
     if getattr(args, "dk_bootstrap_check", False):
         ndn_log = os.environ.get(
             "NDN_LOG",
@@ -1646,6 +1646,7 @@ def app_env(output_dir, session_base, args):
         "NDNSF_CONFIG": str(output_dir / "ndnsf.conf"),
         "NDNSF_SESSION_BASE": str(session_base),
         "NDN_LOG": ndn_log,
+        "NDNSF_SVS_MAX_SUPPRESSION_MS": os.environ.get("NDNSF_SVS_MAX_SUPPRESSION_MS", "1"),
     }
     for name in ("NDNSF_HANDLER_THREADS", "NDNSF_ACK_THREADS"):
         if name in os.environ:
@@ -2101,8 +2102,8 @@ def collect_startup_timestamps(output_dir):
     result["first_ack_received_by_user"] = first_timestamp_us_from_log(user_log, [
         (r"event=ACK_RECEIVED timestamp_us=(\d+)", "us"),
     ])
-    result["first_coordination_sent"] = first_timestamp_us_from_log(user_log, [
-        (r"event=COORDINATION_PUBLISHED timestamp_us=(\d+)", "us"),
+    result["first_selection_sent"] = first_timestamp_us_from_log(user_log, [
+        (r"event=SELECTION_PUBLISHED timestamp_us=(\d+)", "us"),
     ])
     result["first_response_received"] = first_timestamp_us_from_log(user_log, [
         (r"event=RESPONSE_RECEIVED timestamp_us=(\d+)", "us"),
@@ -2342,12 +2343,12 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
         "selection_invoked_us": "",
         "selection_completed_us": "",
         "selected_provider": "",
-        "coordination_scheduling_attempt_us": "",
-        "coordination_scheduled_us": "",
-        "coordination_publish_attempt_us": "",
-        "coordination_publish_us": "",
-        "coordination_publish_status": "",
-        "coordination_to_provider_coordination_received_us": "",
+        "selection_scheduling_attempt_us": "",
+        "selection_scheduled_us": "",
+        "selection_publish_attempt_us": "",
+        "selection_publish_us": "",
+        "selection_publish_status": "",
+        "selection_to_provider_selection_received_us": "",
         "response_completion_us": "",
         "response_observed_us": "",
         "response_decrypt_start_us": "",
@@ -2357,11 +2358,11 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
         "response_validation_done_us": "",
         "response_validation_failed_us": "",
         "callback_attempt_us": "",
-        "provider_coordination_received_us": "",
-        "provider_coordination_decrypt_start_us": "",
-        "provider_coordination_decrypt_done_us": "",
-        "provider_coordination_decrypt_failed_us": "",
-        "provider_coordination_no_pending_us": "",
+        "provider_selection_received_us": "",
+        "provider_selection_decrypt_start_us": "",
+        "provider_selection_decrypt_done_us": "",
+        "provider_selection_decrypt_failed_us": "",
+        "provider_selection_no_pending_us": "",
         "provider_execute_start_us": "",
         "provider_execute_done_us": "",
         "provider_response_publish_attempt_us": "",
@@ -2376,9 +2377,9 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
         "final_classification": "",
         "lat_request_created_to_ack_matched_us": "",
         "lat_ack_matched_to_provider_selected_us": "",
-        "lat_provider_selected_to_coordination_published_us": "",
-        "lat_coordination_published_to_provider_coordination_received_us": "",
-        "lat_provider_coordination_received_to_response_published_us": "",
+        "lat_provider_selected_to_selection_published_us": "",
+        "lat_selection_published_to_provider_selection_received_us": "",
+        "lat_provider_selection_received_to_response_published_us": "",
         "lat_response_published_to_response_observed_us": "",
         "lat_response_observed_to_callback_fired_us": "",
         "ack_processed": 0,
@@ -2470,26 +2471,26 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
                     if provider and provider != "-":
                         row["selected_provider"] = provider
                     set_once(row, "selection_completed_us", timestamp_us)
-                elif event == "COORDINATION_SCHEDULE_ATTEMPT":
-                    counters["coordination_attempted"] += 1
-                    set_once(row, "coordination_scheduling_attempt_us", timestamp_us)
-                elif event == "COORDINATION_SCHEDULED_CALLBACK":
-                    counters["coordination_scheduled"] += 1
-                    set_once(row, "coordination_scheduled_us", timestamp_us)
-                elif event == "COORDINATION_PUBLISH_ATTEMPT":
-                    set_once(row, "coordination_publish_attempt_us", timestamp_us)
-                elif event == "COORDINATION_PUBLISHED":
-                    counters["coordination_published"] += 1
-                    set_once(row, "coordination_publish_us", timestamp_us)
-                    row["coordination_publish_status"] = "success"
-                elif event == "COORDINATION_PUBLISH_FAILED":
-                    counters["coordination_publish_failed"] += 1
-                    set_once(row, "coordination_publish_us", timestamp_us)
-                    row["coordination_publish_status"] = "failure"
-                elif event == "COORDINATION_SKIPPED":
-                    counters["coordination_skipped"] += 1
-                elif event == "COORDINATION_REJECTED":
-                    counters["coordination_rejected"] += 1
+                elif event == "SELECTION_SCHEDULE_ATTEMPT":
+                    counters["selection_attempted"] += 1
+                    set_once(row, "selection_scheduling_attempt_us", timestamp_us)
+                elif event == "SELECTION_SCHEDULED_CALLBACK":
+                    counters["selection_scheduled"] += 1
+                    set_once(row, "selection_scheduled_us", timestamp_us)
+                elif event == "SELECTION_PUBLISH_ATTEMPT":
+                    set_once(row, "selection_publish_attempt_us", timestamp_us)
+                elif event == "SELECTION_PUBLISHED":
+                    counters["selection_published"] += 1
+                    set_once(row, "selection_publish_us", timestamp_us)
+                    row["selection_publish_status"] = "success"
+                elif event == "SELECTION_PUBLISH_FAILED":
+                    counters["selection_publish_failed"] += 1
+                    set_once(row, "selection_publish_us", timestamp_us)
+                    row["selection_publish_status"] = "failure"
+                elif event == "SELECTION_SKIPPED":
+                    counters["selection_skipped"] += 1
+                elif event == "SELECTION_REJECTED":
+                    counters["selection_rejected"] += 1
                 elif event == "RESPONSE_RECEIVED":
                     set_once(row, "response_completion_us", timestamp_us)
                 elif event == "RESPONSE_OBSERVED":
@@ -2533,17 +2534,17 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
                 if not request_id:
                     continue
                 row = row_for(request_id)
-                if event == "COORDINATION_RECEIVED":
-                    set_once(row, "provider_coordination_received_us", timestamp_us)
-                elif event == "COORDINATION_DECRYPT_START":
-                    set_once(row, "provider_coordination_decrypt_start_us", timestamp_us)
-                elif event == "COORDINATION_DECRYPT_DONE":
-                    set_once(row, "provider_coordination_decrypt_done_us", timestamp_us)
-                elif event == "COORDINATION_DECRYPT_FAILED":
-                    set_once(row, "provider_coordination_decrypt_failed_us", timestamp_us)
-                elif event == "COORDINATION_NO_PENDING":
-                    counters["coordination_no_pending"] += 1
-                    set_once(row, "provider_coordination_no_pending_us", timestamp_us)
+                if event == "SELECTION_RECEIVED":
+                    set_once(row, "provider_selection_received_us", timestamp_us)
+                elif event == "SELECTION_DECRYPT_START":
+                    set_once(row, "provider_selection_decrypt_start_us", timestamp_us)
+                elif event == "SELECTION_DECRYPT_DONE":
+                    set_once(row, "provider_selection_decrypt_done_us", timestamp_us)
+                elif event == "SELECTION_DECRYPT_FAILED":
+                    set_once(row, "provider_selection_decrypt_failed_us", timestamp_us)
+                elif event == "SELECTION_NO_PENDING":
+                    counters["selection_no_pending"] += 1
+                    set_once(row, "provider_selection_no_pending_us", timestamp_us)
                 elif event == "PROVIDER_EXECUTE_START":
                     set_once(row, "provider_execute_start_us", timestamp_us)
                 elif event == "PROVIDER_EXECUTE_DONE":
@@ -2575,12 +2576,12 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
                     "pending_created_us", "ack_matched_us")
         set_latency(row, "lat_ack_matched_to_provider_selected_us",
                     "ack_matched_us", "selection_completed_us")
-        set_latency(row, "lat_provider_selected_to_coordination_published_us",
-                    "selection_completed_us", "coordination_publish_us")
-        set_latency(row, "lat_coordination_published_to_provider_coordination_received_us",
-                    "coordination_publish_us", "provider_coordination_received_us")
-        set_latency(row, "lat_provider_coordination_received_to_response_published_us",
-                    "provider_coordination_received_us", "provider_response_published_us")
+        set_latency(row, "lat_provider_selected_to_selection_published_us",
+                    "selection_completed_us", "selection_publish_us")
+        set_latency(row, "lat_selection_published_to_provider_selection_received_us",
+                    "selection_publish_us", "provider_selection_received_us")
+        set_latency(row, "lat_provider_selection_received_to_response_published_us",
+                    "provider_selection_received_us", "provider_response_published_us")
         set_latency(row, "lat_response_published_to_response_observed_us",
                     "provider_response_published_us", "response_observed_us")
         set_latency(row, "lat_response_observed_to_callback_fired_us",
@@ -2606,15 +2607,15 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
         elif row["ack_matched_pending_call"] and not row["selected_provider"]:
             row["final_classification"] = "5_ack_matched_pending_call_but_no_provider_selected"
             counters["bucket_5_ack_matched_pending_call_but_no_provider_selected"] += 1
-        elif row["selected_provider"] and not row["coordination_scheduling_attempt_us"]:
-            row["final_classification"] = "6_provider_selected_but_coordination_not_scheduled"
-            counters["bucket_6_provider_selected_but_coordination_not_scheduled"] += 1
-        elif row["coordination_scheduling_attempt_us"] and not row["coordination_publish_us"]:
-            row["final_classification"] = "7_coordination_scheduled_but_not_published"
-            counters["bucket_7_coordination_scheduled_but_not_published"] += 1
-        elif row["coordination_publish_us"] and not row["provider_response_published_us"]:
-            row["final_classification"] = "8_coordination_published_but_provider_did_not_execute_respond"
-            counters["bucket_8_coordination_published_but_provider_did_not_execute_respond"] += 1
+        elif row["selected_provider"] and not row["selection_scheduling_attempt_us"]:
+            row["final_classification"] = "6_provider_selected_but_selection_not_scheduled"
+            counters["bucket_6_provider_selected_but_selection_not_scheduled"] += 1
+        elif row["selection_scheduling_attempt_us"] and not row["selection_publish_us"]:
+            row["final_classification"] = "7_selection_scheduled_but_not_published"
+            counters["bucket_7_selection_scheduled_but_not_published"] += 1
+        elif row["selection_publish_us"] and not row["provider_response_published_us"]:
+            row["final_classification"] = "8_selection_published_but_provider_did_not_execute_respond"
+            counters["bucket_8_selection_published_but_provider_did_not_execute_respond"] += 1
         elif row["provider_response_published_us"] and not row["callback_fired_us"]:
             row["final_classification"] = "9_response_published_but_user_callback_not_triggered"
             counters["bucket_9_response_published_but_user_callback_not_triggered"] += 1
@@ -2628,11 +2629,11 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
                 counters["requests_timed_out_before_selection"] += 1
             elif not row["selected_provider"]:
                 row["timeout_stage"] = "after_selection_no_provider"
-            elif not row["coordination_publish_us"]:
-                row["timeout_stage"] = "after_selection_before_coordination"
-                counters["requests_timed_out_after_selection_before_coordination"] += 1
+            elif not row["selection_publish_us"]:
+                row["timeout_stage"] = "after_selection_before_selection"
+                counters["requests_timed_out_after_selection_before_selection"] += 1
             elif not row["response_completion_us"]:
-                row["timeout_stage"] = "after_coordination_before_response"
+                row["timeout_stage"] = "after_selection_before_response"
         if not row["selected_provider"]:
             counters["requests_with_no_selection"] += 1
 
@@ -2650,27 +2651,27 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
     counters.setdefault("ack_match_failed_expired_call", 0)
     counters.setdefault("ack_match_failed_request_id_mismatch", 0)
     counters.setdefault("ack_match_skipped_pre_decrypt", 0)
-    counters.setdefault("coordination_attempted", 0)
-    counters.setdefault("coordination_scheduled", 0)
-    counters.setdefault("coordination_published", 0)
-    counters.setdefault("coordination_publish_failed", 0)
-    counters.setdefault("coordination_skipped", 0)
-    counters.setdefault("coordination_rejected", 0)
-    counters.setdefault("coordination_no_pending", 0)
+    counters.setdefault("selection_attempted", 0)
+    counters.setdefault("selection_scheduled", 0)
+    counters.setdefault("selection_published", 0)
+    counters.setdefault("selection_publish_failed", 0)
+    counters.setdefault("selection_skipped", 0)
+    counters.setdefault("selection_rejected", 0)
+    counters.setdefault("selection_no_pending", 0)
     counters.setdefault("callback_skipped_no_pending", 0)
     counters.setdefault("callback_skipped_timeout", 0)
     counters.setdefault("requests_with_no_selection", 0)
     counters.setdefault("requests_timed_out_before_selection", 0)
-    counters.setdefault("requests_timed_out_after_selection_before_coordination", 0)
+    counters.setdefault("requests_timed_out_after_selection_before_selection", 0)
     bucket_keys = [
         "bucket_1_request_never_created_pending_call",
         "bucket_2_pending_call_created_but_erased_before_ack",
         "bucket_3_ack_received_but_skipped_pre_decrypt",
         "bucket_4_ack_decoded_but_no_pending_call_matched",
         "bucket_5_ack_matched_pending_call_but_no_provider_selected",
-        "bucket_6_provider_selected_but_coordination_not_scheduled",
-        "bucket_7_coordination_scheduled_but_not_published",
-        "bucket_8_coordination_published_but_provider_did_not_execute_respond",
+        "bucket_6_provider_selected_but_selection_not_scheduled",
+        "bucket_7_selection_scheduled_but_not_published",
+        "bucket_8_selection_published_but_provider_did_not_execute_respond",
         "bucket_9_response_published_but_user_callback_not_triggered",
         "bucket_10_real_network_svs_nac_loss_or_timeout",
     ]
@@ -2703,11 +2704,11 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
         "selection_invoked_us",
         "selection_completed_us",
         "selected_provider",
-        "coordination_scheduling_attempt_us",
-        "coordination_scheduled_us",
-        "coordination_publish_attempt_us",
-        "coordination_publish_us",
-        "coordination_publish_status",
+        "selection_scheduling_attempt_us",
+        "selection_scheduled_us",
+        "selection_publish_attempt_us",
+        "selection_publish_us",
+        "selection_publish_status",
         "response_completion_us",
         "response_observed_us",
         "response_decrypt_start_us",
@@ -2717,11 +2718,11 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
         "response_validation_done_us",
         "response_validation_failed_us",
         "callback_attempt_us",
-        "provider_coordination_received_us",
-        "provider_coordination_decrypt_start_us",
-        "provider_coordination_decrypt_done_us",
-        "provider_coordination_decrypt_failed_us",
-        "provider_coordination_no_pending_us",
+        "provider_selection_received_us",
+        "provider_selection_decrypt_start_us",
+        "provider_selection_decrypt_done_us",
+        "provider_selection_decrypt_failed_us",
+        "provider_selection_no_pending_us",
         "provider_execute_start_us",
         "provider_execute_done_us",
         "provider_response_publish_attempt_us",
@@ -2736,9 +2737,9 @@ def collect_post_ack_pipeline(output_dir, sent_request_ids=None):
         "final_classification",
         "lat_request_created_to_ack_matched_us",
         "lat_ack_matched_to_provider_selected_us",
-        "lat_provider_selected_to_coordination_published_us",
-        "lat_coordination_published_to_provider_coordination_received_us",
-        "lat_provider_coordination_received_to_response_published_us",
+        "lat_provider_selected_to_selection_published_us",
+        "lat_selection_published_to_provider_selection_received_us",
+        "lat_provider_selection_received_to_response_published_us",
         "lat_response_published_to_response_observed_us",
         "lat_response_observed_to_callback_fired_us",
         "ack_processed",
@@ -2985,9 +2986,14 @@ def parse_results(output_dir, app_csv, request_csv, args, readiness=None):
     provider_pending_max = max(provider_pending_samples) if provider_pending_samples else 0
     offered = offered_rate_rps(args)
     achieved = timestamp_metrics["actual_requests_per_second"]
-    if achieved == 0.0 and open_loop_summary:
-        achieved = parse_float_like(open_loop_summary.get("achieved_rps"), 0.0)
-        timestamp_metrics["actual_requests_per_second"] = achieved
+    if open_loop_summary:
+        # PERF_REQUEST_SENT is intentionally sampled in performance mode, so it
+        # cannot be the authoritative generation rate. Prefer the App_User
+        # summary when available; fall back to timestamps for older logs.
+        summary_achieved = parse_float_like(open_loop_summary.get("achieved_rps"), 0.0)
+        if summary_achieved > 0.0:
+            achieved = summary_achieved
+            timestamp_metrics["actual_requests_per_second"] = achieved
     completion_throughput = timestamp_metrics["actual_successful_responses_per_second"]
     if completion_throughput == 0.0 and open_loop_summary:
         configured_duration = float(args.duration or 0)
@@ -3072,7 +3078,7 @@ def parse_results(output_dir, app_csv, request_csv, args, readiness=None):
         "provider_pending_p50": provider_pending_p50,
         "provider_pending_p95": provider_pending_p95,
         "provider_pending_max": provider_pending_max,
-        "provider_coordination_no_pending_count": post_ack_pipeline.get("summary", {}).get("coordination_no_pending", 0),
+        "provider_selection_no_pending_count": post_ack_pipeline.get("summary", {}).get("selection_no_pending", 0),
         "provider_response_published_count": provider_lifecycle_counts.get("RESPONSE_PUBLISHED", 0),
         "late_response_count": late_response_count,
         "max_outstanding": getattr(args, "max_outstanding", None),
@@ -3116,7 +3122,7 @@ def parse_results(output_dir, app_csv, request_csv, args, readiness=None):
         "response_received_too_late": late_response_count,
         "provider_selection_concentrated_on_C": bool(provider_skew.get("concentrated_on_C") and
                                                      provider_skew.get("skewed")),
-        "ack_coordination_bottleneck": (
+        "ack_selection_bottleneck": (
             timed_out_count > 0 and outstanding_limit_skip_count == 0 and
             sum(int(v) for v in summary["ack_count_per_provider"].values()) > 0 and
             sum(int(v) for v in selected_distribution.values()) < sent_count * 0.50),
@@ -3132,11 +3138,11 @@ def collect_svs_smoke_diagnostics(output_dir, app_csv, user_exit_status):
         text = log_path.read_text(errors="replace")
         logs[log_path.name] = {
             "bytes": log_path.stat().st_size,
-            "perf_request_sent": len(re.findall(r"^PERF_REQUEST_SENT ", text, re.M)),
-            "perf_ack_received": len(re.findall(r"^PERF_ACK_RECEIVED ", text, re.M)),
-            "perf_provider_selected": len(re.findall(r"^PERF_PROVIDER_SELECTED ", text, re.M)),
-            "perf_response_received": len(re.findall(r"^PERF_RESPONSE_RECEIVED ", text, re.M)),
-            "perf_request_timeout": len(re.findall(r"^PERF_REQUEST_TIMEOUT ", text, re.M)),
+            "perf_request_sent": len(re.findall(r"PERF_REQUEST_SENT ", text)),
+            "perf_ack_received": len(re.findall(r"PERF_ACK_RECEIVED ", text)),
+            "perf_provider_selected": len(re.findall(r"PERF_PROVIDER_SELECTED ", text)),
+            "perf_response_received": len(re.findall(r"PERF_RESPONSE_RECEIVED ", text)),
+            "perf_request_timeout": len(re.findall(r"PERF_REQUEST_TIMEOUT ", text)),
             "svs_lines": len(re.findall(r"SVS|ndnsvs|sync", text, re.I)),
             "ack_lines": len(re.findall(r"ACK|ack", text)),
             "error_lines": len(re.findall(r"error|exception|failed", text, re.I)),
@@ -3928,7 +3934,7 @@ def aggregate_csv_row(summary):
         "provider_pending_p50": "{:.3f}".format(float(summary.get("provider_pending_p50", 0.0))),
         "provider_pending_p95": "{:.3f}".format(float(summary.get("provider_pending_p95", 0.0))),
         "provider_pending_max": summary.get("provider_pending_max", 0),
-        "provider_coordination_no_pending_count": summary.get("provider_coordination_no_pending_count", 0),
+        "provider_selection_no_pending_count": summary.get("provider_selection_no_pending_count", 0),
         "provider_response_published_count": summary.get("provider_response_published_count", 0),
         "late_response_count": summary.get("late_response_count", 0),
         "bottleneck_primary": summary.get("bottleneck_classification", {}).get("primary", ""),
@@ -3967,29 +3973,29 @@ def aggregate_csv_row(summary):
         "post_ack_bucket_5": post_ack.get(
             "bucket_5_ack_matched_pending_call_but_no_provider_selected", 0),
         "post_ack_bucket_6": post_ack.get(
-            "bucket_6_provider_selected_but_coordination_not_scheduled", 0),
+            "bucket_6_provider_selected_but_selection_not_scheduled", 0),
         "post_ack_bucket_7": post_ack.get(
-            "bucket_7_coordination_scheduled_but_not_published", 0),
+            "bucket_7_selection_scheduled_but_not_published", 0),
         "post_ack_bucket_8": post_ack.get(
-            "bucket_8_coordination_published_but_provider_did_not_execute_respond", 0),
+            "bucket_8_selection_published_but_provider_did_not_execute_respond", 0),
         "post_ack_bucket_9": post_ack.get(
             "bucket_9_response_published_but_user_callback_not_triggered", 0),
         "post_ack_bucket_10": post_ack.get(
             "bucket_10_real_network_svs_nac_loss_or_timeout", 0),
         "post_ack_selection_invoked": post_ack.get("selection_invoked", 0),
         "post_ack_selection_completed": post_ack.get("selection_completed", 0),
-        "post_ack_coordination_attempted": post_ack.get("coordination_attempted", 0),
-        "post_ack_coordination_scheduled": post_ack.get("coordination_scheduled", 0),
-        "post_ack_coordination_published": post_ack.get("coordination_published", 0),
-        "post_ack_coordination_no_pending": post_ack.get("coordination_no_pending", 0),
-        "post_ack_coordination_publish_failed": post_ack.get("coordination_publish_failed", 0),
-        "post_ack_coordination_skipped": post_ack.get("coordination_skipped", 0),
-        "post_ack_coordination_rejected": post_ack.get("coordination_rejected", 0),
+        "post_ack_selection_attempted": post_ack.get("selection_attempted", 0),
+        "post_ack_selection_scheduled": post_ack.get("selection_scheduled", 0),
+        "post_ack_selection_published": post_ack.get("selection_published", 0),
+        "post_ack_selection_no_pending": post_ack.get("selection_no_pending", 0),
+        "post_ack_selection_publish_failed": post_ack.get("selection_publish_failed", 0),
+        "post_ack_selection_skipped": post_ack.get("selection_skipped", 0),
+        "post_ack_selection_rejected": post_ack.get("selection_rejected", 0),
         "post_ack_requests_with_no_selection": post_ack.get("requests_with_no_selection", 0),
         "post_ack_requests_timed_out_before_selection": post_ack.get(
             "requests_timed_out_before_selection", 0),
-        "post_ack_requests_timed_out_after_selection_before_coordination": post_ack.get(
-            "requests_timed_out_after_selection_before_coordination", 0),
+        "post_ack_requests_timed_out_after_selection_before_selection": post_ack.get(
+            "requests_timed_out_after_selection_before_selection", 0),
         "post_ack_callback_skipped_no_pending": post_ack.get(
             "callback_skipped_no_pending", 0),
         "post_ack_callback_skipped_timeout": post_ack.get("callback_skipped_timeout", 0),
@@ -4128,7 +4134,7 @@ def write_aggregate_results(output_dir, summaries, started_at, finished_at, args
         "provider_pending_p50",
         "provider_pending_p95",
         "provider_pending_max",
-        "provider_coordination_no_pending_count",
+        "provider_selection_no_pending_count",
         "provider_response_published_count",
         "late_response_count", "bottleneck_primary", "failure_breakdown",
         "achieved_rate_warning",
@@ -4147,13 +4153,13 @@ def write_aggregate_results(output_dir, summaries, started_at, finished_at, args
         "post_ack_bucket_7", "post_ack_bucket_8", "post_ack_bucket_9",
         "post_ack_bucket_10",
         "post_ack_selection_invoked", "post_ack_selection_completed",
-        "post_ack_coordination_attempted", "post_ack_coordination_scheduled",
-        "post_ack_coordination_published", "post_ack_coordination_no_pending",
-        "post_ack_coordination_publish_failed",
-        "post_ack_coordination_skipped", "post_ack_coordination_rejected",
+        "post_ack_selection_attempted", "post_ack_selection_scheduled",
+        "post_ack_selection_published", "post_ack_selection_no_pending",
+        "post_ack_selection_publish_failed",
+        "post_ack_selection_skipped", "post_ack_selection_rejected",
         "post_ack_requests_with_no_selection",
         "post_ack_requests_timed_out_before_selection",
-        "post_ack_requests_timed_out_after_selection_before_coordination",
+        "post_ack_requests_timed_out_after_selection_before_selection",
         "post_ack_callback_skipped_no_pending", "post_ack_callback_skipped_timeout",
         "post_ack_pipeline_csv",
     ]
@@ -4252,11 +4258,13 @@ def provider_argv(args, provider_id, index, output_dir=None):
             "--provider-ack-max-pending", str(int(args.provider_ack_max_pending)),
             "--provider-ack-max-event-loop-lag-ms",
             str(int(args.provider_ack_max_event_loop_lag_ms)),
-            "--provider-ack-max-coordination-lag-ms",
-            str(int(args.provider_ack_max_coordination_lag_ms)),
+            "--provider-ack-max-selection-lag-ms",
+            str(int(args.provider_ack_max_selection_lag_ms)),
         ])
     if getattr(args, "handler_threads", -1) >= 0:
         argv.extend(["--handler-threads", str(int(args.handler_threads))])
+    if getattr(args, "performance_mode", False):
+        argv.append("--performance-mode")
     if getattr(args, "disable_tokens", False):
         argv.append("--disable-tokens")
     if getattr(args, "timeline_trace", False):

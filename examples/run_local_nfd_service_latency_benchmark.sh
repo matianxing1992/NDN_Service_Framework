@@ -10,7 +10,7 @@ warmup="${NDNSF_BENCHMARK_WARMUP:-5}"
 timeout_ms="${NDNSF_BENCHMARK_TIMEOUT_MS:-20000}"
 ack_timeout_ms="${NDNSF_BENCHMARK_ACK_TIMEOUT_MS:-100}"
 interval_ms="${NDNSF_BENCHMARK_INTERVAL_MS:-1000}"
-strategy="${NDNSF_BENCHMARK_STRATEGY:-no-coordination}"
+strategy="${NDNSF_BENCHMARK_STRATEGY:-all-selected}"
 
 controller_pid=""
 provider_pid=""
