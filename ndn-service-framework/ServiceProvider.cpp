@@ -517,6 +517,12 @@ namespace ndn_service_framework
                 std::bind(&ServiceProvider::onMissingData, this, _1),
                 opts,
                 secOpts);
+            const int suppressionMs =
+                std::max(0, intEnvOrDefault("NDNSF_SVS_MAX_SUPPRESSION_MS", 50));
+            m_svsps->getSVSync().getCore().setMaxSuppressionTime(
+                ndn::time::milliseconds(suppressionMs));
+            NDN_LOG_INFO("NDNSF_SVS_MAX_SUPPRESSION_MS role=provider value="
+                         << suppressionMs);
             NDN_LOG_INFO("NDNSF_SVS_ASYNC_PUBLISH role=provider "
                          << (useAsyncSvsPublish() ? "enabled" : "disabled"));
             const bool enableParallelSync =
