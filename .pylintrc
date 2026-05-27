@@ -1,0 +1,2 @@
+[MASTER]
+init-hook='import sys, pathlib; root = pathlib.Path.cwd(); sys.path.insert(0, str(root / "pythonWrapper"))'

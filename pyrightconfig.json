@@ -1,0 +1,10 @@
+{
+  "include": [
+    "examples/python",
+    "pythonWrapper/ndnsf"
+  ],
+  "extraPaths": [
+    "pythonWrapper"
+  ],
+  "reportMissingImports": true
+}

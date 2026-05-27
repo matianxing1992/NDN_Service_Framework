@@ -8,6 +8,12 @@
 .waf3-*-*/
 .lock-waf*
 compile_commands.json
+__pycache__/
+*.py[cod]
+*.so
+pythonWrapper/build/
+pythonWrapper/*.egg-info/
+.ndn/
 
 # Generated/local outputs
 docs/
