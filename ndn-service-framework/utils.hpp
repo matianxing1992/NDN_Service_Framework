@@ -81,6 +81,16 @@ namespace ndn_service_framework
         ndn::Name requestId;
     };
 
+    struct CollaborationDataName
+    {
+        ndn::Name producerName;
+        ndn::Name requesterName;
+        ndn::Name requestId;
+        std::string keyScope;
+        ndn::Name topic;
+        uint64_t sequence = 0;
+    };
+
     // V2 wire names use one unified serviceName endpoint path, never ServiceName + FunctionName.
     // NAC-ABE attributes follow message direction: REQUEST/COORDINATION use
     // /SERVICE/<serviceName>; RESPONSE/ACK use /PERMISSION/<serviceName>.
@@ -128,6 +138,15 @@ namespace ndn_service_framework
                                                          const ndn::Name& requestId);
     std::optional<ServiceCoordinationNameV2>
     parseServiceCoordinationNameV2(const ndn::Name& serviceCoordinationName);
+
+    ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
+                                        const ndn::Name& requesterName,
+                                        const ndn::Name& requestId,
+                                        const std::string& keyScope,
+                                        const ndn::Name& topic,
+                                        uint64_t sequence);
+    std::optional<CollaborationDataName>
+    parseCollaborationDataName(const ndn::Name& collaborationDataName);
 
     // /muas/drone1/NDNSF/TOKEN/ObjectDetection/YOLOv8/0
     // <provider> <service> <function> <seqNum>

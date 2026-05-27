@@ -49,6 +49,38 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    bld.program(name='AI_DistributedCollaborationProvider',
+                target='AI_DistributedCollaborationProvider',
+                source=['AI_DistributedCollaborationProvider.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='AI_User',
+                target='AI_User',
+                source=['AI_User.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='Payment_CollaborationProvider',
+                target='Payment_CollaborationProvider',
+                source=['Payment_CollaborationProvider.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='Payment_User',
+                target='Payment_User',
+                source=['Payment_User.cpp'],
+                includes=['..'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     bld.program(name='App_WifiMobilityProvider',
                 target='App_WifiMobilityProvider',
                 source=['App_IntermittentProvider.cpp'],

@@ -1,0 +1,98 @@
+name /example/hello/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/hello/provider
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p00
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/A
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p01
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/B
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p02
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/C
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p10
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/D
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p11
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/E
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p12
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/F
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p20
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/G
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p21
+        }
+    }
+    provider-policy
+    {
+        for /example/hello/provider/H
+        allow
+        {
+            /AI/FNN/Inference
+            /AI/FNN/Inference/ROLE/p22
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/hello/user
+        allow
+        {
+            /AI/FNN/Inference
+        }
+    }
+}

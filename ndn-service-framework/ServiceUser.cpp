@@ -133,6 +133,62 @@ namespace ndn_service_framework
                    isTruthyEnv("NDNSF_SVS_ASYNC_PUBLISH");
         }
 
+        bool
+        containsRole(const std::vector<SelectedParticipant>& participants,
+                     const CollaborationRole& role)
+        {
+            return std::any_of(participants.begin(), participants.end(),
+                               [&role](const SelectedParticipant& participant) {
+                                   return participant.role == role;
+                               });
+        }
+
+        bool
+        validateCollaborationSelection(
+            const CollaborationPlan& plan,
+            const std::vector<SelectedParticipant>& participants,
+            std::string& reason)
+        {
+            for (const auto& role : plan.roles) {
+                const auto count = static_cast<size_t>(
+                    std::count_if(participants.begin(), participants.end(),
+                                  [&role](const SelectedParticipant& participant) {
+                                      return participant.role == role.role;
+                                  }));
+                if (count < role.minProviders) {
+                    reason = "missing required collaboration role " + role.role;
+                    return false;
+                }
+                if (role.maxProviders > 0 && count > role.maxProviders) {
+                    reason = "too many providers selected for collaboration role " +
+                             role.role;
+                    return false;
+                }
+            }
+
+            for (const auto& dependency : plan.dependencies) {
+                if (!dependency.required) {
+                    continue;
+                }
+                for (const auto& producer : dependency.producers) {
+                    if (!containsRole(participants, producer)) {
+                        reason = "missing dependency producer role " + producer +
+                                 " for scope " + dependency.keyScope;
+                        return false;
+                    }
+                }
+                for (const auto& consumer : dependency.consumers) {
+                    if (!containsRole(participants, consumer)) {
+                        reason = "missing dependency consumer role " + consumer +
+                                 " for scope " + dependency.keyScope;
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
         void
         publishSvs(const std::shared_ptr<ndn::svs::SVSPubSub>& svs,
                    const ndn::Name& name,
@@ -2076,6 +2132,8 @@ namespace ndn_service_framework
 
     void ServiceUser::fetchPermissionsFromController(const ndn::Name& controllerPrefix)
     {
+        fetchPolicyManifestFromController(controllerPrefix);
+
         ndn::Name interestName(controllerPrefix);
         interestName.append(ndn::Name("/NDNSF/PERMISSIONS/USER"));
         interestName.append(identity);
@@ -2103,7 +2161,16 @@ namespace ndn_service_framework
             return;
         }
 
+        m_currentPolicyEpoch = response.getPolicyEpoch();
+
         for (const auto& entry : response.getEntries()) {
+            if (entry.getVersion() != 0 && entry.getVersion() != m_currentPolicyEpoch) {
+                NDN_LOG_WARN("Permission entry epoch differs from response epoch provider="
+                             << entry.getProviderName()
+                             << " service=" << entry.getServiceName()
+                             << " entryEpoch=" << entry.getVersion()
+                             << " responseEpoch=" << m_currentPolicyEpoch);
+            }
             ndn::Name providerServiceName(entry.getProviderName());
             providerServiceName.append(ndn::Name(entry.getServiceName()));
             UPT.insertPermission(providerServiceName.toUri(),
@@ -2111,8 +2178,20 @@ namespace ndn_service_framework
                                  entry.getToken());
             NDN_LOG_INFO("Installed user permission provider="
                          << entry.getProviderName()
-                         << " service=" << entry.getServiceName());
+                         << " service=" << entry.getServiceName()
+                         << " policyEpoch=" << entry.getVersion());
         }
+    }
+
+    size_t ServiceUser::getCurrentPolicyEpoch() const
+    {
+        return m_currentPolicyEpoch;
+    }
+
+    bool ServiceUser::isAcceptablePolicyEpoch(size_t messageEpoch) const
+    {
+        return m_currentPolicyEpoch == 0 || messageEpoch == 0 ||
+               messageEpoch == m_currentPolicyEpoch;
     }
 
     bool ServiceUser::handlePermissionResponseData(const ndn::Data& data,
@@ -2283,6 +2362,7 @@ namespace ndn_service_framework
         }
         requestMessage.setPayload(const_cast<ndn::Buffer&>(payload), payload.size());
         requestMessage.setStrategy(strategy);
+        requestMessage.setPolicyEpoch(m_currentPolicyEpoch);
         requestMessage.WireEncode().data();
 
         ndn::Name requestName =
@@ -2639,7 +2719,7 @@ namespace ndn_service_framework
         PendingCall pendingCall;
         pendingCall.serviceName = serviceName;
         pendingCall.requestMessage = requestMessage;
-        pendingCall.strategy = ndn_service_framework::tlv::FirstResponding;
+        pendingCall.strategy = ndn_service_framework::tlv::LoadBalancing;
         pendingCall.timeoutMs = timeoutMs;
         pendingCall.ackTimeoutMs = ackTimeoutMs;
         pendingCall.createdAtUs = nowMicroseconds();
@@ -2804,6 +2884,47 @@ namespace ndn_service_framework
                           requestStrategy);
     }
 
+    ndn::Name ServiceUser::RequestCollaboration(
+        const ServiceName& service,
+        const RequestPayload& initialRequest,
+        CollaborationPlan plan,
+        ResponseHandler onFinalResponse,
+        TimeoutHandler onTimeout)
+    {
+        if (!plan.participantSelector) {
+            return ndn::Name();
+        }
+
+        const ndn::Name requestId = makeRequestId();
+
+        ndn_service_framework::RequestMessage requestMessage;
+        auto payload = initialRequest;
+        requestMessage.setPayload(payload, payload.size());
+        requestMessage.setStrategy(ndn_service_framework::tlv::LoadBalancing);
+
+        PendingCall pendingCall;
+        pendingCall.serviceName = service;
+        pendingCall.requestMessage = std::move(requestMessage);
+        pendingCall.strategy = ndn_service_framework::tlv::LoadBalancing;
+        pendingCall.timeoutMs = plan.timeoutMs;
+        pendingCall.ackTimeoutMs = plan.ackCollectionTimeMs;
+        pendingCall.createdAtUs = nowMicroseconds();
+        pendingCall.timeoutHandler = std::move(onTimeout);
+        pendingCall.responseHandler = std::move(onFinalResponse);
+        pendingCall.isCollaboration = true;
+        pendingCall.collaborationPlan = std::move(plan);
+        m_pendingCalls[requestId] = std::move(pendingCall);
+
+        updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COLLAB_REQUEST_CREATED timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " serviceName=" << service.toUri());
+
+        admitOrQueuePendingCall(requestId, true, true);
+        return requestId;
+    }
+
     void ServiceUser::handleResponse(const ndn::Name& requestId,
                                      const ndn::Name& providerName,
                                      const ndn_service_framework::ResponseMessage& responseMessage)
@@ -2946,6 +3067,13 @@ namespace ndn_service_framework
                       << " expectedTokenPresent=" << !expectedUserToken.empty());
             NDN_LOG_ERROR("Reject response with mismatched UserToken for requestId="
                           << requestId.toUri());
+            return false;
+        }
+        if (!isAcceptablePolicyEpoch(responseMessage.getPolicyEpoch())) {
+            NDN_LOG_ERROR("Reject response with stale policy epoch for requestId="
+                          << requestId.toUri()
+                          << " receivedEpoch=" << responseMessage.getPolicyEpoch()
+                          << " currentEpoch=" << m_currentPolicyEpoch);
             return false;
         }
 
@@ -3154,6 +3282,17 @@ namespace ndn_service_framework
                 }
                 return false;
             }
+            if (!isAcceptablePolicyEpoch(ackMessage.getPolicyEpoch())) {
+                NDN_LOG_ERROR("Reject ACK with stale policy epoch for requestId="
+                              << parsedV2->requestId.toUri()
+                              << " provider=" << parsedV2->providerName.toUri()
+                              << " receivedEpoch=" << ackMessage.getPolicyEpoch()
+                              << " currentEpoch=" << m_currentPolicyEpoch);
+                if (completeAckDecrypt()) {
+                    evaluateAckSelection(parsedV2->requestId);
+                }
+                return false;
+            }
 
             if (m_useTokens &&
                 ackMessage.getStatus() && ackMessage.getProviderToken().empty()) {
@@ -3210,7 +3349,8 @@ namespace ndn_service_framework
                       << !ackMessage.getProviderToken().empty()
                       << " userTokenMatched=1");
             const auto& storedAck = pendingCall->second.requestAcks.back();
-            if (pendingCall->second.acksHandler ||
+            if (pendingCall->second.isCollaboration ||
+                pendingCall->second.acksHandler ||
                 pendingCall->second.ackCandidatesHandler) {
                 if (pendingCall->second.ackWindowExpired) {
                     if (completeAckDecrypt()) {
@@ -3239,11 +3379,16 @@ namespace ndn_service_framework
                 return true;
             }
             if (pendingCall->second.ackWindowExpired) {
+                if (pendingCall->second.isCollaboration) {
+                    evaluateAckSelection(parsedV2->requestId);
+                    return true;
+                }
                 selectLateAckAfterAckTimeout(pendingCall->second, storedAck);
                 return true;
             }
             const bool shouldCoordinateFirstAck =
                 pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
+                !pendingCall->second.isCollaboration &&
                 pendingCall->second.selectedProvider.empty() &&
                 ackMessage.getStatus();
             evaluateAckSelection(parsedV2->requestId);
@@ -3398,7 +3543,8 @@ namespace ndn_service_framework
                   << !ackMessage.getProviderToken().empty()
                   << " userTokenMatched=1");
         const auto& storedAck = pendingCall->second.requestAcks.back();
-        if (pendingCall->second.acksHandler ||
+        if (pendingCall->second.isCollaboration ||
+            pendingCall->second.acksHandler ||
             pendingCall->second.ackCandidatesHandler) {
             if (pendingCall->second.ackWindowExpired) {
                 selectLateAckAfterAckTimeout(pendingCall->second, storedAck);
@@ -3430,6 +3576,7 @@ namespace ndn_service_framework
         }
         const bool shouldCoordinateFirstAck =
             pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
+            !pendingCall->second.isCollaboration &&
             pendingCall->second.selectedProvider.empty() &&
             ackMessage.getStatus();
         evaluateAckSelection(requestId);
@@ -3605,11 +3752,13 @@ namespace ndn_service_framework
                   << " ackTimeoutMs=" << pendingCall->second.ackTimeoutMs
                   << " timeoutMs=" << pendingCall->second.timeoutMs
                   << " customHandler="
-                  << static_cast<bool>(pendingCall->second.acksHandler ||
+                  << static_cast<bool>(pendingCall->second.isCollaboration ||
+                                       pendingCall->second.acksHandler ||
                                        pendingCall->second.ackCandidatesHandler));
 
         bool selected = false;
-        if (pendingCall->second.acksHandler ||
+        if (pendingCall->second.isCollaboration ||
+            pendingCall->second.acksHandler ||
             pendingCall->second.ackCandidatesHandler) {
             selected = evaluateCustomAckSelection(pendingCall->second);
         }
@@ -3681,13 +3830,15 @@ namespace ndn_service_framework
         }
 
         if (pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
+            !pendingCall->second.isCollaboration &&
             !pendingCall->second.acksHandler &&
             !pendingCall->second.ackCandidatesHandler) {
             return false;
         }
 
         pendingCall->second.ackWindowExpired = true;
-        if ((pendingCall->second.acksHandler ||
+        if ((pendingCall->second.isCollaboration ||
+             pendingCall->second.acksHandler ||
              pendingCall->second.ackCandidatesHandler) &&
             pendingCall->second.ackDecryptsInFlight > 0 &&
             pendingCall->second.ackSelectionDeferrals < 5) {
@@ -3748,8 +3899,70 @@ namespace ndn_service_framework
         pendingCall.selectedProvider = ndn::Name();
         pendingCall.expectedResponseProviders.clear();
         pendingCall.responseProviders.clear();
+        pendingCall.collaborationAssignments.clear();
 
-        if (pendingCall.ackCandidatesHandler) {
+        if (pendingCall.isCollaboration &&
+            pendingCall.collaborationPlan.participantSelector) {
+            std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
+            for (const auto& storedAck : pendingCall.requestAcks) {
+                candidates.push_back({storedAck.providerName,
+                                      storedAck.serviceName,
+                                      storedAck.requestId,
+                                      storedAck.message});
+            }
+
+            const auto selectedParticipants =
+                pendingCall.collaborationPlan.participantSelector->select(
+                    candidates,
+                    pendingCall.collaborationPlan.roles);
+            std::string validationError;
+            if (!validateCollaborationSelection(pendingCall.collaborationPlan,
+                                                selectedParticipants,
+                                                validationError)) {
+                NDN_LOG_ERROR("Reject collaboration selection for request "
+                              << pendingCall.requestMessage.getUserToken()
+                              << ": " << validationError);
+                return false;
+            }
+            for (const auto& participant : selectedParticipants) {
+                for (const auto& storedAck : pendingCall.requestAcks) {
+                    if (!storedAck.providerName.equals(participant.provider) ||
+                        !storedAck.serviceName.equals(participant.service) ||
+                        !storedAck.requestId.equals(participant.ack.requestId) ||
+                        !ackEquals(storedAck.message, participant.ack.ack) ||
+                        !storedAck.message.getStatus()) {
+                        continue;
+                    }
+
+                    pendingCall.customSelectedAcks.push_back(storedAck);
+                    addUniqueName(pendingCall.successfulAckProviders, storedAck.providerName);
+                    addUniqueName(pendingCall.expectedResponseProviders, storedAck.providerName);
+                    if (pendingCall.selectedProvider.empty()) {
+                        pendingCall.selectedProvider = storedAck.providerName;
+                    }
+
+                    ndn::Buffer assignment = participant.assignmentPayload;
+                    if (assignment.empty()) {
+                        const std::string text =
+                            "role=" + participant.role +
+                            ";artifact=" + participant.assignedArtifact.toUri() +
+                            ";requiresProvisioning=" +
+                            (participant.requiresProvisioning ? "1" : "0") +
+                            ";provisioningTimeoutMs=" +
+                            std::to_string(participant.provisioningTimeoutMs) +
+                            ";";
+                        assignment = ndn::Buffer(
+                            reinterpret_cast<const uint8_t*>(text.data()),
+                            text.size());
+                    }
+                    pendingCall.collaborationAssignments[
+                        storedAck.providerName.toUri()] = assignment;
+                    break;
+                }
+            }
+        }
+        else if (pendingCall.ackCandidatesHandler) {
+
             std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
             for (const auto& storedAck : pendingCall.requestAcks) {
                 candidates.push_back({storedAck.providerName,
@@ -3961,7 +4174,24 @@ namespace ndn_service_framework
                                   << " expectedController=" << expectedController->toUri());
                     return;
                 }
-                handlePermissionResponseData(validatedData, identity, m_keyChain, UPT);
+                EncryptedPermissionResponse encryptedResponse;
+                if (decodeEncryptedPermissionResponseFromDataContent(validatedData, encryptedResponse)) {
+                    try {
+                        auto response =
+                            decryptPermissionResponseWithKeyChain(encryptedResponse, m_keyChain);
+                        if (response.getTargetIdentity() != identity.toUri()) {
+                            NDN_LOG_ERROR("Ignoring PermissionResponse for unexpected targetIdentity="
+                                          << response.getTargetIdentity()
+                                          << " expected=" << identity.toUri());
+                            return;
+                        }
+                        applyPermissionResponse(response);
+                    }
+                    catch (const std::exception& e) {
+                        NDN_LOG_ERROR("Failed to install PermissionResponse epoch: "
+                                      << e.what());
+                    }
+                }
             },
             [](const ndn::Data& badData, const ndn::security::ValidationError& error) {
                 NDN_LOG_ERROR("PermissionResponse Data validation failed: "
@@ -3972,6 +4202,69 @@ namespace ndn_service_framework
     void ServiceUser::onPermissionResponseTimeout(const ndn::Interest& interest)
     {
         NDN_LOG_ERROR("PermissionResponse timeout: " << interest.getName());
+    }
+
+    void ServiceUser::fetchPolicyManifestFromController(const ndn::Name& controllerPrefix)
+    {
+        ndn::Name interestName(controllerPrefix);
+        interestName.append(ndn::Name("/NDNSF/POLICY-MANIFEST"));
+
+        ndn::Interest interest(interestName);
+        interest.setCanBePrefix(false);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::seconds(4));
+
+        NDN_LOG_INFO("Fetch policy manifest: " << interestName);
+        m_face.expressInterest(
+            interest,
+            std::bind(&ServiceUser::onPolicyManifestData, this, _1, _2),
+            [this](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                onPolicyManifestTimeout(interest);
+            },
+            std::bind(&ServiceUser::onPolicyManifestTimeout, this, _1));
+    }
+
+    void ServiceUser::onPolicyManifestData(const ndn::Interest& interest,
+                                           const ndn::Data& data)
+    {
+        const auto expectedController = extractPermissionControllerIdentity(interest);
+        validator->validate(
+            data,
+            [this, expectedController](const ndn::Data& validatedData) {
+                if (expectedController &&
+                    !isSignedByIdentity(validatedData, *expectedController)) {
+                    NDN_LOG_ERROR("PolicyManifest Data signer mismatch: "
+                                  << validatedData.getName()
+                                  << " expectedController=" << expectedController->toUri());
+                    return;
+                }
+                PolicyManifest manifest;
+                const auto& content = validatedData.getContent();
+                bool ok = content.type() == tlv::PolicyManifestType ?
+                    manifest.WireDecode(content) : false;
+                if (!ok) {
+                    auto [parsed, block] = ndn::Block::fromBuffer(
+                        ndn::span<const uint8_t>(content.value(), content.value_size()));
+                    ok = parsed && manifest.WireDecode(block);
+                }
+                if (!ok) {
+                    NDN_LOG_ERROR("PolicyManifest decode failed: " << validatedData.getName());
+                    return;
+                }
+                m_currentPolicyEpoch = manifest.getPolicyEpoch();
+                m_requiredKeyEpoch = manifest.getRequiredKeyEpoch();
+                m_policyGracePeriodMs = manifest.getGracePeriodMs();
+                NDN_LOG_INFO("Installed PolicyManifest " << manifest.toString());
+            },
+            [](const ndn::Data& badData, const ndn::security::ValidationError& error) {
+                NDN_LOG_ERROR("PolicyManifest Data validation failed: "
+                              << badData.getName() << " reason=" << error);
+            });
+    }
+
+    void ServiceUser::onPolicyManifestTimeout(const ndn::Interest& interest)
+    {
+        NDN_LOG_ERROR("PolicyManifest timeout: " << interest.getName());
     }
 
     void ServiceUser::OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
@@ -4764,6 +5057,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
         ServiceCoordinationMessage coordinationMessage;
         coordinationMessage.setRequestIDs({requestId.toUri()});
+        coordinationMessage.setPolicyEpoch(m_currentPolicyEpoch);
         auto pendingIt = m_pendingCalls.find(requestId);
         bool providerTokenPresent = false;
         if (pendingIt != m_pendingCalls.end()) {
@@ -4776,6 +5070,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         if (!m_useTokens) {
             providerTokenPresent = true;
+        }
+        if (pendingIt != m_pendingCalls.end()) {
+            auto assignmentIt =
+                pendingIt->second.collaborationAssignments.find(providerName.toUri());
+            if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
+                coordinationMessage.setAssignmentPayload(assignmentIt->second);
+            }
         }
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_TOKEN_STATE timestamp_us="
                   << nowMicroseconds()

@@ -47,6 +47,16 @@ namespace tlv {
         AuthTagType = 176,
         WrappedMessageKeyType = 177,
         MessageTypeType = 178,
+        CollaborationDataMessageType = 179,
+        KeyScopeType = 180,
+        TopicType = 181,
+        ProducerRoleType = 182,
+        SequenceType = 183,
+        AssignmentPayloadType = 184,
+        PolicyManifestType = 185,
+        ValidFromType = 186,
+        GracePeriodMsType = 187,
+        RequiredKeyEpochType = 188,
         AllowedServiceListType = 0xF501,
         AllowedServiceType = 0xF502,
     };
@@ -82,11 +92,13 @@ public:
     void setPayload(ndn::Buffer& payload, size_t size);
     // FirstResponding = 0, LoadBalancing = 1, AllResponders = 2,
     void setStrategy(size_t strategy);
+    void setPolicyEpoch(size_t policyEpoch);
     const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
     size_t getStrategy() const;
+    size_t getPolicyEpoch() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -97,6 +109,7 @@ private:
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
     size_t strategy_ = tlv::FirstResponding;
+    size_t policyEpoch_ = 0;
     mutable ndn::Block m_wire;
 };
 
@@ -108,11 +121,13 @@ public:
     void setErrorInfo(const std::string& errorInfo);
     void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
+    void setPolicyEpoch(size_t policyEpoch);
     bool getStatus() const;
     const std::string& getErrorInfo() const;
     const std::string& getUserToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
+    size_t getPolicyEpoch() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -123,6 +138,7 @@ private:
     std::string userToken_;
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
+    size_t policyEpoch_ = 0;
     mutable ndn::Block m_wire;
 };
 
@@ -135,12 +151,14 @@ public:
     void setUserToken(const std::string& userToken);
     void setProviderToken(const std::string& providerToken);
     void setPayload(ndn::Buffer& payload, size_t size);
+    void setPolicyEpoch(size_t policyEpoch);
     bool getStatus() const;
     const std::string& getMessage() const;
     const std::string& getUserToken() const;
     const std::string& getProviderToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
+    size_t getPolicyEpoch() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -152,6 +170,7 @@ private:
     std::string providerToken_;
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
+    size_t policyEpoch_ = 0;
     mutable ndn::Block m_wire;
 };
 
@@ -161,8 +180,12 @@ public:
 
     void setRequestIDs(const std::vector<std::string>& requestIDs);
     void setProviderToken(const std::string& providerToken);
+    void setAssignmentPayload(const ndn::Buffer& payload);
+    void setPolicyEpoch(size_t policyEpoch);
     const std::vector<std::string>& getRequestIDs() const;
     const std::string& getProviderToken() const;
+    const ndn::Buffer& getAssignmentPayload() const;
+    size_t getPolicyEpoch() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -170,6 +193,37 @@ public:
 private:
     std::vector<std::string> requestIDs_;
     std::string providerToken_;
+    ndn::Buffer assignmentPayload_;
+    size_t policyEpoch_ = 0;
+    mutable ndn::Block m_wire;
+};
+
+class CollaborationDataMessage : public AbstractMessage {
+public:
+    CollaborationDataMessage();
+
+    void setKeyScope(const std::string& keyScope);
+    void setTopic(const ndn::Name& topic);
+    void setProducerRole(const std::string& role);
+    void setSequence(uint64_t sequence);
+    void setPayload(const ndn::Buffer& payload);
+
+    const std::string& getKeyScope() const;
+    const ndn::Name& getTopic() const;
+    const std::string& getProducerRole() const;
+    uint64_t getSequence() const;
+    const ndn::Buffer& getPayload() const;
+
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+
+private:
+    std::string keyScope_;
+    ndn::Name topic_;
+    std::string producerRole_;
+    uint64_t sequence_ = 0;
+    ndn::Buffer payload_;
     mutable ndn::Block m_wire;
 };
 
@@ -251,11 +305,13 @@ public:
 
     void setTargetIdentity(const std::string& targetIdentity);
     void setPermissionKind(size_t permissionKind);
+    void setPolicyEpoch(size_t policyEpoch);
     void setEntries(const std::vector<PermissionEntry>& entries);
     void addEntry(const PermissionEntry& entry);
 
     const std::string& getTargetIdentity() const;
     size_t getPermissionKind() const;
+    size_t getPolicyEpoch() const;
     const std::vector<PermissionEntry>& getEntries() const;
     std::string toString() const;
 
@@ -266,7 +322,35 @@ public:
 private:
     std::string targetIdentity_;
     size_t permissionKind_ = tlv::UserPermission;
+    size_t policyEpoch_ = 1;
     std::vector<PermissionEntry> entries_;
+    mutable ndn::Block m_wire;
+};
+
+class PolicyManifest : public AbstractMessage {
+public:
+    PolicyManifest();
+
+    void setPolicyEpoch(size_t policyEpoch);
+    void setValidFromMs(uint64_t validFromMs);
+    void setGracePeriodMs(uint64_t gracePeriodMs);
+    void setRequiredKeyEpoch(size_t requiredKeyEpoch);
+
+    size_t getPolicyEpoch() const;
+    uint64_t getValidFromMs() const;
+    uint64_t getGracePeriodMs() const;
+    size_t getRequiredKeyEpoch() const;
+    std::string toString() const;
+
+    void Clear() override;
+    ndn::Block WireEncode() const override;
+    bool WireDecode(const ndn::Block& block) override;
+
+private:
+    size_t policyEpoch_ = 1;
+    uint64_t validFromMs_ = 0;
+    uint64_t gracePeriodMs_ = 0;
+    size_t requiredKeyEpoch_ = 1;
     mutable ndn::Block m_wire;
 };
 

@@ -17,7 +17,9 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <condition_variable>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -29,6 +31,10 @@ namespace ndn_service_framework{
     using RequestPayload = ndn::Buffer;
     using ResponsePayload = ndn::Buffer;
     using ServiceName = ndn::Name;
+    using CollaborationRole = std::string;
+    using KeyScope = std::string;
+    using Topic = ndn::Name;
+    using SessionId = std::string;
 
     struct LargeDataFetchResult
     {
@@ -68,6 +74,81 @@ namespace ndn_service_framework{
 
             using SimpleRequestHandler =
                 std::function<ResponseMessage(const RequestMessage& requestMessage)>;
+
+            struct CollaborationAssignment
+            {
+                CollaborationRole role;
+                ServiceName service;
+                ndn::Name assignedArtifact;
+                ndn::Name artifactDataName;
+                bool requiresProvisioning = false;
+                int provisioningTimeoutMs = 0;
+                ndn::Buffer assignmentPayload;
+                std::map<KeyScope, ndn::Buffer> scopeKeys;
+                std::map<KeyScope, ndn::Name> scopeKeyDataNames;
+                ndn::Buffer artifactPayload;
+            };
+
+            struct CollaborationData
+            {
+                SessionId sessionId;
+                KeyScope keyScope;
+                Topic topic;
+                ndn::Name producer;
+                CollaborationRole producerRole;
+                uint64_t sequence = 0;
+                ndn::Buffer payload;
+            };
+
+            class CollaborationContext
+            {
+            public:
+                CollaborationContext(ServiceProvider& provider,
+                                     ndn::Name requesterName,
+                                     ndn::Name requestId,
+                                     RequestMessage requestMessage,
+                                     CollaborationAssignment assignment);
+
+                SessionId sessionId() const;
+                CollaborationRole role() const;
+                ndn::Name localProvider() const;
+                const CollaborationAssignment& assignment() const;
+
+                bool hasArtifact(const ndn::Name& artifactName) const;
+                bool fetchArtifact(const ndn::Name& artifactName, int timeoutMs);
+                std::optional<ndn::Buffer> getArtifact(const ndn::Name& artifactName) const;
+                void fail(const std::string& reason);
+
+                void publish(KeyScope keyScope,
+                             Topic topic,
+                             const ndn::Buffer& payload);
+                void subscribe(KeyScope keyScope,
+                               Topic topicPrefix,
+                               std::function<void(const CollaborationData&)> onData);
+                void subscribe(KeyScope keyScope,
+                               Topic topicPrefix,
+                               std::function<void(CollaborationContext&,
+                                                  const CollaborationData&)> onData);
+                std::optional<CollaborationData> waitOne(KeyScope keyScope,
+                                                         Topic topicPrefix,
+                                                         int timeoutMs);
+                std::vector<CollaborationData> waitFor(KeyScope keyScope,
+                                                       Topic topicPrefix,
+                                                       size_t minCount,
+                                                       int timeoutMs);
+                void publishFinalResponse(const ndn::Buffer& payload);
+
+            private:
+                ServiceProvider& m_provider;
+                ndn::Name m_requesterName;
+                ndn::Name m_requestId;
+                RequestMessage m_requestMessage;
+                CollaborationAssignment m_assignment;
+            };
+
+            using CollaborationHandler =
+                std::function<void(CollaborationContext& ctx,
+                                   const RequestMessage& initialRequest)>;
 
             enum class ProviderRequestLifecycleState
             {
@@ -125,6 +206,7 @@ namespace ndn_service_framework{
 
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
+            size_t getCurrentPolicyEpoch() const;
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,
@@ -217,6 +299,22 @@ namespace ndn_service_framework{
 
             void RegisterService(const ServiceName& serviceName,
                                  RequestHandler requestHandler);
+
+            void addCollaborationHandler(const ndn::Name& serviceName,
+                                         AckStrategyHandler ackHandler,
+                                         CollaborationHandler handler);
+
+            void addCollaborationHandler(const ndn::Name& serviceName,
+                                         std::vector<CollaborationRole> allowedRoles,
+                                         AckStrategyHandler ackHandler,
+                                         CollaborationHandler handler);
+
+            void addCollaborationHandler(const ndn::Name& serviceName,
+                                         CollaborationHandler handler);
+
+            void addCollaborationHandler(const ndn::Name& serviceName,
+                                         std::vector<CollaborationRole> allowedRoles,
+                                         CollaborationHandler handler);
 
             void setAckStrategyHandler(const ndn::Name& serviceName,
                                        AckStrategyHandler ackHandler);
@@ -337,8 +435,13 @@ namespace ndn_service_framework{
             void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
 
             void onPermissionResponseData(const ndn::Interest& interest,
-                                          const ndn::Data& data);
+                                           const ndn::Data& data);
             void onPermissionResponseTimeout(const ndn::Interest& interest);
+            void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix);
+            void onPolicyManifestData(const ndn::Interest& interest,
+                                      const ndn::Data& data);
+            void onPolicyManifestTimeout(const ndn::Interest& interest);
+            bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
 
             // void PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer& buffer);
 
@@ -402,6 +505,34 @@ namespace ndn_service_framework{
                 RequestHandler requestHandler;
             };
 
+            struct RegisteredCollaborationService
+            {
+                AckStrategyHandler ackHandler;
+                CollaborationHandler handler;
+                std::vector<CollaborationRole> allowedRoles;
+            };
+
+            struct PendingEncryptedCollaborationData
+            {
+                ndn::Name dataName;
+                ndn::Name requestId;
+                ndn::Name producer;
+                CollaborationDataMessage message;
+            };
+
+            struct CollaborationSubscription
+            {
+                ndn::Name requestId;
+                ndn::Name requesterName;
+                KeyScope keyScope;
+                Topic topicPrefix;
+                RequestMessage requestMessage;
+                CollaborationAssignment assignment;
+                std::function<void(const CollaborationData&)> onData;
+                std::function<void(CollaborationContext&,
+                                   const CollaborationData&)> onContextData;
+            };
+
             struct ParsedRequestName
             {
                 ndn::Name requesterIdentity;
@@ -459,6 +590,17 @@ namespace ndn_service_framework{
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage);
+            bool dispatchCollaborationExecutionAsync(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage,
+                CollaborationAssignment assignment);
+            void prepareCollaborationAssignmentAsync(
+                const ndn::Name& requestId,
+                CollaborationAssignment assignment,
+                std::function<void(bool, std::string)> onReady);
             void finishRequestExecutionOnEventLoop(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -473,6 +615,52 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
                 const std::string& error);
+            void publishCollaborationData(const ndn::Name& requesterName,
+                                          const ndn::Name& requestId,
+                                          const std::string& producerRole,
+                                          const std::string& keyScope,
+                                          const ndn::Name& topic,
+                                          const ndn::Buffer& payload);
+            void publishCollaborationFinalResponse(
+                const ndn::Name& requesterName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& requestMessage,
+                const ndn::Buffer& payload);
+            void onCollaborationDataMessage(
+                const ndn::svs::SVSPubSub::SubscriptionData& subscription);
+            void deliverCollaborationData(const CollaborationData& data);
+            void addCollaborationSubscription(
+                const ndn::Name& requestId,
+                KeyScope keyScope,
+                Topic topicPrefix,
+                std::function<void(const CollaborationData&)> onData);
+            void addCollaborationSubscription(
+                const ndn::Name& requesterName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage,
+                CollaborationAssignment assignment,
+                KeyScope keyScope,
+                Topic topicPrefix,
+                std::function<void(CollaborationContext&,
+                                   const CollaborationData&)> onData);
+            void decryptCollaborationDataOrQueue(
+                const ndn::Name& dataName,
+                const ndn::Name& requestId,
+                const ndn::Name& producer,
+                const CollaborationDataMessage& message);
+            bool maybeFetchCollaborationScopeKey(
+                const ndn::Name& requestId,
+                const KeyScope& keyScope);
+            std::vector<CollaborationData> waitForCollaborationData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& topicPrefix,
+                size_t minCount,
+                int timeoutMs);
+            static CollaborationAssignment parseCollaborationAssignment(
+                const ndn::Name& serviceName,
+                const ndn::Buffer& payload);
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
             ndn::Name identity;
@@ -490,6 +678,9 @@ namespace ndn_service_framework{
             ndn::nacabe::CacheProducer nacProducer;
             ndn::security::SigningInfo m_signingInfo;
             bool m_timelineTrace = false;
+            size_t m_currentPolicyEpoch = 0;
+            size_t m_requiredKeyEpoch = 0;
+            uint64_t m_policyGracePeriodMs = 0;
             HybridMessageCrypto m_hybridMessageCrypto;
             HybridCryptoCounters m_hybridCryptoCounters;
             SerializedWorkerQueue m_cryptoProduceQueue{"ServiceProvider NAC-ABE produce"};
@@ -509,6 +700,17 @@ namespace ndn_service_framework{
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
             std::map<ndn::Name,std::string> pendingProviderTokens;
+            std::map<ndn::Name, RegisteredCollaborationService> m_collaborationServices;
+            std::map<ndn::Name, std::vector<CollaborationData>> m_collaborationDataByRequest;
+            std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>> m_collaborationScopeKeysByRequest;
+            std::map<ndn::Name, std::map<KeyScope, ndn::Name>> m_collaborationScopeKeyDataNamesByRequest;
+            std::set<std::string> m_collaborationScopeKeyFetchesInFlight;
+            std::map<ndn::Name, std::vector<PendingEncryptedCollaborationData>> m_pendingEncryptedCollaborationData;
+            std::map<std::string, ndn::Buffer> m_collaborationArtifacts;
+            std::vector<CollaborationSubscription> m_collaborationSubscriptions;
+            std::mutex m_collaborationMutex;
+            std::condition_variable m_collaborationCv;
+            std::atomic<uint64_t> m_collaborationSequence{0};
             std::atomic<size_t> m_selectedOutstandingRequests{0};
             size_t m_cleanupInvocationCount = 0;
             size_t m_tokenConsumeCount = 0;

@@ -450,6 +450,77 @@ namespace ndn_service_framework
             getSubNameByComponentCount(serviceCoordinationName, index, 1)};
     }
 
+    ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
+                                        const ndn::Name& requesterName,
+                                        const ndn::Name& requestId,
+                                        const std::string& keyScope,
+                                        const ndn::Name& topic,
+                                        uint64_t sequence)
+    {
+        ndn::Name name(producerName);
+        name.append(ndn::Name("/NDNSF/COLLAB"));
+        appendCountedName(name, requesterName);
+        name.append(requestId);
+        name.append(keyScope);
+        name.append(std::to_string(topic.size()));
+        name.append(topic);
+        name.append(std::to_string(sequence));
+        return name;
+    }
+
+    std::optional<CollaborationDataName>
+    parseCollaborationDataName(const ndn::Name& collaborationDataName)
+    {
+        auto marker = findNdnsfMessageMarker(collaborationDataName, "COLLAB");
+        if (!marker) {
+            return std::nullopt;
+        }
+
+        size_t index = *marker + 2;
+        auto requesterName = parseCountedName(collaborationDataName, index);
+        if (!requesterName || index >= collaborationDataName.size()) {
+            return std::nullopt;
+        }
+
+        ndn::Name requestId(collaborationDataName.get(index++).toUri());
+        if (index >= collaborationDataName.size()) {
+            return std::nullopt;
+        }
+        const std::string keyScope = collaborationDataName.get(index++).toUri();
+
+        auto topicCount = parseComponentCount(collaborationDataName, index);
+        if (!topicCount) {
+            return std::nullopt;
+        }
+        ++index;
+        if (index + *topicCount > collaborationDataName.size()) {
+            return std::nullopt;
+        }
+        ndn::Name topic = getSubNameByComponentCount(collaborationDataName, index, *topicCount);
+        index += *topicCount;
+        if (index >= collaborationDataName.size()) {
+            return std::nullopt;
+        }
+
+        uint64_t sequence = 0;
+        const auto seqText = collaborationDataName.get(index).toUri();
+        for (const auto ch : seqText) {
+            if (ch < '0' || ch > '9') {
+                return std::nullopt;
+            }
+            sequence = (sequence * 10) + static_cast<uint64_t>(ch - '0');
+        }
+
+        return CollaborationDataName{
+            getSubNameByComponentCount(collaborationDataName, 0, *marker),
+            *requesterName,
+            requestId,
+            keyScope,
+            topic,
+            sequence
+        };
+    }
+
     std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
     parsePermissionTokenName(ndn::Name permissionTokenName)
     {

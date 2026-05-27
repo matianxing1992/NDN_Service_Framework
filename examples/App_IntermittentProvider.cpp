@@ -242,7 +242,7 @@ main(int argc, char** argv)
       failureProbability, epochMs, rejectMs, seed, availabilityFile);
 
     ndn_service_framework::ServiceProvider provider(
-      face, GROUP_PREFIX, providerCert, controllerCert, "examples/trust-any.conf");
+      face, GROUP_PREFIX, providerCert, controllerCert, "examples/trust-schema.conf");
     provider.setPerformanceMode(true);
     provider.setUseTokens(true);
     provider.setHandlerThreads(static_cast<size_t>(std::max(0, handlerThreads)));

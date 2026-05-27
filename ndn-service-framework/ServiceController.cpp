@@ -4,6 +4,9 @@
 #include <ndn-cxx/security/transform.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
+#include <cstdlib>
+#include <fstream>
+#include <limits>
 #include <string_view>
 
 namespace ndn_service_framework {
@@ -40,6 +43,48 @@ runAesCbc(ndn::span<const uint8_t> input,
 
   const auto result = output.buf();
   return ndn::Buffer(result->begin(), result->end());
+}
+
+size_t
+fnv1aPolicyHash(const std::string& path)
+{
+  constexpr uint64_t offsetBasis = 1469598103934665603ULL;
+  constexpr uint64_t prime = 1099511628211ULL;
+  uint64_t hash = offsetBasis;
+
+  std::ifstream input(path, std::ios::binary);
+  char ch = 0;
+  while (input.get(ch)) {
+    hash ^= static_cast<unsigned char>(ch);
+    hash *= prime;
+  }
+
+  if (hash == 0) {
+    hash = 1;
+  }
+  if constexpr (sizeof(size_t) < sizeof(uint64_t)) {
+    hash ^= hash >> (sizeof(size_t) * 8);
+  }
+  return static_cast<size_t>(
+    hash & static_cast<uint64_t>(std::numeric_limits<size_t>::max()));
+}
+
+size_t
+computePolicyEpoch(const std::string& path)
+{
+  if (const char* envEpoch = std::getenv("NDNSF_POLICY_EPOCH")) {
+    try {
+      const auto parsed = std::stoull(envEpoch);
+      if (parsed > 0) {
+        return static_cast<size_t>(parsed);
+      }
+    }
+    catch (const std::exception&) {
+      NDN_LOG_WARN("Ignoring invalid NDNSF_POLICY_EPOCH=" << envEpoch);
+    }
+  }
+
+  return fnv1aPolicyHash(path);
 }
 
 ndn::Block
@@ -97,6 +142,9 @@ ServiceController::ServiceController(ndn::Face& face,
 {
   // Load provider/user policies from config
   loadConfigFiles();
+  m_policyValidFromMs = 0;
+  m_policyEpoch = computePolicyEpoch(m_configFilePath);
+  m_requiredKeyEpoch = m_policyEpoch;
 
   // Convert policies into ABE attribute policies and register them in AA
   addAttributesForUsersAccordingToServicePolicy();
@@ -283,6 +331,9 @@ void ServiceController::registerInterestHandlers()
   m_prefixProviderPermissions = m_controllerPrefix;
   m_prefixProviderPermissions.append("NDNSF").append("PERMISSIONS").append("PROVIDER");
 
+  m_prefixPolicyManifest = m_controllerPrefix;
+  m_prefixPolicyManifest.append("NDNSF").append("POLICY-MANIFEST");
+
   m_face.setInterestFilter(
     m_prefixServiceAccess,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
@@ -323,11 +374,22 @@ void ServiceController::registerInterestHandlers()
       NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
     });
 
+  m_face.setInterestFilter(
+    m_prefixPolicyManifest,
+    [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
+      this->onPolicyManifestInterest(f, i);
+    },
+    ndn::RegisterPrefixSuccessCallback(),
+    [](const ndn::Name& p, const std::string& reason) {
+      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
+    });
+
   NDN_LOG_INFO("ServiceController listening on:\n"
             << "  " << m_prefixServiceAccess 
             << "  " << m_prefixServiceProvision 
             << "  " << m_prefixUserPermissions 
-            << "  " << m_prefixProviderPermissions);
+            << "  " << m_prefixProviderPermissions
+            << "  " << m_prefixPolicyManifest);
 
   m_isRegistered = true;
 }
@@ -357,6 +419,7 @@ ServiceController::buildUserPermissionResponse(const ndn::Name& targetIdentity) 
   PermissionResponse response;
   response.setTargetIdentity(targetIdentity.toUri());
   response.setPermissionKind(tlv::UserPermission);
+  response.setPolicyEpoch(m_policyEpoch);
 
   std::vector<std::string> allowedServices;
   if (auto it = m_userAllowedServices.find(targetIdentity.toUri());
@@ -380,7 +443,7 @@ ServiceController::buildUserPermissionResponse(const ndn::Name& targetIdentity) 
       // per-request UserToken and per-ACK ProviderToken, not controller tokens.
       entry.setToken("");
       entry.setTtl(0);
-      entry.setVersion(1);
+      entry.setVersion(m_policyEpoch);
       response.addEntry(entry);
     }
   }
@@ -394,6 +457,7 @@ ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdenti
   PermissionResponse response;
   response.setTargetIdentity(targetIdentity.toUri());
   response.setPermissionKind(tlv::ProviderPermission);
+  response.setPolicyEpoch(m_policyEpoch);
 
   std::vector<std::string> allowedServices;
   if (auto it = m_providerAllowedServices.find(targetIdentity.toUri());
@@ -409,11 +473,22 @@ ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdenti
     // still installed, but no invocation token is issued by the controller.
     entry.setToken("");
     entry.setTtl(0);
-    entry.setVersion(1);
+    entry.setVersion(m_policyEpoch);
     response.addEntry(entry);
   }
 
   return response;
+}
+
+PolicyManifest
+ServiceController::buildPolicyManifest() const
+{
+  PolicyManifest manifest;
+  manifest.setPolicyEpoch(m_policyEpoch);
+  manifest.setValidFromMs(m_policyValidFromMs);
+  manifest.setGracePeriodMs(m_policyGracePeriodMs);
+  manifest.setRequiredKeyEpoch(m_requiredKeyEpoch);
+  return manifest;
 }
 
 ndn::security::Certificate
@@ -664,7 +739,7 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
 
   ndn::Data data(dataName);
   data.setContent(encryptedResponse.WireEncode());
-  data.setFreshnessPeriod(ndn::time::seconds(2));
+  data.setFreshnessPeriod(ndn::time::milliseconds(0));
   m_keyChain.sign(data, ndn::security::SigningInfo(
     ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
   m_face.put(data);
@@ -702,7 +777,7 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
 
   ndn::Data data(dataName);
   data.setContent(encryptedResponse.WireEncode());
-  data.setFreshnessPeriod(ndn::time::seconds(2));
+  data.setFreshnessPeriod(ndn::time::milliseconds(0));
   m_keyChain.sign(data, ndn::security::SigningInfo(
     ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
   m_face.put(data);
@@ -712,6 +787,21 @@ void ServiceController::onProviderPermissionsInterest(const ndn::InterestFilter&
             << " entries=" << response.getEntries().size()
             << " data=" << data.getName()
             << " payload=" << encryptedResponse.toString());
+}
+
+void ServiceController::onPolicyManifestInterest(const ndn::InterestFilter&,
+                                                 const ndn::Interest& interest)
+{
+  PolicyManifest manifest = buildPolicyManifest();
+  ndn::Data data(interest.getName());
+  data.setContent(manifest.WireEncode());
+  data.setFreshnessPeriod(ndn::time::milliseconds(0));
+  m_keyChain.sign(data, ndn::security::SigningInfo(
+    ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
+  m_face.put(data);
+
+  NDN_LOG_INFO("[POLICY-MANIFEST] Reply data=" << data.getName()
+               << " payload=" << manifest.toString());
 }
 
 } // namespace ndn_service_framework
