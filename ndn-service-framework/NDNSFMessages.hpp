@@ -61,11 +61,11 @@ namespace tlv {
         AllowedServiceType = 0xF502,
     };
 
-    // Coordination Strategies
+    // Selection strategies.
     enum {
         FirstResponding = 0,
-        LoadBalancing = 1,
-        AllResponders = 2,
+        RandomSelection = 1,
+        AllSelected = 2,
     };
 
     enum {
@@ -90,7 +90,7 @@ public:
     void setTokens(const std::map<std::string, std::string>& tokens);
     void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
-    // FirstResponding = 0, LoadBalancing = 1, AllResponders = 2,
+    // FirstResponding = 0, RandomSelection = 1, AllSelected = 2.
     void setStrategy(size_t strategy);
     void setPolicyEpoch(size_t policyEpoch);
     const std::map<std::string, std::string>& getTokens() const;
@@ -174,9 +174,9 @@ private:
     mutable ndn::Block m_wire;
 };
 
-class ServiceCoordinationMessage : public AbstractMessage {
+class ServiceSelectionMessage : public AbstractMessage {
 public:
-    ServiceCoordinationMessage();
+    ServiceSelectionMessage();
 
     void setRequestIDs(const std::vector<std::string>& requestIDs);
     void setProviderToken(const std::string& providerToken);

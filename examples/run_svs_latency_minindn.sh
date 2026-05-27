@@ -13,7 +13,7 @@ parallel_workers="${SVS_PARALLEL_WORKERS:-2}"
 parallel_queue="${SVS_PARALLEL_QUEUE:-128}"
 sync_batching="${SVS_SYNC_BATCHING:-0}"
 sync_batch_ms="${SVS_SYNC_BATCH_MS:-5}"
-max_suppression_ms="${SVS_MAX_SUPPRESSION_MS:-}"
+max_suppression_ms="${SVS_MAX_SUPPRESSION_MS:-1}"
 svs_strategy="${SVS_LATENCY_STRATEGY:-}"
 svs_log="${SVS_LATENCY_NDN_LOG:-ndn_service_framework.AppSvsLatency=INFO:ndn_svs.SyncTimeline=INFO}"
 

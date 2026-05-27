@@ -171,7 +171,7 @@ echo "provider_log=${tmpdir}/provider.log"
 echo "warmup=${warmup}"
 echo "count=${count}"
 
-run_benchmark "no-coordination" "no-coordination" "0"
+run_benchmark "all-selected" "all-selected" "0"
 run_benchmark "first-responding" "first-responding" "0"
 run_benchmark "custom-selection-ack50" "custom-selection" "50"
 run_benchmark "custom-selection-ack100" "custom-selection" "100"

@@ -309,8 +309,8 @@ namespace ndn_service_framework
                 if (component == "ACK") {
                     return "ack";
                 }
-                if (component == "COORDINATION") {
-                    return "coordination";
+                if (component == "SELECTION") {
+                    return "selection";
                 }
                 if (component == "RESPONSE") {
                     return "response";
@@ -433,7 +433,7 @@ namespace ndn_service_framework
             }
         };
 
-        class LoadBalancingPolicy final : public AckSelectionPolicy
+        class RandomSelectionPolicy final : public AckSelectionPolicy
         {
         public:
             std::vector<ProviderId>
@@ -455,7 +455,7 @@ namespace ndn_service_framework
             }
         };
 
-        class AllRespondersPolicy final : public AckSelectionPolicy
+        class AllSelectedPolicy final : public AckSelectionPolicy
         {
         public:
             std::vector<ProviderId>
@@ -473,7 +473,7 @@ namespace ndn_service_framework
             size_t
             requestStrategy() const override
             {
-                return ndn_service_framework::tlv::AllResponders;
+            return ndn_service_framework::tlv::AllSelected;
             }
         };
     }
@@ -482,10 +482,10 @@ namespace ndn_service_framework
     {
         const std::shared_ptr<const AckSelectionPolicy> FirstResponding =
             std::make_shared<FirstRespondingPolicy>();
-        const std::shared_ptr<const AckSelectionPolicy> LoadBalancing =
-            std::make_shared<LoadBalancingPolicy>();
-        const std::shared_ptr<const AckSelectionPolicy> AllResponders =
-            std::make_shared<AllRespondersPolicy>();
+        const std::shared_ptr<const AckSelectionPolicy> RandomSelection =
+            std::make_shared<RandomSelectionPolicy>();
+        const std::shared_ptr<const AckSelectionPolicy> AllSelected =
+            std::make_shared<AllSelectedPolicy>();
     }
 
     ServiceUser::ServiceUser(ndn::Face &face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) : 
@@ -564,7 +564,7 @@ namespace ndn_service_framework
                 opts,
                 secOpts);
             const int suppressionMs =
-                std::max(0, intEnvOrDefault("NDNSF_SVS_MAX_SUPPRESSION_MS", 50));
+                std::max(0, intEnvOrDefault("NDNSF_SVS_MAX_SUPPRESSION_MS", 1));
             m_svsps->getSVSync().getCore().setMaxSuppressionTime(
                 ndn::time::milliseconds(suppressionMs));
             NDN_LOG_INFO("NDNSF_SVS_MAX_SUPPRESSION_MS role=user value="
@@ -733,7 +733,7 @@ namespace ndn_service_framework
         case RequestLifecycleState::REQUEST_PUBLISHED: return "REQUEST_PUBLISHED";
         case RequestLifecycleState::ACK_MATCHED: return "ACK_MATCHED";
         case RequestLifecycleState::PROVIDER_SELECTED: return "PROVIDER_SELECTED";
-        case RequestLifecycleState::COORDINATION_PUBLISHED: return "COORDINATION_PUBLISHED";
+        case RequestLifecycleState::SELECTION_PUBLISHED: return "SELECTION_PUBLISHED";
         case RequestLifecycleState::RESPONSE_OBSERVED: return "RESPONSE_OBSERVED";
         case RequestLifecycleState::RESPONSE_DECRYPTED: return "RESPONSE_DECRYPTED";
         case RequestLifecycleState::CALLBACK_FIRED: return "CALLBACK_FIRED";
@@ -940,8 +940,8 @@ namespace ndn_service_framework
             if (status.providerSelectionTimestampUs == 0) {
                 status.providerSelectionTimestampUs = pending.ackSelectionCompletedAtUs;
             }
-            if (status.coordinationPublishTimestampUs == 0) {
-                status.coordinationPublishTimestampUs = pending.coordinationPublishedAtUs;
+            if (status.selectionPublishTimestampUs == 0) {
+                status.selectionPublishTimestampUs = pending.selectionPublishedAtUs;
             }
             if (status.responseObservedTimestampUs == 0) {
                 status.responseObservedTimestampUs = pending.responseObservedAtUs;
@@ -976,8 +976,8 @@ namespace ndn_service_framework
             status.providerSelectionTimestampUs =
                 status.providerSelectionTimestampUs == 0 ? nowUs : status.providerSelectionTimestampUs;
             break;
-        case RequestLifecycleState::COORDINATION_PUBLISHED:
-            status.coordinationPublishTimestampUs = nowUs;
+        case RequestLifecycleState::SELECTION_PUBLISHED:
+            status.selectionPublishTimestampUs = nowUs;
             break;
         case RequestLifecycleState::RESPONSE_OBSERVED:
             status.responseObservedTimestampUs =
@@ -1085,7 +1085,7 @@ namespace ndn_service_framework
             return [] (const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
                 return selectRandomAck(candidates);
             };
-        case AckSelectionStrategy::AllResponders:
+        case AckSelectionStrategy::AllSelected:
             return [] (const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
                 return selectAllResponderAcks(candidates);
             };
@@ -1256,8 +1256,8 @@ namespace ndn_service_framework
                !pendingCall.requestAcks.empty() ||
                pendingCall.providerSelected ||
                !pendingCall.selectedProvider.empty() ||
-               pendingCall.coordinationScheduledAtUs != 0 ||
-               pendingCall.coordinationPublishedAtUs != 0 ||
+               pendingCall.selectionScheduledAtUs != 0 ||
+               pendingCall.selectionPublishedAtUs != 0 ||
                pendingCall.responseObservedAtUs != 0 ||
                pendingCall.responseDecryptedAtUs != 0 ||
                pendingCall.responseValidatedAtUs != 0 ||
@@ -1314,10 +1314,10 @@ namespace ndn_service_framework
                       << pendingCall->second.ackSelectionAtUs
                       << " ackSelectionCompletedAtUs="
                       << pendingCall->second.ackSelectionCompletedAtUs
-                      << " coordinationScheduledAtUs="
-                      << pendingCall->second.coordinationScheduledAtUs
-                      << " coordinationPublishedAtUs="
-                      << pendingCall->second.coordinationPublishedAtUs
+                      << " selectionScheduledAtUs="
+                      << pendingCall->second.selectionScheduledAtUs
+                      << " selectionPublishedAtUs="
+                      << pendingCall->second.selectionPublishedAtUs
                       << " responseObservedAtUs="
                       << pendingCall->second.responseObservedAtUs
                       << " responseDecryptedAtUs="
@@ -2296,11 +2296,11 @@ namespace ndn_service_framework
     
         PublishMessage(requestName,requestNameWithoutPrefix,requestMessage);
 
-        // register coordination strategy
+        // register selection strategy
         m_strategyMap.emplace(RequestID, strategy);
 
-        // create a timer for LoadBalancing
-        if (strategy == tlv::LoadBalancing){
+        // create a timer for RandomSelection
+        if (strategy == tlv::RandomSelection){
 
             // insert RequestID->vector<AckInfo> into m_AckInfoMap
             m_AckInfoMap[RequestID] = std::vector<ndn_service_framework::AckInfo>();
@@ -2325,10 +2325,10 @@ namespace ndn_service_framework
 
                 // random choose one AckInfo from ackInfoVec.second
                 auto randomAckInfo = ackInfoVec->second[rand() % ackInfoVec->second.size()];
-                // log AckInfo is choosen for LoadBalancing
-                NDN_LOG_INFO("Choosen AckInfo for LoadBalancing: " << randomAckInfo.providerName.toUri() << " " << randomAckInfo.requestID.toUri());
-                // publish service coordination message
-                PublishServiceCoordinationMessage(randomAckInfo.providerName, randomAckInfo.serviceName, randomAckInfo.functionName, randomAckInfo.requestID);
+                // log AckInfo is choosen for RandomSelection
+                NDN_LOG_INFO("Choosen AckInfo for RandomSelection: " << randomAckInfo.providerName.toUri() << " " << randomAckInfo.requestID.toUri());
+                // publish service selection message
+                PublishServiceSelectionMessage(randomAckInfo.providerName, randomAckInfo.serviceName, randomAckInfo.functionName, randomAckInfo.requestID);
                 
             });
         }
@@ -2446,7 +2446,7 @@ namespace ndn_service_framework
 
         m_strategyMap.emplace(requestId, strategy);
 
-        if (strategy == tlv::LoadBalancing){
+        if (strategy == tlv::RandomSelection){
             m_AckInfoMap[requestId] = std::vector<ndn_service_framework::AckInfo>();
 
             m_scheduler.schedule(100_ms,[this, requestId](){
@@ -2465,10 +2465,10 @@ namespace ndn_service_framework
                 }
 
                 auto randomAckInfo = ackInfoVec->second[rand() % ackInfoVec->second.size()];
-                NDN_LOG_INFO("Choosen AckInfo for LoadBalancing: "
+                NDN_LOG_INFO("Choosen AckInfo for RandomSelection: "
                              << randomAckInfo.providerName.toUri() << " "
                              << randomAckInfo.requestID.toUri());
-                PublishServiceCoordinationMessage(randomAckInfo.providerName,
+                PublishServiceSelectionMessage(randomAckInfo.providerName,
                                                   randomAckInfo.serviceName,
                                                   randomAckInfo.functionName,
                                                   randomAckInfo.requestID);
@@ -2725,7 +2725,7 @@ namespace ndn_service_framework
         PendingCall pendingCall;
         pendingCall.serviceName = serviceName;
         pendingCall.requestMessage = requestMessage;
-        pendingCall.strategy = ndn_service_framework::tlv::LoadBalancing;
+        pendingCall.strategy = ndn_service_framework::tlv::RandomSelection;
         pendingCall.timeoutMs = timeoutMs;
         pendingCall.ackTimeoutMs = ackTimeoutMs;
         pendingCall.createdAtUs = nowMicroseconds();
@@ -2828,8 +2828,8 @@ namespace ndn_service_framework
         }
 
         const size_t requestStrategy =
-            selectionStrategy == AckSelectionStrategy::AllResponders ?
-            ndn_service_framework::tlv::AllResponders :
+            selectionStrategy == AckSelectionStrategy::AllSelected ?
+            ndn_service_framework::tlv::AllSelected :
             ndn_service_framework::tlv::FirstResponding;
 
         return RequestService(providers,
@@ -2923,12 +2923,12 @@ namespace ndn_service_framework
         ndn_service_framework::RequestMessage requestMessage;
         auto payload = initialRequest;
         requestMessage.setPayload(payload, payload.size());
-        requestMessage.setStrategy(ndn_service_framework::tlv::LoadBalancing);
+        requestMessage.setStrategy(ndn_service_framework::tlv::RandomSelection);
 
         PendingCall pendingCall;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
-        pendingCall.strategy = ndn_service_framework::tlv::LoadBalancing;
+        pendingCall.strategy = ndn_service_framework::tlv::RandomSelection;
         pendingCall.timeoutMs = plan.timeoutMs;
         pendingCall.ackTimeoutMs = plan.ackCollectionTimeMs;
         pendingCall.createdAtUs = nowMicroseconds();
@@ -3409,19 +3409,19 @@ namespace ndn_service_framework
                 selectLateAckAfterAckTimeout(pendingCall->second, storedAck);
                 return true;
             }
-            const bool shouldCoordinateFirstAck =
+            const bool shouldSelectFirstAck =
                 pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
                 !pendingCall->second.isCollaboration &&
                 pendingCall->second.selectedProvider.empty() &&
                 ackMessage.getStatus();
             evaluateAckSelection(parsedV2->requestId);
             pendingCall = m_pendingCalls.find(parsedV2->requestId);
-            if (shouldCoordinateFirstAck &&
+            if (shouldSelectFirstAck &&
                 pendingCall != m_pendingCalls.end() &&
                 pendingCall->second.selectedProvider.equals(parsedV2->providerName)) {
                 const auto scheduleAtUs = nowMicroseconds();
-                pendingCall->second.coordinationScheduledAtUs = scheduleAtUs;
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_ELIGIBILITY_CHECK timestamp_us="
+                pendingCall->second.selectionScheduledAtUs = scheduleAtUs;
+                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                           << scheduleAtUs
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3431,22 +3431,22 @@ namespace ndn_service_framework
                           << " providerTokenPresent="
                           << (pendingCall->second.providerTokens.find(parsedV2->providerName.toUri()) !=
                               pendingCall->second.providerTokens.end()));
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_SCHEDULE_ATTEMPT timestamp_us="
+                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SCHEDULE_ATTEMPT timestamp_us="
                           << scheduleAtUs
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
                           << " serviceName=" << parsedV2->serviceName.toUri());
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_FAST_PATH timestamp_us="
+                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_FAST_PATH timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
                           << " serviceName=" << parsedV2->serviceName.toUri());
-                PublishServiceCoordinationMessageV2(parsedV2->providerName,
+                PublishServiceSelectionMessageV2(parsedV2->providerName,
                                                     parsedV2->serviceName,
                                                     parsedV2->requestId);
             }
-            else if (shouldCoordinateFirstAck) {
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_SKIPPED timestamp_us="
+            else if (shouldSelectFirstAck) {
+                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SKIPPED timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3597,19 +3597,19 @@ namespace ndn_service_framework
             selectLateAckAfterAckTimeout(pendingCall->second, storedAck);
             return true;
         }
-        const bool shouldCoordinateFirstAck =
+        const bool shouldSelectFirstAck =
             pendingCall->second.strategy == ndn_service_framework::tlv::FirstResponding &&
             !pendingCall->second.isCollaboration &&
             pendingCall->second.selectedProvider.empty() &&
             ackMessage.getStatus();
         evaluateAckSelection(requestId);
         pendingCall = m_pendingCalls.find(requestId);
-        if (shouldCoordinateFirstAck &&
+        if (shouldSelectFirstAck &&
             pendingCall != m_pendingCalls.end() &&
             pendingCall->second.selectedProvider.equals(providerName)) {
             const auto scheduleAtUs = nowMicroseconds();
-            pendingCall->second.coordinationScheduledAtUs = scheduleAtUs;
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_ELIGIBILITY_CHECK timestamp_us="
+            pendingCall->second.selectionScheduledAtUs = scheduleAtUs;
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                       << scheduleAtUs
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3619,23 +3619,23 @@ namespace ndn_service_framework
                       << " providerTokenPresent="
                       << (pendingCall->second.providerTokens.find(providerName.toUri()) !=
                           pendingCall->second.providerTokens.end()));
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_SCHEDULE_ATTEMPT timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SCHEDULE_ATTEMPT timestamp_us="
                       << scheduleAtUs
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
                       << " serviceName=" << makeUnifiedServiceName(serviceName, functionName).toUri());
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_FAST_PATH timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_FAST_PATH timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
                       << " serviceName=" << makeUnifiedServiceName(serviceName, functionName).toUri());
-            PublishServiceCoordinationMessage(providerName,
+            PublishServiceSelectionMessage(providerName,
                                               serviceName,
                                               functionName,
                                               requestId);
         }
-        else if (shouldCoordinateFirstAck) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_SKIPPED timestamp_us="
+        else if (shouldSelectFirstAck) {
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SKIPPED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3792,7 +3792,7 @@ namespace ndn_service_framework
         const bool hasSelectedCandidate =
             !pendingCall->second.selectedProvider.empty() ||
             !pendingCall->second.customSelectedAcks.empty() ||
-            (pendingCall->second.strategy == ndn_service_framework::tlv::AllResponders &&
+            (pendingCall->second.strategy == ndn_service_framework::tlv::AllSelected &&
              !pendingCall->second.successfulAckProviders.empty());
         selected = selected && hasSelectedCandidate;
 
@@ -3830,7 +3830,7 @@ namespace ndn_service_framework
         }
         else {
             // ACK selection without a provider is not terminal: late ACKs may
-            // still arrive and trigger coordination. Keep the admission slot
+            // still arrive and trigger selection. Keep the admission slot
             // until the call completes or times out so overload is reflected
             // in the user-side controller instead of admitting more work.
             NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_NO_PROVIDER_PENDING"
@@ -3909,7 +3909,7 @@ namespace ndn_service_framework
                   << " serviceName=" << storedAck.serviceName.toUri()
                   << " providerTokenPresent="
                   << !storedAck.message.getProviderToken().empty());
-        PublishServiceCoordinationMessageV2(storedAck.providerName,
+        PublishServiceSelectionMessageV2(storedAck.providerName,
                                             storedAck.serviceName,
                                             storedAck.requestId);
         return true;
@@ -4050,7 +4050,7 @@ namespace ndn_service_framework
                       << " serviceName=" << selectedAck.serviceName.toUri()
                       << " providerTokenPresent="
                       << !selectedAck.message.getProviderToken().empty());
-            PublishServiceCoordinationMessageV2(selectedAck.providerName,
+            PublishServiceSelectionMessageV2(selectedAck.providerName,
                                                 selectedAck.serviceName,
                                                 selectedAck.requestId);
         }
@@ -4076,14 +4076,14 @@ namespace ndn_service_framework
             return !pendingCall.selectedProvider.empty();
         }
 
-        if (pendingCall.strategy == ndn_service_framework::tlv::LoadBalancing) {
-            pendingCall.selectedProvider = selectLoadBalancingProvider(pendingCall.successfulAckProviders);
+        if (pendingCall.strategy == ndn_service_framework::tlv::RandomSelection) {
+            pendingCall.selectedProvider = selectRandomProvider(pendingCall.successfulAckProviders);
             pendingCall.expectedResponseProviders.clear();
             addUniqueName(pendingCall.expectedResponseProviders, pendingCall.selectedProvider);
             return !pendingCall.selectedProvider.empty();
         }
 
-        if (pendingCall.strategy == ndn_service_framework::tlv::AllResponders) {
+        if (pendingCall.strategy == ndn_service_framework::tlv::AllSelected) {
             pendingCall.selectedProvider = ndn::Name();
             pendingCall.customSelectedAcks.clear();
             pendingCall.expectedResponseProviders.clear();
@@ -4097,7 +4097,7 @@ namespace ndn_service_framework
                 if (pendingCall.selectedProvider.empty()) {
                     pendingCall.selectedProvider = storedAck.providerName;
                 }
-                PublishServiceCoordinationMessageV2(storedAck.providerName,
+                PublishServiceSelectionMessageV2(storedAck.providerName,
                                                     storedAck.serviceName,
                                                     storedAck.requestId);
             }
@@ -4126,7 +4126,7 @@ namespace ndn_service_framework
         }
     }
 
-    ndn::Name ServiceUser::selectLoadBalancingProvider(
+    ndn::Name ServiceUser::selectRandomProvider(
         const std::vector<ndn::Name>& providers)
     {
         if (providers.empty()) {
@@ -4927,13 +4927,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
         // Decision based on strategy
         if (strategy == tlv::FirstResponding) {
-            PublishServiceCoordinationMessage(providerName,
+            PublishServiceSelectionMessage(providerName,
                                               ServiceName,
                                               FunctionName,
                                               requestID);
             m_strategyMap.erase(strategyIt);
         }
-        else if (strategy == tlv::LoadBalancing) {
+        else if (strategy == tlv::RandomSelection) {
             // Ensure vector exists
             auto itAck = m_AckInfoMap.find(requestID);
             if (itAck == m_AckInfoMap.end()) {
@@ -4948,8 +4948,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
                          << providerName.toUri() << " "
                          << requestID.toUri());
         }
-        else if (strategy == tlv::AllResponders) {
-            PublishServiceCoordinationMessage(providerName, ServiceName, FunctionName, requestID);
+        else if (strategy == tlv::AllSelected) {
+            PublishServiceSelectionMessage(providerName, ServiceName, FunctionName, requestID);
         }
         else {
             NDN_LOG_ERROR("Invalid strategy: " << strategy);
@@ -4972,37 +4972,37 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
     }
 
-    void ServiceUser::PublishServiceCoordinationMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID)
+    void ServiceUser::PublishServiceSelectionMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID)
     {
-        NDN_LOG_DEBUG("[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
+        NDN_LOG_DEBUG("[ServiceUser] PublishServiceSelectionMessage called timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << ServiceName.toUri());
         if (FunctionName.empty()) {
-            PublishServiceCoordinationMessageV2(providerName, ServiceName, requestID);
+            PublishServiceSelectionMessageV2(providerName, ServiceName, requestID);
             return;
         }
 
         // log message
-        NDN_LOG_DEBUG("PublishServiceCoordinationMessage: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri());
-        // create service coordination message
-        ServiceCoordinationMessage coordinationMessage;
-        coordinationMessage.setRequestIDs({requestID.toUri()});
+        NDN_LOG_DEBUG("PublishServiceSelectionMessage: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << requestID.toUri());
+        // create service selection message
+        ServiceSelectionMessage selectionMessage;
+        selectionMessage.setRequestIDs({requestID.toUri()});
         auto pendingIt = m_pendingCalls.find(requestID);
         bool providerTokenPresent = false;
         if (pendingIt != m_pendingCalls.end()) {
             auto tokenIt =
                 pendingIt->second.providerTokens.find(providerName.toUri());
             if (m_useTokens && tokenIt != pendingIt->second.providerTokens.end()) {
-                coordinationMessage.setProviderToken(tokenIt->second);
+                selectionMessage.setProviderToken(tokenIt->second);
                 providerTokenPresent = true;
             }
         }
         if (!m_useTokens) {
             providerTokenPresent = true;
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_ELIGIBILITY_CHECK timestamp_us="
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5012,7 +5012,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " pendingCallPresent=" << (pendingIt != m_pendingCalls.end())
                   << " providerTokenPresent=" << providerTokenPresent);
         if (pendingIt == m_pendingCalls.end() || !providerTokenPresent) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_REJECTED timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_REJECTED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestID.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5022,22 +5022,22 @@ void ServiceUser::finishRequestAckOnEventLoop(
                           "pending_missing" : "provider_token_missing"));
         }
 
-        // make service coordination message name
-        ndn::Name serviceCoordinationName = makeServiceCoordinationName(identity, providerName, ServiceName, FunctionName, requestID);
-        ndn::Name serviceCoordinationNameWithoutPrefix = makeServiceCoordinationNameWithoutPrefix(providerName, ServiceName, FunctionName, requestID);
+        // make service selection message name
+        ndn::Name serviceSelectionName = makeServiceSelectionName(identity, providerName, ServiceName, FunctionName, requestID);
+        ndn::Name serviceSelectionNameWithoutPrefix = makeServiceSelectionNameWithoutPrefix(providerName, ServiceName, FunctionName, requestID);
 
-        // publish service coordination message
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISH_ATTEMPT timestamp_us="
+        // publish service selection message
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << makeUnifiedServiceName(ServiceName, FunctionName).toUri()
-                  << " messageName=" << serviceCoordinationName.toUri());
+                  << " messageName=" << serviceSelectionName.toUri());
         try {
-            PublishMessage(serviceCoordinationName, serviceCoordinationNameWithoutPrefix, coordinationMessage);
+            PublishMessage(serviceSelectionName, serviceSelectionNameWithoutPrefix, selectionMessage);
         }
         catch (const std::exception& e) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISH_FAILED timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_FAILED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestID.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5047,47 +5047,47 @@ void ServiceUser::finishRequestAckOnEventLoop(
             throw;
         }
         if (pendingIt != m_pendingCalls.end()) {
-            pendingIt->second.coordinationPublishedAtUs = nowMicroseconds();
-            addUniqueName(pendingIt->second.coordinatedProviders, providerName);
+            pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
+            addUniqueName(pendingIt->second.selectionPublishedProviders, providerName);
         }
-        updateRequestLifecycleState(requestID, RequestLifecycleState::COORDINATION_PUBLISHED);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISHED timestamp_us="
+        updateRequestLifecycleState(requestID, RequestLifecycleState::SELECTION_PUBLISHED);
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISHED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << makeUnifiedServiceName(ServiceName, FunctionName).toUri()
-                  << " messageName=" << serviceCoordinationName.toUri());
-        NDN_LOG_DEBUG("[ServiceUser] coordination PublishMessage returned timestampMs="
+                  << " messageName=" << serviceSelectionName.toUri());
+        NDN_LOG_DEBUG("[ServiceUser] selection PublishMessage returned timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << ServiceName.toUri());
     }
 
-    void ServiceUser::PublishServiceCoordinationMessageV2(const ndn::Name& providerName,
+    void ServiceUser::PublishServiceSelectionMessageV2(const ndn::Name& providerName,
                                                           const ndn::Name& serviceName,
                                                           const ndn::Name& requestId)
     {
-        NDN_LOG_DEBUG("PublishServiceCoordinationMessageV2: "
+        NDN_LOG_DEBUG("PublishServiceSelectionMessageV2: "
                      << providerName.toUri()
                      << serviceName.toUri()
                      << requestId.toUri());
-        NDN_LOG_DEBUG("[ServiceUser] PublishServiceCoordinationMessage called timestampMs="
+        NDN_LOG_DEBUG("[ServiceUser] PublishServiceSelectionMessage called timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri());
 
-        ServiceCoordinationMessage coordinationMessage;
-        coordinationMessage.setRequestIDs({requestId.toUri()});
-        coordinationMessage.setPolicyEpoch(m_currentPolicyEpoch);
+        ServiceSelectionMessage selectionMessage;
+        selectionMessage.setRequestIDs({requestId.toUri()});
+        selectionMessage.setPolicyEpoch(m_currentPolicyEpoch);
         auto pendingIt = m_pendingCalls.find(requestId);
         bool providerTokenPresent = false;
         if (pendingIt != m_pendingCalls.end()) {
             auto tokenIt =
                 pendingIt->second.providerTokens.find(providerName.toUri());
             if (m_useTokens && tokenIt != pendingIt->second.providerTokens.end()) {
-                coordinationMessage.setProviderToken(tokenIt->second);
+                selectionMessage.setProviderToken(tokenIt->second);
                 providerTokenPresent = true;
             }
         }
@@ -5098,17 +5098,17 @@ void ServiceUser::finishRequestAckOnEventLoop(
             auto assignmentIt =
                 pendingIt->second.collaborationAssignments.find(providerName.toUri());
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
-                coordinationMessage.setAssignmentPayload(assignmentIt->second);
+                selectionMessage.setAssignmentPayload(assignmentIt->second);
             }
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_TOKEN_STATE timestamp_us="
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri()
                   << " pendingCallPresent=" << (pendingIt != m_pendingCalls.end())
                   << " providerTokenPresent=" << providerTokenPresent);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_ELIGIBILITY_CHECK timestamp_us="
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5118,7 +5118,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " pendingCallPresent=" << (pendingIt != m_pendingCalls.end())
                   << " providerTokenPresent=" << providerTokenPresent);
         if (pendingIt == m_pendingCalls.end() || !providerTokenPresent) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_REJECTED timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_REJECTED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5128,24 +5128,24 @@ void ServiceUser::finishRequestAckOnEventLoop(
                           "pending_missing" : "provider_token_missing"));
         }
 
-        ndn::Name serviceCoordinationName =
-            makeServiceCoordinationNameV2(identity, providerName, serviceName, requestId);
-        ndn::Name serviceCoordinationNameWithoutPrefix =
-            makeServiceCoordinationNameWithoutPrefixV2(providerName, serviceName, requestId);
+        ndn::Name serviceSelectionName =
+            makeServiceSelectionNameV2(identity, providerName, serviceName, requestId);
+        ndn::Name serviceSelectionNameWithoutPrefix =
+            makeServiceSelectionNameWithoutPrefixV2(providerName, serviceName, requestId);
 
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISH_ATTEMPT timestamp_us="
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri()
-                  << " messageName=" << serviceCoordinationName.toUri());
+                  << " messageName=" << serviceSelectionName.toUri());
         try {
-            PublishMessage(serviceCoordinationName,
-                           serviceCoordinationNameWithoutPrefix,
-                           coordinationMessage);
+            PublishMessage(serviceSelectionName,
+                           serviceSelectionNameWithoutPrefix,
+                           selectionMessage);
         }
         catch (const std::exception& e) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISH_FAILED timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_FAILED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5155,17 +5155,17 @@ void ServiceUser::finishRequestAckOnEventLoop(
             throw;
         }
         if (pendingIt != m_pendingCalls.end()) {
-            pendingIt->second.coordinationPublishedAtUs = nowMicroseconds();
-            addUniqueName(pendingIt->second.coordinatedProviders, providerName);
+            pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
+            addUniqueName(pendingIt->second.selectionPublishedProviders, providerName);
         }
-        updateRequestLifecycleState(requestId, RequestLifecycleState::COORDINATION_PUBLISHED);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COORDINATION_PUBLISHED timestamp_us="
+        updateRequestLifecycleState(requestId, RequestLifecycleState::SELECTION_PUBLISHED);
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISHED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri()
-                  << " messageName=" << serviceCoordinationName.toUri());
-        NDN_LOG_DEBUG("[ServiceUser] coordination PublishMessage returned timestampMs="
+                  << " messageName=" << serviceSelectionName.toUri());
+        NDN_LOG_DEBUG("[ServiceUser] selection PublishMessage returned timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5269,9 +5269,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
             serviceName = request->serviceName;
             requestId = request->requestId;
         }
-        else if (auto coordination = parseServiceCoordinationNameV2(messageName)) {
-            serviceName = coordination->serviceName;
-            requestId = coordination->requestId;
+        else if (auto selection = parseServiceSelectionNameV2(messageName)) {
+            serviceName = selection->serviceName;
+            requestId = selection->requestId;
         }
         else {
             NDN_LOG_ERROR("Hybrid publish unsupported message name: " << messageName);
@@ -5392,7 +5392,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     if (messageType == "REQUEST" || messageType == "RESPONSE") {
                         ++m_hybridCryptoCounters.user_token_symmetric_encrypt_count;
                     }
-                    if (messageType == "ACK" || messageType == "COORDINATION") {
+                    if (messageType == "ACK" || messageType == "SELECTION") {
                         ++m_hybridCryptoCounters.provider_token_symmetric_encrypt_count;
                     }
                 }
@@ -5419,9 +5419,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                         rid = request->requestId;
                         svc = request->serviceName;
                     }
-                    else if (auto coordination = parseServiceCoordinationNameV2(messageName)) {
-                        rid = coordination->requestId;
-                        svc = coordination->serviceName;
+                    else if (auto selection = parseServiceSelectionNameV2(messageName)) {
+                        rid = selection->requestId;
+                        svc = selection->serviceName;
                     }
                     if (!rid.empty()) {
                         logTimelineTrace("user", cryptoStageForName(messageName) + "_publish_start",
@@ -5439,9 +5439,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                         rid = request->requestId;
                         svc = request->serviceName;
                     }
-                    else if (auto coordination = parseServiceCoordinationNameV2(messageName)) {
-                        rid = coordination->requestId;
-                        svc = coordination->serviceName;
+                    else if (auto selection = parseServiceSelectionNameV2(messageName)) {
+                        rid = selection->requestId;
+                        svc = selection->serviceName;
                     }
                     if (!rid.empty()) {
                         logTimelineTrace("user", cryptoStageForName(messageName) + "_publish_done",
@@ -5602,9 +5602,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
             timelineRequestId = request->requestId;
             timelineServiceName = request->serviceName;
         }
-        else if (auto coordination = parseServiceCoordinationNameV2(messageName)) {
-            timelineRequestId = coordination->requestId;
-            timelineServiceName = coordination->serviceName;
+        else if (auto selection = parseServiceSelectionNameV2(messageName)) {
+            timelineRequestId = selection->requestId;
+            timelineServiceName = selection->serviceName;
         }
         const auto plaintextBlock = message.WireEncode();
         const bool usePlaintext =
@@ -5655,9 +5655,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                             requestId = request->requestId;
                             serviceName = request->serviceName;
                         }
-                        else if (auto coordination = parseServiceCoordinationNameV2(messageName)) {
-                            requestId = coordination->requestId;
-                            serviceName = coordination->serviceName;
+                        else if (auto selection = parseServiceSelectionNameV2(messageName)) {
+                            requestId = selection->requestId;
+                            serviceName = selection->serviceName;
                         }
                         if (!requestId.empty()) {
                             logTimelineTrace("user", cryptoStageForName(messageName) + "_publish_start",
@@ -5674,9 +5674,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
                             requestId = request->requestId;
                             serviceName = request->serviceName;
                         }
-                        else if (auto coordination = parseServiceCoordinationNameV2(messageName)) {
-                            requestId = coordination->requestId;
-                            serviceName = coordination->serviceName;
+                        else if (auto selection = parseServiceSelectionNameV2(messageName)) {
+                            requestId = selection->requestId;
+                            serviceName = selection->serviceName;
                         }
                         if (!requestId.empty()) {
                             logTimelineTrace("user", cryptoStageForName(messageName) + "_publish_done",
@@ -5887,8 +5887,8 @@ namespace ndnsf
         extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
             FirstResponding = ndn_service_framework::strategy::FirstResponding;
         extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
-            LoadBalancing = ndn_service_framework::strategy::LoadBalancing;
+            RandomSelection = ndn_service_framework::strategy::RandomSelection;
         extern const std::shared_ptr<const ndn_service_framework::AckSelectionPolicy>
-            AllResponders = ndn_service_framework::strategy::AllResponders;
+            AllSelected = ndn_service_framework::strategy::AllSelected;
     }
 }

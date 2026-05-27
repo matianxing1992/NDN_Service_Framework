@@ -186,7 +186,7 @@ def write_report(output_dir, rows):
     base_fields = [
         "id", "label", "providers", "plaintext_ack", "plaintext_response",
         "success_rate", "sent_count", "completed_count", "timed_out_count",
-        "ack_published", "ack_processed", "coordination_sent", "responses_received",
+        "ack_published", "ack_processed", "selection_sent", "responses_received",
         "actual_requests_per_second", "actual_successful_responses_per_second",
         "status", "error", "summary_json",
     ]
@@ -282,7 +282,7 @@ def main():
                 "timed_out_count": 0,
                 "ack_published": 0,
                 "ack_processed": 0,
-                "coordination_sent": 0,
+                "selection_sent": 0,
                 "responses_received": 0,
                 "actual_requests_per_second": 0.0,
                 "actual_successful_responses_per_second": 0.0,
@@ -309,7 +309,7 @@ def main():
                 "timed_out_count": 0,
                 "ack_published": 0,
                 "ack_processed": 0,
-                "coordination_sent": 0,
+                "selection_sent": 0,
                 "responses_received": 0,
                 "actual_requests_per_second": 0.0,
                 "actual_successful_responses_per_second": 0.0,
@@ -341,10 +341,10 @@ def main():
                 stats.get("success_count", 0)
                 for key, stats in crypto.items()
                 if key.startswith("user.ack.decrypt."))),
-            "coordination_sent": int(sum(
+            "selection_sent": int(sum(
                 stats.get("total_count", 0)
                 for key, stats in crypto.items()
-                if key.startswith("user.coordination.encrypt."))),
+                if key.startswith("user.selection.encrypt."))),
             "responses_received": int(sum(
                 stats.get("success_count", 0)
                 for key, stats in crypto.items()

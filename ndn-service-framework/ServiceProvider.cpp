@@ -270,8 +270,8 @@ namespace ndn_service_framework
                 if (component == "ACK") {
                     return "ack";
                 }
-                if (component == "COORDINATION") {
-                    return "coordination";
+                if (component == "SELECTION") {
+                    return "selection";
                 }
                 if (component == "RESPONSE") {
                     return "response";
@@ -518,7 +518,7 @@ namespace ndn_service_framework
                 opts,
                 secOpts);
             const int suppressionMs =
-                std::max(0, intEnvOrDefault("NDNSF_SVS_MAX_SUPPRESSION_MS", 50));
+                std::max(0, intEnvOrDefault("NDNSF_SVS_MAX_SUPPRESSION_MS", 1));
             m_svsps->getSVSync().getCore().setMaxSuppressionTime(
                 ndn::time::milliseconds(suppressionMs));
             NDN_LOG_INFO("NDNSF_SVS_MAX_SUPPRESSION_MS role=provider value="
@@ -1136,9 +1136,9 @@ namespace ndn_service_framework
         m_providerAckMaxEventLoopLag = std::max(ndn::time::milliseconds(0), maxLag);
     }
 
-    void ServiceProvider::setProviderAckMaxCoordinationLag(ndn::time::milliseconds maxLag)
+    void ServiceProvider::setProviderAckMaxSelectionLag(ndn::time::milliseconds maxLag)
     {
-        m_providerAckMaxCoordinationLag = std::max(ndn::time::milliseconds(0), maxLag);
+        m_providerAckMaxSelectionLag = std::max(ndn::time::milliseconds(0), maxLag);
     }
 
     void ServiceProvider::setProviderRequestLifecycleCallback(
@@ -1155,7 +1155,7 @@ namespace ndn_service_framework
         case ProviderRequestLifecycleState::ACK_ADMISSION_CHECKED: return "ACK_ADMISSION_CHECKED";
         case ProviderRequestLifecycleState::ACK_SUPPRESSED_OVERLOAD: return "ACK_SUPPRESSED_OVERLOAD";
         case ProviderRequestLifecycleState::ACK_PUBLISHED: return "ACK_PUBLISHED";
-        case ProviderRequestLifecycleState::COORDINATION_RECEIVED: return "COORDINATION_RECEIVED";
+        case ProviderRequestLifecycleState::SELECTION_RECEIVED: return "SELECTION_RECEIVED";
         case ProviderRequestLifecycleState::EXECUTION_STARTED: return "EXECUTION_STARTED";
         case ProviderRequestLifecycleState::EXECUTION_DONE: return "EXECUTION_DONE";
         case ProviderRequestLifecycleState::RESPONSE_PUBLISHED: return "RESPONSE_PUBLISHED";
@@ -1228,11 +1228,11 @@ namespace ndn_service_framework
         case ProviderRequestLifecycleState::ACK_PUBLISHED:
             status.ackPublishedOrSuppressedTimestampUs = nowUs;
             break;
-        case ProviderRequestLifecycleState::COORDINATION_RECEIVED:
-            status.coordinationReceivedTimestampUs = nowUs;
+        case ProviderRequestLifecycleState::SELECTION_RECEIVED:
+            status.selectionReceivedTimestampUs = nowUs;
             if (status.ackPublishedOrSuppressedTimestampUs != 0 &&
                 nowUs >= status.ackPublishedOrSuppressedTimestampUs) {
-                status.coordinationLagUs = nowUs - status.ackPublishedOrSuppressedTimestampUs;
+                status.selectionLagUs = nowUs - status.ackPublishedOrSuppressedTimestampUs;
             }
             break;
         case ProviderRequestLifecycleState::EXECUTION_STARTED:
@@ -1258,7 +1258,7 @@ namespace ndn_service_framework
                   << " suppressionReason="
                   << (status.suppressionReason.empty() ? "-" : status.suppressionReason)
                   << " pendingAtDecision=" << status.providerPendingCountAtDecision
-                  << " coordinationLagUs=" << status.coordinationLagUs
+                  << " selectionLagUs=" << status.selectionLagUs
                   << " finalStatus="
                   << (status.finalStatus.empty() ? "-" : status.finalStatus));
         if (m_providerRequestLifecycleCallback) {
@@ -2534,8 +2534,8 @@ namespace ndn_service_framework
                 return makeErrorResponse("Missing UserToken for " +
                                          parsedV2->serviceName.toUri());
             }
-            if (requestMessage.getStrategy() == tlv::AllResponders) {
-                return makeErrorResponse("AllResponders requires coordination before execution for " +
+            if (requestMessage.getStrategy() == tlv::AllSelected) {
+                return makeErrorResponse("AllSelected requires selection before execution for " +
                                          parsedV2->serviceName.toUri());
             }
 
@@ -2569,8 +2569,8 @@ namespace ndn_service_framework
             return makeErrorResponse("Missing UserToken for " +
                                      parsed->serviceName.toUri());
         }
-        if (requestMessage.getStrategy() == tlv::AllResponders) {
-            return makeErrorResponse("AllResponders requires coordination before execution for " +
+        if (requestMessage.getStrategy() == tlv::AllSelected) {
+            return makeErrorResponse("AllSelected requires selection before execution for " +
                                      parsed->serviceName.toUri());
         }
 
@@ -2924,10 +2924,10 @@ namespace ndn_service_framework
             requestId = request->requestId;
             senderPrefix = request->requesterName;
         }
-        else if (auto coordination = parseServiceCoordinationNameV2(messageName)) {
-            serviceName = coordination->serviceName;
-            requestId = coordination->requestId;
-            senderPrefix = coordination->requesterName;
+        else if (auto selection = parseServiceSelectionNameV2(messageName)) {
+            serviceName = selection->serviceName;
+            requestId = selection->requestId;
+            senderPrefix = selection->requesterName;
         }
         else {
             return false;
@@ -2961,7 +2961,7 @@ namespace ndn_service_framework
                         if (envelope.getMessageType() == "REQUEST") {
                             ++m_hybridCryptoCounters.user_token_symmetric_decrypt_count;
                         }
-                        if (envelope.getMessageType() == "COORDINATION") {
+                        if (envelope.getMessageType() == "SELECTION") {
                             ++m_hybridCryptoCounters.provider_token_symmetric_decrypt_count;
                         }
                     }
@@ -3950,7 +3950,7 @@ void ServiceProvider::OnRequestDecryptionSuccessCallback(
 
         NDN_LOG_INFO("No dynamic handler for "
                      << unifiedServiceName.toUri()
-                     << "; preserving old ACK/coordination path");
+                     << "; preserving ACK/selection path");
 
         // Save request into pendingRequests
         ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())
@@ -4318,79 +4318,79 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         PublishMessage(name, nameWithoutPrefix, requestAckMessage);
     }
 
-    void ServiceProvider::onServiceCoordinationMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
+    void ServiceProvider::onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
         if(!isFresh(subscription)) return;
 
-        auto coordinationV2 =
-            ndn_service_framework::parseServiceCoordinationNameV2(subscription.name);
-        if (coordinationV2) {
-            if (!coordinationV2->providerName.equals(identity)) {
+        auto selectionV2 =
+            ndn_service_framework::parseServiceSelectionNameV2(subscription.name);
+        if (selectionV2) {
+            if (!selectionV2->providerName.equals(identity)) {
                 return;
             }
-            NDN_LOG_DEBUG("Received Service Coordination Message: "
+            NDN_LOG_DEBUG("Received Service Selection Message: "
                           << subscription.name.toUri());
-            NDN_LOG_DEBUG("[ServiceProvider] coordination received timestampMs="
+            NDN_LOG_DEBUG("[ServiceProvider] selection received timestampMs="
                       << nowMilliseconds()
-                      << " requestId=" << coordinationV2->requestId.toUri()
-                      << " providerName=" << coordinationV2->providerName.toUri()
-                      << " requesterName=" << coordinationV2->requesterName.toUri()
-                      << " serviceName=" << coordinationV2->serviceName.toUri());
+                      << " requestId=" << selectionV2->requestId.toUri()
+                      << " providerName=" << selectionV2->providerName.toUri()
+                      << " requesterName=" << selectionV2->requesterName.toUri()
+                      << " serviceName=" << selectionV2->serviceName.toUri());
             if (m_timelineTrace) {
-                logTimelineTrace("provider", "coordination_observed",
-                                 coordinationV2->requestId,
-                                 {{"serviceName", coordinationV2->serviceName.toUri()},
-                                  {"requesterName", coordinationV2->requesterName.toUri()},
-                                  {"providerName", coordinationV2->providerName.toUri()},
-                                  {"coordinationName", subscription.name.toUri()}});
+                logTimelineTrace("provider", "selection_observed",
+                                 selectionV2->requestId,
+                                 {{"serviceName", selectionV2->serviceName.toUri()},
+                                  {"requesterName", selectionV2->requesterName.toUri()},
+                                  {"providerName", selectionV2->providerName.toUri()},
+                                  {"selectionName", subscription.name.toUri()}});
             }
 
             if(subscription.data.size() > 0){
                 const auto decryptStartUs = nowMicroseconds();
                 if (m_timelineTrace) {
-                    logTimelineTrace("provider", "coordination_decrypt_start",
-                                     coordinationV2->requestId,
-                                     {{"serviceName", coordinationV2->serviceName.toUri()}});
+                    logTimelineTrace("provider", "selection_decrypt_start",
+                                     selectionV2->requestId,
+                                     {{"serviceName", selectionV2->serviceName.toUri()}});
                 }
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_DECRYPT_START timestamp_us="
+                NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_START timestamp_us="
                           << decryptStartUs
-                          << " requestId=" << coordinationV2->requestId.toUri()
-                          << " requesterName=" << coordinationV2->requesterName.toUri()
-                          << " providerName=" << coordinationV2->providerName.toUri()
-                          << " serviceName=" << coordinationV2->serviceName.toUri()
-                          << " coordinationName=" << subscription.name.toUri());
+                          << " requestId=" << selectionV2->requestId.toUri()
+                          << " requesterName=" << selectionV2->requesterName.toUri()
+                          << " providerName=" << selectionV2->providerName.toUri()
+                          << " serviceName=" << selectionV2->serviceName.toUri()
+                          << " selectionName=" << subscription.name.toUri());
                 if (decryptHybridMessage(
                         subscription.name,
                         ndn::Block(subscription.data),
-                        [this, requesterName = coordinationV2->requesterName,
-                         providerName = coordinationV2->providerName,
-                         serviceName = coordinationV2->serviceName,
-                         requestId = coordinationV2->requestId,
+                        [this, requesterName = selectionV2->requesterName,
+                         providerName = selectionV2->providerName,
+                         serviceName = selectionV2->serviceName,
+                         requestId = selectionV2->requestId,
                          subscriptionName = ndn::Name(subscription.name),
                          decryptStartUs](const ndn::Buffer& buffer) {
                             const auto decryptEndUs = nowMicroseconds();
                             if (m_timelineTrace) {
-                                logTimelineTrace("provider", "coordination_decrypt_done", requestId,
+                                logTimelineTrace("provider", "selection_decrypt_done", requestId,
                                                  {{"serviceName", serviceName.toUri()},
                                                   {"duration_us",
                                                    std::to_string(decryptEndUs >= decryptStartUs ?
                                                                   decryptEndUs - decryptStartUs : 0)}});
                             }
-                            logCryptoDiag("provider", "coordination",
+                            logCryptoDiag("provider", "selection",
                                           "decrypt", "hybrid", "success",
                                           decryptStartUs, decryptEndUs,
                                           subscriptionName, buffer.size());
-                            OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+                            OnServiceSelectionMessageDecryptionSuccessCallbackV2(
                                 requesterName, providerName, serviceName,
                                 requestId, buffer);
                         },
-                        [this, requesterName = coordinationV2->requesterName,
-                         providerName = coordinationV2->providerName,
-                         serviceName = coordinationV2->serviceName,
-                         requestId = coordinationV2->requestId,
+                        [this, requesterName = selectionV2->requesterName,
+                         providerName = selectionV2->providerName,
+                         serviceName = selectionV2->serviceName,
+                         requestId = selectionV2->requestId,
                          decryptStartUs](const std::string& error) {
                             const auto decryptEndUs = nowMicroseconds();
-                            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_DECRYPT_FAILED timestamp_us="
+                            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_FAILED timestamp_us="
                                       << decryptEndUs
                                       << " requestId=" << requestId.toUri()
                                       << " requesterName=" << requesterName.toUri()
@@ -4399,137 +4399,137 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                       << " durationUs=" << (decryptEndUs >= decryptStartUs ?
                                                             decryptEndUs - decryptStartUs : 0)
                                       << " error=" << error);
-                            OnServiceCoordinationMessageDecryptionErrorCallback(
+                            OnServiceSelectionMessageDecryptionErrorCallback(
                                 requesterName, providerName, serviceName,
                                 ndn::Name(), requestId, error);
                         })) {
                     return;
                 }
-                OnServiceCoordinationMessageDecryptionErrorCallback(
-                    coordinationV2->requesterName,
-                    coordinationV2->providerName,
-                    coordinationV2->serviceName,
+                OnServiceSelectionMessageDecryptionErrorCallback(
+                    selectionV2->requesterName,
+                    selectionV2->providerName,
+                    selectionV2->serviceName,
                     ndn::Name(),
-                    coordinationV2->requestId,
-                    "invalid hybrid coordination envelope");
+                    selectionV2->requestId,
+                    "invalid hybrid selection envelope");
                 return;
                 nacConsumer.consume(subscription.name,
                                     ndn::Block(subscription.data),
-                                    [this, requesterName = coordinationV2->requesterName,
-                                     providerName = coordinationV2->providerName,
-                                     serviceName = coordinationV2->serviceName,
-                                     requestId = coordinationV2->requestId,
+                                    [this, requesterName = selectionV2->requesterName,
+                                     providerName = selectionV2->providerName,
+                                     serviceName = selectionV2->serviceName,
+                                     requestId = selectionV2->requestId,
                                      subscriptionName = ndn::Name(subscription.name),
                                      decryptStartUs](const ndn::Buffer& buffer) {
                                         const auto decryptEndUs = nowMicroseconds();
                                         if (m_timelineTrace) {
-                                            logTimelineTrace("provider", "coordination_decrypt_done", requestId,
+                                            logTimelineTrace("provider", "selection_decrypt_done", requestId,
                                                              {{"serviceName", serviceName.toUri()},
                                                               {"duration_us",
                                                                std::to_string(decryptEndUs >= decryptStartUs ?
                                                                               decryptEndUs - decryptStartUs : 0)}});
                                         }
-                                        logCryptoDiag("provider", "coordination",
+                                        logCryptoDiag("provider", "selection",
                                                       "decrypt", "normal", "success",
                                                       decryptStartUs, decryptEndUs,
                                                       subscriptionName, buffer.size());
-                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_DECRYPT_DONE timestamp_us="
+                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_DONE timestamp_us="
                                                   << decryptEndUs
                                                   << " requestId=" << requestId.toUri()
                                                   << " requesterName=" << requesterName.toUri()
                                                   << " providerName=" << providerName.toUri()
                                                   << " serviceName=" << serviceName.toUri()
-                                                  << " coordinationName=" << subscriptionName.toUri()
+                                                  << " selectionName=" << subscriptionName.toUri()
                                                   << " payloadBytes=" << buffer.size()
                                                   << " durationUs=" << (decryptEndUs >= decryptStartUs ?
                                                                         decryptEndUs - decryptStartUs : 0));
-                                        OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+                                        OnServiceSelectionMessageDecryptionSuccessCallbackV2(
                                             requesterName, providerName, serviceName,
                                             requestId, buffer);
                                     },
-                                    [this, requesterName = coordinationV2->requesterName,
-                                     providerName = coordinationV2->providerName,
-                                     serviceName = coordinationV2->serviceName,
-                                     requestId = coordinationV2->requestId,
+                                    [this, requesterName = selectionV2->requesterName,
+                                     providerName = selectionV2->providerName,
+                                     serviceName = selectionV2->serviceName,
+                                     requestId = selectionV2->requestId,
                                      subscriptionName = ndn::Name(subscription.name),
                                      decryptStartUs](const std::string& error) {
                                         const auto decryptEndUs = nowMicroseconds();
-                                        logCryptoDiag("provider", "coordination",
+                                        logCryptoDiag("provider", "selection",
                                                       "decrypt", "normal", "failure",
                                                       decryptStartUs, decryptEndUs,
                                                       subscriptionName, 0, error);
-                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_DECRYPT_FAILED timestamp_us="
+                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_FAILED timestamp_us="
                                                   << decryptEndUs
                                                   << " requestId=" << requestId.toUri()
                                                   << " requesterName=" << requesterName.toUri()
                                                   << " providerName=" << providerName.toUri()
                                                   << " serviceName=" << serviceName.toUri()
-                                                  << " coordinationName=" << subscriptionName.toUri()
+                                                  << " selectionName=" << subscriptionName.toUri()
                                                   << " durationUs=" << (decryptEndUs >= decryptStartUs ?
                                                                         decryptEndUs - decryptStartUs : 0)
                                                   << " error=" << error);
-                                        OnServiceCoordinationMessageDecryptionErrorCallback(
+                                        OnServiceSelectionMessageDecryptionErrorCallback(
                                             requesterName, providerName, serviceName,
                                             ndn::Name(), requestId, error);
                                     });
 
             }else{
                 const auto decryptStartUs = nowMicroseconds();
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_DECRYPT_START timestamp_us="
+                NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_START timestamp_us="
                           << decryptStartUs
-                          << " requestId=" << coordinationV2->requestId.toUri()
-                          << " requesterName=" << coordinationV2->requesterName.toUri()
-                          << " providerName=" << coordinationV2->providerName.toUri()
-                          << " serviceName=" << coordinationV2->serviceName.toUri()
-                          << " coordinationName=" << subscription.name.toUri());
+                          << " requestId=" << selectionV2->requestId.toUri()
+                          << " requesterName=" << selectionV2->requesterName.toUri()
+                          << " providerName=" << selectionV2->providerName.toUri()
+                          << " serviceName=" << selectionV2->serviceName.toUri()
+                          << " selectionName=" << subscription.name.toUri());
                 nacConsumer.consume(subscription.name,
-                                    [this, requesterName = coordinationV2->requesterName,
-                                     providerName = coordinationV2->providerName,
-                                     serviceName = coordinationV2->serviceName,
-                                     requestId = coordinationV2->requestId,
+                                    [this, requesterName = selectionV2->requesterName,
+                                     providerName = selectionV2->providerName,
+                                     serviceName = selectionV2->serviceName,
+                                     requestId = selectionV2->requestId,
                                      subscriptionName = ndn::Name(subscription.name),
                                      decryptStartUs](const ndn::Buffer& buffer) {
                                         const auto decryptEndUs = nowMicroseconds();
-                                        logCryptoDiag("provider", "coordination",
+                                        logCryptoDiag("provider", "selection",
                                                       "decrypt", "normal", "success",
                                                       decryptStartUs, decryptEndUs,
                                                       subscriptionName, buffer.size());
-                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_DECRYPT_DONE timestamp_us="
+                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_DONE timestamp_us="
                                                   << decryptEndUs
                                                   << " requestId=" << requestId.toUri()
                                                   << " requesterName=" << requesterName.toUri()
                                                   << " providerName=" << providerName.toUri()
                                                   << " serviceName=" << serviceName.toUri()
-                                                  << " coordinationName=" << subscriptionName.toUri()
+                                                  << " selectionName=" << subscriptionName.toUri()
                                                   << " payloadBytes=" << buffer.size()
                                                   << " durationUs=" << (decryptEndUs >= decryptStartUs ?
                                                                         decryptEndUs - decryptStartUs : 0));
-                                        OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+                                        OnServiceSelectionMessageDecryptionSuccessCallbackV2(
                                             requesterName, providerName, serviceName,
                                             requestId, buffer);
                                     },
-                                    [this, requesterName = coordinationV2->requesterName,
-                                     providerName = coordinationV2->providerName,
-                                     serviceName = coordinationV2->serviceName,
-                                     requestId = coordinationV2->requestId,
+                                    [this, requesterName = selectionV2->requesterName,
+                                     providerName = selectionV2->providerName,
+                                     serviceName = selectionV2->serviceName,
+                                     requestId = selectionV2->requestId,
                                      subscriptionName = ndn::Name(subscription.name),
                                      decryptStartUs](const std::string& error) {
                                         const auto decryptEndUs = nowMicroseconds();
-                                        logCryptoDiag("provider", "coordination",
+                                        logCryptoDiag("provider", "selection",
                                                       "decrypt", "normal", "failure",
                                                       decryptStartUs, decryptEndUs,
                                                       subscriptionName, 0, error);
-                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_DECRYPT_FAILED timestamp_us="
+                                        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_FAILED timestamp_us="
                                                   << decryptEndUs
                                                   << " requestId=" << requestId.toUri()
                                                   << " requesterName=" << requesterName.toUri()
                                                   << " providerName=" << providerName.toUri()
                                                   << " serviceName=" << serviceName.toUri()
-                                                  << " coordinationName=" << subscriptionName.toUri()
+                                                  << " selectionName=" << subscriptionName.toUri()
                                                   << " durationUs=" << (decryptEndUs >= decryptStartUs ?
                                                                         decryptEndUs - decryptStartUs : 0)
                                                   << " error=" << error);
-                                        OnServiceCoordinationMessageDecryptionErrorCallback(
+                                        OnServiceSelectionMessageDecryptionErrorCallback(
                                             requesterName, providerName, serviceName,
                                             ndn::Name(), requestId, error);
                                     });
@@ -4537,21 +4537,21 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
 
-        // parse ServiceCoordinationMessage
+        // parse ServiceSelectionMessage
         ndn::Name requesterName, providerName, ServiceName, FunctionName, msgId;
-        auto results = ndn_service_framework::parseServiceCoordinationName(subscription.name);
+        auto results = ndn_service_framework::parseServiceSelectionName(subscription.name);
         if (!results)
         {
-            NDN_LOG_ERROR("parseServiceCoordinationMessageName failed: " << subscription.name.toUri());
+            NDN_LOG_ERROR("parseServiceSelectionMessageName failed: " << subscription.name.toUri());
             return;
         }
         std::tie(requesterName, providerName, ServiceName, FunctionName, msgId) = results.value();
         if (!providerName.equals(identity)) {
             return;
         }
-        NDN_LOG_DEBUG("Received Service Coordination Message: "
+        NDN_LOG_DEBUG("Received Service Selection Message: "
                       << subscription.name.toUri());
-        NDN_LOG_DEBUG("[ServiceProvider] coordination received timestampMs="
+        NDN_LOG_DEBUG("[ServiceProvider] selection received timestampMs="
                   << nowMilliseconds()
                   << " requestId=" << msgId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -4561,13 +4561,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if(subscription.data.size() > 0){
             nacConsumer.consume(subscription.name,
                                 ndn::Block(subscription.data),
-                                std::bind(&ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1),
-                                std::bind(&ServiceProvider::OnServiceCoordinationMessageDecryptionErrorCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1));
+                                std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionSuccessCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1),
+                                std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionErrorCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1));
     
         }else{
             nacConsumer.consume(subscription.name,
-                                std::bind(&ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1),
-                                std::bind(&ServiceProvider::OnServiceCoordinationMessageDecryptionErrorCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1));
+                                std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionSuccessCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1),
+                                std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionErrorCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1));
         }
         
  
@@ -4695,7 +4695,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         return true;
     }
 
-    void ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallbackV2(
+    void ServiceProvider::OnServiceSelectionMessageDecryptionSuccessCallbackV2(
         const ndn::Name& requesterName,
         const ndn::Name& providerName,
         const ndn::Name& serviceName,
@@ -4703,7 +4703,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         const ndn::Buffer& buffer)
     {
         if (!providerName.equals(identity)) {
-            NDN_LOG_WARN("Ignore V2 coordination for non-local provider "
+            NDN_LOG_WARN("Ignore V2 selection for non-local provider "
                          << providerName.toUri()
                          << " at " << identity.toUri());
             return;
@@ -4714,12 +4714,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
         auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
 
-        NDN_LOG_DEBUG("OnServiceCoordinationMessageDecryptionSuccessCallbackV2: "
+        NDN_LOG_DEBUG("OnServiceSelectionMessageDecryptionSuccessCallbackV2: "
             << requesterName.toUri()
             << providerName.toUri()
             << serviceName.toUri()
             << msgId.toUri());
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_RECEIVED timestamp_us="
+        NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_RECEIVED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << msgId.toUri()
                   << " serviceName=" << serviceName.toUri()
@@ -4727,12 +4727,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                   << " providerName=" << providerName.toUri());
         updateProviderRequestLifecycleState(
             msgId, serviceName,
-            ProviderRequestLifecycleState::COORDINATION_RECEIVED);
+            ProviderRequestLifecycleState::SELECTION_RECEIVED);
 
-        ServiceCoordinationMessage message;
+        ServiceSelectionMessage message;
         message.WireDecode(block);
         if (!isAcceptablePolicyEpoch(message.getPolicyEpoch())) {
-            NDN_LOG_ERROR("Reject V2 coordination with stale policy epoch for "
+            NDN_LOG_ERROR("Reject V2 selection with stale policy epoch for "
                           << msgId.toUri()
                           << " receivedEpoch=" << message.getPolicyEpoch()
                           << " currentEpoch=" << m_currentPolicyEpoch);
@@ -4745,7 +4745,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
         auto it = pendingRequests.find(key);
         if (it == pendingRequests.end()) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_NO_PENDING timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_NO_PENDING timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << msgId.toUri()
                       << " serviceName=" << serviceName.toUri()
@@ -4764,7 +4764,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if (m_useTokens &&
             (providerTokenIt == pendingProviderTokens.end() ||
              message.getProviderToken() != providerTokenIt->second)) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=COORDINATION_REJECTED_PROVIDER_TOKEN timestamp_us="
+            NDN_LOG_DEBUG("[NDNSF_TRACE] role=provider event=SELECTION_REJECTED_PROVIDER_TOKEN timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << msgId.toUri()
                       << " serviceName=" << serviceName.toUri()
@@ -4775,7 +4775,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                       << (providerTokenIt != pendingProviderTokens.end())
                       << " receivedTokenPresent="
                       << !message.getProviderToken().empty());
-            NDN_LOG_ERROR("Reject V2 coordination with mismatched ProviderToken for "
+            NDN_LOG_ERROR("Reject V2 selection with mismatched ProviderToken for "
                           << key.toUri());
             return;
         }
@@ -4852,7 +4852,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     }
 
 
-    void ServiceProvider::OnServiceCoordinationMessageDecryptionSuccessCallback(
+    void ServiceProvider::OnServiceSelectionMessageDecryptionSuccessCallback(
         const ndn::Name& requesterName,
         const ndn::Name& providerName,
         const ndn::Name& ServiceName,
@@ -4875,15 +4875,15 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
             auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
 
-            NDN_LOG_DEBUG("OnServiceCoordinationMessageDecryptionSuccessCallback: "
+            NDN_LOG_DEBUG("OnServiceSelectionMessageDecryptionSuccessCallback: "
                 << requesterName.toUri()
                 << providerName.toUri()
                 << ServiceName.toUri()
                 << FunctionName.toUri()
                 << msgID.toUri());
 
-            // Decode ServiceCoordinationMessage
-            ServiceCoordinationMessage message;
+            // Decode ServiceSelectionMessage
+            ServiceSelectionMessage message;
             message.WireDecode(block);
 
             // Build lookup key
@@ -4898,7 +4898,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 if (m_useTokens &&
                     (providerTokenIt == pendingProviderTokens.end() ||
                      message.getProviderToken() != providerTokenIt->second)) {
-                    NDN_LOG_ERROR("Reject coordination with mismatched ProviderToken for "
+                    NDN_LOG_ERROR("Reject selection with mismatched ProviderToken for "
                                   << key.toUri());
                     return;
                 }
@@ -4950,10 +4950,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
 
 
-    void ServiceProvider::OnServiceCoordinationMessageDecryptionErrorCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const std::string &reason)
+    void ServiceProvider::OnServiceSelectionMessageDecryptionErrorCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const std::string &reason)
     {
         // log error
-        NDN_LOG_ERROR("OnServiceCoordinationMessageDecryptionErrorCallback: " << requesterName.toUri() << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << msgID.toUri() << " reason: " << reason);
+        NDN_LOG_ERROR("OnServiceSelectionMessageDecryptionErrorCallback: " << requesterName.toUri() << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << msgID.toUri() << " reason: " << reason);
 
     }
 
@@ -4979,11 +4979,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str),
                                         std::bind(&ServiceProvider::OnRequest, this, _1),
                                         true, false);
-            // register Service Coordination Message
-            std::string regex_str2 = "^(<>*)<NDNSF><COORDINATION>(<>*)$";
+            // register Service Selection Message
+            std::string regex_str2 = "^(<>*)<NDNSF><SELECTION>(<>*)$";
             NDN_LOG_INFO(regex_str2);
             m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
-                                        std::bind(&ServiceProvider::onServiceCoordinationMessage, this, _1),
+                                        std::bind(&ServiceProvider::onServiceSelectionMessage, this, _1),
                                         true, false);
         }
         std::string collabRegex = "^(<>*)<NDNSF><COLLAB>(<>*)$";

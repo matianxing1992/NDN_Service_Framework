@@ -156,11 +156,11 @@ main(int argc, char** argv)
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     std::shared_ptr<const ndn_service_framework::AckSelectionPolicy> selectionStrategy =
       ndn_service_framework::strategy::FirstResponding;
-    if (strategyName == "all-responders") {
-      selectionStrategy = ndn_service_framework::strategy::AllResponders;
+    if (strategyName == "all-selected") {
+      selectionStrategy = ndn_service_framework::strategy::AllSelected;
     }
-    else if (strategyName == "load-balancing") {
-      selectionStrategy = ndn_service_framework::strategy::LoadBalancing;
+    else if (strategyName == "random-selection") {
+      selectionStrategy = ndn_service_framework::strategy::RandomSelection;
     }
 
     ndn::Face face;
