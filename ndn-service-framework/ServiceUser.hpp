@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -264,6 +265,8 @@ namespace ndn_service_framework{
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
             size_t getCurrentPolicyEpoch() const;
+            std::vector<std::tuple<std::string, std::string, std::string>>
+            getAllowedServices() const;
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,

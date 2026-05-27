@@ -2194,6 +2194,12 @@ namespace ndn_service_framework
         return m_currentPolicyEpoch;
     }
 
+    std::vector<std::tuple<std::string, std::string, std::string>>
+    ServiceUser::getAllowedServices() const
+    {
+        return UPT.dumpAll();
+    }
+
     bool ServiceUser::isAcceptablePolicyEpoch(size_t messageEpoch) const
     {
         return m_currentPolicyEpoch == 0 || messageEpoch == 0 ||
