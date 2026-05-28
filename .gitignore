@@ -24,3 +24,6 @@ results/
 
 # Local experiment virtual environments
 Experiments/pythonEnv/
+
+# Local Chinese README translations
+README_ch.md
