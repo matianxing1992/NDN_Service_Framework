@@ -1,10 +1,12 @@
 {
   "include": [
     "examples/python",
-    "pythonWrapper/ndnsf"
+    "pythonWrapper/ndnsf",
+    "NDNSF-DistributedInference/ndnsf_distributed_inference"
   ],
   "extraPaths": [
-    "pythonWrapper"
+    "pythonWrapper",
+    "NDNSF-DistributedInference"
   ],
   "reportMissingImports": true
 }

@@ -1,10 +1,11 @@
 # NDNSF Examples
 
 This directory contains C++ examples for the current generic NDNSF runtime API.
-The Python examples in `examples/python/` use `pythonWrapper/`: HELLO uses true
-Python business logic through pybind11-backed `ServiceProvider` and
-`ServiceUser`, while larger collaboration examples currently orchestrate the
-existing C++ applications.
+The Python examples in `examples/python/` use `pythonWrapper/` for generic
+NDNSF business logic. AI-specific distributed inference examples live in
+`../NDNSF-DistributedInference/`, which is a higher-level Python package built
+on top of the NDNSF Python wrapper. Their runnable scripts live under
+`python/NDNSF-DistributedInference/`.
 
 ## Build
 
@@ -12,6 +13,7 @@ From the repository root:
 
 ```bash
 python3 -m pip install -e ./pythonWrapper
+python3 -m pip install -e ./NDNSF-DistributedInference
 ./waf configure
 ./waf build
 export NDNSF_BINARY_DIR=$PWD/build/examples
@@ -51,6 +53,15 @@ only the instance started by the script:
 python3 examples/python/hello_service.py --run --start-local-nfd
 python3 examples/python/ai_distributed_collaboration.py --run --start-local-nfd
 python3 examples/python/payment_collaboration.py --run --start-local-nfd
+```
+
+For high-level distributed inference:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_split/controller.py
+python3 examples/python/NDNSF-DistributedInference/yolo_split/provider.py
+python3 examples/python/NDNSF-DistributedInference/yolo_split/provider.py --provider-id A
+python3 examples/python/NDNSF-DistributedInference/yolo_split/user.py
 ```
 
 Use `--dry-run` on any Python example to print the underlying commands/actions.

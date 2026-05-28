@@ -117,11 +117,22 @@ namespace ndn_service_framework{
                 bool hasArtifact(const ndn::Name& artifactName) const;
                 bool fetchArtifact(const ndn::Name& artifactName, int timeoutMs);
                 std::optional<ndn::Buffer> getArtifact(const ndn::Name& artifactName) const;
+                std::optional<ndn::Buffer> fetchEncryptedLargeData(
+                    const ndn::Name& dataName,
+                    const ndn::Name& serviceName = ndn::Name());
                 void fail(const std::string& reason);
 
                 void publish(KeyScope keyScope,
                              Topic topic,
                              const ndn::Buffer& payload);
+                ndn::Name publishLarge(KeyScope keyScope,
+                                       Topic topic,
+                                       const ndn::Buffer& payload,
+                                       size_t maxSegmentSize = 7000,
+                                       int freshnessMs = 60000);
+                std::optional<ndn::Buffer> fetchLarge(const ndn::Name& dataName,
+                                                      KeyScope keyScope,
+                                                      int timeoutMs);
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);
@@ -621,6 +632,20 @@ namespace ndn_service_framework{
                                           const std::string& keyScope,
                                           const ndn::Name& topic,
                                           const ndn::Buffer& payload);
+            ndn::Name publishCollaborationLargeData(
+                const ndn::Name& requesterName,
+                const ndn::Name& requestId,
+                const std::string& producerRole,
+                const std::string& keyScope,
+                const ndn::Name& topic,
+                const ndn::Buffer& payload,
+                size_t maxSegmentSize,
+                int freshnessMs);
+            std::optional<ndn::Buffer> fetchCollaborationLargeData(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                int timeoutMs);
             void publishCollaborationFinalResponse(
                 const ndn::Name& requesterName,
                 const ndn::Name& serviceName,

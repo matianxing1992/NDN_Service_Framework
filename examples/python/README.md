@@ -3,12 +3,17 @@
 These scripts are application examples. They use the installable `ndnsf`
 Python package.
 
-The HELLO controller/provider/user scripts show the preferred Python API:
+The HELLO, payment, and collaboration scripts show the preferred Python API:
 control logic and business logic are written in Python with
 `ServiceController`, `ServiceProvider`, and `ServiceUser`, while the
-`ndnsf._ndnsf` pybind11 extension calls the NDNSF C++ runtime. Larger
-collaboration examples still use `NDNSFSession` to orchestrate existing C++
-examples until collaboration-specific Python bindings are added.
+`ndnsf._ndnsf` pybind11 extension calls the NDNSF C++ runtime for Face, SVS,
+NAC-ABE, signing, segmentation, validation, and worker threads.
+
+AI/model-specific distributed inference APIs live one layer above this package
+under `NDNSF-DistributedInference/`. The actual distributed-inference examples
+live under `examples/python/NDNSF-DistributedInference/`; the `yolo_split_*`
+scripts in this directory are compatibility entry points that delegate to that
+higher-level example.
 
 ## Available Examples
 
@@ -46,6 +51,10 @@ intermittent_reliability.py
 
 intermittent_controller.py / intermittent_provider.py / intermittent_user.py
   Role-specific entry points for the intermittent-provider reliability example.
+
+yolo_split_controller.py / yolo_split_provider.py / yolo_split_user.py
+  Compatibility launchers for the YOLO distributed-inference example in
+  `examples/python/NDNSF-DistributedInference/yolo_split/`.
 ```
 
 ## Install And Build
@@ -54,6 +63,7 @@ From the repository root:
 
 ```bash
 python3 -m pip install -e ./pythonWrapper
+python3 -m pip install -e ./NDNSF-DistributedInference
 ./waf configure
 ./waf build
 export NDNSF_BINARY_DIR=$PWD/build/examples
@@ -87,6 +97,10 @@ python3 examples/python/intermittent_reliability.py --dry-run
 python3 examples/python/intermittent_controller.py --dry-run
 python3 examples/python/intermittent_provider.py --provider-id A --dry-run
 python3 examples/python/intermittent_user.py --dry-run
+python3 examples/python/yolo_split_controller.py --dry-run
+python3 examples/python/yolo_split_provider.py --dry-run
+python3 examples/python/yolo_split_provider.py --provider-id A --dry-run
+python3 examples/python/yolo_split_user.py --dry-run
 ```
 
 ## Real-Machine Single-Host Run
@@ -141,7 +155,44 @@ python3 examples/python/intermittent_provider.py --provider-id A
 python3 examples/python/intermittent_provider.py --provider-id B
 python3 examples/python/intermittent_provider.py --provider-id C
 python3 examples/python/intermittent_user.py
+
+python3 examples/python/yolo_split_controller.py
+python3 examples/python/yolo_split_provider.py \
+  --temp-dir /tmp/ndnsf-yolo-stage0
+python3 examples/python/yolo_split_provider.py --provider-id A \
+  --temp-dir /tmp/ndnsf-yolo-stage1
+python3 examples/python/yolo_split_user.py
 ```
+
+The canonical distributed-inference scripts are:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_split/controller.py
+python3 examples/python/NDNSF-DistributedInference/yolo_split/provider.py \
+  --temp-dir /tmp/ndnsf-yolo-stage0
+python3 examples/python/NDNSF-DistributedInference/yolo_split/provider.py --provider-id A \
+  --temp-dir /tmp/ndnsf-yolo-stage1
+python3 examples/python/NDNSF-DistributedInference/yolo_split/user.py
+```
+
+The YOLO split example requires CPU Python inference dependencies:
+
+```bash
+python3 -m pip install "ultralytics>=8.4" "onnx>=1.16" "onnxruntime>=1.18"
+```
+
+`--temp-dir` is optional, but recommended in MiniNDN or multi-provider tests so
+each provider materializes fetched ONNX artifacts under its own node-local
+directory. In repeated local tests, pass a fresh `--group` to the providers and
+user to avoid stale SVS state from previous runs.
+
+The execution-artifact API can carry both model data and runtime artifacts.
+For safety, NDNSF only fetches encrypted artifacts, verifies SHA-256 hashes,
+and materializes them in a provider-local temp directory. It does not
+automatically execute downloaded code. Executable artifacts are disabled by
+default and must be explicitly enabled by the application. The YOLO example
+keeps the downloaded runner as a non-executable Python script and launches it
+through the provider's local Python interpreter.
 
 ## MiniNDN Run
 
@@ -208,6 +259,30 @@ print(response.payload)
 `get_allowed_services()` uses the user's current permission table after
 ServiceController permission discovery. It is the Python API for asking what
 services this user is authorized to invoke.
+
+Collaboration applications use the same installed package. Providers register
+role-specific handlers and can exchange large intermediate objects by publishing
+signed segments and sending the resulting name through scoped collaboration
+messages:
+
+```python
+from ndnsf import AckDecision, CollaborationContext, ServiceProvider
+
+provider = ServiceProvider(provider_id="A")
+
+def ack(_request: bytes) -> AckDecision:
+    return AckDecision(status=True, payload=b"role=/Stage/1;queue=0;")
+
+def stage1(ctx: CollaborationContext, request: bytes) -> None:
+    ref = ctx.wait_one("stage0-to-stage1", "/activation-ref", 10000)
+    activation = ctx.fetch_large(ref.payload.decode(), "stage0-to-stage1")
+    result = run_stage1(activation)
+    ctx.publish_final_response(result)
+
+provider.add_collaboration_handler(
+    "/AI/YOLO/SplitInference", ["/Stage/1"], stage1, ack)
+provider.run()
+```
 
 For experiment orchestration, `NDNSFSession` can still launch existing C++ apps:
 

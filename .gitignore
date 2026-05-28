@@ -18,3 +18,5 @@ pythonWrapper/*.egg-info/
 # Generated/local outputs
 docs/
 results/
+*.pt
+*.onnx

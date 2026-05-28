@@ -497,7 +497,7 @@ namespace ndn_service_framework
         // nac_validator(std::move(ndn::security::ValidatorNull())),
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        m_IMS(6000)
+        m_IMS(50000)
     {
         m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
         NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=user workers="
@@ -590,8 +590,12 @@ namespace ndn_service_framework
                     1, intEnvOrDefault("NDNSF_SVS_PARALLEL_PRODUCTION",
                                        intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 4)));
                 const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 256));
+                // Keep Sync Interest signing on the Face/io_context thread by
+                // default. Worker signing can assign monotonically increasing
+                // timestamps in an order different from expressInterest(),
+                // which lets remote validators observe reordered timestamps.
                 const bool signInWorker =
-                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING") == nullptr ||
+                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING") != nullptr &&
                     isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING");
                 const bool extraBlockInWorker =
                     std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK") == nullptr ||
@@ -640,7 +644,7 @@ namespace ndn_service_framework
         identityCert(identityCert),
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        m_IMS(6000),
+        m_IMS(50000),
         m_configManager("/tmp/ndnsf-service-user-local-mock.conf")
     {
         m_signingInfo = ndn::security::signingByCertificate(identityCert);
@@ -666,6 +670,7 @@ namespace ndn_service_framework
                          << " serialMs=" << stats.syncInterestSerialHandlerMs
                          << " parallelTotalMs=" << stats.syncInterestParallelTotalMs
                          << " mainBlockingMs=" << stats.syncInterestMainThreadBlockingMs);
+            m_svsps.reset();
         }
         m_cryptoProduceQueue.shutdown();
         m_ackProcessingPool.shutdown();
@@ -2929,12 +2934,17 @@ namespace ndn_service_framework
         ndn_service_framework::RequestMessage requestMessage;
         auto payload = initialRequest;
         requestMessage.setPayload(payload, payload.size());
-        requestMessage.setStrategy(ndn_service_framework::tlv::RandomSelection);
+        // Collaboration uses an explicit participantSelector after the ACK
+        // collection window. Do not mark the request as RandomSelection here:
+        // the legacy RandomSelection path installs a hard-coded 100 ms timer
+        // and can race the collaboration selector before all required roles
+        // have returned ACKs.
+        requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
 
         PendingCall pendingCall;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);
-        pendingCall.strategy = ndn_service_framework::tlv::RandomSelection;
+        pendingCall.strategy = ndn_service_framework::tlv::AllSelected;
         pendingCall.timeoutMs = plan.timeoutMs;
         pendingCall.ackTimeoutMs = plan.ackCollectionTimeMs;
         pendingCall.createdAtUs = nowMicroseconds();
@@ -5209,7 +5219,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         std::shared_ptr<const ndn::Data> data;
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
-            data = m_IMS.find(interest.getName());
+            data = m_IMS.find(interest);
         }
         if (data != nullptr)
         {
