@@ -9,6 +9,8 @@
 #include <random>
 #include <sstream>
 
+#include <ndn-cxx/security/validation-error.hpp>
+
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -370,7 +372,13 @@ namespace ndn_service_framework
                                             const std::string& role)
         {
             ndn::Name roleName(serviceName);
-            roleName.append("ROLE").append(role);
+            roleName.append("ROLE");
+            if (!role.empty() && role.front() == '/') {
+                roleName.append(ndn::Name(role));
+            }
+            else {
+                roleName.append(role);
+            }
             return roleName;
         }
 
@@ -442,7 +450,7 @@ namespace ndn_service_framework
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
-        m_IMS(6000)
+        m_IMS(50000)
     {
         m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
         m_ackPool.setThreadCount(defaultNdnsfAckThreads());
@@ -544,8 +552,12 @@ namespace ndn_service_framework
                     1, intEnvOrDefault("NDNSF_SVS_PARALLEL_PRODUCTION",
                                        intEnvOrDefault("NDNSF_SVS_PARALLEL_WORKERS", 4)));
                 const int queue = std::max(1, intEnvOrDefault("NDNSF_SVS_PARALLEL_QUEUE", 256));
+                // Keep Sync Interest signing on the Face/io_context thread by
+                // default. Worker signing can assign monotonically increasing
+                // timestamps in an order different from expressInterest(),
+                // which lets remote validators observe reordered timestamps.
                 const bool signInWorker =
-                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING") == nullptr ||
+                    std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING") != nullptr &&
                     isTruthyEnv("NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING");
                 const bool extraBlockInWorker =
                     std::getenv("NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK") == nullptr ||
@@ -599,7 +611,7 @@ namespace ndn_service_framework
         nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
-        m_IMS(6000),
+        m_IMS(50000),
         m_configManager("/tmp/ndnsf-service-provider-local-mock.conf")
     {
         m_signingInfo = ndn::security::signingByCertificate(identityCert);
@@ -909,6 +921,22 @@ namespace ndn_service_framework
         return it->second;
     }
 
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchEncryptedLargeData(
+        const ndn::Name& dataName,
+        const ndn::Name& serviceName)
+    {
+        auto result = m_provider.fetchAndDecryptLargeData(
+            dataName,
+            serviceName.empty() ? m_assignment.service.toUri() : serviceName.toUri());
+        if (!result.success) {
+            NDN_LOG_ERROR("Failed to fetch encrypted large Data "
+                          << dataName.toUri() << ": " << result.errorMessage);
+            return std::nullopt;
+        }
+        return ndn::Buffer(result.plaintext.begin(), result.plaintext.end());
+    }
+
     void ServiceProvider::CollaborationContext::fail(const std::string& reason)
     {
         NDN_LOG_ERROR("Collaboration role " << m_assignment.role
@@ -926,6 +954,34 @@ namespace ndn_service_framework
                                             keyScope,
                                             topic,
                                             payload);
+    }
+
+    ndn::Name ServiceProvider::CollaborationContext::publishLarge(
+        KeyScope keyScope,
+        Topic topic,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs)
+    {
+        return m_provider.publishCollaborationLargeData(m_requesterName,
+                                                        m_requestId,
+                                                        m_assignment.role,
+                                                        std::move(keyScope),
+                                                        std::move(topic),
+                                                        payload,
+                                                        maxSegmentSize,
+                                                        freshnessMs);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchLarge(const ndn::Name& dataName,
+                                                      KeyScope keyScope,
+                                                      int timeoutMs)
+    {
+        return m_provider.fetchCollaborationLargeData(m_requestId,
+                                                      std::move(keyScope),
+                                                      dataName,
+                                                      timeoutMs);
     }
 
     void ServiceProvider::CollaborationContext::subscribe(
@@ -1815,6 +1871,181 @@ namespace ndn_service_framework
         }
     }
 
+    ndn::Name ServiceProvider::publishCollaborationLargeData(
+        const ndn::Name& requesterName,
+        const ndn::Name& requestId,
+        const std::string& producerRole,
+        const std::string& keyScope,
+        const ndn::Name& topic,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs)
+    {
+        const uint64_t sequence =
+            m_collaborationSequence.fetch_add(1, std::memory_order_relaxed);
+        ndn::Name name = makeCollaborationDataName(identity,
+                                                   requesterName,
+                                                   requestId,
+                                                   keyScope,
+                                                   topic,
+                                                   sequence);
+        name.append("large").appendVersion();
+
+        ndn::Buffer scopeKey;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto requestIt = m_collaborationScopeKeysByRequest.find(requestId);
+            if (requestIt != m_collaborationScopeKeysByRequest.end()) {
+                auto keyIt = requestIt->second.find(keyScope);
+                if (keyIt != requestIt->second.end()) {
+                    scopeKey = keyIt->second;
+                }
+            }
+        }
+        if (scopeKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+            NDN_LOG_ERROR("Missing collaboration scope key for large Data "
+                          << requestId.toUri() << " scope=" << keyScope);
+            return {};
+        }
+
+        HybridMessageEnvelope envelope;
+        const std::string keyId = "collab-large|" + requestId.toUri() + "|" + keyScope;
+        envelope.setKeyId(keyId);
+        envelope.setEpochId("session");
+        envelope.setMessageType("COLLAB-LARGE");
+        const std::string adText = name.toUri() + "|COLLAB-LARGE|" +
+                                   requestId.toUri() + "|" + keyScope;
+        const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()), adText.size());
+        auto encrypted = hybridAesGcmEncrypt(
+            scopeKey,
+            ndn::span<const uint8_t>(payload.data(), payload.size()),
+            ndn::span<const uint8_t>(ad.data(), ad.size()));
+        envelope.setNonce(encrypted.nonce);
+        envelope.setCipherText(encrypted.ciphertext);
+        envelope.setAuthTag(encrypted.tag);
+        auto block = envelope.WireEncode();
+        ndn::Buffer encoded(block.begin(), block.end());
+
+        ndn::Segmenter segmenter(m_keyChain, m_signingInfo);
+        auto segments = segmenter.segment(
+            ndn::span<const uint8_t>(encoded.data(), encoded.size()),
+            name,
+            maxSegmentSize == 0 ? 7000 : maxSegmentSize,
+            ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            for (const auto& data : segments) {
+                m_IMS.insert(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+            }
+        }
+        NDN_LOG_DEBUG("COLLAB_LARGE_PUBLISHED name=" << name.toUri()
+                      << " plaintextBytes=" << payload.size()
+                      << " segments=" << segments.size());
+        return name;
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::fetchCollaborationLargeData(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& dataName,
+        int timeoutMs)
+    {
+        ndn::Buffer scopeKey;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto requestIt = m_collaborationScopeKeysByRequest.find(requestId);
+            if (requestIt != m_collaborationScopeKeysByRequest.end()) {
+                auto keyIt = requestIt->second.find(keyScope);
+                if (keyIt != requestIt->second.end()) {
+                    scopeKey = keyIt->second;
+                }
+            }
+        }
+        if (scopeKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+            NDN_LOG_ERROR("Missing collaboration scope key to fetch large Data "
+                          << requestId.toUri() << " scope=" << keyScope);
+            return std::nullopt;
+        }
+
+        auto completed = std::make_shared<std::atomic<bool>>(false);
+        auto mutex = std::make_shared<std::mutex>();
+        auto cv = std::make_shared<std::condition_variable>();
+        auto error = std::make_shared<std::string>();
+        auto encoded = std::make_shared<ndn::Buffer>();
+
+        m_face.getIoContext().post([this, dataName, completed, mutex, cv, error, encoded] {
+            ndn::Interest interest(dataName);
+            interest.setCanBePrefix(true);
+            interest.setMustBeFresh(true);
+            interest.setInterestLifetime(ndn::time::seconds(4));
+            ndn::SegmentFetcher::Options options;
+            options.probeLatestVersion = false;
+            options.useConstantCwnd = true;
+            options.initCwnd = 4.0;
+            options.maxTimeout = ndn::time::seconds(10);
+            auto fetcher = ndn::SegmentFetcher::start(m_face, interest, nac_validator, options);
+            fetcher->onComplete.connect(
+                [completed, mutex, cv, encoded](ndn::ConstBufferPtr buffer) {
+                    {
+                        std::lock_guard<std::mutex> lock(*mutex);
+                        encoded->assign(buffer->begin(), buffer->end());
+                        completed->store(true);
+                    }
+                    cv->notify_one();
+                });
+            fetcher->onError.connect(
+                [completed, mutex, cv, error](uint32_t code, const std::string& msg) {
+                    {
+                        std::lock_guard<std::mutex> lock(*mutex);
+                        *error = "SegmentFetcher error " + std::to_string(code) + ": " + msg;
+                        completed->store(true);
+                    }
+                    cv->notify_one();
+                });
+        });
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(timeoutMs <= 0 ? 5000 : timeoutMs);
+        std::unique_lock<std::mutex> lock(*mutex);
+        cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
+        if (!completed->load()) {
+            NDN_LOG_ERROR("Timed out fetching collaboration large Data " << dataName.toUri());
+            return std::nullopt;
+        }
+        if (!error->empty()) {
+            NDN_LOG_ERROR("Failed fetching collaboration large Data "
+                          << dataName.toUri() << ": " << *error);
+            return std::nullopt;
+        }
+
+        try {
+            ndn::Block block(*encoded);
+            HybridMessageEnvelope envelope;
+            envelope.WireDecode(block);
+            const std::string adText = dataName.toUri() + "|COLLAB-LARGE|" +
+                                       requestId.toUri() + "|" + keyScope;
+            // Large Data is signed segment-by-segment. AES-GCM also binds the
+            // ciphertext to the versioned large object name and request scope.
+            const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()),
+                                 adText.size());
+            ndn::Buffer plaintext;
+            if (!hybridAesGcmDecrypt(scopeKey,
+                                     envelope,
+                                     ndn::span<const uint8_t>(ad.data(), ad.size()),
+                                     plaintext)) {
+                return std::nullopt;
+            }
+            return plaintext;
+        }
+        catch (const std::exception& e) {
+            NDN_LOG_ERROR("Failed decrypting collaboration large Data "
+                          << dataName.toUri() << ": " << e.what());
+            return std::nullopt;
+        }
+    }
+
     void ServiceProvider::publishCollaborationFinalResponse(
         const ndn::Name& requesterName,
         const ndn::Name& serviceName,
@@ -2100,48 +2331,64 @@ namespace ndn_service_framework
             state->onReady(!state->failed, state->error);
         };
 
-        auto startFetch = [this, state, finishIfReady](
+        const auto provisioningTimeoutMs =
+            state->assignment.provisioningTimeoutMs > 0 ?
+                state->assignment.provisioningTimeoutMs : 30000;
+        const auto provisioningLifetime =
+            ndn::time::milliseconds(provisioningTimeoutMs);
+
+        auto startFetch = [this, state, finishIfReady, provisioningLifetime](
                               const ndn::Name& dataName,
                               std::function<void(const ndn::Buffer&)> onPlaintext) mutable {
-            ndn::Interest interest(dataName);
-            interest.setCanBePrefix(true);
-            interest.setMustBeFresh(true);
-            interest.setInterestLifetime(ndn::time::seconds(4));
+            m_face.getIoContext().post(
+                [this,
+                 state,
+                 finishIfReady,
+                 provisioningLifetime,
+                 dataName,
+                 onPlaintext = std::move(onPlaintext)]() mutable {
+                    ndn::Interest interest(dataName);
+                    interest.setCanBePrefix(true);
+                    interest.setMustBeFresh(true);
+                    interest.setInterestLifetime(provisioningLifetime);
 
-            try {
-                nacConsumer.consume(
-                    interest,
-                    [state, onPlaintext = std::move(onPlaintext), finishIfReady](
-                        const ndn::Buffer& buffer) mutable {
-                        onPlaintext(buffer);
-                        if (state->pending > 0) {
-                            --state->pending;
-                        }
-                        finishIfReady();
-                    },
-                    [state, dataName, finishIfReady](const std::string& reason) mutable {
+                    try {
+                        nacConsumer.consume(
+                            interest,
+                            [state,
+                             onPlaintext = std::move(onPlaintext),
+                             finishIfReady](const ndn::Buffer& buffer) mutable {
+                                onPlaintext(buffer);
+                                if (state->pending > 0) {
+                                    --state->pending;
+                                }
+                                finishIfReady();
+                            },
+                            [state, dataName, finishIfReady](
+                                const std::string& reason) mutable {
+                                state->failed = true;
+                                if (!state->error.empty()) {
+                                    state->error += "; ";
+                                }
+                                state->error += dataName.toUri() + ": " + reason;
+                                if (state->pending > 0) {
+                                    --state->pending;
+                                }
+                                finishIfReady();
+                            });
+                    }
+                    catch (const std::exception& e) {
                         state->failed = true;
                         if (!state->error.empty()) {
                             state->error += "; ";
                         }
-                        state->error += dataName.toUri() + ": " + reason;
+                        state->error += dataName.toUri() + ": " + e.what();
                         if (state->pending > 0) {
                             --state->pending;
                         }
                         finishIfReady();
-                    });
-            }
-            catch (const std::exception& e) {
-                state->failed = true;
-                if (!state->error.empty()) {
-                    state->error += "; ";
-                }
-                state->error += dataName.toUri() + ": " + e.what();
-                if (state->pending > 0) {
-                    --state->pending;
-                }
-                finishIfReady();
-            }
+                    }
+                });
         };
 
         for (const auto& entry : keysToFetch) {
@@ -4140,7 +4387,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         std::shared_ptr<const ndn::Data> data;
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
-            data = m_IMS.find(interest.getName());
+            data = m_IMS.find(interest);
         }
         if (data != nullptr)
         {
@@ -4198,48 +4445,63 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return result;
         }
 
-        bool completed = false;
-        std::string error;
-        ndn::Buffer plaintext;
+        auto completed = std::make_shared<std::atomic<bool>>(false);
+        auto mutex = std::make_shared<std::mutex>();
+        auto cv = std::make_shared<std::condition_variable>();
+        auto error = std::make_shared<std::string>();
+        auto plaintext = std::make_shared<ndn::Buffer>();
 
-        ndn::Interest interest(encryptedDataName);
-        interest.setCanBePrefix(true);
-        interest.setMustBeFresh(true);
-        interest.setInterestLifetime(ndn::time::seconds(4));
+        m_face.getIoContext().post([this, encryptedDataName, completed, mutex, cv, error, plaintext] {
+            ndn::Interest interest(encryptedDataName);
+            interest.setCanBePrefix(true);
+            interest.setMustBeFresh(true);
+            interest.setInterestLifetime(ndn::time::seconds(4));
 
-        try {
-            nacConsumer.consume(
-                interest,
-                [&completed, &plaintext](const ndn::Buffer& buffer) {
-                    plaintext = buffer;
-                    completed = true;
-                },
-                [&completed, &error](const std::string& reason) {
-                    error = reason;
-                    completed = true;
-                });
-        }
-        catch (const std::exception& e) {
-            result.errorMessage = std::string("large-data fetch/decrypt failed: ") + e.what();
-            return result;
-        }
+            try {
+                nacConsumer.consume(
+                    interest,
+                    [completed, mutex, cv, plaintext](const ndn::Buffer& buffer) {
+                        {
+                            std::lock_guard<std::mutex> lock(*mutex);
+                            *plaintext = buffer;
+                            completed->store(true);
+                        }
+                        cv->notify_one();
+                    },
+                    [completed, mutex, cv, error](const std::string& reason) {
+                        {
+                            std::lock_guard<std::mutex> lock(*mutex);
+                            *error = reason;
+                            completed->store(true);
+                        }
+                        cv->notify_one();
+                    });
+            }
+            catch (const std::exception& e) {
+                {
+                    std::lock_guard<std::mutex> lock(*mutex);
+                    *error = std::string("large-data fetch/decrypt failed: ") + e.what();
+                    completed->store(true);
+                }
+                cv->notify_one();
+            }
+        });
 
-        const auto deadline = ndn::time::steady_clock::now() + ndn::time::seconds(5);
-        while (!completed && ndn::time::steady_clock::now() < deadline) {
-            m_face.processEvents(ndn::time::milliseconds(10));
-        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        std::unique_lock<std::mutex> lock(*mutex);
+        cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
 
-        if (!completed) {
+        if (!completed->load()) {
             result.errorMessage = "large-data fetch timed out or data not found";
             return result;
         }
-        if (!error.empty()) {
+        if (!error->empty()) {
             result.errorMessage = "large-data authorization/decryption failure for " +
-                                  serviceName + ": " + error;
+                                  serviceName + ": " + *error;
             return result;
         }
 
-        result.plaintext.assign(plaintext.begin(), plaintext.end());
+        result.plaintext.assign(plaintext->begin(), plaintext->end());
         result.success = true;
         return result;
     }

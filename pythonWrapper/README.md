@@ -18,6 +18,12 @@ Application-specific orchestration, such as which AI roles to start or which
 policy file to use, belongs in user code or `examples/`, not in this wrapper
 package.
 
+AI/model-specific APIs live above this wrapper in
+`../NDNSF-DistributedInference/`. That package uses `ServiceUser`,
+`ServiceProvider`, encrypted artifacts, and collaboration primitives from this
+wrapper, but exposes model-plan and inference-oriented APIs to application
+developers.
+
 ## Install
 
 Install the Python package from the repository root:
@@ -160,6 +166,8 @@ payloads, handlers, and orchestration policy.
 - `ndnsf/runtime.py`: low-level process management for NDNSF binaries.
 - `../examples/python/`: application-specific Python examples built on top of
   the generic API.
+- `../NDNSF-DistributedInference/`: optional high-level distributed inference
+  package built on top of this generic wrapper.
 
 ## Source-Tree Development
 

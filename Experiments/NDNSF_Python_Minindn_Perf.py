@@ -74,7 +74,7 @@ def make_perf_args(args: argparse.Namespace) -> SimpleNamespace:
         svs_disable_parallel_production=False,
         svs_parallel_production_workers=4,
         svs_disable_parallel_production_signing=False,
-        svs_parallel_production_signing=True,
+        svs_parallel_production_signing=False,
         svs_disable_parallel_production_extra_block=False,
         svs_parallel_production_extra_block=True,
         svs_sync_batching=False,

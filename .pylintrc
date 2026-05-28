@@ -1,2 +1,8 @@
 [MASTER]
 init-hook='import sys, pathlib; root = pathlib.Path.cwd(); sys.path.insert(0, str(root / "pythonWrapper"))'
+
+[MESSAGES CONTROL]
+disable=
+    missing-function-docstring,
+    missing-method-docstring,
+    too-many-locals

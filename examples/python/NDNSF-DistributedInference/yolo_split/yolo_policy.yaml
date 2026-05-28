@@ -1,0 +1,30 @@
+application: yolo-split-demo
+controller: /example/hello/controller
+group: /example/hello/group
+
+identities:
+  user: /example/hello/user
+  provider_prefix: /example/hello/provider
+
+trust:
+  app_roots:
+    - /example
+
+services:
+  - name: /AI/YOLO/SplitInference
+    model: /Model/Ultralytics/YOLO/Split
+    roles:
+      - /Stage/0
+      - /Stage/1
+    dependencies:
+      - producers: [/Stage/0]
+        consumers: [/Stage/1]
+        key_scope: stage0-to-stage1
+        topic_prefix: /activation
+    users:
+      - /example/hello/user
+    providers:
+      - identity: /example/hello/provider
+        roles: all
+      - identity: /example/hello/provider/A
+        roles: all

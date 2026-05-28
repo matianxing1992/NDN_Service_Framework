@@ -355,6 +355,7 @@ namespace ndn_service_framework{
     {
     public:
         MessageValidator(std::string trustSchemaPath)
+            : m_validator(m_face, makeCommandInterestOptions(), makeSignedInterestOptions())
         {
             m_validator.load(trustSchemaPath);
         }
@@ -441,9 +442,40 @@ namespace ndn_service_framework{
         }
 
     private:
+        static ndn::security::ValidatorConfig::CommandInterestOptions
+        makeCommandInterestOptions()
+        {
+            ndn::security::ValidatorConfig::CommandInterestOptions options;
+            // ValidatorConfig includes the legacy command-interest policy
+            // inside the signed-interest policy. That policy treats V03 signed
+            // Interests as stop-and-wait command Interests and records one
+            // last timestamp per signer. SVS Sync Interests are not
+            // stop-and-wait; they can be multicast and delivered out of order.
+            // Disable only the last-timestamp record while retaining the
+            // normal timestamp grace-period sanity check.
+            options.maxRecords = 0;
+            return options;
+        }
+
+        static ndn::security::ValidatorConfig::SignedInterestOptions
+        makeSignedInterestOptions()
+        {
+            ndn::security::ValidatorConfig::SignedInterestOptions options;
+            // SVS Sync Interests are multicast realtime signals. They can be
+            // delivered out of order even when each signer produces monotonic
+            // timestamps, so timestamp-order replay checks cause false drops
+            // under high publication rates. Keep nonce replay protection and
+            // normal trust-schema/signature validation.
+            options.shouldValidateTimestamps = false;
+            options.shouldValidateNonces = true;
+            options.maxNonceRecordCount = 10000;
+            return options;
+        }
+
+    private:
         NDN_LOG_MEMBER_DECL();
         ndn::Face m_face;
-        ndn::ValidatorConfig m_validator{m_face};
+        ndn::ValidatorConfig m_validator;
         std::atomic<size_t> m_failureCount{0};
     };
 
@@ -455,15 +487,15 @@ namespace ndn_service_framework{
     public:
         explicit CommandInterestSigner(ndn::security::KeyChain &keyChain)
             : m_keyChain(keyChain),
-              _signer(m_keyChain)
+              m_signer(m_keyChain)
         {
         }
 
         void
         sign(ndn::Interest &interest) const override
         {
-            ndn::security::InterestSigner signer(_signer);
-            signer.makeSignedInterest(interest, signingInfo,
+            std::lock_guard<std::mutex> lock(m_signerMutex);
+            m_signer.makeSignedInterest(interest, signingInfo,
                             ndn::security::InterestSigner::SigningFlags::WantNonce |
                             ndn::security::InterestSigner::SigningFlags::WantTime);
         }
@@ -476,7 +508,8 @@ namespace ndn_service_framework{
 
     private:
         ndn::security::KeyChain &m_keyChain;
-        ndn::security::InterestSigner _signer;
+        mutable std::mutex m_signerMutex;
+        mutable ndn::security::InterestSigner m_signer;
     };
 }
 

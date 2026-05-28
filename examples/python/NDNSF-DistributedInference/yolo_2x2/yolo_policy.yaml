@@ -1,0 +1,49 @@
+application: yolo-2x2-demo
+controller: /example/hello/controller
+group: /example/hello/group
+
+identities:
+  user: /example/hello/user
+  provider_prefix: /example/hello/provider
+
+trust:
+  app_roots:
+    - /example
+
+artifact_security:
+  allowlist: []
+  sandbox:
+    kind: ""
+
+services:
+  - name: /AI/YOLO/2x2Inference
+    model: /Model/Ultralytics/YOLO/2x2
+    roles:
+      - /Stage/0/Shard/0
+      - /Stage/0/Shard/1
+      - /Stage/1/Shard/0
+      - /Stage/1/Shard/1
+    dependencies:
+      - producers: [/Stage/0/Shard/0, /Stage/0/Shard/1]
+        consumers: [/Stage/0/Shard/0, /Stage/0/Shard/1]
+        key_scope: stage0-internal
+        topic_prefix: /tensor-exchange/stage0
+      - producers: [/Stage/1/Shard/0, /Stage/1/Shard/1]
+        consumers: [/Stage/1/Shard/0, /Stage/1/Shard/1]
+        key_scope: stage1-internal
+        topic_prefix: /tensor-exchange/stage1
+      - producers: [/Stage/0/Shard/0, /Stage/0/Shard/1]
+        consumers: [/Stage/1/Shard/0, /Stage/1/Shard/1]
+        key_scope: stage0-to-stage1
+        topic_prefix: /activation
+    users:
+      - /example/hello/user
+    providers:
+      - identity: /example/hello/provider
+        roles: all
+      - identity: /example/hello/provider/A
+        roles: all
+      - identity: /example/hello/provider/B
+        roles: all
+      - identity: /example/hello/provider/C
+        roles: all
