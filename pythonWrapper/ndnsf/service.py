@@ -35,6 +35,16 @@ class AckDecision:
 
 
 @dataclass(frozen=True)
+class AckCandidate:
+    provider_name: str
+    service_name: str
+    request_id: str
+    status: bool
+    message: str = ""
+    payload: bytes = b""
+
+
+@dataclass(frozen=True)
 class AllowedService:
     """A service permission entry visible to a Python NDNSF user.
 
@@ -55,6 +65,219 @@ class LargeDataPublishResult:
     encrypted_data_name: str = ""
     object_id: str = ""
     error: str = ""
+
+
+class SegmentedObjectProducer:
+    """Serve one payload as signed segmented NDN Data.
+
+    This is a thin Python wrapper around ndn-cxx Segmenter. The base name is a
+    generic object name, not an AI artifact name; higher-level frameworks such
+    as NDNSF-DI decide whether the object is a model shard, runner, activation,
+    or some other application object.
+    """
+
+    def __init__(
+        self,
+        base_name: str,
+        payload: bytes,
+        *,
+        signing_identity: str = "",
+        max_segment_size: int = 6000,
+        freshness_ms: int = 60000,
+    ) -> None:
+        self._native = _ndnsf.SegmentedObjectProducer(
+            base_name,
+            bytes(payload),
+            signing_identity,
+            int(max_segment_size),
+            int(freshness_ms),
+        )
+
+    @property
+    def base_name(self) -> str:
+        return str(self._native.base_name)
+
+    @property
+    def versioned_name(self) -> str:
+        return str(self._native.versioned_name)
+
+    @property
+    def segment_count(self) -> int:
+        return int(self._native.segment_count)
+
+    @property
+    def error(self) -> str:
+        return str(self._native.error)
+
+    def start(self) -> "SegmentedObjectProducer":
+        self._native.start()
+        return self
+
+    def stop(self) -> None:
+        self._native.stop()
+
+
+@dataclass(frozen=True)
+class DataPacket:
+    """One immutable NDN Data packet encoded in wire format."""
+
+    name: str
+    segment: int
+    wire: bytes
+
+
+@dataclass(frozen=True)
+class SegmentHintRange:
+    """Forwarding hints that apply to a contiguous segment range."""
+
+    start: int
+    end: int
+    forwarding_hints: tuple[str, ...]
+
+
+class StoredDataProducer:
+    """Serve already-signed NDN Data packets without rewriting them."""
+
+    def __init__(
+        self,
+        base_name: str,
+        packet_wires: list[bytes],
+        *,
+        signing_identity: str = "",
+    ) -> None:
+        self._native = _ndnsf.StoredDataProducer(
+            base_name,
+            [bytes(packet) for packet in packet_wires],
+            signing_identity,
+        )
+
+    @property
+    def segment_count(self) -> int:
+        return int(self._native.segment_count)
+
+    @property
+    def error(self) -> str:
+        return str(self._native.error)
+
+    def start(self) -> "StoredDataProducer":
+        self._native.start()
+        return self
+
+    def stop(self) -> None:
+        self._native.stop()
+
+
+def make_segmented_data_packets(
+    base_name: str,
+    payload: bytes,
+    *,
+    signing_identity: str = "",
+    max_segment_size: int = 6000,
+    freshness_ms: int = 60000,
+) -> list[DataPacket]:
+    """Create signed segmented NDN Data packets for direct packet storage."""
+
+    packets = _ndnsf.make_segmented_data_packets(
+        base_name,
+        bytes(payload),
+        signing_identity,
+        int(max_segment_size),
+        int(freshness_ms),
+    )
+    return [
+        DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
+        for packet in packets
+    ]
+
+
+def fetch_segmented_data_packets(
+    base_name: str,
+    *,
+    timeout_ms: int = 30000,
+    interest_lifetime_ms: int = 1000,
+    forwarding_hints: Optional[list[str]] = None,
+) -> list[DataPacket]:
+    """Fetch segmented NDN Data and return the original Data wire packets."""
+
+    packets = _ndnsf.fetch_segmented_data_packets(
+        base_name,
+        int(timeout_ms),
+        int(interest_lifetime_ms),
+        list(forwarding_hints or []),
+    )
+    return [
+        DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
+        for packet in packets
+    ]
+
+
+def fetch_segmented_object(
+    base_name: str,
+    *,
+    timeout_ms: int = 30000,
+    interest_lifetime_ms: int = 1000,
+    init_cwnd: float = 8.0,
+    forwarding_hints: Optional[list[str]] = None,
+) -> bytes:
+    """Fetch signed segmented NDN Data with ndn-cxx SegmentFetcher."""
+
+    return bytes(_ndnsf.fetch_segmented_object(
+        base_name,
+        int(timeout_ms),
+        int(interest_lifetime_ms),
+        float(init_cwnd),
+        list(forwarding_hints or []),
+    ))
+
+
+def fetch_segmented_object_with_segment_hints(
+    base_name: str,
+    *,
+    timeout_ms: int = 30000,
+    interest_lifetime_ms: int = 1000,
+    hint_ranges: Optional[list[SegmentHintRange]] = None,
+) -> bytes:
+    """Fetch segmented Data while allowing each segment range to use hints."""
+
+    native_ranges = []
+    for hint_range in hint_ranges or []:
+        native = _ndnsf.SegmentHintRange()
+        native.start = int(hint_range.start)
+        native.end = int(hint_range.end)
+        native.forwarding_hints = list(hint_range.forwarding_hints)
+        native_ranges.append(native)
+    return bytes(_ndnsf.fetch_segmented_object_with_segment_hints(
+        base_name,
+        int(timeout_ms),
+        int(interest_lifetime_ms),
+        native_ranges,
+    ))
+
+
+def fetch_known_segmented_object_with_segment_hints(
+    versioned_name: str,
+    segment_count: int,
+    *,
+    timeout_ms: int = 30000,
+    interest_lifetime_ms: int = 1000,
+    hint_ranges: Optional[list[SegmentHintRange]] = None,
+) -> bytes:
+    """Fetch known signed segments with per-range forwarding hints."""
+
+    native_ranges = []
+    for hint_range in hint_ranges or []:
+        native = _ndnsf.SegmentHintRange()
+        native.start = int(hint_range.start)
+        native.end = int(hint_range.end)
+        native.forwarding_hints = list(hint_range.forwarding_hints)
+        native_ranges.append(native)
+    return bytes(_ndnsf.fetch_known_segmented_object_with_segment_hints(
+        versioned_name,
+        int(segment_count),
+        int(timeout_ms),
+        int(interest_lifetime_ms),
+        native_ranges,
+    ))
 
 
 @dataclass(frozen=True)
@@ -741,6 +964,10 @@ class ServiceUser:
         env=None,
     ) -> None:
         del binary, binary_dir, library_dirs, cwd, env
+        self.group = group
+        self.controller = controller
+        self.user = user
+        self.trust_schema = trust_schema
         self._native = _ndnsf.NativeServiceUser(
             group=group,
             controller=controller,
@@ -768,6 +995,47 @@ class ServiceUser:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             strategy=strategy,
+        )
+        return _from_native_response(response)
+
+    def request_service_select(
+        self,
+        service: str,
+        payload: bytes,
+        selector: Callable[[list[AckCandidate]], list[str]],
+        *,
+        ack_timeout_ms: int = 300,
+        timeout_ms: int = 5000,
+        request_strategy: str = "first-responding",
+    ) -> ServiceResponse:
+        """Request a service using an application-defined ACK selector.
+
+        ``selector`` receives all ACK candidates collected during
+        ``ack_timeout_ms`` and returns provider names to select. This is the
+        generic hook used by DistributedRepo to select exactly N repo replicas
+        from one shared repo service name.
+        """
+
+        def native_selector(native_candidates) -> list[str]:
+            return list(selector([
+                AckCandidate(
+                    provider_name=str(candidate.provider_name),
+                    service_name=str(candidate.service_name),
+                    request_id=str(candidate.request_id),
+                    status=bool(candidate.status),
+                    message=str(candidate.message),
+                    payload=bytes(candidate.payload),
+                )
+                for candidate in native_candidates
+            ]))
+
+        response = self._native.request_service_select(
+            service,
+            bytes(payload),
+            native_selector,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            request_strategy=request_strategy,
         )
         return _from_native_response(response)
 

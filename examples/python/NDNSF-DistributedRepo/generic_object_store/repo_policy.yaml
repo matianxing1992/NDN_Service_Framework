@@ -1,0 +1,31 @@
+application: distributed-repo-generic-demo
+controller: /example/repo/controller
+group: /example/repo/group
+
+identities:
+  user: /example/repo/user
+  provider_prefix: /example/repo/provider
+
+trust:
+  app_roots:
+    - /example
+
+artifact_security:
+  allowlist: []
+  sandbox:
+    kind: ""
+
+services:
+  - name: /NDNSF/DistributedRepo
+    model: /NDNSF/DistributedRepo
+    roles: []
+    dependencies: []
+    users:
+      - /example/repo/user
+    providers:
+      - identity: /example/repo/provider/repoA
+        roles: []
+      - identity: /example/repo/provider/repoB
+        roles: []
+      - identity: /example/repo/provider/repoC
+        roles: []

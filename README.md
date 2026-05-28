@@ -1,16 +1,103 @@
 # ndn_service_framework
 
-1. Prerequisites  
-To ensure version consistency, please install according to the corresponding libraries from the specified directory.  
-ndn-cxx: https://github.com/named-data/ndn-cxx/  
-NDNSD: https://github.com/matianxing1992/NDNSD  
-ndn-svs: https://github.com/matianxing1992/ndn-svs  
-NAC-ABE: https://github.com/matianxing1992/NAC-ABE  
+1. Prerequisites
 
-2. Installation  
-./waf configure  
-sudo ./waf build  
-sudo ./waf install  
+To keep the stack version-consistent, use the following repositories:
+
+```text
+ndn-cxx: https://github.com/matianxing1992/ndn-cxx
+NDNSD:   https://github.com/matianxing1992/NDNSD
+ndn-svs: https://github.com/matianxing1992/ndn-svs
+NAC-ABE: https://github.com/matianxing1992/NAC-ABE
+NDNSF:   https://github.com/matianxing1992/NDN_Service_Framework
+```
+
+The recommended installer below checks whether the external NDN dependencies
+are already installed. If a dependency is missing, it clones the corresponding
+repository from the list above, builds it, and installs it before building
+NDNSF.
+
+2. Installation
+
+The recommended installer is the top-level stack script:
+
+```bash
+sudo ./install_ndnsf_stack.sh
+```
+
+It installs the stack in dependency order:
+
+1. Check external dependencies with `pkg-config`.
+2. Clone, build, and install missing dependencies:
+   `ndn-cxx`, `NDNSD`, `ndn-svs`, and `NAC-ABE`.
+3. Build the NDNSF C++ core and bundled C++ subprojects with `waf`.
+4. Install the NDNSF Python wrapper package, `ndnsf`.
+5. Install the NDNSF-DistributedRepo Python binding, `py_repoclient`.
+6. Install the NDNSF-DistributedInference Python package.
+7. Run a small Python import/API smoke test.
+
+By default, dependency source trees are reused or cloned under `dependencies/` next to `install_ndnsf_stack.sh`. The directory is created automatically if it does not
+exist. Use `--deps-dir` to choose a different source directory:
+
+```bash
+sudo ./install_ndnsf_stack.sh --deps-dir ./dependencies
+```
+
+If the dependencies are already installed and you only want to rebuild NDNSF:
+
+```bash
+./install_ndnsf_stack.sh --no-dependencies --no-system-install
+```
+
+To force rebuilding all external dependencies from the local source trees or
+from freshly cloned repositories:
+
+```bash
+sudo ./install_ndnsf_stack.sh --force-dependencies
+```
+
+For source-tree development, or when you do not want to install C++ libraries
+and headers system-wide, use:
+
+```bash
+./install_ndnsf_stack.sh --no-system-install
+```
+
+Useful variants:
+
+```bash
+./install_ndnsf_stack.sh --configure --with-examples
+./install_ndnsf_stack.sh --configure --with-tests
+./install_ndnsf_stack.sh --no-system-install --with-examples
+./install_ndnsf_stack.sh --no-dependencies --no-system-install
+```
+
+Repository URLs can be overridden if needed:
+
+```bash
+NDNCXX_REPO_URL=https://github.com/matianxing1992/ndn-cxx \
+NDNSD_REPO_URL=https://github.com/matianxing1992/NDNSD \
+NDNSVS_REPO_URL=https://github.com/matianxing1992/ndn-svs \
+NACABE_REPO_URL=https://github.com/matianxing1992/NAC-ABE \
+sudo ./install_ndnsf_stack.sh --force-dependencies
+```
+
+Manual C++-only installation is still possible:
+
+```bash
+./waf configure
+./waf
+sudo ./waf install
+```
+
+If you install manually and also need Python APIs, install the Python packages
+after the C++ build:
+
+```bash
+python3 -m pip install -e ./pythonWrapper
+python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
+python3 -m pip install -e ./NDNSF-DistributedInference
+```
 
 3. How-to
 

@@ -47,3 +47,17 @@ services:
         roles: all
       - identity: /example/hello/provider/C
         roles: all
+
+  - name: /NDNSF/DistributedRepo
+    model: /NDNSF/DistributedRepo
+    roles: []
+    dependencies: []
+    users:
+      - /example/hello/user
+    providers:
+      - identity: /example/hello/provider/repoA
+        roles: []
+      - identity: /example/hello/provider/repoB
+        roles: []
+      - identity: /example/hello/provider/repoC
+        roles: []
