@@ -12,11 +12,17 @@ INSTALL_EDITABLE=1
 INSTALL_DEPENDENCIES=auto
 FORCE_DEPENDENCIES=0
 DEPS_DIR="$ROOT/dependencies"
+INSTALL_SYSTEM_PACKAGES=1
+INSTALL_TEST_PACKAGES=0
+INSTALL_MININDN_PACKAGES=0
+INSTALL_NFD_NLSR_PACKAGES=0
+OPENABE_PREFIX=""
 
-NDNCXX_REPO_URL="${NDNCXX_REPO_URL:-git@github.com:matianxing1992/ndn-cxx.git}"
-NDNSD_REPO_URL="${NDNSD_REPO_URL:-git@github.com:matianxing1992/NDNSD.git}"
-NDNSVS_REPO_URL="${NDNSVS_REPO_URL:-git@github.com:matianxing1992/ndn-svs.git}"
-NACABE_REPO_URL="${NACABE_REPO_URL:-git@github.com:matianxing1992/NAC-ABE.git}"
+NDNCXX_REPO_URL="${NDNCXX_REPO_URL:-https://github.com/matianxing1992/ndn-cxx.git}"
+NDNSD_REPO_URL="${NDNSD_REPO_URL:-https://github.com/matianxing1992/NDNSD.git}"
+NDNSVS_REPO_URL="${NDNSVS_REPO_URL:-https://github.com/matianxing1992/ndn-svs.git}"
+NACABE_REPO_URL="${NACABE_REPO_URL:-https://github.com/matianxing1992/NAC-ABE.git}"
+OPENABE_REPO_URL="${OPENABE_REPO_URL:-https://github.com/zeutro/openabe.git}"
 
 usage() {
   cat <<'EOF'
@@ -35,6 +41,11 @@ Options:
   --no-dependencies        Do not check or install external dependencies.
   --force-dependencies     Rebuild/install external dependencies even if found.
   --deps-dir PATH          Clone dependency sources under PATH (default: ./dependencies).
+  --install-system-packages Install common apt build packages when available (default).
+  --no-system-packages     Do not install OS packages.
+  --with-system-tests-deps Install extra OS packages used by tests/docs.
+  --with-minindn-deps      Install OS packages commonly needed by MiniNDN experiments.
+  --with-nfd-nlsr-deps     Install OS packages commonly needed to build NFD/NLSR.
   --configure              Always run ./waf configure before building.
   --no-configure           Skip ./waf configure.
   --with-examples          Pass --with-examples to ./waf configure.
@@ -49,12 +60,21 @@ Options:
 
 Notes:
   - If ./waf install is enabled and needs root, sudo is used automatically.
-  - If dependency installation is enabled, the script checks pkg-config names:
-    libndn-cxx, ndnsd, libndn-svs, and libnac-abe.
+  - If dependency installation is enabled, the script first installs default
+    build/runtime OS packages for ndn-cxx, NDNSD, ndn-svs, OpenABE, NAC-ABE,
+    and NDNSF. apt skips packages that are already installed.
+  - Optional OS package groups are available for tests/docs, MiniNDN, and
+    NFD/NLSR builds.
+  - The script checks pkg-config names: libndn-cxx, ndnsd, libndn-svs, and
+    libnac-abe.
+  - If libopenabe is missing, OpenABE is cloned into dependencies/openabe and
+    installed privately under dependencies/local/openabe. Its bundled OpenSSL
+    1.1.1-dev dependency is used for OpenABE/NAC-ABE without replacing the
+    system OpenSSL.
   - Existing dependency source trees under --deps-dir are reused. Missing trees
     are cloned from the matianxing1992 GitHub repositories.
   - Repository URLs can be overridden with NDNCXX_REPO_URL, NDNSD_REPO_URL,
-    NDNSVS_REPO_URL, and NACABE_REPO_URL.
+    NDNSVS_REPO_URL, NACABE_REPO_URL, and OPENABE_REPO_URL.
   - Python extension builds search the local ./build directory first, so source
     tree installs work before system-wide installation.
 EOF
@@ -78,6 +98,26 @@ while [[ $# -gt 0 ]]; do
     --deps-dir)
       DEPS_DIR="$2"
       shift 2
+      ;;
+    --install-system-packages)
+      INSTALL_SYSTEM_PACKAGES=1
+      shift
+      ;;
+    --no-system-packages)
+      INSTALL_SYSTEM_PACKAGES=0
+      shift
+      ;;
+    --with-system-tests-deps)
+      INSTALL_TEST_PACKAGES=1
+      shift
+      ;;
+    --with-minindn-deps)
+      INSTALL_MININDN_PACKAGES=1
+      shift
+      ;;
+    --with-nfd-nlsr-deps)
+      INSTALL_NFD_NLSR_PACKAGES=1
+      shift
       ;;
     --configure)
       RUN_WAF_CONFIGURE=1
@@ -160,6 +200,51 @@ is_pkg_installed() {
   pkg-config --exists "$1"
 }
 
+has_openabe() {
+  [[ -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]] && return 0
+  ldconfig -p 2>/dev/null | grep -q 'libopenabe\.so' && return 0
+  [[ -f /usr/local/lib/libopenabe.so ]] && return 0
+  return 1
+}
+
+install_common_system_packages() {
+  if [[ "$INSTALL_SYSTEM_PACKAGES" != "1" ]]; then
+    echo "==> Skipping OS package installation"
+    return
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "==> Installing common Debian/Ubuntu build packages"
+    sudo_run apt-get update
+    local packages=(
+      build-essential git pkg-config cmake python3 python3-pip wget curl \
+      python3-dev python3-setuptools python3-wheel python3-venv \
+      autoconf automake libtool m4 bison flex ninja-build \
+      libgmp-dev libssl-dev \
+      libboost-all-dev libsqlite3-dev libpcap-dev libsodium-dev libz-dev \
+      liblog4cxx-dev sqlite3
+    )
+    if [[ "$INSTALL_TEST_PACKAGES" == "1" ]]; then
+      packages+=(libgtest-dev doxygen graphviz)
+    fi
+    if [[ "$INSTALL_MININDN_PACKAGES" == "1" ]]; then
+      packages+=(
+        mininet openvswitch-switch tcpdump iproute2 net-tools
+        python3-pyroute2 python3-networkx python3-matplotlib
+      )
+    fi
+    if [[ "$INSTALL_NFD_NLSR_PACKAGES" == "1" ]]; then
+      packages+=(
+        libsystemd-dev libcap-dev libprotobuf-dev protobuf-compiler
+        libboost-all-dev libsqlite3-dev libpcap-dev libsodium-dev
+      )
+    fi
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+  else
+    echo "==> No supported OS package manager detected; assuming build tools are installed"
+  fi
+}
+
 ensure_source_tree() {
   local name="$1"
   local url="$2"
@@ -177,6 +262,22 @@ ensure_source_tree() {
   fi
 
   printf '%s\n' "$dir"
+}
+
+build_openabe_dependency() {
+  local dir
+  OPENABE_PREFIX="$DEPS_DIR/local/openabe"
+
+  if [[ "$FORCE_DEPENDENCIES" != "1" ]] && has_openabe; then
+    echo "==> OpenABE already installed; skipping"
+    return
+  fi
+
+  dir="$(ensure_source_tree "openabe" "$OPENABE_REPO_URL" | tail -n 1)"
+  echo "==> Building OpenABE with private OpenSSL 1.1 dependency"
+  run bash -lc "cd '$dir' && . ./env && make -C deps/openssl && make -C deps/relic && make -C deps/gtest && BISON=\$(command -v bison) FLEX=\$(command -v flex) make"
+  echo "==> Installing OpenABE under $OPENABE_PREFIX"
+  run bash -lc "cd '$dir' && . ./env && make INSTALL_PREFIX='$OPENABE_PREFIX' install"
 }
 
 build_waf_dependency() {
@@ -211,7 +312,21 @@ build_cmake_dependency() {
 
   dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
   echo "==> Building dependency $name"
-  run bash -lc "cd '$dir' && cmake -S . -B build && cmake --build build -j\$(nproc)"
+  if [[ "$name" == "NAC-ABE" && -n "$OPENABE_PREFIX" && -f "$OPENABE_PREFIX/lib/libopenabe.so" ]]; then
+    run bash -lc "cd '$dir' && env \
+      CMAKE_PREFIX_PATH='$OPENABE_PREFIX':\${CMAKE_PREFIX_PATH:-} \
+      CMAKE_INCLUDE_PATH='$OPENABE_PREFIX/include':\${CMAKE_INCLUDE_PATH:-} \
+      CMAKE_LIBRARY_PATH='$OPENABE_PREFIX/lib':\${CMAKE_LIBRARY_PATH:-} \
+      CXXFLAGS='-I$OPENABE_PREFIX/include '\${CXXFLAGS:-} \
+      LDFLAGS='-L$OPENABE_PREFIX/lib -Wl,-rpath,$OPENABE_PREFIX/lib '\${LDFLAGS:-} \
+      LD_LIBRARY_PATH='$OPENABE_PREFIX/lib':\${LD_LIBRARY_PATH:-} \
+      cmake -S . -B build \
+        -DCMAKE_BUILD_RPATH='$OPENABE_PREFIX/lib' \
+        -DCMAKE_INSTALL_RPATH='$OPENABE_PREFIX/lib' && \
+      cmake --build build -j\$(nproc)"
+  else
+    run bash -lc "cd '$dir' && cmake -S . -B build && cmake --build build -j\$(nproc)"
+  fi
   echo "==> Installing dependency $name"
   sudo_run bash -lc "cd '$dir' && cmake --install build"
   sudo_run ldconfig
@@ -220,9 +335,20 @@ build_cmake_dependency() {
 install_external_dependencies() {
   echo "==> Checking external NDN dependencies"
   echo "==> Dependency source directory: $DEPS_DIR"
+  if [[ "$FORCE_DEPENDENCIES" == "1" ]] || \
+     ! is_pkg_installed "libndn-cxx" || \
+     ! is_pkg_installed "ndnsd" || \
+     ! is_pkg_installed "libndn-svs" || \
+     ! is_pkg_installed "libnac-abe" || \
+     ! has_openabe; then
+    install_common_system_packages
+  else
+    echo "==> External dependencies already present; skipping OS package installation"
+  fi
   build_waf_dependency "ndn-cxx" "libndn-cxx" "$NDNCXX_REPO_URL"
   build_waf_dependency "NDNSD" "ndnsd" "$NDNSD_REPO_URL"
   build_waf_dependency "ndn-svs" "libndn-svs" "$NDNSVS_REPO_URL"
+  build_openabe_dependency
   build_cmake_dependency "NAC-ABE" "libnac-abe" "$NACABE_REPO_URL"
 }
 
