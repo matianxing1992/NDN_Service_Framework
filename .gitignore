@@ -21,3 +21,6 @@ docs/
 results/
 *.pt
 *.onnx
+
+# Local experiment virtual environments
+Experiments/pythonEnv/

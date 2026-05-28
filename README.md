@@ -27,14 +27,37 @@ sudo ./install_ndnsf_stack.sh
 
 It installs the stack in dependency order:
 
-1. Check external dependencies with `pkg-config`.
-2. Clone, build, and install missing dependencies:
-   `ndn-cxx`, `NDNSD`, `ndn-svs`, and `NAC-ABE`.
-3. Build the NDNSF C++ core and bundled C++ subprojects with `waf`.
-4. Install the NDNSF Python wrapper package, `ndnsf`.
-5. Install the NDNSF-DistributedRepo Python binding, `py_repoclient`.
-6. Install the NDNSF-DistributedInference Python package.
-7. Run a small Python import/API smoke test.
+1. Install default build/runtime OS packages needed by the NDNSF stack.
+2. Check external dependencies with `pkg-config`.
+3. Clone, build, and install missing dependencies:
+   `ndn-cxx`, `NDNSD`, `ndn-svs`, `OpenABE`, and `NAC-ABE`.
+4. Build the NDNSF C++ core and bundled C++ subprojects with `waf`.
+5. Install the NDNSF Python wrapper package, `ndnsf`.
+6. Install the NDNSF-DistributedRepo Python binding, `py_repoclient`.
+7. Install the NDNSF-DistributedInference Python package.
+8. Run a small Python import/API smoke test.
+
+The default OS package set is intended to build and run:
+
+```text
+ndn-cxx, NDNSD, ndn-svs, OpenABE, NAC-ABE, and NDNSF
+```
+
+Additional optional package groups can be enabled when needed:
+
+```bash
+# Extra packages commonly used by tests and documentation.
+sudo ./install_ndnsf_stack.sh --with-system-tests-deps
+
+# Extra packages commonly used by MiniNDN/Mininet experiments.
+sudo ./install_ndnsf_stack.sh --with-minindn-deps
+
+# Extra packages commonly used when building NFD/NLSR from source.
+sudo ./install_ndnsf_stack.sh --with-nfd-nlsr-deps
+```
+
+`apt-get install` is idempotent, so already installed packages are skipped by
+the package manager.
 
 By default, dependency source trees are reused or cloned under `dependencies/` next to `install_ndnsf_stack.sh`. The directory is created automatically if it does not
 exist. Use `--deps-dir` to choose a different source directory:
@@ -55,6 +78,22 @@ from freshly cloned repositories:
 ```bash
 sudo ./install_ndnsf_stack.sh --force-dependencies
 ```
+
+OpenABE and OpenSSL note:
+
+NAC-ABE depends on OpenABE. The upstream OpenABE code is sensitive to OpenSSL
+versions and is known to work most reliably with OpenSSL 1.1.x. Ubuntu 20.04
+ships OpenSSL 1.1, but Ubuntu 22.04 and 24.04 ship OpenSSL 3 by default. To
+avoid replacing the system OpenSSL, the installer builds OpenABE with its
+private OpenSSL 1.1 dependency when `libopenabe` is missing. The private OpenABE
+installation is placed under:
+
+```text
+dependencies/local/openabe
+```
+
+This keeps OpenABE/NAC-ABE compatible on newer Ubuntu releases without changing
+the OpenSSL used by system tools such as `apt`, `git`, `curl`, or Python.
 
 For source-tree development, or when you do not want to install C++ libraries
 and headers system-wide, use:
