@@ -156,6 +156,8 @@ def build(bld):
     if bld.env.WITH_TESTS:
         bld.recurse('tests')
 
+    bld.recurse('NDNSF-DistributedRepo')
+
     bld.recurse('examples')
 
     headers = bld.path.ant_glob('ndn-service-framework/**/*.hpp')

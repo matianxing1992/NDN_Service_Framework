@@ -11,6 +11,7 @@ compile_commands.json
 __pycache__/
 *.py[cod]
 *.so
+*.egg-info/
 pythonWrapper/build/
 pythonWrapper/*.egg-info/
 .ndn/

@@ -7,6 +7,9 @@
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/security/validator-config.hpp>
+#include <ndn-cxx/security/validator-null.hpp>
+#include <ndn-cxx/util/segment-fetcher.hpp>
+#include <ndn-cxx/util/segmenter.hpp>
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -112,6 +115,16 @@ struct PyAckDecision
   bool suppress = false;
 };
 
+struct PyAckCandidate
+{
+  std::string providerName;
+  std::string serviceName;
+  std::string requestId;
+  bool status = false;
+  std::string message;
+  py::bytes payload;
+};
+
 struct PyLargeDataPublishResult
 {
   bool success = false;
@@ -119,6 +132,677 @@ struct PyLargeDataPublishResult
   std::string objectId;
   std::string error;
 };
+
+struct PyDataPacket
+{
+  std::string name;
+  uint64_t segment = 0;
+  py::bytes wire;
+};
+
+struct PySegmentHintRange
+{
+  uint64_t start = 0;
+  uint64_t end = 0;
+  std::vector<std::string> forwardingHints;
+};
+
+PyDataPacket
+toPyDataPacket(const ndn::Data& data)
+{
+  const auto wire = data.wireEncode();
+  PyDataPacket packet;
+  packet.name = data.getName().toUri();
+  if (!data.getName().empty() && data.getName()[-1].isSegment()) {
+    packet.segment = data.getName()[-1].toSegment();
+  }
+  packet.wire = py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+  return packet;
+}
+
+std::shared_ptr<ndn::Data>
+dataFromWireBytes(const py::bytes& wireBytes)
+{
+  const std::string bytes = wireBytes;
+  ndn::Block wire(ndn::span<const uint8_t>(
+    reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+  wire.parse();
+  return std::make_shared<ndn::Data>(wire);
+}
+
+class NativeSegmentedObjectProducer
+{
+public:
+  NativeSegmentedObjectProducer(const std::string& baseName,
+                                const py::bytes& payload,
+                                const std::string& signingIdentity,
+                                size_t maxSegmentSize,
+                                int freshnessMs)
+    : m_baseName(baseName)
+  {
+    const auto identityName = signingIdentity.empty() ?
+      ndn::Name("/ndnsf/python/segmented-producer") : ndn::Name(signingIdentity);
+    getOrCreateIdentity(m_keyChain, identityName);
+    m_signingIdentity = identityName;
+
+    m_versionedName = m_baseName;
+    m_versionedName.appendVersion(static_cast<uint64_t>(
+      ndn::time::toUnixTimestamp(ndn::time::system_clock::now()).count()));
+
+    const std::string bytes = payload;
+    ndn::Segmenter segmenter(
+      m_keyChain,
+      ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                                 identityName));
+    m_segments = segmenter.segment(
+      ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(bytes.data()),
+                               bytes.size()),
+      m_versionedName,
+      maxSegmentSize,
+      ndn::time::milliseconds(freshnessMs));
+  }
+
+  ~NativeSegmentedObjectProducer()
+  {
+    stop();
+  }
+
+  std::string
+  baseName() const
+  {
+    return m_baseName.toUri();
+  }
+
+  std::string
+  versionedName() const
+  {
+    return m_versionedName.toUri();
+  }
+
+  size_t
+  segmentCount() const
+  {
+    return m_segments.size();
+  }
+
+  void
+  start()
+  {
+    bool expected = false;
+    if (!m_running.compare_exchange_strong(expected, true)) {
+      return;
+    }
+
+    m_face.setInterestFilter(
+      m_baseName,
+      [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+        this->serveInterest(interest);
+      },
+      [] (const ndn::Name&) {},
+      [] (const ndn::Name&, const std::string&) {},
+      ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                                 m_signingIdentity));
+
+    m_thread = std::thread([this] {
+      while (m_running.load()) {
+        try {
+          processFaceEvents(m_face, ndn::time::milliseconds(50));
+        }
+        catch (const std::exception& e) {
+          std::lock_guard<std::mutex> lock(m_errorMutex);
+          m_error = e.what();
+        }
+      }
+    });
+  }
+
+  void
+  stop()
+  {
+    bool expected = true;
+    if (!m_running.compare_exchange_strong(expected, false)) {
+      return;
+    }
+    try {
+      m_face.getIoContext().stop();
+    }
+    catch (const std::exception&) {
+    }
+    if (m_thread.joinable()) {
+      m_thread.join();
+    }
+  }
+
+  std::string
+  error() const
+  {
+    std::lock_guard<std::mutex> lock(m_errorMutex);
+    return m_error;
+  }
+
+private:
+  void
+  serveInterest(const ndn::Interest& interest)
+  {
+    if (m_segments.empty()) {
+      return;
+    }
+
+    uint64_t segmentNo = 0;
+    const auto& name = interest.getName();
+    if (!name.empty() && name[-1].isSegment()) {
+      segmentNo = name[-1].toSegment();
+    }
+
+    if (segmentNo >= m_segments.size()) {
+      return;
+    }
+
+    m_face.put(*m_segments[segmentNo]);
+  }
+
+private:
+  ndn::Face m_face;
+  ndn::KeyChain m_keyChain;
+  ndn::Name m_baseName;
+  ndn::Name m_versionedName;
+  ndn::Name m_signingIdentity;
+  std::vector<std::shared_ptr<ndn::Data>> m_segments;
+  std::atomic_bool m_running{false};
+  std::thread m_thread;
+  mutable std::mutex m_errorMutex;
+  std::string m_error;
+};
+
+class NativeWireDataProducer
+{
+public:
+  NativeWireDataProducer(const std::string& baseName,
+                         const std::vector<py::bytes>& packetWires,
+                         const std::string& signingIdentity)
+    : m_baseName(baseName)
+  {
+    m_signingIdentity = signingIdentity.empty() ?
+      ndn::Name("/ndnsf/python/stored-data-producer") : ndn::Name(signingIdentity);
+    getOrCreateIdentity(m_keyChain, m_signingIdentity);
+    for (const auto& packetWire : packetWires) {
+      auto data = dataFromWireBytes(packetWire);
+      if (!data->getName().empty() && data->getName()[-1].isSegment()) {
+        m_segments[data->getName()[-1].toSegment()] = data;
+      }
+      else {
+        m_segments[0] = data;
+      }
+    }
+  }
+
+  ~NativeWireDataProducer()
+  {
+    stop();
+  }
+
+  void
+  start()
+  {
+    bool expected = false;
+    if (!m_running.compare_exchange_strong(expected, true)) {
+      return;
+    }
+    m_face.setInterestFilter(
+      m_baseName,
+      [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+        this->serveInterest(interest);
+      },
+      [] (const ndn::Name&) {},
+      [] (const ndn::Name&, const std::string&) {},
+      ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                                 m_signingIdentity));
+    m_thread = std::thread([this] {
+      while (m_running.load()) {
+        try {
+          processFaceEvents(m_face, ndn::time::milliseconds(50));
+        }
+        catch (const std::exception& e) {
+          std::lock_guard<std::mutex> lock(m_errorMutex);
+          m_error = e.what();
+        }
+      }
+    });
+  }
+
+  void
+  stop()
+  {
+    bool expected = true;
+    if (!m_running.compare_exchange_strong(expected, false)) {
+      return;
+    }
+    try {
+      m_face.getIoContext().stop();
+    }
+    catch (const std::exception&) {
+    }
+    if (m_thread.joinable()) {
+      m_thread.join();
+    }
+  }
+
+  size_t
+  segmentCount() const
+  {
+    return m_segments.size();
+  }
+
+  std::string
+  error() const
+  {
+    std::lock_guard<std::mutex> lock(m_errorMutex);
+    return m_error;
+  }
+
+private:
+  void
+  serveInterest(const ndn::Interest& interest)
+  {
+    if (m_segments.empty()) {
+      return;
+    }
+    uint64_t segmentNo = 0;
+    const auto& name = interest.getName();
+    if (!name.empty() && name[-1].isSegment()) {
+      segmentNo = name[-1].toSegment();
+    }
+    auto it = m_segments.find(segmentNo);
+    if (it == m_segments.end()) {
+      return;
+    }
+    m_face.put(*it->second);
+  }
+
+private:
+  ndn::Face m_face;
+  ndn::KeyChain m_keyChain;
+  ndn::Name m_baseName;
+  ndn::Name m_signingIdentity;
+  std::map<uint64_t, std::shared_ptr<ndn::Data>> m_segments;
+  std::atomic_bool m_running{false};
+  std::thread m_thread;
+  mutable std::mutex m_errorMutex;
+  std::string m_error;
+};
+
+std::vector<PyDataPacket>
+makeSegmentedDataPackets(const std::string& baseName,
+                         const py::bytes& payload,
+                         const std::string& signingIdentity,
+                         size_t maxSegmentSize,
+                         int freshnessMs)
+{
+  ndn::KeyChain keyChain;
+  const auto identityName = signingIdentity.empty() ?
+    ndn::Name("/ndnsf/python/segmented-packets") : ndn::Name(signingIdentity);
+  getOrCreateIdentity(keyChain, identityName);
+
+  ndn::Name versionedName(baseName);
+  versionedName.appendVersion(static_cast<uint64_t>(
+    ndn::time::toUnixTimestamp(ndn::time::system_clock::now()).count()));
+  const std::string bytes = payload;
+  ndn::Segmenter segmenter(
+    keyChain,
+    ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                               identityName));
+  auto segments = segmenter.segment(
+    ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(bytes.data()),
+                             bytes.size()),
+    versionedName,
+    maxSegmentSize,
+    ndn::time::milliseconds(freshnessMs));
+
+  std::vector<PyDataPacket> output;
+  output.reserve(segments.size());
+  for (const auto& segment : segments) {
+    output.push_back(toPyDataPacket(*segment));
+  }
+  return output;
+}
+
+PyDataPacket
+fetchOneDataPacket(ndn::Face& face,
+                   const ndn::Interest& interest,
+                   ndn::time::steady_clock::time_point deadline)
+{
+  std::mutex mutex;
+  bool done = false;
+  std::optional<PyDataPacket> packet;
+  std::string error;
+
+  face.expressInterest(
+    interest,
+    [&] (const ndn::Interest&, const ndn::Data& data) {
+      std::lock_guard<std::mutex> lock(mutex);
+      packet = toPyDataPacket(data);
+      done = true;
+    },
+    [&] (const ndn::Interest&, const ndn::lp::Nack& nack) {
+      std::lock_guard<std::mutex> lock(mutex);
+      error = "Nack: " + std::to_string(static_cast<int>(nack.getReason()));
+      done = true;
+    },
+    [&] (const ndn::Interest&) {
+      std::lock_guard<std::mutex> lock(mutex);
+      error = "timeout";
+      done = true;
+    });
+
+  while (ndn::time::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (done) {
+        break;
+      }
+    }
+    processFaceEvents(face, ndn::time::milliseconds(20));
+  }
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!done) {
+    throw std::runtime_error("Data packet fetch timed out: " + interest.getName().toUri());
+  }
+  if (!error.empty()) {
+    throw std::runtime_error("Data packet fetch failed for " + interest.getName().toUri() + ": " + error);
+  }
+  if (!packet) {
+    throw std::runtime_error("Data packet fetch returned no packet: " + interest.getName().toUri());
+  }
+  return *packet;
+}
+
+std::vector<ndn::Name>
+hintsForSegment(uint64_t segmentNo, const std::vector<PySegmentHintRange>& ranges)
+{
+  std::vector<ndn::Name> hints;
+  for (const auto& range : ranges) {
+    if (segmentNo < range.start || segmentNo > range.end) {
+      continue;
+    }
+    hints.reserve(range.forwardingHints.size());
+    for (const auto& hint : range.forwardingHints) {
+      hints.emplace_back(hint);
+    }
+    break;
+  }
+  return hints;
+}
+
+void
+applyForwardingHints(ndn::Interest& interest, const std::vector<ndn::Name>& hints)
+{
+  if (!hints.empty()) {
+    interest.setForwardingHint(hints);
+  }
+}
+
+PyDataPacket
+fetchOneDataPacketWithHintFallback(ndn::Face& face,
+                                   const ndn::Name& name,
+                                   bool canBePrefix,
+                                   ndn::time::milliseconds interestLifetime,
+                                   ndn::time::steady_clock::time_point deadline,
+                                   const std::vector<ndn::Name>& hints)
+{
+  std::vector<std::vector<ndn::Name>> attempts;
+  if (hints.empty()) {
+    attempts.emplace_back();
+  }
+  else {
+    attempts.reserve(hints.size() + 1);
+    for (const auto& hint : hints) {
+      attempts.push_back({hint});
+    }
+    attempts.emplace_back();
+  }
+
+  std::string lastError;
+  for (const auto& attemptHints : attempts) {
+    ndn::Interest interest(name);
+    interest.setCanBePrefix(canBePrefix);
+    interest.setMustBeFresh(false);
+    interest.setInterestLifetime(interestLifetime);
+    applyForwardingHints(interest, attemptHints);
+    try {
+      return fetchOneDataPacket(face, interest, deadline);
+    }
+    catch (const std::exception& e) {
+      lastError = e.what();
+      if (ndn::time::steady_clock::now() >= deadline) {
+        break;
+      }
+    }
+  }
+  throw std::runtime_error("Data packet fetch failed after hint fallback for " +
+                           name.toUri() + ": " + lastError);
+}
+
+std::vector<PyDataPacket>
+fetchSegmentedDataPackets(const std::string& baseName,
+                          int timeoutMs,
+                          int interestLifetimeMs,
+                          const std::vector<std::string>& forwardingHints)
+{
+  ndn::Face face;
+  const auto deadline = ndn::time::steady_clock::now() + ndn::time::milliseconds(timeoutMs);
+
+  ndn::Interest firstInterest{ndn::Name(baseName)};
+  firstInterest.setCanBePrefix(true);
+  firstInterest.setMustBeFresh(false);
+  firstInterest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
+  std::vector<ndn::Name> hintNames;
+  hintNames.reserve(forwardingHints.size());
+  for (const auto& hint : forwardingHints) {
+    hintNames.emplace_back(hint);
+  }
+  if (!hintNames.empty()) {
+    firstInterest.setForwardingHint(hintNames);
+  }
+  auto first = fetchOneDataPacket(face, firstInterest, deadline);
+
+  auto firstData = dataFromWireBytes(first.wire);
+  auto finalBlock = firstData->getFinalBlock();
+  if (!finalBlock || !finalBlock->isSegment()) {
+    throw std::runtime_error("First segmented Data has no segment FinalBlockId: " + first.name);
+  }
+  const auto finalSegment = finalBlock->toSegment();
+  const auto versionedName = firstData->getName().getPrefix(-1);
+
+  std::vector<PyDataPacket> packets(finalSegment + 1);
+  if (first.segment > finalSegment) {
+    throw std::runtime_error("First segment number exceeds FinalBlockId");
+  }
+  packets[first.segment] = first;
+
+  for (uint64_t segmentNo = 0; segmentNo <= finalSegment; ++segmentNo) {
+    if (segmentNo == first.segment) {
+      continue;
+    }
+    ndn::Name segmentName(versionedName);
+    segmentName.appendSegment(segmentNo);
+    ndn::Interest interest(segmentName);
+    interest.setCanBePrefix(false);
+    interest.setMustBeFresh(false);
+    interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
+    if (!hintNames.empty()) {
+      interest.setForwardingHint(hintNames);
+    }
+    packets[segmentNo] = fetchOneDataPacket(face, interest, deadline);
+  }
+  return packets;
+}
+
+py::bytes
+fetchSegmentedObjectWithSegmentHints(const std::string& baseName,
+                                     int timeoutMs,
+                                     int interestLifetimeMs,
+                                     const std::vector<PySegmentHintRange>& hintRanges)
+{
+  ndn::Face face;
+  const auto deadline = ndn::time::steady_clock::now() + ndn::time::milliseconds(timeoutMs);
+
+  const auto interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
+  auto first = fetchOneDataPacketWithHintFallback(face,
+                                                  ndn::Name(baseName),
+                                                  true,
+                                                  interestLifetime,
+                                                  deadline,
+                                                  hintsForSegment(0, hintRanges));
+
+  auto firstData = dataFromWireBytes(first.wire);
+  auto finalBlock = firstData->getFinalBlock();
+  if (!finalBlock || !finalBlock->isSegment()) {
+    throw std::runtime_error("First segmented Data has no segment FinalBlockId: " + first.name);
+  }
+  const auto finalSegment = finalBlock->toSegment();
+  const auto versionedName = firstData->getName().getPrefix(-1);
+
+  std::vector<PyDataPacket> packets(finalSegment + 1);
+  if (first.segment > finalSegment) {
+    throw std::runtime_error("First segment number exceeds FinalBlockId");
+  }
+  packets[first.segment] = first;
+
+  for (uint64_t segmentNo = 0; segmentNo <= finalSegment; ++segmentNo) {
+    if (segmentNo == first.segment) {
+      continue;
+    }
+    ndn::Name segmentName(versionedName);
+    segmentName.appendSegment(segmentNo);
+    packets[segmentNo] = fetchOneDataPacketWithHintFallback(face,
+                                                            segmentName,
+                                                            false,
+                                                            interestLifetime,
+                                                            deadline,
+                                                            hintsForSegment(segmentNo, hintRanges));
+  }
+
+  std::string output;
+  for (const auto& packet : packets) {
+    auto data = dataFromWireBytes(packet.wire);
+    const auto& content = data->getContent();
+    output.append(reinterpret_cast<const char*>(content.value()), content.value_size());
+  }
+  return py::bytes(output);
+}
+
+py::bytes
+fetchKnownSegmentedObjectWithSegmentHints(const std::string& versionedName,
+                                          uint64_t segmentCount,
+                                          int timeoutMs,
+                                          int interestLifetimeMs,
+                                          const std::vector<PySegmentHintRange>& hintRanges)
+{
+  if (segmentCount == 0) {
+    return py::bytes();
+  }
+  ndn::Face face;
+  const auto deadline = ndn::time::steady_clock::now() + ndn::time::milliseconds(timeoutMs);
+  const auto interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
+
+  std::vector<PyDataPacket> packets(segmentCount);
+  for (uint64_t segmentNo = 0; segmentNo < segmentCount; ++segmentNo) {
+    ndn::Name segmentName(versionedName);
+    segmentName.appendSegment(segmentNo);
+    packets[segmentNo] = fetchOneDataPacketWithHintFallback(face,
+                                                            segmentName,
+                                                            false,
+                                                            interestLifetime,
+                                                            deadline,
+                                                            hintsForSegment(segmentNo, hintRanges));
+  }
+
+  std::string output;
+  for (const auto& packet : packets) {
+    auto data = dataFromWireBytes(packet.wire);
+    const auto& content = data->getContent();
+    output.append(reinterpret_cast<const char*>(content.value()), content.value_size());
+  }
+  return py::bytes(output);
+}
+
+py::bytes
+fetchSegmentedObject(const std::string& baseName,
+                     int timeoutMs,
+                     int interestLifetimeMs,
+                     double initCwnd,
+                     const std::vector<std::string>& forwardingHints)
+{
+  ndn::Face face;
+  ndn::security::ValidatorNull validator;
+  ndn::SegmentFetcher::Options options;
+  options.maxTimeout = ndn::time::milliseconds(timeoutMs);
+  options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
+  options.initCwnd = initCwnd;
+
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool done = false;
+  ndn::ConstBufferPtr result;
+  std::string error;
+
+  ndn::Interest interest{ndn::Name(baseName)};
+  interest.setCanBePrefix(true);
+  interest.setMustBeFresh(false);
+  interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
+  std::vector<ndn::Name> hintNames;
+  hintNames.reserve(forwardingHints.size());
+  for (const auto& hint : forwardingHints) {
+    hintNames.emplace_back(hint);
+  }
+  if (!hintNames.empty()) {
+    interest.setForwardingHint(hintNames);
+  }
+
+  auto fetcher = ndn::SegmentFetcher::start(face, interest, validator, options);
+  fetcher->onComplete.connect([&] (ndn::ConstBufferPtr payload) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      result = std::move(payload);
+      done = true;
+    }
+    cv.notify_one();
+  });
+  fetcher->onError.connect([&] (uint32_t code, const std::string& message) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      error = std::to_string(code) + ": " + message;
+      done = true;
+    }
+    cv.notify_one();
+  });
+
+  const auto deadline = ndn::time::steady_clock::now() + ndn::time::milliseconds(timeoutMs);
+  while (ndn::time::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (done) {
+        break;
+      }
+    }
+    processFaceEvents(face, ndn::time::milliseconds(20));
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!done) {
+      fetcher->stop();
+      throw std::runtime_error("segmented object fetch timed out: " + baseName);
+    }
+    if (!error.empty()) {
+      throw std::runtime_error("segmented object fetch failed for " + baseName + ": " + error);
+    }
+    if (!result) {
+      throw std::runtime_error("segmented object fetch completed without payload: " + baseName);
+    }
+    return py::bytes(reinterpret_cast<const char*>(result->data()), result->size());
+  }
+}
 
 struct PyCollaborationAssignment
 {
@@ -905,7 +1589,7 @@ public:
     }
   }
 
-  PyServiceResponse
+PyServiceResponse
   requestService(const std::string& serviceName,
                  const py::bytes& requestPayload,
                  int ackTimeoutMs,
@@ -1163,6 +1847,121 @@ public:
     return output;
   }
 
+  PyServiceResponse
+  requestServiceSelect(const std::string& serviceName,
+                       const py::bytes& requestPayload,
+                       py::function selector,
+                       int ackTimeoutMs,
+                       int timeoutMs,
+                       const std::string& requestStrategy)
+  {
+    PyServiceResponse output;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+
+    auto payload = toBuffer(requestPayload);
+    auto selectorFn = keepPyFunction(std::move(selector));
+    const size_t nativeStrategy =
+      (requestStrategy == "all-selected" || requestStrategy == "all-responders") ?
+      nsf::tlv::AllSelected : nsf::tlv::FirstResponding;
+
+    nsf::ServiceUser::AckCandidatesHandler handler =
+      [selectorFn](const std::vector<nsf::AckSelectionCandidate>& candidates) {
+        py::gil_scoped_acquire gil;
+        py::list pyCandidates;
+        for (const auto& candidate : candidates) {
+          PyAckCandidate item;
+          item.providerName = candidate.providerName.toUri();
+          item.serviceName = candidate.serviceName.toUri();
+          item.requestId = candidate.requestId.toUri();
+          item.status = candidate.ack.getStatus();
+          item.message = candidate.ack.getMessage();
+          item.payload = toPyBytes(candidate.ack.getPayload());
+          pyCandidates.append(py::cast(item));
+        }
+
+        std::vector<std::string> selectedProviderNames;
+        py::object selected = (*selectorFn)(pyCandidates);
+        selectedProviderNames = selected.cast<std::vector<std::string>>();
+
+        std::vector<nsf::AckSelectionCandidate> selectedCandidates;
+        for (const auto& providerName : selectedProviderNames) {
+          for (const auto& candidate : candidates) {
+            if (candidate.ack.getStatus() &&
+                candidate.providerName.toUri() == providerName) {
+              selectedCandidates.push_back(candidate);
+              break;
+            }
+          }
+        }
+        return selectedCandidates;
+      };
+
+    auto submit = [&, payload, handler, nativeStrategy] {
+      nsf::RequestMessage requestMessage;
+      auto mutablePayload = payload;
+      requestMessage.setPayload(mutablePayload, mutablePayload.size());
+      requestMessage.setStrategy(nativeStrategy);
+      m_user->RequestService(
+        std::vector<ndn::Name>{},
+        ndn::Name(serviceName),
+        requestMessage,
+        ackTimeoutMs,
+        handler,
+        timeoutMs,
+        [&](const ndn::Name& requestId) {
+          std::lock_guard<std::mutex> lock(mutex);
+          output.status = false;
+          output.error = "timeout: " + requestId.toUri();
+          done = true;
+          cv.notify_one();
+        },
+        [&](const nsf::ResponseMessage& response) {
+          py::gil_scoped_acquire gil;
+          std::lock_guard<std::mutex> lock(mutex);
+          output.status = response.getStatus();
+          output.payload = toPyBytes(response.getPayload());
+          output.error = response.getErrorInfo();
+          done = true;
+          cv.notify_one();
+        },
+        nativeStrategy);
+    };
+
+    if (m_running.load()) {
+      m_face.getIoContext().post(submit);
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(timeoutMs + 3000);
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(mutex);
+      cv.wait_until(lock, deadline, [&done] { return done; });
+      if (done) {
+        return output;
+      }
+      output.status = false;
+      output.error = "local deadline";
+      return output;
+    }
+
+    submit();
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs + 3000);
+    while (std::chrono::steady_clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (done) {
+          return output;
+        }
+      }
+      py::gil_scoped_release release;
+      processFaceEvents(m_face, ndn::time::milliseconds(10));
+    }
+    output.status = false;
+    output.error = "local deadline";
+    return output;
+  }
+
   void
   requestServiceAsync(const std::string& serviceName,
                       const py::bytes& requestPayload,
@@ -1263,6 +2062,15 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("message", &PyAckDecision::message)
     .def_readwrite("suppress", &PyAckDecision::suppress);
 
+  py::class_<PyAckCandidate>(m, "AckCandidate")
+    .def(py::init<>())
+    .def_readwrite("provider_name", &PyAckCandidate::providerName)
+    .def_readwrite("service_name", &PyAckCandidate::serviceName)
+    .def_readwrite("request_id", &PyAckCandidate::requestId)
+    .def_readwrite("status", &PyAckCandidate::status)
+    .def_readwrite("message", &PyAckCandidate::message)
+    .def_readwrite("payload", &PyAckCandidate::payload);
+
   py::class_<PyLargeDataPublishResult>(m, "LargeDataPublishResult")
     .def(py::init<>())
     .def_readwrite("success", &PyLargeDataPublishResult::success)
@@ -1289,6 +2097,83 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("producer_role", &PyCollaborationData::producerRole)
     .def_readwrite("sequence", &PyCollaborationData::sequence)
     .def_readwrite("payload", &PyCollaborationData::payload);
+
+  py::class_<NativeSegmentedObjectProducer>(m, "SegmentedObjectProducer")
+    .def(py::init<const std::string&,
+                  const py::bytes&,
+                  const std::string&,
+                  size_t,
+                  int>(),
+         py::arg("base_name"),
+         py::arg("payload"),
+         py::arg("signing_identity") = "",
+         py::arg("max_segment_size") = 6000,
+         py::arg("freshness_ms") = 60000)
+    .def("start", &NativeSegmentedObjectProducer::start)
+    .def("stop", &NativeSegmentedObjectProducer::stop)
+    .def_property_readonly("base_name", &NativeSegmentedObjectProducer::baseName)
+    .def_property_readonly("versioned_name", &NativeSegmentedObjectProducer::versionedName)
+    .def_property_readonly("segment_count", &NativeSegmentedObjectProducer::segmentCount)
+    .def_property_readonly("error", &NativeSegmentedObjectProducer::error);
+
+  py::class_<PyDataPacket>(m, "DataPacket")
+    .def(py::init<>())
+    .def_readwrite("name", &PyDataPacket::name)
+    .def_readwrite("segment", &PyDataPacket::segment)
+    .def_readwrite("wire", &PyDataPacket::wire);
+
+  py::class_<PySegmentHintRange>(m, "SegmentHintRange")
+    .def(py::init<>())
+    .def_readwrite("start", &PySegmentHintRange::start)
+    .def_readwrite("end", &PySegmentHintRange::end)
+    .def_readwrite("forwarding_hints", &PySegmentHintRange::forwardingHints);
+
+  py::class_<NativeWireDataProducer>(m, "StoredDataProducer")
+    .def(py::init<const std::string&, const std::vector<py::bytes>&, const std::string&>(),
+         py::arg("base_name"),
+         py::arg("packet_wires"),
+         py::arg("signing_identity") = "")
+    .def("start", &NativeWireDataProducer::start)
+    .def("stop", &NativeWireDataProducer::stop)
+    .def_property_readonly("segment_count", &NativeWireDataProducer::segmentCount)
+    .def_property_readonly("error", &NativeWireDataProducer::error);
+
+  m.def("make_segmented_data_packets",
+        &makeSegmentedDataPackets,
+        py::arg("base_name"),
+        py::arg("payload"),
+        py::arg("signing_identity") = "",
+        py::arg("max_segment_size") = 6000,
+        py::arg("freshness_ms") = 60000);
+
+  m.def("fetch_segmented_data_packets",
+        &fetchSegmentedDataPackets,
+        py::arg("base_name"),
+        py::arg("timeout_ms") = 30000,
+        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("forwarding_hints") = std::vector<std::string>{});
+
+  m.def("fetch_segmented_object",
+        &fetchSegmentedObject,
+        py::arg("base_name"),
+        py::arg("timeout_ms") = 30000,
+        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("init_cwnd") = 8.0,
+        py::arg("forwarding_hints") = std::vector<std::string>{});
+
+  m.def("fetch_segmented_object_with_segment_hints",
+        &fetchSegmentedObjectWithSegmentHints,
+        py::arg("base_name"),
+        py::arg("timeout_ms") = 30000,
+        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("hint_ranges") = std::vector<PySegmentHintRange>{});
+  m.def("fetch_known_segmented_object_with_segment_hints",
+        &fetchKnownSegmentedObjectWithSegmentHints,
+        py::arg("versioned_name"),
+        py::arg("segment_count"),
+        py::arg("timeout_ms") = 30000,
+        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("hint_ranges") = std::vector<PySegmentHintRange>{});
 
   py::class_<PyCollaborationContext>(m, "CollaborationContext")
     .def_property_readonly("session_id", &PyCollaborationContext::sessionId)
@@ -1401,6 +2286,13 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 5000,
          py::arg("strategy") = "first-responding")
+    .def("request_service_select", &NativeServiceUser::requestServiceSelect,
+         py::arg("service"),
+         py::arg("payload"),
+         py::arg("selector"),
+         py::arg("ack_timeout_ms") = 300,
+         py::arg("timeout_ms") = 5000,
+         py::arg("request_strategy") = "first-responding")
     .def("request_service_async", &NativeServiceUser::requestServiceAsync,
          py::arg("service"),
          py::arg("payload"),

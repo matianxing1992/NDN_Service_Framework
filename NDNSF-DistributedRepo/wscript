@@ -1,0 +1,46 @@
+top = '..'
+
+import subprocess
+import sys
+
+
+def _install_py_repoclient(bld):
+    if bld.cmd != 'install':
+        return
+    wrapper = bld.path.find_dir('pythonWrapper')
+    if wrapper is None:
+        return
+    bld.to_log('Installing py_repoclient with pip\n')
+    subprocess.check_call([
+        sys.executable,
+        '-m',
+        'pip',
+        'install',
+        '-e',
+        wrapper.abspath(),
+    ])
+
+
+def build(bld):
+    repo_sources = [
+        'src/RepoClient.cpp',
+        'src/RepoNode.cpp',
+        'src/RepoProtocol.cpp',
+        'src/RepoTypes.cpp',
+    ]
+
+    bld.stlib(name='ndnsf-distributed-repo',
+              target='ndnsf-distributed-repo',
+              source=repo_sources,
+              includes=['include', '..'],
+              use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL',
+              install_path=None)
+
+    bld.program(name='DistributedRepoSmoke',
+                target='DistributedRepoSmoke',
+                source=['examples/DistributedRepoSmoke.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL',
+                install_path=None)
+
+    bld.add_post_fun(_install_py_repoclient)

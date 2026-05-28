@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61", "pybind11>=2.10"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-repoclient"
+version = "0.1.0"
+description = "Python bindings for NDNSF-DistributedRepo RepoClient"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  {name = "NDNSF Developers"}
+]
+dependencies = [
+  "ndnsf>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["py_repoclient*"]
