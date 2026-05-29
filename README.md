@@ -502,12 +502,12 @@ application crypto.
 A follow-up diagnostic isolated one important source of delivery jitter:
 parallel Sync Interest production. With `--svs-disable-parallel-production`
 and a 60-second send-but-not-measure warmup, the sustained 60-second 100 RPS
-run returned to the low-latency band
-(`results/newapi_minindn_perf_20260529_131130`):
+run returned to the low-latency band. This was then verified as the default
+`--performance-mode` profile in `results/newapi_minindn_perf_20260529_131700`:
 
 ```text
 Actual RPS  Success  Avg ms  P50 ms  P95 ms  P99 ms  Timeout
-100.000     100.00%  168.06  166.50  177.14  198.33  0
+100.000     100.00%  168.23  166.77  177.15  190.17  0
 ```
 
 This indicates that the 166 ms behavior is reachable in sustained 60-second
