@@ -416,6 +416,7 @@ struct OpenLoopRequestState
 {
   std::string requestId;
   std::chrono::steady_clock::time_point start;
+  bool measured = true;
   bool completed = false;
   std::string selectedProvider = "-";
 };
@@ -812,6 +813,8 @@ main(int argc, char** argv)
         const auto intervalNs = static_cast<int64_t>(
           std::max(1.0, 1000000000.0 / rateRps));
         const auto startTime = std::make_shared<std::chrono::steady_clock::time_point>();
+        const auto measurementStartAt =
+          std::make_shared<std::chrono::steady_clock::time_point>();
         const auto stopSendingAt = std::make_shared<std::chrono::steady_clock::time_point>();
         const auto drainDeadline = std::make_shared<std::chrono::steady_clock::time_point>();
         auto nextSequence = std::make_shared<uint64_t>(0);
@@ -1096,7 +1099,7 @@ main(int argc, char** argv)
 
         *maybeFinish = [&, csv, states, sendStopped, drainDeadline, sentCount, successCount,
                         timeoutCount, lateResponseCount, outstandingLimitSkips, latencies,
-                        outstandingSamples, maxOutstandingObserved, startTime,
+                        outstandingSamples, maxOutstandingObserved, measurementStartAt,
                         stopSendingAt, rateRps, maybeFinish]() {
           if (!*sendStopped) {
             return;
@@ -1112,7 +1115,7 @@ main(int argc, char** argv)
                   static_cast<double>(latencies->size());
           }
           const double configuredDurationSeconds =
-            std::chrono::duration<double>(*stopSendingAt - *startTime).count();
+            std::chrono::duration<double>(*stopSendingAt - *measurementStartAt).count();
           double sendWindowSeconds = 0.0;
           if (*sentCount >= 2) {
             sendWindowSeconds =
@@ -1214,6 +1217,7 @@ main(int argc, char** argv)
                     << " in_flight_max=" << *maxOutstandingObserved
                     << " target_rps=" << rateRps
                     << " achieved_rps=" << achievedRps
+                    << " warmup_s=" << benchmarkWarmup
                     << " send_window_s=" << sendWindowSeconds
                     << " remaining_outstanding=" << states->size()
                     << " median_outstanding=" << medianSize(*outstandingSamples)
@@ -1236,7 +1240,8 @@ main(int argc, char** argv)
 
         *sendNext = [&, csv, benchmarkServiceName, useBenchmarkCustomSelection,
                      useBenchmarkRandomSelection, benchmarkStrategy,
-                     intervalNs, startTime, stopSendingAt, drainDeadline, nextSequence,
+                     intervalNs, startTime, measurementStartAt, stopSendingAt,
+                     drainDeadline, nextSequence,
                      sendStopped, states, completedRequestIds, sentCount, successCount,
                      timeoutCount, lateResponseCount, outstandingLimitSkips, latencies,
                      sampleOutstanding, sendNext, maybeFinish]() {
@@ -1486,6 +1491,7 @@ main(int argc, char** argv)
 
             auto state = std::make_shared<OpenLoopRequestState>();
             state->start = now;
+            state->measured = now >= *measurementStartAt;
 
             auto onTimeout = std::function<void(const ndn::Name&)>(
               [&, csv, states, completedRequestIds, timeoutCount,
@@ -1503,19 +1509,25 @@ main(int argc, char** argv)
 
                     auto stateIt = states->find(requestIdText);
                     double latencyMs = 0.0;
+                    bool measured = true;
                     if (stateIt != states->end()) {
                       latencyMs = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - stateIt->second->start).count();
+                      measured = stateIt->second->measured;
                       states->erase(stateIt);
                     }
-                    ++(*timeoutCount);
-                    ++(*intervalTimeouts);
+                    if (measured) {
+                      ++(*timeoutCount);
+                      ++(*intervalTimeouts);
+                    }
                     // In no-admission benchmark mode, timeouts are recorded
                     // but must not trigger an additional app-side congestion
                     // pause; otherwise the "no admission" baseline is still
                     // self-throttled by the traffic generator.
-                    *csv << csvEscape(requestIdText) << ",0,"
-                         << std::fixed << std::setprecision(3) << latencyMs << ",\n";
+                    if (measured) {
+                      *csv << csvEscape(requestIdText) << ",0,"
+                           << std::fixed << std::setprecision(3) << latencyMs << ",\n";
+                    }
                     if (!performanceMode && perfLogGate->allow()) {
                       NDN_LOG_INFO( "PERF_REQUEST_TIMEOUT id=" << requestIdText
                                 << " ts=" << nowMilliseconds());
@@ -1558,13 +1570,15 @@ main(int argc, char** argv)
 
                     const double latencyMs = std::chrono::duration<double, std::milli>(
                       std::chrono::steady_clock::now() - state->start).count();
-                    ++(*successCount);
-                    ++(*intervalSuccesses);
-                    latencies->push_back(latencyMs);
-                    intervalLatencies->push_back(latencyMs);
-                    *csv << csvEscape(requestIdText) << ",1,"
-                         << std::fixed << std::setprecision(3) << latencyMs << ","
-                         << csvEscape(responseText) << "\n";
+                    if (state->measured) {
+                      ++(*successCount);
+                      ++(*intervalSuccesses);
+                      latencies->push_back(latencyMs);
+                      intervalLatencies->push_back(latencyMs);
+                      *csv << csvEscape(requestIdText) << ",1,"
+                           << std::fixed << std::setprecision(3) << latencyMs << ","
+                           << csvEscape(responseText) << "\n";
+                    }
                     if (!performanceMode && perfLogGate->allow()) {
                       NDN_LOG_INFO( "PERF_RESPONSE_RECEIVED id=" << requestIdText
                                 << " provider=" << state->selectedProvider
@@ -1742,13 +1756,15 @@ main(int argc, char** argv)
                              [controlAdaptiveWindow] { (*controlAdaptiveWindow)(); });
         };
 
-        scheduler.schedule(ndn::time::seconds(2), [&, startTime, stopSendingAt,
+        scheduler.schedule(ndn::time::seconds(2), [&, startTime, measurementStartAt, stopSendingAt,
                                                    drainDeadline, sendNext,
                                                    benchmarkStrategy,
                                                    useBenchmarkCustomSelection,
                                                    useBenchmarkRandomSelection] {
           *startTime = std::chrono::steady_clock::now();
-          *stopSendingAt = *startTime + std::chrono::seconds(openLoopDurationSeconds);
+          *measurementStartAt = *startTime + std::chrono::seconds(benchmarkWarmup);
+          *stopSendingAt =
+            *measurementStartAt + std::chrono::seconds(openLoopDurationSeconds);
           *drainDeadline = *stopSendingAt + std::chrono::seconds(drainSeconds);
           const auto startQueueLimits = adaptiveQueueLimitsForWindow(
             *adaptiveWindow,
@@ -1760,6 +1776,7 @@ main(int argc, char** argv)
                                               useBenchmarkRandomSelection)
                     << " rate_rps=" << std::fixed << std::setprecision(3) << rateRps
                     << " duration_s=" << openLoopDurationSeconds
+                    << " warmup_s=" << benchmarkWarmup
                     << " max_inflight=" << maxOutstanding
                     << " adaptive_admission=" << adaptiveAdmission.enabled
                     << " adaptive_initial_window=" << *adaptiveWindow
@@ -2023,7 +2040,7 @@ main(int argc, char** argv)
                 << PROVIDER_IDENTITY.toUri());
       NDN_LOG_INFO( "[App_User] selected serviceName=/HELLO");
       NDN_LOG_INFO( "[App_User] final request name="
-                   "/example/hello/user/NDNSF/REQUEST/1/HELLO/<bloomFilter>/<requestId>"
+                   "/example/hello/user/NDNSF/REQUEST/HELLO/<requestId>"
                );
 
       const std::string requestText = "HELLO";

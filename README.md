@@ -142,7 +142,7 @@ python3 -m pip install -e ./NDNSF-DistributedInference
 
 3.1 Generic dynamic API, preferred for new applications
 
-New applications should use the framework-core generic dynamic API directly. This path does not require generated `ServiceUser_*`, `ServiceProvider_*`, `*Service`, or `*ServiceStub` classes.
+New applications should use the framework-core generic dynamic API directly.
 
 Provider side:
 
@@ -233,24 +233,35 @@ Do not design new code around separate `ServiceName + FunctionName` paths. The s
 
 3.3 V2 naming note
 
-Generic runtime paths use V2 naming helpers. V2 names carry explicit component counts and the unified variable-length `serviceName`.
+Generic runtime paths use V2 naming helpers with one unified variable-length
+`serviceName`. The service name is parsed by position: the trailing `requestId`
+is fixed in Request, ACK, Selection, and Response names.
+When a user or provider identity appears inside another identity's namespace,
+it is encoded as a single URI component so the remaining middle components are
+unambiguously the service name.
 
 Request:
 
 ```text
-/<requester>/NDNSF/REQUEST/<serviceComponentCount>/<serviceName...>/<bloomFilter>/<requestId>
+/<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
 ```
 
 Response:
 
 ```text
-/<provider>/NDNSF/RESPONSE/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
+/<provider>/NDNSF/RESPONSE/<requester-uri-component>/<serviceName...>/<requestId>
 ```
 
 ACK:
 
 ```text
-/<provider>/NDNSF/ACK/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
+/<provider>/NDNSF/ACK/<requester-uri-component>/<serviceName...>/<requestId>
+```
+
+Selection:
+
+```text
+/<requester>/NDNSF/SELECTION/<provider-uri-component>/<serviceName...>/<requestId>
 ```
 
 3.4 Permission model
@@ -279,6 +290,15 @@ provider, controller, and AA certificates must be reachable by their certificate
 names through routing/FIB, just like service Data. Remote validators, NAC-ABE
 authorities, and controllers may fetch these certificates during DKEY,
 permission, and bootstrap flows.
+
+NDNSF deployments should use an application root identity as the trust anchor.
+Each node first creates its own identity key, then obtains an NDN certificate
+for that key signed by the application root. The node keeps the private key for
+its own identity, installs the root certificate as the local trust anchor, and
+serves its root-signed certificate by name. The MiniNDN HELLO harness follows
+this model by creating `/example/hello/root` and using it to sign the
+controller, user, and provider certificates before distributing the node
+keychains.
 
 The framework provides `ndn_service_framework::CertificatePublisher` for this:
 
@@ -310,17 +330,7 @@ Build it with:
 
 See `/examples/wscript` for how to compile the examples.
 
-3.6 Legacy CodeGenerator compatibility
-
-The `/CodeGenerator` directory contains the legacy generator: `Generated`, `Template`, `app.yml`, and `NDNSFCodeGenerator.py`.
-
-The `app.yml` file defines services and message types. Running `sudo python NDNSFCodeGenerator.py` generates compatibility files in the `Generated` folder based on the templates in `Template`.
-
-Generated classes such as `ServiceUser_*`, `ServiceProvider_*`, `*Service`, and `*ServiceStub` are legacy compatibility code only. They should not be treated as the primary architecture for new applications.
-
-Generated C++ outputs are not checked in unless an active build target or compatibility test intentionally uses them.
-
-3.7 How to run examples:
+3.6 How to run examples:
 
 NDN requires creating a corresponding root certificate, then using the root certificate to generate the corresponding sub-certificates. Both the root certificate and these sub-certificates need to be installed on each node. `/Experiments/NDNSFExperiment_AutoConfig.py` provides an example of how to create certificates, which you need to modify according to your own requirements.
 
@@ -385,3 +395,62 @@ Then run:
 
 The output will be saved in the file `filename.log` in the current directory.
 If you're using MiniNDN, the output will be stored under `/tmp/minindn/<nodeName>`.
+
+3.9 MiniNDN latency reproduction profile
+
+The low-latency HELLO benchmark uses the dynamic API with one Memphis user, one
+UCLA provider, the CSU controller, no adaptive admission control, SVS maximum
+suppression set to 1 ms, and performance-mode logging. Hot-path per-message logs
+must stay below `INFO`; otherwise request/ACK/selection/response logging can
+dominate the benchmark.
+
+Key runtime settings:
+
+```text
+NDN_LOG=ndn_service_framework.*=INFO
+NFD log level: WARN
+NDNSF_SVS_MAX_SUPPRESSION_MS=1
+NDNSF_SVS_ASYNC_PUBLISH=1
+NDNSF_SVS_PARALLEL_SYNC=1
+NDNSF_SVS_PARALLEL_WORKERS=4
+NDNSF_SVS_PARALLEL_QUEUE=256
+NDNSF_SVS_PARALLEL_PRODUCTION=4
+NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING=0
+NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK=1
+adaptive admission: disabled
+provider handler threads: 2
+provider ACK worker threads: 2
+strategy: first-responding
+workload: open-loop, 10 s warmup + 10 s measured duration per rate
+```
+
+Reproduction command:
+
+```bash
+sudo -n python3 Experiments/NDNSF_NewAPI_Minindn_Perf.py \
+  --topology-file 'Experiments/Topology/testbed(loss=0%).conf' \
+  --user-node memphis \
+  --provider-nodes ucla \
+  --controller-node csu \
+  --providers 1 \
+  --rate-series 20,60,100 \
+  --per-rate-duration 10 \
+  --max-total-runtime-seconds 300 \
+  --workload-mode open-loop \
+  --strategy first-responding \
+  --disable-adaptive-admission-control \
+  --performance-mode \
+  --handler-threads 2 \
+  --ack-threads 2 \
+  --nfd-log-level WARN \
+  --skip-post-run-diagnostics
+```
+
+Reference result from `results/newapi_testbed_rate_series_20260528_194238`:
+
+```text
+RPS   Actual   Success   Avg ms   P50 ms   P95 ms   P99 ms   Timeout
+20    20.00    100%      166.19   165.20   172.88   178.70   0
+60    60.00    100%      168.85   166.61   184.34   199.18   0
+100   99.99    100%      166.40   165.67   169.04   174.19   0
+```

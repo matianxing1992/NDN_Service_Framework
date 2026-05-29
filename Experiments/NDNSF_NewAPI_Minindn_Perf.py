@@ -1397,10 +1397,13 @@ def initialize_example_keychains(ndn, args, output_dir):
     # The App_* examples were originally exercised against one local keychain.
     # MiniNDN gives each node an isolated HOME, so pre-install the same example
     # identities on every node before the apps call getOrCreateIdentity().
-    log("Installing example keychain material on MiniNDN nodes")
+    # Use a single application root certificate to sign all runtime identities
+    # so the experiment follows the same trust shape as a distributed deployment.
+    log("Installing root-signed example keychain material on MiniNDN nodes")
     security_dir = output_dir / "security"
     security_dir.mkdir(parents=True, exist_ok=True)
 
+    root_identity = "/example/hello/root"
     identities = [
         "/example/hello/controller",
         "/example/hello/provider",
@@ -1408,18 +1411,30 @@ def initialize_example_keychains(ndn, args, output_dir):
     ] + ["/example/hello/provider/{}".format(pid) for pid in selected_provider_ids(args)]
 
     for node in ndn.net.hosts:
-        for identity in identities:
+        for identity in [root_identity] + identities:
             node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
                 shell_quote(identity)))
 
     controller = ndn.net[args.controller_node]
+    root_cert_path = security_dir / "root.cert"
+    node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
+        shell_quote(root_identity), shell_quote(root_cert_path)))
+    node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+        shell_quote(root_cert_path)))
+    root_cert_name = certificate_name_from_file(root_cert_path)
+    log("root_cert identity={} name={} file={}".format(
+        root_identity, root_cert_name, root_cert_path))
+
     exported_keys = []
     provider_cert_records = []
     for index, identity in enumerate(identities):
         cert_path = security_dir / "identity-{}.cert".format(index)
+        req_path = security_dir / "identity-{}.req".format(index)
         key_path = security_dir / "identity-{}.ndnkey".format(index)
-        node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
-            shell_quote(identity), shell_quote(cert_path)))
+        node_cmd(controller, "ndnsec key-gen -n -t r {} > {}".format(
+            shell_quote(identity), shell_quote(req_path)))
+        node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
+            shell_quote(root_identity), shell_quote(req_path), shell_quote(cert_path)))
         node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
             shell_quote(cert_path)))
         node_cmd(controller, "ndnsec-export -P 123456 -o {} -i {}".format(
@@ -1436,6 +1451,8 @@ def initialize_example_keychains(ndn, args, output_dir):
             })
 
     for node in ndn.net.hosts:
+        node_cmd(node, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+            shell_quote(root_cert_path)))
         for key_path in exported_keys:
             node_cmd(node, "ndnsec import -P 123456 {} >/dev/null 2>&1 || true".format(
                 shell_quote(key_path)))
@@ -3823,7 +3840,6 @@ def make_rate_args(args, rate):
     rate_args = argparse.Namespace(**vars(args))
     rate_args.rate_rps = float(rate)
     rate_args.duration = args.per_rate_duration
-    rate_args.warmup = 0
     rate_args.interval_ms = interval_for_rate(rate)
     if args.workload_mode == "open-loop":
         rate_args.timeout_ms = args.request_timeout_ms
@@ -4565,11 +4581,12 @@ def run_dk_forwarding_check(ndn, args, output_dir):
 
 def app_user_argv(args, app_csv):
     app_interval_ms = int(round(float(args.interval_ms)))
+    app_warmup = int(args.warmup) if args.workload_mode == "open-loop" else warmup_count(args)
     user_args = [
         "--benchmark",
         "--workload-mode", args.workload_mode,
         "--count", str(measured_count(args)),
-        "--warmup", str(warmup_count(args)),
+        "--warmup", str(app_warmup),
         "--interval-ms", str(max(1, app_interval_ms)),
         "--service", DEFAULT_SERVICE,
         "--strategy", args.strategy,

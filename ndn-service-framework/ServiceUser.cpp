@@ -2351,23 +2351,7 @@ namespace ndn_service_framework
                                        const ndn::Buffer& payload,
                                        const size_t& strategy)
     {
-        NDN_LOG_INFO("PublishRequestV2: " << serviceName << requestId);
-
-        ndn_service_framework::BloomFilter bloomFilter;
-        std::vector<std::pair<std::string, std::string>> pairs =
-            UPT.searchByFunctionName(serviceName.toUri());
-
-        if (serviceProviderNames.size() > 0){
-            for (auto providerName : serviceProviderNames){
-                bloomFilter.insert(providerName.toUri());
-            }
-        }else{
-            for (auto pair : pairs){
-                ndn::Name serviceFullName(pair.first);
-                bloomFilter.insert(serviceFullName.getPrefix(
-                    -static_cast<int>(serviceName.size())).toUri());
-            }
-        }
+        NDN_LOG_DEBUG("PublishRequestV2: " << serviceName << requestId);
 
         ndn_service_framework::RequestMessage requestMessage;
         auto pendingIt = m_pendingCalls.find(requestId);
@@ -2385,27 +2369,25 @@ namespace ndn_service_framework
         ndn::Name requestName =
             ndn_service_framework::makeRequestNameV2(identity,
                                                      serviceName,
-                                                     ndn::Name(bloomFilter.toHexString()),
                                                      requestId);
         ndn::Name requestNameWithoutPrefix =
             ndn_service_framework::makeRequestNameWithoutPrefixV2(
                 serviceName,
-                ndn::Name(bloomFilter.toHexString()),
                 requestId);
 
-        NDN_LOG_INFO("[ServiceUser] selected providerName(s)=");
+        NDN_LOG_DEBUG("[ServiceUser] selected providerName(s)=");
         if (serviceProviderNames.empty()) {
-            NDN_LOG_INFO("<discovery/bloom-filter>");
+            NDN_LOG_DEBUG("<discovery>");
         }
         else {
             for (size_t i = 0; i < serviceProviderNames.size(); ++i) {
                 if (i != 0) {
-                    NDN_LOG_INFO(",");
+                    NDN_LOG_DEBUG(",");
                 }
-                NDN_LOG_INFO(serviceProviderNames[i].toUri());
+                NDN_LOG_DEBUG(serviceProviderNames[i].toUri());
             }
         }
-        NDN_LOG_INFO(" selected serviceName=" << serviceName.toUri()
+        NDN_LOG_DEBUG(" selected serviceName=" << serviceName.toUri()
                   << " final request name=" << requestName.toUri()
                   << " userToken=" << requestMessage.getUserToken());
         NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_PUBLISHED timestamp_us="
@@ -2413,7 +2395,7 @@ namespace ndn_service_framework
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri()
                   << " requestName=" << requestName.toUri());
-        NDN_LOG_INFO("PublishRequestV2 selected serviceName=" << serviceName.toUri()
+        NDN_LOG_DEBUG("PublishRequestV2 selected serviceName=" << serviceName.toUri()
                      << " final request name=" << requestName.toUri());
 
         pendingIt = m_pendingCalls.find(requestId);
@@ -5243,14 +5225,14 @@ void ServiceUser::finishRequestAckOnEventLoop(
     }
     void ServiceUser::onInterest(const ndn::InterestFilter &, const ndn::Interest &interest)
     {
-        NDN_LOG_INFO("Received Interest: " << interest.getName().toUri());
+        NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
         replyFromIMS(interest);
         
     }
     void ServiceUser::serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data> &contentData, ndn::nacabe::SPtrVector<ndn::Data> &ckData)
     {
         //log data
-        NDN_LOG_INFO("serveDataWithIMS: " << contentData.size() << " " << ckData.size());
+        NDN_LOG_DEBUG("serveDataWithIMS: " << contentData.size() << " " << ckData.size());
         std::lock_guard<std::mutex> lock(_cache_mutex);
         // contentData is now served by svsps
         for (auto data : contentData)
@@ -5595,9 +5577,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
     void ServiceUser::PublishMessage(const ndn::Name &messageName, const ndn::Name &messageNameWithoutPrefix,AbstractMessage &message)
     {
         // log message
-        NDN_LOG_INFO("PublishMessage: " << messageName.toUri());
+        NDN_LOG_DEBUG("PublishMessage: " << messageName.toUri());
         if (m_svsps == nullptr) {
-            NDN_LOG_INFO("PublishMessage skipped because SVS publisher is not initialized");
+            NDN_LOG_DEBUG("PublishMessage skipped because SVS publisher is not initialized");
             return;
         }
 
@@ -5607,7 +5589,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             NDN_LOG_ERROR("GetAttributesByName failed: " << messageName);
             return;
         }
-        NDN_LOG_INFO("GetAttributesByName: messageName=" << messageName.toUri()
+        NDN_LOG_DEBUG("GetAttributesByName: messageName=" << messageName.toUri()
                      << " attributes=" << formatAttributesForLog(*results));
         publishHybridMessage(messageName, messageNameWithoutPrefix, message);
         return;

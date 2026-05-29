@@ -33,6 +33,29 @@ namespace ndn_service_framework
             dst.append(value);
         }
 
+        void
+        appendNameUriComponent(ndn::Name& dst, const ndn::Name& value)
+        {
+            dst.append(ndn::name::Component(value.toUri()));
+        }
+
+        std::optional<ndn::Name>
+        parseNameUriComponent(const ndn::Name& name, size_t index)
+        {
+            if (index >= name.size()) {
+                return std::nullopt;
+            }
+
+            const auto& component = name.get(index);
+            std::string uri(reinterpret_cast<const char*>(component.value()),
+                            component.value_size());
+            if (uri.empty() || uri.front() != '/') {
+                return std::nullopt;
+            }
+
+            return ndn::Name(uri);
+        }
+
         std::optional<size_t>
         parseComponentCount(const ndn::Name& name, size_t index)
         {
@@ -270,24 +293,22 @@ namespace ndn_service_framework
 
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
                                 const ndn::Name& serviceName,
-                                const ndn::Name& bloomFilter,
                                 const ndn::Name& requestId)
     {
         ndn::Name requestName;
         requestName.append(requesterName).append(ndn::Name("/NDNSF/REQUEST"));
-        appendCountedName(requestName, serviceName);
-        requestName.append(bloomFilter).append(requestId);
+        requestName.append(serviceName);
+        requestName.append(requestId);
         return requestName;
     }
 
     ndn::Name makeRequestNameWithoutPrefixV2(const ndn::Name& serviceName,
-                                             const ndn::Name& bloomFilter,
                                              const ndn::Name& requestId)
     {
         ndn::Name requestName;
         requestName.append(ndn::Name("/NDNSF/REQUEST"));
-        appendCountedName(requestName, serviceName);
-        requestName.append(bloomFilter).append(requestId);
+        requestName.append(serviceName);
+        requestName.append(requestId);
         return requestName;
     }
 
@@ -298,17 +319,16 @@ namespace ndn_service_framework
             return std::nullopt;
         }
 
-        size_t index = *marker + 2;
-        auto serviceName = parseCountedName(requestName, index);
-        if (!serviceName || index + 2 != requestName.size()) {
+        const size_t index = *marker + 2;
+        if (index + 2 > requestName.size()) {
             return std::nullopt;
         }
+        const size_t serviceComponentCount = requestName.size() - index - 1;
 
         return RequestNameV2{
             getSubNameByComponentCount(requestName, 0, *marker),
-            *serviceName,
-            getSubNameByComponentCount(requestName, index, 1),
-            getSubNameByComponentCount(requestName, index + 1, 1)};
+            getSubNameByComponentCount(requestName, index, serviceComponentCount),
+            getSubNameByComponentCount(requestName, index + serviceComponentCount, 1)};
     }
 
     ndn::Name makeResponseNameV2(const ndn::Name& providerName,
@@ -318,8 +338,8 @@ namespace ndn_service_framework
     {
         ndn::Name responseName;
         responseName.append(providerName).append(ndn::Name("/NDNSF/RESPONSE"));
-        appendCountedName(responseName, requesterName);
-        appendCountedName(responseName, serviceName);
+        appendNameUriComponent(responseName, requesterName);
+        responseName.append(serviceName);
         responseName.append(requestId);
         return responseName;
     }
@@ -330,8 +350,8 @@ namespace ndn_service_framework
     {
         ndn::Name responseName;
         responseName.append(ndn::Name("/NDNSF/RESPONSE"));
-        appendCountedName(responseName, requesterName);
-        appendCountedName(responseName, serviceName);
+        appendNameUriComponent(responseName, requesterName);
+        responseName.append(serviceName);
         responseName.append(requestId);
         return responseName;
     }
@@ -343,18 +363,22 @@ namespace ndn_service_framework
             return std::nullopt;
         }
 
-        size_t index = *marker + 2;
-        auto requesterName = parseCountedName(responseName, index);
-        auto serviceName = parseCountedName(responseName, index);
-        if (!requesterName || !serviceName || index + 1 != responseName.size()) {
+        const size_t index = *marker + 2;
+        if (index + 3 > responseName.size()) {
             return std::nullopt;
         }
+        auto requesterName = parseNameUriComponent(responseName, index);
+        if (!requesterName) {
+            return std::nullopt;
+        }
+        const size_t serviceIndex = index + 1;
+        const size_t serviceComponentCount = responseName.size() - serviceIndex - 1;
 
         return ResponseNameV2{
             getSubNameByComponentCount(responseName, 0, *marker),
             *requesterName,
-            *serviceName,
-            getSubNameByComponentCount(responseName, index, 1)};
+            getSubNameByComponentCount(responseName, serviceIndex, serviceComponentCount),
+            getSubNameByComponentCount(responseName, responseName.size() - 1, 1)};
     }
 
     ndn::Name makeRequestAckNameV2(const ndn::Name& providerName,
@@ -364,8 +388,8 @@ namespace ndn_service_framework
     {
         ndn::Name requestAckName;
         requestAckName.append(providerName).append(ndn::Name("/NDNSF/ACK"));
-        appendCountedName(requestAckName, requesterName);
-        appendCountedName(requestAckName, serviceName);
+        appendNameUriComponent(requestAckName, requesterName);
+        requestAckName.append(serviceName);
         requestAckName.append(requestId);
         return requestAckName;
     }
@@ -376,8 +400,8 @@ namespace ndn_service_framework
     {
         ndn::Name requestAckName;
         requestAckName.append(ndn::Name("/NDNSF/ACK"));
-        appendCountedName(requestAckName, requesterName);
-        appendCountedName(requestAckName, serviceName);
+        appendNameUriComponent(requestAckName, requesterName);
+        requestAckName.append(serviceName);
         requestAckName.append(requestId);
         return requestAckName;
     }
@@ -389,18 +413,22 @@ namespace ndn_service_framework
             return std::nullopt;
         }
 
-        size_t index = *marker + 2;
-        auto requesterName = parseCountedName(requestAckName, index);
-        auto serviceName = parseCountedName(requestAckName, index);
-        if (!requesterName || !serviceName || index + 1 != requestAckName.size()) {
+        const size_t index = *marker + 2;
+        if (index + 3 > requestAckName.size()) {
             return std::nullopt;
         }
+        auto requesterName = parseNameUriComponent(requestAckName, index);
+        if (!requesterName) {
+            return std::nullopt;
+        }
+        const size_t serviceIndex = index + 1;
+        const size_t serviceComponentCount = requestAckName.size() - serviceIndex - 1;
 
         return RequestAckNameV2{
             getSubNameByComponentCount(requestAckName, 0, *marker),
             *requesterName,
-            *serviceName,
-            getSubNameByComponentCount(requestAckName, index, 1)};
+            getSubNameByComponentCount(requestAckName, serviceIndex, serviceComponentCount),
+            getSubNameByComponentCount(requestAckName, requestAckName.size() - 1, 1)};
     }
 
     ndn::Name makeServiceSelectionNameV2(const ndn::Name& requesterName,
@@ -410,8 +438,8 @@ namespace ndn_service_framework
     {
         ndn::Name serviceSelectionName;
         serviceSelectionName.append(requesterName).append(ndn::Name("/NDNSF/SELECTION"));
-        appendCountedName(serviceSelectionName, providerName);
-        appendCountedName(serviceSelectionName, serviceName);
+        appendNameUriComponent(serviceSelectionName, providerName);
+        serviceSelectionName.append(serviceName);
         serviceSelectionName.append(requestId);
         return serviceSelectionName;
     }
@@ -422,8 +450,8 @@ namespace ndn_service_framework
     {
         ndn::Name serviceSelectionName;
         serviceSelectionName.append(ndn::Name("/NDNSF/SELECTION"));
-        appendCountedName(serviceSelectionName, providerName);
-        appendCountedName(serviceSelectionName, serviceName);
+        appendNameUriComponent(serviceSelectionName, providerName);
+        serviceSelectionName.append(serviceName);
         serviceSelectionName.append(requestId);
         return serviceSelectionName;
     }
@@ -436,18 +464,22 @@ namespace ndn_service_framework
             return std::nullopt;
         }
 
-        size_t index = *marker + 2;
-        auto providerName = parseCountedName(serviceSelectionName, index);
-        auto serviceName = parseCountedName(serviceSelectionName, index);
-        if (!providerName || !serviceName || index + 1 != serviceSelectionName.size()) {
+        const size_t index = *marker + 2;
+        if (index + 3 > serviceSelectionName.size()) {
             return std::nullopt;
         }
+        auto providerName = parseNameUriComponent(serviceSelectionName, index);
+        if (!providerName) {
+            return std::nullopt;
+        }
+        const size_t serviceIndex = index + 1;
+        const size_t serviceComponentCount = serviceSelectionName.size() - serviceIndex - 1;
 
         return ServiceSelectionNameV2{
             getSubNameByComponentCount(serviceSelectionName, 0, *marker),
             *providerName,
-            *serviceName,
-            getSubNameByComponentCount(serviceSelectionName, index, 1)};
+            getSubNameByComponentCount(serviceSelectionName, serviceIndex, serviceComponentCount),
+            getSubNameByComponentCount(serviceSelectionName, serviceSelectionName.size() - 1, 1)};
     }
 
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,

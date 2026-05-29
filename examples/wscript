@@ -109,7 +109,6 @@ def build(bld):
                             'ndn-service-framework/ConfigManager.cpp',
                             'ndn-service-framework/Service.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
-                            'ndn-service-framework/ServiceStub.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',

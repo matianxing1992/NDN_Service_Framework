@@ -778,15 +778,13 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   const ndn::Name requester("/test/user/alice");
   const ndn::Name provider("/test/provider/camera");
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
-  const ndn::Name bloomFilter("/ff00");
   const ndn::Name requestId("/request-1");
 
-  const auto requestName = makeRequestNameV2(requester, serviceName, bloomFilter, requestId);
+  const auto requestName = makeRequestNameV2(requester, serviceName, requestId);
   const auto parsedRequest = parseRequestNameV2(requestName);
   BOOST_REQUIRE(parsedRequest);
   BOOST_CHECK_EQUAL(parsedRequest->requesterName, requester);
   BOOST_CHECK_EQUAL(parsedRequest->serviceName, serviceName);
-  BOOST_CHECK_EQUAL(parsedRequest->bloomFilter, bloomFilter);
   BOOST_CHECK_EQUAL(parsedRequest->requestId, requestId);
 
   const auto responseName = makeResponseNameV2(provider, requester, serviceName, requestId);
@@ -882,7 +880,7 @@ BOOST_AUTO_TEST_CASE(HybridMessageEnvelopeProtectsRequestPayloadAndUserToken)
   request.setPayload(payload, payload.size());
   const auto plaintext = request.WireEncode();
   const auto ad = hybridAssociatedData(
-    ndn::Name("/test/user/alice/NDNSF/REQUEST/1/HELLO/bloom/rid"),
+    ndn::Name("/test/user/alice/NDNSF/REQUEST/HELLO/bloom/rid"),
     "REQUEST", ndn::Name("/rid"), serviceName, sender, key.keyId, key.epochId);
 
   auto encrypted = hybridAesGcmEncrypt(
@@ -933,7 +931,10 @@ BOOST_AUTO_TEST_CASE(HybridMessageEnvelopeProtectsAckProviderTokenAndDetectsTamp
   ack.setPayload(payload, payload.size());
   const auto plaintext = ack.WireEncode();
   const auto ad = hybridAssociatedData(
-    ndn::Name("/test/provider/a/NDNSF/ACK/3/test/user/alice/1/HELLO/rid"),
+    makeRequestAckNameV2(ndn::Name("/test/provider/a"),
+                         ndn::Name("/test/user/alice"),
+                         serviceName,
+                         ndn::Name("/rid")),
     "ACK", ndn::Name("/rid"), serviceName, sender, key.keyId, key.epochId);
 
   auto encrypted = hybridAesGcmEncrypt(
@@ -1039,7 +1040,6 @@ BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
 
   const auto requestName = makeRequestNameV2(requesterName,
                                             serviceName,
-                                            ndn::Name("/bf"),
                                             requestId);
   auto goodRequest = makeRequestMessageWithUserToken("payload");
   auto goodResponse = provider.handleDecryptedRequestByName(requestName, goodRequest);
