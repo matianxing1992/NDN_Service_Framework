@@ -73,36 +73,37 @@ The HELLO examples use normal `RequestMessage`, `RequestAckMessage`, and `Respon
 
 ## V2 Naming
 
-All new generic runtime paths should use V2 helpers with explicit component counts.
+All new generic runtime paths should use V2 helpers without bloom filters.
+Legacy bloom-filter parsing may remain only for compatibility with old names.
 
 Request:
 
 ```text
-/<requester>/NDNSF/REQUEST/<service-component-count>/<service-name...>/<bloomFilter>/<requestId>
+/<requester>/NDNSF/REQUEST/<service-name...>/<requestId>
 ```
 
 Example:
 
 ```text
-/example/hello/user/NDNSF/REQUEST/1/HELLO/<bloomFilter>/<requestId>
+/example/hello/user/NDNSF/REQUEST/HELLO/<requestId>
 ```
 
 Response:
 
 ```text
-/<provider>/NDNSF/RESPONSE/<requester-component-count>/<requester...>/<service-component-count>/<service-name...>/<requestId>
+/<provider>/NDNSF/RESPONSE/<requester-uri-component>/<service-name...>/<requestId>
 ```
 
 ACK:
 
 ```text
-/<provider>/NDNSF/ACK/<requester-component-count>/<requester...>/<service-component-count>/<service-name...>/<requestId>
+/<provider>/NDNSF/ACK/<requester-uri-component>/<service-name...>/<requestId>
 ```
 
 Selection:
 
 ```text
-/<requester>/NDNSF/SELECTION/<provider-component-count>/<provider...>/<service-component-count>/<service-name...>/<requestId>
+/<requester>/NDNSF/SELECTION/<provider-uri-component>/<service-name...>/<requestId>
 ```
 
 ## NAC-ABE Routing
@@ -307,6 +308,20 @@ selection, and that only the selected provider executes the final response.
 NAC-ABE attribute routing logs from `GetAttributesByName`: REQUEST and
 SELECTION map to `/SERVICE/<service>`, while ACK and RESPONSE map to
 `/PERMISSION/<service>`.
+
+## Benchmark Results Retention
+
+`results/` is local experiment output and is not a source of truth by itself.
+Keep only canonical reproduction runs or the latest result for a distinct
+diagnostic scenario. Delete superseded rate-series attempts, failed/debug smoke
+runs, and repeated local troubleshooting logs once the useful finding is
+documented in README or a tracked script.
+
+Current canonical MiniNDN latency result:
+
+```text
+results/newapi_testbed_rate_series_20260528_194238
+```
 
 ## Security Verification Notes
 
