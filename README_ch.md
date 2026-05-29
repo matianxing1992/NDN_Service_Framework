@@ -103,6 +103,7 @@ dependencies/local/openabe
 NDNCXX_REPO_URL=https://github.com/matianxing1992/ndn-cxx \
 NDNSD_REPO_URL=https://github.com/matianxing1992/NDNSD \
 NDNSVS_REPO_URL=https://github.com/matianxing1992/ndn-svs \
+OPENABE_REPO_URL=https://github.com/zeutro/openabe \
 NACABE_REPO_URL=https://github.com/matianxing1992/NAC-ABE \
 sudo ./install_ndnsf_stack.sh --force-dependencies
 ```
@@ -393,6 +394,61 @@ provider handler threads: 2
 provider ACK worker threads: 2
 strategy: first-responding
 workload: open-loop, latency floor 验证使用 60 s warmup + 60 s measured duration
+```
+
+100 RPS latency-floor run 已验证的软件栈：
+
+```text
+OS: Ubuntu 20.04.3 LTS
+Compiler: g++ 9.4.0
+Python: 3.8.10
+Boost: 1.71.0
+OpenSSL: 1.1.1f
+ndn-cxx: 0.9.0 (/usr/local/lib/libndn-cxx.so.0.9.0)
+NFD: 24.07-14-g2b43d675
+MiniNDN: 0.7.0 (/home/tianxing/NDN/mini-ndn)
+Mininet: 2.3.1b4
+ndn-svs: /home/tianxing/NDN/ndn-svs commit 8b26f10
+NDNSF: /home/tianxing/NDN/ndn-service-framework commit 1259111
+OpenABE: /usr/local/lib/libopenabe.so，基于 OpenSSL 1.1.x 构建
+```
+
+这里的 commit hash 是复现实验记录的一部分，不表示永久最低版本要求。如果更新了
+`ndn-cxx`、`NFD`、`ndn-svs`、MiniNDN/Mininet、OpenABE 或本仓库后 latency
+floor 退化，应先重新执行下面的复现命令，再和 166 ms reference 比较。同时要确认
+程序实际链接的是期望的 `/usr/local/lib/libndn-svs.so` 和
+`/usr/local/lib/libndn-cxx.so`；如果还在使用旧的系统库，源码修改可能看起来没有生效。
+
+复现命令：
+
+```bash
+sudo -n python3 Experiments/NDNSF_NewAPI_Minindn_Perf.py \
+  --topology-file 'Experiments/Topology/testbed(loss=0%).conf' \
+  --user-node memphis \
+  --provider-nodes ucla \
+  --controller-node csu \
+  --providers 1 \
+  --rate-rps 100 \
+  --duration 60 \
+  --warmup 60 \
+  --max-total-runtime-seconds 300 \
+  --workload-mode open-loop \
+  --strategy first-responding \
+  --disable-adaptive-admission-control \
+  --performance-mode \
+  --handler-threads 2 \
+  --ack-threads 2 \
+  --nfd-log-level WARN \
+  --skip-post-run-diagnostics
+```
+
+参考结果来自 `results/newapi_testbed_rate_series_20260528_194238`：
+
+```text
+RPS   Actual   Success   Avg ms   P50 ms   P95 ms   P99 ms   Timeout
+20    20.00    100%      166.19   165.20   172.88   178.70   0
+60    60.00    100%      168.85   166.61   184.34   199.18   0
+100   99.99    100%      166.40   165.67   169.04   174.19   0
 ```
 
 当前 60 秒、100 RPS 诊断解释了为什么后续持续运行可能高于 166 ms 的短窗口

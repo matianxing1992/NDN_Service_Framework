@@ -149,7 +149,7 @@ private:
             std::string consumerInputParam = extractInterestParam(interest);
             std::string token = extractRPCCaller(consumerInputParam);
             std::string resultName = RESULTS + token;
-            auto data = createData(interest.getName(), resultName, PRODUCER_IDENTITY);
+            auto data = createData(interest.getName(), APP_ACK, PRODUCER_IDENTITY);
             m_face.put(*data);
             requestConsumerInput(consumerInputParam, token, resultName);
 

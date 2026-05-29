@@ -117,6 +117,7 @@ Repository URLs can be overridden if needed:
 NDNCXX_REPO_URL=https://github.com/matianxing1992/ndn-cxx \
 NDNSD_REPO_URL=https://github.com/matianxing1992/NDNSD \
 NDNSVS_REPO_URL=https://github.com/matianxing1992/ndn-svs \
+OPENABE_REPO_URL=https://github.com/zeutro/openabe \
 NACABE_REPO_URL=https://github.com/matianxing1992/NAC-ABE \
 sudo ./install_ndnsf_stack.sh --force-dependencies
 ```
@@ -438,6 +439,31 @@ strategy: first-responding
 workload: open-loop, 60 s warmup + 60 s measured duration for latency floor validation
 ```
 
+Verified software stack for the 100 RPS latency-floor run:
+
+```text
+OS: Ubuntu 20.04.3 LTS
+Compiler: g++ 9.4.0
+Python: 3.8.10
+Boost: 1.71.0
+OpenSSL: 1.1.1f
+ndn-cxx: 0.9.0 (/usr/local/lib/libndn-cxx.so.0.9.0)
+NFD: 24.07-14-g2b43d675
+MiniNDN: 0.7.0 (/home/tianxing/NDN/mini-ndn)
+Mininet: 2.3.1b4
+ndn-svs: /home/tianxing/NDN/ndn-svs commit 8b26f10
+NDNSF: /home/tianxing/NDN/ndn-service-framework commit 1259111
+OpenABE: /usr/local/lib/libopenabe.so, built against OpenSSL 1.1.x
+```
+
+The exact commit hashes are part of the reproduction record, not a permanent
+minimum version claim. If the latency floor regresses after updating any of
+`ndn-cxx`, `NFD`, `ndn-svs`, MiniNDN/Mininet, OpenABE, or this repository, rerun
+the command below before comparing against the 166 ms reference. Also verify
+that the application links against the intended `/usr/local/lib/libndn-svs.so`
+and `/usr/local/lib/libndn-cxx.so`; stale system libraries can make source
+changes appear ineffective.
+
 Reproduction command:
 
 ```bash
@@ -455,7 +481,6 @@ sudo -n python3 Experiments/NDNSF_NewAPI_Minindn_Perf.py \
   --strategy first-responding \
   --disable-adaptive-admission-control \
   --performance-mode \
-  --svs-disable-parallel-production \
   --handler-threads 2 \
   --ack-threads 2 \
   --nfd-log-level WARN \
