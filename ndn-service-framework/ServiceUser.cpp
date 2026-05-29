@@ -569,6 +569,14 @@ namespace ndn_service_framework
                 ndn::time::milliseconds(suppressionMs));
             NDN_LOG_INFO("NDNSF_SVS_MAX_SUPPRESSION_MS role=user value="
                          << suppressionMs);
+            if (std::getenv("NDNSF_SVS_PERIODIC_SYNC_MS") != nullptr) {
+                const int periodicSyncMs =
+                    std::max(1, intEnvOrDefault("NDNSF_SVS_PERIODIC_SYNC_MS", 30000));
+                m_svsps->getSVSync().getCore().setPeriodicSyncTime(
+                    ndn::time::milliseconds(periodicSyncMs));
+                NDN_LOG_INFO("NDNSF_SVS_PERIODIC_SYNC_MS role=user value="
+                             << periodicSyncMs);
+            }
             NDN_LOG_INFO("NDNSF_SVS_ASYNC_PUBLISH role=user "
                          << (useAsyncSvsPublish() ? "enabled" : "disabled"));
             const bool enableParallelSync =
@@ -1028,7 +1036,7 @@ namespace ndn_service_framework
             status.endToEndLatencyMs =
                 static_cast<double>(terminalUs - status.enqueueTimestampUs) / 1000.0;
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_LIFECYCLE_STATE timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_LIFECYCLE_STATE timestamp_us="
                   << nowUs
                   << " requestId=" << requestId.toUri()
                   << " state=" << requestLifecycleStateToString(state)
@@ -1146,7 +1154,7 @@ namespace ndn_service_framework
 
     void ServiceUser::cleanupPendingCallState(const ndn::Name& requestId)
     {
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=PENDING_CLEANUP timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=PENDING_CLEANUP timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " strategyState=" << (m_strategyMap.find(requestId) != m_strategyMap.end())
@@ -1182,7 +1190,7 @@ namespace ndn_service_framework
         record.createdAtUs = pendingCall.createdAtUs;
         record.requestName = pendingCall.requestName;
         m_pendingCallTraceHistory[requestId] = record;
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_PENDING_CREATED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PENDING_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " callId=" << requestId.toUri()
@@ -1228,7 +1236,7 @@ namespace ndn_service_framework
         const char* event = record.completed ?
             "REQUEST_PENDING_COMPLETED" :
             (record.timedOut ? "REQUEST_PENDING_TIMEOUT" : "REQUEST_PENDING_ERASED");
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=" << event
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=" << event
                   << " timestamp_us=" << eraseAtUs
                   << " requestId=" << requestId.toUri()
                   << " callId=" << requestId.toUri()
@@ -1242,7 +1250,7 @@ namespace ndn_service_framework
                   << " pendingCallsSizeBefore=" << m_pendingCalls.size()
                   << " threadId=" << currentThreadIdForTrace());
         if (std::string(event) != "REQUEST_PENDING_ERASED") {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_PENDING_ERASED"
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PENDING_ERASED"
                       << " timestamp_us=" << eraseAtUs
                       << " requestId=" << requestId.toUri()
                       << " callId=" << requestId.toUri()
@@ -1305,7 +1313,7 @@ namespace ndn_service_framework
                 return;
             }
 
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=TIMEOUT_FIRED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=TIMEOUT_FIRED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " pendingCall=present"
@@ -1337,7 +1345,7 @@ namespace ndn_service_framework
             if (hasReachedLatePipelineStage(pendingCall->second) &&
                 m_pendingCallTimeoutGrace.count() > 0) {
                 pendingCall->second.timeoutGraceActive = true;
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=TIMEOUT_GRACE_STARTED timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=TIMEOUT_GRACE_STARTED timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << requestId.toUri()
                           << " graceMs=" << m_pendingCallTimeoutGrace.count());
@@ -1392,7 +1400,7 @@ namespace ndn_service_framework
                                               effectiveSoftQueueLimit,
                                               effectiveHardQueueLimit);
             }
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ADMISSION_QUEUED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ADMISSION_QUEUED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " inflight=" << m_adaptiveAdmissionInflight
@@ -2041,7 +2049,7 @@ namespace ndn_service_framework
             }
         }
 
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ADMISSION_RELEASED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ADMISSION_RELEASED timestamp_us="
                   << terminalTimestampUs
                   << " requestId=" << requestId.toUri()
                   << " reason=" << reasonText
@@ -2060,7 +2068,7 @@ namespace ndn_service_framework
         auto pendingCall = m_pendingCalls.find(requestId);
         const uint64_t createdAtUs =
             pendingCall != m_pendingCalls.end() ? pendingCall->second.createdAtUs : 0;
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCH_ATTEMPT"
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCH_ATTEMPT"
                   << " timestamp_us=" << ackReceiveUs
                   << " requestId=" << requestId.toUri()
                   << " callId=" << requestId.toUri()
@@ -2099,7 +2107,7 @@ namespace ndn_service_framework
         }
         const bool beforeEarliestPendingCreation =
             earliestCreatedAtUs != 0 && ackReceiveUs < earliestCreatedAtUs;
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCH_FAILED_NO_PENDING_CALL"
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCH_FAILED_NO_PENDING_CALL"
                   << " timestamp_us=" << ackReceiveUs
                   << " requestId=" << requestId.toUri()
                   << " callId=" << requestId.toUri()
@@ -2118,7 +2126,7 @@ namespace ndn_service_framework
                   << " afterCompletionCleanup=" << afterCompletionCleanup
                   << " threadId=" << currentThreadIdForTrace());
         if (afterTimeoutCleanup || afterCompletionCleanup) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCH_FAILED_EXPIRED_CALL"
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCH_FAILED_EXPIRED_CALL"
                       << " timestamp_us=" << ackReceiveUs
                       << " requestId=" << requestId.toUri()
                       << " ackName=" << ackName.toUri()
@@ -2127,7 +2135,7 @@ namespace ndn_service_framework
                       << " afterCompletionCleanup=" << afterCompletionCleanup);
         }
         if (!m_pendingCalls.empty()) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCH_FAILED_REQUEST_ID_MISMATCH"
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCH_FAILED_REQUEST_ID_MISMATCH"
                       << " timestamp_us=" << ackReceiveUs
                       << " requestId=" << requestId.toUri()
                       << " ackName=" << ackName.toUri()
@@ -2390,7 +2398,7 @@ namespace ndn_service_framework
         NDN_LOG_DEBUG(" selected serviceName=" << serviceName.toUri()
                   << " final request name=" << requestName.toUri()
                   << " userToken=" << requestMessage.getUserToken());
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_PUBLISHED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PUBLISHED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri()
@@ -2410,7 +2418,7 @@ namespace ndn_service_framework
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::REQUEST_PUBLISHED);
 
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_PUBLISH_BEGIN timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PUBLISH_BEGIN timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri()
@@ -2432,7 +2440,7 @@ namespace ndn_service_framework
         else {
             PublishMessage(requestName, requestNameWithoutPrefix, requestMessage);
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_PUBLISH_RETURN timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_PUBLISH_RETURN timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
@@ -2567,7 +2575,7 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
@@ -2692,7 +2700,7 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
@@ -2727,7 +2735,7 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
@@ -2765,7 +2773,7 @@ namespace ndn_service_framework
         pendingCall.responseHandler = std::move(onResponseHandler);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << serviceName.toUri());
@@ -2802,7 +2810,7 @@ namespace ndn_service_framework
             pendingCall.responseHandler = std::move(onResponseHandler);
             m_pendingCalls[requestId] = std::move(pendingCall);
             updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " serviceName=" << serviceName.toUri());
@@ -2937,7 +2945,7 @@ namespace ndn_service_framework
         m_pendingCalls[requestId] = std::move(pendingCall);
 
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=COLLAB_REQUEST_CREATED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COLLAB_REQUEST_CREATED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " serviceName=" << service.toUri());
@@ -2953,14 +2961,14 @@ namespace ndn_service_framework
         auto pendingCall = m_pendingCalls.find(requestId);
         if (pendingCall == m_pendingCalls.end()) {
             ++m_runtimeDiagnostics.callbackSkippedNoPending;
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CALLBACK_SKIPPED_NO_PENDING timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CALLBACK_SKIPPED_NO_PENDING timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " userToken=" << responseMessage.getUserToken());
             return;
         }
 
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CALLBACK_ATTEMPT timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CALLBACK_ATTEMPT timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " pendingCall=present"
@@ -2968,7 +2976,7 @@ namespace ndn_service_framework
         if (pendingCall->second.timedOut) {
             ++m_runtimeDiagnostics.callbackSkippedTimeout;
             ++m_runtimeDiagnostics.responseAfterPendingTimeout;
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CALLBACK_SKIPPED_TIMEOUT timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CALLBACK_SKIPPED_TIMEOUT timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri());
             return;
@@ -2980,7 +2988,7 @@ namespace ndn_service_framework
         }
         if (expectMultipleResponses &&
             !containsName(pendingCall->second.expectedResponseProviders, providerName)) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_REJECTED_UNSELECTED_PROVIDER timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_REJECTED_UNSELECTED_PROVIDER timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri());
@@ -3016,10 +3024,10 @@ namespace ndn_service_framework
             return;
         }
 
-        NDN_LOG_INFO("[ServiceUser] RESPONSE accepted requestId="
+        NDN_LOG_TRACE("[ServiceUser] RESPONSE accepted requestId="
                   << requestId.toUri()
                   << " userToken=" << responseMessage.getUserToken());
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CALLBACK_FIRED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CALLBACK_FIRED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " handlerQueueDepth=" << m_handlerPool.getQueueSize());
@@ -3048,7 +3056,7 @@ namespace ndn_service_framework
                 }
             });
         if (!queued) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CALLBACK_QUEUE_FULL timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CALLBACK_QUEUE_FULL timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri());
         }
@@ -3062,10 +3070,10 @@ namespace ndn_service_framework
         if (m_pendingCalls.find(requestId) == m_pendingCalls.end()) {
             ++m_runtimeDiagnostics.callbackSkippedNoPending;
             ++m_runtimeDiagnostics.responseAfterPendingTimeout;
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPTED_NO_PENDING timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPTED_NO_PENDING timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri());
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CALLBACK_SKIPPED_NO_PENDING timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CALLBACK_SKIPPED_NO_PENDING timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " reason=response_after_pending_erased");
@@ -3074,14 +3082,14 @@ namespace ndn_service_framework
 
         auto pendingCall = m_pendingCalls.find(requestId);
         const auto& expectedUserToken = pendingCall->second.requestMessage.getUserToken();
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_START timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_START timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " pendingCall=present");
         if (m_useTokens &&
             (expectedUserToken.empty() ||
              responseMessage.getUserToken() != expectedUserToken)) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_FAILED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_FAILED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " reason=user_token_mismatch"
@@ -3098,7 +3106,7 @@ namespace ndn_service_framework
             return false;
         }
 
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_DONE timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_DONE timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri());
         pendingCall->second.responseValidatedAtUs = nowMicroseconds();
@@ -3117,7 +3125,7 @@ namespace ndn_service_framework
     {
         ndn_service_framework::ResponseMessage responseMessage;
         if (!responseMessage.WireDecode(responseBlock)) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_FAILED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_FAILED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " reason=wire_decode_failed");
@@ -3176,7 +3184,7 @@ namespace ndn_service_framework
             try {
                 ndn::Block block(ndn::span<const uint8_t>(raw->data(), raw->size()));
                 if (!responseMessage.WireDecode(block)) {
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_FAILED timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_FAILED timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << requestId.toUri()
                               << " reason=wire_decode_failed");
@@ -3232,7 +3240,7 @@ namespace ndn_service_framework
                      pending->second.ackCandidatesHandler) &&
                     pending->second.ackDecryptsInFlight > 0) {
                     --pending->second.ackDecryptsInFlight;
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_DECRYPT_IN_FLIGHT_DONE timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_DECRYPT_IN_FLIGHT_DONE timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << requestId.toUri()
                               << " inFlight=" << pending->second.ackDecryptsInFlight
@@ -3256,7 +3264,7 @@ namespace ndn_service_framework
                                 ackName,
                                 parsedV2->providerName,
                                 ackReceiveUs);
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_IGNORED_NO_PENDING timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_IGNORED_NO_PENDING timestamp_us="
                           << ackReceiveUs
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3264,7 +3272,7 @@ namespace ndn_service_framework
                 return false;
             }
 
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_RECEIVED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_RECEIVED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << parsedV2->requestId.toUri()
                       << " providerName=" << parsedV2->providerName.toUri()
@@ -3278,7 +3286,7 @@ namespace ndn_service_framework
                         static_cast<double>(pendingCall->second.firstAckAtUs -
                                             pendingCall->second.createdAtUs) / 1000.0);
                 }
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=FIRST_ACK_OBSERVED timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=FIRST_ACK_OBSERVED timestamp_us="
                           << pendingCall->second.firstAckAtUs
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3290,7 +3298,7 @@ namespace ndn_service_framework
             if (m_useTokens &&
                 (expectedUserToken.empty() ||
                  ackMessage.getUserToken() != expectedUserToken)) {
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_REJECTED_USER_TOKEN timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_REJECTED_USER_TOKEN timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3317,7 +3325,7 @@ namespace ndn_service_framework
 
             if (m_useTokens &&
                 ackMessage.getStatus() && ackMessage.getProviderToken().empty()) {
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_REJECTED_PROVIDER_TOKEN timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_REJECTED_PROVIDER_TOKEN timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri());
@@ -3332,7 +3340,7 @@ namespace ndn_service_framework
 
             if (pendingCall->second.providerSelected ||
                 !pendingCall->second.selectedProvider.empty()) {
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_IGNORED_PROVIDER_SELECTED timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_IGNORED_PROVIDER_SELECTED timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3357,7 +3365,7 @@ namespace ndn_service_framework
             }
             traceRecord.matchedAck = true;
             traceRecord.requestName = pendingCall->second.requestName;
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCHED_PENDING_CALL timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCHED_PENDING_CALL timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << parsedV2->requestId.toUri()
                       << " callId=" << parsedV2->requestId.toUri()
@@ -3389,7 +3397,7 @@ namespace ndn_service_framework
                 if (learnedProviderCount > 0 &&
                     ackProviders.size() >= learnedProviderCount) {
                     pendingCall->second.ackWindowExpired = true;
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << parsedV2->requestId.toUri()
                               << " ackProviderCount=" << ackProviders.size()
@@ -3419,7 +3427,7 @@ namespace ndn_service_framework
                 pendingCall->second.selectedProvider.equals(parsedV2->providerName)) {
                 const auto scheduleAtUs = nowMicroseconds();
                 pendingCall->second.selectionScheduledAtUs = scheduleAtUs;
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                           << scheduleAtUs
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3429,12 +3437,12 @@ namespace ndn_service_framework
                           << " providerTokenPresent="
                           << (pendingCall->second.providerTokens.find(parsedV2->providerName.toUri()) !=
                               pendingCall->second.providerTokens.end()));
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SCHEDULE_ATTEMPT timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_SCHEDULE_ATTEMPT timestamp_us="
                           << scheduleAtUs
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
                           << " serviceName=" << parsedV2->serviceName.toUri());
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_FAST_PATH timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_FAST_PATH timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3444,7 +3452,7 @@ namespace ndn_service_framework
                                                     parsedV2->requestId);
             }
             else if (shouldSelectFirstAck) {
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SKIPPED timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_SKIPPED timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << parsedV2->requestId.toUri()
                           << " providerName=" << parsedV2->providerName.toUri()
@@ -3477,7 +3485,7 @@ namespace ndn_service_framework
         auto pendingCall = m_pendingCalls.find(requestId);
         if (pendingCall == m_pendingCalls.end()) {
             logAckNoPending(requestId, ackName, providerName, ackReceiveUs);
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_IGNORED_NO_PENDING timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_IGNORED_NO_PENDING timestamp_us="
                       << ackReceiveUs
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3485,7 +3493,7 @@ namespace ndn_service_framework
             return false;
         }
 
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_RECEIVED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_RECEIVED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -3499,7 +3507,7 @@ namespace ndn_service_framework
                     static_cast<double>(pendingCall->second.firstAckAtUs -
                                         pendingCall->second.createdAtUs) / 1000.0);
             }
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=FIRST_ACK_OBSERVED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=FIRST_ACK_OBSERVED timestamp_us="
                       << pendingCall->second.firstAckAtUs
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3526,7 +3534,7 @@ namespace ndn_service_framework
 
         if (pendingCall->second.providerSelected ||
             !pendingCall->second.selectedProvider.empty()) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_IGNORED_PROVIDER_SELECTED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_IGNORED_PROVIDER_SELECTED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3551,7 +3559,7 @@ namespace ndn_service_framework
         }
         traceRecord.matchedAck = true;
         traceRecord.requestName = pendingCall->second.requestName;
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCHED_PENDING_CALL timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCHED_PENDING_CALL timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " callId=" << requestId.toUri()
@@ -3580,7 +3588,7 @@ namespace ndn_service_framework
                 if (learnedProviderCount > 0 &&
                     ackProviders.size() >= learnedProviderCount) {
                     pendingCall->second.ackWindowExpired = true;
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
                               << nowMicroseconds()
                               << " requestId=" << requestId.toUri()
                               << " ackProviderCount=" << ackProviders.size()
@@ -3607,7 +3615,7 @@ namespace ndn_service_framework
             pendingCall->second.selectedProvider.equals(providerName)) {
             const auto scheduleAtUs = nowMicroseconds();
             pendingCall->second.selectionScheduledAtUs = scheduleAtUs;
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                       << scheduleAtUs
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3617,12 +3625,12 @@ namespace ndn_service_framework
                       << " providerTokenPresent="
                       << (pendingCall->second.providerTokens.find(providerName.toUri()) !=
                           pendingCall->second.providerTokens.end()));
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SCHEDULE_ATTEMPT timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_SCHEDULE_ATTEMPT timestamp_us="
                       << scheduleAtUs
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
                       << " serviceName=" << makeUnifiedServiceName(serviceName, functionName).toUri());
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_FAST_PATH timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_FAST_PATH timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3633,7 +3641,7 @@ namespace ndn_service_framework
                                               requestId);
         }
         else if (shouldSelectFirstAck) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_SKIPPED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_SKIPPED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -3741,7 +3749,7 @@ namespace ndn_service_framework
     {
         auto pendingCall = m_pendingCalls.find(requestId);
         if (pendingCall == m_pendingCalls.end()) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_NO_PENDING timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_NO_PENDING timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri());
             return false;
@@ -3749,7 +3757,7 @@ namespace ndn_service_framework
 
         if (pendingCall->second.providerSelected ||
             !pendingCall->second.selectedProvider.empty()) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_ALREADY_SELECTED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_ALREADY_SELECTED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " selectedProvider="
@@ -3765,7 +3773,7 @@ namespace ndn_service_framework
                 ++successfulAckCount;
             }
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_BEGIN timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_BEGIN timestamp_us="
                   << pendingCall->second.ackSelectionAtUs
                   << " requestId=" << requestId.toUri()
                   << " ackCount=" << pendingCall->second.requestAcks.size()
@@ -3795,7 +3803,7 @@ namespace ndn_service_framework
         selected = selected && hasSelectedCandidate;
 
         pendingCall->second.ackSelectionCompletedAtUs = nowMicroseconds();
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_END timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_END timestamp_us="
                   << pendingCall->second.ackSelectionCompletedAtUs
                   << " requestId=" << requestId.toUri()
                   << " result=" << selected
@@ -3809,7 +3817,7 @@ namespace ndn_service_framework
         if (selected && hasSelectedCandidate) {
             pendingCall->second.providerSelected = true;
             updateRequestLifecycleState(requestId, RequestLifecycleState::PROVIDER_SELECTED);
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=PROVIDER_SELECTED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=PROVIDER_SELECTED timestamp_us="
                       << pendingCall->second.ackSelectionCompletedAtUs
                       << " requestId=" << requestId.toUri()
                       << " selectedProvider="
@@ -3831,7 +3839,7 @@ namespace ndn_service_framework
             // still arrive and trigger selection. Keep the admission slot
             // until the call completes or times out so overload is reflected
             // in the user-side controller instead of admitting more work.
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_NO_PROVIDER_PENDING"
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_NO_PROVIDER_PENDING"
                       << " timestamp_us=" << pendingCall->second.ackSelectionCompletedAtUs
                       << " requestId=" << requestId.toUri()
                       << " ackCount=" << pendingCall->second.requestAcks.size()
@@ -3844,7 +3852,7 @@ namespace ndn_service_framework
     {
         auto pendingCall = m_pendingCalls.find(requestId);
         if (pendingCall == m_pendingCalls.end()) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_NO_PENDING timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_SKIPPED_NO_PENDING timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri());
             return false;
@@ -3864,7 +3872,7 @@ namespace ndn_service_framework
             pendingCall->second.ackDecryptsInFlight > 0 &&
             pendingCall->second.ackSelectionDeferrals < 5) {
             ++pendingCall->second.ackSelectionDeferrals;
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SELECTION_DEFERRED_IN_FLIGHT timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_DEFERRED_IN_FLIGHT timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " inFlight=" << pendingCall->second.ackDecryptsInFlight
@@ -3893,14 +3901,14 @@ namespace ndn_service_framework
         pendingCall.customSelectedAcks.push_back(storedAck);
         pendingCall.successfulAckProviders.clear();
         addUniqueName(pendingCall.successfulAckProviders, storedAck.providerName);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=LATE_ACK_SELECTED_AFTER_ACK_TIMEOUT timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=LATE_ACK_SELECTED_AFTER_ACK_TIMEOUT timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << storedAck.requestId.toUri()
                   << " providerName=" << storedAck.providerName.toUri()
                   << " serviceName=" << storedAck.serviceName.toUri()
                   << " providerTokenPresent="
                   << !storedAck.message.getProviderToken().empty());
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << storedAck.requestId.toUri()
                   << " providerName=" << storedAck.providerName.toUri()
@@ -4041,7 +4049,7 @@ namespace ndn_service_framework
         }
 
         for (const auto& selectedAck : pendingCall.customSelectedAcks) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << selectedAck.requestId.toUri()
                       << " providerName=" << selectedAck.providerName.toUri()
@@ -4325,7 +4333,7 @@ namespace ndn_service_framework
                                     ackV2->providerName,
                                     ackReceiveUs);
                 }
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCH_SKIPPED_PRE_DECRYPT timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCH_SKIPPED_PRE_DECRYPT timestamp_us="
                           << ackReceiveUs
                           << " requestId=" << ackV2->requestId.toUri()
                           << " ackName=" << subscription.name.toUri()
@@ -4357,7 +4365,7 @@ namespace ndn_service_framework
                 if (pendingCall->second.ackWindowExpired &&
                     deadlineUs > 0 &&
                     ackReceiveUs > deadlineUs) {
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_SKIPPED_AFTER_ACK_WINDOW timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SKIPPED_AFTER_ACK_WINDOW timestamp_us="
                               << ackReceiveUs
                               << " requestId=" << ackV2->requestId.toUri()
                               << " ackName=" << subscription.name.toUri()
@@ -4367,7 +4375,7 @@ namespace ndn_service_framework
                 }
                 if (deadlineUs == 0 || ackReceiveUs <= deadlineUs) {
                     ++pendingCall->second.ackDecryptsInFlight;
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_DECRYPT_IN_FLIGHT timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_DECRYPT_IN_FLIGHT timestamp_us="
                               << ackReceiveUs
                               << " requestId=" << ackV2->requestId.toUri()
                               << " ackName=" << subscription.name.toUri()
@@ -4553,7 +4561,7 @@ namespace ndn_service_framework
                                 providerName,
                                 ackReceiveUs);
             }
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=ACK_MATCH_SKIPPED_PRE_DECRYPT timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_MATCH_SKIPPED_PRE_DECRYPT timestamp_us="
                       << ackReceiveUs
                       << " requestId=" << seqNum.toUri()
                       << " ackName=" << subscription.name.toUri()
@@ -4676,7 +4684,7 @@ namespace ndn_service_framework
             responsePending->second.responseObservedAtUs = nowMicroseconds();
         }
         updateRequestLifecycleState(RequestId, RequestLifecycleState::RESPONSE_OBSERVED);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_OBSERVED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_OBSERVED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << RequestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -4695,7 +4703,7 @@ namespace ndn_service_framework
                              {{"providerName", providerName.toUri()},
                               {"serviceName", ServiceName.toUri()}});
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_START timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_START timestamp_us="
                   << decryptStartUs
                   << " requestId=" << RequestId.toUri()
                   << " responseName=" << responseName.toUri());
@@ -4716,14 +4724,14 @@ namespace ndn_service_framework
                                    std::to_string(decryptEndUs >= decryptStartUs ?
                                                   decryptEndUs - decryptStartUs : 0)}});
             }
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_DONE timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_DONE timestamp_us="
                       << decryptEndUs
                       << " requestId=" << RequestId.toUri()
                       << " responseName=" << responseName.toUri()
                       << " payloadBytes=" << buffer.size()
                       << " durationUs=" << (decryptEndUs >= decryptStartUs ?
                                             decryptEndUs - decryptStartUs : 0));
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_RECEIVED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_RECEIVED timestamp_us="
                       << decryptEndUs
                       << " requestId=" << RequestId.toUri()
                       << " responseName=" << responseName.toUri());
@@ -4735,7 +4743,7 @@ namespace ndn_service_framework
             logCryptoDiag("user", "response", "decrypt", "normal",
                           "failure", decryptStartUs, decryptEndUs,
                           responseName, 0, error);
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_FAILED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_FAILED timestamp_us="
                       << decryptEndUs
                       << " requestId=" << RequestId.toUri()
                       << " responseName=" << responseName.toUri()
@@ -4765,7 +4773,7 @@ namespace ndn_service_framework
                                        std::to_string(decryptEndUs >= decryptStartUs ?
                                                       decryptEndUs - decryptStartUs : 0)}});
                 }
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_DONE timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_DECRYPT_DONE timestamp_us="
                           << decryptEndUs
                           << " requestId=" << RequestId.toUri()
                           << " responseName=" << responseName.toUri()
@@ -4773,7 +4781,7 @@ namespace ndn_service_framework
                           << " durationUs=" << (decryptEndUs >= decryptStartUs ?
                                                 decryptEndUs - decryptStartUs : 0)
                           << " mode=plaintext");
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=RESPONSE_RECEIVED timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_RECEIVED timestamp_us="
                           << decryptEndUs
                           << " requestId=" << RequestId.toUri()
                           << " responseName=" << responseName.toUri());
@@ -5000,7 +5008,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         if (!m_useTokens) {
             providerTokenPresent = true;
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5010,7 +5018,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " pendingCallPresent=" << (pendingIt != m_pendingCalls.end())
                   << " providerTokenPresent=" << providerTokenPresent);
         if (pendingIt == m_pendingCalls.end() || !providerTokenPresent) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_REJECTED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_REJECTED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestID.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5025,7 +5033,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         ndn::Name serviceSelectionNameWithoutPrefix = makeServiceSelectionNameWithoutPrefix(providerName, ServiceName, FunctionName, requestID);
 
         // publish service selection message
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5035,7 +5043,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             PublishMessage(serviceSelectionName, serviceSelectionNameWithoutPrefix, selectionMessage);
         }
         catch (const std::exception& e) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_FAILED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_FAILED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestID.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5049,7 +5057,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             addUniqueName(pendingIt->second.selectionPublishedProviders, providerName);
         }
         updateRequestLifecycleState(requestID, RequestLifecycleState::SELECTION_PUBLISHED);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISHED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISHED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestID.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5099,14 +5107,14 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 selectionMessage.setAssignmentPayload(assignmentIt->second);
             }
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri()
                   << " pendingCallPresent=" << (pendingIt != m_pendingCalls.end())
                   << " providerTokenPresent=" << providerTokenPresent);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ELIGIBILITY_CHECK timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5116,7 +5124,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " pendingCallPresent=" << (pendingIt != m_pendingCalls.end())
                   << " providerTokenPresent=" << providerTokenPresent);
         if (pendingIt == m_pendingCalls.end() || !providerTokenPresent) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_REJECTED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_REJECTED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5131,7 +5139,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         ndn::Name serviceSelectionNameWithoutPrefix =
             makeServiceSelectionNameWithoutPrefixV2(providerName, serviceName, requestId);
 
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5143,7 +5151,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                            selectionMessage);
         }
         catch (const std::exception& e) {
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_FAILED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_FAILED timestamp_us="
                       << nowMicroseconds()
                       << " requestId=" << requestId.toUri()
                       << " providerName=" << providerName.toUri()
@@ -5157,7 +5165,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             addUniqueName(pendingIt->second.selectionPublishedProviders, providerName);
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::SELECTION_PUBLISHED);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SELECTION_PUBLISHED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISHED timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
@@ -5404,7 +5412,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                               << " ciphertextBytes=" << ciphertextBytes);
                 ndn::Block contentBlock(buffer);
                 const auto beginUs = nowMicroseconds();
-                NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_BEGIN timestamp_us="
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SVS_PUBLISH_BEGIN timestamp_us="
                           << beginUs
                           << " messageName=" << messageName.toUri()
                           << " contentBytes=" << contentBlock.value_size()
@@ -5629,7 +5637,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                           plaintextBlock.size());
 
             auto buffer = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_QUEUED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SVS_PUBLISH_QUEUED timestamp_us="
                       << nowMicroseconds()
                       << " messageName=" << messageName.toUri()
                       << " contentBytes=" << buffer.size()
@@ -5640,7 +5648,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 [this, messageName, queuedAtUs, buffer = std::move(buffer)]() mutable {
                     ndn::Block contentBlock(buffer);
                     const auto beginUs = nowMicroseconds();
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_BEGIN timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SVS_PUBLISH_BEGIN timestamp_us="
                               << beginUs
                               << " messageName=" << messageName.toUri()
                               << " contentBytes=" << contentBlock.value_size()
@@ -5683,10 +5691,10 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                               {"messageName", messageName.toUri()}});
                         }
                     }
-                    NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_DONE timestamp_us="
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SVS_PUBLISH_DONE timestamp_us="
                               << nowMicroseconds()
                               << " messageName=" << messageName.toUri());
-                    NDN_LOG_INFO("Message Published: " << messageName.toUri()
+                    NDN_LOG_TRACE("Message Published: " << messageName.toUri()
                                  << " " << contentBlock.value_size());
                 });
             return;
@@ -5694,7 +5702,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
         std::vector<uint8_t> plaintext(plaintextBlock.begin(), plaintextBlock.end());
         ndn::nacabe::SPtrVector<ndn::Data> contentData, ckData;
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=PRODUCE_STARTED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=PRODUCE_STARTED timestamp_us="
                   << nowMicroseconds()
                   << " messageName=" << messageName.toUri()
                   << " stage=" << stage
@@ -5720,7 +5728,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                           "synchronous-user-publish", "success",
                           encryptStartUs, encryptEndUs,
                           messageName, plaintext.size());
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=PRODUCE_COMPLETED timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=PRODUCE_COMPLETED timestamp_us="
                       << encryptEndUs
                       << " messageName=" << messageName.toUri()
                       << " stage=" << stage
@@ -5752,7 +5760,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         if (buffer.empty()) {
             NDN_LOG_ERROR("NAC-ABE produce returned empty content for "
                           << messageName.toUri());
-            NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=PRODUCE_EMPTY_CONTENT timestamp_us="
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=PRODUCE_EMPTY_CONTENT timestamp_us="
                       << nowMicroseconds()
                       << " messageName=" << messageName.toUri()
                       << " stage=" << stage
@@ -5762,7 +5770,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             return;
         }
         const auto queuedAtUs = nowMicroseconds();
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_QUEUED timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SVS_PUBLISH_QUEUED timestamp_us="
                   << queuedAtUs
                   << " messageName=" << messageName.toUri()
                   << " contentBytes=" << buffer.size()
@@ -5771,7 +5779,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " mode=synchronous-user-publish");
 
         serveDataWithIMS(contentData, ckData);
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=IMS_INSERT_DONE timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=IMS_INSERT_DONE timestamp_us="
                   << nowMicroseconds()
                   << " messageName=" << messageName.toUri()
                   << " contentSegments=" << contentData.size()
@@ -5779,7 +5787,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " mode=synchronous-user-publish");
         ndn::Block contentBlock(buffer);
         const auto beginUs = nowMicroseconds();
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_BEGIN timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SVS_PUBLISH_BEGIN timestamp_us="
                   << beginUs
                   << " messageName=" << messageName.toUri()
                   << " contentBytes=" << contentBlock.value_size()
@@ -5797,11 +5805,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
                              {{"serviceName", timelineServiceName.toUri()},
                               {"messageName", messageName.toUri()}});
         }
-        NDN_LOG_DEBUG("[NDNSF_TRACE] role=user event=SVS_PUBLISH_DONE timestamp_us="
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SVS_PUBLISH_DONE timestamp_us="
                   << nowMicroseconds()
                   << " messageName=" << messageName.toUri()
                   << " mode=synchronous-user-publish");
-        NDN_LOG_INFO("Message Published: " << messageName.toUri()
+        NDN_LOG_TRACE("Message Published: " << messageName.toUri()
                      << " " << contentBlock.value_size());
     }
     void ServiceUser::registerNDNSFMessages()

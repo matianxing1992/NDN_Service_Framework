@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <sstream>
 
 namespace ndn_service_framework {
@@ -20,6 +21,31 @@ envFlagEnabled(const char* name)
     const std::string text(value);
     return !(text.empty() || text == "0" || text == "false" ||
              text == "FALSE" || text == "no" || text == "NO");
+}
+
+size_t
+envSizeValue(const char* name, size_t defaultValue)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        return defaultValue;
+    }
+    try {
+        return std::max<size_t>(1, static_cast<size_t>(std::stoull(value)));
+    }
+    catch (...) {
+        return defaultValue;
+    }
+}
+
+bool
+timelineTraceSampleAllows(const ndn::Name& requestId)
+{
+    const size_t sampleRate = envSizeValue("NDNSF_TIMELINE_TRACE_SAMPLE_RATE", 100);
+    if (sampleRate <= 1 || requestId.empty()) {
+        return true;
+    }
+    return (std::hash<std::string>{}(requestId.toUri()) % sampleRate) == 0;
 }
 
 uint64_t
@@ -51,6 +77,9 @@ logTimelineTrace(const std::string& role,
                  TimelineFields fields)
 {
     if (!timelineTraceEnvEnabled()) {
+        return;
+    }
+    if (!timelineTraceSampleAllows(requestId)) {
         return;
     }
 

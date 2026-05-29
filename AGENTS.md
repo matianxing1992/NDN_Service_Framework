@@ -365,6 +365,18 @@ Keep changes incremental. Preserve legacy compatibility unless a migration is ex
 
 When updating README documentation, keep Chinese and English versions in sync
 when both exist. Before running commands, briefly estimate the expected runtime.
+Normal builds do not need `-j1`; use the usual parallel build unless a memory
+pressure problem is observed or the user asks for single-job compilation.
+Performance-analysis artifacts should also be sampled. `request_lifecycle.csv`,
+`provider-*-lifecycle.csv`, and timeline trace logs should use the shared
+`NDNSF_TIMELINE_TRACE_SAMPLE_RATE` sampler so analysis runs keep only a small,
+stable subset of request IDs.
+Performance short tests should still use a 60-second measured window unless the
+user explicitly asks for a shorter smoke test.
+Do not casually change ndn-svs periodic Sync Interest timing or the low
+suppression interval used for Sync Interest replies. Periodic sync affects
+piggyback opportunities, and benchmark suppression should stay in the 1-5 ms
+range unless an experiment explicitly asks to vary it.
 After finishing a requested task, play the 1s completion bell:
 
 ```bash

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -101,6 +102,30 @@ private:
   size_t m_count = 0;
   std::mutex m_mutex;
 };
+
+size_t
+envSizeOption(const char* name, size_t defaultValue)
+{
+  const char* value = std::getenv(name);
+  if (value == nullptr || *value == '\0') {
+    return defaultValue;
+  }
+  try {
+    return std::max<size_t>(1, static_cast<size_t>(std::stoull(value)));
+  }
+  catch (...) {
+    return defaultValue;
+  }
+}
+
+bool
+sampleByRequestId(const ndn::Name& requestId, size_t sampleRate)
+{
+  if (sampleRate <= 1 || requestId.empty()) {
+    return true;
+  }
+  return (std::hash<std::string>{}(requestId.toUri()) % sampleRate) == 0;
+}
 
 ndn::security::Certificate
 getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
@@ -514,6 +539,17 @@ userScopedLockPath(const std::string& base)
   return base + "-" + std::to_string(getuid()) + ".lock";
 }
 
+std::chrono::nanoseconds
+openLoopPacingJitter(uint64_t sequence, int jitterUs)
+{
+  if (jitterUs <= 0) {
+    return std::chrono::nanoseconds(0);
+  }
+  static constexpr int pattern[] = {-100, -50, 75, 25, 100, -75, 50, -25};
+  const int scaledUs = (jitterUs * pattern[sequence % std::size(pattern)]) / 100;
+  return std::chrono::microseconds(scaledUs);
+}
+
 } // namespace
 
 int
@@ -542,6 +578,8 @@ main(int argc, char** argv)
     const int requestTimeoutMs = parseIntOption(argc, argv, "--request-timeout-ms", timeoutMs);
     const int handlerThreads = parseIntOption(argc, argv, "--handler-threads", -1);
     const double rateRps = parseDoubleOption(argc, argv, "--rate-rps", 1.0);
+    const int openLoopPacingJitterUs = std::max(
+      0, parseIntOption(argc, argv, "--pacing-jitter-us", 0));
     const int openLoopDurationSeconds = parseIntOption(argc, argv, "--duration", 10);
     const int maxOutstanding = parseIntOption(
       argc, argv, "--max-inflight",
@@ -763,10 +801,15 @@ main(int argc, char** argv)
           return 2;
         }
         *csv << "request_id,success,latency_ms,response_payload\n";
-        const auto lifecycleCsvPath =
-          std::filesystem::path(outputCsv).parent_path() / "request_lifecycle.csv";
-        auto lifecycleCsv = std::make_shared<std::ofstream>(lifecycleCsvPath);
-        if (*lifecycleCsv) {
+        std::shared_ptr<std::ofstream> lifecycleCsv;
+        if (timelineTrace) {
+          const auto lifecycleCsvPath =
+            std::filesystem::path(outputCsv).parent_path() / "request_lifecycle.csv";
+          lifecycleCsv = std::make_shared<std::ofstream>(lifecycleCsvPath);
+        }
+        if (lifecycleCsv && *lifecycleCsv) {
+          const auto lifecycleSampleRate =
+            envSizeOption("NDNSF_TIMELINE_TRACE_SAMPLE_RATE", 100);
           *lifecycleCsv
             << "application_task_id,request_id,service_name,state,selected_provider,"
             << "enqueue_timestamp_us,admission_timestamp_us,publish_timestamp_us,"
@@ -777,7 +820,11 @@ main(int argc, char** argv)
             << "inflight_duration_ms,end_to_end_latency_ms,"
             << "delayed_by_admission_control,final_cleanup_reason\n";
           user.setRequestLifecycleCallback(
-            [lifecycleCsv](const ndn_service_framework::ServiceUser::RequestLifecycleStatus& status) {
+            [lifecycleCsv, lifecycleSampleRate](
+              const ndn_service_framework::ServiceUser::RequestLifecycleStatus& status) {
+              if (!sampleByRequestId(status.requestId, lifecycleSampleRate)) {
+                return;
+              }
               *lifecycleCsv
                 << csvEscape(status.applicationTaskId) << ","
                 << csvEscape(status.requestId.toUri()) << ","
@@ -817,6 +864,13 @@ main(int argc, char** argv)
           std::make_shared<std::chrono::steady_clock::time_point>();
         const auto stopSendingAt = std::make_shared<std::chrono::steady_clock::time_point>();
         const auto drainDeadline = std::make_shared<std::chrono::steady_clock::time_point>();
+        const auto nextDueAt = std::make_shared<std::chrono::steady_clock::time_point>();
+        const auto noAdmissionWarmupRequests = static_cast<uint64_t>(
+          std::llround(std::max(0.0, rateRps * static_cast<double>(benchmarkWarmup))));
+        const auto noAdmissionMeasuredRequests = static_cast<uint64_t>(
+          std::llround(std::max(1.0, rateRps * static_cast<double>(openLoopDurationSeconds))));
+        const auto noAdmissionTargetRequests =
+          noAdmissionWarmupRequests + noAdmissionMeasuredRequests;
         auto nextSequence = std::make_shared<uint64_t>(0);
         auto sendStopped = std::make_shared<bool>(false);
         auto states = std::make_shared<std::map<std::string, std::shared_ptr<OpenLoopRequestState>>>();
@@ -944,7 +998,7 @@ main(int argc, char** argv)
             // Soft-limit warnings are advisory: record them and apply the
             // optional warning backoff above, but keep admission flowing.
             if (!performanceMode && perfLogGate->allow()) {
-              NDN_LOG_INFO( "PERF_ADMISSION_WARNING"
+              NDN_LOG_TRACE( "PERF_ADMISSION_WARNING"
                         << " depth=" << status.queueDepth
                         << " soft_limit=" << status.softQueueLimit
                         << " hard_limit=" << status.hardQueueLimit
@@ -1009,7 +1063,7 @@ main(int argc, char** argv)
               ++(*admissionRejectQueuePauses);
             }
             if (!performanceMode && perfLogGate->allow()) {
-              NDN_LOG_INFO( "PERF_ADMISSION_REJECT"
+              NDN_LOG_TRACE( "PERF_ADMISSION_REJECT"
                         << " depth=" << status.queueDepth
                         << " soft_limit=" << status.softQueueLimit
                         << " hard_limit=" << status.hardQueueLimit
@@ -1067,7 +1121,7 @@ main(int argc, char** argv)
           ++(*pauseCount);
           ++(*pauseTransitions);
           *pauseStartedAt = std::chrono::steady_clock::now();
-          NDN_LOG_INFO( "PERF_ADMISSION_PAUSED reason=" << reason
+          NDN_LOG_TRACE( "PERF_ADMISSION_PAUSED reason=" << reason
                     << " inflight=" << states->size()
                     << " queued=" << *queuedTasks
                     << " adaptive_window=" << *adaptiveWindow
@@ -1088,7 +1142,7 @@ main(int argc, char** argv)
           if (pausedForMs > 0) {
             *totalPausedMs += static_cast<uint64_t>(pausedForMs);
           }
-          NDN_LOG_INFO( "PERF_ADMISSION_RESUMED"
+          NDN_LOG_TRACE( "PERF_ADMISSION_RESUMED"
                     << " inflight=" << states->size()
                     << " queued=" << *queuedTasks
                     << " adaptive_window=" << *adaptiveWindow
@@ -1148,7 +1202,7 @@ main(int argc, char** argv)
             adaptiveAdmission.softQueueLimit,
             adaptiveAdmission.hardQueueLimit);
 
-          NDN_LOG_INFO( std::fixed << std::setprecision(3)
+          NDN_LOG_WARN( std::fixed << std::setprecision(3)
                     << "OPEN_LOOP_SUMMARY sent=" << *sentCount
                     << " success=" << *successCount
                     << " timeout=" << *timeoutCount
@@ -1241,12 +1295,13 @@ main(int argc, char** argv)
         *sendNext = [&, csv, benchmarkServiceName, useBenchmarkCustomSelection,
                      useBenchmarkRandomSelection, benchmarkStrategy,
                      intervalNs, startTime, measurementStartAt, stopSendingAt,
-                     drainDeadline, nextSequence,
+                     drainDeadline, nextDueAt, nextSequence,
                      sendStopped, states, completedRequestIds, sentCount, successCount,
                      timeoutCount, lateResponseCount, outstandingLimitSkips, latencies,
                      sampleOutstanding, sendNext, maybeFinish]() {
           const auto now = std::chrono::steady_clock::now();
-          const bool generating = now < *stopSendingAt;
+          const bool generating = adaptiveAdmission.enabled ?
+            now < *stopSendingAt : *nextSequence < noAdmissionTargetRequests;
           if (!generating &&
               (!adaptiveAdmission.enabled || *queuedTasks == 0 ||
                now >= *drainDeadline)) {
@@ -1264,6 +1319,13 @@ main(int argc, char** argv)
             if (!generating) {
               return;
             }
+            if (!adaptiveAdmission.enabled) {
+              if (*queuedTasks == 0) {
+                *queuedTasks = 1;
+                (*sampleAdaptive)();
+              }
+              return;
+            }
             uint64_t dueExclusive = *nextSequence;
             if (intervalNs > 0) {
               const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1278,22 +1340,6 @@ main(int argc, char** argv)
               return;
             }
             const uint64_t dueTicks = dueExclusive - *nextSequence;
-            if (!adaptiveAdmission.enabled) {
-              const size_t creditLimit = static_cast<size_t>(maxOutstanding);
-              const size_t room = *queuedTasks >= creditLimit ?
-                0 : creditLimit - *queuedTasks;
-              const size_t acceptedTicks = static_cast<size_t>(
-                std::min<uint64_t>(dueTicks, static_cast<uint64_t>(room)));
-              if (acceptedTicks > 0) {
-                *queuedTasks += acceptedTicks;
-                (*sampleAdaptive)();
-              }
-              if (dueTicks > static_cast<uint64_t>(acceptedTicks)) {
-                *delayedPublications += dueTicks - acceptedTicks;
-              }
-              *nextSequence = dueExclusive;
-              return;
-            }
             const auto currentQueueLimits = adaptiveQueueLimitsForWindow(
               user.getAdaptiveAdmissionWindow(),
               adaptiveAdmission.softQueueLimit,
@@ -1323,12 +1369,17 @@ main(int argc, char** argv)
             }
             *nextSequence = dueExclusive;
           };
-          auto delayUntilNextOpenLoopTick = [&]() {
-            if (!generating || intervalNs <= 0) {
-              return retryDelay;
-            }
-            const auto nextDue = *startTime + std::chrono::nanoseconds(
-              intervalNs * static_cast<int64_t>(*nextSequence));
+        auto delayUntilNextOpenLoopTick = [&]() {
+          if (!generating || intervalNs <= 0) {
+            return retryDelay;
+          }
+          if (!adaptiveAdmission.enabled) {
+            return std::max(std::chrono::nanoseconds(0),
+                            *nextDueAt - std::chrono::steady_clock::now());
+          }
+            const auto nextDue = *startTime +
+              std::chrono::nanoseconds(intervalNs * static_cast<int64_t>(*nextSequence)) +
+              openLoopPacingJitter(*nextSequence, openLoopPacingJitterUs);
             return std::max(std::chrono::nanoseconds(0),
                             nextDue - std::chrono::steady_clock::now());
           };
@@ -1376,7 +1427,7 @@ main(int argc, char** argv)
                 const auto remainingMs =
                   std::chrono::duration_cast<std::chrono::milliseconds>(
                     *nextAdmissionRecommendedSendAt - now).count();
-                NDN_LOG_INFO( "PERF_ADMISSION_RECOMMENDED_RATE_PAUSED"
+                NDN_LOG_TRACE( "PERF_ADMISSION_RECOMMENDED_RATE_PAUSED"
                           << " recommended_rps=" << recommendedRate
                           << " offered_rps=" << rateRps
                           << " remaining_ms=" << remainingMs
@@ -1409,7 +1460,7 @@ main(int argc, char** argv)
                   static_cast<uint64_t>(pausedForMs);
               }
               if (!performanceMode && perfLogGate->allow()) {
-                NDN_LOG_INFO( "PERF_ADMISSION_QUEUE_RESUMED"
+                NDN_LOG_TRACE( "PERF_ADMISSION_QUEUE_RESUMED"
                           << " reason=" << *admissionQueuePauseReason
                           << " queue_depth=" << runtimeQueueDepth
                           << " resume_depth=" << *admissionQueuePauseResumeDepth
@@ -1426,7 +1477,7 @@ main(int argc, char** argv)
                 const auto remainingBackoffMs = minBackoffElapsed ? 0 :
                   std::chrono::duration_cast<std::chrono::milliseconds>(
                     *admissionBackoffUntil - now).count();
-                NDN_LOG_INFO( "PERF_ADMISSION_QUEUE_PAUSED"
+                NDN_LOG_TRACE( "PERF_ADMISSION_QUEUE_PAUSED"
                           << " reason=" << *admissionQueuePauseReason
                           << " queue_depth=" << runtimeQueueDepth
                           << " resume_depth=" << *admissionQueuePauseResumeDepth
@@ -1446,7 +1497,7 @@ main(int argc, char** argv)
             if (!performanceMode && perfLogGate->allow()) {
               const auto backoffMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 *admissionBackoffUntil - now).count();
-              NDN_LOG_INFO( "PERF_ADMISSION_BACKOFF"
+              NDN_LOG_TRACE( "PERF_ADMISSION_BACKOFF"
                         << " remaining_ms=" << backoffMs
                         << " queued_credit=" << *queuedTasks
                         << " ts=" << nowMilliseconds());
@@ -1465,7 +1516,7 @@ main(int argc, char** argv)
             (*sampleOutstanding)();
             (*sampleAdaptive)();
             if (!performanceMode && pendingResponseAtLimit) {
-              NDN_LOG_INFO( "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
+              NDN_LOG_TRACE( "PERF_OUTSTANDING_LIMIT_REACHED outstanding="
                         << states->size()
                         << " admission_inflight=" << runtimeAdmissionInflight
                         << " queued=" << *queuedTasks
@@ -1477,7 +1528,37 @@ main(int argc, char** argv)
             return;
           }
 
+          bool scheduledNextTickBeforeSend = false;
+          uint64_t currentSequence = *nextSequence;
           if (*queuedTasks > 0) {
+            if (generating) {
+              if (!adaptiveAdmission.enabled) {
+                ++(*nextSequence);
+                if (*nextSequence < noAdmissionTargetRequests) {
+                  auto idealNextDue =
+                    *startTime +
+                    std::chrono::nanoseconds(intervalNs * static_cast<int64_t>(*nextSequence)) +
+                    openLoopPacingJitter(*nextSequence, openLoopPacingJitterUs);
+                  const auto boundedCatchUpSpacing = std::min(
+                    std::chrono::nanoseconds(intervalNs),
+                    std::chrono::nanoseconds(std::chrono::milliseconds(5)));
+                  const auto minimumNextDue =
+                    std::chrono::steady_clock::now() + boundedCatchUpSpacing;
+                  if (idealNextDue < minimumNextDue) {
+                    ++(*delayedPublications);
+                    idealNextDue = minimumNextDue;
+                  }
+                  *nextDueAt = idealNextDue;
+                  scheduleNext(std::max(std::chrono::nanoseconds(0),
+                                        *nextDueAt - std::chrono::steady_clock::now()));
+                  scheduledNextTickBeforeSend = true;
+                }
+              }
+              else {
+                scheduleNext(delayUntilNextOpenLoopTick());
+                scheduledNextTickBeforeSend = true;
+              }
+            }
             const std::string requestText = "HELLO";
             ndn::Buffer requestPayload(
               reinterpret_cast<const uint8_t*>(requestText.data()),
@@ -1491,7 +1572,8 @@ main(int argc, char** argv)
 
             auto state = std::make_shared<OpenLoopRequestState>();
             state->start = now;
-            state->measured = now >= *measurementStartAt;
+            state->measured = adaptiveAdmission.enabled ?
+              now >= *measurementStartAt : currentSequence >= noAdmissionWarmupRequests;
 
             auto onTimeout = std::function<void(const ndn::Name&)>(
               [&, csv, states, completedRequestIds, timeoutCount,
@@ -1529,7 +1611,7 @@ main(int argc, char** argv)
                            << std::fixed << std::setprecision(3) << latencyMs << ",\n";
                     }
                     if (!performanceMode && perfLogGate->allow()) {
-                      NDN_LOG_INFO( "PERF_REQUEST_TIMEOUT id=" << requestIdText
+                      NDN_LOG_TRACE( "PERF_REQUEST_TIMEOUT id=" << requestIdText
                                 << " ts=" << nowMilliseconds());
                     }
                     (*sampleOutstanding)();
@@ -1561,7 +1643,7 @@ main(int argc, char** argv)
                       // Same as timeout handling above: late responses are
                       // measured, not converted into admission-like pacing.
                       if (!performanceMode && perfLogGate->allow()) {
-                        NDN_LOG_INFO( "PERF_LATE_RESPONSE id=" << requestIdText
+                        NDN_LOG_TRACE( "PERF_LATE_RESPONSE id=" << requestIdText
                                   << " ts=" << nowMilliseconds());
                       }
                       return;
@@ -1580,7 +1662,7 @@ main(int argc, char** argv)
                            << csvEscape(responseText) << "\n";
                     }
                     if (!performanceMode && perfLogGate->allow()) {
-                      NDN_LOG_INFO( "PERF_RESPONSE_RECEIVED id=" << requestIdText
+                      NDN_LOG_TRACE( "PERF_RESPONSE_RECEIVED id=" << requestIdText
                                 << " provider=" << state->selectedProvider
                                 << " latency_ms=" << std::fixed << std::setprecision(3)
                                 << latencyMs
@@ -1612,10 +1694,12 @@ main(int argc, char** argv)
               (*sampleOutstanding)();
               (*sampleAdaptive)();
               if (!performanceMode && !state->requestId.empty()) {
-                NDN_LOG_INFO( "PERF_REQUEST_ADMISSION_REJECTED id=" << state->requestId
+                NDN_LOG_TRACE( "PERF_REQUEST_ADMISSION_REJECTED id=" << state->requestId
                           << " ts=" << nowMilliseconds());
               }
-              scheduleNext(delayUntilNextOpenLoopTick());
+              if (!scheduledNextTickBeforeSend) {
+                scheduleNext(delayUntilNextOpenLoopTick());
+              }
               return;
             }
             (*states)[state->requestId] = state;
@@ -1630,7 +1714,7 @@ main(int argc, char** argv)
             (*sampleOutstanding)();
             (*sampleAdaptive)();
             if (!performanceMode && perfLogGate->allow()) {
-              NDN_LOG_INFO( "PERF_REQUEST_SENT id=" << state->requestId
+              NDN_LOG_TRACE( "PERF_REQUEST_SENT id=" << state->requestId
                         << " ts=" << nowMilliseconds());
             }
             if (adaptiveAdmission.enabled && adaptiveAdmission.useRecommendedRate) {
@@ -1648,17 +1732,22 @@ main(int argc, char** argv)
             }
           }
 
-          const auto nextDue = *startTime + std::chrono::nanoseconds(
-            intervalNs * static_cast<int64_t>(*nextSequence));
-          auto delay = std::max(std::chrono::nanoseconds(0),
-                                nextDue - std::chrono::steady_clock::now());
-          if (*queuedTasks > 0) {
-            delay = std::chrono::nanoseconds(0);
+          if (!scheduledNextTickBeforeSend) {
+            const auto nextDue = adaptiveAdmission.enabled ?
+              *startTime + std::chrono::nanoseconds(
+                intervalNs * static_cast<int64_t>(*nextSequence)) +
+              openLoopPacingJitter(*nextSequence, openLoopPacingJitterUs) :
+              *nextDueAt;
+            auto delay = std::max(std::chrono::nanoseconds(0),
+                                  nextDue - std::chrono::steady_clock::now());
+            if (*queuedTasks > 0) {
+              delay = std::chrono::nanoseconds(0);
+            }
+            else if (!generating) {
+              delay = std::chrono::nanoseconds(std::chrono::milliseconds(10));
+            }
+            scheduleNext(delay);
           }
-          else if (!generating) {
-            delay = std::chrono::nanoseconds(std::chrono::milliseconds(10));
-          }
-          scheduleNext(delay);
         };
 
         *controlAdaptiveWindow = [&, states, adaptiveWindow, queuedTasks,
@@ -1719,7 +1808,7 @@ main(int argc, char** argv)
           const size_t oldWindow = *adaptiveWindow;
           *adaptiveWindow = runtimeWindow;
 
-          NDN_LOG_INFO( "PERF_ADAPTIVE_WINDOW window=" << *adaptiveWindow
+          NDN_LOG_TRACE( "PERF_ADAPTIVE_WINDOW window=" << *adaptiveWindow
                     << " old_window=" << oldWindow
                     << " queued=" << *queuedTasks
                     << " inflight=" << states->size()
@@ -1762,6 +1851,7 @@ main(int argc, char** argv)
                                                    useBenchmarkCustomSelection,
                                                    useBenchmarkRandomSelection] {
           *startTime = std::chrono::steady_clock::now();
+          *nextDueAt = *startTime;
           *measurementStartAt = *startTime + std::chrono::seconds(benchmarkWarmup);
           *stopSendingAt =
             *measurementStartAt + std::chrono::seconds(openLoopDurationSeconds);
@@ -1770,7 +1860,7 @@ main(int argc, char** argv)
             *adaptiveWindow,
             adaptiveAdmission.softQueueLimit,
             adaptiveAdmission.hardQueueLimit);
-          NDN_LOG_INFO( "Starting open-loop benchmark strategy="
+          NDN_LOG_WARN( "Starting open-loop benchmark strategy="
                     << benchmarkStrategyLabel(benchmarkStrategy,
                                               useBenchmarkCustomSelection,
                                               useBenchmarkRandomSelection)
@@ -1801,6 +1891,7 @@ main(int argc, char** argv)
                     << adaptiveAdmission.rejectResumeQueueDepth
                     << " adaptive_target_latency_ms=" << adaptiveAdmission.targetLatencyMs
                     << " request_timeout_ms=" << requestTimeoutMs
+                    << " pacing_jitter_us=" << openLoopPacingJitterUs
                     << " drain_seconds=" << drainSeconds
                    );
           if (adaptiveAdmission.enabled) {
@@ -1937,10 +2028,10 @@ main(int argc, char** argv)
               }
 
               ++(*completed);
-              NDN_LOG_INFO( "PERF_REQUEST_TIMEOUT id="
+              NDN_LOG_TRACE( "PERF_REQUEST_TIMEOUT id="
                         << timedOutRequestId.toUri()
                         << " ts=" << nowMilliseconds());
-              NDN_LOG_INFO( "[App_User] benchmark timeout requestId="
+              NDN_LOG_TRACE( "[App_User] benchmark timeout requestId="
                         << timedOutRequestId.toUri()
                         << " completed=" << *completed
                         << "/" << totalCalls);
@@ -1973,12 +2064,12 @@ main(int argc, char** argv)
               }
 
               ++(*completed);
-              NDN_LOG_INFO( "PERF_RESPONSE_RECEIVED id=" << *currentRequestId
+              NDN_LOG_TRACE( "PERF_RESPONSE_RECEIVED id=" << *currentRequestId
                         << " provider=-"
                         << " latency_ms=" << std::fixed << std::setprecision(3)
                         << latencyMs
                         << " ts=" << nowMilliseconds());
-              NDN_LOG_INFO( "[App_User] benchmark response requestId="
+              NDN_LOG_TRACE( "[App_User] benchmark response requestId="
                         << *currentRequestId
                         << " latency_ms=" << std::fixed << std::setprecision(3)
                         << latencyMs
@@ -2014,7 +2105,7 @@ main(int argc, char** argv)
           onTimeout);
 
         *currentRequestId = requestId.toUri();
-        NDN_LOG_INFO( "PERF_REQUEST_SENT id=" << *currentRequestId
+        NDN_LOG_TRACE( "PERF_REQUEST_SENT id=" << *currentRequestId
                   << " ts=" << nowMilliseconds());
         ++(*issued);
       };
