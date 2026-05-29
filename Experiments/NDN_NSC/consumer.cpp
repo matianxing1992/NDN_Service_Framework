@@ -161,7 +161,7 @@ public:
         }
 
         //send notification interest
-        sendNotification(publishNum);
+        sendNotification(inputNameFor(publishNum));
     }
 
 private:
@@ -195,10 +195,15 @@ private:
     }
 
     //Send a notification to the RPC Producer to initiate RPC Call
-    void sendNotification(int publishNum)
+    std::string inputNameFor(int publishNum) const
+    {
+        return INPUT_NAMESPACE + std::to_string(publishNum);
+    }
+
+    void sendNotification(const std::string& inputName)
     {
         Interest interest = createInterest(PRODUCER_FUNC_NAME, true, true);
-        addInterestParameterString(INPUT_NAMESPACE + std::to_string(publishNum), interest);
+        addInterestParameterString(inputName, interest);
         m_keyChain.sign(interest, security::signingByIdentity(Name(CONSUMER_IDENTITY)));
         m_face.expressInterest(interest,
                                bind(&rpcConsumer::onNotificationData, this, _1, _2),
@@ -214,10 +219,7 @@ private:
     void onNotificationData(const Interest &, const Data &data)
     {
         nscLog() << "Received Acknowledgement to Notification:" << std::endl;
-        std::string resultName = extractDataValue(data);
-        if (!resultName.empty()) {
-            sendInterestForResult(resultName);
-        }
+        (void)data;
         nscLog() << "------------------------" << std::endl;
     }
 
@@ -232,6 +234,11 @@ private:
 
             auto data = createData(interest.getName(), CCNUM, CONSUMER_IDENTITY);
             m_face.put(*data);
+
+            std::string resultName = extractInterestParam(interest);
+            if (!resultName.empty()) {
+                sendInterestForResult(resultName);
+            }
         }
     }
 
