@@ -1679,6 +1679,8 @@ def app_env(output_dir, session_base, args):
             "NDNSF_SVS_MAX_APP_PARAMS_BYTES", "4096")
         env["NDNSF_SVS_MAX_PIGGYDATA_BYTES"] = os.environ.get(
             "NDNSF_SVS_MAX_PIGGYDATA_BYTES", "4096")
+        env["NDNSF_SVS_PARALLEL_PRODUCTION"] = os.environ.get(
+            "NDNSF_SVS_PARALLEL_PRODUCTION", "0")
     if "NDNSF_SVS_PERIODIC_SYNC_MS" in os.environ:
         env["NDNSF_SVS_PERIODIC_SYNC_MS"] = os.environ["NDNSF_SVS_PERIODIC_SYNC_MS"]
     for name in ("NDNSF_HANDLER_THREADS", "NDNSF_ACK_THREADS"):
