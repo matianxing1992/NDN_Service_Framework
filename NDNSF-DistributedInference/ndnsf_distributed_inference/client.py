@@ -8,9 +8,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from ndnsf import ServiceResponse, ServiceUser
+from ndnsf import CollaborationDependency, CollaborationRole, ServiceResponse, ServiceUser
 
-from .plan import DistributedInferencePlan
+from .plan import DistributedInferencePlan, InferenceDependency
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,14 @@ class InferenceResult:
     status: bool
     payload: bytes = b""
     error: str = ""
+
+
+def _to_collaboration_dependency(
+    dep: CollaborationDependency | InferenceDependency | dict,
+) -> CollaborationDependency | dict:
+    if isinstance(dep, InferenceDependency):
+        return dep.ndnsf_dependency()
+    return dep
 
 
 class DistributedInferenceClient:
@@ -117,6 +125,27 @@ class DistributedInferenceClient:
             scope_key_data_names[scope] = result.encrypted_data_name
         return scope_key_data_names
 
+    def publish_scope_keys_for_scopes(
+        self,
+        service: str,
+        key_scopes: dict[str, list[str]],
+        *,
+        object_label_prefix: str = "inference-scope-key",
+        freshness_ms: int = 60000,
+    ) -> dict[str, str]:
+        scope_key_data_names: dict[str, str] = {}
+        for scope in key_scopes:
+            result = self.user.publish_encrypted_large_data(
+                service,
+                secrets.token_bytes(32),
+                object_label=f"{object_label_prefix}-{scope}",
+                freshness_ms=freshness_ms,
+            )
+            if not result.success:
+                raise RuntimeError(f"scope key publish failed for {scope}: {result.error}")
+            scope_key_data_names[scope] = result.encrypted_data_name
+        return scope_key_data_names
+
     def infer(
         self,
         plan: DistributedInferencePlan,
@@ -160,6 +189,89 @@ class DistributedInferenceClient:
             payload=response.payload,
             error=response.error,
         )
+
+    def infer_deployed_service(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        roles: list[CollaborationRole],
+        key_scopes: dict[str, list[str]],
+        dependencies: list[CollaborationDependency | InferenceDependency | dict],
+        role_scopes: dict[str, list[str]],
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+        freshness_ms: int = 60000,
+    ) -> InferenceResult:
+        """Request a service whose model layout/artifacts are already deployed."""
+
+        with self._user_lock:
+            scope_key_data_names = self.publish_scope_keys_for_scopes(
+                service,
+                key_scopes,
+                object_label_prefix="inference-scope-key",
+                freshness_ms=freshness_ms,
+            )
+            response: ServiceResponse = self.user.request_collaboration(
+                service,
+                payload,
+                roles=roles,
+                key_scopes=key_scopes,
+                dependencies=[
+                    _to_collaboration_dependency(dep)
+                    for dep in dependencies
+                ],
+                artifact_data_names={},
+                scope_key_data_names=scope_key_data_names,
+                role_scopes=role_scopes,
+                ack_timeout_ms=ack_timeout_ms,
+                timeout_ms=timeout_ms,
+            )
+        return InferenceResult(
+            status=response.status,
+            payload=response.payload,
+            error=response.error,
+        )
+
+    def infer_deployed_service_async(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        roles: list[CollaborationRole],
+        key_scopes: dict[str, list[str]],
+        dependencies: list[CollaborationDependency],
+        role_scopes: dict[str, list[str]],
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+        freshness_ms: int = 60000,
+        on_result: Callable[[InferenceResult], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> Future:
+        future = self._executor.submit(
+            self.infer_deployed_service,
+            service,
+            payload,
+            roles=roles,
+            key_scopes=key_scopes,
+            dependencies=dependencies,
+            role_scopes=role_scopes,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            freshness_ms=freshness_ms,
+        )
+        if on_result is not None or on_error is not None:
+            def _done(done: Future) -> None:
+                try:
+                    result = done.result()
+                except BaseException as exc:  # noqa: BLE001
+                    if on_error is not None:
+                        on_error(exc)
+                    return
+                if on_result is not None:
+                    on_result(result)
+            future.add_done_callback(_done)
+        return future
 
     def infer_async(
         self,

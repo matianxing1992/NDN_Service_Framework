@@ -332,6 +332,26 @@ def yolo_splitter_output(exported: dict) -> SplitterOutput:
                 metadata=dict(common_metadata, runner_stage="stage1"),
             ),
         ],
+        input_schema={
+            "codec": "npz",
+            "encoder": "encode_initial_request(image_tensor)",
+            "fields": {
+                "images": {
+                    "dtype": "float16",
+                    "shape": [1, 3, input_size, input_size],
+                    "layout": "NCHW",
+                },
+            },
+        },
+        output_schema={
+            "codec": "npz",
+            "decoder": "decode_onnx_output(response.payload)",
+            "fields": {
+                "output": {
+                    "dtype": "float32",
+                },
+            },
+        },
         metadata=common_metadata,
     )
     return SplitterOutput(

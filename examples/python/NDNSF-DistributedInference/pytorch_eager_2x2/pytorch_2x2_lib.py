@@ -164,6 +164,26 @@ def pytorch_splitter_output(split: dict) -> SplitterOutput:
             ),
         ],
         artifacts=artifacts,
+        input_schema={
+            "codec": "torch-save+gzip",
+            "encoder": "encode_input(input_tensor)",
+            "fields": {
+                "x": {
+                    "dtype": "float32",
+                    "shape": [1, INPUT_DIM],
+                },
+            },
+        },
+        output_schema={
+            "codec": "torch-save+gzip",
+            "decoder": "decode_output(response.payload)",
+            "fields": {
+                "output": {
+                    "dtype": "float32",
+                    "shape": [1, OUTPUT_DIM],
+                },
+            },
+        },
     )
     return SplitterOutput(
         application="pytorch-eager-2x2-demo",

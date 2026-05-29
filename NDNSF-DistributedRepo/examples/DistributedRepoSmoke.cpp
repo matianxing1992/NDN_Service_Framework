@@ -26,43 +26,42 @@ main()
     return 1;
   }
 
-  RepoObjectManifest manifest;
-  manifest.objectName = "/NDNSF-DI/ARTIFACT/demo/object";
-  manifest.objectType = "model";
-  manifest.sha256 = sha256Hex(payload);
-  manifest.size = payload.size();
-  manifest.replicationFactor = policy.replicationFactor;
-  manifest.policyEpoch = "/Policy/demo/v1";
-  for (const auto& replica : replicas) {
-    manifest.replicaNodes.push_back(replica.repoNode);
-  }
-
-  RepoNode node(ndn::Name("/NDNSF/DistributedRepo"),
+  RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
                 {"/repo/A", 1024 * 1024, 0, 0.10, 0.99, "rack-a",
                  {"model", "intermediate"}});
-  const auto storeRequest = encodeStoreRequest(manifest, payload);
-  const auto storeResponse = node.handleStore(storeRequest);
-  const auto fetched = node.handleFetch(toBytes(manifest.objectName));
+  StoreOptions options;
+  options.objectType = "model";
+  options.replicationFactor = policy.replicationFactor;
+  options.policyEpoch = "/Policy/demo/v1";
+  for (const auto& replica : replicas) {
+    options.replicaNodes.push_back(replica.repoNode);
+  }
+  const auto manifest = RepoClient::put(node,
+                                        "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/"
+                                        "NDNSF-DI/ARTIFACT/demo/object",
+                                        payload,
+                                        options);
+  const auto fetched = RepoClient::get(node, manifest.objectName);
   const auto manifestResponse = node.handleManifest(toBytes(manifest.objectName));
-  const auto inventoryResponse = node.handleInventory();
   const auto capabilityResponse = node.handleCapability();
-  const auto deleteResponse = node.handleDelete(toBytes(manifest.objectName));
+  const auto listed = RepoClient::list(node);
+  const bool removed = RepoClient::remove(node, manifest.objectName);
 
   if (fetched != payload) {
     std::cerr << "stored object not found\n";
     return 1;
   }
-  if (toString(storeResponse).find(manifest.sha256) == std::string::npos ||
-      toString(manifestResponse).find(manifest.objectName) == std::string::npos ||
-      toString(inventoryResponse).find(manifest.objectName) == std::string::npos ||
+  if (toString(manifestResponse).find(manifest.objectName) == std::string::npos ||
+      listed.empty() || listed.front().objectName != manifest.objectName ||
       toString(capabilityResponse).find("/repo/A") == std::string::npos ||
-      toString(deleteResponse) != "deleted") {
+      !removed) {
     std::cerr << "repo node response mismatch\n";
     return 1;
   }
 
   const auto clientManifest = RepoClient::makeManifest(
-    "/NDNSF-DI/ARTIFACT/demo/client-object",
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/"
+    "NDNSF-DI/ARTIFACT/demo/client-object",
     "model",
     payload,
     policy.replicationFactor,

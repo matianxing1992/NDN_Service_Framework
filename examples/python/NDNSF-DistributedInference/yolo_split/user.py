@@ -4,15 +4,10 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-import tempfile
 
 from ndnsf_distributed_inference import (
-    DistributedInferencePlan,
     APPClient,
-    InferencePlanBuilder,
 )
-from ndnsf_distributed_inference.backends.onnxruntime import runtime_spec
 
 from yolo_split_lib import (
     CONFIG_FILE,
@@ -23,50 +18,11 @@ from yolo_split_lib import (
     decode_initial_request,
     decode_onnx_output,
     encode_initial_request,
-    export_yolo_split_onnx,
     full_forward,
     load_yolo_model,
     make_input,
     optional_local_nfd,
-    yolo_splitter_output,
 )
-
-
-def build_plan(deployment, model_name: str, exported: dict,
-               input_size: int) -> DistributedInferencePlan:
-    runtime = runtime_spec()
-    split = int(exported["split"])
-    saved_indices = [int(value) for value in exported["saved_indices"]]
-    common_metadata = {
-        "model": model_name,
-        "split": split,
-        "saved_indices": saved_indices,
-        "input_size": input_size,
-    }
-    split_service = yolo_splitter_output(exported).service(SERVICE)
-    builder = InferencePlanBuilder.for_service(
-        deployment,
-        SERVICE,
-        runtime=runtime,
-    ).metadata(**common_metadata)
-    stage0_artifact = split_service.artifact_for_role(ROLE_STAGE0)
-    stage1_artifact = split_service.artifact_for_role(ROLE_STAGE1)
-    builder.add_part(
-        role=ROLE_STAGE0,
-        artifact_name=stage0_artifact.artifact_name,
-        model=Path(stage0_artifact.path).read_bytes(),
-        filename=stage0_artifact.resolved_filename(),
-        kind=stage0_artifact.kind,
-        metadata=stage0_artifact.metadata,
-    ).add_part(
-        role=ROLE_STAGE1,
-        artifact_name=stage1_artifact.artifact_name,
-        model=Path(stage1_artifact.path).read_bytes(),
-        filename=stage1_artifact.resolved_filename(),
-        kind=stage1_artifact.kind,
-        metadata=stage1_artifact.metadata,
-    )
-    return builder.build()
 
 
 def main() -> int:
@@ -103,18 +59,16 @@ def main() -> int:
         )
         model_name, model = load_yolo_model(args.model)
         x = make_input(args.input_size)
-        request_payload = encode_initial_request(x)
+        client.register_input_encoder(SERVICE, encode_initial_request)
+        request_payload = client.encode_input(SERVICE, x)
         expected = full_forward(model, decode_initial_request(request_payload))
 
-        with tempfile.TemporaryDirectory(prefix="ndnsf-yolo-onnx-export-") as export_dir:
-            exported = export_yolo_split_onnx(args.model, export_dir, args.input_size)
-            plan = build_plan(client.deployment, model_name, exported, args.input_size)
-            result = client.infer(
-                plan,
-                request_payload,
-                ack_timeout_ms=args.ack_timeout_ms,
-                timeout_ms=args.timeout_ms,
-            )
+        result = client.infer_service(
+            SERVICE,
+            request_payload,
+            ack_timeout_ms=args.ack_timeout_ms,
+            timeout_ms=args.timeout_ms,
+        )
 
         if not result.status:
             print("YOLO_SPLIT_RESULT status=false error=", result.error, sep="")

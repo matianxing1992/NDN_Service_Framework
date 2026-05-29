@@ -13,9 +13,10 @@ as both a reusable C++ API and an NDNSF service layer:
 - `selectReplicas`: deterministic placement over candidate storage nodes.
 - `InMemoryRepoStore`: a local smoke-test store used by examples.
 - `RepoNode`: a repo node that can register NDNSF services on a
-  `ServiceProvider`.
-- `RepoClient`: helper APIs for applications that use `ServiceUser` to store
-  or fetch repo objects.
+  `ServiceProvider`, plus local `put/get/list/remove` helpers for C++ apps and
+  tests.
+- `RepoClient`: high-level `put/get/list/remove` helpers, plus lower-level
+  request helpers for applications that need direct `ServiceUser` control.
 - `py_repoclient`: a Python binding for the reusable repo client/protocol API.
 
 The service name is application-configurable. By default, all repo nodes share:
@@ -36,6 +37,7 @@ FETCH
 FETCH_PREPARE
 MANIFEST
 INVENTORY
+DELETE
 ```
 
 Objects are described by `RepoObjectManifest`, which contains object name,
@@ -47,20 +49,130 @@ repo generic: the payload may be a model shard, runner, ONNX file, PyTorch
 artifact, activation tensor, payment-workflow record, telemetry log, JSON
 configuration, or any other NDNSF application object.
 
-The Python-facing generic object API is:
+The recommended Python-facing generic object API hides most NDNSF setup
+details. In a running deployment, repo nodes can preload the deployment config
+as a normal repo object. The application user starts with the repo service
+bootstrap parameters and fetches that config through the repo before doing
+ordinary `put/get` operations:
+
+```python
+from ndnsf_distributed_inference import DistributedRepo
+
+repo = DistributedRepo.from_repo_config(
+    controller="/example/repo/controller",
+    user="/example/repo/user",
+    group="/example/repo/group",
+    trust_schema="examples/trust-schema.conf",
+    config_object_name="/example/repo/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/CONFIG/repo_policy.yaml",
+)
+manifest = repo.put(
+    "APP/Generic/BinaryBlob/demo",
+    payload,
+    object_type="binary-blob",
+    replication_factor=2,
+    policy_epoch="/Policy/example/v1",
+)
+payload = repo.get(manifest.object_name, manifest)
+objects = repo.list()
+repo.remove(manifest.object_name)
+```
+
+The high-level `repo.put(...)` API accepts an application-relative suffix and
+expands it under the publisher namespace, for example
+`/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo`.
+This keeps app data names globally unique and easy to verify.
+Deployment config fetched from the repo follows the same rule; the default
+example config object is under the controller publisher namespace.
+NDNSF-DistributedRepo treats the supplied payload as opaque application data: whether
+the app already encrypted it or left it plaintext, the repo client only
+segments and signs the Data packets before storing those segments in repo
+nodes.
+Validator trust schemas should use hierarchical Data and certificate rules:
+stored Data names stay under the publisher identity, child certificates stay
+under parent certificate namespaces, and production anchors point at the
+trust-root certificate.
+
+## Namespace and Trust Schema Design
+
+NDNSF-DistributedRepo separates the service namespace from the stored-data
+namespace. `/NDNSF/DistributedRepo` is only the invocation service name used for
+CAPABILITY, STORE, FETCH, MANIFEST, and related operations. Stored objects,
+deployment configs, manifests, and payload segments are named under the
+application publisher identity.
+
+Recommended object namespace shape:
+
+```text
+/<publisher>/NDNSF-DISTRIBUTED-REPO/OBJECT/<app-suffix...>
+/<publisher>/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/<digest>
+```
+
+For the generic MiniNDN example:
+
+```text
+/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo
+/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/<digest>
+/example/repo/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/CONFIG/repo_policy.yaml
+```
+
+The repo does not add an extra encryption layer. Application payloads are
+opaque to the repo: encrypted input remains encrypted, plaintext input remains
+plaintext, and the repo client only segments and signs the Data packets that
+repo nodes store.
+
+Trust roots should be project namespaces, not leaf names. For a project rooted
+at `/example/repo`, the trust-root identity is `/example/repo`, and it signs
+children such as `/example/repo/controller`, `/example/repo/user`, and
+`/example/repo/provider/repoA`. A root named `/example/repo/root` signing
+`/example/repo/user` is not hierarchical because `/example/repo/root` is not a
+parent prefix of `/example/repo/user`.
+
+The corresponding trust schema should enforce:
+
+- application object Data names are under the publisher identity;
+- NDNSF runtime and SVS Data names are under the signer identity;
+- certificate names preserve parent-child hierarchy;
+- production validation anchors are trust-root certificates, not permissive
+  `type any` anchors.
+
+`DistributedRepo.from_config("repo_policy.yaml")` remains available for local
+tests and deployment tools that already have the policy file on disk.
+
+The lower-level Python binding remains available when a framework already owns
+the NDNSF `ServiceUser`:
 
 ```python
 from py_repoclient import RepoClient
 
 repo = RepoClient(user, "/NDNSF/DistributedRepo")
 manifest = repo.store(
-    object_name="/APP/Generic/BinaryBlob/demo",
+    object_name="/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo",
     payload=payload,
     object_type="binary-blob",
     replication_factor=2,
     policy_epoch="/Policy/example/v1",
 )
 payload = repo.fetch(manifest.object_name)
+```
+
+The recommended C++ object API is similarly object-oriented:
+
+```cpp
+using namespace ndnsf_distributed_repo;
+
+RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), capability);
+StoreOptions options;
+options.objectType = "binary-blob";
+options.replicationFactor = 2;
+
+auto manifest = RepoClient::put(
+  node,
+  "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo",
+  payload,
+  options);
+auto fetched = RepoClient::get(node, manifest.objectName);
+auto objects = RepoClient::list(node);
+RepoClient::remove(node, manifest.objectName);
 ```
 
 AI-specific helpers such as `store_artifact(...)` belong in

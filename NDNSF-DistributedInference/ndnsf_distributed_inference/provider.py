@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import tempfile
 from typing import Callable, Sequence
 
-from ndnsf import AckDecision, CollaborationContext, ServiceProvider
+from ndnsf import (
+    AckDecision,
+    CollaborationContext,
+    ExecutionArtifact,
+    ExecutionArtifactSpec,
+    ExecutionContext,
+    ServiceProvider,
+)
 
 from .plan import RoleDependencyView
 
@@ -73,6 +82,11 @@ def _validate_list_token(value: str, field: str) -> str:
     return text
 
 
+def _safe_path_token(value: str) -> str:
+    token = str(value).strip("/").replace("/", "-")
+    return token or "role"
+
+
 class DistributedInferenceProvider:
     """Register inference roles using the underlying NDNSF provider."""
 
@@ -121,6 +135,49 @@ class DistributedInferenceProvider:
         # CollaborationContext is owned by the active NDNSF callback. Wait for
         # the Python worker to complete before returning to keep it valid.
         self._handler_executor.submit(handler, context).result()
+
+    def _local_execution(
+        self,
+        role: str,
+        *,
+        backend: str,
+        temp_dir: str | None,
+        local_artifacts: dict[str, dict],
+    ) -> ExecutionContext:
+        root = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
+        root.mkdir(parents=True, exist_ok=True)
+        artifact = dict(local_artifacts.get(role, {}))
+        artifact_paths = {}
+        spec_artifacts = []
+        path = artifact.get("path", "")
+        if path:
+            artifact_paths["model"] = Path(path)
+            spec_artifacts.append(ExecutionArtifact(
+                name="model",
+                data_name="",
+                filename=str(artifact.get("filename") or Path(path).name),
+                sha256="",
+                kind=str(artifact.get("kind") or "model"),
+                chunks=[],
+                executable=False,
+                cache_name="",
+            ))
+        return ExecutionContext(
+            spec=ExecutionArtifactSpec(
+                role=role,
+                backend=str(artifact.get("backend") or backend),
+                entrypoint="",
+                artifacts=spec_artifacts,
+                metadata={
+                    "deployedModel": True,
+                    **dict(artifact.get("metadata") or {}),
+                },
+            ),
+            artifact_paths=artifact_paths,
+            work_dir=Path(tempfile.mkdtemp(
+                prefix=f"ndnsf-{_safe_path_token(_validate_list_token(role, 'role'))}-",
+                dir=str(root))),
+        )
 
     def add_role(
         self,
@@ -177,12 +234,14 @@ class DistributedInferenceProvider:
         can_provision: bool = True,
         allow_executables: bool = False,
         dependency_graph=None,
+        local_artifacts: dict[str, dict] | None = None,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
 
-        The provider may not have the model/runtime locally. The assignment
-        carries encrypted artifacts published by the user; ``prepare_execution``
-        downloads and verifies them before the handler runs.
+        Providers normally use locally deployed artifacts recorded in the
+        service policy. If an assignment carries an artifact name, the provider
+        can still fetch and materialize it for compatibility with older dynamic
+        provisioning flows.
         """
 
         role_list = [_validate_list_token(str(role), "role") for role in roles]
@@ -190,6 +249,7 @@ class DistributedInferenceProvider:
             raise ValueError("at least one role capability is required")
         backend_list = [_validate_list_token(str(backend), "backend")
                         for backend in backends]
+        local_artifacts = dict(local_artifacts or {})
 
         def ack(_payload: bytes) -> AckDecision:
             fields = [
@@ -210,10 +270,23 @@ class DistributedInferenceProvider:
 
         def wrapped(ctx: CollaborationContext, request: bytes) -> None:
             try:
-                execution = ctx.prepare_execution(
-                    temp_root=temp_dir,
-                    allow_executables=allow_executables,
-                )
+                assigned_artifact = str(ctx.assignment.assigned_artifact or "")
+                if assigned_artifact and assigned_artifact != "/":
+                    execution = ctx.prepare_execution(
+                        temp_root=temp_dir,
+                        allow_executables=allow_executables,
+                    )
+                elif has_model:
+                    execution = self._local_execution(
+                        ctx.assignment.role,
+                        backend=backend_list[0] if backend_list else "",
+                        temp_dir=temp_dir,
+                        local_artifacts=local_artifacts,
+                    )
+                else:
+                    raise RuntimeError(
+                        "collaboration assignment has no artifact and provider "
+                        "was not registered with has_model=True")
             except Exception as exc:
                 ctx.fail(f"failed to prepare inference execution: {exc}")
                 return

@@ -19,6 +19,21 @@ public:
 
   void registerServices(ndn_service_framework::ServiceProvider& provider);
 
+  RepoObjectManifest put(const std::string& objectName,
+                         const std::vector<uint8_t>& payload,
+                         const std::string& objectType = "object",
+                         uint32_t replicationFactor = 1,
+                         const std::string& policyEpoch = "",
+                         std::vector<std::string> replicaNodes = {});
+
+  std::vector<uint8_t> get(const std::string& objectName) const;
+
+  RepoObjectManifest getManifest(const std::string& objectName) const;
+
+  std::vector<RepoObjectManifest> list() const;
+
+  bool remove(const std::string& objectName);
+
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleFetch(const std::vector<uint8_t>& request) const;

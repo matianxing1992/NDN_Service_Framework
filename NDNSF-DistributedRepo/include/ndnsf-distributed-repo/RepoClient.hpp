@@ -8,9 +8,37 @@
 
 namespace ndnsf_distributed_repo {
 
+class RepoNode;
+
+struct StoreOptions
+{
+  std::string objectType = "object";
+  uint32_t replicationFactor = 1;
+  std::vector<std::string> replicaNodes;
+  std::string policyEpoch;
+};
+
 class RepoClient
 {
 public:
+  static constexpr const char* DEFAULT_SERVICE_NAME = "/NDNSF/DistributedRepo";
+
+  static RepoObjectManifest put(RepoNode& node,
+                                const std::string& objectName,
+                                const std::vector<uint8_t>& payload,
+                                StoreOptions options = {});
+
+  static std::vector<uint8_t> get(const RepoNode& node,
+                                  const std::string& objectName);
+
+  static RepoObjectManifest getManifest(const RepoNode& node,
+                                        const std::string& objectName);
+
+  static std::vector<RepoObjectManifest> list(const RepoNode& node);
+
+  static bool remove(RepoNode& node,
+                     const std::string& objectName);
+
   static RepoObjectManifest makeManifest(std::string objectName,
                                          std::string objectType,
                                          const std::vector<uint8_t>& payload,

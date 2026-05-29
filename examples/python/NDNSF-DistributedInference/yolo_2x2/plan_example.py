@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Build a YOLO 2x2 distributed-inference plan with the APP-level API.
+"""Inspect a YOLO 2x2 distributed-inference service policy.
 
 This example intentionally focuses on the application-facing API. It shows how
 an AI developer describes a two-stage, two-shard split without importing NDNSF
-Core objects. The same builder supports arbitrary role names and dependency
-graphs; 2x2 is only one convenient layout.
+Core objects. 2x2 is only one convenient layout.
 """
 
 from __future__ import annotations
@@ -14,12 +13,10 @@ import hashlib
 
 from ndnsf_distributed_inference import (
     APPDeployment,
-    InferencePlanBuilder,
     LocalDistributedRepo,
     PlacementPolicy,
     StorageCapability,
 )
-from ndnsf_distributed_inference.backends.onnxruntime import runtime_spec
 
 
 SERVICE = "/AI/YOLO/2x2Inference"
@@ -62,24 +59,22 @@ def build_repo() -> LocalDistributedRepo:
     ])
 
 
-def build_yolo_2x2_plan():
+def inspect_yolo_2x2_policy():
     deployment = APPDeployment.from_config(
         CONFIG_FILE,
         generated_policy_dir="/tmp/ndnsf-di-yolo-2x2-policy",
     )
     repo = build_repo()
     placement = PlacementPolicy(replication_factor=2)
-    builder = InferencePlanBuilder.for_service(
-        deployment.deployment,
-        SERVICE,
-        runtime=runtime_spec(),
-    ).metadata(layout="2-stage x 2-shard", framework="onnxruntime")
+    service = deployment.deployment.service_policy(SERVICE)
+    manifests = {}
 
     for stage in range(2):
         for shard in range(2):
             payload = fake_onnx_payload(stage, shard)
             object_name = (
-                "/NDNSF-DI/ARTIFACT/AI/YOLO/2x2"
+                "/example/hello/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/"
+                "NDNSF-DI/ARTIFACT/AI/YOLO/2x2"
                 f"/Stage/{stage}/Shard/{shard}/model"
             )
             manifest = repo.put(
@@ -89,25 +84,13 @@ def build_yolo_2x2_plan():
                 policy=placement,
                 policy_epoch="/Policy/yolo-2x2/v1",
             )
-            builder.add_grid_part(
-                stage=stage,
-                shard=shard,
-                model=payload,
-                filename=f"yolo-stage{stage}-shard{shard}.onnx",
-                kind="onnx-model",
-                metadata={
-                    "tensor_parallel_shard": shard,
-                    "pipeline_stage": stage,
-                    "repo_manifest": manifest.to_dict(),
-                },
-            )
+            manifests[f"/Stage/{stage}/Shard/{shard}"] = manifest.to_dict()
 
-    return builder.build(), deployment, repo
+    return service, manifests, deployment, repo
 
 
-def validate_repo_artifacts(plan, repo: LocalDistributedRepo) -> None:
-    for role in plan.roles:
-        manifest_dict = role.metadata["repo_manifest"]
+def validate_repo_artifacts(manifests, repo: LocalDistributedRepo) -> None:
+    for manifest_dict in manifests.values():
         object_name = manifest_dict["objectName"]
         payload = repo.fetch(object_name)
         digest = hashlib.sha256(payload).hexdigest()
@@ -118,7 +101,10 @@ def validate_repo_artifacts(plan, repo: LocalDistributedRepo) -> None:
 def validate_repo_intermediate_data(repo: LocalDistributedRepo) -> None:
     payload = b"activation tensor from stage0 shards to stage1 shards"
     manifest = repo.put(
-        object_name="/NDNSF-DI/INTERMEDIATE/AI/YOLO/2x2/session-0/stage0-to-stage1",
+        object_name=(
+            "/example/hello/user/NDNSF-DISTRIBUTED-REPO/OBJECT/"
+            "NDNSF-DI/INTERMEDIATE/AI/YOLO/2x2/session-0/stage0-to-stage1"
+        ),
         payload=payload,
         object_type="activation",
         policy=PlacementPolicy(replication_factor=1),
@@ -130,11 +116,11 @@ def validate_repo_intermediate_data(repo: LocalDistributedRepo) -> None:
 
 
 def main() -> int:
-    plan, deployment, repo = build_yolo_2x2_plan()
-    validate_repo_artifacts(plan, repo)
+    service, manifests, deployment, repo = inspect_yolo_2x2_policy()
+    validate_repo_artifacts(manifests, repo)
     validate_repo_intermediate_data(repo)
-    print("APP API plan smoke")
-    print("service:", plan.service)
+    print("APP API service policy smoke")
+    print("service:", service.name)
     print("policy trust schema:", deployment.trust_schema)
     print("repo objects:", len(repo.inventory()))
     print("repo nodes:")
@@ -142,20 +128,19 @@ def main() -> int:
         print(f"  {capability.repo_node} free={capability.free_bytes} "
               f"used={capability.used_bytes} load={capability.recent_load}")
     print("roles:")
-    for role in plan.roles:
-        manifest = role.metadata["repo_manifest"]
+    for role in service.roles:
+        manifest = manifests[role]
         replicas = ",".join(manifest["replicaNodes"])
-        print(f"  {role.role} -> {role.artifact_name} "
-              f"repo={manifest['objectName']} replicas={replicas}")
+        print(f"  {role} repo={manifest['objectName']} replicas={replicas}")
     print("dependencies:")
-    for dep in plan.dependencies:
+    for dep in service.dependencies:
         producers = ",".join(dep.producers)
         consumers = ",".join(dep.consumers)
         print(f"  {dep.key_scope}: {producers} -> {consumers} "
               f"topic={dep.topic_prefix}")
     print("provider role dependency views:")
     dependency_graph = deployment.deployment.dependency_graph_for_service(SERVICE)
-    for role in [role.role for role in plan.roles]:
+    for role in service.roles:
         view = dependency_graph.for_role(role)
         print(f"  {role}: "
               f"inputs={[edge.key_scope for edge in view.inputs]} "

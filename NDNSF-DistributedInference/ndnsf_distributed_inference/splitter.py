@@ -43,6 +43,10 @@ class SplitServiceSpec:
     roles: list[str]
     dependencies: list[InferenceDependency]
     artifacts: list[SplitArtifact] = field(default_factory=list)
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] = field(default_factory=dict)
+    users: list[str] = field(default_factory=list)
+    providers: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_policy_service(
@@ -65,8 +69,22 @@ class SplitServiceSpec:
                 }
                 for dep in self.dependencies
             ],
-            "users": list(users),
-            "providers": list(providers),
+            "artifacts": [
+                {
+                    "role": artifact.role,
+                    "path": artifact.path,
+                    "artifact": artifact.artifact_name,
+                    "filename": artifact.resolved_filename(),
+                    "kind": artifact.kind,
+                    "backend": artifact.backend,
+                    "metadata": dict(artifact.metadata),
+                }
+                for artifact in self.artifacts
+            ],
+            "users": list(self.users or users),
+            "providers": list(self.providers or providers),
+            "input": dict(self.input_schema),
+            "output": dict(self.output_schema),
         }
 
     def artifact_for_role(self, role: str) -> SplitArtifact:
@@ -87,6 +105,9 @@ class SplitterOutput:
     provider_prefix: str
     services: list[SplitServiceSpec]
     trust_app_roots: list[str] = field(default_factory=list)
+    trust_anchor_file: str = ""
+    artifact_allowlist: list[str] = field(default_factory=list)
+    artifact_sandbox: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def service(self, name: str) -> SplitServiceSpec:
@@ -99,6 +120,8 @@ class SplitterOutput:
         providers = [
             {"identity": self.provider_prefix, "roles": "all"},
             {"identity": self.provider_prefix.rstrip("/") + "/A", "roles": "all"},
+            {"identity": self.provider_prefix.rstrip("/") + "/B", "roles": "all"},
+            {"identity": self.provider_prefix.rstrip("/") + "/C", "roles": "all"},
         ]
         return {
             "application": self.application,
@@ -110,6 +133,12 @@ class SplitterOutput:
             },
             "trust": {
                 "app_roots": list(self.trust_app_roots),
+            },
+            "artifact_security": {
+                **({"anchor_file": self.trust_anchor_file}
+                   if self.trust_anchor_file else {}),
+                "allowlist": list(self.artifact_allowlist),
+                "sandbox": dict(self.artifact_sandbox),
             },
             "services": [
                 service.to_policy_service(users=[self.user], providers=providers)

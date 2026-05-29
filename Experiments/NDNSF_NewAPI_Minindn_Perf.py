@@ -1403,7 +1403,7 @@ def initialize_example_keychains(ndn, args, output_dir):
     security_dir = output_dir / "security"
     security_dir.mkdir(parents=True, exist_ok=True)
 
-    root_identity = "/example/hello/root"
+    root_identity = "/example/hello"
     identities = [
         "/example/hello/controller",
         "/example/hello/provider",

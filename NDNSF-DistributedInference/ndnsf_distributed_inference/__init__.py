@@ -22,6 +22,7 @@ from .plan import (
 )
 from .provider import DistributedInferenceProvider, ProviderRuntimeContext
 from .repo import (
+    DistributedRepo,
     LocalDistributedRepo,
     NetworkDistributedRepoClient,
     PlacementPolicy,
@@ -56,6 +57,7 @@ __all__ = [
     "DistributedInferenceController",
     "DistributedInferencePlan",
     "DistributedInferenceProvider",
+    "DistributedRepo",
     "DistributedInferenceDeployment",
     "DependencyGraph",
     "DependencyEdge",

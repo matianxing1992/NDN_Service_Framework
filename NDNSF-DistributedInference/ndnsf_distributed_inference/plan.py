@@ -23,6 +23,7 @@ class ArtifactSpec:
     kind: str = "model"
     executable: bool = False
     cache_name: str = ""
+    repo_manifest: dict = field(default_factory=dict)
 
     def to_ndnsf_artifact(self) -> dict:
         return {
@@ -31,6 +32,7 @@ class ArtifactSpec:
             "kind": self.kind,
             "executable": self.executable,
             "cache_name": self.cache_name,
+            "repo_manifest": dict(self.repo_manifest or {}),
         }
 
 
@@ -204,6 +206,21 @@ class DependencyGraph:
             outputs=outputs,
             internal=internal,
         )
+
+    def key_scopes(self) -> dict[str, list[str]]:
+        scopes: dict[str, set[str]] = {}
+        for edge in self.dependencies:
+            roles = scopes.setdefault(edge.key_scope, set())
+            roles.update(edge.producers)
+            roles.update(edge.consumers)
+        return {scope: sorted(roles) for scope, roles in scopes.items()}
+
+    def role_scopes(self) -> dict[str, list[str]]:
+        mapping: dict[str, list[str]] = {role: [] for role in self.roles}
+        for edge in self.dependencies:
+            for role in edge.producers + edge.consumers:
+                mapping.setdefault(role, []).append(edge.key_scope)
+        return mapping
 
 
 @dataclass(frozen=True)
