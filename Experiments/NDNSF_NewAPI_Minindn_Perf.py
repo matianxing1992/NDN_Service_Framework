@@ -158,6 +158,8 @@ def build_parser():
                         help="Open-loop offered request rate")
     parser.add_argument("--max-outstanding", type=int, default=512,
                         help="Open-loop maximum concurrent outstanding requests")
+    parser.add_argument("--pacing-jitter-us", type=int, default=0,
+                        help="Optional deterministic open-loop send-time jitter in microseconds; disabled by default")
     parser.add_argument("--adaptive-admission-control", action="store_true",
                         help="Explicitly enable App_User adaptive local queue admission control; enabled by default")
     parser.add_argument("--disable-adaptive-admission-control", action="store_true",
@@ -258,6 +260,10 @@ def build_parser():
                         help="Enable harness-only NDNSF_CRYPTO_DIAG timing logs")
     parser.add_argument("--timeline-trace", action="store_true",
                         help="Pass --timeline-trace to App_User and App_Provider and enable timeline trace logs")
+    parser.add_argument("--timeline-trace-sample-rate", type=int, default=100,
+                        help="Sample one request out of N for timeline trace and lifecycle CSV output")
+    parser.add_argument("--svs-piggyback-trace", action="store_true",
+                        help="Enable ndn_svs.SVSPubSub TRACE logs only for app processes")
     parser.add_argument("--svs-parallel-sync-processing", action="store_true",
                         help="Enable experimental ndn-svs parallel Sync Interest processing in App_User/App_Provider")
     parser.add_argument("--svs-parallel-workers", type=int, default=4,
@@ -1645,13 +1651,16 @@ def write_provider_cert_runtime_diagnostics(output_dir, args, label):
 
 
 def app_env(output_dir, session_base, args):
-    ndn_log = os.environ.get("NDN_LOG", "ndn_service_framework.*=INFO")
+    default_ndn_log = "ndn_service_framework.*=WARN" if args.performance_mode else "ndn_service_framework.*=INFO"
+    ndn_log = os.environ.get("NDN_LOG", default_ndn_log)
     if args.debug_ack:
         ndn_log = os.environ.get("NDN_LOG", "ndn_service_framework.*=TRACE:ndnsvs.*=INFO")
     if getattr(args, "timeline_trace", False):
         ndn_log = os.environ.get(
             "NDN_LOG",
-            "ndn_service_framework.*=DEBUG:ndn_service_framework.TimelineTrace=DEBUG:ndn_svs.*=TRACE")
+            "ndn_service_framework.*=WARN:ndn_service_framework.TimelineTrace=DEBUG")
+    if getattr(args, "svs_piggyback_trace", False):
+        ndn_log = "{}:ndn_svs.SVSPubSub=TRACE".format(ndn_log)
     if getattr(args, "dk_bootstrap_check", False):
         ndn_log = os.environ.get(
             "NDN_LOG",
@@ -1665,6 +1674,13 @@ def app_env(output_dir, session_base, args):
         "NDN_LOG": ndn_log,
         "NDNSF_SVS_MAX_SUPPRESSION_MS": os.environ.get("NDNSF_SVS_MAX_SUPPRESSION_MS", "1"),
     }
+    if args.performance_mode:
+        env["NDNSF_SVS_MAX_APP_PARAMS_BYTES"] = os.environ.get(
+            "NDNSF_SVS_MAX_APP_PARAMS_BYTES", "4096")
+        env["NDNSF_SVS_MAX_PIGGYDATA_BYTES"] = os.environ.get(
+            "NDNSF_SVS_MAX_PIGGYDATA_BYTES", "4096")
+    if "NDNSF_SVS_PERIODIC_SYNC_MS" in os.environ:
+        env["NDNSF_SVS_PERIODIC_SYNC_MS"] = os.environ["NDNSF_SVS_PERIODIC_SYNC_MS"]
     for name in ("NDNSF_HANDLER_THREADS", "NDNSF_ACK_THREADS"):
         if name in os.environ:
             env[name] = os.environ[name]
@@ -1674,6 +1690,8 @@ def app_env(output_dir, session_base, args):
         env["NDNSF_CRYPTO_DIAG"] = "1"
     if getattr(args, "timeline_trace", False):
         env["NDNSF_TIMELINE_TRACE"] = "1"
+        env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = str(
+            max(1, int(getattr(args, "timeline_trace_sample_rate", 100))))
     if getattr(args, "diag_plaintext_ack", False):
         env["NDNSF_CRYPTO_DIAG"] = "1"
         env["NDNSF_DIAG_PLAINTEXT_ACK"] = "1"
@@ -4235,7 +4253,10 @@ def start_controller(ndn, output_dir, session_base, processes, args):
     controller_proc, controller_log = start_process(
         ndn.net[args.controller_node], "controller", APP_TARGETS["controller"], [],
         output_dir, session_base, processes, args)
-    if not wait_for_log(controller_log, r"ServiceController listening on:", 20, controller_proc):
+    if not wait_for_log(controller_log,
+                        r"ServiceController (listening on:|started)",
+                        20,
+                        controller_proc):
         raise RuntimeError("Controller did not become ready; see {}".format(controller_log))
     (output_dir / "controller-startup.json").write_text(json.dumps({
         "event": "controller_ready",
@@ -4262,9 +4283,13 @@ def provider_argv(args, provider_id, index, output_dir=None):
                           if args.provider_ack_payload is not None
                           else "queue={};gpu=idle;rank={}".format(queue, rank)),
         "--response-payload", "HELLO_FROM_{}".format(provider_id),
-        "--provider-lifecycle-csv",
-        str((output_dir or Path(".")).resolve() / "provider-{}-lifecycle.csv".format(provider_id)),
     ]
+    if getattr(args, "timeline_trace", False):
+        argv.extend([
+            "--provider-lifecycle-csv",
+            str((output_dir or Path(".")).resolve() /
+                "provider-{}-lifecycle.csv".format(provider_id)),
+        ])
     if delay_series:
         delay_ms = delay_series[min(index, len(delay_series) - 1)]
         argv.extend(["--provider-request-delay-ms", str(delay_ms)])
@@ -4601,6 +4626,7 @@ def app_user_argv(args, app_csv):
             "--max-outstanding", str(int(args.max_outstanding)),
             "--request-timeout-ms", str(int(args.request_timeout_ms)),
             "--drain-seconds", str(int(args.drain_seconds)),
+            "--pacing-jitter-us", str(max(0, int(args.pacing_jitter_us))),
         ])
         if getattr(args, "disable_adaptive_admission_control", False):
             user_args.append("--disable-adaptive-admission-control")

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -96,6 +97,30 @@ private:
   size_t m_count = 0;
   std::mutex m_mutex;
 };
+
+size_t
+envSizeOption(const char* name, size_t defaultValue)
+{
+  const char* value = std::getenv(name);
+  if (value == nullptr || *value == '\0') {
+    return defaultValue;
+  }
+  try {
+    return std::max<size_t>(1, static_cast<size_t>(std::stoull(value)));
+  }
+  catch (...) {
+    return defaultValue;
+  }
+}
+
+bool
+sampleByRequestId(const ndn::Name& requestId, size_t sampleRate)
+{
+  if (sampleRate <= 1 || requestId.empty()) {
+    return true;
+  }
+  return (std::hash<std::string>{}(requestId.toUri()) % sampleRate) == 0;
+}
 
 ndn::security::Certificate
 getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
@@ -302,6 +327,8 @@ main(int argc, char** argv)
       providerLifecycleStream =
         std::make_shared<std::ofstream>(providerLifecycleCsv);
       if (*providerLifecycleStream) {
+        const auto providerLifecycleSampleRate =
+          envSizeOption("NDNSF_TIMELINE_TRACE_SAMPLE_RATE", 100);
         *providerLifecycleStream
           << "request_id,service_name,provider_name,state,"
           << "request_observed_timestamp_us,ack_admission_decision_timestamp_us,"
@@ -311,8 +338,11 @@ main(int argc, char** argv)
           << "execution_start_timestamp_us,execution_done_timestamp_us,"
           << "response_published_timestamp_us,final_status\n";
         provider.setProviderRequestLifecycleCallback(
-          [providerLifecycleStream](
+          [providerLifecycleStream, providerLifecycleSampleRate](
             const ndn_service_framework::ServiceProvider::ProviderRequestLifecycleStatus& status) {
+            if (!sampleByRequestId(status.requestId, providerLifecycleSampleRate)) {
+              return;
+            }
             *providerLifecycleStream
               << status.requestId.toUri() << ","
               << status.serviceName.toUri() << ","

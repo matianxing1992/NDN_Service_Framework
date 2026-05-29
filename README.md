@@ -404,6 +404,20 @@ suppression set to 1 ms, and performance-mode logging. Hot-path per-message logs
 must stay below `INFO`; otherwise request/ACK/selection/response logging can
 dominate the benchmark.
 
+For performance runs, keep output intentionally sparse. The code treats
+per-request, per-ACK/selection/response, lifecycle, publication, and detailed
+diagnostic events as `TRACE` logs. Use `NDN_LOG=ndn_service_framework.*=INFO`
+for normal performance measurements, or `DEBUG` when checking startup/state
+without hot-path traces. Use `TRACE` only for performance analysis or debugging.
+Performance-analysis traces are sampled by default: `--timeline-trace` enables
+timeline/lifecycle diagnostics, and `--timeline-trace-sample-rate N` keeps one
+stable request sample out of every `N` request IDs (`100` by default). Use
+`--timeline-trace-sample-rate 1` only for very short focused debugging. Likewise,
+keep NFD packet dumps and other detailed diagnostics disabled unless the run is
+specifically investigating a bottleneck. Long 10-minute rate runs can generate
+enough raw output to perturb latency and fill the filesystem; keep only summary
+artifacts after the useful finding has been recorded.
+
 Key runtime settings:
 
 ```text
@@ -454,3 +468,31 @@ RPS   Actual   Success   Avg ms   P50 ms   P95 ms   P99 ms   Timeout
 60    60.00    100%      168.85   166.61   184.34   199.18   0
 100   99.99    100%      166.40   165.67   169.04   174.19   0
 ```
+
+Current 60-second 100 RPS diagnostics show why later sustained runs can sit
+above the 166 ms short-window baseline. Do not change ndn-svs periodic Sync
+Interest timing for this benchmark unless the experiment explicitly studies
+that timer: periodic sync affects piggyback opportunities. Keep the Sync
+Interest suppression interval in the 1-5 ms range; the reproduction profile
+uses 1 ms.
+
+The current open-loop generator avoids zero-delay catch-up bursts. When the
+event loop falls behind, it records delayed publications and uses bounded
+catch-up spacing instead of publishing multiple due requests back-to-back. In a
+60-second 100 RPS run (`results/newapi_minindn_perf_20260529_125158`), the
+generator kept 99.995 actual RPS while reducing sub-1 ms send gaps to zero:
+
+```text
+Actual RPS  Success  Avg ms  P50 ms  P95 ms  P99 ms  Timeout
+99.995      99.95%   203.81  201.47  235.27  251.08  3
+```
+
+A sampled timeline run (`results/newapi_minindn_perf_20260529_125523`) showed
+that AES-GCM encryption and local publish calls are not the bottleneck
+(publish/crypto p50 is sub-millisecond). The remaining latency is in SVS/NFD
+delivery: REQUEST-to-ACK p50 is about 97 ms, and SELECTION-to-RESPONSE p50 is
+about 96 ms. The four one-way user/provider delivery legs are each about
+46-50 ms, while the Memphis-to-UCLA route cost is 37 ms. Future optimization
+should therefore focus on the SVS/NFD delivery path and piggyback delivery
+effectiveness, not on periodic-sync timer changes, extra hot-path logging, or
+application crypto.
