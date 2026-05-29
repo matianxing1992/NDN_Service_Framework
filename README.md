@@ -428,14 +428,14 @@ NDNSF_SVS_ASYNC_PUBLISH=1
 NDNSF_SVS_PARALLEL_SYNC=1
 NDNSF_SVS_PARALLEL_WORKERS=4
 NDNSF_SVS_PARALLEL_QUEUE=256
-NDNSF_SVS_PARALLEL_PRODUCTION=4
+NDNSF_SVS_PARALLEL_PRODUCTION=0
 NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING=0
 NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK=1
 adaptive admission: disabled
 provider handler threads: 2
 provider ACK worker threads: 2
 strategy: first-responding
-workload: open-loop, 10 s warmup + 10 s measured duration per rate
+workload: open-loop, 60 s warmup + 60 s measured duration for latency floor validation
 ```
 
 Reproduction command:
@@ -447,13 +447,15 @@ sudo -n python3 Experiments/NDNSF_NewAPI_Minindn_Perf.py \
   --provider-nodes ucla \
   --controller-node csu \
   --providers 1 \
-  --rate-series 20,60,100 \
-  --per-rate-duration 10 \
+  --rate-rps 100 \
+  --duration 60 \
+  --warmup 60 \
   --max-total-runtime-seconds 300 \
   --workload-mode open-loop \
   --strategy first-responding \
   --disable-adaptive-admission-control \
   --performance-mode \
+  --svs-disable-parallel-production \
   --handler-threads 2 \
   --ack-threads 2 \
   --nfd-log-level WARN \

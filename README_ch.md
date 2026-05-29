@@ -385,14 +385,14 @@ NDNSF_SVS_ASYNC_PUBLISH=1
 NDNSF_SVS_PARALLEL_SYNC=1
 NDNSF_SVS_PARALLEL_WORKERS=4
 NDNSF_SVS_PARALLEL_QUEUE=256
-NDNSF_SVS_PARALLEL_PRODUCTION=4
+NDNSF_SVS_PARALLEL_PRODUCTION=0
 NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING=0
 NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK=1
 adaptive admission: disabled
 provider handler threads: 2
 provider ACK worker threads: 2
 strategy: first-responding
-workload: open-loop, 10 s warmup + 10 s measured duration per rate
+workload: open-loop, latency floor 验证使用 60 s warmup + 60 s measured duration
 ```
 
 当前 60 秒、100 RPS 诊断解释了为什么后续持续运行可能高于 166 ms 的短窗口
