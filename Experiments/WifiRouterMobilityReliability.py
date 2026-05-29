@@ -112,16 +112,18 @@ def stop_processes(processes):
 
 
 class RandomWaypointCoverage:
-    def __init__(self, provider_names, seed, area_size=400.0, min_speed=1.0, max_speed=2.0):
+    def __init__(self, provider_names, seed, area_size=400.0, min_speed=1.0,
+                 max_speed=2.0, ap_x=200.0, ap_y=200.0, initial_radius=50.0):
         self.rng = random.Random(seed)
         self.area_size = area_size
         self.min_speed = min_speed
         self.max_speed = max_speed
         self.states = {}
         for name in provider_names:
+            angle = self.rng.uniform(0.0, 2.0 * math.pi)
             self.states[name] = {
-                "x": self.rng.uniform(0, area_size),
-                "y": self.rng.uniform(0, area_size),
+                "x": ap_x + math.cos(angle) * initial_radius,
+                "y": ap_y + math.sin(angle) * initial_radius,
                 "target_x": self.rng.uniform(0, area_size),
                 "target_y": self.rng.uniform(0, area_size),
                 "speed": self.rng.uniform(min_speed, max_speed),
@@ -245,16 +247,42 @@ def initialize_keychains(nodes, controller, output_dir):
 
 
 def configure_ndn_multicast(nodes):
+    identity_owners = {
+        "/example/hello/controller": "memphis",
+        "/example/hello/user": "memphis",
+        "/example/hello/provider/A": "ucla",
+        "/example/hello/provider/B": "wustl",
+        "/example/hello/provider/C": "uiuc",
+        "/muas/memphis": "memphis",
+        "/muas/ucla": "ucla",
+        "/muas/wustl": "wustl",
+        "/muas/uiuc": "uiuc",
+    }
+    group_prefixes = ["/example/hello/group", "/muas"]
+
+    face_uri = {}
     for node in nodes:
-        for prefix in ["/example/hello", "/example/hello/group", "/muas"]:
+        for peer in nodes:
+            if peer.name == node.name:
+                continue
+            uri = f"udp4://{peer.IP()}"
+            face_uri[(node.name, peer.name)] = uri
+            node.cmd(f"nfdc face create {uri} >/dev/null 2>&1 || true")
+
+    for node in nodes:
+        for prefix in group_prefixes:
             node.cmd(f"nfdc strategy set {prefix} /localhost/nfd/strategy/multicast >/dev/null 2>&1 || true")
-            node.cmd(f"nfdc route add prefix {prefix} nexthop 256 cost 100 >/dev/null 2>&1 || true")
-        for identity in ["/example/hello/controller", "/example/hello/user",
-                         "/example/hello/provider/A", "/example/hello/provider/B",
-                         "/example/hello/provider/C",
-                         "/muas/memphis", "/muas/ucla", "/muas/wustl", "/muas/uiuc"]:
-            node.cmd(f"nfdc strategy set {identity} /localhost/nfd/strategy/multicast >/dev/null 2>&1 || true")
-            node.cmd(f"nfdc route add prefix {identity} nexthop 256 cost 100 >/dev/null 2>&1 || true")
+            for peer in nodes:
+                if peer.name != node.name:
+                    node.cmd(
+                        f"nfdc route add prefix {prefix} nexthop {face_uri[(node.name, peer.name)]} cost 100 "
+                        ">/dev/null 2>&1 || true")
+        for prefix, owner_name in identity_owners.items():
+            node.cmd(f"nfdc strategy set {prefix} /localhost/nfd/strategy/best-route >/dev/null 2>&1 || true")
+            if owner_name != node.name:
+                node.cmd(
+                    f"nfdc route add prefix {prefix} nexthop {face_uri[(node.name, owner_name)]} cost 10 "
+                    ">/dev/null 2>&1 || true")
 
 
 def build_wifi_topology(ap_range, seed):
