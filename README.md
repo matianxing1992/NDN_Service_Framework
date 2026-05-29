@@ -496,3 +496,22 @@ about 96 ms. The four one-way user/provider delivery legs are each about
 should therefore focus on the SVS/NFD delivery path and piggyback delivery
 effectiveness, not on periodic-sync timer changes, extra hot-path logging, or
 application crypto.
+
+A follow-up diagnostic isolated one important source of delivery jitter:
+parallel Sync Interest production. With `--svs-disable-parallel-production`
+and a 60-second send-but-not-measure warmup, the sustained 60-second 100 RPS
+run returned to the low-latency band
+(`results/newapi_minindn_perf_20260529_131130`):
+
+```text
+Actual RPS  Success  Avg ms  P50 ms  P95 ms  P99 ms  Timeout
+100.000     100.00%  168.06  166.50  177.14  198.33  0
+```
+
+This indicates that the 166 ms behavior is reachable in sustained 60-second
+measurements after the system reaches steady state. Parallel production can
+hide local publication delay behind worker queues: local publish calls still
+look sub-millisecond in application traces, while end-to-end delivery gains
+extra tail. Use this profile when validating the latency floor, and use
+parallel production only when the experiment is specifically studying
+throughput/CPU tradeoffs.
