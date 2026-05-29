@@ -1418,6 +1418,15 @@ public:
     if (m_serveCertificates) {
       m_certPublisher = std::make_unique<nsf::CertificatePublisher>(
         m_face, m_keyChain, m_controllerCert.getName());
+      const auto rootIdentity = m_controllerPrefix.getPrefix(-1);
+      if (!rootIdentity.empty() && rootIdentity != m_controllerPrefix) {
+        try {
+          m_rootCertPublisher = std::make_unique<nsf::CertificatePublisher>(
+            m_face, m_keyChain, rootIdentity);
+        }
+        catch (const std::exception&) {
+        }
+      }
     }
     m_controller = std::make_unique<nsf::ServiceController>(
       m_face, m_controllerCert, m_validator, m_policyFile);
@@ -1497,6 +1506,7 @@ private:
   bool m_serveCertificates = true;
   ndn::security::Certificate m_controllerCert;
   std::unique_ptr<nsf::CertificatePublisher> m_certPublisher;
+  std::unique_ptr<nsf::CertificatePublisher> m_rootCertPublisher;
   std::unique_ptr<nsf::ServiceController> m_controller;
   std::atomic<bool> m_running{false};
   std::thread m_thread;

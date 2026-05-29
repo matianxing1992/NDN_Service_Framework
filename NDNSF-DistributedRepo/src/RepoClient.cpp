@@ -1,8 +1,47 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/RepoNode.hpp"
 
 #include <utility>
 
 namespace ndnsf_distributed_repo {
+
+RepoObjectManifest
+RepoClient::put(RepoNode& node,
+                const std::string& objectName,
+                const std::vector<uint8_t>& payload,
+                StoreOptions options)
+{
+  return node.put(objectName,
+                  payload,
+                  options.objectType,
+                  options.replicationFactor,
+                  options.policyEpoch,
+                  std::move(options.replicaNodes));
+}
+
+std::vector<uint8_t>
+RepoClient::get(const RepoNode& node, const std::string& objectName)
+{
+  return node.get(objectName);
+}
+
+RepoObjectManifest
+RepoClient::getManifest(const RepoNode& node, const std::string& objectName)
+{
+  return node.getManifest(objectName);
+}
+
+std::vector<RepoObjectManifest>
+RepoClient::list(const RepoNode& node)
+{
+  return node.list();
+}
+
+bool
+RepoClient::remove(RepoNode& node, const std::string& objectName)
+{
+  return node.remove(objectName);
+}
 
 RepoObjectManifest
 RepoClient::makeManifest(std::string objectName,

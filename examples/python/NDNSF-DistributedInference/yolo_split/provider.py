@@ -103,8 +103,8 @@ def main() -> int:
             handler=handle_role,
             backends=["onnxruntime"],
             temp_dir=args.temp_dir or None,
-            has_model=False,
-            can_provision=True,
+            has_model=True,
+            can_provision=False,
             allow_executables=args.allow_executables,
         )
         app_provider.run()

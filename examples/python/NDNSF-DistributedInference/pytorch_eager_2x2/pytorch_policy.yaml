@@ -8,7 +8,9 @@ identities:
 
 trust:
   app_roots:
-    - /example
+    - /example/hello
+  # Production deployments should anchor validation at the trust-root certificate.
+  # anchor_file: /path/to/root.cert
 
 services:
   - name: /AI/PyTorch/Eager2x2Inference
@@ -27,6 +29,20 @@ services:
         consumers: [/Stage/1/Shard/0, /Stage/1/Shard/1]
         key_scope: stage1-internal
         topic_prefix: /output
+    input:
+      codec: torch-save+gzip
+      encoder: encode_input(input_tensor)
+      fields:
+        x:
+          dtype: float32
+          shape: [1, 8]
+    output:
+      codec: torch-save+gzip
+      decoder: decode_output(response.payload)
+      fields:
+        output:
+          dtype: float32
+          shape: [1, 4]
     users:
       - /example/hello/user
     providers:

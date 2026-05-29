@@ -9,6 +9,7 @@ import subprocess
 import time
 import sys
 from pathlib import Path
+import yaml  # type: ignore
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "Experiments"))
@@ -26,6 +27,9 @@ from minindn.util import getPopen  # noqa: E402
 TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
 OUT = REPO / "results/distributed_repo_generic_minindn"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedRepo/generic_object_store"
+CONFIG = PY_DIR / "repo_policy.yaml"
+RUNTIME_CONFIG = OUT / "repo_policy.yaml"
+GEN_POLICY = "/tmp/ndnsf-distributed-repo-generic-policy"
 
 
 def log(message: str) -> None:
@@ -88,11 +92,32 @@ def main() -> None:
         perf.wait_for_nfd_sockets(ndn, OUT)
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
-        rh.addOrigin([ndn.net["csu"]], ["/example/repo/controller"])
-        rh.addOrigin([ndn.net["memphis"]], ["/example/repo/user"])
-        rh.addOrigin([ndn.net["ucla"]], ["/example/repo/provider/repoA"])
-        rh.addOrigin([ndn.net["wustl"]], ["/example/repo/provider/repoB"])
-        rh.addOrigin([ndn.net["uiuc"]], ["/example/repo/provider/repoC"])
+        rh.addOrigin(
+            [ndn.net["csu"]],
+            [
+                "/example/repo/controller",
+                "/example/repo/controller/DKEY",
+                "/example/repo/controller/KEY",
+                "/example/repo",
+                "/example/repo/KEY",
+            ],
+        )
+        rh.addOrigin(
+            [ndn.net["memphis"]],
+            ["/example/repo/user", "/example/repo/user/KEY"],
+        )
+        rh.addOrigin(
+            [ndn.net["ucla"]],
+            ["/example/repo/provider/repoA", "/example/repo/provider/repoA/KEY"],
+        )
+        rh.addOrigin(
+            [ndn.net["wustl"]],
+            ["/example/repo/provider/repoB", "/example/repo/provider/repoB/KEY"],
+        )
+        rh.addOrigin(
+            [ndn.net["uiuc"]],
+            ["/example/repo/provider/repoC", "/example/repo/provider/repoC/KEY"],
+        )
         rh.addOrigin(
             [ndn.net["ucla"], ndn.net["wustl"], ndn.net["uiuc"]],
             ["/NDNSF/DistributedRepo/Object"],
@@ -133,14 +158,88 @@ def main() -> None:
         (key_source / ".ndn/client.conf").write_text("transport=unix:///run/nfd/csu.sock\n",
                                                      encoding="utf-8")
         passphrase = "ndnsf-minindn"
+        root_identity = "/example/repo"
+        root_cert = OUT / "root.cert"
+        root_bag = OUT / "root.safebag"
+        subprocess.run(
+            "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} > {}; "
+            "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true; "
+            "HOME={} NDN_CLIENT_CONF={} ndnsec export -P {} -o {} -i {}".format(
+                perf.shell_quote(key_source),
+                perf.shell_quote(key_source / ".ndn/client.conf"),
+                perf.shell_quote(root_identity),
+                perf.shell_quote(root_cert),
+                perf.shell_quote(key_source),
+                perf.shell_quote(key_source / ".ndn/client.conf"),
+                perf.shell_quote(root_cert),
+                perf.shell_quote(key_source),
+                perf.shell_quote(key_source / ".ndn/client.conf"),
+                perf.shell_quote(passphrase),
+                perf.shell_quote(root_bag),
+                perf.shell_quote(root_identity),
+            ),
+            shell=True,
+            check=True,
+        )
+        cert_paths = {}
+        bag_paths = {}
         for host_name, identity in identities.items():
             bag = OUT / f"{host_name}.safebag"
+            req = OUT / f"{host_name}.req"
+            cert = OUT / f"{host_name}.cert"
             subprocess.run(
-                "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} >/dev/null 2>&1 || true; "
-                "HOME={} NDN_CLIENT_CONF={} ndnsec export -P {} -o {} -i {}".format(
+                "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -n -t r {} > {}; "
+                "HOME={} NDN_CLIENT_CONF={} ndnsec cert-gen -s {} -i ROOT {} > {}; "
+                "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
                     perf.shell_quote(key_source),
                     perf.shell_quote(key_source / ".ndn/client.conf"),
                     perf.shell_quote(identity),
+                    perf.shell_quote(req),
+                    perf.shell_quote(key_source),
+                    perf.shell_quote(key_source / ".ndn/client.conf"),
+                    perf.shell_quote(root_identity),
+                    perf.shell_quote(req),
+                    perf.shell_quote(cert),
+                    perf.shell_quote(key_source),
+                    perf.shell_quote(key_source / ".ndn/client.conf"),
+                    perf.shell_quote(cert),
+                ),
+                shell=True,
+                check=True,
+            )
+            cert_name = perf.certificate_name_from_file(cert)
+            subprocess.run(
+                "HOME={} NDN_CLIENT_CONF={} ndnsec set-default -c -n {}".format(
+                    perf.shell_quote(key_source),
+                    perf.shell_quote(key_source / ".ndn/client.conf"),
+                    perf.shell_quote(cert_name),
+                ),
+                shell=True,
+                check=True,
+            )
+            cert_listing = subprocess.check_output(
+                "HOME={} NDN_CLIENT_CONF={} ndnsec list -c".format(
+                    perf.shell_quote(key_source),
+                    perf.shell_quote(key_source / ".ndn/client.conf"),
+                ),
+                shell=True,
+                text=True,
+            )
+            for match in re.finditer(
+                r"({}/KEY/\S+/self/v=\S+)".format(re.escape(identity)),
+                cert_listing,
+            ):
+                subprocess.run(
+                    "HOME={} NDN_CLIENT_CONF={} ndnsec delete -c -n {} >/dev/null 2>&1 || true".format(
+                        perf.shell_quote(key_source),
+                        perf.shell_quote(key_source / ".ndn/client.conf"),
+                        perf.shell_quote(match.group(1)),
+                    ),
+                    shell=True,
+                    check=False,
+                )
+            subprocess.run(
+                "HOME={} NDN_CLIENT_CONF={} ndnsec export -P {} -o {} -i {}".format(
                     perf.shell_quote(key_source),
                     perf.shell_quote(key_source / ".ndn/client.conf"),
                     perf.shell_quote(passphrase),
@@ -150,8 +249,18 @@ def main() -> None:
                 shell=True,
                 check=True,
             )
-            target_hosts = set(identities) if host_name == "csu" else {"csu", host_name}
-            for target_host in target_hosts:
+            cert_paths[host_name] = cert
+            bag_paths[host_name] = bag
+
+        for target_host in identities:
+            perf.node_cmd(
+                ndn.net[target_host],
+                "HOME={} NDN_CLIENT_CONF={} ndnsec import -P {} {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(homes[target_host]),
+                    perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
+                    perf.shell_quote(passphrase),
+                    perf.shell_quote(root_bag)))
+            for bag in bag_paths.values():
                 perf.node_cmd(
                     ndn.net[target_host],
                     "HOME={} NDN_CLIENT_CONF={} ndnsec import -P {} {} >/dev/null 2>&1 || true".format(
@@ -159,6 +268,17 @@ def main() -> None:
                         perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
                         perf.shell_quote(passphrase),
                         perf.shell_quote(bag)))
+            perf.node_cmd(
+                ndn.net[target_host],
+                "HOME={} NDN_CLIENT_CONF={} ndnsec set-default -n {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(homes[target_host]),
+                    perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
+                    perf.shell_quote(identities[target_host])))
+
+        config_obj = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+        config_obj.setdefault("trust", {})["anchor_file"] = str(root_cert)
+        RUNTIME_CONFIG.write_text(yaml.safe_dump(config_obj, sort_keys=False),
+                                  encoding="utf-8")
 
         env = {
             **os.environ,
@@ -168,6 +288,8 @@ def main() -> None:
                 str(REPO / "pythonWrapper"),
                 os.environ.get("PYTHONPATH", ""),
             ]),
+            "PYTHONUNBUFFERED": "1",
+            "NDN_LOG": "ndn_service_framework.*=INFO",
         }
         env.pop("NDN_CLIENT_TRANSPORT", None)
 
@@ -189,12 +311,18 @@ def main() -> None:
             return proc, log_path
 
         base = f"cd {perf.shell_quote(REPO)} && exec python3 "
-        start("csu", "controller", base + perf.shell_quote(PY_DIR / "controller.py"))
-        time.sleep(5.0)
+        common = (
+            " --config {} --generated-policy-dir {}".format(
+                perf.shell_quote(RUNTIME_CONFIG),
+                perf.shell_quote(GEN_POLICY),
+            )
+        )
+        start("csu", "controller", base + perf.shell_quote(PY_DIR / "controller.py") + common)
+        time.sleep(15.0)
         start(
             "ucla",
             "repoA",
-            base + perf.shell_quote(PY_DIR / "repo_node.py") +
+            base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoA --repo-node /example/repo/provider/repoA "
             "--failure-domain rack-a "
             "--storage-dir /tmp/minindn/ucla/repo-store "
@@ -203,7 +331,7 @@ def main() -> None:
         start(
             "wustl",
             "repoB",
-            base + perf.shell_quote(PY_DIR / "repo_node.py") +
+            base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoB --repo-node /example/repo/provider/repoB "
             "--failure-domain rack-b "
             "--storage-dir /tmp/minindn/wustl/repo-store "
@@ -212,19 +340,21 @@ def main() -> None:
         start(
             "uiuc",
             "repoC",
-            base + perf.shell_quote(PY_DIR / "repo_node.py") +
+            base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoC --repo-node /example/repo/provider/repoC "
             "--failure-domain rack-c "
             "--storage-dir /tmp/minindn/uiuc/repo-store "
             "--advertise-stored-prefixes",
         )
-        time.sleep(15.0)
+        time.sleep(25.0)
         client_log = OUT / "client.log"
         out = client_log.open("wb")
         client = getPopen(
             ndn.net["memphis"],
             base + perf.shell_quote(PY_DIR / "client.py") +
-            " --ack-timeout-ms 5000",
+            common +
+            " --trust-schema {} --ack-timeout-ms 5000".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
             envDict=node_env("memphis"),
             shell=True,
             stdout=out,

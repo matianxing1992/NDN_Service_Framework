@@ -360,3 +360,13 @@ Authorization and execution:
 ## Refactor Rules
 
 Keep changes incremental. Preserve legacy compatibility unless a migration is explicitly planned. Do not rewrite generated compatibility layers for new generic behavior. Do not modify `ServiceController` for ACK-only work unless the permission/auth regression requires it and the reason is documented here.
+
+## Collaboration Rules
+
+When updating README documentation, keep Chinese and English versions in sync
+when both exist. Before running commands, briefly estimate the expected runtime.
+After finishing a requested task, play the 1s completion bell:
+
+```bash
+sudo -n timeout 1s speaker-test -t sine -f 880 >/tmp/ndnsf_bell.log 2>&1 || true
+```

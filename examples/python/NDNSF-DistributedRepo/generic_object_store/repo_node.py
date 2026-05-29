@@ -10,6 +10,9 @@ from ndnsf_distributed_inference import APPDeployment, RepoNodeApp
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
 REPO_SERVICE = "/NDNSF/DistributedRepo"
+CONFIG_OBJECT = (
+    "/example/repo/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/CONFIG/repo_policy.yaml"
+)
 
 
 def main() -> int:
@@ -24,6 +27,8 @@ def main() -> int:
     parser.add_argument("--preallocate-bytes", type=int, default=0)
     parser.add_argument("--failure-domain", default="")
     parser.add_argument("--storage-dir", default="")
+    parser.add_argument("--config-object", default=CONFIG_OBJECT,
+                        help="Repo object name that stores the deployment config")
     parser.add_argument("--advertise-stored-prefixes", action="store_true",
                         help="Advertise stored Data prefixes through NLSR")
     args = parser.parse_args()
@@ -47,6 +52,17 @@ def main() -> int:
         memory_cache_bytes=args.memory_cache_bytes,
         preallocate_bytes=args.preallocate_bytes,
         advertise_stored_prefixes=args.advertise_stored_prefixes,
+    )
+    app.seed_object(
+        args.config_object,
+        open(args.config, "rb").read(),
+        object_type="deployment-config",
+        policy_epoch="/Policy/generic-repo/bootstrap",
+    )
+    print(
+        f"repo_node ready provider={args.repo_node} "
+        f"seeded_config={args.config_object}",
+        flush=True,
     )
     return app.run()
 

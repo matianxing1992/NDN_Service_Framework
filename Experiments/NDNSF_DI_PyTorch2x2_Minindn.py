@@ -26,7 +26,7 @@ from minindn.util import getPopen  # noqa: E402
 TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
 OUT = REPO / "results/pytorch_eager_2x2_minindn_quick"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2"
-CONFIG = PY_DIR / "pytorch_policy.yaml"
+CONFIG = OUT / "pytorch_policy.yaml"
 GEN_POLICY = "/tmp/ndnsf-di-pytorch-2x2-policy"
 
 
@@ -90,6 +90,14 @@ def stop(procs):
 def main() -> None:
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
+    subprocess.run([
+        "python3",
+        str(PY_DIR / "split_model.py"),
+        "--out-dir",
+        str(OUT / "model"),
+        "--policy",
+        str(CONFIG),
+    ], cwd=str(REPO), check=True)
     Minindn.cleanUp()
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=str(TOPO))

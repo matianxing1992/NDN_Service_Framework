@@ -222,6 +222,17 @@ class LocalDistributedRepo:
             if repo_node in self._nodes:
                 self._nodes[repo_node].manifests[manifest.object_name] = manifest
 
+    def erase(self, object_name: str) -> bool:
+        removed = False
+        for node in self._nodes.values():
+            if object_name in node.objects:
+                node.objects.pop(object_name, None)
+                removed = True
+            if object_name in node.manifests:
+                node.manifests.pop(object_name, None)
+                removed = True
+        return removed
+
     def manifest(self, object_name: str) -> RepoObjectManifest:
         for node in self._nodes.values():
             if object_name in node.manifests:
@@ -750,6 +761,24 @@ class RepoNodeApp:
         _, payload = self._load_persisted_object(object_name)
         return payload
 
+    def _delete_object(self, object_name: str) -> bool:
+        removed = self._store.erase(object_name)
+        self._cache.pop(object_name, None)
+        self._packet_cache.pop(object_name, None)
+        if self._db is not None:
+            with self._db_lock:
+                cursor = self._db.execute(
+                    "DELETE FROM objects WHERE object_name=?",
+                    (object_name,),
+                )
+                self._db.execute(
+                    "DELETE FROM data_segments WHERE object_name=?",
+                    (object_name,),
+                )
+                self._db.commit()
+                removed = removed or cursor.rowcount > 0
+        return removed
+
     @staticmethod
     def _ndn_uri(name: str) -> str:
         return "ndn:" + name if name.startswith("/") else "ndn:/" + name
@@ -1192,6 +1221,14 @@ class RepoNodeApp:
                     name: manifest.to_dict()
                     for name, manifest in inventory.items()
                 }, sort_keys=True).encode())
+            if operation == "DELETE":
+                object_name = str(request["objectName"])
+                removed = self._delete_object(object_name)
+                return ServiceResponse(True, json.dumps({
+                    "status": "deleted" if removed else "not-found",
+                    "repoNode": self.repo_node,
+                    "objectName": object_name,
+                }, sort_keys=True).encode())
             raise ValueError(f"unsupported repo operation {operation}")
         except Exception as exc:  # noqa: BLE001
             return ServiceResponse(False, str(exc).encode(), str(exc))
@@ -1200,6 +1237,31 @@ class RepoNodeApp:
         self.provider.add_handler(self.service_name, self._handle)
         self.provider.set_ack_handler(self.service_name, self._ack)
         return self.provider.run(self.service_name)
+
+    def seed_object(
+        self,
+        object_name: str,
+        payload: bytes | bytearray | memoryview | str,
+        *,
+        object_type: str = "bootstrap-config",
+        policy_epoch: str = "",
+    ) -> RepoObjectManifest:
+        """Preload an object into this repo node before serving requests."""
+
+        payload_bytes = payload.encode() if isinstance(payload, str) else bytes(payload)
+        manifest = self._store.put(
+            object_name=object_name,
+            payload=payload_bytes,
+            object_type=object_type,
+            policy=PlacementPolicy(replication_factor=1),
+            policy_epoch=policy_epoch,
+        )
+        self._persist_object(manifest, payload_bytes)
+        self._serve_object(
+            self.data_name(self.repo_node, manifest.object_name),
+            payload_bytes,
+        )
+        return manifest
 
 
 class NetworkDistributedRepoClient:
@@ -1265,6 +1327,32 @@ class NetworkDistributedRepoClient:
     def _shared_upload_data_name(self, object_name: str) -> str:
         object_hash = hashlib.sha256(object_name.encode()).hexdigest()
         return f"{self.upload_prefix}/DATA/{object_hash}"
+
+    @property
+    def publisher_namespace(self) -> str:
+        return (
+            f"{self.user.user.rstrip('/')}"
+            "/NDNSF-DISTRIBUTED-REPO/OBJECT"
+        )
+
+    def publisher_object_name(self, suffix: str) -> str:
+        suffix = str(suffix).strip()
+        if not suffix:
+            raise ValueError("repo object suffix must not be empty")
+        if suffix.startswith(self.publisher_namespace + "/"):
+            return suffix
+        return f"{self.publisher_namespace}/{suffix.strip('/')}"
+
+    def _require_publisher_object_name(self, object_name: str) -> str:
+        name = str(object_name).strip()
+        if not name:
+            raise ValueError("repo object name must not be empty")
+        if not name.startswith(self.publisher_namespace + "/"):
+            raise ValueError(
+                "repo object data names must be under the publisher namespace: "
+                f"{self.publisher_namespace}/..."
+            )
+        return name
 
     @staticmethod
     def _packet_data_name(packets: list[DataPacket]) -> str:
@@ -1647,6 +1735,8 @@ class NetworkDistributedRepoClient:
         replica_nodes: tuple[str, ...] = (),
         policy_epoch: str,
     ) -> RepoObjectManifest:
+        object_name = self._require_publisher_object_name(object_name)
+
         def select_replicas_once() -> list[str]:
             if len(self._placement_cache) >= replication_factor:
                 cached = self._placement_cache[:replication_factor]
@@ -1715,14 +1805,8 @@ class NetworkDistributedRepoClient:
                         f"need {replication_factor}")
                 selected = selected[:replication_factor]
                 use_pull_store = len(payload) >= self.pull_store_threshold_bytes
-                if use_pull_store:
-                    shared_data_name = self._shared_upload_data_name(object_name)
-                    data_names = tuple(shared_data_name for _ in selected)
-                else:
-                    data_names = tuple(
-                        self.data_name(repo_node, object_name)
-                        for repo_node in selected
-                    )
+                shared_data_name = self._shared_upload_data_name(object_name)
+                data_names = tuple(shared_data_name for _ in selected)
                 segment_locations: list[dict] = []
                 packet_user = ServiceUser(
                     group=self.user.group,
@@ -1928,6 +2012,13 @@ class NetworkDistributedRepoClient:
 
         if not packets:
             raise ValueError("store_signed_packets requires at least one packet")
+        object_name = self._require_publisher_object_name(object_name)
+        for packet in packets:
+            if not str(packet.name).startswith(self.publisher_namespace + "/"):
+                raise ValueError(
+                    "signed Data packet names must be under the publisher namespace: "
+                    f"{self.publisher_namespace}/..."
+                )
         data_name = data_name or self._packet_data_name(packets)
         versioned_data_name = self._packet_versioned_data_name(packets)
         selected = self._select_repo_nodes(
@@ -2009,6 +2100,57 @@ class NetworkDistributedRepoClient:
         if not response.status:
             raise RuntimeError(response.error)
         return RepoObjectManifest.from_dict(json.loads(response.payload.decode()))
+
+    def inventory(self) -> dict[str, RepoObjectManifest]:
+        def selector(candidates: list[AckCandidate]) -> list[str]:
+            return [
+                candidate.provider_name
+                for candidate in candidates
+                if candidate.status
+            ][:1]
+
+        response = self.user.request_service_select(
+            self.service_name,
+            encode_repo_request("INVENTORY"),
+            selector,
+            ack_timeout_ms=self.ack_timeout_ms,
+            timeout_ms=self.timeout_ms,
+            request_strategy="all-selected",
+        )
+        if not response.status:
+            raise RuntimeError(response.error)
+        obj = json.loads(response.payload.decode())
+        if not isinstance(obj, dict):
+            raise ValueError("repo inventory response must be a JSON object")
+        return {
+            str(name): RepoObjectManifest.from_dict(value)
+            for name, value in obj.items()
+        }
+
+    def delete(self, object_name: str) -> bool:
+        def selector(candidates: list[AckCandidate]) -> list[str]:
+            selected = []
+            for candidate in candidates:
+                fields = self._parse_ack_payload(candidate.payload)
+                if fields.get("hasManifest") == "1" or fields.get("hasObject") == "1":
+                    selected.append(candidate.provider_name)
+            return selected
+
+        response = self.user.request_service_select(
+            self.service_name,
+            encode_repo_request("DELETE", objectName=object_name),
+            selector,
+            ack_timeout_ms=self.ack_timeout_ms,
+            timeout_ms=self.timeout_ms,
+            request_strategy="all-selected",
+        )
+        if not response.status:
+            raise RuntimeError(response.error)
+        try:
+            obj = json.loads(response.payload.decode())
+            return str(obj.get("status", "")) == "deleted"
+        except Exception:
+            return response.payload.decode(errors="replace") == "deleted"
 
     def fetch(self, object_name: str, manifest: RepoObjectManifest | None = None) -> bytes:
         manifest = manifest or self.manifest(object_name)
@@ -2148,6 +2290,199 @@ class NetworkDistributedRepoClient:
                 last_error = exc
                 time.sleep(0.2)
         raise RuntimeError(f"repo cluster not ready: {last_error}")
+
+
+class DistributedRepo:
+    """User-facing generic object-store facade.
+
+    This wrapper hides NDNSF-specific setup details such as ``ServiceUser``,
+    the shared repo service name, and the upload prefix. Applications can treat
+    the repo as a named object store: ``put`` bytes, ``get`` bytes, and inspect
+    returned manifests when placement metadata matters.
+    """
+
+    DEFAULT_SERVICE = "/NDNSF/DistributedRepo"
+    DEFAULT_CONFIG_OBJECT = (
+        "/example/repo/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/CONFIG/repo_policy.yaml"
+    )
+
+    def __init__(self, client: NetworkDistributedRepoClient):
+        self._client = client
+        self._known_manifests: dict[str, RepoObjectManifest] = {}
+
+    @property
+    def publisher_namespace(self) -> str:
+        return self._client.publisher_namespace
+
+    def object_name(self, suffix: str) -> str:
+        return self._client.publisher_object_name(suffix)
+
+    def _publisher_object_name(self, object_name: str) -> str:
+        name = str(object_name).strip()
+        if name.startswith("/"):
+            return self._client._require_publisher_object_name(name)
+        return self.object_name(name)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: str | Path,
+        *,
+        generated_policy_dir: str | Path = "/tmp/ndnsf-distributed-repo-policy",
+        user: str | None = None,
+        service_name: str = DEFAULT_SERVICE,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 10000,
+        verbose: bool = False,
+    ) -> "DistributedRepo":
+        from .app import APPDeployment
+
+        deployment = APPDeployment.from_config(
+            config,
+            generated_policy_dir=generated_policy_dir,
+        ).deployment
+        user_name = user or deployment.user
+        service_user = ServiceUser(
+            group=deployment.group,
+            controller=deployment.controller,
+            user=user_name,
+            trust_schema=deployment.trust_schema,
+            permission_wait_ms=6000,
+            adaptive_admission=False,
+        )
+        return cls(NetworkDistributedRepoClient(
+            user=service_user,
+            service_name=service_name,
+            upload_prefix=f"{user_name}/NDNSF-DISTRIBUTED-REPO/UPLOAD",
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            verbose=verbose,
+        ))
+
+    @classmethod
+    def from_ndn_config(
+        cls,
+        *,
+        controller: str,
+        user: str,
+        group: str,
+        trust_schema: str,
+        config_object_name: str = DEFAULT_CONFIG_OBJECT,
+        generated_policy_dir: str | Path = "/tmp/ndnsf-distributed-repo-policy",
+        service_name: str = DEFAULT_SERVICE,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 10000,
+        verbose: bool = False,
+    ) -> "DistributedRepo":
+        bootstrap_user = ServiceUser(
+            group=group,
+            controller=controller,
+            user=user,
+            trust_schema=trust_schema,
+            permission_wait_ms=6000,
+            adaptive_admission=False,
+        )
+        bootstrap_client = NetworkDistributedRepoClient(
+            user=bootstrap_user,
+            service_name=service_name,
+            upload_prefix=f"{user}/NDNSF-DISTRIBUTED-REPO/UPLOAD",
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            verbose=verbose,
+        )
+        config_payload = bootstrap_client.fetch(config_object_name)
+        policy_dir = Path(generated_policy_dir)
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        config_path = policy_dir / "deployment-from-ndn.yaml"
+        config_path.write_bytes(config_payload)
+        return cls.from_config(
+            config_path,
+            generated_policy_dir=policy_dir,
+            user=user,
+            service_name=service_name,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            verbose=verbose,
+        )
+
+    from_repo_config = from_ndn_config
+
+    def wait_until_ready(self, timeout_s: float = 10.0) -> dict:
+        return self._client.wait_until_ready(timeout_s)
+
+    def put(
+        self,
+        object_name: str,
+        payload: bytes | bytearray | memoryview | str,
+        *,
+        object_type: str = "object",
+        replication_factor: int = 1,
+        replica_nodes: Iterable[str] = (),
+        policy_epoch: str = "",
+    ) -> RepoObjectManifest:
+        if isinstance(payload, str):
+            payload_bytes = payload.encode()
+        else:
+            payload_bytes = bytes(payload)
+        canonical_name = self._publisher_object_name(object_name)
+        manifest = self._client.store_object(
+            object_name=canonical_name,
+            payload=payload_bytes,
+            object_type=object_type,
+            replication_factor=replication_factor,
+            replica_nodes=tuple(replica_nodes),
+            policy_epoch=policy_epoch,
+        )
+        self._known_manifests[manifest.object_name] = manifest
+        return manifest
+
+    def get(self, object_name: str, manifest: RepoObjectManifest | None = None) -> bytes:
+        canonical_name = (
+            manifest.object_name if manifest is not None
+            else self._publisher_object_name(object_name)
+        )
+        return self._client.fetch_object(
+            canonical_name,
+            manifest or self._known_manifests.get(canonical_name),
+        )
+
+    def manifest(self, object_name: str) -> RepoObjectManifest:
+        canonical_name = self._publisher_object_name(object_name)
+        manifest = self._client.manifest(canonical_name)
+        self._known_manifests[canonical_name] = manifest
+        return manifest
+
+    def list(self) -> dict[str, RepoObjectManifest]:
+        return dict(self._known_manifests)
+
+    def remote_inventory(self) -> dict[str, RepoObjectManifest]:
+        inventory = self._client.inventory()
+        self._known_manifests.update(inventory)
+        return inventory
+
+    def remove(self, object_name: str) -> bool:
+        canonical_name = self._publisher_object_name(object_name)
+        manifest = self._known_manifests.get(canonical_name)
+        if manifest is None or not manifest.replica_nodes:
+            removed = self._client.delete(canonical_name)
+        else:
+            payload = encode_repo_request("DELETE", objectName=canonical_name)
+            removed = False
+            for repo_node in manifest.replica_nodes:
+                self._client._request_specific_repo(
+                    repo_node=repo_node,
+                    payload=payload,
+                    timeout_ms=self._client.timeout_ms,
+                )
+                removed = True
+        if removed:
+            self._known_manifests.pop(canonical_name, None)
+        return removed
+
+    store = put
+    fetch = get
+    inventory = list
+    delete = remove
 
 
 def _score(capability: StorageCapability) -> tuple[float, str]:

@@ -10,7 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
+
+from ndnsf import CollaborationRole
 
 from .client import DistributedInferenceClient, InferenceResult
 from .controller import DistributedInferenceController
@@ -40,6 +42,8 @@ class ModelPart:
     filename: str = ""
     kind: str = "model"
     backend: str = ""
+    cache_name: str = ""
+    repo_manifest: dict = field(default_factory=dict)
     runtime: RuntimeSpec | None = None
     service: str = ""
     metadata: dict = field(default_factory=dict)
@@ -110,6 +114,8 @@ class InferencePlanBuilder:
         filename: str = "",
         kind: str = "model",
         backend: str = "",
+        cache_name: str = "",
+        repo_manifest: dict | None = None,
         runtime: RuntimeSpec | None = None,
         service: str = "",
         metadata: dict | None = None,
@@ -125,6 +131,8 @@ class InferencePlanBuilder:
             filename=filename,
             kind=kind,
             backend=backend or self.runtime.backend,
+            cache_name=cache_name,
+            repo_manifest=dict(repo_manifest or {}),
             runtime=runtime or self.runtime,
             service=service,
             metadata=dict(metadata or {}),
@@ -185,6 +193,8 @@ class InferencePlanBuilder:
                     payload=part.payload(),
                     filename=part.inferred_filename(),
                     kind=part.kind,
+                    cache_name=part.cache_name,
+                    repo_manifest=dict(part.repo_manifest or {}),
                 ),
                 runtime=part.runtime or self.runtime,
                 service=part.service,
@@ -219,6 +229,7 @@ class APPClient:
                  client: DistributedInferenceClient):
         self.deployment = deployment
         self._client = client
+        self._input_encoders: dict[str, Callable[[Any], bytes]] = {}
 
     @classmethod
     def from_config(
@@ -254,6 +265,160 @@ class APPClient:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             freshness_ms=freshness_ms,
+        )
+
+    def infer_service(self, service: str, payload: bytes, *,
+                      ack_timeout_ms: int = 500,
+                      timeout_ms: int = 30000,
+                      freshness_ms: int = 60000) -> InferenceResult:
+        """Invoke a deployed service by name.
+
+        Use this path when the service policy already fixes the roles and
+        dependency graph and providers already have the model/runtime locally.
+        """
+
+        service_policy = self.deployment.service_policy(service)
+        role_names = list(service_policy.roles)
+        dependencies = list(service_policy.dependencies)
+        key_scopes: dict[str, set[str]] = {}
+        role_scopes: dict[str, list[str]] = {role: [] for role in role_names}
+        for dep in dependencies:
+            scope_roles = key_scopes.setdefault(dep.key_scope, set())
+            scope_roles.update(dep.producers)
+            scope_roles.update(dep.consumers)
+            for role in dep.producers + dep.consumers:
+                role_scopes.setdefault(role, []).append(dep.key_scope)
+        return self._client.infer_deployed_service(
+            service,
+            payload,
+            roles=[
+                CollaborationRole(
+                    role=role,
+                    service=service,
+                    allow_dynamic_provisioning=False,
+                )
+                for role in role_names
+            ],
+            key_scopes={scope: sorted(roles)
+                        for scope, roles in key_scopes.items()},
+            dependencies=dependencies,
+            role_scopes=role_scopes,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            freshness_ms=freshness_ms,
+        )
+
+    def input_contract(self, service: str) -> dict[str, Any]:
+        """Return the application payload contract recorded for a service."""
+
+        return dict(self.deployment.service_policy(service).input_schema or {})
+
+    def output_contract(self, service: str) -> dict[str, Any]:
+        """Return the application response contract recorded for a service."""
+
+        return dict(self.deployment.service_policy(service).output_schema or {})
+
+    def register_input_encoder(
+        self,
+        service: str,
+        encoder: Callable[[Any], bytes],
+    ) -> None:
+        """Register application logic that converts objects to request bytes."""
+
+        self.deployment.service_policy(service)
+        self._input_encoders[service] = encoder
+
+    def encode_input(self, service: str, value: Any) -> bytes:
+        """Encode one application input according to a service contract."""
+
+        if isinstance(value, bytes):
+            return value
+        encoder = self._input_encoders.get(service)
+        if encoder is None:
+            contract = self.input_contract(service)
+            raise ValueError(
+                f"service {service} has no registered input encoder; "
+                f"contract={contract!r}")
+        payload = encoder(value)
+        if not isinstance(payload, bytes):
+            raise TypeError("input encoder must return bytes")
+        return payload
+
+    def infer_service_object(self, service: str, value: Any, *,
+                             ack_timeout_ms: int = 500,
+                             timeout_ms: int = 30000,
+                             freshness_ms: int = 60000) -> InferenceResult:
+        return self.infer_service(
+            service,
+            self.encode_input(service, value),
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            freshness_ms=freshness_ms,
+        )
+
+    def infer_service_async(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+        freshness_ms: int = 60000,
+        on_result: Callable[[InferenceResult], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> Future:
+        service_policy = self.deployment.service_policy(service)
+        role_names = list(service_policy.roles)
+        dependencies = list(service_policy.dependencies)
+        key_scopes: dict[str, set[str]] = {}
+        role_scopes: dict[str, list[str]] = {role: [] for role in role_names}
+        for dep in dependencies:
+            scope_roles = key_scopes.setdefault(dep.key_scope, set())
+            scope_roles.update(dep.producers)
+            scope_roles.update(dep.consumers)
+            for role in dep.producers + dep.consumers:
+                role_scopes.setdefault(role, []).append(dep.key_scope)
+        return self._client.infer_deployed_service_async(
+            service,
+            payload,
+            roles=[
+                CollaborationRole(
+                    role=role,
+                    service=service,
+                    allow_dynamic_provisioning=False,
+                )
+                for role in role_names
+            ],
+            key_scopes={scope: sorted(roles)
+                        for scope, roles in key_scopes.items()},
+            dependencies=dependencies,
+            role_scopes=role_scopes,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            freshness_ms=freshness_ms,
+            on_result=on_result,
+            on_error=on_error,
+        )
+
+    def infer_service_object_async(
+        self,
+        service: str,
+        value: Any,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+        freshness_ms: int = 60000,
+        on_result: Callable[[InferenceResult], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> Future:
+        return self.infer_service_async(
+            service,
+            self.encode_input(service, value),
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            freshness_ms=freshness_ms,
+            on_result=on_result,
+            on_error=on_error,
         )
 
     def infer_async(self, plan: DistributedInferencePlan, payload: bytes, *,
@@ -442,6 +607,18 @@ class APPProvider:
                 roles = self.roles_for_service(service)
             else:
                 roles = [part.strip() for part in roles.split(",") if part.strip()]
+        service_policy = self.deployment.service_policy(service)
+        local_artifacts = {
+            artifact.role: {
+                "path": artifact.path,
+                "artifact": artifact.artifact_name,
+                "filename": artifact.filename,
+                "kind": artifact.kind,
+                "backend": artifact.backend,
+                "metadata": dict(artifact.metadata or {}),
+            }
+            for artifact in service_policy.artifacts
+        }
         self._provider.add_capability_handler(
             service,
             list(roles),
@@ -453,6 +630,7 @@ class APPProvider:
             can_provision=can_provision,
             allow_executables=allow_executables,
             dependency_graph=self.deployment.dependency_graph_for_service(service),
+            local_artifacts=local_artifacts,
         )
 
     def roles_for_service(self, service: str) -> list[str]:

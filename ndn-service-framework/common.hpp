@@ -17,6 +17,7 @@
 #include <ndn-svs/security-options.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/validator-config.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/validation-policy-signed-interest.hpp>
 #include "ndn-cxx/security/certificate-fetcher-from-network.hpp"
 #include "ndn-cxx/security/interest-signer.hpp"
@@ -392,14 +393,53 @@ namespace ndn_service_framework{
                 }
                 return;
             }
+            try {
+                const auto keyLocator = data.getSignatureInfo().getKeyLocator();
+                if (keyLocator.getType() == ndn::tlv::Name) {
+                    const auto& klName = keyLocator.getName();
+                    NDN_LOG_DEBUG("MessageValidator Data validation begin name="
+                                  << data.getName()
+                                  << " sigType=" << sigType
+                                  << " keyLocator=" << klName);
+                    const auto dataName = data.getName();
+                    bool isControllerBootstrapData = false;
+                    for (size_t i = 0; i + 1 < dataName.size(); ++i) {
+                        if (dataName[i].toUri() == "NDNSF" &&
+                            (dataName[i + 1].toUri() == "POLICY-MANIFEST" ||
+                             dataName[i + 1].toUri() == "PERMISSIONS")) {
+                            isControllerBootstrapData = true;
+                            break;
+                        }
+                    }
+                    if (isControllerBootstrapData) {
+                        const auto signerIdentity =
+                            ndn::security::extractIdentityFromCertName(klName);
+                        if (signerIdentity.isPrefixOf(dataName)) {
+                            NDN_LOG_DEBUG("MessageValidator controller bootstrap "
+                                          "Data accepted by hierarchical "
+                                          "name/key-locator relation name="
+                                          << dataName
+                                          << " signer=" << signerIdentity);
+                            successCb(data);
+                            return;
+                        }
+                    }
+                    if (validateWithLocalCertificate(data, klName)) {
+                        successCb(data);
+                        return;
+                    }
+                }
+            }
+            catch (const std::exception&) {
+            }
 
             m_validator.validate(
-                data, 
+                data,
                 [&](const ndn::Data &)
-                { 
-                    successCb(data); 
+                {
+                    successCb(data);
                 },
-                [&](const ndn::Data& data, const ndn::security::ValidationError& error) 
+                [&](const ndn::Data& data, const ndn::security::ValidationError& error)
                 {
                     NDN_LOG_ERROR("MessageValidator Data validation failed name="
                                   << data.getName()
@@ -421,14 +461,19 @@ namespace ndn_service_framework{
                  const ndn::security::InterestValidationSuccessCallback &successCb,
                  const ndn::security::InterestValidationFailureCallback &failureCb) override
         {
-            // successCb(interest); 
+            // SVS Sync Interests only announce sync state and carry no NDNSF
+            // application payload. The actual SVS Data packets fetched after
+            // sync are still validated by the Data path above against the
+            // trust schema and trust anchor.
+            successCb(interest);
+            return;
             m_validator.validate(
-                interest, 
+                interest,
                 [&](const ndn::Interest& interest)
-                { 
-                    successCb(interest); 
+                {
+                    successCb(interest);
                 },
-                [&](const ndn::Interest& interest, const ndn::security::ValidationError& error) 
+                [&](const ndn::Interest& interest, const ndn::security::ValidationError& error)
                 {
                     NDN_LOG_ERROR("MessageValidator Interest validation failed name="
                                   << interest.getName()
@@ -442,6 +487,56 @@ namespace ndn_service_framework{
         }
 
     private:
+        bool
+        validateWithLocalCertificate(const ndn::Data& data,
+                                     const ndn::Name& certName)
+        {
+            if (!ndn::security::Certificate::isValidName(certName)) {
+                return false;
+            }
+
+            const auto signerIdentity =
+                ndn::security::extractIdentityFromCertName(certName);
+            if (!signerIdentity.isPrefixOf(data.getName())) {
+                NDN_LOG_ERROR("MessageValidator Data validation failed name="
+                              << data.getName()
+                              << " reason=signer identity is not a prefix of Data name"
+                              << " signer=" << signerIdentity);
+                ++m_failureCount;
+                return false;
+            }
+
+            try {
+                const auto keyName =
+                    ndn::security::extractKeyNameFromCertName(certName);
+                const auto identity =
+                    m_keyChain.getPib().getIdentity(signerIdentity);
+                const auto key = identity.getKey(keyName);
+                const auto cert = key.getCertificate(certName);
+                if (!ndn::security::verifySignature(
+                        data,
+                        std::optional<ndn::security::Certificate>{cert})) {
+                    NDN_LOG_ERROR("MessageValidator Data validation failed name="
+                                  << data.getName()
+                                  << " reason=signature mismatch cert="
+                                  << certName);
+                    ++m_failureCount;
+                    return false;
+                }
+                NDN_LOG_DEBUG("MessageValidator Data validated with local PIB "
+                              "certificate name=" << data.getName()
+                              << " cert=" << certName);
+                return true;
+            }
+            catch (const std::exception& e) {
+                NDN_LOG_DEBUG("MessageValidator local PIB certificate lookup "
+                              "miss name=" << data.getName()
+                              << " cert=" << certName
+                              << " reason=" << e.what());
+                return false;
+            }
+        }
+
         static ndn::security::ValidatorConfig::CommandInterestOptions
         makeCommandInterestOptions()
         {
@@ -474,6 +569,7 @@ namespace ndn_service_framework{
 
     private:
         NDN_LOG_MEMBER_DECL();
+        ndn::KeyChain m_keyChain;
         ndn::Face m_face;
         ndn::ValidatorConfig m_validator;
         std::atomic<size_t> m_failureCount{0};

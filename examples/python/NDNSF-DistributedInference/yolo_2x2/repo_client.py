@@ -61,7 +61,9 @@ def main() -> int:
     for index, chunk in enumerate(chunks):
         print(f"store chunk {index} size={len(chunk)}", flush=True)
         manifest = repo.store_object(
-            object_name=f"/NDNSF-DI/ARTIFACT/AI/YOLO/2x2/real-model/chunk/{index}",
+            object_name=repo.publisher_object_name(
+                f"NDNSF-DI/ARTIFACT/AI/YOLO/2x2/real-model/chunk/{index}"
+            ),
             payload=chunk,
             object_type="model-shard",
             replication_factor=args.replication_factor,

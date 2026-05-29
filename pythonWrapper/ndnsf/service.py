@@ -8,9 +8,11 @@ framework rather than by Python.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -339,6 +341,7 @@ class ExecutionArtifact:
     chunks: list[str] = None
     executable: bool = False
     cache_name: str = ""
+    repo_manifest: dict = None
 
 
 @dataclass(frozen=True)
@@ -364,6 +367,7 @@ class ExecutionArtifactSpec:
                     "chunks": list(artifact.chunks or []),
                     "executable": bool(artifact.executable),
                     "cacheName": artifact.cache_name,
+                    "repoManifest": dict(artifact.repo_manifest or {}),
                 }
                 for artifact in (self.artifacts or [])
             ],
@@ -387,6 +391,7 @@ class ExecutionArtifactSpec:
                     chunks=[str(value) for value in item.get("chunks", [])],
                     executable=bool(item.get("executable", False)),
                     cache_name=str(item.get("cacheName", "")),
+                    repo_manifest=dict(item.get("repoManifest", {})),
                 )
                 for item in obj.get("artifacts", [])
             ],
@@ -508,8 +513,28 @@ class CollaborationContext:
         for artifact in spec.artifacts or []:
             cached_payload = _read_cached_artifact(artifact)
             if cached_payload is not None:
+                print(
+                    "NDNSF_EXECUTION_ARTIFACT_CACHE_HIT "
+                    f"role={spec.role} artifact={artifact.name} "
+                    f"cacheName={artifact.cache_name}",
+                    flush=True,
+                )
                 payload = cached_payload
+            elif artifact.repo_manifest:
+                print(
+                    "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS "
+                    f"role={spec.role} artifact={artifact.name} "
+                    f"cacheName={artifact.cache_name} source=repo",
+                    flush=True,
+                )
+                payload = _fetch_repo_manifest_payload(artifact.repo_manifest)
             elif artifact.chunks:
+                print(
+                    "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS "
+                    f"role={spec.role} artifact={artifact.name} "
+                    f"cacheName={artifact.cache_name}",
+                    flush=True,
+                )
                 parts = []
                 for index, chunk_name in enumerate(artifact.chunks):
                     part = self.fetch_encrypted_large_data(chunk_name, assignment.service)
@@ -519,6 +544,12 @@ class CollaborationContext:
                     parts.append(part)
                 payload = b"".join(parts)
             else:
+                print(
+                    "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS "
+                    f"role={spec.role} artifact={artifact.name} "
+                    f"cacheName={artifact.cache_name}",
+                    flush=True,
+                )
                 payload = self.fetch_encrypted_large_data(artifact.data_name, assignment.service)
                 if payload is None:
                     raise RuntimeError(f"failed to fetch execution artifact {artifact.name}")
@@ -687,6 +718,23 @@ def _artifact_spec_parts(spec) -> tuple[bytes, str, str, bool, str]:
     return bytes(payload), str(filename), str(kind), bool(executable), str(cache_name)
 
 
+def _artifact_from_repo_spec(name: str, spec: dict) -> Optional[ExecutionArtifact]:
+    manifest = spec.get("repo_manifest", spec.get("repoManifest"))
+    if not manifest:
+        return None
+    return ExecutionArtifact(
+        name=name,
+        data_name="",
+        filename=str(spec["filename"]),
+        sha256=str(manifest["sha256"]),
+        kind=str(spec.get("kind", "model")),
+        chunks=[],
+        executable=bool(spec.get("executable", False)),
+        cache_name=str(spec.get("cache_name", spec.get("cacheName", ""))),
+        repo_manifest=dict(manifest),
+    )
+
+
 def _safe_file_token(value: str) -> str:
     token = "".join(
         ch if ch.isalnum() or ch in ("-", "_", ".") else "-"
@@ -695,12 +743,132 @@ def _safe_file_token(value: str) -> str:
     return token or "artifact"
 
 
+def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
+    segment_count = int(manifest.get("segmentCount", 1))
+    size = int(manifest["size"])
+    expected_hash = str(manifest["sha256"])
+    segment_locations = list(manifest.get("segmentLocations", []))
+    if segment_locations:
+        by_data_name: dict[str, list[dict]] = {}
+        for location in segment_locations:
+            by_data_name.setdefault(str(location["dataName"]), []).append(dict(location))
+        last_error = None
+        for data_name, locations in by_data_name.items():
+            covered_segments = set()
+            hint_ranges: list[SegmentHintRange] = []
+            route_strategy = "hint-first"
+            for location in locations:
+                start = int(location.get("start", 0))
+                end = int(location.get("end", start))
+                covered_segments.update(range(start, end + 1))
+                if str(location.get("routeStrategy", "")) == "direct-first":
+                    route_strategy = "direct-first"
+                hint_ranges.append(SegmentHintRange(
+                    start=start,
+                    end=end,
+                    forwarding_hints=tuple(str(hint) for hint in location.get("hints", [])),
+                ))
+            if len(covered_segments) < segment_count:
+                continue
+            try:
+                versioned_names = {
+                    str(location.get("versionedDataName", ""))
+                    for location in locations
+                    if location.get("versionedDataName")
+                }
+                first_ranges = [] if route_strategy == "direct-first" else hint_ranges
+                second_ranges = hint_ranges if route_strategy == "direct-first" else []
+                if len(versioned_names) == 1:
+                    versioned_name = next(iter(versioned_names))
+                    try:
+                        payload = fetch_known_segmented_object_with_segment_hints(
+                            versioned_name,
+                            segment_count,
+                            timeout_ms=30000,
+                            interest_lifetime_ms=1000,
+                            hint_ranges=first_ranges,
+                        )
+                    except Exception:
+                        payload = fetch_known_segmented_object_with_segment_hints(
+                            versioned_name,
+                            segment_count,
+                            timeout_ms=30000,
+                            interest_lifetime_ms=1000,
+                            hint_ranges=second_ranges,
+                        )
+                else:
+                    try:
+                        payload = fetch_segmented_object_with_segment_hints(
+                            data_name,
+                            timeout_ms=30000,
+                            interest_lifetime_ms=1000,
+                            hint_ranges=first_ranges,
+                        )
+                    except Exception:
+                        payload = fetch_segmented_object_with_segment_hints(
+                            data_name,
+                            timeout_ms=30000,
+                            interest_lifetime_ms=1000,
+                            hint_ranges=second_ranges,
+                        )
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            raise RuntimeError(
+                f"no repo segment location could serve {manifest.get('objectName')}: {last_error}"
+            )
+    else:
+        replica_nodes = [str(value) for value in manifest.get("replicaNodes", [])]
+        data_names = [str(value) for value in manifest.get("replicaDataNames", [])]
+        if not data_names:
+            data_names = [
+                RepoDataName.data_name(repo_node, str(manifest["objectName"]))
+                for repo_node in replica_nodes
+            ]
+        last_error = None
+        for repo_node, data_name in zip(replica_nodes, data_names):
+            try:
+                hints = [] if data_name.startswith(repo_node.rstrip("/") + "/") else [repo_node]
+                payload = fetch_segmented_object(
+                    data_name,
+                    timeout_ms=30000,
+                    interest_lifetime_ms=1000,
+                    init_cwnd=8.0,
+                    forwarding_hints=hints,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            raise RuntimeError(
+                f"no repo replica could serve {manifest.get('objectName')}: {last_error}"
+            )
+    if len(payload) != size:
+        raise RuntimeError(f"repo object size mismatch: {manifest.get('objectName')}")
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != expected_hash:
+        raise RuntimeError(
+            f"repo object hash mismatch: {manifest.get('objectName')}: "
+            f"expected {expected_hash}, got {digest}"
+        )
+    return payload
+
+
+class RepoDataName:
+    @staticmethod
+    def data_name(repo_node: str, object_name: str) -> str:
+        digest = hashlib.sha256(object_name.encode()).hexdigest()
+        return f"{repo_node.rstrip('/')}/NDNSF-DISTRIBUTED-REPO/DATA/{digest}"
+
+
 def _artifact_cache_path(artifact: ExecutionArtifact) -> Optional[Path]:
     if not artifact.cache_name:
         return None
     filename = Path(artifact.filename).name
-    cache_dir = (Path.home() / ".cache" / "ndnsf" / "artifacts" /
-                 f"{_safe_file_token(artifact.cache_name)}-{artifact.sha256[:16]}")
+    root = os.environ.get("NDNSF_ARTIFACT_CACHE_DIR")
+    cache_root = Path(root) if root else Path.home() / ".cache" / "ndnsf" / "artifacts"
+    cache_dir = cache_root / f"{_safe_file_token(artifact.cache_name)}-{artifact.sha256[:16]}"
     return cache_dir / filename
 
 
@@ -1107,6 +1275,11 @@ class ServiceUser:
 
         refs: list[ExecutionArtifact] = []
         for name, spec in artifacts.items():
+            if isinstance(spec, dict):
+                repo_artifact = _artifact_from_repo_spec(name, spec)
+                if repo_artifact is not None:
+                    refs.append(repo_artifact)
+                    continue
             payload, filename, kind, executable, cache_name = _artifact_spec_parts(spec)
             payload = bytes(payload)
             chunks: list[str] = []

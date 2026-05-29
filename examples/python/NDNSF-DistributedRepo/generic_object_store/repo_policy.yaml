@@ -8,7 +8,9 @@ identities:
 
 trust:
   app_roots:
-    - /example
+    - /example/repo
+  # Production deployments should anchor validation at the trust-root certificate.
+  # anchor_file: /path/to/root.cert
 
 artifact_security:
   allowlist: []

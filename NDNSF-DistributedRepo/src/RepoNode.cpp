@@ -1,6 +1,7 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 
 #include <exception>
+#include <utility>
 
 namespace ndnsf_distributed_repo {
 
@@ -25,6 +26,52 @@ const ndn::Name&
 RepoNode::servicePrefix() const
 {
   return m_servicePrefix;
+}
+
+RepoObjectManifest
+RepoNode::put(const std::string& objectName,
+              const std::vector<uint8_t>& payload,
+              const std::string& objectType,
+              uint32_t replicationFactor,
+              const std::string& policyEpoch,
+              std::vector<std::string> replicaNodes)
+{
+  RepoObjectManifest manifest;
+  manifest.objectName = objectName;
+  manifest.objectType = objectType;
+  manifest.sha256 = sha256Hex(payload);
+  manifest.size = payload.size();
+  manifest.segmentCount = 1;
+  manifest.replicationFactor = replicationFactor;
+  manifest.replicaNodes = std::move(replicaNodes);
+  manifest.policyEpoch = policyEpoch;
+  const auto response = handleStore(encodeStoreRequest(manifest, payload));
+  return parseManifestJson(toString(response));
+}
+
+std::vector<uint8_t>
+RepoNode::get(const std::string& objectName) const
+{
+  return handleFetch(toBytes(objectName));
+}
+
+RepoObjectManifest
+RepoNode::getManifest(const std::string& objectName) const
+{
+  return parseManifestJson(toString(handleManifest(toBytes(objectName))));
+}
+
+std::vector<RepoObjectManifest>
+RepoNode::list() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_store.listManifests();
+}
+
+bool
+RepoNode::remove(const std::string& objectName)
+{
+  return toString(handleDelete(toBytes(objectName))) == "deleted";
 }
 
 void

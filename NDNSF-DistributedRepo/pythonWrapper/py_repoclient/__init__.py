@@ -79,6 +79,32 @@ class RepoClient:
         self.ack_timeout_ms = ack_timeout_ms
         self.timeout_ms = timeout_ms
 
+    @property
+    def publisher_namespace(self) -> str:
+        return (
+            f"{self.user.user.rstrip('/')}"
+            "/NDNSF-DISTRIBUTED-REPO/OBJECT"
+        )
+
+    def publisher_object_name(self, suffix: str) -> str:
+        suffix = str(suffix).strip()
+        if not suffix:
+            raise ValueError("repo object suffix must not be empty")
+        if suffix.startswith(self.publisher_namespace + "/"):
+            return suffix
+        return f"{self.publisher_namespace}/{suffix.strip('/')}"
+
+    def _require_publisher_object_name(self, object_name: str) -> str:
+        name = str(object_name).strip()
+        if not name:
+            raise ValueError("repo object name must not be empty")
+        if not name.startswith(self.publisher_namespace + "/"):
+            raise ValueError(
+                "repo object data names must be under the publisher namespace: "
+                f"{self.publisher_namespace}/..."
+            )
+        return name
+
     @staticmethod
     def make_manifest(
         *,
@@ -127,6 +153,7 @@ class RepoClient:
         selector: Optional[Callable[[list[AckCandidate]], list[str]]] = None,
     ) -> RepoObjectManifest:
         payload = bytes(payload)
+        object_name = self._require_publisher_object_name(object_name)
         manifest = self.make_manifest(
             object_name=object_name,
             object_type=object_type,
@@ -159,6 +186,27 @@ class RepoClient:
             pass
         return manifest
 
+    def put(
+        self,
+        object_name: str,
+        payload: bytes,
+        *,
+        object_type: str = "object",
+        replication_factor: int = 1,
+        replica_nodes: Iterable[str] = (),
+        policy_epoch: str = "",
+        selector: Optional[Callable[[list[AckCandidate]], list[str]]] = None,
+    ) -> RepoObjectManifest:
+        return self.store(
+            object_name=object_name,
+            payload=payload,
+            object_type=object_type,
+            replication_factor=replication_factor,
+            replica_nodes=replica_nodes,
+            policy_epoch=policy_epoch,
+            selector=selector,
+        )
+
     def fetch(self, object_name: str) -> bytes:
         response = self.user.request_service(
             self.repo_service_name,
@@ -173,6 +221,9 @@ class RepoClient:
         if "payloadB64" in obj:
             return _unb64(obj["payloadB64"])
         return bytes(response.payload)
+
+    def get(self, object_name: str) -> bytes:
+        return self.fetch(object_name)
 
     def manifest(self, object_name: str) -> RepoObjectManifest:
         response = self.user.request_service(
@@ -203,6 +254,9 @@ class RepoClient:
             for name, value in objects.items()
         }
 
+    def list(self) -> dict[str, RepoObjectManifest]:
+        return self.inventory()
+
     def delete(self, object_name: str) -> None:
         response = self.user.request_service(
             self.repo_service_name,
@@ -213,6 +267,9 @@ class RepoClient:
         )
         if not response.status:
             raise RuntimeError(response.error)
+
+    def remove(self, object_name: str) -> None:
+        self.delete(object_name)
 
 
 def _capacity_selector(replication_factor: int, object_size: int):
