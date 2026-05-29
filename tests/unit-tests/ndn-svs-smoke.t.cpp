@@ -244,8 +244,7 @@ BOOST_AUTO_TEST_CASE(DummyFacesDeliverV2RequestPublication)
   const ndn::Name requester("/test/user/alice");
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
   const ndn::Name requestId("/request-1");
-  const ndn::Name bloomFilter("/ff00");
-  const auto requestName = makeRequestNameV2(requester, serviceName, bloomFilter, requestId);
+  const auto requestName = makeRequestNameV2(requester, serviceName, requestId);
 
   RequestMessage requestMessage;
   ndn::Buffer requestPayload;

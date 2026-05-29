@@ -2,7 +2,8 @@
 
 ## Core Direction
 
-The framework is moving from generated static service/stub code to a generic dynamic C++ API.
+The framework uses a generic dynamic C++ API. The old generated static
+service/stub path has been removed.
 
 Preferred provider API:
 
@@ -25,9 +26,7 @@ user.RequestService<RequestT, ResponseT>(
     strategy);
 ```
 
-Generated `ServiceUser_*`, `ServiceProvider_*`, `*Service`, and `*ServiceStub` files are legacy compatibility code only.
-
-## Examples and CodeGenerator Outputs
+## Examples
 
 Examples should demonstrate the current dynamic runtime API:
 
@@ -38,9 +37,11 @@ user.RequestService(serviceName, request, ackTimeoutMs, selector, timeoutMs, onT
 user.RequestService<RequestT, ResponseT>(providers, serviceName, request, onResponse, onTimeout, timeoutMs, strategy);
 ```
 
-Do not add new examples that depend on generated service users, generated service providers, generated service/stub classes, or service-specific framework message types. Application data belongs in `RequestMessage.payload` and `ResponseMessage.payload`, or in app-defined typed request/response objects wrapped by the generic helpers.
-
-Checked-in `CodeGenerator/Generated` C++ outputs are not required unless a build target, test, or intentionally retained compatibility example uses them. Prefer keeping generator scripts/templates for migration reference and deleting stale generated outputs.
+Do not add examples that depend on generated service users, generated service
+providers, generated service/stub classes, or service-specific framework
+message types. Application data belongs in `RequestMessage.payload` and
+`ResponseMessage.payload`, or in app-defined typed request/response objects
+wrapped by the generic helpers.
 
 ## Unified Service Names
 

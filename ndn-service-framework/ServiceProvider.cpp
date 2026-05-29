@@ -3296,7 +3296,7 @@ namespace ndn_service_framework
     void ServiceProvider::PublishMessage(const ndn::Name &messageName, const ndn::Name &messageNameWithoutPrefix,AbstractMessage &message)
     {
         // log message
-        NDN_LOG_INFO("PublishMessage: " << messageName.toUri());
+        NDN_LOG_DEBUG("PublishMessage: " << messageName.toUri());
 
         auto results = ndn_service_framework::GetAttributesByName(messageName);
         if (!results)
@@ -3304,7 +3304,7 @@ namespace ndn_service_framework
             NDN_LOG_ERROR("GetAttributesByName failed: " << messageName);
             return;
         }
-        NDN_LOG_INFO("GetAttributesByName: messageName=" << messageName.toUri()
+        NDN_LOG_DEBUG("GetAttributesByName: messageName=" << messageName.toUri()
                      << " attributes=" << formatAttributesForLog(*results));
         publishHybridMessage(messageName, messageNameWithoutPrefix, message);
         return;
@@ -3716,12 +3716,12 @@ namespace ndn_service_framework
     void ServiceProvider::OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
         if(!isFresh(subscription)) return;
-        NDN_LOG_INFO("[ServiceProvider] OnRequest name="
+        NDN_LOG_DEBUG("[ServiceProvider] OnRequest name="
                   << subscription.name.toUri()
                   << " producer=" << subscription.producerPrefix.toUri()
                   << " bytes=" << subscription.data.size());
         // log the request
-        NDN_LOG_INFO("OnRequest: " << subscription.name << " " << subscription.data.size());
+        NDN_LOG_DEBUG("OnRequest: " << subscription.name << " " << subscription.data.size());
 
         auto requestV2 = ndn_service_framework::parseRequestNameV2(subscription.name);
         if (requestV2) {
@@ -3736,105 +3736,66 @@ namespace ndn_service_framework
                                   {"requesterName", requestV2->requesterName.toUri()},
                                   {"requestName", subscription.name.toUri()}});
             }
-            std::string bfStr = requestV2->bloomFilter.toUri().substr(1);
-
-            ndn_service_framework::BloomFilter bloomFilter;
-            if(!bloomFilter.fromHexString(bfStr))
+            auto token = UPT.queryPermission(
+                ndn::Name(identity.toUri()).append(requestV2->serviceName).toUri(),
+                requestV2->serviceName.toUri());
+            if(!token)
             {
-                NDN_LOG_ERROR("OnRequest: BloomFilter parse failed: " << bfStr);
+                NDN_LOG_INFO("[ServiceProvider] OnRequest missing permission provider="
+                          << identity.toUri()
+                          << " service=" << requestV2->serviceName.toUri());
+                NDN_LOG_ERROR("Not serving: " << requestV2->serviceName);
                 return;
             }
-            bool isTarget = bloomFilter.contains(this->identity.toUri());
-            NDN_LOG_INFO("[ServiceProvider] OnRequest targetCheck provider="
-                      << identity.toUri()
-                      << " service=" << requestV2->serviceName.toUri()
-                      << " isTarget=" << isTarget);
-            NDN_LOG_INFO("BloomFilter: " << bfStr << isTarget);
 
-            if(isTarget)
-            {
-                auto token = UPT.queryPermission(
-                    ndn::Name(identity.toUri()).append(requestV2->serviceName).toUri(),
-                    requestV2->serviceName.toUri());
-                if(!token)
-                {
-                    NDN_LOG_INFO("[ServiceProvider] OnRequest missing permission provider="
-                              << identity.toUri()
-                              << " service=" << requestV2->serviceName.toUri());
-                    NDN_LOG_ERROR("Not serving: " << requestV2->serviceName);
+            if(subscription.data.size() > 0){
+                if (m_timelineTrace) {
+                    logTimelineTrace("provider", "request_decrypt_start",
+                                     requestV2->requestId,
+                                     {{"serviceName", requestV2->serviceName.toUri()}});
+                }
+                if (decryptHybridMessage(subscription.name,
+                                         ndn::Block(subscription.data),
+                                         std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
+                                                   this,
+                                                   requestV2->requesterName,
+                                                   requestV2->serviceName,
+                                                   ndn::Name(),
+                                                   requestV2->requestId,
+                                                   _1),
+                                         std::bind(&ServiceProvider::OnRequestDecryptionErrorCallback,
+                                                   this,
+                                                   requestV2->requesterName,
+                                                   requestV2->serviceName,
+                                                   ndn::Name(),
+                                                   requestV2->requestId,
+                                                   _1))) {
                     return;
                 }
-
-                if(subscription.data.size() > 0){
-                    if (m_timelineTrace) {
-                        logTimelineTrace("provider", "request_decrypt_start",
-                                         requestV2->requestId,
-                                         {{"serviceName", requestV2->serviceName.toUri()}});
-                    }
-                    if (decryptHybridMessage(subscription.name,
-                                             ndn::Block(subscription.data),
-                                             std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
-                                                       this,
-                                                       requestV2->requesterName,
-                                                       requestV2->serviceName,
-                                                       requestV2->bloomFilter,
-                                                       requestV2->requestId,
-                                                       _1),
-                                             std::bind(&ServiceProvider::OnRequestDecryptionErrorCallback,
-                                                       this,
-                                                       requestV2->requesterName,
-                                                       requestV2->serviceName,
-                                                       ndn::Name(),
-                                                       requestV2->requestId,
-                                                       _1))) {
-                        return;
-                    }
-                    OnRequestDecryptionErrorCallback(requestV2->requesterName,
-                                                     requestV2->serviceName,
-                                                     ndn::Name(),
-                                                     requestV2->requestId,
-                                                     "invalid hybrid request envelope");
-                    return;
-                    nacConsumer.consume(subscription.name,
-                                        ndn::Block(subscription.data),
-                                        std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
-                                                  this,
-                                                  requestV2->requesterName,
-                                                  requestV2->serviceName,
-                                                  requestV2->bloomFilter,
-                                                  requestV2->requestId,
-                                                  _1),
-                                        std::bind(&ServiceProvider::OnRequestDecryptionErrorCallback,
-                                                  this,
-                                                  requestV2->requesterName,
-                                                  requestV2->serviceName,
-                                                  ndn::Name(),
-                                                  requestV2->requestId,
-                                                  _1));
-
-                }else{
-                    nacConsumer.consume(subscription.name,
-                                        std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
-                                                  this,
-                                                  requestV2->requesterName,
-                                                  requestV2->serviceName,
-                                                  requestV2->bloomFilter,
-                                                  requestV2->requestId,
-                                                  _1),
-                                        std::bind(&ServiceProvider::OnRequestDecryptionErrorCallback,
-                                                  this,
-                                                  requestV2->requesterName,
-                                                  requestV2->serviceName,
-                                                  ndn::Name(),
-                                                  requestV2->requestId,
-                                                  _1));
-
-                }
+                OnRequestDecryptionErrorCallback(requestV2->requesterName,
+                                                 requestV2->serviceName,
+                                                 ndn::Name(),
+                                                 requestV2->requestId,
+                                                 "invalid hybrid request envelope");
+                return;
             }
-            else
-            {
-                NDN_LOG_ERROR("OnRequest: Requester is not in the bloom filter: "
-                              << requestV2->requesterName);
+            else{
+                nacConsumer.consume(subscription.name,
+                                    std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallbackV2,
+                                              this,
+                                              requestV2->requesterName,
+                                              requestV2->serviceName,
+                                              ndn::Name(),
+                                              requestV2->requestId,
+                                              _1),
+                                    std::bind(&ServiceProvider::OnRequestDecryptionErrorCallback,
+                                              this,
+                                              requestV2->requesterName,
+                                              requestV2->serviceName,
+                                              ndn::Name(),
+                                              requestV2->requestId,
+                                              _1));
+
             }
             return;
         }
@@ -3963,7 +3924,7 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
     const ndn::Name& requestId,
     ndn_service_framework::RequestMessage requestMessage)
 {
-    NDN_LOG_INFO("OnRequestDecryptionSuccessCallbackV2: "
+    NDN_LOG_DEBUG("OnRequestDecryptionSuccessCallbackV2: "
         << requesterIdentity.toUri()
         << serviceName.toUri()
         << bloomFilterName.toUri()
@@ -4006,13 +3967,13 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                          {{"serviceName", serviceName.toUri()},
                           {"valid", "true"}});
     }
-    NDN_LOG_INFO("OnRequestDecryptionSuccessCallbackV2: Permission Granted to "
+    NDN_LOG_DEBUG("OnRequestDecryptionSuccessCallbackV2: Permission Granted to "
                  << requesterIdentity.toUri()
                  << " for " << serviceName.toUri());
 
     if (hasService(serviceName) ||
         m_collaborationServices.find(serviceName) != m_collaborationServices.end()) {
-        NDN_LOG_INFO("Dispatch request using V2 dynamic handler for "
+        NDN_LOG_DEBUG("Dispatch request using V2 dynamic handler for "
                      << serviceName.toUri());
 
         if (shouldSuppressAdaptiveAck(requesterIdentity, serviceName, requestId)) {
@@ -4411,7 +4372,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::onInterest(const ndn::InterestFilter &, const ndn::Interest &interest)
     {
         // log interest
-        NDN_LOG_INFO("Received Interest: " << interest.getName().toUri());
+        NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
         replyFromIMS(interest);
         
     }
@@ -4419,7 +4380,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data> &contentData, ndn::nacabe::SPtrVector<ndn::Data> &ckData)
     {
         //log data
-        NDN_LOG_INFO("serveDataWithIMS: " << contentData.size() << " " << ckData.size());
+        NDN_LOG_DEBUG("serveDataWithIMS: " << contentData.size() << " " << ckData.size());
         std::lock_guard<std::mutex> lock(_cache_mutex);
         for (auto data : contentData)
         {
@@ -5227,14 +5188,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             // register Request Message
             ndn::Name sname(serviceName);
             std::string regex_str =
-                "^(<>*)<NDNSF><REQUEST><" +
-                std::to_string(sname.size()) + ">" +
+                "^(<>*)<NDNSF><REQUEST>" +
                 ndn_service_framework::NameToRegexString(sname) +
-                "(<>)(<>)$";
+                "(<>)$";
             // V2 requests are published as:
-            //   /<requester>/NDNSF/REQUEST/<serviceComponentCount>/<serviceName...>/<bloomFilter>/<requestId>
+            //   /<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
             // The service-specific regex keeps /HELLO subscribed as:
-            //   ^(<>*)<NDNSF><REQUEST><1><HELLO>(<>)(<>)$
+            //   ^(<>*)<NDNSF><REQUEST><HELLO>(<>)$
             NDN_LOG_INFO("[ServiceProvider] SVS request subscription regex="
                       << regex_str);
             NDN_LOG_INFO(regex_str);

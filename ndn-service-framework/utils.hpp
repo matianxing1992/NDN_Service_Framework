@@ -53,7 +53,6 @@ namespace ndn_service_framework
     {
         ndn::Name requesterName;
         ndn::Name serviceName;
-        ndn::Name bloomFilter;
         ndn::Name requestId;
     };
 
@@ -95,19 +94,17 @@ namespace ndn_service_framework
     // NAC-ABE attributes follow message direction: REQUEST/SELECTION use
     // /SERVICE/<serviceName>; RESPONSE/ACK use /PERMISSION/<serviceName>.
     // Request:
-    //   /<requester>/NDNSF/REQUEST/<serviceComponentCount>/<serviceName...>/<bloomFilter>/<requestId>
+    //   /<requester>/NDNSF/REQUEST/<serviceName...>/<requestId>
     // Response:
-    //   /<provider>/NDNSF/RESPONSE/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
+    //   /<provider>/NDNSF/RESPONSE/<requester-uri-component>/<serviceName...>/<requestId>
     // ACK:
-    //   /<provider>/NDNSF/ACK/<requesterComponentCount>/<requester...>/<serviceComponentCount>/<serviceName...>/<requestId>
+    //   /<provider>/NDNSF/ACK/<requester-uri-component>/<serviceName...>/<requestId>
     // Selection:
-    //   /<requester>/NDNSF/SELECTION/<providerComponentCount>/<provider...>/<serviceComponentCount>/<serviceName...>/<requestId>
+    //   /<requester>/NDNSF/SELECTION/<provider-uri-component>/<serviceName...>/<requestId>
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
                                 const ndn::Name& serviceName,
-                                const ndn::Name& bloomFilter,
                                 const ndn::Name& requestId);
     ndn::Name makeRequestNameWithoutPrefixV2(const ndn::Name& serviceName,
-                                             const ndn::Name& bloomFilter,
                                              const ndn::Name& requestId);
     std::optional<RequestNameV2> parseRequestNameV2(const ndn::Name& requestName);
 

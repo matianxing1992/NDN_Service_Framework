@@ -2,7 +2,6 @@
 #define NDN_SERVICE_FRAMEWORK_SERVICE_USER_HPP
 
 #include "common.hpp"
-#include "ServiceStub.hpp"
 #include "utils.hpp"
 
 #include "BloomFilter.hpp"
@@ -256,8 +255,6 @@ namespace ndn_service_framework{
                         std::string trustSchemaPath);
 
             virtual ~ServiceUser();
-            // void addServiceStub(ServiceStub serviceStub);
-
             void init();
 
             ndn::Name getName();
