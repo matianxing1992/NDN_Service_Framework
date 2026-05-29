@@ -418,3 +418,19 @@ SVS/NFD delivery：REQUEST-to-ACK p50 约 97 ms，SELECTION-to-RESPONSE p50 约
 的 route cost 为 37 ms。因此后续优化应聚焦 SVS/NFD delivery path 和
 piggyback delivery effectiveness，而不是继续调整 periodic-sync timer、增加
 hot-path 日志，或优化应用层 crypto。
+
+后续诊断隔离出一个重要 delivery 抖动来源：parallel Sync Interest production。
+使用 `--svs-disable-parallel-production` 并把 send-but-not-measure warmup 扩到
+60 秒后，持续 60 秒、100 RPS measured run 回到了低延迟区间
+(`results/newapi_minindn_perf_20260529_131130`)：
+
+```text
+Actual RPS  Success  Avg ms  P50 ms  P95 ms  P99 ms  Timeout
+100.000     100.00%  168.06  166.50  177.14  198.33  0
+```
+
+这说明 166 ms 行为并不只存在于短窗口；系统进入 steady state 后，60 秒持续
+测量也能达到接近该水平。parallel production 会把本地 publication delay 隐藏
+在 worker queue 后面：应用 timeline 里本地 publish 仍是亚毫秒级，但端到端
+delivery 会增加额外 tail。验证 latency floor 时应使用这个 profile；只有当实验
+明确研究 throughput/CPU tradeoff 时才启用 parallel production。
