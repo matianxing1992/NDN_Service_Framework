@@ -421,12 +421,13 @@ hot-path 日志，或优化应用层 crypto。
 
 后续诊断隔离出一个重要 delivery 抖动来源：parallel Sync Interest production。
 使用 `--svs-disable-parallel-production` 并把 send-but-not-measure warmup 扩到
-60 秒后，持续 60 秒、100 RPS measured run 回到了低延迟区间
-(`results/newapi_minindn_perf_20260529_131130`)：
+60 秒后，持续 60 秒、100 RPS measured run 回到了低延迟区间。随后又验证了
+默认 `--performance-mode` profile，结果目录为
+`results/newapi_minindn_perf_20260529_131700`：
 
 ```text
 Actual RPS  Success  Avg ms  P50 ms  P95 ms  P99 ms  Timeout
-100.000     100.00%  168.06  166.50  177.14  198.33  0
+100.000     100.00%  168.23  166.77  177.15  190.17  0
 ```
 
 这说明 166 ms 行为并不只存在于短窗口；系统进入 steady state 后，60 秒持续
