@@ -43,9 +43,6 @@ CONTROLLER_READY_MARKERS = [
     "App_ServiceController started",
 ]
 JMAVSIM_READY_MARKERS = [
-    "INFO  [simulator_mavlink] Simulator connected",
-    "INFO  [mavlink] mode:",
-    "INFO  [px4] Startup script returned successfully",
     "INFO  [commander] Ready for takeoff!",
 ]
 
@@ -163,7 +160,9 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
             "NDNSF_APP_NDN_LOG",
             os.environ.get(
                 "NDN_LOG",
-                "ndn_service_framework.*=INFO:nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN",
+                "ndn_service_framework.*=WARN:"
+                "ndn_service_framework.examples.*=INFO:"
+                "nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN",
             ),
         ),
         "NDNSF_DISABLE_NDNSD": os.environ.get("NDNSF_DISABLE_NDNSD", "1"),
@@ -335,10 +334,14 @@ def start(node, name: str, command: str, env: dict[str, str], output_dir: Path, 
 
 def start_jmavsim(ndn, args: argparse.Namespace, drone_node: str,
                   drone_id: str, env: dict[str, str], output_dir: Path,
-                  processes) -> tuple[subprocess.Popen, Path]:
+                  processes) -> tuple[subprocess.Popen, Path, Path]:
     px4_dir = Path(args.px4_dir).resolve()
     if not (px4_dir / "Tools/simulation/jmavsim/jmavsim_run.sh").exists():
         raise RuntimeError(f"PX4 jMAVSim script not found under {px4_dir}")
+    status_file = output_dir / f"jmavsim-{drone_id}.status"
+    status_file.write_text("starting\n", encoding="utf-8")
+    sim_env = dict(env)
+    sim_env["NDNSF_UAV_JMAVSIM_STATUS_FILE"] = str(status_file)
     headless = "HEADLESS=1 " if args.jmavsim_headless else ""
     # Use the existing PX4 make target so PX4 and jMAVSim share the same node
     # namespace. If the PX4 build already exists this normally starts quickly;
@@ -347,10 +350,12 @@ def start_jmavsim(ndn, args: argparse.Namespace, drone_node: str,
         f"cd {shell_quote(px4_dir)} && "
         f"export PX4_SIM_MODEL=iris && "
         f"export CMAKE_ARGS={shell_quote(args.px4_cmake_args)} && "
-        f"{headless}exec make px4_sitl jmavsim"
+        f"{headless}make px4_sitl jmavsim </dev/null 2>&1 | "
+        f"python3 {shell_quote(REPO / 'Experiments/uav_jmavsim_log_filter.py')}"
     )
-    return start(ndn.net[drone_node], f"jmavsim-{drone_id}",
-                 command, env, output_dir, processes)
+    proc, log_path = start(ndn.net[drone_node], f"jmavsim-{drone_id}",
+                           command, sim_env, output_dir, processes)
+    return proc, log_path, status_file
 
 
 def cleanup_px4_jmavsim(px4_dir: str) -> None:
@@ -484,20 +489,15 @@ def main() -> int:
             )
 
         drone_logs = {}
+        simulator_status_files = {}
         for drone_id, node_name in drones:
             start_simulator = should_start_jmavsim(args)
             if start_simulator:
                 cleanup_px4_jmavsim(args.px4_dir)
-                jmavsim_proc, jmavsim_log = start_jmavsim(
+                jmavsim_proc, jmavsim_log, status_file = start_jmavsim(
                     ndn, args, node_name, drone_id,
                     drone_envs[drone_id], output_dir, processes)
-                if not wait_log_any(jmavsim_log, JMAVSIM_READY_MARKERS,
-                                    args.jmavsim_ready_timeout_seconds,
-                                    proc=jmavsim_proc):
-                    raise RuntimeError(
-                        f"PX4/jMAVSim did not become ready; see {jmavsim_log}\n"
-                        f"--- tail ---\n{read_tail(jmavsim_log)}"
-                    )
+                simulator_status_files[drone_id] = status_file
             drone_cmd = app_cmd(APP_DRONE, [
                 "--drone-id", drone_id,
                 "--video-source", resolve_repo_path(args.video_source),
@@ -506,6 +506,8 @@ def main() -> int:
                 "--mavlink-udp-host", args.mavlink_udp_host,
                 "--mavlink-udp-port", args.mavlink_udp_port,
             ])
+            if start_simulator:
+                drone_cmd += " --fc-status-file " + shell_quote(simulator_status_files[drone_id])
             label = "drone" if len(drones) == 1 else f"drone-{drone_id}"
             drone_proc, drone_log = start(ndn.net[node_name], label,
                                           drone_cmd, drone_envs[drone_id],
@@ -513,6 +515,16 @@ def main() -> int:
             drone_logs[drone_id] = drone_log
             if not wait_log(drone_log, "DRONE_GUI_READY", 30, drone_proc):
                 raise RuntimeError(f"drone {drone_id} GUI did not start; see {drone_log}")
+
+            if (start_simulator and
+                (args.auto_mavlink_test or args.auto_keyboard_test or args.auto_manual_control_test)):
+                if not wait_log_any(jmavsim_log, JMAVSIM_READY_MARKERS,
+                                    args.jmavsim_ready_timeout_seconds,
+                                    proc=jmavsim_proc):
+                    raise RuntimeError(
+                        f"PX4/jMAVSim did not become ready; see {jmavsim_log}\n"
+                        f"--- tail ---\n{read_tail(jmavsim_log)}"
+                    )
 
         gs_argv = [
             "--target-drone", args.drone_id,
