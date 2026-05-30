@@ -100,7 +100,7 @@ camera-control service globally unique. High-rate video packets are still
 fetched as signed NDN Data under the drone namespace, so the generic
 request/response path carries control only, not the video byte stream.
 
-The current implementation loops `/home/tianxing/NDN/drone.mp4` through
+The current implementation loops `NDNSF-UAV-APP/videos/demo.mp4` through
 `ffmpeg`, encodes low-latency MJPEG frames, and splits each frame into NDN-sized
 video packets. This is not ordinary NDN segmentation of one object. Each Data
 packet is an independent video packet named only by the stream start timestamp
@@ -196,7 +196,7 @@ nfd-start
   --controller-prefix /example/uav/controller \
   --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
 
-./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
+./build/examples/UavDroneApp --drone-id A --video-source NDNSF-UAV-APP/videos/demo.mp4
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480
 ```
@@ -209,7 +209,7 @@ back to `Video stopped`.
 For an automated GUI smoke test without manual button clicks:
 
 ```bash
-./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
+./build/examples/UavDroneApp --drone-id A --video-source NDNSF-UAV-APP/videos/demo.mp4
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480 \
   --auto-video-test --auto-stop-seconds 10

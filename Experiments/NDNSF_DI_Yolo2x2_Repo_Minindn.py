@@ -27,7 +27,7 @@ from minindn.util import getPopen  # noqa: E402
 TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
 OUT = REPO / "results/yolo_2x2_distributed_repo_minindn"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
-MININDN_ROOT = Path("/tm/MININDN")
+MININDN_ROOT = Path("/tmp/minindn")
 
 
 class Args(SimpleNamespace):

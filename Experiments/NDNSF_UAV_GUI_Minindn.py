@@ -17,6 +17,7 @@ import sys
 import time
 
 REPO = Path(__file__).resolve().parents[1]
+MININDN_ROOT = Path("/tmp/minindn")
 sys.path.insert(0, str(REPO / "Experiments"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
@@ -52,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gs-node", default="memphis")
     parser.add_argument("--drone-node", default="ucla")
     parser.add_argument("--drone-id", default="A")
-    parser.add_argument("--video-source", default="/home/tianxing/NDN/drone.mp4")
+    parser.add_argument("--video-source", default="NDNSF-UAV-APP/videos/demo.mp4")
     parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
     parser.add_argument("--video-width", type=int, default=480,
@@ -81,7 +82,7 @@ def app_cmd(binary: Path, argv: list[str]) -> str:
 
 def node_home(ndn, node_name: str) -> Path:
     node = ndn.net[node_name]
-    return Path(node.params.get("params", {}).get("homeDir", f"/tmp/minindn/{node_name}"))
+    return Path(node.params.get("params", {}).get("homeDir", str(MININDN_ROOT / node_name)))
 
 
 def write_node_client_conf(home: Path, node_name: str) -> Path:

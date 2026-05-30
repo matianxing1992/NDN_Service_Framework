@@ -102,7 +102,7 @@ def preflight_cleanup(provider_count):
 set +e
 mn -c >/dev/null 2>&1
 rm -f /run/nfd/controller.sock /run/nfd/user.sock /run/nfd/router.sock {provider_sockets}
-rm -rf /tm/MININDN /tmp/mn-* /tmp/*.nfd.sock /tmp/ndnsf-svs-registration-*.lock \
+rm -rf /tmp/minindn /tmp/mn-* /tmp/*.nfd.sock /tmp/ndnsf-svs-registration-*.lock \
        /tmp/ndnsf-keychain-init-*.lock /tmp/ndnsf-provider-route-registration-*.lock
 ip netns list 2>/dev/null | awk '/^(controller|user|router|{provider_regex})[[:space:]]/ {{print $1}}' | \
   xargs -r -n1 ip netns delete 2>/dev/null

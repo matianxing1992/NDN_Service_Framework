@@ -86,7 +86,7 @@ Ground station -> /example/uav/drone/A/UAV/Camera/Video/stop/<nonce>
 用于让这个摄像头控制服务全局唯一。高频 video packets 仍然作为 drone namespace 下的签名
 NDN Data 拉取，因此 generic request/response 路径只承载控制消息，不承载视频字节流。
 
-当前实现把 `/home/tianxing/NDN/drone.mp4` 交给 `ffmpeg` 循环读取，编码成低延迟 MJPEG frame，
+当前实现把 `NDNSF-UAV-APP/videos/demo.mp4` 交给 `ffmpeg` 循环读取，编码成低延迟 MJPEG frame，
 然后把每个 frame 切成符合 NDN packet 大小的 video packets。这不是普通 NDN segmentation，
 也不是把一个大 Data object 切段。每个 Data 都是一个独立 video packet，名字只由 stream
 启动时间和递增 `packetSeq` 组成；一个 Data 只包含一个 frame 的一部分，绝不会混入两个 frame
@@ -168,7 +168,7 @@ nfd-start
   --controller-prefix /example/uav/controller \
   --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
 
-./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
+./build/examples/UavDroneApp --drone-id A --video-source NDNSF-UAV-APP/videos/demo.mp4
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480
 ```
@@ -179,7 +179,7 @@ nfd-start
 如果要不手动点击按钮做 GUI smoke test：
 
 ```bash
-./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
+./build/examples/UavDroneApp --drone-id A --video-source NDNSF-UAV-APP/videos/demo.mp4
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480 \
   --auto-video-test --auto-stop-seconds 10
