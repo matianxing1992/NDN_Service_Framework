@@ -184,20 +184,32 @@ public:
       std::stoull(fieldOr(requestFields, "fps", "30")), 1, 60);
     m_requestedBitrateKbps = std::max<uint64_t>(
       1, std::stoull(fieldOr(requestFields, "requested_bitrate_kbps",
-                             fieldOr(requestFields, "target_bitrate_kbps", "4000"))));
+                             fieldOr(requestFields, "target_bitrate_kbps", "8000"))));
     m_acceptedBitrateKbps = std::clamp<uint64_t>(
       m_requestedBitrateKbps.load(), MIN_VIDEO_BITRATE_KBPS, MAX_VIDEO_BITRATE_KBPS);
+    auto requestedWidth = std::clamp<uint64_t>(
+      std::stoull(fieldOr(requestFields, "requested_frame_width", "480")),
+      MIN_VIDEO_FRAME_WIDTH, MAX_VIDEO_FRAME_WIDTH);
+    if (requestedWidth % 2 != 0) {
+      --requestedWidth;
+    }
+    m_requestedFrameWidth = requestedWidth;
+    m_acceptedFrameWidth = requestedWidth;
     m_encoderQuality = qualityForBitrate(m_acceptedBitrateKbps);
+    m_fecDataShards = defaultFecDataShardsForBitrate(m_acceptedBitrateKbps.load());
+    m_fecParityShards = 1;
     m_restartEncoder = true;
     ensureFrameFilterRegistered();
     m_streamId = "stream-" + std::to_string(nowMilliseconds());
     m_streamPrefix = ndn::Name(m_videoPrefix).append(m_streamId);
     m_nextSeq = 0;
     m_nextPacketSeq = 0;
+    m_nextFecFrameSeq = 0;
     m_packets.clear();
     m_order.clear();
     m_pending.clear();
-    m_nextPacketSeqByBucket.clear();
+    m_fecPendingChunks.clear();
+    m_fecCurrentFrameStartMs = 0;
     m_jpegBuffer.clear();
     m_streaming = true;
     const auto startSecond = nowMilliseconds() / 1000;
@@ -212,11 +224,15 @@ public:
       {"min_bitrate_kbps", std::to_string(MIN_VIDEO_BITRATE_KBPS)},
       {"max_bitrate_kbps", std::to_string(MAX_VIDEO_BITRATE_KBPS)},
       {"encoder_quality", std::to_string(m_encoderQuality)},
+      {"requested_frame_width", std::to_string(m_requestedFrameWidth)},
+      {"accepted_frame_width", std::to_string(m_acceptedFrameWidth)},
       {"start_second", std::to_string(startSecond)},
       {"next_packet", "0"},
-      {"encoding", "image/jpeg"},
-      {"stream_format", "stream-start-time/packetSeq with per-packet frame metadata"},
-      {"frame_width", "240"},
+      {"encoding", "video/h264"},
+      {"stream_format", "stream-start-time/packetSeq with stream-chunk metadata"},
+      {"fec_data_shards", std::to_string(m_fecDataShards)},
+      {"fec_parity_shards", std::to_string(m_fecParityShards)},
+      {"frame_width", std::to_string(m_acceptedFrameWidth)},
       {"max_payload_bytes", std::to_string(MAX_VIDEO_PACKET_PAYLOAD)},
       {"streaming_model", "mjpeg-low-latency-packet-stream"},
       {"prefetch_hint", "budget-from-bitrate"},
@@ -231,7 +247,13 @@ public:
     std::lock_guard<std::mutex> guard(m_mutex);
     m_streaming = false;
     m_pending.clear();
+    m_packets.clear();
+    m_order.clear();
+    m_fecPendingChunks.clear();
+    m_fecCurrentFrameStartMs = 0;
+    m_nextFecFrameSeq = 0;
     m_jpegBuffer.clear();
+    m_restartEncoder = true;
     return {
       {"status", "stopped"},
       {"drone_id", m_droneId},
@@ -280,11 +302,17 @@ private:
   static uint64_t
   qualityForBitrate(uint64_t bitrateKbps)
   {
-    if (bitrateKbps >= 3500) {
+    if (bitrateKbps >= 8000) {
+      return 6;
+    }
+    if (bitrateKbps >= 6000) {
+      return 8;
+    }
+    if (bitrateKbps >= 4000) {
       return 10;
     }
     if (bitrateKbps >= 2500) {
-      return 15;
+      return 14;
     }
     if (bitrateKbps >= 1500) {
       return 20;
@@ -293,6 +321,37 @@ private:
       return 25;
     }
     return 31;
+  }
+
+  static uint64_t
+  defaultFecDataShardsForBitrate(uint64_t bitrateKbps)
+  {
+    if (bitrateKbps >= 8000) {
+      return 12;
+    }
+    if (bitrateKbps >= 4000) {
+      return 8;
+    }
+    if (bitrateKbps >= 2000) {
+      return 6;
+    }
+    if (bitrateKbps >= 1200) {
+      return 4;
+    }
+    return 3;
+  }
+
+  static std::string
+  joinFecLengths(const std::vector<size_t>& lengths)
+  {
+    std::string out;
+    for (size_t i = 0; i < lengths.size(); ++i) {
+      if (i > 0) {
+        out += ",";
+      }
+      out += std::to_string(lengths[i]);
+    }
+    return out;
   }
 
   void
@@ -311,6 +370,9 @@ private:
     std::vector<uint8_t> packet;
     {
       std::lock_guard<std::mutex> guard(m_mutex);
+      if (!m_streaming.load() || !m_streamPrefix.isPrefixOf(name)) {
+        return;
+      }
       const auto uri = name.toUri();
       const auto it = m_packets.find(uri);
       if (it != m_packets.end()) {
@@ -391,40 +453,105 @@ private:
   }
 
   void
-  publishFrame(const std::vector<uint8_t>& frame)
+  appendStreamChunk(std::vector<uint8_t> chunk, uint64_t nowMs)
   {
     if (!m_streaming.load()) {
       return;
     }
-    const auto frameSeq = m_nextSeq.fetch_add(1);
-    const auto captureMs = nowMilliseconds();
-    const auto second = captureMs / 1000;
-    const bool keyFrame = frameSeq % 30 == 0;
-    const auto segmentCount = static_cast<uint32_t>(
-      (frame.size() + MAX_VIDEO_PACKET_PAYLOAD - 1) / MAX_VIDEO_PACKET_PAYLOAD);
-    const auto firstPacketSeq = allocatePacketRange(segmentCount);
-    const auto bucketPacketCount = firstPacketSeq + segmentCount;
+    if (m_fecPendingChunks.empty()) {
+      m_fecCurrentFrameStartMs = nowMs;
+    }
+    m_fecPendingChunks.push_back(std::move(chunk));
 
-    for (uint32_t i = 0; i < segmentCount; ++i) {
-      const auto offset = static_cast<size_t>(i) * MAX_VIDEO_PACKET_PAYLOAD;
-      const auto size = std::min(MAX_VIDEO_PACKET_PAYLOAD, frame.size() - offset);
-      const auto packetSeq = firstPacketSeq + i;
+    if (m_fecPendingChunks.size() >= m_fecDataShards ||
+        (m_fecCurrentFrameStartMs != 0 &&
+         nowMs >= m_fecCurrentFrameStartMs + m_fecFrameTimeoutMs)) {
+      publishCurrentFrame(nowMs);
+    }
+  }
+
+  void
+  publishCurrentFrame(uint64_t captureMs)
+  {
+    const auto dataShardCount = m_fecPendingChunks.size();
+    if (dataShardCount == 0 || !m_streaming.load()) {
+      return;
+    }
+
+    const auto frameSeq = m_nextFecFrameSeq++;
+    const auto second = captureMs / 1000;
+    auto dataChunks = std::move(m_fecPendingChunks);
+    m_fecPendingChunks.clear();
+    m_fecCurrentFrameStartMs = 0;
+
+    std::vector<size_t> dataLengths;
+    dataLengths.reserve(dataChunks.size());
+    size_t maxPayloadSize = 0;
+    for (const auto& payload : dataChunks) {
+      dataLengths.push_back(payload.size());
+      maxPayloadSize = std::max(maxPayloadSize, payload.size());
+    }
+
+    std::vector<uint8_t> parityPayload(maxPayloadSize, 0);
+    for (const auto& payload : dataChunks) {
+      for (size_t i = 0; i < payload.size(); ++i) {
+        parityPayload[i] ^= payload[i];
+      }
+    }
+
+    const auto firstPacketSeq = allocatePacketRange(dataShardCount + m_fecParityShards);
+    const auto frameLastPacketSeq = firstPacketSeq + dataShardCount + m_fecParityShards - 1;
+    const auto dataLengthsCsv = joinFecLengths(dataLengths);
+    m_nextSeq += static_cast<uint64_t>(dataShardCount + m_fecParityShards);
+
+    for (uint64_t i = 0; i < dataShardCount; ++i) {
       VideoPacket packet;
       packet.second = second;
-      packet.packetSeq = packetSeq;
+      packet.packetSeq = firstPacketSeq + i;
       packet.frameSeq = frameSeq;
       packet.captureMs = captureMs;
       packet.frameFirstPacketSeq = firstPacketSeq;
-      packet.frameLastPacketSeq = bucketPacketCount - 1;
-      packet.bucketPacketCount = bucketPacketCount;
-      packet.frameSegmentIndex = i;
-      packet.frameSegmentCount = segmentCount;
-      packet.keyFrame = keyFrame;
-      packet.encoding = "image/jpeg";
-      packet.payload.assign(frame.begin() + offset, frame.begin() + offset + size);
+      packet.frameLastPacketSeq = frameLastPacketSeq;
+      packet.bucketPacketCount = frameLastPacketSeq + 1;
+      packet.frameSegmentIndex = static_cast<uint32_t>(i);
+      packet.frameSegmentCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
+      packet.keyFrame = ((frameSeq % 30) == 0);
+      packet.encoding = "video/h264";
+      packet.fecDataShards = static_cast<uint32_t>(dataShardCount);
+      packet.fecParityShards = static_cast<uint32_t>(m_fecParityShards);
+      packet.fecSymbolIndex = static_cast<uint32_t>(i);
+      packet.fecSymbolCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
+      packet.fecDataLengths = dataLengthsCsv;
+      packet.payload = std::move(dataChunks[i]);
 
       ndn::Name packetName = m_streamPrefix;
-      packetName.append(std::to_string(packetSeq));
+      packetName.append(std::to_string(packet.packetSeq));
+      rememberPacket(packetName, encodeVideoPacket(packet));
+    }
+
+    for (uint64_t i = 0; i < m_fecParityShards; ++i) {
+      const auto symbolIndex = dataShardCount + i;
+      VideoPacket packet;
+      packet.second = second;
+      packet.packetSeq = firstPacketSeq + symbolIndex;
+      packet.frameSeq = frameSeq;
+      packet.captureMs = captureMs;
+      packet.frameFirstPacketSeq = firstPacketSeq;
+      packet.frameLastPacketSeq = frameLastPacketSeq;
+      packet.bucketPacketCount = frameLastPacketSeq + 1;
+      packet.frameSegmentIndex = static_cast<uint32_t>(symbolIndex);
+      packet.frameSegmentCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
+      packet.keyFrame = false;
+      packet.encoding = "video/h264";
+      packet.fecDataShards = static_cast<uint32_t>(dataShardCount);
+      packet.fecParityShards = static_cast<uint32_t>(m_fecParityShards);
+      packet.fecSymbolIndex = static_cast<uint32_t>(symbolIndex);
+      packet.fecSymbolCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
+      packet.fecDataLengths = dataLengthsCsv;
+      packet.payload = parityPayload;
+
+      ndn::Name packetName = m_streamPrefix;
+      packetName.append(std::to_string(packet.packetSeq));
       rememberPacket(packetName, encodeVideoPacket(packet));
     }
   }
@@ -440,9 +567,12 @@ private:
   captureLoop()
   {
     std::unique_ptr<FILE, decltype(&pclose)> pipe(nullptr, pclose);
+    std::vector<uint8_t> chunkBuffer;
     while (!m_done.load()) {
       if (!m_streaming.load()) {
         pipe.reset();
+        std::lock_guard<std::mutex> guard(m_mutex);
+        m_jpegBuffer.clear();
         std::this_thread::sleep_for(50ms);
         continue;
       }
@@ -453,12 +583,13 @@ private:
 
       if (!pipe) {
         const auto fps = m_targetFps.load();
-        const auto quality = m_encoderQuality.load();
+        const auto width = m_acceptedFrameWidth.load();
         const auto command =
           "ffmpeg -loglevel error -re -stream_loop -1 -i " + shellQuote(m_videoPath) +
           " -vf fps=" + std::to_string(fps) +
-          ",scale=240:-2 -an -q:v " + std::to_string(quality) +
-          " -f image2pipe -vcodec mjpeg pipe:1 2>/dev/null";
+          ",scale=" + std::to_string(width) + ":-2 -an "
+          " -c:v libx264 -preset veryfast -tune zerolatency -x264-params keyint=60:min-keyint=60:scenecut=0 "
+          "-f h264 pipe:1";
         pipe.reset(popen(command.c_str(), "r"));
         if (!pipe) {
           NDN_LOG_WARN("VIDEO_ENCODER_START_FAILED path=" << m_videoPath);
@@ -467,57 +598,34 @@ private:
         }
       }
 
-      std::array<uint8_t, 4096> buffer{};
+      std::array<uint8_t, 8192> buffer{};
       const auto n = fread(buffer.data(), 1, buffer.size(), pipe.get());
       if (n == 0) {
         pipe.reset();
         continue;
       }
 
-      m_jpegBuffer.insert(m_jpegBuffer.end(), buffer.begin(), buffer.begin() + n);
-      publishCompleteJpegFrames();
-    }
-  }
-
-  void
-  publishCompleteJpegFrames()
-  {
-    while (true) {
-      auto begin = std::search(m_jpegBuffer.begin(), m_jpegBuffer.end(),
-                               kJpegStart.begin(), kJpegStart.end());
-      if (begin == m_jpegBuffer.end()) {
-        if (m_jpegBuffer.size() > 1024 * 1024) {
-          m_jpegBuffer.clear();
-        }
-        return;
+      chunkBuffer.insert(chunkBuffer.end(), buffer.begin(), buffer.begin() + n);
+      while (chunkBuffer.size() >= MAX_VIDEO_PACKET_PAYLOAD) {
+        const auto chunkSize = std::min(MAX_VIDEO_PACKET_PAYLOAD, chunkBuffer.size());
+        std::vector<uint8_t> packetBytes(chunkBuffer.begin(), chunkBuffer.begin() + chunkSize);
+        chunkBuffer.erase(chunkBuffer.begin(), chunkBuffer.begin() + chunkSize);
+        appendStreamChunk(std::move(packetBytes), nowMilliseconds());
       }
-
-      if (begin != m_jpegBuffer.begin()) {
-        m_jpegBuffer.erase(m_jpegBuffer.begin(), begin);
+      if (!m_fecPendingChunks.empty() &&
+          m_fecCurrentFrameStartMs != 0 &&
+          nowMilliseconds() >= m_fecCurrentFrameStartMs + m_fecFrameTimeoutMs) {
+        publishCurrentFrame(nowMilliseconds());
       }
-
-      auto end = std::search(m_jpegBuffer.begin() + 2, m_jpegBuffer.end(),
-                             kJpegEnd.begin(), kJpegEnd.end());
-      if (end == m_jpegBuffer.end()) {
-        return;
-      }
-      end += 2;
-
-      std::vector<uint8_t> frame(m_jpegBuffer.begin(), end);
-      m_jpegBuffer.erase(m_jpegBuffer.begin(), end);
-      if (!m_streaming.load()) {
-        return;
-      }
-      publishFrame(frame);
     }
   }
 
 private:
-  static constexpr std::array<uint8_t, 2> kJpegStart{{0xff, 0xd8}};
-  static constexpr std::array<uint8_t, 2> kJpegEnd{{0xff, 0xd9}};
   static constexpr size_t MAX_VIDEO_PACKET_PAYLOAD = 3600;
   static constexpr uint64_t MIN_VIDEO_BITRATE_KBPS = 256;
-  static constexpr uint64_t MAX_VIDEO_BITRATE_KBPS = 8000;
+  static constexpr uint64_t MAX_VIDEO_BITRATE_KBPS = 16000;
+  static constexpr uint64_t MIN_VIDEO_FRAME_WIDTH = 160;
+  static constexpr uint64_t MAX_VIDEO_FRAME_WIDTH = 1280;
   ndn::Face& m_face;
   ndn::KeyChain& m_keyChain;
   std::string m_droneId;
@@ -532,18 +640,25 @@ private:
   std::atomic<bool> m_done{false};
   std::atomic<uint64_t> m_nextSeq{0};
   std::atomic<uint64_t> m_nextPacketSeq{0};
+  std::atomic<uint64_t> m_nextFecFrameSeq{0};
   std::atomic<uint64_t> m_frameInterests{0};
   std::atomic<uint64_t> m_framePuts{0};
   std::atomic<uint64_t> m_targetFps{30};
-  std::atomic<uint64_t> m_requestedBitrateKbps{4000};
-  std::atomic<uint64_t> m_acceptedBitrateKbps{4000};
-  std::atomic<uint64_t> m_encoderQuality{15};
+  std::atomic<uint64_t> m_requestedBitrateKbps{8000};
+  std::atomic<uint64_t> m_acceptedBitrateKbps{8000};
+  std::atomic<uint64_t> m_requestedFrameWidth{480};
+  std::atomic<uint64_t> m_acceptedFrameWidth{480};
+  std::atomic<uint64_t> m_encoderQuality{6};
   std::atomic<bool> m_restartEncoder{false};
   std::map<std::string, std::vector<uint8_t>> m_packets;
   std::deque<std::string> m_order;
   std::map<std::string, ndn::Name> m_pending;
-  std::map<std::string, uint64_t> m_nextPacketSeqByBucket;
   std::vector<uint8_t> m_jpegBuffer;
+  std::vector<std::vector<uint8_t>> m_fecPendingChunks;
+  uint64_t m_fecCurrentFrameStartMs = 0;
+  uint64_t m_fecDataShards = 8;
+  uint64_t m_fecParityShards = 1;
+  static constexpr uint64_t m_fecFrameTimeoutMs = 35;
   std::thread m_captureThread;
 };
 

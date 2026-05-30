@@ -89,6 +89,7 @@ def build(bld):
                 ],
                 includes=['..', '../NDNSF-UAV-APP/shared'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm',
+                cxxflags=['-Wno-error=extra-semi'],
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
@@ -100,6 +101,7 @@ def build(bld):
                 ],
                 includes=['..', '../NDNSF-UAV-APP/shared'],
                 use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm',
+                cxxflags=['-Wno-error=extra-semi'],
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 

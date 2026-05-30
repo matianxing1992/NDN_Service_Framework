@@ -48,8 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drone-node", default="ucla")
     parser.add_argument("--drone-id", default="A")
     parser.add_argument("--video-source", default="/home/tianxing/NDN/drone.mp4")
-    parser.add_argument("--video-bitrate-kbps", type=int, default=4000,
+    parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
+    parser.add_argument("--video-width", type=int, default=480,
+                        help="Requested encoded frame width passed to the drone video service.")
     parser.add_argument("--output-dir", default=str(REPO / "results/uav_gui_minindn"))
     parser.add_argument("--nfd-log-level", default="WARN")
     parser.add_argument("--auto-video-test", action="store_true",
@@ -306,6 +308,7 @@ def main() -> int:
         gs_argv = [
             "--target-drone", args.drone_id,
             "--video-bitrate-kbps", str(args.video_bitrate_kbps),
+            "--video-width", str(args.video_width),
         ]
         if args.auto_video_test:
             gs_argv += ["--auto-video-test", "--auto-stop-seconds", str(args.auto_stop_seconds)]

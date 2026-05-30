@@ -107,6 +107,11 @@ encodeVideoPacket(const VideoPacket& packet)
     {"frame_segment_index", std::to_string(packet.frameSegmentIndex)},
     {"frame_seq", std::to_string(packet.frameSeq)},
     {"key_frame", packet.keyFrame ? "true" : "false"},
+    {"fec_data_shards", std::to_string(packet.fecDataShards)},
+    {"fec_parity_shards", std::to_string(packet.fecParityShards)},
+    {"fec_symbol_index", std::to_string(packet.fecSymbolIndex)},
+    {"fec_symbol_count", std::to_string(packet.fecSymbolCount)},
+    {"fec_data_lengths", packet.fecDataLengths},
     {"packet_seq", std::to_string(packet.packetSeq)},
     {"second", std::to_string(packet.second)},
   });
@@ -158,6 +163,15 @@ decodeVideoPacket(const std::vector<uint8_t>& payload)
     std::stoul(fieldOr(header, "frame_segment_index", "0")));
   packet.frameSegmentCount = static_cast<uint32_t>(
     std::stoul(fieldOr(header, "frame_segment_count", "0")));
+  packet.fecDataShards = static_cast<uint32_t>(
+    std::stoul(fieldOr(header, "fec_data_shards", "0")));
+  packet.fecParityShards = static_cast<uint32_t>(
+    std::stoul(fieldOr(header, "fec_parity_shards", "0")));
+  packet.fecSymbolIndex = static_cast<uint32_t>(
+    std::stoul(fieldOr(header, "fec_symbol_index", "0")));
+  packet.fecSymbolCount = static_cast<uint32_t>(
+    std::stoul(fieldOr(header, "fec_symbol_count", "0")));
+  packet.fecDataLengths = fieldOr(header, "fec_data_lengths", "");
   packet.keyFrame = fieldOr(header, "key_frame", "false") == "true";
   packet.encoding = fieldOr(header, "encoding", "");
   packet.payload.assign(payload.begin() + 4 + headerSize, payload.end());
