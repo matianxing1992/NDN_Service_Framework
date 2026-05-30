@@ -27,6 +27,7 @@ from minindn.util import getPopen  # noqa: E402
 TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
 OUT = REPO / "results/yolo_2x2_distributed_repo_minindn"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
+MININDN_ROOT = Path("/tm/MININDN")
 
 
 class Args(SimpleNamespace):
@@ -118,7 +119,7 @@ def main() -> None:
         }
         homes = {}
         for host_name, identity in identities.items():
-            home = Path("/tmp/minindn") / host_name
+            home = MININDN_ROOT / host_name
             ndn_dir = home / ".ndn"
             subprocess.run(["rm", "-rf", str(ndn_dir)], check=False)
             ndn_dir.mkdir(parents=True, exist_ok=True)
@@ -207,7 +208,7 @@ def main() -> None:
             base + perf.shell_quote(PY_DIR / "repo_node.py") +
             " --provider-id repoA --repo-node /example/hello/provider/repoA "
             "--failure-domain rack-a "
-            "--storage-dir /tmp/minindn/ucla/repo-store "
+            f"--storage-dir {MININDN_ROOT}/ucla/repo-store "
             "--advertise-stored-prefixes",
         )
         start(
@@ -216,7 +217,7 @@ def main() -> None:
             base + perf.shell_quote(PY_DIR / "repo_node.py") +
             " --provider-id repoB --repo-node /example/hello/provider/repoB "
             "--failure-domain rack-b "
-            "--storage-dir /tmp/minindn/wustl/repo-store "
+            f"--storage-dir {MININDN_ROOT}/wustl/repo-store "
             "--advertise-stored-prefixes",
         )
         start(
@@ -225,7 +226,7 @@ def main() -> None:
             base + perf.shell_quote(PY_DIR / "repo_node.py") +
             " --provider-id repoC --repo-node /example/hello/provider/repoC "
             "--failure-domain rack-c "
-            "--storage-dir /tmp/minindn/uiuc/repo-store "
+            f"--storage-dir {MININDN_ROOT}/uiuc/repo-store "
             "--advertise-stored-prefixes",
         )
         time.sleep(15.0)
