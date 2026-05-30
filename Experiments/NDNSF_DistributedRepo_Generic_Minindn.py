@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml  # type: ignore
 
 REPO = Path(__file__).resolve().parents[1]
+MININDN_ROOT = Path("/tmp/minindn")
 sys.path.insert(0, str(REPO / "Experiments"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
@@ -140,7 +141,7 @@ def main() -> None:
         }
         homes = {}
         for host_name, identity in identities.items():
-            home = Path("/tmp/minindn") / host_name
+            home = MININDN_ROOT / host_name
             ndn_dir = home / ".ndn"
             subprocess.run(["rm", "-rf", str(ndn_dir)], check=False)
             ndn_dir.mkdir(parents=True, exist_ok=True)
@@ -325,7 +326,7 @@ def main() -> None:
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoA --repo-node /example/repo/provider/repoA "
             "--failure-domain rack-a "
-            "--storage-dir /tmp/minindn/ucla/repo-store "
+            f"--storage-dir {MININDN_ROOT}/ucla/repo-store "
             "--advertise-stored-prefixes",
         )
         start(
@@ -334,7 +335,7 @@ def main() -> None:
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoB --repo-node /example/repo/provider/repoB "
             "--failure-domain rack-b "
-            "--storage-dir /tmp/minindn/wustl/repo-store "
+            f"--storage-dir {MININDN_ROOT}/wustl/repo-store "
             "--advertise-stored-prefixes",
         )
         start(
@@ -343,7 +344,7 @@ def main() -> None:
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoC --repo-node /example/repo/provider/repoC "
             "--failure-domain rack-c "
-            "--storage-dir /tmp/minindn/uiuc/repo-store "
+            f"--storage-dir {MININDN_ROOT}/uiuc/repo-store "
             "--advertise-stored-prefixes",
         )
         time.sleep(25.0)

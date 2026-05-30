@@ -395,7 +395,7 @@ Then run:
 ```
 
 The output will be saved in the file `filename.log` in the current directory.
-If you're using MiniNDN, the output will be stored under `/tm/MININDN/<nodeName>`.
+If you're using MiniNDN, the output will be stored under `/tmp/minindn/<nodeName>`.
 
 3.9 MiniNDN latency reproduction profile
 

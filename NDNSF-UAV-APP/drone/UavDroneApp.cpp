@@ -1003,7 +1003,7 @@ main(int argc, char** argv)
     const bool available = !hasFlag(argc, argv, "--unavailable");
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string videoPath = getOption(argc, argv, "--video-source",
-                                            "/home/tianxing/NDN/drone.mp4");
+                                            "NDNSF-UAV-APP/videos/demo.mp4");
 
     auto runtime = std::make_unique<DroneRuntime>(droneId, available, serveCertificates, videoPath);
     runtime->start();
