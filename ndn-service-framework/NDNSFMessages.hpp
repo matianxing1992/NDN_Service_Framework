@@ -75,6 +75,7 @@ namespace tlv {
         // normal ACK/Selection phase because the requester already names the
         // intended provider.
         TargetedRequest = 1,
+        TargetedBootstrapRequest = 2,
         DirectRequest = TargetedRequest,
     };
 
@@ -99,6 +100,7 @@ public:
 
     void setTokens(const std::map<std::string, std::string>& tokens);
     void setUserToken(const std::string& userToken);
+    void setProviderToken(const std::string& providerToken);
     void setPayload(ndn::Buffer& payload, size_t size);
     // FirstResponding = 0, RandomSelection = 1, AllSelected = 2.
     void setStrategy(size_t strategy);
@@ -107,6 +109,7 @@ public:
     void setPolicyEpoch(size_t policyEpoch);
     const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
+    const std::string& getProviderToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
     size_t getStrategy() const;
@@ -120,6 +123,7 @@ public:
 private:
     std::map<std::string, std::string> tokens_;
     std::string userToken_;
+    std::string providerToken_;
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
     size_t strategy_ = tlv::FirstResponding;
@@ -135,11 +139,13 @@ public:
 
     void setStatus(bool status);
     void setErrorInfo(const std::string& errorInfo);
+    void setTokens(const std::map<std::string, std::string>& tokens);
     void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
     void setPolicyEpoch(size_t policyEpoch);
     bool getStatus() const;
     const std::string& getErrorInfo() const;
+    const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
@@ -151,6 +157,7 @@ public:
 private:
     bool status_;
     std::string errorInfo_;
+    std::map<std::string, std::string> tokens_;
     std::string userToken_;
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;

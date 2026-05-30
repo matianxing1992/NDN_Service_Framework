@@ -787,6 +787,12 @@ namespace ndn_service_framework{
                 std::map<std::string, ndn::Buffer> collaborationAssignments;
             };
 
+            struct TargetedTokenPair
+            {
+                std::string providerToken;
+                std::string userToken;
+            };
+
             struct PendingCallTraceRecord
             {
                 uint64_t createdAtUs = 0;
@@ -858,6 +864,18 @@ namespace ndn_service_framework{
                                       const ndn::Name& name);
 
             static ndn::Name selectRandomProvider(const std::vector<ndn::Name>& providers);
+
+            bool hasUserPermissionForProvider(const ndn::Name& providerName,
+                                              const ndn::Name& serviceName) const;
+            static std::string makeTargetedTokenPoolKey(
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName);
+            bool popTargetedTokenPair(const ndn::Name& providerName,
+                                      const ndn::Name& serviceName,
+                                      TargetedTokenPair& pair);
+            void storeTargetedTokenPairs(const ndn::Name& providerName,
+                                         const ndn::Name& serviceName,
+                                         const ndn_service_framework::ResponseMessage& responseMessage);
 
             static const StoredAck* findStoredAck(
                 const PendingCall& pendingCall,
@@ -940,6 +958,7 @@ namespace ndn_service_framework{
             std::mutex svs_mutex;
 
             std::map<ndn::Name, PendingCall> m_pendingCalls;
+            std::map<std::string, std::deque<TargetedTokenPair>> m_targetedTokenPools;
             std::map<ndn::Name, std::map<std::string, uint64_t>>
                 m_recentAckProvidersByService;
             std::map<ndn::Name, PendingCallTraceRecord> m_pendingCallTraceHistory;

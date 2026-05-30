@@ -2603,6 +2603,79 @@ namespace ndn_service_framework
         return requestId;
     }
 
+    bool ServiceUser::hasUserPermissionForProvider(
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName) const
+    {
+        if (providerName.empty() || serviceName.empty()) {
+            return false;
+        }
+        const ndn::Name providerServiceName =
+            makePermissionFullServiceName(providerName, serviceName);
+        return UPT.queryPermission(providerServiceName.toUri(),
+                                   serviceName.toUri()).has_value();
+    }
+
+    std::string ServiceUser::makeTargetedTokenPoolKey(
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName)
+    {
+        return providerName.toUri() + "|" + serviceName.toUri();
+    }
+
+    bool ServiceUser::popTargetedTokenPair(const ndn::Name& providerName,
+                                           const ndn::Name& serviceName,
+                                           TargetedTokenPair& pair)
+    {
+        auto poolIt =
+            m_targetedTokenPools.find(makeTargetedTokenPoolKey(providerName, serviceName));
+        if (poolIt == m_targetedTokenPools.end() || poolIt->second.empty()) {
+            return false;
+        }
+        pair = poolIt->second.front();
+        poolIt->second.pop_front();
+        if (poolIt->second.empty()) {
+            m_targetedTokenPools.erase(poolIt);
+        }
+        return !pair.providerToken.empty() && !pair.userToken.empty();
+    }
+
+    void ServiceUser::storeTargetedTokenPairs(
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn_service_framework::ResponseMessage& responseMessage)
+    {
+        if (providerName.empty() || serviceName.empty() || !responseMessage.getStatus()) {
+            return;
+        }
+
+        auto& pool =
+            m_targetedTokenPools[makeTargetedTokenPoolKey(providerName, serviceName)];
+        const auto& tokens = responseMessage.getTokens();
+        size_t stored = 0;
+        for (size_t i = 0; i < 64; ++i) {
+            const auto providerKey = "targeted." + std::to_string(i) + ".provider";
+            const auto userKey = "targeted." + std::to_string(i) + ".user";
+            auto providerIt = tokens.find(providerKey);
+            auto userIt = tokens.find(userKey);
+            if (providerIt == tokens.end() || userIt == tokens.end()) {
+                continue;
+            }
+            if (providerIt->second.empty() || userIt->second.empty()) {
+                continue;
+            }
+            pool.push_back(TargetedTokenPair{providerIt->second, userIt->second});
+            ++stored;
+        }
+        if (stored > 0) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=TARGETED_TOKEN_BATCH_STORED timestamp_us="
+                      << nowMicroseconds()
+                      << " providerName=" << providerName.toUri()
+                      << " serviceName=" << serviceName.toUri()
+                      << " count=" << stored);
+        }
+    }
+
     ndn::Name ServiceUser::RequestService(const PreparedServiceRequest& ctx,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int timeoutMs,
@@ -2669,9 +2742,27 @@ namespace ndn_service_framework
         if (provider.empty()) {
             return ndn::Name();
         }
+        if (!hasUserPermissionForProvider(provider, serviceName)) {
+            NDN_LOG_ERROR("Reject targeted request without user permission provider="
+                          << provider.toUri()
+                          << " serviceName=" << serviceName.toUri());
+            return ndn::Name();
+        }
 
         const ndn::Name requestId = makeRequestId();
-        requestMessage.setRequestMode(ndn_service_framework::tlv::TargetedRequest);
+        TargetedTokenPair tokenPair;
+        const bool hasCachedTargetedToken =
+            !m_useTokens || popTargetedTokenPair(provider, serviceName, tokenPair);
+        if (hasCachedTargetedToken) {
+            requestMessage.setRequestMode(ndn_service_framework::tlv::TargetedRequest);
+            if (m_useTokens) {
+                requestMessage.setUserToken(tokenPair.userToken);
+                requestMessage.setProviderToken(tokenPair.providerToken);
+            }
+        }
+        else {
+            requestMessage.setRequestMode(ndn_service_framework::tlv::TargetedBootstrapRequest);
+        }
         requestMessage.setTargetProvider(provider);
         requestMessage.setStrategy(ndn_service_framework::tlv::FirstResponding);
 
@@ -2684,7 +2775,7 @@ namespace ndn_service_framework
         pendingCall.createdAtUs = nowMicroseconds();
         pendingCall.timeoutHandler = std::move(onTimeout);
         pendingCall.responseHandler = std::move(onResponseHandler);
-        pendingCall.directMode = true;
+        pendingCall.directMode = hasCachedTargetedToken;
         addUniqueName(pendingCall.expectedResponseProviders, provider);
         m_pendingCalls[requestId] = std::move(pendingCall);
 
@@ -2693,14 +2784,15 @@ namespace ndn_service_framework
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << provider.toUri()
-                  << " serviceName=" << serviceName.toUri());
+                  << " serviceName=" << serviceName.toUri()
+                  << " fastPath=" << hasCachedTargetedToken);
         if (m_timelineTrace) {
             logTimelineTrace("user", "targeted_request_created", requestId,
                              {{"serviceName", serviceName.toUri()},
                               {"providerName", provider.toUri()}});
         }
 
-        admitOrQueuePendingCall(requestId, false, false);
+        admitOrQueuePendingCall(requestId, !hasCachedTargetedToken, false);
         return requestId;
     }
 
@@ -3188,10 +3280,21 @@ namespace ndn_service_framework
                           << " provider=" << providerName.toUri());
             return false;
         }
+        if (pendingCall->second.directMode &&
+            !hasUserPermissionForProvider(providerName, pendingCall->second.serviceName)) {
+            NDN_LOG_ERROR("Reject targeted response from provider without user permission requestId="
+                          << requestId.toUri()
+                          << " provider=" << providerName.toUri()
+                          << " serviceName=" << pendingCall->second.serviceName.toUri());
+            return false;
+        }
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_DONE timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri());
+        storeTargetedTokenPairs(providerName,
+                                pendingCall->second.serviceName,
+                                responseMessage);
         pendingCall->second.responseValidatedAtUs = nowMicroseconds();
         handleResponse(requestId, providerName, responseMessage);
         return true;
@@ -5016,8 +5119,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
         const bool handledByPendingCall = handleRequestAckByName(ackName, AckMessage);
         if (FunctionName.empty()) {
             if (!handledByPendingCall) {
-                NDN_LOG_INFO("V2 ACK did not update pending call state for requestID: "
-                             << requestID.toUri());
+                NDN_LOG_DEBUG("V2 ACK did not update pending call state for requestID: "
+                              << requestID.toUri());
             }
             return;
         }

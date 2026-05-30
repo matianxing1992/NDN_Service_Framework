@@ -70,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-stop-seconds", type=int, default=10)
+    parser.add_argument("--auto-start-delay-ms", type=int, default=3000,
+                        help="Delay before auto video start; useful for reproducing early manual clicks.")
     parser.add_argument("--no-cli", action="store_true",
                         help="Do not open the MiniNDN CLI; wait until interrupted.")
     parser.add_argument("--no-xhost", action="store_true",
@@ -128,8 +130,11 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
         "NDN_CLIENT_CONF": str(client_conf),
         "NDN_CLIENT_TRANSPORT": f"unix:///run/nfd/{node_name}.sock",
         "NDN_LOG": os.environ.get(
-            "NDN_LOG",
-            "ndn_service_framework.*=INFO:nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN",
+            "NDNSF_APP_NDN_LOG",
+            os.environ.get(
+                "NDN_LOG",
+                "ndn_service_framework.*=INFO:nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN",
+            ),
         ),
         "NDNSF_DISABLE_NDNSD": os.environ.get("NDNSF_DISABLE_NDNSD", "1"),
         "NDNSF_SVS_MAX_SUPPRESSION_MS": os.environ.get("NDNSF_SVS_MAX_SUPPRESSION_MS", "1"),
@@ -404,7 +409,11 @@ def main() -> int:
             "--video-width", str(args.video_width),
         ]
         if args.auto_video_test:
-            gs_argv += ["--auto-video-test", "--auto-stop-seconds", str(args.auto_stop_seconds)]
+            gs_argv += [
+                "--auto-video-test",
+                "--auto-stop-seconds", str(args.auto_stop_seconds),
+                "--auto-start-delay-ms", str(args.auto_start_delay_ms),
+            ]
         if args.auto_patrol_test:
             gs_argv += [
                 "--auto-patrol-test",

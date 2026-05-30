@@ -195,7 +195,8 @@ user.RequestService<ObjectDetectionRequest, ObjectDetectionResponse>(
 For known-provider low-latency commands, such as UAV flight-control/MAVLink
 execution, use targeted invocation. Targeted invocation still uses NDNSF
 `RequestMessage`/`ResponseMessage`, signing, permission checks, one-time token
-checks, and replay protection, but skips the normal ACK/Selection phase:
+checks, and replay protection. It skips the normal ACK/Selection phase only
+after a token batch has been bootstrapped for that provider/service:
 
 ```cpp
 provider.addTargetedService(
@@ -213,6 +214,25 @@ user.RequestServiceTargeted<MavlinkCommand, MavlinkResult>(
 
 `RequestServiceDirect(...)` and `addDirectService(...)` remain compatibility
 aliases, but new code should use the more precise `Targeted` terminology.
+
+Security model for Targeted invocation:
+
+```text
+First call or token refill:
+  TargetedBootstrapRequest -> ACK -> SELECTION -> RESPONSE
+  The provider response includes a batch of future one-time token pairs.
+
+Fast path while cached token pairs remain:
+  REQUEST -> RESPONSE
+  The request carries one unused ProviderToken.
+  The response echoes the paired UserToken.
+  The provider consumes the ProviderToken before executing the handler.
+```
+
+This keeps known-provider commands low-latency without losing provider
+authorization or replay resistance. When the cached token pool is exhausted,
+the next `RequestServiceTargeted(...)` call automatically uses the bootstrap
+flow again.
 
 `RequestT` and `ResponseT` only need protobuf-like methods:
 
@@ -399,6 +419,10 @@ Authorization:
   Users reject ACK/response UserToken mismatches.
   Providers reject selection ProviderToken mismatches.
   Providers reject replayed ProviderTokens for consumed or new request IDs.
+  Targeted fast-path requests carry one unused ProviderToken obtained from a
+  prior targeted bootstrap/refill response, and targeted responses echo the
+  paired UserToken.
+  Targeted services refill token batches through the normal ACK/Selection path.
   Providers must install their own provider permission before serving a service.
   Service authorization is enforced by NAC-ABE attributes, provider permission checks, and token handshake validation.
 ```

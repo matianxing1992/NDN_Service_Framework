@@ -571,8 +571,10 @@ private:
     while (!m_done.load()) {
       if (!m_streaming.load()) {
         pipe.reset();
-        std::lock_guard<std::mutex> guard(m_mutex);
-        m_jpegBuffer.clear();
+        {
+          std::lock_guard<std::mutex> guard(m_mutex);
+          m_jpegBuffer.clear();
+        }
         std::this_thread::sleep_for(50ms);
         continue;
       }

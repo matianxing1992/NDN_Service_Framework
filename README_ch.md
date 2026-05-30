@@ -180,7 +180,8 @@ user.RequestService<ObjectDetectionRequest, ObjectDetectionResponse>(
 对于已经知道目标 provider 的低延迟命令，例如 UAV flight-control/MAVLink
 执行，使用 targeted invocation。Targeted invocation 仍然使用 NDNSF 的
 `RequestMessage`/`ResponseMessage`、签名、权限检查、一次性 token 检查和
-replay 防护，只是跳过普通 ACK/Selection 阶段：
+replay 防护。它只有在这个 provider/service 已经 bootstrap 出一批 token pair
+之后，才跳过普通 ACK/Selection 阶段：
 
 ```cpp
 provider.addTargetedService(
@@ -198,6 +199,24 @@ user.RequestServiceTargeted<MavlinkCommand, MavlinkResult>(
 
 `RequestServiceDirect(...)` 和 `addDirectService(...)` 保留为兼容别名，但新代码
 应使用语义更准确的 `Targeted` 术语。
+
+Targeted invocation 的安全模型：
+
+```text
+第一次调用或 token 用完后的 refill:
+  TargetedBootstrapRequest -> ACK -> SELECTION -> RESPONSE
+  provider 的 response 会带回一批后续使用的一次性 token pair。
+
+有缓存 token pair 时的 fast path:
+  REQUEST -> RESPONSE
+  request 携带一个没用过的 ProviderToken。
+  response 回显与之配对的 UserToken。
+  provider 在执行 handler 前消费这个 ProviderToken。
+```
+
+这样已知 provider 的控制命令仍然可以低延迟执行，同时不丢失 provider
+authorization 和 replay resistance。缓存 token pool 用完后，下一次
+`RequestServiceTargeted(...)` 会自动重新走 bootstrap/refill 流程。
 
 `RequestT` 和 `ResponseT` 只需要提供类似 protobuf 的方法：
 
@@ -359,6 +378,10 @@ Authorization:
   Users reject ACK/response UserToken mismatches.
   Providers reject selection ProviderToken mismatches.
   Providers reject replayed ProviderTokens for consumed or new request IDs.
+  Targeted fast-path requests carry one unused ProviderToken obtained from a
+  prior targeted bootstrap/refill response, and targeted responses echo the
+  paired UserToken.
+  Targeted services refill token batches through the normal ACK/Selection path.
   Providers must install their own provider permission before serving a service.
   Service authorization is enforced by NAC-ABE attributes, provider permission checks, and token handshake validation.
 ```

@@ -7,6 +7,7 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
 
 #include <algorithm>
@@ -99,6 +100,19 @@ makeRsaIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
 {
   auto id = keyChain.createIdentity(identity, ndn::RsaKeyParams(2048));
   return id.getDefaultKey().getDefaultCertificate();
+}
+
+std::string
+makeProviderTokenHashForTest(const ndn::Name& requesterName,
+                             const ndn::Name& serviceName,
+                             const std::string& providerToken)
+{
+  ndn::util::Sha256 digest;
+  digest << "TARGETED";
+  digest << requesterName.toUri();
+  digest << serviceName.toUri();
+  digest << providerToken;
+  return digest.toString();
 }
 
 class LocalServiceUser : public ServiceUser
@@ -236,6 +250,29 @@ public:
   }
 
   void
+  addTargetedTokenPairForTest(const ndn::Name& providerName,
+                              const ndn::Name& serviceName,
+                              const std::string& providerToken,
+                              const std::string& userToken)
+  {
+    m_targetedTokenPools[
+      makeTargetedTokenPoolKey(providerName, serviceName)].push_back(
+        TargetedTokenPair{providerToken, userToken});
+  }
+
+  size_t
+  getTargetedTokenPoolSizeForTest(const ndn::Name& providerName,
+                                  const ndn::Name& serviceName) const
+  {
+    const auto poolIt =
+      m_targetedTokenPools.find(makeTargetedTokenPoolKey(providerName, serviceName));
+    if (poolIt == m_targetedTokenPools.end()) {
+      return 0;
+    }
+    return poolIt->second.size();
+  }
+
+  void
   setPendingResponseHandlerForTest(const ndn::Name& requestId,
                                    ResponseHandler responseHandler)
   {
@@ -321,6 +358,19 @@ public:
     key.append(serviceName).append(requestId);
     std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
     return pendingProviderTokens.find(key) != pendingProviderTokens.end();
+  }
+
+  void
+  addTargetedProviderTokenForTest(const ndn::Name& requesterName,
+                                  const ndn::Name& serviceName,
+                                  const std::string& providerToken,
+                                  const std::string& userToken)
+  {
+    const auto tokenHash =
+      makeProviderTokenHashForTest(requesterName, serviceName, providerToken);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+    m_targetedProviderTokens[tokenHash] =
+      TargetedProviderTokenState{requesterName, serviceName, userToken};
   }
 };
 
