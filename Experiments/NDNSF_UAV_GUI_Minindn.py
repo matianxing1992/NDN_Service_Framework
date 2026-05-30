@@ -34,6 +34,11 @@ APP_CONTROLLER = REPO / "build/examples/App_ServiceController"
 APP_DRONE = REPO / "build/examples/UavDroneApp"
 APP_GS = REPO / "build/examples/UavGroundStationApp"
 POLICY = REPO / "NDNSF-UAV-APP/configs/uav_demo.policies"
+CONTROLLER_READY_MARKERS = [
+    "ServiceController started...",
+    "ServiceController started",
+    "App_ServiceController started",
+]
 
 
 def log(message: str) -> None:
@@ -90,7 +95,6 @@ def write_node_client_conf(home: Path, node_name: str) -> Path:
 def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, str]:
     client_conf = write_node_client_conf(home, node_name)
     env = {
-        "LD_LIBRARY_PATH": f"{REPO / 'build'}:{os.environ.get('LD_LIBRARY_PATH', '')}",
         "HOME": str(home),
         "NDN_CLIENT_CONF": str(client_conf),
         "NDN_CLIENT_TRANSPORT": f"unix:///run/nfd/{node_name}.sock",
@@ -109,9 +113,22 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
         "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK": os.environ.get(
             "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK", "1"),
     }
+    # Keep caller-provided runtime search path if present; avoid forcing REPO/build,
+    # which can pick up stale incompatible shared objects inside this repo.
+    if os.environ.get("LD_LIBRARY_PATH"):
+        env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
     for name in ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"):
         if os.environ.get(name):
             env[name] = os.environ[name]
+
+    # AddressSanitizer can report false new-delete mismatches from gtkmm/glibmm in
+    # some GUI stacks. Keep ASAN checks but disable this specific check for the app.
+    asan_options = os.environ.get("ASAN_OPTIONS", "")
+    if "new_delete_type_mismatch=0" not in asan_options:
+        env["ASAN_OPTIONS"] = (
+            asan_options + "," if asan_options else ""
+        ) + "new_delete_type_mismatch=0"
+
     return env
 
 
@@ -241,14 +258,36 @@ def stop(processes) -> None:
         log_file.close()
 
 
-def wait_log(path: Path, needle: str, timeout_s: float, proc=None) -> bool:
+def read_tail(path: Path, lines: int = 120) -> str:
+    if not path.exists():
+        return ""
+    return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
+
+
+def wait_log_any(path: Path, needles: list[str], timeout_s: float, proc=None) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         if proc is not None and proc.poll() is not None:
             return False
-        if path.exists() and needle in path.read_text(errors="replace"):
-            return True
+        if path.exists():
+            text = path.read_text(errors="replace")
+            if any(needle in text for needle in needles):
+                return True
         time.sleep(0.2)
+    return False
+
+
+def wait_log(path: Path, needle: str, timeout_s: float, proc=None) -> bool:
+    return wait_log_any(path, [needle], timeout_s, proc=proc)
+
+
+def wait_for_nfd_socket(node_name: str, timeout_s: float = 3.0) -> bool:
+    socket_path = Path(f"/run/nfd/{node_name}.sock")
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if socket_path.exists():
+            return True
+        time.sleep(0.1)
     return False
 
 
@@ -291,10 +330,19 @@ def main() -> int:
             "--controller-prefix", "/example/uav/controller",
             "--policy-file", str(POLICY.relative_to(REPO)),
         ])
-        _, controller_log = start(ndn.net[args.controller_node], "controller",
-                                  controller_cmd, controller_env, output_dir, processes)
-        if not wait_log(controller_log, "ServiceController started", 20):
-            raise RuntimeError(f"controller did not start; see {controller_log}")
+        if not wait_for_nfd_socket(args.controller_node, 5):
+            raise RuntimeError(
+                f"NFD socket for controller node not ready: /run/nfd/{args.controller_node}.sock"
+            )
+        controller_proc, controller_log = start(
+            ndn.net[args.controller_node], "controller",
+            controller_cmd, controller_env, output_dir, processes
+        )
+        if not wait_log_any(controller_log, CONTROLLER_READY_MARKERS, 20, proc=controller_proc):
+            raise RuntimeError(
+                f"controller did not start (proc={controller_proc.pid}, rc={controller_proc.poll()}); "
+                f"see {controller_log}\n--- tail ---\n{read_tail(controller_log)}"
+            )
 
         drone_cmd = app_cmd(APP_DRONE, [
             "--drone-id", args.drone_id,
