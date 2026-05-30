@@ -725,6 +725,13 @@ namespace ndn_service_framework{
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
             std::map<ndn::Name,std::string> pendingProviderTokens;
+            std::set<ndn::Name> m_recentProviderRequests;
+            std::set<ndn::Name> m_selectedProviderRequests;
+            std::map<ndn::Name, std::string> m_pendingRequestTokenHashes;
+            std::map<ndn::Name, std::string> m_selectedProviderTokenHashes;
+            std::set<std::string> m_recentProviderRequestTokenHashes;
+            std::set<std::string> m_consumedProviderTokenHashes;
+            mutable std::mutex m_pendingRequestMutex;
             std::map<ndn::Name, RegisteredCollaborationService> m_collaborationServices;
             std::map<ndn::Name, std::vector<CollaborationData>> m_collaborationDataByRequest;
             std::map<ndn::Name, std::map<KeyScope, ndn::Buffer>> m_collaborationScopeKeysByRequest;

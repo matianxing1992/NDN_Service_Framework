@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include <ndn-cxx/security/validation-error.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -76,6 +77,23 @@ namespace ndn_service_framework
                            [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
             return !(text.empty() || text == "0" || text == "false" ||
                      text == "no" || text == "off");
+        }
+
+        std::string
+        replayTokenHash(const std::string& scope,
+                        const ndn::Name& peer,
+                        const ndn::Name& serviceName,
+                        const std::string& token)
+        {
+            if (token.empty()) {
+                return "";
+            }
+            ndn::util::Sha256 digest;
+            digest << scope;
+            digest << peer.toUri();
+            digest << serviceName.toUri();
+            digest << token;
+            return digest.toString();
         }
 
         int
@@ -1114,6 +1132,7 @@ namespace ndn_service_framework
 
     size_t ServiceProvider::getPendingRequestCountForTesting() const
     {
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         return pendingRequests.size();
     }
 
@@ -1124,6 +1143,7 @@ namespace ndn_service_framework
 
     size_t ServiceProvider::getPendingProviderTokenCountForTesting() const
     {
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         return pendingProviderTokens.size();
     }
 
@@ -1467,7 +1487,9 @@ namespace ndn_service_framework
                 decision.message.empty() ? "ACK suppressed" : decision.message);
             return;
         }
+        std::string providerToken;
         if (decision.status) {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
             pendingRequests[pendingKey] =
                 std::make_shared<RequestMessage>(requestMessage);
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PENDING_REQUEST_STORED timestamp_us="
@@ -1477,12 +1499,16 @@ namespace ndn_service_framework
                       << " serviceName=" << serviceName.toUri()
                       << " pendingKey=" << pendingKey.toUri());
             schedulePendingRequestCleanup(pendingKey);
-        }
-
-        const std::string providerToken =
-            (m_useTokens && decision.status) ? makeOneTimeToken() : "";
-        if (m_useTokens && decision.status) {
-            pendingProviderTokens[pendingKey] = providerToken;
+            if (m_useTokens) {
+                auto tokenIt = pendingProviderTokens.find(pendingKey);
+                if (tokenIt != pendingProviderTokens.end()) {
+                    providerToken = tokenIt->second;
+                }
+                else {
+                    providerToken = makeOneTimeToken();
+                    pendingProviderTokens[pendingKey] = providerToken;
+                }
+            }
         }
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=ACK_DECISION timestamp_us="
                   << nowMicroseconds()
@@ -2928,6 +2954,7 @@ namespace ndn_service_framework
     void ServiceProvider::cleanupPendingRequestState(const ndn::Name& pendingKey)
     {
         ++m_cleanupInvocationCount;
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PENDING_CLEANUP timestamp_us="
                   << nowMicroseconds()
                   << " providerName=" << identity.toUri()
@@ -2935,31 +2962,63 @@ namespace ndn_service_framework
                   << " hadRequest=" << (pendingRequests.find(pendingKey) != pendingRequests.end())
                   << " hadProviderToken="
                   << (pendingProviderTokens.find(pendingKey) != pendingProviderTokens.end()));
+        auto tokenHashIt = m_pendingRequestTokenHashes.find(pendingKey);
+        if (tokenHashIt != m_pendingRequestTokenHashes.end()) {
+            m_recentProviderRequestTokenHashes.erase(tokenHashIt->second);
+            m_pendingRequestTokenHashes.erase(tokenHashIt);
+        }
         pendingRequests.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
+        m_recentProviderRequests.erase(pendingKey);
+        m_selectedProviderRequests.erase(pendingKey);
+        auto selectedTokenHashIt = m_selectedProviderTokenHashes.find(pendingKey);
+        if (selectedTokenHashIt != m_selectedProviderTokenHashes.end()) {
+            m_consumedProviderTokenHashes.erase(selectedTokenHashIt->second);
+            m_selectedProviderTokenHashes.erase(selectedTokenHashIt);
+        }
     }
 
     bool ServiceProvider::expirePendingRequestState(const ndn::Name& pendingKey)
     {
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         const bool hadRequest = pendingRequests.find(pendingKey) != pendingRequests.end();
         const bool hadToken = pendingProviderTokens.find(pendingKey) != pendingProviderTokens.end();
-        if (!hadRequest && !hadToken) {
+        const bool hadRecent = m_recentProviderRequests.find(pendingKey) != m_recentProviderRequests.end();
+        const bool hadRequestToken = m_pendingRequestTokenHashes.find(pendingKey) !=
+                                     m_pendingRequestTokenHashes.end();
+        if (!hadRequest && !hadToken && !hadRecent && !hadRequestToken) {
             return false;
         }
+        ++m_cleanupInvocationCount;
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PENDING_EXPIRED timestamp_us="
                   << nowMicroseconds()
                   << " providerName=" << identity.toUri()
                   << " pendingKey=" << pendingKey.toUri()
                   << " hadRequest=" << hadRequest
-                  << " hadProviderToken=" << hadToken);
+                  << " hadProviderToken=" << hadToken
+                  << " hadRecent=" << hadRecent
+                  << " hadRequestToken=" << hadRequestToken);
         if (!pendingKey.empty()) {
             updateProviderRequestLifecycleState(
                 ndn::Name(pendingKey[-1].toUri()),
                 ndn::Name(),
                 ProviderRequestLifecycleState::PROVIDER_REQUEST_EXPIRED);
         }
-        cleanupPendingRequestState(pendingKey);
+        auto tokenHashIt = m_pendingRequestTokenHashes.find(pendingKey);
+        if (tokenHashIt != m_pendingRequestTokenHashes.end()) {
+            m_recentProviderRequestTokenHashes.erase(tokenHashIt->second);
+            m_pendingRequestTokenHashes.erase(tokenHashIt);
+        }
+        pendingRequests.erase(pendingKey);
+        pendingProviderTokens.erase(pendingKey);
+        m_recentProviderRequests.erase(pendingKey);
+        m_selectedProviderRequests.erase(pendingKey);
+        auto selectedTokenHashIt = m_selectedProviderTokenHashes.find(pendingKey);
+        if (selectedTokenHashIt != m_selectedProviderTokenHashes.end()) {
+            m_consumedProviderTokenHashes.erase(selectedTokenHashIt->second);
+            m_selectedProviderTokenHashes.erase(selectedTokenHashIt);
+        }
         NDN_LOG_INFO("Expired pending provider request/token state for "
                      << pendingKey.toUri());
         return true;
@@ -3298,9 +3357,23 @@ namespace ndn_service_framework
                                                         ndn::time::milliseconds ttl)
     {
         m_scheduler.schedule(ttl, [this, pendingKey] {
-            const bool hadRequest = pendingRequests.find(pendingKey) != pendingRequests.end();
-            const bool hadToken = pendingProviderTokens.find(pendingKey) != pendingProviderTokens.end();
-            if (!hadRequest && !hadToken) {
+            bool hadRequest = false;
+            bool hadToken = false;
+            bool hadRecent = false;
+            {
+                std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                hadRequest = pendingRequests.find(pendingKey) != pendingRequests.end();
+                hadToken = pendingProviderTokens.find(pendingKey) != pendingProviderTokens.end();
+                hadRecent = m_recentProviderRequests.find(pendingKey) != m_recentProviderRequests.end();
+                hadRecent = hadRecent ||
+                            m_selectedProviderRequests.find(pendingKey) !=
+                                m_selectedProviderRequests.end() ||
+                            m_pendingRequestTokenHashes.find(pendingKey) !=
+                                m_pendingRequestTokenHashes.end() ||
+                            m_selectedProviderTokenHashes.find(pendingKey) !=
+                                m_selectedProviderTokenHashes.end();
+            }
+            if (!hadRequest && !hadToken && !hadRecent) {
                 return;
             }
             if (m_pendingRequestTimeoutGrace.count() <= 0) {
@@ -3998,6 +4071,28 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
     NDN_LOG_DEBUG("OnRequestDecryptionSuccessCallbackV2: Permission Granted to "
                  << requesterIdentity.toUri()
                  << " for " << serviceName.toUri());
+    const ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())
+                                    .append(serviceName)
+                                    .append(requestId);
+    const std::string requestTokenHash =
+        m_useTokens ? replayTokenHash("REQUEST", requesterIdentity,
+                                      serviceName, requestMessage.getUserToken()) : "";
+    {
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        if (m_recentProviderRequests.find(pendingKey) != m_recentProviderRequests.end() ||
+            (!requestTokenHash.empty() &&
+             m_recentProviderRequestTokenHashes.find(requestTokenHash) !=
+                 m_recentProviderRequestTokenHashes.end())) {
+            NDN_LOG_DEBUG("Ignore duplicate V2 request for " << pendingKey.toUri());
+            return;
+        }
+        m_recentProviderRequests.insert(pendingKey);
+        if (!requestTokenHash.empty()) {
+            m_recentProviderRequestTokenHashes.insert(requestTokenHash);
+            m_pendingRequestTokenHashes[pendingKey] = requestTokenHash;
+        }
+    }
+    schedulePendingRequestCleanup(pendingKey);
 
     if (hasService(serviceName) ||
         m_collaborationServices.find(serviceName) != m_collaborationServices.end()) {
@@ -4061,9 +4156,6 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
 
     NDN_LOG_INFO("No V2 dynamic handler for " << serviceName.toUri());
 
-    ndn::Name pendingKey = ndn::Name(requesterIdentity.toUri())
-                               .append(serviceName)
-                               .append(requestId);
     if (shouldSuppressAdaptiveAck(requesterIdentity, serviceName, requestId)) {
         PublishRequestAckMessageV2(requesterIdentity,
                                    serviceName,
@@ -4075,14 +4167,23 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                                    "");
         return;
     }
-    pendingRequests[pendingKey] =
-        std::make_shared<RequestMessage>(requestMessage);
-    schedulePendingRequestCleanup(pendingKey);
-
     std::string msg = "Permission Granted";
-    const std::string providerToken = m_useTokens ? makeOneTimeToken() : "";
-    if (m_useTokens) {
-        pendingProviderTokens[pendingKey] = providerToken;
+    std::string providerToken;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        pendingRequests[pendingKey] =
+            std::make_shared<RequestMessage>(requestMessage);
+        schedulePendingRequestCleanup(pendingKey);
+        if (m_useTokens) {
+            auto tokenIt = pendingProviderTokens.find(pendingKey);
+            if (tokenIt != pendingProviderTokens.end()) {
+                providerToken = tokenIt->second;
+            }
+            else {
+                providerToken = makeOneTimeToken();
+                pendingProviderTokens[pendingKey] = providerToken;
+            }
+        }
     }
     PublishRequestAckMessageV2(requesterIdentity,
                                serviceName,
@@ -4998,41 +5099,71 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     .append(serviceName)
                     .append(msgId);
 
-        auto it = pendingRequests.find(key);
-        if (it == pendingRequests.end()) {
-            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_NO_PENDING timestamp_us="
-                      << nowMicroseconds()
-                      << " requestId=" << msgId.toUri()
-                      << " serviceName=" << serviceName.toUri()
-                      << " requesterName=" << requesterName.toUri()
-                      << " providerName=" << providerName.toUri()
-                      << " pendingKey=" << key.toUri());
-            NDN_LOG_INFO("No pending V2 request for " << key.toUri());
-            return;
-        }
-
-        auto providerTokenIt = pendingProviderTokens.find(key);
         if (m_timelineTrace) {
             logTimelineTrace("provider", "provider_token_validate_start", msgId,
                              {{"serviceName", serviceName.toUri()}});
         }
-        if (m_useTokens &&
-            (providerTokenIt == pendingProviderTokens.end() ||
-             message.getProviderToken() != providerTokenIt->second)) {
-            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_REJECTED_PROVIDER_TOKEN timestamp_us="
-                      << nowMicroseconds()
-                      << " requestId=" << msgId.toUri()
-                      << " serviceName=" << serviceName.toUri()
-                      << " requesterName=" << requesterName.toUri()
-                      << " providerName=" << providerName.toUri()
-                      << " pendingKey=" << key.toUri()
-                      << " expectedTokenPresent="
-                      << (providerTokenIt != pendingProviderTokens.end())
-                      << " receivedTokenPresent="
-                      << !message.getProviderToken().empty());
-            NDN_LOG_ERROR("Reject V2 selection with mismatched ProviderToken for "
-                          << key.toUri());
-            return;
+        RequestMessage selectedRequest;
+        const std::string providerTokenHash =
+            m_useTokens ? replayTokenHash("SELECTION", requesterName,
+                                          serviceName, message.getProviderToken()) : "";
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            if (m_selectedProviderRequests.find(key) !=
+                    m_selectedProviderRequests.end() ||
+                (!providerTokenHash.empty() &&
+                 m_consumedProviderTokenHashes.find(providerTokenHash) !=
+                     m_consumedProviderTokenHashes.end())) {
+                NDN_LOG_DEBUG("Ignore replayed V2 selection for " << key.toUri());
+                return;
+            }
+            auto it = pendingRequests.find(key);
+            if (it == pendingRequests.end()) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_NO_PENDING timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << msgId.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " requesterName=" << requesterName.toUri()
+                          << " providerName=" << providerName.toUri()
+                          << " pendingKey=" << key.toUri());
+                NDN_LOG_INFO("No pending V2 request for " << key.toUri());
+                return;
+            }
+
+            auto providerTokenIt = pendingProviderTokens.find(key);
+            if (m_useTokens &&
+                (providerTokenIt == pendingProviderTokens.end() ||
+                 message.getProviderToken() != providerTokenIt->second)) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_REJECTED_PROVIDER_TOKEN timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << msgId.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " requesterName=" << requesterName.toUri()
+                          << " providerName=" << providerName.toUri()
+                          << " pendingKey=" << key.toUri()
+                          << " expectedTokenPresent="
+                          << (providerTokenIt != pendingProviderTokens.end())
+                          << " receivedTokenPresent="
+                          << !message.getProviderToken().empty());
+                NDN_LOG_ERROR("Reject V2 selection with mismatched ProviderToken for "
+                              << key.toUri());
+                return;
+            }
+            selectedRequest = *(it->second);
+            ++m_cleanupInvocationCount;
+            m_selectedProviderRequests.insert(key);
+            if (!providerTokenHash.empty()) {
+                m_consumedProviderTokenHashes.insert(providerTokenHash);
+                m_selectedProviderTokenHashes[key] = providerTokenHash;
+            }
+            auto requestTokenHashIt = m_pendingRequestTokenHashes.find(key);
+            if (requestTokenHashIt != m_pendingRequestTokenHashes.end()) {
+                m_recentProviderRequestTokenHashes.erase(requestTokenHashIt->second);
+                m_pendingRequestTokenHashes.erase(requestTokenHashIt);
+            }
+            pendingRequests.erase(it);
+            pendingProviderTokens.erase(key);
+            m_recentProviderRequests.erase(key);
         }
         if (m_timelineTrace) {
             logTimelineTrace("provider", "provider_token_validate_done", msgId,
@@ -5068,7 +5199,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 requestId, serviceName,
                 ProviderRequestLifecycleState::EXECUTION_STARTED);
             m_selectedOutstandingRequests.fetch_add(1, std::memory_order_relaxed);
-            RequestMessage requestCopy = *(it->second);
+            RequestMessage requestCopy = selectedRequest;
             if (collabService != m_collaborationServices.end()) {
                 auto assignment =
                     parseCollaborationAssignment(serviceName,
@@ -5102,8 +5233,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                               requestCopy,
                                               std::move(response));
         }
-
-        cleanupPendingRequestState(key);
     }
 
 

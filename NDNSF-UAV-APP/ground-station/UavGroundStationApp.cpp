@@ -232,20 +232,26 @@ public:
   void
   startVideo()
   {
+    if (m_streaming.load()) {
+      publishStatus("Video already streaming");
+      return;
+    }
+    if (m_videoStartInFlight.exchange(true)) {
+      publishStatus("Video start already pending");
+      return;
+    }
     m_seenVideoStart = false;
     startVideoAttempt();
-    std::thread([this] {
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-      if (!m_streaming.load() && !m_done.load()) {
-        publishStatus("Retrying video start");
-        startVideoAttempt();
-      }
-    }).detach();
   }
 
   void
   stopVideo()
   {
+    if (m_videoStopInFlight.exchange(true)) {
+      publishStatus("Video stop already pending");
+      return;
+    }
+    m_videoStartInFlight = false;
     m_streaming = false;
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
@@ -254,9 +260,20 @@ public:
     postRequest(droneVideoControlService(m_targetDroneId),
                 encodeFields({{"type", "video-control"}, {"action", "stop"}}),
                 [this](const std::string& payload) {
+                  m_videoStopInFlight = false;
                   const auto fields = decodeFields(payload);
                   publishStatus("Video stopped, frames=" + fieldOr(fields, "frames_published", "0"));
+                },
+                {},
+                [this] {
+                  m_videoStopInFlight = false;
                 });
+  }
+
+  bool
+  isStreaming() const
+  {
+    return m_streaming.load();
   }
 
 private:
@@ -284,10 +301,11 @@ private:
                   configurePrefetch(fields);
                   m_keyLane = PacketLane{};
                   m_deltaLane = PacketLane{"packet", 0, 0, 0, 0};
-                  m_videoPumpScheduled = false;
-                  m_streaming = true;
-                  m_seenVideoStart = true;
-                  m_firstFrameMs = 0;
+	                  m_videoPumpScheduled = false;
+	                  m_streaming = true;
+	                  m_seenVideoStart = true;
+	                  m_videoStartInFlight = false;
+	                  m_firstFrameMs = 0;
                   m_receivedChunks = 0;
                   m_frameNacks = 0;
                   m_frameTimeouts = 0;
@@ -301,9 +319,14 @@ private:
                   stopDecoder();
                   startDecoder();
                   publishStatus("Video packet stream from " + prefix);
-                  requestVideoPackets();
-                },
-                [this] { return m_seenVideoStart.load(); });
+	                  requestVideoPackets();
+	                },
+	                [this] { return m_seenVideoStart.load(); },
+	                [this] {
+	                  if (!m_seenVideoStart.load()) {
+	                    m_videoStartInFlight = false;
+	                  }
+	                });
   }
 
   void
@@ -319,13 +342,18 @@ private:
   void
   postRequest(const ndn::Name& service, const std::string& payload,
               std::function<void(std::string)> onSuccess,
-              std::function<bool()> ignoreTimeout = {})
+              std::function<bool()> ignoreTimeout = {},
+              std::function<void()> onTimeout = {})
   {
     m_face.getIoContext().post([this, service, payload,
                                 onSuccess = std::move(onSuccess),
-                                ignoreTimeout = std::move(ignoreTimeout)] {
+                                ignoreTimeout = std::move(ignoreTimeout),
+                                onTimeout = std::move(onTimeout)] {
       if (!m_runtimeReady.load() || !m_user) {
         publishStatus("NDNSF runtime not ready for " + service.toUri());
+        if (onTimeout) {
+          onTimeout();
+        }
         return;
       }
       auto requestMessage = makeRequest(payload);
@@ -336,9 +364,14 @@ private:
         m_ackTimeoutMs,
         ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
         m_timeoutMs,
-        [this, service, ignoreTimeout = std::move(ignoreTimeout)](const ndn::Name&) {
+        [this, service,
+         ignoreTimeout = std::move(ignoreTimeout),
+         onTimeout = std::move(onTimeout)](const ndn::Name&) {
           if (ignoreTimeout && ignoreTimeout()) {
             return;
+          }
+          if (onTimeout) {
+            onTimeout();
           }
           publishStatus("Timeout waiting for " + service.toUri());
         },
@@ -654,6 +687,9 @@ private:
     if (packet.fecSymbolIndex < state.dataShards) {
       insertChunkForDecode(packet.packetSeq, packet.payload, elapsedMs);
     }
+    if (state.complete) {
+      cleanupFecFrames();
+    }
   }
 
   void
@@ -672,7 +708,6 @@ private:
 
     if (receivedDataShards == state.dataShards) {
       state.complete = true;
-      cleanupFecFrames();
       return;
     }
 
@@ -1149,6 +1184,8 @@ private:
   std::atomic<bool> m_runtimeReady{false};
   std::atomic<bool> m_streaming{false};
   std::atomic<bool> m_seenVideoStart{false};
+  std::atomic<bool> m_videoStartInFlight{false};
+  std::atomic<bool> m_videoStopInFlight{false};
   std::atomic<uint64_t> m_firstFrameMs{0};
   std::atomic<uint64_t> m_receivedChunks{0};
   std::atomic<uint64_t> m_frameNacks{0};
@@ -1313,6 +1350,9 @@ public:
       std::thread([this, autoStopSeconds] {
         std::this_thread::sleep_for(std::chrono::seconds(3));
         m_runtime.startVideo();
+        for (int i = 0; i < 100 && !m_runtime.isStreaming(); ++i) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
         std::this_thread::sleep_for(std::chrono::seconds(autoStopSeconds));
         m_runtime.stopVideo();
         std::this_thread::sleep_for(std::chrono::seconds(1));

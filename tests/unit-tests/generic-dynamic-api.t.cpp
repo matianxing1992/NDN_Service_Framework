@@ -218,6 +218,13 @@ public:
   {
     m_pendingCalls[requestId].responseHandler = std::move(responseHandler);
   }
+
+  void
+  setPendingAckCandidatesHandlerForTest(const ndn::Name& requestId,
+                                        AckCandidatesHandler ackCandidatesHandler)
+  {
+    m_pendingCalls[requestId].ackCandidatesHandler = std::move(ackCandidatesHandler);
+  }
 };
 
 class LocalServiceProvider : public ServiceProvider
@@ -246,6 +253,7 @@ public:
   {
     ndn::Name key(requesterName);
     key.append(serviceName).append(requestId);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
     pendingRequests[key] = std::make_shared<RequestMessage>(requestMessage);
     pendingProviderTokens[key] = providerToken;
   }
@@ -277,6 +285,7 @@ public:
   {
     ndn::Name key(requesterName);
     key.append(serviceName).append(requestId);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
     return pendingRequests.find(key) != pendingRequests.end();
   }
 
@@ -287,6 +296,7 @@ public:
   {
     ndn::Name key(requesterName);
     key.append(serviceName).append(requestId);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
     return pendingProviderTokens.find(key) != pendingProviderTokens.end();
   }
 };
@@ -1728,6 +1738,95 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
 }
 
+BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
+{
+  ndn::Face face;
+  ndn::security::KeyChain keyChain("pib-memory:runtime-replay",
+                                   "tpm-memory:runtime-replay");
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name providerName("/test/provider/camera");
+  const ndn::Name serviceName("/HELLO");
+  const ndn::Name requestId("/request-replay");
+
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-runtime-replay"));
+
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  installPermissions(user, provider, requesterName, serviceName);
+
+  int ackHandlerCalls = 0;
+  int providerExecutions = 0;
+  provider.addService(
+    serviceName,
+    ServiceProvider::AckStrategyHandler([&] (const RequestMessage&) {
+      ++ackHandlerCalls;
+      ServiceProvider::AckDecision decision;
+      decision.status = true;
+      decision.message = "ready";
+      return decision;
+    }),
+    ServiceProvider::RequestHandler(
+      [&] (const ndn::Name&,
+           const ndn::Name&,
+           const ndn::Name&,
+           const ndn::Name&,
+           const RequestMessage&) {
+        ++providerExecutions;
+        ResponseMessage response;
+        response.setStatus(true);
+        return response;
+      }));
+
+  RequestMessage requestMessage = makeRequestMessageWithUserToken("hello");
+  auto requestBlock = requestMessage.WireEncode();
+  ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
+  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+                                                serviceName,
+                                                ndn::Name(),
+                                                requestId,
+                                                requestBuffer);
+  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+                                                serviceName,
+                                                ndn::Name(),
+                                                requestId,
+                                                requestBuffer);
+  BOOST_CHECK_EQUAL(ackHandlerCalls, 1);
+  BOOST_CHECK_EQUAL(providerExecutions, 0);
+  BOOST_CHECK(provider.hasPendingRequestForTokenTest(requesterName, serviceName, requestId));
+
+  user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
+  user.setPendingAckCandidatesHandlerForTest(
+    requestId,
+    [] (const std::vector<AckSelectionCandidate>& candidates) {
+      return candidates;
+    });
+  auto ack = makeSuccessAck();
+  ack.setUserToken("user-token");
+  ack.setProviderToken("provider-token");
+  const auto ackName = makeRequestAckNameV2(providerName, requesterName, serviceName, requestId);
+  BOOST_CHECK(user.handleRequestAckByName(ackName, ack));
+  BOOST_CHECK(!user.handleRequestAckByName(ackName, ack));
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 1);
+
+  int responseCallbacks = 0;
+  user.setPendingResponseHandlerForTest(requestId, [&] (const ResponseMessage&) {
+    ++responseCallbacks;
+  });
+  ResponseMessage response;
+  response.setStatus(true);
+  response.setUserToken("user-token");
+  const auto responseName = makeResponseNameV2(providerName, requesterName, serviceName, requestId);
+  BOOST_CHECK(user.handleDecryptedResponseByName(responseName, response));
+  BOOST_CHECK(!user.handleDecryptedResponseByName(responseName, response));
+  BOOST_CHECK_EQUAL(responseCallbacks, 1);
+}
+
 BOOST_AUTO_TEST_CASE(TokenModeDefaultsToEnabledAndPreservesChecks)
 {
   ndn::Face face;
@@ -2354,9 +2453,15 @@ BOOST_AUTO_TEST_CASE(AllSelectedPublishesSelectionForEveryValidAckResponder)
 
       BOOST_CHECK(user.handleRequestAckByName(
         makeRequestAckNameV2(providers[0], requesterName, serviceName, requestId), ackA));
+      BOOST_CHECK(!user.handleRequestAckByName(
+        makeRequestAckNameV2(providers[0], requesterName, serviceName, requestId), ackA));
       BOOST_CHECK(user.handleRequestAckByName(
         makeRequestAckNameV2(providers[1], requesterName, serviceName, requestId), ackB));
+      BOOST_CHECK(!user.handleRequestAckByName(
+        makeRequestAckNameV2(providers[1], requesterName, serviceName, requestId), ackB));
       BOOST_CHECK(user.handleRequestAckByName(
+        makeRequestAckNameV2(providers[2], requesterName, serviceName, requestId), rejectedAck));
+      BOOST_CHECK(!user.handleRequestAckByName(
         makeRequestAckNameV2(providers[2], requesterName, serviceName, requestId), rejectedAck));
     });
 
@@ -2446,6 +2551,13 @@ BOOST_AUTO_TEST_CASE(AllSelectedProvidersExecuteOnlyAfterSelection)
                                          requestId,
                                          request,
                                          "provider-token");
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
+                                                                  providerName,
+                                                                  serviceName,
+                                                                  requestId,
+                                                                  selectionBuffer);
+  BOOST_CHECK_EQUAL(executions, 1);
+
   provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
                                                                   providerName,
                                                                   serviceName,
@@ -2752,16 +2864,19 @@ BOOST_AUTO_TEST_CASE(ProviderHandlerExecutionCanRunOffEventLoopAndInParallel)
         cv.notify_one();
       }));
 
-  RequestMessage request = makeRequestMessageWithUserToken("hello");
   const std::vector<ndn::Name> requestIds{ndn::Name("/request-parallel-a"),
                                           ndn::Name("/request-parallel-b")};
-  for (const auto& requestId : requestIds) {
+  for (size_t i = 0; i < requestIds.size(); ++i) {
+    const auto& requestId = requestIds[i];
+    RequestMessage request = makeRequestMessageWithUserToken(
+      "hello", "user-token-parallel-" + std::to_string(i));
+    const std::string providerToken = "provider-token-parallel-" + std::to_string(i);
     provider.addPendingRequestForTokenTest(requesterName,
                                            serviceName,
                                            requestId,
                                            request,
-                                           "provider-token");
-    auto selectionBuffer = makeSelectionBuffer(requestId, "provider-token");
+                                           providerToken);
+    auto selectionBuffer = makeSelectionBuffer(requestId, providerToken);
     provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
                                                                     providerName,
                                                                     serviceName,
