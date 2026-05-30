@@ -9,6 +9,7 @@ each process talks to its own MiniNDN NFD socket.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -41,6 +42,12 @@ CONTROLLER_READY_MARKERS = [
     "ServiceController started",
     "App_ServiceController started",
 ]
+JMAVSIM_READY_MARKERS = [
+    "INFO  [simulator_mavlink] Simulator connected",
+    "INFO  [mavlink] mode:",
+    "INFO  [px4] Startup script returned successfully",
+    "INFO  [commander] Ready for takeoff!",
+]
 
 
 def log(message: str) -> None:
@@ -59,6 +66,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patrol-drone-ids", default="A,B",
                         help="Comma-separated drone IDs for the auto patrol demo.")
     parser.add_argument("--video-source", default=str(DEFAULT_VIDEO_SOURCE))
+    parser.add_argument("--flight-controller-backend", default="mock",
+                        choices=["mock", "udp"],
+                        help="Drone flight-controller backend. Use udp for PX4/jMAVSim SITL.")
+    parser.add_argument("--mavlink-udp-host", default="127.0.0.1")
+    parser.add_argument("--mavlink-udp-port", default="18570",
+                        help="PX4 SITL GCS MAVLink UDP local port for instance 0.")
+    parser.add_argument("--start-jmavsim", action="store_true",
+                        help="Start PX4 SITL with jMAVSim on the same MiniNDN node as the drone.")
+    parser.add_argument("--px4-dir", default=str(Path.home() / "PX4-Autopilot"))
+    parser.add_argument("--px4-cmake-args", default="-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+                        help="Extra CMAKE_ARGS passed to PX4 make when starting jMAVSim.")
+    parser.add_argument("--jmavsim-headless", action="store_true",
+                        help="Run jMAVSim without its GUI.")
+    parser.add_argument("--jmavsim-ready-timeout-seconds", type=int, default=90,
+                        help="How long to wait for PX4/jMAVSim readiness before starting the Drone app.")
     parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
     parser.add_argument("--video-width", type=int, default=480,
@@ -67,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nfd-log-level", default="WARN")
     parser.add_argument("--auto-video-test", action="store_true",
                         help="Have the GS auto-start and auto-stop video for smoke testing.")
+    parser.add_argument("--auto-mavlink-test", action="store_true",
+                        help="Have the GS send Arm/Takeoff/Land over Targeted NDNSF for smoke testing.")
+    parser.add_argument("--auto-keyboard-test", action="store_true",
+                        help="Have the GS trigger the same keyboard shortcuts as a/t/l for smoke testing.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-stop-seconds", type=int, default=10)
@@ -147,6 +173,21 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
         "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK": os.environ.get(
             "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK", "1"),
     }
+    if os.environ.get("PATH"):
+        env["PATH"] = os.environ["PATH"]
+    python_paths = []
+    if os.environ.get("PYTHONPATH"):
+        python_paths.extend(part for part in os.environ["PYTHONPATH"].split(":") if part)
+    kconfig_spec = importlib.util.find_spec("kconfiglib")
+    if kconfig_spec and kconfig_spec.origin:
+        python_paths.append(str(Path(kconfig_spec.origin).resolve().parent))
+    if python_paths:
+        deduped = []
+        for path in python_paths:
+            if path not in deduped:
+                deduped.append(path)
+        env["PYTHONPATH"] = ":".join(deduped)
+
     # MiniNDN demos in this checkout should exercise the freshly built framework
     # instead of an older system install under /usr/local/lib.
     ld_paths = [str(REPO / "build")]
@@ -288,6 +329,38 @@ def start(node, name: str, command: str, env: dict[str, str], output_dir: Path, 
     return proc, log_path
 
 
+def start_jmavsim(ndn, args: argparse.Namespace, drone_node: str,
+                  drone_id: str, env: dict[str, str], output_dir: Path,
+                  processes) -> tuple[subprocess.Popen, Path]:
+    px4_dir = Path(args.px4_dir).resolve()
+    if not (px4_dir / "Tools/simulation/jmavsim/jmavsim_run.sh").exists():
+        raise RuntimeError(f"PX4 jMAVSim script not found under {px4_dir}")
+    headless = "HEADLESS=1 " if args.jmavsim_headless else ""
+    # Use the existing PX4 make target so PX4 and jMAVSim share the same node
+    # namespace. If the PX4 build already exists this normally starts quickly;
+    # otherwise PX4 may build first.
+    command = (
+        f"cd {shell_quote(px4_dir)} && "
+        f"export PX4_SIM_MODEL=iris && "
+        f"export CMAKE_ARGS={shell_quote(args.px4_cmake_args)} && "
+        f"{headless}exec make px4_sitl jmavsim"
+    )
+    return start(ndn.net[drone_node], f"jmavsim-{drone_id}",
+                 command, env, output_dir, processes)
+
+
+def cleanup_px4_jmavsim(px4_dir: str) -> None:
+    px4_root = str(Path(px4_dir).resolve())
+    patterns = [
+        f"{px4_root}/build/px4_sitl_default/bin/px4",
+        "jmavsim_run.jar",
+        "jmavsim_run.sh",
+    ]
+    for pattern in patterns:
+        subprocess.run(["pkill", "-TERM", "-f", pattern], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def stop(processes) -> None:
     for proc, log_file, _ in reversed(processes):
         if proc.poll() is None:
@@ -337,6 +410,13 @@ def require_log(path: Path, needle: str) -> None:
     if needle not in text:
         tail = "\n".join(text.splitlines()[-40:])
         raise RuntimeError(f"missing '{needle}' in {path}\n--- tail ---\n{tail}")
+
+
+def require_log_any(path: Path, needles: list[str]) -> None:
+    text = path.read_text(errors="replace") if path.exists() else ""
+    if not any(needle in text for needle in needles):
+        tail = "\n".join(text.splitlines()[-40:])
+        raise RuntimeError(f"missing any of {needles} in {path}\n--- tail ---\n{tail}")
 
 
 def main() -> int:
@@ -391,9 +471,25 @@ def main() -> int:
 
         drone_logs = {}
         for drone_id, node_name in drones:
+            if args.start_jmavsim:
+                cleanup_px4_jmavsim(args.px4_dir)
+                jmavsim_proc, jmavsim_log = start_jmavsim(
+                    ndn, args, node_name, drone_id,
+                    drone_envs[drone_id], output_dir, processes)
+                if not wait_log_any(jmavsim_log, JMAVSIM_READY_MARKERS,
+                                    args.jmavsim_ready_timeout_seconds,
+                                    proc=jmavsim_proc):
+                    raise RuntimeError(
+                        f"PX4/jMAVSim did not become ready; see {jmavsim_log}\n"
+                        f"--- tail ---\n{read_tail(jmavsim_log)}"
+                    )
             drone_cmd = app_cmd(APP_DRONE, [
                 "--drone-id", drone_id,
                 "--video-source", resolve_repo_path(args.video_source),
+                "--flight-controller-backend",
+                "udp" if args.start_jmavsim else args.flight_controller_backend,
+                "--mavlink-udp-host", args.mavlink_udp_host,
+                "--mavlink-udp-port", args.mavlink_udp_port,
             ])
             label = "drone" if len(drones) == 1 else f"drone-{drone_id}"
             drone_proc, drone_log = start(ndn.net[node_name], label,
@@ -414,6 +510,10 @@ def main() -> int:
                 "--auto-stop-seconds", str(args.auto_stop_seconds),
                 "--auto-start-delay-ms", str(args.auto_start_delay_ms),
             ]
+        if args.auto_mavlink_test:
+            gs_argv += ["--auto-mavlink-test"]
+        if args.auto_keyboard_test:
+            gs_argv += ["--auto-keyboard-test"]
         if args.auto_patrol_test:
             gs_argv += [
                 "--auto-patrol-test",
@@ -452,6 +552,22 @@ def main() -> int:
             require_log(gs_log, "PATROL_TASK_DONE")
             require_log(drone_logs[drones[0][0]], "mission response delayed")
             print("NDNSF_UAV_PATROL_MININDN_SMOKE_OK")
+        elif (args.auto_mavlink_test or args.auto_keyboard_test) and args.no_cli:
+            try:
+                gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station MAVLink smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "GS_TARGETED_RESPONSE service=/UAV/MAVLink/Execute")
+            require_log(gs_log, "MAVLink arm accepted=true")
+            require_log(gs_log, "MAVLink takeoff accepted=true")
+            require_log(gs_log, "MAVLink land accepted=true")
+            require_log_any(drone_logs[args.drone_id], [
+                "MOCK_FC_FORWARD drone=" + args.drone_id,
+                "UDP_FC_FORWARD drone=" + args.drone_id,
+            ])
+            print("NDNSF_UAV_MAVLINK_TARGETED_MININDN_SMOKE_OK")
         elif args.auto_video_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=max(45, args.auto_stop_seconds + 35))
@@ -473,6 +589,8 @@ def main() -> int:
         return 0
     finally:
         stop(processes)
+        if 'args' in locals() and args.start_jmavsim:
+            cleanup_px4_jmavsim(args.px4_dir)
         if ndn is not None:
             ndn.stop()
         Minindn.cleanUp()

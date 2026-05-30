@@ -2,7 +2,9 @@
 #include "UavNames.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
@@ -196,6 +198,149 @@ buildMockMavlinkFrame(const std::string& commandName, const Fields& params)
   return frame;
 }
 
+namespace {
+
+uint16_t
+mavlinkCrcAccumulate(uint8_t data, uint16_t crc)
+{
+  data ^= static_cast<uint8_t>(crc & 0xff);
+  data ^= static_cast<uint8_t>(data << 4);
+  return static_cast<uint16_t>(
+    (crc >> 8) ^
+    (static_cast<uint16_t>(data) << 8) ^
+    (static_cast<uint16_t>(data) << 3) ^
+    (static_cast<uint16_t>(data) >> 4));
+}
+
+uint16_t
+mavlinkCrcX25(const std::vector<uint8_t>& bytes, uint8_t extra)
+{
+  uint16_t crc = 0xffff;
+  for (const auto byte : bytes) {
+    crc = mavlinkCrcAccumulate(byte, crc);
+  }
+  return mavlinkCrcAccumulate(extra, crc);
+}
+
+void
+appendFloatLe(std::vector<uint8_t>& out, float value)
+{
+  static_assert(sizeof(float) == 4, "MAVLink float must be 32 bits");
+  uint32_t raw = 0;
+  std::memcpy(&raw, &value, sizeof(raw));
+  out.push_back(static_cast<uint8_t>(raw & 0xff));
+  out.push_back(static_cast<uint8_t>((raw >> 8) & 0xff));
+  out.push_back(static_cast<uint8_t>((raw >> 16) & 0xff));
+  out.push_back(static_cast<uint8_t>((raw >> 24) & 0xff));
+}
+
+void
+appendUint16Le(std::vector<uint8_t>& out, uint16_t value)
+{
+  out.push_back(static_cast<uint8_t>(value & 0xff));
+  out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+}
+
+float
+fieldFloatOr(const Fields& fields, const std::string& key, float fallback)
+{
+  const auto it = fields.find(key);
+  if (it == fields.end() || it->second.empty()) {
+    return fallback;
+  }
+  if (it->second == "true") {
+    return 1.0F;
+  }
+  if (it->second == "false") {
+    return 0.0F;
+  }
+  return std::stof(it->second);
+}
+
+uint8_t
+fieldUint8Or(const Fields& fields, const std::string& key, uint8_t fallback)
+{
+  const auto it = fields.find(key);
+  if (it == fields.end() || it->second.empty()) {
+    return fallback;
+  }
+  return static_cast<uint8_t>(std::stoul(it->second));
+}
+
+std::vector<uint8_t>
+buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& params)
+{
+  constexpr uint8_t mavlinkStx = 0xfe;
+  constexpr uint8_t commandLongMsgId = 76;
+  constexpr uint8_t commandLongCrcExtra = 152;
+  static uint8_t sequence = 0;
+
+  const auto targetSystem = fieldUint8Or(params, "target_system", 1);
+  const auto targetComponent = fieldUint8Or(params, "target_component", 1);
+  const auto sourceSystem = fieldUint8Or(params, "source_system", 255);
+  const auto sourceComponent = fieldUint8Or(params, "source_component", 190);
+
+  uint16_t command = 0;
+  std::array<float, 7> p = {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+  if (commandName == "arm") {
+    command = 400; // MAV_CMD_COMPONENT_ARM_DISARM
+    p[0] = fieldFloatOr(params, "arm", 1.0F);
+  }
+  else if (commandName == "disarm") {
+    command = 400;
+    p[0] = 0.0F;
+  }
+  else if (commandName == "takeoff") {
+    command = 22; // MAV_CMD_NAV_TAKEOFF
+    p[6] = fieldFloatOr(params, "altitude_m", 15.0F);
+    p[4] = fieldFloatOr(params, "latitude", 0.0F);
+    p[5] = fieldFloatOr(params, "longitude", 0.0F);
+  }
+  else if (commandName == "land") {
+    command = 21; // MAV_CMD_NAV_LAND
+    p[4] = fieldFloatOr(params, "latitude", 0.0F);
+    p[5] = fieldFloatOr(params, "longitude", 0.0F);
+  }
+  else {
+    return buildMockMavlinkFrame(commandName, params);
+  }
+
+  for (size_t i = 0; i < p.size(); ++i) {
+    p[i] = fieldFloatOr(params, "param" + std::to_string(i + 1), p[i]);
+  }
+
+  std::vector<uint8_t> payload;
+  payload.reserve(33);
+  for (const auto value : p) {
+    appendFloatLe(payload, value);
+  }
+  appendUint16Le(payload, command);
+  payload.push_back(targetSystem);
+  payload.push_back(targetComponent);
+  payload.push_back(0); // confirmation
+
+  std::vector<uint8_t> checksumInput;
+  checksumInput.reserve(5 + payload.size());
+  checksumInput.push_back(static_cast<uint8_t>(payload.size()));
+  checksumInput.push_back(sequence);
+  checksumInput.push_back(sourceSystem);
+  checksumInput.push_back(sourceComponent);
+  checksumInput.push_back(commandLongMsgId);
+  checksumInput.insert(checksumInput.end(), payload.begin(), payload.end());
+  const auto crc = mavlinkCrcX25(checksumInput, commandLongCrcExtra);
+
+  std::vector<uint8_t> frame;
+  frame.reserve(8 + payload.size());
+  frame.push_back(mavlinkStx);
+  frame.insert(frame.end(), checksumInput.begin(), checksumInput.end());
+  frame.push_back(static_cast<uint8_t>(crc & 0xff));
+  frame.push_back(static_cast<uint8_t>((crc >> 8) & 0xff));
+  ++sequence;
+  return frame;
+}
+
+} // namespace
+
 std::vector<uint8_t>
 buildMockJpeg(const std::string& droneId, const std::string& frameId)
 {
@@ -239,10 +384,13 @@ makeMavlinkCommandPayload(const std::string& commandName,
                           const std::string& missionId,
                           const Fields& params)
 {
-  auto frame = buildMockMavlinkFrame(commandName, params);
+  auto frame = buildMavlinkCommandLongFrame(commandName, params);
   Fields fields = params;
   fields["type"] = "mavlink-command";
   fields["command"] = commandName;
+  fields["mavlink_encoding"] =
+    frame.size() > 4 && frame[0] == 0xfe && frame[5] == 76 ?
+    "mavlink-v1-command-long" : "mavlink-mock";
   fields["mission_id"] = missionId;
   fields["timestamp_ms"] = std::to_string(nowMilliseconds());
   fields["mavlink_hex"] = hexEncode(frame);

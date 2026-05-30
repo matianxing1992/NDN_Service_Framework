@@ -13,6 +13,7 @@
 
 #include <boost/asio/steady_timer.hpp>
 
+#include <gdk/gdkkeysyms.h>
 #include <gdkmm/pixbufloader.h>
 #include <gtkmm.h>
 
@@ -295,6 +296,29 @@ public:
   isStreaming() const
   {
     return m_streaming.load();
+  }
+
+  void
+  sendMavlinkCommand(const std::string& commandName, Fields params = {})
+  {
+    params["target_drone"] = m_targetDroneId;
+    const auto missionId = "manual-" + commandName + "-" + std::to_string(nowMilliseconds());
+    const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
+    postTargetedRequest(
+      droneIdentity(m_targetDroneId),
+      SERVICE_MAVLINK_EXECUTE,
+      payload,
+      [this, commandName](const std::string& responsePayload) {
+        const auto fields = decodeFields(responsePayload);
+        const auto accepted = fieldOr(fields, "accepted", "false");
+        const auto bytes = fieldOr(fields, "forwarded_bytes", "0");
+        publishStatus("MAVLink " + commandName +
+                      " accepted=" + accepted +
+                      " forwarded_bytes=" + bytes);
+      },
+      [this, commandName] {
+        publishStatus("Timeout waiting for targeted MAVLink " + commandName);
+      });
   }
 
   bool
@@ -654,6 +678,45 @@ private:
         [onSuccess, service](const ndn_service_framework::ResponseMessage& response) {
           const auto payloadText = responsePayload(response);
           NDN_LOG_INFO("GS_RESPONSE service=" << service << " payload=" << payloadText);
+          onSuccess(payloadText);
+        });
+    });
+  }
+
+  void
+  postTargetedRequest(const ndn::Name& provider, const ndn::Name& service,
+                      const std::string& payload,
+                      std::function<void(std::string)> onSuccess,
+                      std::function<void()> onTimeout = {})
+  {
+    m_face.getIoContext().post([this, provider, service, payload,
+                                onSuccess = std::move(onSuccess),
+                                onTimeout = std::move(onTimeout)] {
+      if (!m_runtimeReady.load() || !m_user) {
+        publishStatus("NDNSF runtime not ready for targeted " + service.toUri());
+        if (onTimeout) {
+          onTimeout();
+        }
+        return;
+      }
+      auto requestMessage = makeRequest(payload);
+      m_user->RequestServiceTargeted(
+        provider,
+        service,
+        std::move(requestMessage),
+        m_timeoutMs,
+        [this, service, onTimeout = std::move(onTimeout)](const ndn::Name&) {
+          if (onTimeout) {
+            onTimeout();
+          }
+          else {
+            publishStatus("Timeout waiting for targeted " + service.toUri());
+          }
+        },
+        [onSuccess, service](const ndn_service_framework::ResponseMessage& response) {
+          const auto payloadText = responsePayload(response);
+          NDN_LOG_INFO("GS_TARGETED_RESPONSE service=" << service
+                       << " payload=" << payloadText);
           onSuccess(payloadText);
         });
     });
@@ -1549,16 +1612,28 @@ class GroundStationWindow : public Gtk::Window
 {
 public:
   GroundStationWindow(GroundStationRuntime& runtime, bool autoStart,
-                      int autoStopSeconds, int autoStartDelayMs)
+                      int autoStopSeconds, int autoStartDelayMs,
+                      bool autoMavlinkTest, bool autoKeyboardTest)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_buttons(Gtk::ORIENTATION_HORIZONTAL, 8)
     , m_start("Start Video")
     , m_stop("Stop Video")
+    , m_arm("Arm")
+    , m_takeoff("Takeoff")
+    , m_land("Land")
+    , m_controlToggle("Start Control")
+    , m_controlPanel(Gtk::ORIENTATION_HORIZONTAL, 6)
+    , m_keyA("A  Arm")
+    , m_keyT("T  Takeoff")
+    , m_keyL("L  Land")
+    , m_keyV("V  Video")
+    , m_keyS("S  Stop")
   {
     set_title("NDNSF UAV Ground Station");
     set_default_size(920, 700);
     set_border_width(12);
+    set_can_focus(true);
 
     m_status.set_text("Video stopped");
     m_stats.set_text("Frames: 0");
@@ -1566,12 +1641,32 @@ public:
 
     m_buttons.pack_start(m_start, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_stop, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_arm, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_takeoff, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_land, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_controlToggle, Gtk::PACK_SHRINK);
     m_box.pack_start(m_buttons, Gtk::PACK_SHRINK);
+    m_controlHelp.set_text("Keyboard control: hold a key to command the drone; the active key turns black.");
+    m_controlPanel.pack_start(m_controlHelp, Gtk::PACK_SHRINK);
+    m_controlPanel.pack_start(m_keyA, Gtk::PACK_SHRINK);
+    m_controlPanel.pack_start(m_keyT, Gtk::PACK_SHRINK);
+    m_controlPanel.pack_start(m_keyL, Gtk::PACK_SHRINK);
+    m_controlPanel.pack_start(m_keyV, Gtk::PACK_SHRINK);
+    m_controlPanel.pack_start(m_keyS, Gtk::PACK_SHRINK);
+    m_box.pack_start(m_controlPanel, Gtk::PACK_SHRINK);
     m_box.pack_start(m_status, Gtk::PACK_SHRINK);
     m_box.pack_start(m_image, Gtk::PACK_EXPAND_WIDGET);
     m_box.pack_start(m_stats, Gtk::PACK_SHRINK);
+    installControlCss();
+    configureKeycap(m_keyA);
+    configureKeycap(m_keyT);
+    configureKeycap(m_keyL);
+    configureKeycap(m_keyV);
+    configureKeycap(m_keyS);
+    m_controlPanel.hide();
     add(m_box);
     show_all_children();
+    m_controlPanel.hide();
 
     m_start.signal_clicked().connect([this] {
       m_start.set_sensitive(false);
@@ -1585,6 +1680,34 @@ public:
       m_acceptFrames = false;
       m_runtime.stopVideo();
     });
+    m_arm.signal_clicked().connect([this] {
+      m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+    });
+    m_takeoff.signal_clicked().connect([this] {
+      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", "15"}});
+    });
+    m_land.signal_clicked().connect([this] {
+      m_runtime.sendMavlinkCommand("land");
+    });
+    m_controlToggle.signal_clicked().connect([this] {
+      setControlMode(!m_controlMode);
+    });
+    signal_key_press_event().connect(
+      [this](GdkEventKey* event) {
+        if (event == nullptr) {
+          return false;
+        }
+        return handleShortcutKeyPress(event->keyval);
+      },
+      false);
+    signal_key_release_event().connect(
+      [this](GdkEventKey* event) {
+        if (event == nullptr) {
+          return false;
+        }
+        return handleShortcutKeyRelease(event->keyval);
+      },
+      false);
 
     m_runtime.setStatusCallback([this](std::string status) {
       {
@@ -1654,9 +1777,215 @@ public:
         });
       }).detach();
     }
+
+    if (autoMavlinkTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", "15"}});
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_runtime.sendMavlinkCommand("land");
+        std::this_thread::sleep_for(std::chrono::seconds(4));
+        Glib::signal_idle().connect_once([this] {
+          hide();
+        });
+      }).detach();
+    }
+
+    if (autoKeyboardTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        Glib::signal_idle().connect_once([this] {
+          setControlMode(true);
+          handleShortcutKeyPress(GDK_KEY_a);
+          handleShortcutKeyRelease(GDK_KEY_a);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        Glib::signal_idle().connect_once([this] {
+          handleShortcutKeyPress(GDK_KEY_t);
+          handleShortcutKeyRelease(GDK_KEY_t);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(8));
+        Glib::signal_idle().connect_once([this] {
+          handleShortcutKeyPress(GDK_KEY_l);
+          handleShortcutKeyRelease(GDK_KEY_l);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(4));
+        Glib::signal_idle().connect_once([this] {
+          hide();
+        });
+      }).detach();
+    }
   }
 
 private:
+  bool
+  handleShortcutKeyPress(guint keyval)
+  {
+    if (!m_controlMode) {
+      return false;
+    }
+    const auto normalized = normalizeShortcutKey(keyval);
+    if (normalized == 0) {
+      return false;
+    }
+    setKeyPressed(normalized, true);
+    if (!m_pressedKeys.insert(normalized).second) {
+      return true;
+    }
+
+    switch (normalized) {
+    case GDK_KEY_a:
+      m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+      return true;
+    case GDK_KEY_t:
+      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", "15"}});
+      return true;
+    case GDK_KEY_l:
+      m_runtime.sendMavlinkCommand("land");
+      return true;
+    case GDK_KEY_v:
+      if (!m_runtime.isStreaming()) {
+        m_start.set_sensitive(false);
+        m_stop.set_sensitive(true);
+        beginLocalStreamView();
+        m_runtime.startVideo();
+      }
+      return true;
+    case GDK_KEY_s:
+      if (m_runtime.isStreaming()) {
+        m_stop.set_sensitive(false);
+        m_start.set_sensitive(true);
+        m_acceptFrames = false;
+        m_runtime.stopVideo();
+      }
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  bool
+  handleShortcutKeyRelease(guint keyval)
+  {
+    const auto normalized = normalizeShortcutKey(keyval);
+    if (normalized == 0) {
+      return false;
+    }
+    m_pressedKeys.erase(normalized);
+    setKeyPressed(normalized, false);
+    return m_controlMode;
+  }
+
+  guint
+  normalizeShortcutKey(guint keyval) const
+  {
+    switch (keyval) {
+    case GDK_KEY_a:
+    case GDK_KEY_A:
+      return GDK_KEY_a;
+    case GDK_KEY_t:
+    case GDK_KEY_T:
+      return GDK_KEY_t;
+    case GDK_KEY_l:
+    case GDK_KEY_L:
+      return GDK_KEY_l;
+    case GDK_KEY_v:
+    case GDK_KEY_V:
+      return GDK_KEY_v;
+    case GDK_KEY_s:
+    case GDK_KEY_S:
+      return GDK_KEY_s;
+    default:
+      return 0;
+    }
+  }
+
+  void
+  setControlMode(bool enabled)
+  {
+    m_controlMode = enabled;
+    m_controlToggle.set_label(enabled ? "Stop Control" : "Start Control");
+    if (enabled) {
+      m_controlPanel.show();
+      grab_focus();
+    }
+    else {
+      m_pressedKeys.clear();
+      setKeyPressed(GDK_KEY_a, false);
+      setKeyPressed(GDK_KEY_t, false);
+      setKeyPressed(GDK_KEY_l, false);
+      setKeyPressed(GDK_KEY_v, false);
+      setKeyPressed(GDK_KEY_s, false);
+      m_controlPanel.hide();
+    }
+  }
+
+  void
+  configureKeycap(Gtk::Button& button)
+  {
+    button.set_sensitive(false);
+    button.get_style_context()->add_class("uav-keycap");
+  }
+
+  void
+  installControlCss()
+  {
+    auto provider = Gtk::CssProvider::create();
+    provider->load_from_data(
+      ".uav-keycap {"
+      "  color: #202124;"
+      "  background: #f3f4f6;"
+      "  border: 1px solid #9aa0a6;"
+      "  border-radius: 4px;"
+      "  padding: 6px 10px;"
+      "}"
+      ".uav-keycap-active {"
+      "  color: white;"
+      "  background: #111111;"
+      "  border: 1px solid #111111;"
+      "}"
+    );
+    auto screen = Gdk::Screen::get_default();
+    if (screen) {
+      Gtk::StyleContext::add_provider_for_screen(
+        screen, provider, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+  }
+
+  void
+  setKeyPressed(guint keyval, bool pressed)
+  {
+    Gtk::Button* button = nullptr;
+    switch (keyval) {
+    case GDK_KEY_a:
+      button = &m_keyA;
+      break;
+    case GDK_KEY_t:
+      button = &m_keyT;
+      break;
+    case GDK_KEY_l:
+      button = &m_keyL;
+      break;
+    case GDK_KEY_v:
+      button = &m_keyV;
+      break;
+    case GDK_KEY_s:
+      button = &m_keyS;
+      break;
+    default:
+      return;
+    }
+    auto context = button->get_style_context();
+    if (pressed) {
+      context->add_class("uav-keycap-active");
+    }
+    else {
+      context->remove_class("uav-keycap-active");
+    }
+  }
+
   void
   setPendingButtonStateLocked(bool startSensitive, bool stopSensitive)
   {
@@ -1733,6 +2062,17 @@ private:
   Gtk::Box m_buttons;
   Gtk::Button m_start;
   Gtk::Button m_stop;
+  Gtk::Button m_arm;
+  Gtk::Button m_takeoff;
+  Gtk::Button m_land;
+  Gtk::Button m_controlToggle;
+  Gtk::Box m_controlPanel;
+  Gtk::Label m_controlHelp;
+  Gtk::Button m_keyA;
+  Gtk::Button m_keyT;
+  Gtk::Button m_keyL;
+  Gtk::Button m_keyV;
+  Gtk::Button m_keyS;
   Gtk::Label m_status;
   Gtk::Image m_image;
   Gtk::Label m_stats;
@@ -1746,6 +2086,8 @@ private:
   bool m_pendingButtonState = false;
   bool m_pendingStartSensitive = true;
   bool m_pendingStopSensitive = false;
+  bool m_controlMode = false;
+  std::set<guint> m_pressedKeys;
   uint64_t m_streamGeneration = 0;
   bool m_acceptFrames = false;
   std::atomic<uint64_t> m_decodedFrames{0};
@@ -1760,6 +2102,8 @@ main(int argc, char** argv)
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const bool objectDetectionMode = hasFlag(argc, argv, "--serve-object-detection");
 	    const bool autoStart = hasFlag(argc, argv, "--auto-video-test");
+	    const bool autoMavlinkTest = hasFlag(argc, argv, "--auto-mavlink-test");
+	    const bool autoKeyboardTest = hasFlag(argc, argv, "--auto-keyboard-test");
 	    const bool autoPatrolTest = hasFlag(argc, argv, "--auto-patrol-test");
 	    const int autoStopSeconds = std::stoi(getOption(argc, argv, "--auto-stop-seconds", "10"));
 	    const int autoStartDelayMs = std::stoi(getOption(argc, argv, "--auto-start-delay-ms", "3000"));
@@ -1796,10 +2140,14 @@ main(int argc, char** argv)
       return ok ? 0 : 2;
     }
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
-	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds, autoStartDelayMs);
+	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
+                                 autoStartDelayMs, autoMavlinkTest, autoKeyboardTest);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
-              << " auto_video_test=" << (autoStart ? "true" : "false") << std::endl;
+              << " auto_video_test=" << (autoStart ? "true" : "false")
+              << " auto_mavlink_test=" << (autoMavlinkTest ? "true" : "false")
+              << " auto_keyboard_test=" << (autoKeyboardTest ? "true" : "false")
+              << std::endl;
     const int rc = app->run(window);
     std::cout << "GS_GUI_EXIT rc=" << rc << std::endl;
     return rc;

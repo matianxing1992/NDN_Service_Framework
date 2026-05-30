@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <deque>
 #include <fcntl.h>
+#include <netdb.h>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -26,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <sys/file.h>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -123,7 +125,15 @@ makeResponse(bool status, const std::string& payload, const std::string& error =
   return response;
 }
 
-class MockFlightControllerBackend
+class FlightControllerBackend
+{
+public:
+  virtual ~FlightControllerBackend() = default;
+  virtual bool sendMavlink(const std::vector<uint8_t>& frame) = 0;
+  virtual std::string description() const = 0;
+};
+
+class MockFlightControllerBackend : public FlightControllerBackend
 {
 public:
   explicit MockFlightControllerBackend(std::string droneId)
@@ -132,7 +142,7 @@ public:
   }
 
   bool
-  sendMavlink(const std::vector<uint8_t>& frame)
+  sendMavlink(const std::vector<uint8_t>& frame) override
   {
     ++m_forwardedCount;
     NDN_LOG_INFO("MOCK_FC_FORWARD drone=" << m_droneId
@@ -141,8 +151,113 @@ public:
     return true;
   }
 
+  std::string
+  description() const override
+  {
+    return "mock-flight-controller";
+  }
+
 private:
   std::string m_droneId;
+  std::atomic<size_t> m_forwardedCount{0};
+};
+
+class UdpFlightControllerBackend : public FlightControllerBackend
+{
+public:
+  UdpFlightControllerBackend(std::string droneId, std::string host, std::string port)
+    : m_droneId(std::move(droneId))
+    , m_host(std::move(host))
+    , m_port(std::move(port))
+  {
+  }
+
+  ~UdpFlightControllerBackend()
+  {
+    if (m_socket >= 0) {
+      close(m_socket);
+    }
+  }
+
+  bool
+  sendMavlink(const std::vector<uint8_t>& frame) override
+  {
+    if (!ensureConnected()) {
+      return false;
+    }
+    const auto n = send(m_socket, frame.data(), frame.size(), 0);
+    if (n < 0 || static_cast<size_t>(n) != frame.size()) {
+      NDN_LOG_WARN("UDP_FC_FORWARD_FAILED drone=" << m_droneId
+                   << " host=" << m_host
+                   << " port=" << m_port
+                   << " bytes=" << frame.size());
+      return false;
+    }
+    ++m_forwardedCount;
+    NDN_LOG_INFO("UDP_FC_FORWARD drone=" << m_droneId
+                 << " host=" << m_host
+                 << " port=" << m_port
+                 << " bytes=" << frame.size()
+                 << " count=" << m_forwardedCount.load());
+    return true;
+  }
+
+  std::string
+  description() const override
+  {
+    return "udp://" + m_host + ":" + m_port;
+  }
+
+private:
+  bool
+  ensureConnected()
+  {
+    if (m_socket >= 0) {
+      return true;
+    }
+
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    addrinfo* result = nullptr;
+    const int rc = getaddrinfo(m_host.c_str(), m_port.c_str(), &hints, &result);
+    if (rc != 0 || result == nullptr) {
+      NDN_LOG_WARN("UDP_FC_RESOLVE_FAILED host=" << m_host
+                   << " port=" << m_port
+                   << " error=" << gai_strerror(rc));
+      return false;
+    }
+
+    int fd = -1;
+    for (addrinfo* rp = result; rp != nullptr; rp = rp->ai_next) {
+      fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+      if (fd < 0) {
+        continue;
+      }
+      if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
+        break;
+      }
+      close(fd);
+      fd = -1;
+    }
+    freeaddrinfo(result);
+    if (fd < 0) {
+      NDN_LOG_WARN("UDP_FC_CONNECT_FAILED host=" << m_host
+                   << " port=" << m_port);
+      return false;
+    }
+    m_socket = fd;
+    NDN_LOG_INFO("UDP_FC_CONNECTED drone=" << m_droneId
+                 << " host=" << m_host
+                 << " port=" << m_port);
+    return true;
+  }
+
+private:
+  std::string m_droneId;
+  std::string m_host;
+  std::string m_port;
+  int m_socket = -1;
   std::atomic<size_t> m_forwardedCount{0};
 };
 
@@ -667,11 +782,16 @@ private:
 class DroneRuntime
 {
 public:
-  DroneRuntime(std::string droneId, bool available, bool serveCertificates, std::string videoPath)
+  DroneRuntime(std::string droneId, bool available, bool serveCertificates,
+               std::string videoPath, std::string flightControllerBackend,
+               std::string mavlinkUdpHost, std::string mavlinkUdpPort)
     : m_serveCertificates(serveCertificates)
     , m_droneId(std::move(droneId))
     , m_available(available)
     , m_identity(droneIdentity(m_droneId))
+    , m_flightControllerBackend(std::move(flightControllerBackend))
+    , m_mavlinkUdpHost(std::move(mavlinkUdpHost))
+    , m_mavlinkUdpPort(std::move(mavlinkUdpPort))
   {
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
     m_providerCert = getOrCreateIdentity(m_keyChain, m_identity);
@@ -786,25 +906,33 @@ private:
     m_provider->setAckThreads(2);
     m_provider->setPerformanceMode(false);
 
-    auto backend = std::make_shared<MockFlightControllerBackend>(m_droneId);
+    std::shared_ptr<FlightControllerBackend> backend;
+    if (m_flightControllerBackend == "udp") {
+      backend = std::make_shared<UdpFlightControllerBackend>(
+        m_droneId, m_mavlinkUdpHost, m_mavlinkUdpPort);
+    }
+    else {
+      backend = std::make_shared<MockFlightControllerBackend>(m_droneId);
+    }
     auto lastMission = std::make_shared<std::string>("idle");
     auto missionMutex = std::make_shared<std::mutex>();
     auto missionBusy = std::make_shared<std::atomic<bool>>(false);
 
-    auto ackHandler = [this](const ndn_service_framework::RequestMessage& request) {
+    auto ackHandler = [this, backend](
+                        const ndn_service_framework::RequestMessage&) {
       ndn_service_framework::ServiceProvider::AckDecision decision;
       decision.status = m_available;
       decision.message = m_available ? "drone ready" : "drone unavailable";
       decision.payload = bufferFromString(encodeFields({
         {"drone_id", m_droneId},
-        {"backend", "mock-flight-controller"},
+        {"backend", backend->description()},
         {"queue", "0"},
         {"streaming", isStreaming() ? "true" : "false"},
       }));
       return decision;
     };
 
-    auto missionAckHandler = [this, missionBusy](
+    auto missionAckHandler = [this, missionBusy, backend](
                                const ndn_service_framework::RequestMessage&) {
       const bool busy = missionBusy->load();
       ndn_service_framework::ServiceProvider::AckDecision decision;
@@ -813,7 +941,7 @@ private:
                          (busy ? "mission slot busy" : "drone unavailable");
       decision.payload = bufferFromString(encodeFields({
         {"drone_id", m_droneId},
-        {"backend", "mock-flight-controller"},
+        {"backend", backend->description()},
         {"mission_busy", busy ? "true" : "false"},
         {"queue", busy ? "1" : "0"},
         {"streaming", isStreaming() ? "true" : "false"},
@@ -847,9 +975,8 @@ private:
           }), "unknown video control action");
         }));
 
-    m_provider->addService(
+    m_provider->addTargetedService(
       SERVICE_MAVLINK_EXECUTE,
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
       ndn_service_framework::ServiceProvider::RequestHandler(
         [backend, this](const ndn::Name&, const ndn::Name&, const ndn::Name&,
                         const ndn::Name&,
@@ -859,6 +986,7 @@ private:
           const bool ok = backend->sendMavlink(frame);
           return makeResponse(ok, encodeFields({
             {"accepted", ok ? "true" : "false"},
+            {"backend", backend->description()},
             {"drone_id", m_droneId},
             {"command", fieldOr(fields, "command", "unknown")},
             {"forwarded_bytes", std::to_string(frame.size())},
@@ -977,6 +1105,9 @@ private:
   bool m_available;
   ndn::Name m_identity;
   std::string m_videoPath;
+  std::string m_flightControllerBackend;
+  std::string m_mavlinkUdpHost;
+  std::string m_mavlinkUdpPort;
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
   ndn::security::Certificate m_providerCert;
@@ -1054,8 +1185,16 @@ main(int argc, char** argv)
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string videoPath = getOption(argc, argv, "--video-source",
                                             "NDNSF-UAV-APP/videos/drone.mp4");
+    const std::string flightControllerBackend =
+      getOption(argc, argv, "--flight-controller-backend", "mock");
+    const std::string mavlinkUdpHost =
+      getOption(argc, argv, "--mavlink-udp-host", "127.0.0.1");
+    const std::string mavlinkUdpPort =
+      getOption(argc, argv, "--mavlink-udp-port", "18570");
 
-    auto runtime = std::make_unique<DroneRuntime>(droneId, available, serveCertificates, videoPath);
+    auto runtime = std::make_unique<DroneRuntime>(
+      droneId, available, serveCertificates, videoPath,
+      flightControllerBackend, mavlinkUdpHost, mavlinkUdpPort);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("drone NDNSF runtime did not become ready");
@@ -1064,9 +1203,14 @@ main(int argc, char** argv)
     DroneWindow window(*runtime);
     NDN_LOG_INFO("UavDroneApp ready identity=" << runtime->identityUri()
                  << " available=" << available
-                 << " video_source=" << videoPath);
+                 << " video_source=" << videoPath
+                 << " flight_controller_backend=" << flightControllerBackend
+                 << " mavlink_udp=" << mavlinkUdpHost << ":" << mavlinkUdpPort);
     std::cout << "DRONE_GUI_READY identity=" << runtime->identityUri()
-              << " video_source=" << videoPath << std::endl;
+              << " video_source=" << videoPath
+              << " flight_controller_backend=" << flightControllerBackend
+              << " mavlink_udp=" << mavlinkUdpHost << ":" << mavlinkUdpPort
+              << std::endl;
     const int rc = app->run(window);
     std::cout << "DRONE_GUI_EXIT rc=" << rc << std::endl;
     return rc;
