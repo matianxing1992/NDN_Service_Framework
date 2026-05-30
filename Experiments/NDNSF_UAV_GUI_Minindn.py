@@ -74,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="PX4 SITL GCS MAVLink UDP local port for instance 0.")
     parser.add_argument("--start-jmavsim", action="store_true",
                         help="Start PX4 SITL with jMAVSim on the same MiniNDN node as the drone.")
+    parser.add_argument("--no-start-jmavsim", action="store_true",
+                        help="Do not auto-start PX4 SITL/jMAVSim in interactive GUI mode.")
     parser.add_argument("--px4-dir", default=str(Path.home() / "PX4-Autopilot"))
     parser.add_argument("--px4-cmake-args", default="-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
                         help="Extra CMAKE_ARGS passed to PX4 make when starting jMAVSim.")
@@ -363,6 +365,16 @@ def cleanup_px4_jmavsim(px4_dir: str) -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def should_start_jmavsim(args: argparse.Namespace) -> bool:
+    if args.no_start_jmavsim:
+        return False
+    if args.start_jmavsim:
+        return True
+    # Interactive GUI demos should show the simulator with DroneAPP by default.
+    # Non-interactive smoke tests stay light unless --start-jmavsim is explicit.
+    return not args.no_cli
+
+
 def stop(processes) -> None:
     for proc, log_file, _ in reversed(processes):
         if proc.poll() is None:
@@ -473,7 +485,8 @@ def main() -> int:
 
         drone_logs = {}
         for drone_id, node_name in drones:
-            if args.start_jmavsim:
+            start_simulator = should_start_jmavsim(args)
+            if start_simulator:
                 cleanup_px4_jmavsim(args.px4_dir)
                 jmavsim_proc, jmavsim_log = start_jmavsim(
                     ndn, args, node_name, drone_id,
@@ -489,7 +502,7 @@ def main() -> int:
                 "--drone-id", drone_id,
                 "--video-source", resolve_repo_path(args.video_source),
                 "--flight-controller-backend",
-                "udp" if args.start_jmavsim else args.flight_controller_backend,
+                "udp" if start_simulator else args.flight_controller_backend,
                 "--mavlink-udp-host", args.mavlink_udp_host,
                 "--mavlink-udp-port", args.mavlink_udp_port,
             ])
@@ -596,7 +609,7 @@ def main() -> int:
         return 0
     finally:
         stop(processes)
-        if 'args' in locals() and args.start_jmavsim:
+        if 'args' in locals() and should_start_jmavsim(args):
             cleanup_px4_jmavsim(args.px4_dir)
         if ndn is not None:
             ndn.stop()

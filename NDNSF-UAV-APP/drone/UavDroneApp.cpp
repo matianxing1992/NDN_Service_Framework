@@ -360,6 +360,8 @@ public:
   stop()
   {
     std::lock_guard<std::mutex> guard(m_mutex);
+    const auto streamPacketsPublished = m_nextSeq.load();
+    const auto fecGroupsPublished = m_nextFecFrameSeq.load();
     m_streaming = false;
     m_pending.clear();
     m_packets.clear();
@@ -373,7 +375,9 @@ public:
       {"status", "stopped"},
       {"drone_id", m_droneId},
       {"stream_id", m_streamId},
-      {"frames_published", std::to_string(m_nextSeq)},
+      {"stream_packets_published", std::to_string(streamPacketsPublished)},
+      {"fec_groups_published", std::to_string(fecGroupsPublished)},
+      {"frames_published", std::to_string(fecGroupsPublished)},
       {"timestamp_ms", std::to_string(nowMilliseconds())},
     };
   }
@@ -385,9 +389,15 @@ public:
   }
 
   uint64_t
-  framesPublished() const
+  streamPacketsPublished() const
   {
     return m_nextSeq.load();
+  }
+
+  uint64_t
+  fecGroupsPublished() const
+  {
+    return m_nextFecFrameSeq.load();
   }
 
   ndn::Name
@@ -876,10 +886,17 @@ public:
   }
 
   uint64_t
-  framesPublished() const
+  streamPacketsPublished() const
   {
     std::lock_guard<std::mutex> guard(m_runtimeMutex);
-    return m_videoPublisher != nullptr ? m_videoPublisher->framesPublished() : 0;
+    return m_videoPublisher != nullptr ? m_videoPublisher->streamPacketsPublished() : 0;
+  }
+
+  uint64_t
+  fecGroupsPublished() const
+  {
+    std::lock_guard<std::mutex> guard(m_runtimeMutex);
+    return m_videoPublisher != nullptr ? m_videoPublisher->fecGroupsPublished() : 0;
   }
 
   std::string
@@ -1135,7 +1152,7 @@ public:
 
     m_title.set_markup("<b>Drone " + m_runtime.identityUri() + "</b>");
     m_status.set_text("Video stopped");
-    m_frames.set_text("Frames published: 0");
+    m_frames.set_text("Stream packets: 0, FEC groups: 0");
 
     m_box.pack_start(m_title, Gtk::PACK_SHRINK);
     m_box.pack_start(m_status, Gtk::PACK_SHRINK);
@@ -1155,7 +1172,8 @@ public:
       m_status.set_text(m_pendingStatus);
     });
     Glib::signal_timeout().connect([this] {
-      m_frames.set_text("Frames published: " + std::to_string(m_runtime.framesPublished()));
+      m_frames.set_text("Stream packets: " + std::to_string(m_runtime.streamPacketsPublished()) +
+                        ", FEC groups: " + std::to_string(m_runtime.fecGroupsPublished()));
       if (!m_runtime.isStreaming()) {
         m_status.set_text("Video stopped");
       }

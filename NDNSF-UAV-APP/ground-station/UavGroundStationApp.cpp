@@ -284,7 +284,11 @@ public:
                 [this](const std::string& payload) {
                   m_videoStopInFlight = false;
                   const auto fields = decodeFields(payload);
-                  publishStatus("Video stopped, frames=" + fieldOr(fields, "frames_published", "0"));
+                  publishStatus("Video stopped, packets=" +
+                                fieldOr(fields, "stream_packets_published",
+                                        fieldOr(fields, "frames_published", "0")) +
+                                ", fec_groups=" +
+                                fieldOr(fields, "fec_groups_published", "0"));
                 },
                 {},
                 [this] {
