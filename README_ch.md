@@ -177,6 +177,28 @@ user.RequestService<ObjectDetectionRequest, ObjectDetectionResponse>(
   ndn_service_framework::tlv::FirstResponding);
 ```
 
+对于已经知道目标 provider 的低延迟命令，例如 UAV flight-control/MAVLink
+执行，使用 targeted invocation。Targeted invocation 仍然使用 NDNSF 的
+`RequestMessage`/`ResponseMessage`、签名、权限检查、一次性 token 检查和
+replay 防护，只是跳过普通 ACK/Selection 阶段：
+
+```cpp
+provider.addTargetedService(
+  ndn::Name("/UAV/MAVLink/Execute"),
+  handler);
+
+user.RequestServiceTargeted<MavlinkCommand, MavlinkResult>(
+  ndn::Name("/example/uav/drone/A"),
+  ndn::Name("/UAV/MAVLink/Execute"),
+  command,
+  onResponse,
+  onTimeout,
+  timeoutMs);
+```
+
+`RequestServiceDirect(...)` 和 `addDirectService(...)` 保留为兼容别名，但新代码
+应使用语义更准确的 `Targeted` 术语。
+
 `RequestT` 和 `ResponseT` 只需要提供类似 protobuf 的方法：
 
 ```cpp

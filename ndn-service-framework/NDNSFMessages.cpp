@@ -21,6 +21,14 @@ void RequestMessage::setStrategy(size_t strategy) {
     strategy_ = strategy;
 }
 
+void RequestMessage::setRequestMode(size_t requestMode) {
+    requestMode_ = requestMode;
+}
+
+void RequestMessage::setTargetProvider(const ndn::Name& targetProvider) {
+    targetProvider_ = targetProvider;
+}
+
 void RequestMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
 }
@@ -45,6 +53,14 @@ size_t RequestMessage::getStrategy() const {
     return strategy_;
 }
 
+size_t RequestMessage::getRequestMode() const {
+    return requestMode_;
+}
+
+const ndn::Name& RequestMessage::getTargetProvider() const {
+    return targetProvider_;
+}
+
 size_t RequestMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
@@ -54,6 +70,9 @@ void RequestMessage::Clear() {
     userToken_.clear();
     payload_.clear();
     payloadSize_ = 0;
+    strategy_ = tlv::FirstResponding;
+    requestMode_ = tlv::NormalRequest;
+    targetProvider_.clear();
     m_wire.reset();
     policyEpoch_ = 0;
 }
@@ -75,6 +94,12 @@ ndn::Block RequestMessage::WireEncode() const {
     // strategy
     ndn::Block strategyloadBlock = ndn::makeNonNegativeIntegerBlock(tlv::StrategyType, strategy_);
     block.push_back(strategyloadBlock);
+    if (requestMode_ != tlv::NormalRequest) {
+        block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::RequestModeType, requestMode_));
+    }
+    if (!targetProvider_.empty()) {
+        block.push_back(ndn::makeStringBlock(tlv::ProviderNameType, targetProvider_.toUri()));
+    }
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
@@ -110,6 +135,12 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::StrategyType) {
             strategy_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::RequestModeType) {
+            requestMode_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::ProviderNameType) {
+            targetProvider_ = ndn::Name(ndn::readString(b));
         }
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);

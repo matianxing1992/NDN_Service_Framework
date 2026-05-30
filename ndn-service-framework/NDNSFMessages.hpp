@@ -57,6 +57,7 @@ namespace tlv {
         ValidFromType = 186,
         GracePeriodMsType = 187,
         RequiredKeyEpochType = 188,
+        RequestModeType = 189,
         AllowedServiceListType = 0xF501,
         AllowedServiceType = 0xF502,
     };
@@ -66,6 +67,15 @@ namespace tlv {
         FirstResponding = 0,
         RandomSelection = 1,
         AllSelected = 2,
+    };
+
+    enum {
+        NormalRequest = 0,
+        // Targeted invocation still uses NDNSF Request/Response, but skips the
+        // normal ACK/Selection phase because the requester already names the
+        // intended provider.
+        TargetedRequest = 1,
+        DirectRequest = TargetedRequest,
     };
 
     enum {
@@ -92,12 +102,16 @@ public:
     void setPayload(ndn::Buffer& payload, size_t size);
     // FirstResponding = 0, RandomSelection = 1, AllSelected = 2.
     void setStrategy(size_t strategy);
+    void setRequestMode(size_t requestMode);
+    void setTargetProvider(const ndn::Name& targetProvider);
     void setPolicyEpoch(size_t policyEpoch);
     const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
     ndn::Buffer getPayload() const;
     size_t getPayloadSize() const;
     size_t getStrategy() const;
+    size_t getRequestMode() const;
+    const ndn::Name& getTargetProvider() const;
     size_t getPolicyEpoch() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
@@ -109,6 +123,8 @@ private:
     ndn::Buffer payload_;
     size_t payloadSize_ = 0;
     size_t strategy_ = tlv::FirstResponding;
+    size_t requestMode_ = tlv::NormalRequest;
+    ndn::Name targetProvider_;
     size_t policyEpoch_ = 0;
     mutable ndn::Block m_wire;
 };
