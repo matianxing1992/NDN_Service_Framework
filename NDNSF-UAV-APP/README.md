@@ -45,9 +45,9 @@ passes them to the flight-controller backend.
 MAVLink execution uses NDNSF Targeted invocation. The first command to a drone
 bootstraps through the normal authenticated request/ACK/selection/response
 flow and obtains one-time token pairs. Later `arm`, `takeoff`, and `land`
-commands use request/response-only Targeted calls to `/UAV/MAVLink/Execute`,
-reducing command latency while still validating the provider and rejecting
-token replay.
+commands, as well as low-rate `MANUAL_CONTROL` updates from the keyboard, use
+request/response-only Targeted calls to `/UAV/MAVLink/Execute`, reducing command
+latency while still validating the provider and rejecting token replay.
 
 ## Current Binaries
 
@@ -273,14 +273,25 @@ nfd-start
 ```
 
 Click `Arm`, `Takeoff`, or `Land` in the ground-station window to send Targeted
-MAVLink commands to the drone. For keyboard operation, click `Start Control`:
-the GUI displays keycaps for `A Arm`, `T Takeoff`, `L Land`, `V Video`, and
-`S Stop`. While a key is held, its keycap turns black so the operator can see
-which command is active. Click `Start Video` or press `v` in control mode to
-begin the live stream.
+MAVLink commands to the drone. For keyboard operation, click `Start Control`.
+The GUI displays manual-control keycaps:
+
+```text
+W forward        S back
+A yaw left       D yaw right
+Q roll left      E roll right
+R throttle up    F throttle down
+I arm            T takeoff
+L land           V video start
+X video stop
+```
+
+While a key is held, its keycap turns black so the operator can see which
+command is active. Holding a manual key sends MAVLink `MANUAL_CONTROL` frames at
+a low fixed rate; releasing the key sends a neutral update.
 The drone window should switch to `video streaming`, and the ground-station
 window should display the live video packet stream. Click `Stop Video` or press
-`s` in control mode to stop the stream; the drone window should switch back to
+`X` in control mode to stop the stream; the drone window should switch back to
 `Video stopped`.
 
 For an automated GUI smoke test without manual button clicks:
@@ -303,6 +314,13 @@ by the GUI:
 
 ```bash
 ./build/examples/UavGroundStationApp --target-drone A --auto-keyboard-test
+```
+
+For a ManualControl smoke test that holds manual keys and emits MAVLink
+`MANUAL_CONTROL`:
+
+```bash
+./build/examples/UavGroundStationApp --target-drone A --auto-manual-control-test
 ```
 
 Expected smoke-test markers:
@@ -369,6 +387,13 @@ to the mock flight-controller backend.
 To run the same flow through the GUI keyboard shortcut path, replace
 `--auto-mavlink-test` with `--auto-keyboard-test`.
 
+To include ManualControl key holds in the smoke test:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-manual-control-test --no-cli
+```
+
 To run PX4 SITL with jMAVSim on the same MiniNDN node as the drone and forward
 commands to PX4's GCS MAVLink UDP port:
 
@@ -384,7 +409,7 @@ For a non-interactive PX4/jMAVSim smoke test:
 ```bash
 sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --start-jmavsim --jmavsim-headless \
-  --auto-keyboard-test --no-cli
+  --auto-manual-control-test --no-cli
 ```
 
 The launcher keeps MiniNDN node homes under `/tmp/minindn/<node>`, so it

@@ -241,6 +241,12 @@ appendUint16Le(std::vector<uint8_t>& out, uint16_t value)
   out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
 }
 
+void
+appendInt16Le(std::vector<uint8_t>& out, int16_t value)
+{
+  appendUint16Le(out, static_cast<uint16_t>(value));
+}
+
 float
 fieldFloatOr(const Fields& fields, const std::string& key, float fallback)
 {
@@ -268,12 +274,89 @@ fieldUint8Or(const Fields& fields, const std::string& key, uint8_t fallback)
 }
 
 std::vector<uint8_t>
-buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& params)
+buildMavlinkV1Frame(uint8_t msgId, uint8_t crcExtra, uint8_t sourceSystem,
+                    uint8_t sourceComponent, std::vector<uint8_t> payload)
 {
   constexpr uint8_t mavlinkStx = 0xfe;
+  static uint8_t sequence = 0;
+
+  std::vector<uint8_t> checksumInput;
+  checksumInput.reserve(5 + payload.size());
+  checksumInput.push_back(static_cast<uint8_t>(payload.size()));
+  checksumInput.push_back(sequence);
+  checksumInput.push_back(sourceSystem);
+  checksumInput.push_back(sourceComponent);
+  checksumInput.push_back(msgId);
+  checksumInput.insert(checksumInput.end(), payload.begin(), payload.end());
+  const auto crc = mavlinkCrcX25(checksumInput, crcExtra);
+
+  std::vector<uint8_t> frame;
+  frame.reserve(8 + payload.size());
+  frame.push_back(mavlinkStx);
+  frame.insert(frame.end(), checksumInput.begin(), checksumInput.end());
+  frame.push_back(static_cast<uint8_t>(crc & 0xff));
+  frame.push_back(static_cast<uint8_t>((crc >> 8) & 0xff));
+  ++sequence;
+  return frame;
+}
+
+int16_t
+fieldInt16ClampedOr(const Fields& fields, const std::string& key,
+                    int16_t fallback, int16_t minValue, int16_t maxValue)
+{
+  const auto it = fields.find(key);
+  if (it == fields.end() || it->second.empty()) {
+    return fallback;
+  }
+  const auto value = std::stoi(it->second);
+  return static_cast<int16_t>(std::clamp(value, static_cast<int>(minValue),
+                                        static_cast<int>(maxValue)));
+}
+
+uint16_t
+fieldUint16ClampedOr(const Fields& fields, const std::string& key,
+                     uint16_t fallback, uint16_t maxValue)
+{
+  const auto it = fields.find(key);
+  if (it == fields.end() || it->second.empty()) {
+    return fallback;
+  }
+  const auto value = std::stoul(it->second);
+  return static_cast<uint16_t>(std::min<unsigned long>(value, maxValue));
+}
+
+std::vector<uint8_t>
+buildMavlinkManualControlFrame(const Fields& params)
+{
+  constexpr uint8_t manualControlMsgId = 69;
+  constexpr uint8_t manualControlCrcExtra = 243;
+
+  const auto targetSystem = fieldUint8Or(params, "target_system", 1);
+  const auto sourceSystem = fieldUint8Or(params, "source_system", 255);
+  const auto sourceComponent = fieldUint8Or(params, "source_component", 190);
+  const auto x = fieldInt16ClampedOr(params, "x", 0, -1000, 1000);
+  const auto y = fieldInt16ClampedOr(params, "y", 0, -1000, 1000);
+  const auto z = fieldInt16ClampedOr(params, "z", 500, 0, 1000);
+  const auto r = fieldInt16ClampedOr(params, "r", 0, -1000, 1000);
+  const auto buttons = fieldUint16ClampedOr(params, "buttons", 0, 0xffff);
+
+  std::vector<uint8_t> payload;
+  payload.reserve(11);
+  appendInt16Le(payload, x);
+  appendInt16Le(payload, y);
+  appendInt16Le(payload, z);
+  appendInt16Le(payload, r);
+  appendUint16Le(payload, buttons);
+  payload.push_back(targetSystem);
+  return buildMavlinkV1Frame(manualControlMsgId, manualControlCrcExtra,
+                             sourceSystem, sourceComponent, std::move(payload));
+}
+
+std::vector<uint8_t>
+buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& params)
+{
   constexpr uint8_t commandLongMsgId = 76;
   constexpr uint8_t commandLongCrcExtra = 152;
-  static uint8_t sequence = 0;
 
   const auto targetSystem = fieldUint8Or(params, "target_system", 1);
   const auto targetComponent = fieldUint8Or(params, "target_component", 1);
@@ -318,25 +401,8 @@ buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& param
   payload.push_back(targetSystem);
   payload.push_back(targetComponent);
   payload.push_back(0); // confirmation
-
-  std::vector<uint8_t> checksumInput;
-  checksumInput.reserve(5 + payload.size());
-  checksumInput.push_back(static_cast<uint8_t>(payload.size()));
-  checksumInput.push_back(sequence);
-  checksumInput.push_back(sourceSystem);
-  checksumInput.push_back(sourceComponent);
-  checksumInput.push_back(commandLongMsgId);
-  checksumInput.insert(checksumInput.end(), payload.begin(), payload.end());
-  const auto crc = mavlinkCrcX25(checksumInput, commandLongCrcExtra);
-
-  std::vector<uint8_t> frame;
-  frame.reserve(8 + payload.size());
-  frame.push_back(mavlinkStx);
-  frame.insert(frame.end(), checksumInput.begin(), checksumInput.end());
-  frame.push_back(static_cast<uint8_t>(crc & 0xff));
-  frame.push_back(static_cast<uint8_t>((crc >> 8) & 0xff));
-  ++sequence;
-  return frame;
+  return buildMavlinkV1Frame(commandLongMsgId, commandLongCrcExtra,
+                             sourceSystem, sourceComponent, std::move(payload));
 }
 
 } // namespace
@@ -385,12 +451,21 @@ makeMavlinkCommandPayload(const std::string& commandName,
                           const Fields& params)
 {
   auto frame = buildMavlinkCommandLongFrame(commandName, params);
+  if (commandName == "manual_control") {
+    frame = buildMavlinkManualControlFrame(params);
+  }
   Fields fields = params;
   fields["type"] = "mavlink-command";
   fields["command"] = commandName;
-  fields["mavlink_encoding"] =
-    frame.size() > 4 && frame[0] == 0xfe && frame[5] == 76 ?
-    "mavlink-v1-command-long" : "mavlink-mock";
+  fields["mavlink_encoding"] = "mavlink-mock";
+  if (frame.size() > 5 && frame[0] == 0xfe) {
+    if (frame[5] == 76) {
+      fields["mavlink_encoding"] = "mavlink-v1-command-long";
+    }
+    else if (frame[5] == 69) {
+      fields["mavlink_encoding"] = "mavlink-v1-manual-control";
+    }
+  }
   fields["mission_id"] = missionId;
   fields["timestamp_ms"] = std::to_string(nowMilliseconds());
   fields["mavlink_hex"] = hexEncode(frame);
