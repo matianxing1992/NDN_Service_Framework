@@ -1,0 +1,98 @@
+name /example/uav/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /example/uav/drone/A
+        allow
+        {
+            /UAV/MAVLink/Execute
+            /UAV/Mission/Assign
+            /UAV/Telemetry/GetStatus
+            /UAV/Camera/GetFrame
+            /example/uav/drone/A/UAV/Camera/Video
+        }
+    }
+
+    provider-policy
+    {
+        for /example/uav/drone/B
+        allow
+        {
+            /UAV/MAVLink/Execute
+            /UAV/Mission/Assign
+            /UAV/Telemetry/GetStatus
+            /UAV/Camera/GetFrame
+            /example/uav/drone/B/UAV/Camera/Video
+        }
+    }
+
+    provider-policy
+    {
+        for /example/uav/drone/C
+        allow
+        {
+            /UAV/MAVLink/Execute
+            /UAV/Mission/Assign
+            /UAV/Telemetry/GetStatus
+            /UAV/Camera/GetFrame
+            /example/uav/drone/C/UAV/Camera/Video
+        }
+    }
+
+    provider-policy
+    {
+        for /example/uav/gs
+        allow
+        {
+            /UAV/GS/ObjectDetection
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /example/uav/gs
+        allow
+        {
+            /UAV/MAVLink/Execute
+            /UAV/Mission/Assign
+            /UAV/Telemetry/GetStatus
+            /UAV/Camera/GetFrame
+            /example/uav/drone/A/UAV/Camera/Video
+            /example/uav/drone/B/UAV/Camera/Video
+            /example/uav/drone/C/UAV/Camera/Video
+            /UAV/GS/ObjectDetection
+        }
+    }
+
+    user-policy
+    {
+        for /example/uav/drone/A
+        allow
+        {
+            /UAV/GS/ObjectDetection
+        }
+    }
+
+    user-policy
+    {
+        for /example/uav/drone/B
+        allow
+        {
+            /UAV/GS/ObjectDetection
+        }
+    }
+
+    user-policy
+    {
+        for /example/uav/drone/C
+        allow
+        {
+            /UAV/GS/ObjectDetection
+        }
+    }
+}

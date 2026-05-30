@@ -12,7 +12,7 @@
 
 namespace {
 
-const ndn::Name CONTROLLER_PREFIX("/example/hello/controller");
+const ndn::Name DEFAULT_CONTROLLER_PREFIX("/example/hello/controller");
 const ndn::Name PROVIDER_IDENTITY("/example/hello/provider");
 const ndn::Name USER_IDENTITY("/example/hello/user");
 
@@ -65,9 +65,11 @@ main(int argc, char** argv)
     ndn::ValidatorConfig validator(face);
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string policyFile = getOption(argc, argv, "--policy-file", "examples/hello.policies");
+    const ndn::Name controllerPrefix(
+      getOption(argc, argv, "--controller-prefix", DEFAULT_CONTROLLER_PREFIX.toUri()));
 
-    auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
-    keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(CONTROLLER_PREFIX));
+    auto controllerCert = getOrCreateIdentity(keyChain, controllerPrefix);
+    keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(controllerPrefix));
     getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
     getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));
     getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("B"));
@@ -94,7 +96,7 @@ main(int argc, char** argv)
       controllerCert,
       validator,
       policyFile);
-    controller.setControllerPrefix(CONTROLLER_PREFIX);
+    controller.setControllerPrefix(controllerPrefix);
 
     std::cout << "ServiceController started..." << std::endl;
     controller.run();

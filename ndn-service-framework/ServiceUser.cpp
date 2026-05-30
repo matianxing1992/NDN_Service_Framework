@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -104,6 +105,18 @@ namespace ndn_service_framework
             catch (const std::exception&) {
                 return fallback;
             }
+        }
+
+        ndn::Name
+        makePermissionFullServiceName(const ndn::Name& providerName,
+                                      const ndn::Name& serviceName)
+        {
+            if (providerName.isPrefixOf(serviceName)) {
+                return serviceName;
+            }
+            ndn::Name fullName(providerName);
+            fullName.append(serviceName);
+            return fullName;
         }
 
         size_t
@@ -2190,8 +2203,9 @@ namespace ndn_service_framework
                              << " entryEpoch=" << entry.getVersion()
                              << " responseEpoch=" << m_currentPolicyEpoch);
             }
-            ndn::Name providerServiceName(entry.getProviderName());
-            providerServiceName.append(ndn::Name(entry.getServiceName()));
+            const ndn::Name providerServiceName =
+                makePermissionFullServiceName(ndn::Name(entry.getProviderName()),
+                                              ndn::Name(entry.getServiceName()));
             UPT.insertPermission(providerServiceName.toUri(),
                                  entry.getServiceName(),
                                  entry.getToken());
@@ -2259,8 +2273,9 @@ namespace ndn_service_framework
         }
 
         for (const auto& entry : response.getEntries()) {
-            ndn::Name providerServiceName(entry.getProviderName());
-            providerServiceName.append(ndn::Name(entry.getServiceName()));
+            const ndn::Name providerServiceName =
+                makePermissionFullServiceName(ndn::Name(entry.getProviderName()),
+                                              ndn::Name(entry.getServiceName()));
             permissionTable.insertPermission(providerServiceName.toUri(),
                                              entry.getServiceName(),
                                              entry.getToken());
@@ -5206,15 +5221,17 @@ void ServiceUser::finishRequestAckOnEventLoop(
 
     bool ServiceUser::replyFromIMS(const ndn::Interest &interest)
     {
-        std::shared_ptr<const ndn::Data> data;
+        std::optional<ndn::Data> dataToSend;
         {
             std::lock_guard<std::mutex> lock(_cache_mutex);
-            data = m_IMS.find(interest);
+            if (auto data = m_IMS.find(interest)) {
+                dataToSend.emplace(*data);
+            }
         }
-        if (data != nullptr)
+        if (dataToSend)
         {
             NDN_LOG_TRACE("Reply from IMS: " << interest.getName().toUri());
-            m_face.put(*data);
+            m_face.put(*dataToSend);
         }else{
             size_t imsSize = 0;
             {
