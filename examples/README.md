@@ -7,6 +7,11 @@ NDNSF business logic. AI-specific distributed inference examples live in
 on top of the NDNSF Python wrapper. Their runnable scripts live under
 `python/NDNSF-DistributedInference/`.
 
+The UAV network application reference app lives in `../NDNSF-UAV-APP/`. It is a
+C++ application-layer demo for ground-station/drone control, telemetry, camera
+frames, ground-station object detection, and multi-drone patrol workflows over
+NDNSF.
+
 ## Build
 
 From the repository root:

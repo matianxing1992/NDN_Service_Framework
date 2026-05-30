@@ -81,6 +81,28 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    bld.program(name='UavDroneApp',
+                target='UavDroneApp',
+                source=[
+                    '../NDNSF-UAV-APP/drone/UavDroneApp.cpp',
+                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                ],
+                includes=['..', '../NDNSF-UAV-APP/shared'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
+    bld.program(name='UavGroundStationApp',
+                target='UavGroundStationApp',
+                source=[
+                    '../NDNSF-UAV-APP/ground-station/UavGroundStationApp.cpp',
+                    '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                ],
+                includes=['..', '../NDNSF-UAV-APP/shared'],
+                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     bld.program(name='App_WifiMobilityProvider',
                 target='App_WifiMobilityProvider',
                 source=['App_IntermittentProvider.cpp'],
