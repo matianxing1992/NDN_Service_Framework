@@ -21,10 +21,11 @@ selection.
 
 The first version demonstrates the main UAV workflow:
 
-- The ground station builds MAVLink bytes for `arm`, `takeoff`, and mission
-  commands.
+- The ground station builds MAVLink bytes for `arm`, `takeoff`, `land`, and
+  mission commands.
 - The drone receives NDNSF requests, verifies the NDNSF security path, and
-  forwards opaque MAVLink bytes to a `MockFlightControllerBackend`.
+  forwards opaque MAVLink bytes to either a mock backend or a UDP MAVLink
+  flight-controller backend.
 - The drone exposes telemetry and camera-frame services.
 - The ground station starts/stops video streaming through a provider-specific
   control service named under the target drone; the drone publishes frames
@@ -41,6 +42,13 @@ The drone does not interpret MAVLink command semantics. The ground station owns
 MAVLink message construction. The drone app treats MAVLink as opaque bytes and
 passes them to the flight-controller backend.
 
+MAVLink execution uses NDNSF Targeted invocation. The first command to a drone
+bootstraps through the normal authenticated request/ACK/selection/response
+flow and obtains one-time token pairs. Later `arm`, `takeoff`, and `land`
+commands use request/response-only Targeted calls to `/UAV/MAVLink/Execute`,
+reducing command latency while still validating the provider and rejecting
+token replay.
+
 ## Current Binaries
 
 ```text
@@ -49,8 +57,9 @@ UavDroneApp
   mission assignment.
 
 UavGroundStationApp
-  Ground-station user for patrol workflows. With --serve-object-detection, it
-  becomes a ground-station object detection provider.
+  Ground-station user for video, MAVLink command, and patrol workflows. With
+  --serve-object-detection, it becomes a ground-station object detection
+  provider.
 ```
 
 ## Services
@@ -229,7 +238,8 @@ The GUI should be a ground-station frontend over the same service layer:
 - drone availability and selected-provider view.
 
 The command path should remain identical: GUI actions build MAVLink bytes at the
-ground station, then send opaque MAVLink frames through NDNSF.
+ground station, then send opaque MAVLink frames through NDNSF Targeted service
+invocation.
 
 ## Build
 
@@ -262,10 +272,16 @@ nfd-start
   --video-bitrate-kbps 8000 --video-width 480
 ```
 
-Click `Start Video` in the ground-station window. The drone window should switch
-to `video streaming`, and the ground-station window should display the live
-video packet stream. Click `Stop Video` to stop the stream; the drone window should switch
-back to `Video stopped`.
+Click `Arm`, `Takeoff`, or `Land` in the ground-station window to send Targeted
+MAVLink commands to the drone. For keyboard operation, click `Start Control`:
+the GUI displays keycaps for `A Arm`, `T Takeoff`, `L Land`, `V Video`, and
+`S Stop`. While a key is held, its keycap turns black so the operator can see
+which command is active. Click `Start Video` or press `v` in control mode to
+begin the live stream.
+The drone window should switch to `video streaming`, and the ground-station
+window should display the live video packet stream. Click `Stop Video` or press
+`s` in control mode to stop the stream; the drone window should switch back to
+`Video stopped`.
 
 For an automated GUI smoke test without manual button clicks:
 
@@ -274,6 +290,19 @@ For an automated GUI smoke test without manual button clicks:
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480 \
   --auto-video-test --auto-stop-seconds 10
+```
+
+For a Targeted MAVLink command smoke test:
+
+```bash
+./build/examples/UavGroundStationApp --target-drone A --auto-mavlink-test
+```
+
+For a keyboard-shortcut smoke test that exercises the same `a/t/l` handlers used
+by the GUI:
+
+```bash
+./build/examples/UavGroundStationApp --target-drone A --auto-keyboard-test
 ```
 
 Expected smoke-test markers:
@@ -325,6 +354,44 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 The smoke test exits after checking that the ground station decoded video
 frames and that the drone entered and left streaming mode.
+
+For a non-interactive Targeted MAVLink smoke test:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-mavlink-test --no-cli
+```
+
+The test checks that the ground station receives Targeted responses for
+`arm`, `takeoff`, and `land`, and that the drone forwards opaque MAVLink bytes
+to the mock flight-controller backend.
+
+To run the same flow through the GUI keyboard shortcut path, replace
+`--auto-mavlink-test` with `--auto-keyboard-test`.
+
+To run PX4 SITL with jMAVSim on the same MiniNDN node as the drone and forward
+commands to PX4's GCS MAVLink UDP port:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --start-jmavsim \
+  --flight-controller-backend udp \
+  --mavlink-udp-port 18570
+```
+
+For a non-interactive PX4/jMAVSim smoke test:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --start-jmavsim --jmavsim-headless \
+  --auto-keyboard-test --no-cli
+```
+
+The launcher keeps MiniNDN node homes under `/tmp/minindn/<node>`, so it
+preserves the current Python package path for PX4 build helpers such as
+`kconfiglib`. It also passes `CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5` by
+default for newer CMake versions; override this with `--px4-cmake-args` if your
+PX4 checkout no longer needs it.
 
 ## Full NDNSF Service Sketch
 

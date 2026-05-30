@@ -17,9 +17,9 @@ provider selection。
 
 第一版展示 UAV workflow 的核心路径：
 
-- ground station 生成 `arm`、`takeoff` 和 mission command 的 MAVLink bytes。
+- ground station 生成 `arm`、`takeoff`、`land` 和 mission command 的 MAVLink bytes。
 - drone 收到 NDNSF request，完成 NDNSF 安全路径验证，然后把 opaque MAVLink bytes 转发给
-  `MockFlightControllerBackend`。
+  mock backend 或 UDP MAVLink flight-controller backend。
 - drone 提供 telemetry 和 camera-frame 服务。
 - ground station 通过目标 drone 名下的专属控制服务开启/停止图传；drone 在自己的命名空间下发布
   frame data，ground station 根据 frame name 拉取和预取后续帧。
@@ -33,6 +33,11 @@ provider selection。
 drone 不解释 MAVLink 命令语义。MAVLink message 由 ground station 构造。drone app 只把
 MAVLink 当作 opaque bytes，并交给 flight-controller backend。
 
+MAVLink execution 使用 NDNSF Targeted invocation。发给某架 drone 的第一条命令先走正常的
+request/ACK/selection/response 认证流程，并拿到一批一次性 token pair。后续 `arm`、`takeoff`
+和 `land` 命令使用 request/response-only Targeted 调用 `/UAV/MAVLink/Execute`，减少命令延迟，
+同时仍然验证 provider 并拒绝 token replay。
+
 ## 当前二进制
 
 ```text
@@ -40,8 +45,8 @@ UavDroneApp
   Drone-side provider，提供 MAVLink execution、telemetry、camera frame 和 mission assignment。
 
 UavGroundStationApp
-  Ground-station user，执行 patrol workflow。加上 --serve-object-detection 后，它会变成
-  ground-station object detection provider。
+  Ground-station user，执行 video、MAVLink command 和 patrol workflow。加上
+  --serve-object-detection 后，它会变成 ground-station object detection provider。
 ```
 
 ## 服务名
@@ -195,8 +200,8 @@ GUI 应该是同一套 service layer 上的 ground-station frontend：
 - object-detection result overlay；
 - drone availability 和 selected-provider view。
 
-命令路径保持不变：GUI action 在 ground station 端构造 MAVLink bytes，然后通过 NDNSF 发送
-opaque MAVLink frame。
+命令路径保持不变：GUI action 在 ground station 端构造 MAVLink bytes，然后通过 NDNSF Targeted
+service invocation 发送 opaque MAVLink frame。
 
 ## 构建
 
@@ -227,8 +232,12 @@ nfd-start
   --video-bitrate-kbps 8000 --video-width 480
 ```
 
-在 ground-station 窗口点击 `Start Video`。drone 窗口应该显示正在图传，ground-station 窗口应该能
-播放收到的 live video packet stream。点击 `Stop Video` 后，drone 窗口应该回到 `Video stopped`。
+在 ground-station 窗口点击 `Arm`、`Takeoff` 或 `Land`，可以通过 Targeted MAVLink command
+控制目标 drone。如果要用键盘操作，先点击 `Start Control`：GUI 会显示 `A Arm`、`T Takeoff`、
+`L Land`、`V Video`、`S Stop` 这些 keycap。按住某个键时，对应 keycap 会变成黑色，让 operator
+明确知道当前按下的是哪个控制键。点击 `Start Video` 或在 control mode 下按 `v` 后，drone 窗口
+应该显示正在图传，ground-station 窗口应该能播放收到的 live video packet stream。点击
+`Stop Video` 或在 control mode 下按 `s` 后，drone 窗口应该回到 `Video stopped`。
 
 如果要不手动点击按钮做 GUI smoke test：
 
@@ -237,6 +246,18 @@ nfd-start
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480 \
   --auto-video-test --auto-stop-seconds 10
+```
+
+如果要做 Targeted MAVLink command smoke test：
+
+```bash
+./build/examples/UavGroundStationApp --target-drone A --auto-mavlink-test
+```
+
+如果要测试 GUI 的 `a/t/l` 键盘快捷键路径：
+
+```bash
+./build/examples/UavGroundStationApp --target-drone A --auto-keyboard-test
 ```
 
 预期 smoke-test 标记：
@@ -283,6 +304,41 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 ```
 
 smoke test 会在确认 ground station 解码到视频 frame，且 drone 进入并退出 streaming 状态后退出。
+
+如果要做不需要人工点击的 Targeted MAVLink smoke test：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-mavlink-test --no-cli
+```
+
+这个测试会检查 ground station 收到 `arm`、`takeoff` 和 `land` 的 Targeted response，并检查
+drone 是否把 opaque MAVLink bytes 转发给 mock flight-controller backend。
+
+如果要测试同一套 GUI 键盘快捷键路径，把 `--auto-mavlink-test` 换成 `--auto-keyboard-test`。
+
+如果要把 PX4 SITL + jMAVSim 运行在和 DroneAPP 相同的 MiniNDN 节点，并把 MAVLink command
+转发到 PX4 的 GCS MAVLink UDP 端口：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --start-jmavsim \
+  --flight-controller-backend udp \
+  --mavlink-udp-port 18570
+```
+
+如果要做不需要人工操作的 PX4/jMAVSim smoke test：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --start-jmavsim --jmavsim-headless \
+  --auto-keyboard-test --no-cli
+```
+
+launcher 会把 MiniNDN 节点 HOME 放在 `/tmp/minindn/<node>` 下，因此它会保留当前 Python
+package path，供 PX4 build helper（例如 `kconfiglib`）使用。它也默认给较新的 CMake 版本传入
+`CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5`；如果你的 PX4 checkout 已经不需要这个参数，
+可以用 `--px4-cmake-args` 覆盖。
 
 ## 完整 NDNSF service 草图
 
