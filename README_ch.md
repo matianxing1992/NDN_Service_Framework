@@ -386,7 +386,7 @@ NDNSF_SVS_ASYNC_PUBLISH=1
 NDNSF_SVS_PARALLEL_SYNC=1
 NDNSF_SVS_PARALLEL_WORKERS=4
 NDNSF_SVS_PARALLEL_QUEUE=256
-NDNSF_SVS_PARALLEL_PRODUCTION=0
+NDNSF_SVS_PARALLEL_PRODUCTION=4
 NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING=0
 NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK=1
 adaptive admission: disabled
@@ -408,8 +408,8 @@ ndn-cxx: 0.9.0 (/usr/local/lib/libndn-cxx.so.0.9.0)
 NFD: 24.07-14-g2b43d675
 MiniNDN: 0.7.0 (/home/tianxing/NDN/mini-ndn)
 Mininet: 2.3.1b4
-ndn-svs: /home/tianxing/NDN/ndn-svs commit 8b26f10
-NDNSF: /home/tianxing/NDN/ndn-service-framework commit 1259111
+ndn-svs: /home/tianxing/NDN/ndn-svs commit 70302b6
+NDNSF: 记录该 profile 的当前仓库 commit
 OpenABE: /usr/local/lib/libopenabe.so，基于 OpenSSL 1.1.x 构建
 ```
 
@@ -451,10 +451,22 @@ RPS   Actual   Success   Avg ms   P50 ms   P95 ms   P99 ms   Timeout
 100   99.99    100%      166.40   165.67   169.04   174.19   0
 ```
 
-当前 60 秒、100 RPS 诊断解释了为什么后续持续运行可能高于 166 ms 的短窗口
-baseline。除非实验明确要测试这个 timer，否则不要修改 ndn-svs periodic Sync
-Interest 时间：periodic sync 会影响 piggyback 机会。Sync Interest suppression
-应保持在 1-5 ms 范围内；本复现 profile 使用 1 ms。
+当前 60 秒诊断确认，在切换到 StateVectorSync v3 bootstrap-time wire format
+之后，低延迟区间仍然可以达到。新的 SVS wire format 为
+`StateVectorEntry(Name, SeqNoEntry(BootstrapTime, SeqNo))`。关键 harness 设置是
+`NDNSF_SVS_PARALLEL_PRODUCTION=4`。之前 `--performance-mode` 默认值误把它设成
+`0`，导致相同 20 RPS workload 上升到约 210 ms。恢复 parallel Sync Interest
+production 后，20 RPS 和 100 RPS 都回到了 160-170 ms 区间：
+
+```text
+Result directory                                      RPS    Actual   Success   Avg ms   P50 ms   P95 ms   P99 ms   Timeout
+results/newapi_testbed_rate_series_20260529_201154   20     20.00    100%      162.04   161.92   163.68   165.83   0
+results/newapi_testbed_rate_series_20260529_201458   100    100.00   100%      164.38   164.00   167.46   173.67   0
+```
+
+除非实验明确要测试 periodic Sync Interest timer，否则不要修改这个 timer：
+periodic sync 会影响 piggyback 机会。Sync Interest suppression 应保持在
+1-5 ms 范围内；本复现 profile 使用 1 ms。
 
 当前 open-loop 生成器避免零延迟 catch-up burst。event loop 落后时，它会记录
 delayed publications，并用有下限的 catch-up 间隔，而不是把多个已到期请求连续
@@ -475,19 +487,8 @@ SVS/NFD delivery：REQUEST-to-ACK p50 约 97 ms，SELECTION-to-RESPONSE p50 约
 piggyback delivery effectiveness，而不是继续调整 periodic-sync timer、增加
 hot-path 日志，或优化应用层 crypto。
 
-后续诊断隔离出一个重要 delivery 抖动来源：parallel Sync Interest production。
-使用 `--svs-disable-parallel-production` 并把 send-but-not-measure warmup 扩到
-60 秒后，持续 60 秒、100 RPS measured run 回到了低延迟区间。随后又验证了
-默认 `--performance-mode` profile，结果目录为
-`results/newapi_minindn_perf_20260529_131700`：
-
-```text
-Actual RPS  Success  Avg ms  P50 ms  P95 ms  P99 ms  Timeout
-100.000     100.00%  168.23  166.77  177.15  190.17  0
-```
-
-这说明 166 ms 行为并不只存在于短窗口；系统进入 steady state 后，60 秒持续
-测量也能达到接近该水平。parallel production 会把本地 publication delay 隐藏
-在 worker queue 后面：应用 timeline 里本地 publish 仍是亚毫秒级，但端到端
-delivery 会增加额外 tail。验证 latency floor 时应使用这个 profile；只有当实验
-明确研究 throughput/CPU tradeoff 时才启用 parallel production。
+2026-05-29 这次 regression 的主要经验是：即使协议和代码路径本身正确，如果
+harness 悄悄关闭 parallel SVS production，benchmark 也会显得很慢。验证
+latency floor 时应保持 `--performance-mode` 与上面的 runtime profile 一致；
+只有在实验明确研究单线程 production 行为时，才设置
+`--svs-disable-parallel-production`。
