@@ -72,6 +72,67 @@ under `/example/uav/drone/A/UAV/Camera/Video`; the control action distinguishes
 start from stop. `/UAV/GS/ObjectDetection` is provided by the ground station for
 heavier compute on uploaded frames.
 
+## Patrol Task Compensation
+
+Patrol missions are modeled as application-level tasks that may require more
+than one NDNSF service invocation to complete. NDNSF still sees each invocation
+as an independent request with a fresh `requestId`, `UserToken`, and
+`ProviderToken`; the ground-station application links them with a shared
+`patrol_task_id`.
+
+The ground station keeps a small patrol task ledger:
+
+```text
+patrol_task_id
+attempt_id
+part_id
+assigned_provider
+state: pending / done / missing / compensated
+response_digest
+deadline_ms
+```
+
+The first attempt assigns all parts of a task by choosing candidate providers
+for each part. If the deadline expires and one or more parts have no valid
+response, the ground station sends one or more compensation requests containing
+only the missing parts. A compensation request does not restart the whole
+mission; it is another NDNSF invocation that belongs to the same
+application-level patrol task.
+
+The mission service remains a shared service name, `/UAV/Mission/Assign`.
+Task assignment is not encoded as a provider name inside the payload. Instead,
+providers use their selective ACK handler to report whether they currently have
+a mission slot available. A busy drone still publishes an ACK, but the ACK has
+`status=false` and metadata such as `mission_busy=true` and `queue=1`. Idle
+drones publish `status=true`, allowing normal NDNSF provider selection to pick
+an available drone.
+
+Example:
+
+```text
+Attempt 1:
+  part0 -> drone A
+  part1 -> drone B
+
+Result:
+  part1 done
+  part0 missing
+
+Attempt 2:
+  part0 -> candidates {drone A, drone B}
+  drone A ACK: mission_busy=true
+  drone B ACK: mission_busy=false
+  selection -> drone B
+
+Task:
+  done when part0 and part1 both have valid responses
+```
+
+This keeps NDNSF generic. The framework handles secure request, ACK,
+selection, response, provider tokens, replay protection, and timeout behavior.
+The UAV application owns patrol-specific semantics such as part status,
+deadlines, compensation, and final task completion.
+
 ## Video Streaming Design
 
 Video streaming is not modeled as a long service response. Control and data use

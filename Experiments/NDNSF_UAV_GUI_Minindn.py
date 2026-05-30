@@ -54,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gs-node", default="memphis")
     parser.add_argument("--drone-node", default="ucla")
     parser.add_argument("--drone-id", default="A")
+    parser.add_argument("--patrol-drone-nodes", default="ucla,wustl",
+                        help="Comma-separated MiniNDN nodes for the auto patrol demo.")
+    parser.add_argument("--patrol-drone-ids", default="A,B",
+                        help="Comma-separated drone IDs for the auto patrol demo.")
     parser.add_argument("--video-source", default=str(DEFAULT_VIDEO_SOURCE))
     parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
@@ -63,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nfd-log-level", default="WARN")
     parser.add_argument("--auto-video-test", action="store_true",
                         help="Have the GS auto-start and auto-stop video for smoke testing.")
+    parser.add_argument("--auto-patrol-test", action="store_true",
+                        help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-stop-seconds", type=int, default=10)
     parser.add_argument("--no-cli", action="store_true",
                         help="Do not open the MiniNDN CLI; wait until interrupted.")
@@ -79,6 +85,20 @@ def app_cmd(binary: Path, argv: list[str]) -> str:
     parts = ["cd", shell_quote(REPO), "&&", "exec", shell_quote(binary)]
     parts.extend(shell_quote(arg) for arg in argv)
     return " ".join(parts)
+
+
+def csv_values(value: str) -> list[str]:
+    return [item for item in (part.strip() for part in value.split(",")) if item]
+
+
+def active_drones(args: argparse.Namespace) -> list[tuple[str, str]]:
+    if not args.auto_patrol_test:
+        return [(args.drone_id, args.drone_node)]
+    ids = csv_values(args.patrol_drone_ids)
+    nodes = csv_values(args.patrol_drone_nodes)
+    if len(ids) != len(nodes) or len(ids) < 2:
+        raise ValueError("--auto-patrol-test requires matching --patrol-drone-ids and --patrol-drone-nodes with at least two entries")
+    return list(zip(ids, nodes))
 
 
 def resolve_repo_path(value: str) -> str:
@@ -148,11 +168,13 @@ def run_shell(command: str) -> None:
 
 
 def setup_node_keychains(ndn, args: argparse.Namespace, output_dir: Path) -> dict[str, Path]:
+    drones = active_drones(args)
     homes = {
         args.controller_node: node_home(ndn, args.controller_node),
         args.gs_node: node_home(ndn, args.gs_node),
-        args.drone_node: node_home(ndn, args.drone_node),
     }
+    for _, node_name in drones:
+        homes[node_name] = node_home(ndn, node_name)
     for node_name, home in homes.items():
         subprocess.run(["rm", "-rf", str(home / ".ndn")], check=False)
         write_node_client_conf(home, node_name)
@@ -166,8 +188,9 @@ def setup_node_keychains(ndn, args: argparse.Namespace, output_dir: Path) -> dic
     identities = {
         args.controller_node: "/example/uav/controller",
         args.gs_node: "/example/uav/gs",
-        args.drone_node: f"/example/uav/drone/{args.drone_id}",
     }
+    for drone_id, node_name in drones:
+        identities[node_name] = f"/example/uav/drone/{drone_id}"
     bags = []
     for node_name, identity in identities.items():
         bag = output_dir / f"{node_name}.safebag"
@@ -216,6 +239,7 @@ def maybe_allow_x11(args: argparse.Namespace) -> None:
 
 
 def configure_routes(ndn, args: argparse.Namespace) -> None:
+    drones = active_drones(args)
     routing = NdnRoutingHelper(ndn.net, "udp", "link-state")
     routing.addOrigin(
         [ndn.net[args.controller_node]],
@@ -225,11 +249,12 @@ def configure_routes(ndn, args: argparse.Namespace) -> None:
         [ndn.net[args.gs_node]],
         ["/example/uav/gs", "/example/uav/gs/KEY", "/example/uav/group"],
     )
-    drone_prefix = f"/example/uav/drone/{args.drone_id}"
-    routing.addOrigin(
-        [ndn.net[args.drone_node]],
-        [drone_prefix, f"{drone_prefix}/KEY", "/example/uav/group"],
-    )
+    for drone_id, node_name in drones:
+        drone_prefix = f"/example/uav/drone/{drone_id}"
+        routing.addOrigin(
+            [ndn.net[node_name]],
+            [drone_prefix, f"{drone_prefix}/KEY", "/example/uav/group"],
+        )
     routing.calculateRoutes()
     for node in ndn.net.hosts:
         for prefix in ("/example/uav", "/example/uav/group", "/example/uav/group/sync"):
@@ -237,14 +262,14 @@ def configure_routes(ndn, args: argparse.Namespace) -> None:
 
 
 def dump_uav_routes(ndn, args: argparse.Namespace, output_dir: Path) -> None:
-    drone_prefix = f"/example/uav/drone/{args.drone_id}"
-    for node_name in (args.gs_node, args.drone_node):
+    drone_prefixes = [f"/example/uav/drone/{drone_id}" for drone_id, _ in active_drones(args)]
+    for node_name in [args.gs_node] + [node_name for _, node_name in active_drones(args)]:
         node = ndn.net[node_name]
         route_log = output_dir / f"{node_name}-nfd-routes.log"
         text = perf.node_cmd(
             node,
             "nfdc fib list | grep -E '({}|/example/uav)' || true".format(
-                shell_quote(drone_prefix).strip("'")))
+                "|".join(shell_quote(prefix).strip("'") for prefix in drone_prefixes)))
         route_log.write_text(text, encoding="utf-8")
 
 
@@ -334,7 +359,11 @@ def main() -> int:
         homes = setup_node_keychains(ndn, args, output_dir)
 
         controller_env = make_env(args, args.controller_node, homes[args.controller_node])
-        drone_env = make_env(args, args.drone_node, homes[args.drone_node])
+        drones = active_drones(args)
+        drone_envs = {
+            drone_id: make_env(args, node_name, homes[node_name])
+            for drone_id, node_name in drones
+        }
         gs_env = make_env(args, args.gs_node, homes[args.gs_node])
 
         controller_cmd = app_cmd(APP_CONTROLLER, [
@@ -355,14 +384,19 @@ def main() -> int:
                 f"see {controller_log}\n--- tail ---\n{read_tail(controller_log)}"
             )
 
-        drone_cmd = app_cmd(APP_DRONE, [
-            "--drone-id", args.drone_id,
-            "--video-source", resolve_repo_path(args.video_source),
-        ])
-        drone_proc, drone_log = start(ndn.net[args.drone_node], "drone",
-                                      drone_cmd, drone_env, output_dir, processes)
-        if not wait_log(drone_log, "DRONE_GUI_READY", 30, drone_proc):
-            raise RuntimeError(f"drone GUI did not start; see {drone_log}")
+        drone_logs = {}
+        for drone_id, node_name in drones:
+            drone_cmd = app_cmd(APP_DRONE, [
+                "--drone-id", drone_id,
+                "--video-source", resolve_repo_path(args.video_source),
+            ])
+            label = "drone" if len(drones) == 1 else f"drone-{drone_id}"
+            drone_proc, drone_log = start(ndn.net[node_name], label,
+                                          drone_cmd, drone_envs[drone_id],
+                                          output_dir, processes)
+            drone_logs[drone_id] = drone_log
+            if not wait_log(drone_log, "DRONE_GUI_READY", 30, drone_proc):
+                raise RuntimeError(f"drone {drone_id} GUI did not start; see {drone_log}")
 
         gs_argv = [
             "--target-drone", args.drone_id,
@@ -371,21 +405,45 @@ def main() -> int:
         ]
         if args.auto_video_test:
             gs_argv += ["--auto-video-test", "--auto-stop-seconds", str(args.auto_stop_seconds)]
+        if args.auto_patrol_test:
+            gs_argv += [
+                "--auto-patrol-test",
+                "--patrol-drones", ",".join(drone_id for drone_id, _ in drones),
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "3000",
+            ]
         gs_proc, gs_log = start(ndn.net[args.gs_node], "ground-station",
                                 app_cmd(APP_GS, gs_argv), gs_env, output_dir, processes)
-        if not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
+        if not args.auto_patrol_test and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
         print("")
         print("NDNSF_UAV_GUI_MININDN_READY")
         print(f"  controller: {args.controller_node} log={controller_log}")
-        print(f"  drone:      {args.drone_node} log={drone_log}")
+        for drone_id, node_name in drones:
+            print(f"  drone {drone_id}:  {node_name} log={drone_logs[drone_id]}")
         print(f"  gs:         {args.gs_node} log={gs_log}")
         print("Use the Ground Station window buttons to start/stop video.")
         print("Type 'exit' in the MiniNDN CLI, or press Ctrl-C here, to stop the demo.")
         print("")
 
-        if args.auto_video_test and args.no_cli:
+        if args.auto_patrol_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station patrol smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "PATROL_TASK_START")
+            require_log(gs_log, "PATROL_PART_MISSING")
+            require_log(gs_log, "PATROL_COMPENSATION")
+            require_log(gs_log, "PATROL_ACK_BUSY")
+            require_log(gs_log, "attempt=1 part=part1 provider=B")
+            require_log(gs_log, "attempt=2 part=part0 provider=B")
+            require_log(gs_log, "PATROL_TASK_DONE")
+            require_log(drone_logs[drones[0][0]], "mission response delayed")
+            print("NDNSF_UAV_PATROL_MININDN_SMOKE_OK")
+        elif args.auto_video_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=max(45, args.auto_stop_seconds + 35))
             except subprocess.TimeoutExpired as e:
@@ -395,8 +453,8 @@ def main() -> int:
             require_log(gs_log, "GS_STATUS Video packet stream")
             require_log(gs_log, "GS_DECODED_FRAMES count=30")
             require_log(gs_log, "GS_GUI_EXIT rc=0")
-            require_log(drone_log, "DRONE_STATUS drone=" + args.drone_id + " video streaming")
-            require_log(drone_log, "DRONE_STATUS drone=" + args.drone_id + " video stopped")
+            require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video streaming")
+            require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video stopped")
             print("NDNSF_UAV_GUI_MININDN_SMOKE_OK")
         elif args.no_cli:
             while True:
