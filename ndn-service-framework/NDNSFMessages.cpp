@@ -12,6 +12,10 @@ void RequestMessage::setUserToken(const std::string& userToken) {
     userToken_ = userToken;
 }
 
+void RequestMessage::setProviderToken(const std::string& providerToken) {
+    providerToken_ = providerToken;
+}
+
 void RequestMessage::setPayload(ndn::Buffer& payload, size_t size) {
     payload_ = payload;
     payloadSize_ = size;
@@ -41,6 +45,10 @@ const std::string& RequestMessage::getUserToken() const {
     return userToken_;
 }
 
+const std::string& RequestMessage::getProviderToken() const {
+    return providerToken_;
+}
+
 ndn::Buffer RequestMessage::getPayload() const {
     return payload_;
 }
@@ -68,6 +76,7 @@ size_t RequestMessage::getPolicyEpoch() const {
 void RequestMessage::Clear() {
     tokens_.clear();
     userToken_.clear();
+    providerToken_.clear();
     payload_.clear();
     payloadSize_ = 0;
     strategy_ = tlv::FirstResponding;
@@ -87,6 +96,9 @@ ndn::Block RequestMessage::WireEncode() const {
     }
     if (!userToken_.empty()) {
         block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
+    }
+    if (!providerToken_.empty()) {
+        block.push_back(ndn::makeStringBlock(tlv::ProviderTokenType, providerToken_));
     }
     // payload
     ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
@@ -129,6 +141,9 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
         else if (b.type() == tlv::UserTokenType) {
             userToken_ = ndn::readString(b);
         }
+        else if (b.type() == tlv::ProviderTokenType) {
+            providerToken_ = ndn::readString(b);
+        }
         else if (b.type() == tlv::PayloadType) {
             payload_ = ndn::Buffer(b.value(),b.value_size());
             payloadSize_ = b.value_size();
@@ -160,6 +175,10 @@ void ResponseMessage::setErrorInfo(const std::string& errorInfo) {
     errorInfo_ = errorInfo;
 }
 
+void ResponseMessage::setTokens(const std::map<std::string, std::string>& tokens) {
+    tokens_ = tokens;
+}
+
 void ResponseMessage::setUserToken(const std::string& userToken) {
     userToken_ = userToken;
 }
@@ -181,6 +200,10 @@ const std::string& ResponseMessage::getErrorInfo() const {
     return errorInfo_;
 }
 
+const std::map<std::string, std::string>& ResponseMessage::getTokens() const {
+    return tokens_;
+}
+
 const std::string& ResponseMessage::getUserToken() const {
     return userToken_;
 }
@@ -200,6 +223,7 @@ size_t ResponseMessage::getPolicyEpoch() const {
 void ResponseMessage::Clear() {
     status_ = false;
     errorInfo_.clear();
+    tokens_.clear();
     userToken_.clear();
     payload_.clear();
     payloadSize_ = 0;
@@ -216,6 +240,9 @@ ndn::Block ResponseMessage::WireEncode() const {
     block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::StatusType, static_cast<int>(status_)));
     // 编码 errorInfo
     block.push_back(ndn::makeStringBlock(tlv::ErrorInfoType, errorInfo_));
+    for (const auto& token : tokens_) {
+        block.push_back(ndn::makeStringBlock(tlv::TokenType, token.first + "=" + token.second));
+    }
     if (!userToken_.empty()) {
         block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
     }
@@ -243,6 +270,13 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::ErrorInfoType) {
             errorInfo_ = ndn::readString(b);
+        }
+        else if (b.type() == tlv::TokenType) {
+            std::string tokenStr = ndn::readString(b);
+            size_t pos = tokenStr.find('=');
+            if (pos != std::string::npos) {
+                tokens_[tokenStr.substr(0, pos)] = tokenStr.substr(pos + 1);
+            }
         }
         else if (b.type() == tlv::UserTokenType) {
             userToken_ = ndn::readString(b);

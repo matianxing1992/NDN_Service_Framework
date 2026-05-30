@@ -261,6 +261,7 @@ public:
       return;
     }
     m_seenVideoStart = false;
+    m_videoStartRetries = 0;
     startVideoAttempt();
   }
 
@@ -564,10 +565,10 @@ private:
                   m_keyLane = PacketLane{};
                   m_deltaLane = PacketLane{"packet", 0, 0, 0, 0};
 	                  m_videoPumpScheduled = false;
-	                  m_streaming = true;
-	                  m_seenVideoStart = true;
-	                  m_videoStartInFlight = false;
-	                  m_firstFrameMs = 0;
+                  m_streaming = true;
+                  m_seenVideoStart = true;
+                  m_videoStartInFlight = false;
+                  m_firstFrameMs = 0;
                   m_receivedChunks = 0;
                   m_frameNacks = 0;
                   m_frameTimeouts = 0;
@@ -581,14 +582,27 @@ private:
                   stopDecoder();
                   startDecoder();
                   publishStatus("Video packet stream from " + prefix);
-	                  requestVideoPackets();
-	                },
-	                [this] { return m_seenVideoStart.load(); },
-	                [this] {
-	                  if (!m_seenVideoStart.load()) {
-	                    m_videoStartInFlight = false;
-	                  }
-	                });
+                  requestVideoPackets();
+                },
+                [this] {
+                  if (m_seenVideoStart.load()) {
+                    return true;
+                  }
+                  const uint64_t retry = m_videoStartRetries.fetch_add(1);
+                  if (retry < MAX_VIDEO_START_RETRIES) {
+                    publishStatus("Video start retry " + std::to_string(retry + 1));
+                    m_face.getIoContext().post([this] {
+                      startVideoAttempt();
+                    });
+                    return true;
+                  }
+                  return false;
+                },
+                [this] {
+                  if (!m_seenVideoStart.load()) {
+                    m_videoStartInFlight = false;
+                  }
+                });
   }
 
   void
@@ -1449,6 +1463,7 @@ private:
   std::atomic<bool> m_seenVideoStart{false};
   std::atomic<bool> m_videoStartInFlight{false};
   std::atomic<bool> m_videoStopInFlight{false};
+  std::atomic<uint64_t> m_videoStartRetries{0};
   std::atomic<uint64_t> m_firstFrameMs{0};
   std::atomic<uint64_t> m_receivedChunks{0};
   std::atomic<uint64_t> m_frameNacks{0};
@@ -1473,6 +1488,7 @@ private:
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t m_decoderReorderWindow = 12;
   static constexpr uint64_t m_decoderMissingTimeoutMs = 80;
+  static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
   std::atomic<bool> m_done{false};
   std::atomic<bool> m_videoPumpScheduled{false};
   std::mutex m_decoderQueueMutex;
@@ -1532,7 +1548,8 @@ serveObjectDetection(ndn::Face& face, ndn::KeyChain& keyChain,
 class GroundStationWindow : public Gtk::Window
 {
 public:
-  GroundStationWindow(GroundStationRuntime& runtime, bool autoStart, int autoStopSeconds)
+  GroundStationWindow(GroundStationRuntime& runtime, bool autoStart,
+                      int autoStopSeconds, int autoStartDelayMs)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_buttons(Gtk::ORIENTATION_HORIZONTAL, 8)
@@ -1573,11 +1590,19 @@ public:
       {
         std::lock_guard<std::mutex> guard(m_mutex);
         if (status.rfind("Video packet stream", 0) == 0) {
+          setPendingButtonStateLocked(false, true);
           beginLocalStreamViewLocked();
         }
         else if (status.rfind("Video stopped", 0) == 0) {
+          setPendingButtonStateLocked(true, false);
           m_acceptFrames = false;
           status += ", decoded=" + std::to_string(m_decodedFrames.load());
+        }
+        else if (status.rfind("Timeout waiting for ", 0) == 0 ||
+                 status.rfind("Video control response missing", 0) == 0 ||
+                 status.rfind("NDNSF runtime not ready", 0) == 0) {
+          setPendingButtonStateLocked(true, false);
+          m_acceptFrames = false;
         }
         m_pendingStatus = std::move(status);
       }
@@ -1589,6 +1614,11 @@ public:
 
     m_statusDispatcher.connect([this] {
       std::lock_guard<std::mutex> guard(m_mutex);
+      if (m_pendingButtonState) {
+        m_start.set_sensitive(m_pendingStartSensitive);
+        m_stop.set_sensitive(m_pendingStopSensitive);
+        m_pendingButtonState = false;
+      }
       m_status.set_text(m_pendingStatus);
     });
     m_frameDispatcher.connect([this] {
@@ -1609,10 +1639,10 @@ public:
       }
     });
 
-    if (autoStart) {
-      std::thread([this, autoStopSeconds] {
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-        m_runtime.startVideo();
+	    if (autoStart) {
+	      std::thread([this, autoStopSeconds, autoStartDelayMs] {
+	        std::this_thread::sleep_for(std::chrono::milliseconds(autoStartDelayMs));
+	        m_runtime.startVideo();
         for (int i = 0; i < 100 && !m_runtime.isStreaming(); ++i) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -1627,6 +1657,14 @@ public:
   }
 
 private:
+  void
+  setPendingButtonStateLocked(bool startSensitive, bool stopSensitive)
+  {
+    m_pendingButtonState = true;
+    m_pendingStartSensitive = startSensitive;
+    m_pendingStopSensitive = stopSensitive;
+  }
+
   void
   beginLocalStreamView()
   {
@@ -1705,6 +1743,9 @@ private:
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;
   uint64_t m_pendingSeq = 0;
   uint64_t m_pendingElapsedMs = 0;
+  bool m_pendingButtonState = false;
+  bool m_pendingStartSensitive = true;
+  bool m_pendingStopSensitive = false;
   uint64_t m_streamGeneration = 0;
   bool m_acceptFrames = false;
   std::atomic<uint64_t> m_decodedFrames{0};
@@ -1718,9 +1759,10 @@ main(int argc, char** argv)
   try {
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const bool objectDetectionMode = hasFlag(argc, argv, "--serve-object-detection");
-    const bool autoStart = hasFlag(argc, argv, "--auto-video-test");
-    const bool autoPatrolTest = hasFlag(argc, argv, "--auto-patrol-test");
-    const int autoStopSeconds = std::stoi(getOption(argc, argv, "--auto-stop-seconds", "10"));
+	    const bool autoStart = hasFlag(argc, argv, "--auto-video-test");
+	    const bool autoPatrolTest = hasFlag(argc, argv, "--auto-patrol-test");
+	    const int autoStopSeconds = std::stoi(getOption(argc, argv, "--auto-stop-seconds", "10"));
+	    const int autoStartDelayMs = std::stoi(getOption(argc, argv, "--auto-start-delay-ms", "3000"));
     const std::string targetDroneId = getOption(argc, argv, "--target-drone", "A");
     auto patrolDroneIds = splitCsv(getOption(argc, argv, "--patrol-drones", targetDroneId));
     const int ackTimeoutMs = std::stoi(getOption(argc, argv, "--ack-timeout-ms", "500"));
@@ -1754,7 +1796,7 @@ main(int argc, char** argv)
       return ok ? 0 : 2;
     }
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
-    GroundStationWindow window(*runtime, autoStart, autoStopSeconds);
+	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds, autoStartDelayMs);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
               << " auto_video_test=" << (autoStart ? "true" : "false") << std::endl;

@@ -1580,6 +1580,82 @@ namespace ndn_service_framework
                                    providerToken);
     }
 
+    bool ServiceProvider::consumeTargetedProviderToken(
+        const ndn::Name& requesterIdentity,
+        const ndn::Name& serviceName,
+        const RequestMessage& requestMessage,
+        std::string& error) const
+    {
+        if (!m_useTokens) {
+            return true;
+        }
+        if (requestMessage.getProviderToken().empty()) {
+            error = "Targeted request missing ProviderToken";
+            return false;
+        }
+        if (requestMessage.getUserToken().empty()) {
+            error = "Targeted request missing UserToken";
+            return false;
+        }
+
+        const std::string tokenHash =
+            replayTokenHash("TARGETED", requesterIdentity,
+                            serviceName, requestMessage.getProviderToken());
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        if (m_consumedTargetedProviderTokenHashes.find(tokenHash) !=
+            m_consumedTargetedProviderTokenHashes.end()) {
+            error = "Targeted ProviderToken replayed";
+            return false;
+        }
+        auto tokenIt = m_targetedProviderTokens.find(tokenHash);
+        if (tokenIt == m_targetedProviderTokens.end()) {
+            error = "Targeted ProviderToken is unknown or expired";
+            return false;
+        }
+        const auto state = tokenIt->second;
+        if (!state.requesterIdentity.equals(requesterIdentity) ||
+            !state.serviceName.equals(serviceName) ||
+            state.userToken != requestMessage.getUserToken()) {
+            error = "Targeted token pair mismatch";
+            return false;
+        }
+        m_targetedProviderTokens.erase(tokenIt);
+        m_consumedTargetedProviderTokenHashes.insert(tokenHash);
+        return true;
+    }
+
+    void ServiceProvider::attachTargetedTokenBatch(
+        const ndn::Name& requesterIdentity,
+        const ndn::Name& serviceName,
+        ResponseMessage& response) const
+    {
+        if (!m_useTokens || !response.getStatus()) {
+            return;
+        }
+
+        constexpr size_t tokenPairCount = 8;
+        std::map<std::string, std::string> tokens = response.getTokens();
+        std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+        for (size_t i = 0; i < tokenPairCount; ++i) {
+            const auto providerToken = makeOneTimeToken();
+            const auto userToken = makeOneTimeToken();
+            const auto tokenHash =
+                replayTokenHash("TARGETED", requesterIdentity,
+                                serviceName, providerToken);
+            m_targetedProviderTokens[tokenHash] =
+                TargetedProviderTokenState{requesterIdentity, serviceName, userToken};
+            tokens["targeted." + std::to_string(i) + ".provider"] = providerToken;
+            tokens["targeted." + std::to_string(i) + ".user"] = userToken;
+        }
+        tokens["targeted.count"] = std::to_string(tokenPairCount);
+        response.setTokens(tokens);
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=TARGETED_TOKEN_BATCH_ATTACHED timestamp_us="
+                  << nowMicroseconds()
+                  << " requesterName=" << requesterIdentity.toUri()
+                  << " serviceName=" << serviceName.toUri()
+                  << " count=" << tokenPairCount);
+    }
+
     bool ServiceProvider::finishTargetedRequestOnEventLoop(
         const ndn::Name& requesterIdentity,
         const ndn::Name& serviceName,
@@ -1621,6 +1697,19 @@ namespace ndn_service_framework
                                                requestId,
                                                requestMessage,
                                                "Service is not registered for targeted mode");
+            return true;
+        }
+        std::string tokenError;
+        if (!consumeTargetedProviderToken(requesterIdentity,
+                                          serviceName,
+                                          requestMessage,
+                                          tokenError)) {
+            publishExecutionFailureOnEventLoop(requesterIdentity,
+                                               identity,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               tokenError);
             return true;
         }
 
@@ -1880,6 +1969,12 @@ namespace ndn_service_framework
             ProviderRequestLifecycleState::EXECUTION_DONE);
         if (m_useTokens) {
             response.setUserToken(requestMessage.getUserToken());
+        }
+        auto registeredService = m_services.find(serviceName);
+        if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
+            registeredService != m_services.end() &&
+            registeredService->second.mode == ServiceMode::Targeted) {
+            attachTargetedTokenBatch(requesterName, serviceName, response);
         }
         response.setPolicyEpoch(m_currentPolicyEpoch);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=RESPONSE_DISPATCHED timestamp_us="
@@ -2978,6 +3073,29 @@ namespace ndn_service_framework
                     return makeErrorResponse("Service is not registered for targeted mode for " +
                                              parsedV2->serviceName.toUri());
                 }
+                std::string tokenError;
+                if (!consumeTargetedProviderToken(parsedV2->requesterName,
+                                                  parsedV2->serviceName,
+                                                  requestMessage,
+                                                  tokenError)) {
+                    return makeErrorResponse(tokenError + " for " +
+                                             parsedV2->serviceName.toUri());
+                }
+            }
+            else if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest) {
+                if (requestMessage.getTargetProvider().empty()) {
+                    return makeErrorResponse("Targeted bootstrap missing target provider for " +
+                                             parsedV2->serviceName.toUri());
+                }
+                if (!requestMessage.getTargetProvider().equals(identity)) {
+                    return makeErrorResponse("Targeted bootstrap is for " +
+                                             requestMessage.getTargetProvider().toUri());
+                }
+                if (service == m_services.end() ||
+                    service->second.mode != ServiceMode::Targeted) {
+                    return makeErrorResponse("Service is not registered for targeted mode for " +
+                                             parsedV2->serviceName.toUri());
+                }
             }
             else if (service != m_services.end() &&
                      service->second.mode == ServiceMode::Targeted) {
@@ -2996,6 +3114,13 @@ namespace ndn_service_framework
                                             requestMessage);
             if (m_useTokens) {
                 response.setUserToken(requestMessage.getUserToken());
+            }
+            if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
+                service != m_services.end() &&
+                service->second.mode == ServiceMode::Targeted) {
+                attachTargetedTokenBatch(parsedV2->requesterName,
+                                         parsedV2->serviceName,
+                                         response);
             }
             response.setPolicyEpoch(m_currentPolicyEpoch);
             return response;
@@ -3034,6 +3159,29 @@ namespace ndn_service_framework
                 return makeErrorResponse("Service is not registered for targeted mode for " +
                                          parsed->serviceName.toUri());
             }
+            std::string tokenError;
+            if (!consumeTargetedProviderToken(parsed->requesterIdentity,
+                                              parsed->serviceName,
+                                              requestMessage,
+                                              tokenError)) {
+                return makeErrorResponse(tokenError + " for " +
+                                         parsed->serviceName.toUri());
+            }
+        }
+        else if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest) {
+            if (requestMessage.getTargetProvider().empty()) {
+                return makeErrorResponse("Targeted bootstrap missing target provider for " +
+                                         parsed->serviceName.toUri());
+            }
+            if (!requestMessage.getTargetProvider().equals(identity)) {
+                return makeErrorResponse("Targeted bootstrap is for " +
+                                         requestMessage.getTargetProvider().toUri());
+            }
+            if (service == m_services.end() ||
+                service->second.mode != ServiceMode::Targeted) {
+                return makeErrorResponse("Service is not registered for targeted mode for " +
+                                         parsed->serviceName.toUri());
+            }
         }
         else if (service != m_services.end() &&
                  service->second.mode == ServiceMode::Targeted) {
@@ -3052,6 +3200,13 @@ namespace ndn_service_framework
                                         requestMessage);
         if (m_useTokens) {
             response.setUserToken(requestMessage.getUserToken());
+        }
+        if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
+            service != m_services.end() &&
+            service->second.mode == ServiceMode::Targeted) {
+            attachTargetedTokenBatch(parsed->requesterIdentity,
+                                     parsed->serviceName,
+                                     response);
         }
         response.setPolicyEpoch(m_currentPolicyEpoch);
         return response;
@@ -3142,6 +3297,7 @@ namespace ndn_service_framework
         pendingProviderTokens.erase(pendingKey);
         m_recentProviderRequests.erase(pendingKey);
         m_selectedProviderRequests.erase(pendingKey);
+        m_selectionDecryptsInFlight.erase(pendingKey);
         auto selectedTokenHashIt = m_selectedProviderTokenHashes.find(pendingKey);
         if (selectedTokenHashIt != m_selectedProviderTokenHashes.end()) {
             m_consumedProviderTokenHashes.erase(selectedTokenHashIt->second);
@@ -3185,6 +3341,7 @@ namespace ndn_service_framework
         pendingProviderTokens.erase(pendingKey);
         m_recentProviderRequests.erase(pendingKey);
         m_selectedProviderRequests.erase(pendingKey);
+        m_selectionDecryptsInFlight.erase(pendingKey);
         auto selectedTokenHashIt = m_selectedProviderTokenHashes.find(pendingKey);
         if (selectedTokenHashIt != m_selectedProviderTokenHashes.end()) {
             m_consumedProviderTokenHashes.erase(selectedTokenHashIt->second);
@@ -4296,6 +4453,17 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         auto collabService = m_collaborationServices.find(serviceName);
         if (service != m_services.end() &&
             service->second.mode == ServiceMode::Targeted) {
+            if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest) {
+                if (requestMessage.getTargetProvider().empty() ||
+                    !requestMessage.getTargetProvider().equals(identity)) {
+                    NDN_LOG_DEBUG("Ignore targeted bootstrap for different provider target="
+                                  << requestMessage.getTargetProvider().toUri()
+                                  << " local=" << identity.toUri()
+                                  << " requestId=" << requestId.toUri());
+                    return;
+                }
+            }
+            else {
             AckDecision decision;
             decision.status = false;
             decision.message = "Service is targeted-only";
@@ -4305,6 +4473,7 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                                          std::move(requestMessage),
                                          std::move(decision));
             return;
+            }
         }
         AckDecision decision = makeDefaultAckDecision();
         AckStrategyHandler ackHandler;
@@ -4892,6 +5061,29 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                   {"selectionName", subscription.name.toUri()}});
             }
 
+            const auto selectionKey = ndn::Name(selectionV2->requesterName.toUri())
+                                          .append(selectionV2->serviceName)
+                                          .append(selectionV2->requestId);
+            {
+                std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                if (m_selectedProviderRequests.find(selectionKey) !=
+                        m_selectedProviderRequests.end() ||
+                    m_selectionDecryptsInFlight.find(selectionKey) !=
+                        m_selectionDecryptsInFlight.end()) {
+                    NDN_LOG_DEBUG("Ignore duplicate V2 selection before decrypt for "
+                                  << selectionKey.toUri());
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DUPLICATE_DROPPED timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << selectionV2->requestId.toUri()
+                              << " serviceName=" << selectionV2->serviceName.toUri()
+                              << " requesterName=" << selectionV2->requesterName.toUri()
+                              << " providerName=" << selectionV2->providerName.toUri()
+                              << " pendingKey=" << selectionKey.toUri());
+                    return;
+                }
+                m_selectionDecryptsInFlight.insert(selectionKey);
+            }
+
             if(subscription.data.size() > 0){
                 const auto decryptStartUs = nowMicroseconds();
                 if (m_timelineTrace) {
@@ -5263,6 +5455,21 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto spanBuf = ndn::span<const uint8_t>(raw->data(), raw->size());
         auto [ok, block] = ndn::Block::fromBuffer(spanBuf);
 
+        auto key = ndn::Name(requesterName.toUri())
+                    .append(serviceName)
+                    .append(msgId);
+        auto clearSelectionDecryptInFlight = [&] {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            m_selectionDecryptsInFlight.erase(key);
+        };
+
+        if (!ok) {
+            NDN_LOG_ERROR("Reject V2 selection with invalid wire block for "
+                          << key.toUri());
+            clearSelectionDecryptInFlight();
+            return;
+        }
+
         NDN_LOG_DEBUG("OnServiceSelectionMessageDecryptionSuccessCallbackV2: "
             << requesterName.toUri()
             << providerName.toUri()
@@ -5285,12 +5492,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << msgId.toUri()
                           << " receivedEpoch=" << message.getPolicyEpoch()
                           << " currentEpoch=" << m_currentPolicyEpoch);
+            clearSelectionDecryptInFlight();
             return;
         }
-
-        auto key = ndn::Name(requesterName.toUri())
-                    .append(serviceName)
-                    .append(msgId);
 
         if (m_timelineTrace) {
             logTimelineTrace("provider", "provider_token_validate_start", msgId,
@@ -5305,9 +5509,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             if (m_selectedProviderRequests.find(key) !=
                     m_selectedProviderRequests.end() ||
                 (!providerTokenHash.empty() &&
-                 m_consumedProviderTokenHashes.find(providerTokenHash) !=
-                     m_consumedProviderTokenHashes.end())) {
+                     m_consumedProviderTokenHashes.find(providerTokenHash) !=
+                         m_consumedProviderTokenHashes.end())) {
                 NDN_LOG_DEBUG("Ignore replayed V2 selection for " << key.toUri());
+                m_selectionDecryptsInFlight.erase(key);
                 return;
             }
             auto it = pendingRequests.find(key);
@@ -5320,6 +5525,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << " providerName=" << providerName.toUri()
                           << " pendingKey=" << key.toUri());
                 NDN_LOG_INFO("No pending V2 request for " << key.toUri());
+                m_selectionDecryptsInFlight.erase(key);
                 return;
             }
 
@@ -5340,6 +5546,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << !message.getProviderToken().empty());
                 NDN_LOG_ERROR("Reject V2 selection with mismatched ProviderToken for "
                               << key.toUri());
+                m_selectionDecryptsInFlight.erase(key);
                 return;
             }
             selectedRequest = *(it->second);
@@ -5357,6 +5564,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             pendingRequests.erase(it);
             pendingProviderTokens.erase(key);
             m_recentProviderRequests.erase(key);
+            m_selectionDecryptsInFlight.erase(key);
         }
         if (m_timelineTrace) {
             logTimelineTrace("provider", "provider_token_validate_done", msgId,
@@ -5529,6 +5737,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
     void ServiceProvider::OnServiceSelectionMessageDecryptionErrorCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const std::string &reason)
     {
+        const ndn::Name unifiedServiceName =
+            FunctionName.empty() ? ServiceName :
+            makeUnifiedServiceName(ServiceName, FunctionName);
+        const auto key = ndn::Name(requesterName.toUri())
+                             .append(unifiedServiceName)
+                             .append(msgID);
+        {
+            std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+            m_selectionDecryptsInFlight.erase(key);
+        }
         // log error
         NDN_LOG_ERROR("OnServiceSelectionMessageDecryptionErrorCallback: " << requesterName.toUri() << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << msgID.toUri() << " reason: " << reason);
 

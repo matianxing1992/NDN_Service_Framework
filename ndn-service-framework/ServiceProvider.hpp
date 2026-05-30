@@ -578,6 +578,13 @@ namespace ndn_service_framework{
                 ndn::Name requestId;
             };
 
+            struct TargetedProviderTokenState
+            {
+                ndn::Name requesterIdentity;
+                ndn::Name serviceName;
+                std::string userToken;
+            };
+
             static ResponseMessage makeErrorResponse(const std::string& errorInfo);
 
             static AckDecision makeDefaultAckDecision();
@@ -627,6 +634,13 @@ namespace ndn_service_framework{
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage);
+            bool consumeTargetedProviderToken(const ndn::Name& requesterIdentity,
+                                              const ndn::Name& serviceName,
+                                              const RequestMessage& requestMessage,
+                                              std::string& error) const;
+            void attachTargetedTokenBatch(const ndn::Name& requesterIdentity,
+                                          const ndn::Name& serviceName,
+                                          ResponseMessage& response) const;
             bool dispatchRequestExecutionAsync(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
@@ -759,10 +773,14 @@ namespace ndn_service_framework{
             std::map<ndn::Name,std::string> pendingProviderTokens;
             std::set<ndn::Name> m_recentProviderRequests;
             std::set<ndn::Name> m_selectedProviderRequests;
+            std::set<ndn::Name> m_selectionDecryptsInFlight;
             std::map<ndn::Name, std::string> m_pendingRequestTokenHashes;
             std::map<ndn::Name, std::string> m_selectedProviderTokenHashes;
             std::set<std::string> m_recentProviderRequestTokenHashes;
             std::set<std::string> m_consumedProviderTokenHashes;
+            mutable std::map<std::string, TargetedProviderTokenState>
+                m_targetedProviderTokens;
+            mutable std::set<std::string> m_consumedTargetedProviderTokenHashes;
             mutable std::mutex m_pendingRequestMutex;
             std::map<ndn::Name, RegisteredCollaborationService> m_collaborationServices;
             std::map<ndn::Name, std::vector<CollaborationData>> m_collaborationDataByRequest;

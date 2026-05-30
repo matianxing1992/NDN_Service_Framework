@@ -42,8 +42,11 @@ user.RequestServiceTargeted<RequestT, ResponseT>(
 `RequestServiceDirect(...)`, `addDirectService(...)`, and `DirectRequest` may
 remain as compatibility aliases, but new code and docs should describe the
 mode as Targeted, not Direct. Targeted still uses NDNSF Request/Response,
-permissions, tokens, and replay protection; it only skips ACK/Selection because
-the target provider is already known.
+permissions, tokens, and replay protection. It skips ACK/Selection only after a
+token batch has been bootstrapped for that provider/service. If no cached
+Targeted token pair is available, `RequestServiceTargeted(...)` first publishes
+a `TargetedBootstrapRequest`, which follows the normal ACK/Selection/Response
+flow and returns future one-time Targeted token pairs.
 
 ## Examples
 
@@ -370,6 +373,11 @@ Authorization and execution:
   - User rejects ACK/response UserToken mismatches
   - Provider rejects selection ProviderToken mismatches
   - Provider rejects replayed ProviderTokens for consumed or new request IDs
+  - Targeted fast-path requests must carry an unused ProviderToken obtained
+    from an earlier Targeted bootstrap/refill response, and targeted responses
+    echo the matching UserToken from that token pair
+  - Targeted services bootstrap/refill token batches through the normal
+    ACK/Selection/Response flow before using REQUEST->RESPONSE fast path
   - Do not introduce debug bypasses such as isAuthorized = true
   - Provider must install its own provider permission before serving a service
   - Service authorization is enforced by NAC-ABE attributes, one-time token
