@@ -1613,7 +1613,8 @@ class GroundStationWindow : public Gtk::Window
 public:
   GroundStationWindow(GroundStationRuntime& runtime, bool autoStart,
                       int autoStopSeconds, int autoStartDelayMs,
-                      bool autoMavlinkTest, bool autoKeyboardTest)
+                      bool autoMavlinkTest, bool autoKeyboardTest,
+                      bool autoManualControlTest)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_buttons(Gtk::ORIENTATION_HORIZONTAL, 8)
@@ -1623,12 +1624,22 @@ public:
     , m_takeoff("Takeoff")
     , m_land("Land")
     , m_controlToggle("Start Control")
-    , m_controlPanel(Gtk::ORIENTATION_HORIZONTAL, 6)
-    , m_keyA("A  Arm")
+    , m_controlPanel(Gtk::ORIENTATION_VERTICAL, 6)
+    , m_manualKeyRow(Gtk::ORIENTATION_HORIZONTAL, 6)
+    , m_commandKeyRow(Gtk::ORIENTATION_HORIZONTAL, 6)
+    , m_keyW("W  Forward")
+    , m_keyA("A  Yaw Left")
+    , m_keyS("S  Back")
+    , m_keyD("D  Yaw Right")
+    , m_keyQ("Q  Roll Left")
+    , m_keyE("E  Roll Right")
+    , m_keyR("R  Throttle Up")
+    , m_keyF("F  Throttle Down")
+    , m_keyI("I  Arm")
     , m_keyT("T  Takeoff")
     , m_keyL("L  Land")
     , m_keyV("V  Video")
-    , m_keyS("S  Stop")
+    , m_keyX("X  Stop Video")
   {
     set_title("NDNSF UAV Ground Station");
     set_default_size(920, 700);
@@ -1646,23 +1657,43 @@ public:
     m_buttons.pack_start(m_land, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_controlToggle, Gtk::PACK_SHRINK);
     m_box.pack_start(m_buttons, Gtk::PACK_SHRINK);
-    m_controlHelp.set_text("Keyboard control: hold a key to command the drone; the active key turns black.");
+    m_controlHelp.set_text(
+      "Manual control: hold W/A/S/D/Q/E/R/F to fly. I/T/L send arm/takeoff/land. "
+      "The active key turns black while pressed.");
     m_controlPanel.pack_start(m_controlHelp, Gtk::PACK_SHRINK);
-    m_controlPanel.pack_start(m_keyA, Gtk::PACK_SHRINK);
-    m_controlPanel.pack_start(m_keyT, Gtk::PACK_SHRINK);
-    m_controlPanel.pack_start(m_keyL, Gtk::PACK_SHRINK);
-    m_controlPanel.pack_start(m_keyV, Gtk::PACK_SHRINK);
-    m_controlPanel.pack_start(m_keyS, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyW, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyA, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyS, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyD, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyQ, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyE, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyR, Gtk::PACK_SHRINK);
+    m_manualKeyRow.pack_start(m_keyF, Gtk::PACK_SHRINK);
+    m_commandKeyRow.pack_start(m_keyI, Gtk::PACK_SHRINK);
+    m_commandKeyRow.pack_start(m_keyT, Gtk::PACK_SHRINK);
+    m_commandKeyRow.pack_start(m_keyL, Gtk::PACK_SHRINK);
+    m_commandKeyRow.pack_start(m_keyV, Gtk::PACK_SHRINK);
+    m_commandKeyRow.pack_start(m_keyX, Gtk::PACK_SHRINK);
+    m_controlPanel.pack_start(m_manualKeyRow, Gtk::PACK_SHRINK);
+    m_controlPanel.pack_start(m_commandKeyRow, Gtk::PACK_SHRINK);
     m_box.pack_start(m_controlPanel, Gtk::PACK_SHRINK);
     m_box.pack_start(m_status, Gtk::PACK_SHRINK);
     m_box.pack_start(m_image, Gtk::PACK_EXPAND_WIDGET);
     m_box.pack_start(m_stats, Gtk::PACK_SHRINK);
     installControlCss();
+    configureKeycap(m_keyW);
     configureKeycap(m_keyA);
+    configureKeycap(m_keyS);
+    configureKeycap(m_keyD);
+    configureKeycap(m_keyQ);
+    configureKeycap(m_keyE);
+    configureKeycap(m_keyR);
+    configureKeycap(m_keyF);
+    configureKeycap(m_keyI);
     configureKeycap(m_keyT);
     configureKeycap(m_keyL);
     configureKeycap(m_keyV);
-    configureKeycap(m_keyS);
+    configureKeycap(m_keyX);
     m_controlPanel.hide();
     add(m_box);
     show_all_children();
@@ -1798,8 +1829,8 @@ public:
         std::this_thread::sleep_for(std::chrono::seconds(3));
         Glib::signal_idle().connect_once([this] {
           setControlMode(true);
-          handleShortcutKeyPress(GDK_KEY_a);
-          handleShortcutKeyRelease(GDK_KEY_a);
+          handleShortcutKeyPress(GDK_KEY_i);
+          handleShortcutKeyRelease(GDK_KEY_i);
         });
         std::this_thread::sleep_for(std::chrono::seconds(2));
         Glib::signal_idle().connect_once([this] {
@@ -1816,6 +1847,51 @@ public:
           hide();
         });
       }).detach();
+    }
+    if (autoManualControlTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        Glib::signal_idle().connect_once([this] {
+          setControlMode(true);
+          handleShortcutKeyPress(GDK_KEY_i);
+          handleShortcutKeyRelease(GDK_KEY_i);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        Glib::signal_idle().connect_once([this] {
+          handleShortcutKeyPress(GDK_KEY_t);
+          handleShortcutKeyRelease(GDK_KEY_t);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        Glib::signal_idle().connect_once([this] {
+          handleShortcutKeyPress(GDK_KEY_w);
+          handleShortcutKeyPress(GDK_KEY_r);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        Glib::signal_idle().connect_once([this] {
+          handleShortcutKeyRelease(GDK_KEY_w);
+          handleShortcutKeyRelease(GDK_KEY_r);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        Glib::signal_idle().connect_once([this] {
+          handleShortcutKeyPress(GDK_KEY_l);
+          handleShortcutKeyRelease(GDK_KEY_l);
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(4));
+        Glib::signal_idle().connect_once([this] {
+          hide();
+        });
+      }).detach();
+    }
+    m_manualControlThread = std::thread([this] {
+      runManualControlLoop();
+    });
+  }
+
+  ~GroundStationWindow() override
+  {
+    m_manualControlDone = true;
+    if (m_manualControlThread.joinable()) {
+      m_manualControlThread.join();
     }
   }
 
@@ -1836,7 +1912,17 @@ private:
     }
 
     switch (normalized) {
+    case GDK_KEY_w:
     case GDK_KEY_a:
+    case GDK_KEY_s:
+    case GDK_KEY_d:
+    case GDK_KEY_q:
+    case GDK_KEY_e:
+    case GDK_KEY_r:
+    case GDK_KEY_f:
+      updateManualAxisState();
+      return true;
+    case GDK_KEY_i:
       m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
       return true;
     case GDK_KEY_t:
@@ -1853,7 +1939,7 @@ private:
         m_runtime.startVideo();
       }
       return true;
-    case GDK_KEY_s:
+    case GDK_KEY_x:
       if (m_runtime.isStreaming()) {
         m_stop.set_sensitive(false);
         m_start.set_sensitive(true);
@@ -1875,6 +1961,7 @@ private:
     }
     m_pressedKeys.erase(normalized);
     setKeyPressed(normalized, false);
+    updateManualAxisState();
     return m_controlMode;
   }
 
@@ -1882,9 +1969,33 @@ private:
   normalizeShortcutKey(guint keyval) const
   {
     switch (keyval) {
+    case GDK_KEY_w:
+    case GDK_KEY_W:
+      return GDK_KEY_w;
     case GDK_KEY_a:
     case GDK_KEY_A:
       return GDK_KEY_a;
+    case GDK_KEY_s:
+    case GDK_KEY_S:
+      return GDK_KEY_s;
+    case GDK_KEY_d:
+    case GDK_KEY_D:
+      return GDK_KEY_d;
+    case GDK_KEY_q:
+    case GDK_KEY_Q:
+      return GDK_KEY_q;
+    case GDK_KEY_e:
+    case GDK_KEY_E:
+      return GDK_KEY_e;
+    case GDK_KEY_r:
+    case GDK_KEY_R:
+      return GDK_KEY_r;
+    case GDK_KEY_f:
+    case GDK_KEY_F:
+      return GDK_KEY_f;
+    case GDK_KEY_i:
+    case GDK_KEY_I:
+      return GDK_KEY_i;
     case GDK_KEY_t:
     case GDK_KEY_T:
       return GDK_KEY_t;
@@ -1894,9 +2005,9 @@ private:
     case GDK_KEY_v:
     case GDK_KEY_V:
       return GDK_KEY_v;
-    case GDK_KEY_s:
-    case GDK_KEY_S:
-      return GDK_KEY_s;
+    case GDK_KEY_x:
+    case GDK_KEY_X:
+      return GDK_KEY_x;
     default:
       return 0;
     }
@@ -1913,11 +2024,25 @@ private:
     }
     else {
       m_pressedKeys.clear();
+      m_manualX = 0;
+      m_manualY = 0;
+      m_manualZ = 500;
+      m_manualR = 0;
+      m_manualActive = false;
+      sendManualControlOnce();
+      setKeyPressed(GDK_KEY_w, false);
       setKeyPressed(GDK_KEY_a, false);
+      setKeyPressed(GDK_KEY_s, false);
+      setKeyPressed(GDK_KEY_d, false);
+      setKeyPressed(GDK_KEY_q, false);
+      setKeyPressed(GDK_KEY_e, false);
+      setKeyPressed(GDK_KEY_r, false);
+      setKeyPressed(GDK_KEY_f, false);
+      setKeyPressed(GDK_KEY_i, false);
       setKeyPressed(GDK_KEY_t, false);
       setKeyPressed(GDK_KEY_l, false);
       setKeyPressed(GDK_KEY_v, false);
-      setKeyPressed(GDK_KEY_s, false);
+      setKeyPressed(GDK_KEY_x, false);
       m_controlPanel.hide();
     }
   }
@@ -1959,8 +2084,32 @@ private:
   {
     Gtk::Button* button = nullptr;
     switch (keyval) {
+    case GDK_KEY_w:
+      button = &m_keyW;
+      break;
     case GDK_KEY_a:
       button = &m_keyA;
+      break;
+    case GDK_KEY_s:
+      button = &m_keyS;
+      break;
+    case GDK_KEY_d:
+      button = &m_keyD;
+      break;
+    case GDK_KEY_q:
+      button = &m_keyQ;
+      break;
+    case GDK_KEY_e:
+      button = &m_keyE;
+      break;
+    case GDK_KEY_r:
+      button = &m_keyR;
+      break;
+    case GDK_KEY_f:
+      button = &m_keyF;
+      break;
+    case GDK_KEY_i:
+      button = &m_keyI;
       break;
     case GDK_KEY_t:
       button = &m_keyT;
@@ -1971,8 +2120,8 @@ private:
     case GDK_KEY_v:
       button = &m_keyV;
       break;
-    case GDK_KEY_s:
-      button = &m_keyS;
+    case GDK_KEY_x:
+      button = &m_keyX;
       break;
     default:
       return;
@@ -1984,6 +2133,58 @@ private:
     else {
       context->remove_class("uav-keycap-active");
     }
+  }
+
+  void
+  updateManualAxisState()
+  {
+    auto has = [this](guint key) {
+      return m_pressedKeys.find(key) != m_pressedKeys.end();
+    };
+    const int x = (has(GDK_KEY_w) ? 650 : 0) + (has(GDK_KEY_s) ? -650 : 0);
+    const int y = (has(GDK_KEY_e) ? 500 : 0) + (has(GDK_KEY_q) ? -500 : 0);
+    const int r = (has(GDK_KEY_d) ? 550 : 0) + (has(GDK_KEY_a) ? -550 : 0);
+    const int z = 500 + (has(GDK_KEY_r) ? 250 : 0) + (has(GDK_KEY_f) ? -250 : 0);
+    m_manualX = std::clamp(x, -1000, 1000);
+    m_manualY = std::clamp(y, -1000, 1000);
+    m_manualZ = std::clamp(z, 0, 1000);
+    m_manualR = std::clamp(r, -1000, 1000);
+    m_manualActive = has(GDK_KEY_w) || has(GDK_KEY_a) || has(GDK_KEY_s) ||
+                     has(GDK_KEY_d) || has(GDK_KEY_q) || has(GDK_KEY_e) ||
+                     has(GDK_KEY_r) || has(GDK_KEY_f);
+  }
+
+  void
+  runManualControlLoop()
+  {
+    bool sentNeutral = false;
+    while (!m_manualControlDone.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      if (!m_controlMode) {
+        sentNeutral = false;
+        continue;
+      }
+      if (m_manualActive.load()) {
+        sentNeutral = false;
+        sendManualControlOnce();
+      }
+      else if (!sentNeutral) {
+        sentNeutral = true;
+        sendManualControlOnce();
+      }
+    }
+  }
+
+  void
+  sendManualControlOnce()
+  {
+    m_runtime.sendMavlinkCommand("manual_control", {
+      {"x", std::to_string(m_manualX.load())},
+      {"y", std::to_string(m_manualY.load())},
+      {"z", std::to_string(m_manualZ.load())},
+      {"r", std::to_string(m_manualR.load())},
+      {"buttons", "0"},
+    });
   }
 
   void
@@ -2067,12 +2268,22 @@ private:
   Gtk::Button m_land;
   Gtk::Button m_controlToggle;
   Gtk::Box m_controlPanel;
+  Gtk::Box m_manualKeyRow;
+  Gtk::Box m_commandKeyRow;
   Gtk::Label m_controlHelp;
+  Gtk::Button m_keyW;
   Gtk::Button m_keyA;
+  Gtk::Button m_keyS;
+  Gtk::Button m_keyD;
+  Gtk::Button m_keyQ;
+  Gtk::Button m_keyE;
+  Gtk::Button m_keyR;
+  Gtk::Button m_keyF;
+  Gtk::Button m_keyI;
   Gtk::Button m_keyT;
   Gtk::Button m_keyL;
   Gtk::Button m_keyV;
-  Gtk::Button m_keyS;
+  Gtk::Button m_keyX;
   Gtk::Label m_status;
   Gtk::Image m_image;
   Gtk::Label m_stats;
@@ -2088,6 +2299,13 @@ private:
   bool m_pendingStopSensitive = false;
   bool m_controlMode = false;
   std::set<guint> m_pressedKeys;
+  std::thread m_manualControlThread;
+  std::atomic<bool> m_manualControlDone{false};
+  std::atomic<bool> m_manualActive{false};
+  std::atomic<int> m_manualX{0};
+  std::atomic<int> m_manualY{0};
+  std::atomic<int> m_manualZ{500};
+  std::atomic<int> m_manualR{0};
   uint64_t m_streamGeneration = 0;
   bool m_acceptFrames = false;
   std::atomic<uint64_t> m_decodedFrames{0};
@@ -2104,6 +2322,7 @@ main(int argc, char** argv)
 	    const bool autoStart = hasFlag(argc, argv, "--auto-video-test");
 	    const bool autoMavlinkTest = hasFlag(argc, argv, "--auto-mavlink-test");
 	    const bool autoKeyboardTest = hasFlag(argc, argv, "--auto-keyboard-test");
+	    const bool autoManualControlTest = hasFlag(argc, argv, "--auto-manual-control-test");
 	    const bool autoPatrolTest = hasFlag(argc, argv, "--auto-patrol-test");
 	    const int autoStopSeconds = std::stoi(getOption(argc, argv, "--auto-stop-seconds", "10"));
 	    const int autoStartDelayMs = std::stoi(getOption(argc, argv, "--auto-start-delay-ms", "3000"));
@@ -2141,12 +2360,14 @@ main(int argc, char** argv)
     }
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
-                                 autoStartDelayMs, autoMavlinkTest, autoKeyboardTest);
+                                 autoStartDelayMs, autoMavlinkTest,
+                                 autoKeyboardTest, autoManualControlTest);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
               << " auto_video_test=" << (autoStart ? "true" : "false")
               << " auto_mavlink_test=" << (autoMavlinkTest ? "true" : "false")
               << " auto_keyboard_test=" << (autoKeyboardTest ? "true" : "false")
+              << " auto_manual_control_test=" << (autoManualControlTest ? "true" : "false")
               << std::endl;
     const int rc = app->run(window);
     std::cout << "GS_GUI_EXIT rc=" << rc << std::endl;

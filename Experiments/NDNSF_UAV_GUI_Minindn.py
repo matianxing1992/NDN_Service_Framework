@@ -93,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS send Arm/Takeoff/Land over Targeted NDNSF for smoke testing.")
     parser.add_argument("--auto-keyboard-test", action="store_true",
                         help="Have the GS trigger the same keyboard shortcuts as a/t/l for smoke testing.")
+    parser.add_argument("--auto-manual-control-test", action="store_true",
+                        help="Have the GS hold manual-control keys and send MAVLink MANUAL_CONTROL.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-stop-seconds", type=int, default=10)
@@ -514,6 +516,8 @@ def main() -> int:
             gs_argv += ["--auto-mavlink-test"]
         if args.auto_keyboard_test:
             gs_argv += ["--auto-keyboard-test"]
+        if args.auto_manual_control_test:
+            gs_argv += ["--auto-manual-control-test"]
         if args.auto_patrol_test:
             gs_argv += [
                 "--auto-patrol-test",
@@ -552,7 +556,8 @@ def main() -> int:
             require_log(gs_log, "PATROL_TASK_DONE")
             require_log(drone_logs[drones[0][0]], "mission response delayed")
             print("NDNSF_UAV_PATROL_MININDN_SMOKE_OK")
-        elif (args.auto_mavlink_test or args.auto_keyboard_test) and args.no_cli:
+        elif (args.auto_mavlink_test or args.auto_keyboard_test or
+              args.auto_manual_control_test) and args.no_cli:
             try:
                 gs_proc.wait(timeout=45)
             except subprocess.TimeoutExpired as e:
@@ -563,6 +568,8 @@ def main() -> int:
             require_log(gs_log, "MAVLink arm accepted=true")
             require_log(gs_log, "MAVLink takeoff accepted=true")
             require_log(gs_log, "MAVLink land accepted=true")
+            if args.auto_manual_control_test:
+                require_log(gs_log, "MAVLink manual_control accepted=true")
             require_log_any(drone_logs[args.drone_id], [
                 "MOCK_FC_FORWARD drone=" + args.drone_id,
                 "UDP_FC_FORWARD drone=" + args.drone_id,
