@@ -714,7 +714,18 @@ namespace ndn_service_framework
                                      AckStrategyHandler ackHandler,
                                      RequestHandler requestHandler)
     {
-        m_services[serviceName] = {std::move(ackHandler), std::move(requestHandler)};
+        addService(serviceName,
+                   std::move(ackHandler),
+                   std::move(requestHandler),
+                   ServiceMode::Normal);
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     AckStrategyHandler ackHandler,
+                                     RequestHandler requestHandler,
+                                     ServiceMode mode)
+    {
+        m_services[serviceName] = {std::move(ackHandler), std::move(requestHandler), mode};
         const auto serviceUri = serviceName.toUri();
         if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
             m_serviceNames.end()) {
@@ -722,7 +733,9 @@ namespace ndn_service_framework
         }
         NDN_LOG_WARN("[ServiceProvider] registered service prefix="
                   << serviceUri);
-        NDN_LOG_WARN("Registered service handler for " << serviceUri);
+        NDN_LOG_WARN("Registered service handler for " << serviceUri
+                     << " mode="
+                     << (mode == ServiceMode::Targeted ? "Targeted" : "Normal"));
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
@@ -797,6 +810,43 @@ namespace ndn_service_framework
                        const RequestMessage& requestMessage) {
                        return handler(requestMessage);
                    });
+    }
+
+    void ServiceProvider::addDirectService(const ndn::Name& serviceName,
+                                           RequestHandler requestHandler)
+    {
+        addTargetedService(serviceName, std::move(requestHandler));
+    }
+
+    void ServiceProvider::addTargetedService(const ndn::Name& serviceName,
+                                             RequestHandler requestHandler)
+    {
+        addService(serviceName,
+                   AckStrategyHandler{},
+                   std::move(requestHandler),
+                   ServiceMode::Targeted);
+    }
+
+    void ServiceProvider::addDirectService(const ndn::Name& serviceName,
+                                           SimpleRequestHandler requestHandler)
+    {
+        addTargetedService(
+            serviceName,
+            std::move(requestHandler));
+    }
+
+    void ServiceProvider::addTargetedService(const ndn::Name& serviceName,
+                                             SimpleRequestHandler requestHandler)
+    {
+        addTargetedService(
+            serviceName,
+            [handler = std::move(requestHandler)](const ndn::Name&,
+                                                  const ndn::Name&,
+                                                  const ndn::Name&,
+                                                  const ndn::Name&,
+                                                  const RequestMessage& requestMessage) {
+                return handler(requestMessage);
+            });
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
@@ -1528,6 +1578,85 @@ namespace ndn_service_framework
                                    decision.payload,
                                    m_useTokens ? requestMessage.getUserToken() : "",
                                    providerToken);
+    }
+
+    bool ServiceProvider::finishTargetedRequestOnEventLoop(
+        const ndn::Name& requesterIdentity,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        RequestMessage requestMessage)
+    {
+        const auto targetProvider = requestMessage.getTargetProvider();
+        if (targetProvider.empty()) {
+            publishExecutionFailureOnEventLoop(requesterIdentity,
+                                               identity,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               "Targeted request missing target provider");
+            return true;
+        }
+        if (!targetProvider.equals(identity)) {
+            NDN_LOG_DEBUG("Ignore targeted request for different provider target="
+                          << targetProvider.toUri()
+                          << " local=" << identity.toUri()
+                          << " requestId=" << requestId.toUri());
+            return true;
+        }
+
+        auto service = m_services.find(serviceName);
+        if (service == m_services.end() || !service->second.requestHandler) {
+            publishExecutionFailureOnEventLoop(requesterIdentity,
+                                               identity,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               "Targeted service has no handler");
+            return true;
+        }
+        if (service->second.mode != ServiceMode::Targeted) {
+            publishExecutionFailureOnEventLoop(requesterIdentity,
+                                               identity,
+                                               serviceName,
+                                               requestId,
+                                               requestMessage,
+                                               "Service is not registered for targeted mode");
+            return true;
+        }
+
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=TARGETED_REQUEST_ACCEPTED timestamp_us="
+                  << nowMicroseconds()
+                  << " providerName=" << identity.toUri()
+                  << " requestId=" << requestId.toUri()
+                  << " serviceName=" << serviceName.toUri());
+        if (!dispatchRequestExecutionAsync(requesterIdentity,
+                                           identity,
+                                           serviceName,
+                                           requestId,
+                                           requestMessage)) {
+            ResponseMessage response;
+            try {
+                response = service->second.requestHandler(requesterIdentity,
+                                                          identity,
+                                                          serviceName,
+                                                          requestId,
+                                                          requestMessage);
+            }
+            catch (const std::exception& e) {
+                response = makeErrorResponse(
+                    std::string("Targeted request handler failed: ") + e.what());
+            }
+            catch (...) {
+                response = makeErrorResponse("Targeted request handler failed");
+            }
+            finishRequestExecutionOnEventLoop(requesterIdentity,
+                                              identity,
+                                              serviceName,
+                                              requestId,
+                                              requestMessage,
+                                              std::move(response));
+        }
+        return true;
     }
 
     bool ServiceProvider::dispatchRequestExecutionAsync(
@@ -2834,6 +2963,27 @@ namespace ndn_service_framework
                 return makeErrorResponse("Missing UserToken for " +
                                          parsedV2->serviceName.toUri());
             }
+            auto service = m_services.find(parsedV2->serviceName);
+            if (requestMessage.getRequestMode() == tlv::TargetedRequest) {
+                if (requestMessage.getTargetProvider().empty()) {
+                    return makeErrorResponse("Targeted request missing target provider for " +
+                                             parsedV2->serviceName.toUri());
+                }
+                if (!requestMessage.getTargetProvider().equals(identity)) {
+                    return makeErrorResponse("Targeted request is for " +
+                                             requestMessage.getTargetProvider().toUri());
+                }
+                if (service == m_services.end() ||
+                    service->second.mode != ServiceMode::Targeted) {
+                    return makeErrorResponse("Service is not registered for targeted mode for " +
+                                             parsedV2->serviceName.toUri());
+                }
+            }
+            else if (service != m_services.end() &&
+                     service->second.mode == ServiceMode::Targeted) {
+                return makeErrorResponse("Service is targeted-only for " +
+                                         parsedV2->serviceName.toUri());
+            }
             if (requestMessage.getStrategy() == tlv::AllSelected) {
                 return makeErrorResponse("AllSelected requires selection before execution for " +
                                          parsedV2->serviceName.toUri());
@@ -2867,6 +3017,27 @@ namespace ndn_service_framework
         }
         if (m_useTokens && requestMessage.getUserToken().empty()) {
             return makeErrorResponse("Missing UserToken for " +
+                                     parsed->serviceName.toUri());
+        }
+        auto service = m_services.find(parsed->serviceName);
+        if (requestMessage.getRequestMode() == tlv::TargetedRequest) {
+            if (requestMessage.getTargetProvider().empty()) {
+                return makeErrorResponse("Targeted request missing target provider for " +
+                                         parsed->serviceName.toUri());
+            }
+            if (!requestMessage.getTargetProvider().equals(identity)) {
+                return makeErrorResponse("Targeted request is for " +
+                                         requestMessage.getTargetProvider().toUri());
+            }
+            if (service == m_services.end() ||
+                service->second.mode != ServiceMode::Targeted) {
+                return makeErrorResponse("Service is not registered for targeted mode for " +
+                                         parsed->serviceName.toUri());
+            }
+        }
+        else if (service != m_services.end() &&
+                 service->second.mode == ServiceMode::Targeted) {
+            return makeErrorResponse("Service is targeted-only for " +
                                      parsed->serviceName.toUri());
         }
         if (requestMessage.getStrategy() == tlv::AllSelected) {
@@ -4094,6 +4265,16 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
     }
     schedulePendingRequestCleanup(pendingKey);
 
+    if (requestMessage.getRequestMode() == tlv::TargetedRequest) {
+        if (finishTargetedRequestOnEventLoop(requesterIdentity,
+                                           serviceName,
+                                           requestId,
+                                           std::move(requestMessage))) {
+            return;
+        }
+        return;
+    }
+
     if (hasService(serviceName) ||
         m_collaborationServices.find(serviceName) != m_collaborationServices.end()) {
         NDN_LOG_DEBUG("Dispatch request using V2 dynamic handler for "
@@ -4113,6 +4294,18 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
 
         auto service = m_services.find(serviceName);
         auto collabService = m_collaborationServices.find(serviceName);
+        if (service != m_services.end() &&
+            service->second.mode == ServiceMode::Targeted) {
+            AckDecision decision;
+            decision.status = false;
+            decision.message = "Service is targeted-only";
+            finishAckDecisionOnEventLoop(requesterIdentity,
+                                         serviceName,
+                                         requestId,
+                                         std::move(requestMessage),
+                                         std::move(decision));
+            return;
+        }
         AckDecision decision = makeDefaultAckDecision();
         AckStrategyHandler ackHandler;
         if (service != m_services.end() && service->second.ackHandler) {

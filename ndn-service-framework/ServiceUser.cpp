@@ -2659,6 +2659,66 @@ namespace ndn_service_framework
                                            strategy);
     }
 
+    ndn::Name ServiceUser::RequestServiceTargeted(const ndn::Name& provider,
+                                      const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler)
+    {
+        if (provider.empty()) {
+            return ndn::Name();
+        }
+
+        const ndn::Name requestId = makeRequestId();
+        requestMessage.setRequestMode(ndn_service_framework::tlv::TargetedRequest);
+        requestMessage.setTargetProvider(provider);
+        requestMessage.setStrategy(ndn_service_framework::tlv::FirstResponding);
+
+        PendingCall pendingCall;
+        pendingCall.providers = {provider};
+        pendingCall.serviceName = serviceName;
+        pendingCall.requestMessage = requestMessage;
+        pendingCall.strategy = ndn_service_framework::tlv::FirstResponding;
+        pendingCall.timeoutMs = timeoutMs;
+        pendingCall.createdAtUs = nowMicroseconds();
+        pendingCall.timeoutHandler = std::move(onTimeout);
+        pendingCall.responseHandler = std::move(onResponseHandler);
+        pendingCall.directMode = true;
+        addUniqueName(pendingCall.expectedResponseProviders, provider);
+        m_pendingCalls[requestId] = std::move(pendingCall);
+
+        updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=TARGETED_REQUEST_CREATED timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " providerName=" << provider.toUri()
+                  << " serviceName=" << serviceName.toUri());
+        if (m_timelineTrace) {
+            logTimelineTrace("user", "targeted_request_created", requestId,
+                             {{"serviceName", serviceName.toUri()},
+                              {"providerName", provider.toUri()}});
+        }
+
+        admitOrQueuePendingCall(requestId, false, false);
+        return requestId;
+    }
+
+    ndn::Name ServiceUser::RequestServiceDirect(const ndn::Name& provider,
+                                      const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int timeoutMs,
+                                      TimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler)
+    {
+        return RequestServiceTargeted(provider,
+                                      serviceName,
+                                      std::move(requestMessage),
+                                      timeoutMs,
+                                      std::move(onTimeout),
+                                      std::move(onResponseHandler));
+    }
+
     ndn::Name ServiceUser::RequestService(const std::vector<ndn::Name>& providers,
                                       const ndn::Name& serviceName,
                                       const ndn::Name& functionName,
@@ -3118,6 +3178,14 @@ namespace ndn_service_framework
                           << requestId.toUri()
                           << " receivedEpoch=" << responseMessage.getPolicyEpoch()
                           << " currentEpoch=" << m_currentPolicyEpoch);
+            return false;
+        }
+        if (pendingCall->second.directMode &&
+            !pendingCall->second.expectedResponseProviders.empty() &&
+            !containsName(pendingCall->second.expectedResponseProviders, providerName)) {
+            NDN_LOG_ERROR("Reject targeted response from unexpected provider requestId="
+                          << requestId.toUri()
+                          << " provider=" << providerName.toUri());
             return false;
         }
 

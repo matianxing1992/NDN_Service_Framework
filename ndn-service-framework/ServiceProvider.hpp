@@ -75,6 +75,15 @@ namespace ndn_service_framework{
             using SimpleRequestHandler =
                 std::function<ResponseMessage(const RequestMessage& requestMessage)>;
 
+            enum class ServiceMode
+            {
+                Normal,
+                // Targeted services accept Request->Response invocation from
+                // a requester that already names this provider as the target.
+                Targeted,
+                Direct = Targeted,
+            };
+
             struct CollaborationAssignment
             {
                 CollaborationRole role;
@@ -268,6 +277,11 @@ namespace ndn_service_framework{
                             RequestHandler requestHandler);
 
             void addService(const ndn::Name& serviceName,
+                            AckStrategyHandler ackHandler,
+                            RequestHandler requestHandler,
+                            ServiceMode mode);
+
+            void addService(const ndn::Name& serviceName,
                             LegacyAckStrategyHandler ackHandler,
                             RequestHandler requestHandler);
 
@@ -277,6 +291,18 @@ namespace ndn_service_framework{
             void addService(const ndn::Name& serviceName,
                             AckStrategyHandler ackHandler,
                             SimpleRequestHandler requestHandler);
+
+            void addDirectService(const ndn::Name& serviceName,
+                                  RequestHandler requestHandler);
+
+            void addDirectService(const ndn::Name& serviceName,
+                                  SimpleRequestHandler requestHandler);
+
+            void addTargetedService(const ndn::Name& serviceName,
+                                    RequestHandler requestHandler);
+
+            void addTargetedService(const ndn::Name& serviceName,
+                                    SimpleRequestHandler requestHandler);
 
             void addService(const ndn::Name& serviceName,
                             LegacyAckStrategyHandler ackHandler,
@@ -514,6 +540,7 @@ namespace ndn_service_framework{
             {
                 AckStrategyHandler ackHandler;
                 RequestHandler requestHandler;
+                ServiceMode mode = ServiceMode::Normal;
             };
 
             struct RegisteredCollaborationService
@@ -593,6 +620,11 @@ namespace ndn_service_framework{
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
                 const ndn::Name& bloomFilterName,
+                const ndn::Name& requestId,
+                RequestMessage requestMessage);
+            bool finishTargetedRequestOnEventLoop(
+                const ndn::Name& requesterIdentity,
+                const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage);
             bool dispatchRequestExecutionAsync(

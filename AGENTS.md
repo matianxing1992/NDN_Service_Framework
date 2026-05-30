@@ -26,6 +26,25 @@ user.RequestService<RequestT, ResponseT>(
     strategy);
 ```
 
+For known-provider low-latency calls, use Targeted terminology:
+
+```cpp
+provider.addTargetedService(serviceName, handler);
+user.RequestServiceTargeted<RequestT, ResponseT>(
+    provider,
+    serviceName,
+    request,
+    onResponse,
+    onTimeout,
+    timeoutMs);
+```
+
+`RequestServiceDirect(...)`, `addDirectService(...)`, and `DirectRequest` may
+remain as compatibility aliases, but new code and docs should describe the
+mode as Targeted, not Direct. Targeted still uses NDNSF Request/Response,
+permissions, tokens, and replay protection; it only skips ACK/Selection because
+the target provider is already known.
+
 ## Examples
 
 Examples should demonstrate the current dynamic runtime API:
@@ -33,8 +52,10 @@ Examples should demonstrate the current dynamic runtime API:
 ```cpp
 provider.addService(ndn::Name("/HELLO"), ackHandler, requestHandler);
 provider.addHandler<RequestT, ResponseT>(serviceName, handler);
+provider.addTargetedService(serviceName, handler);
 user.RequestService(serviceName, request, ackTimeoutMs, selector, timeoutMs, onTimeout, onResponse);
 user.RequestService<RequestT, ResponseT>(providers, serviceName, request, onResponse, onTimeout, timeoutMs, strategy);
+user.RequestServiceTargeted<RequestT, ResponseT>(provider, serviceName, request, onResponse, onTimeout, timeoutMs);
 ```
 
 Do not add examples that depend on generated service users, generated service

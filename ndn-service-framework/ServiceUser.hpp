@@ -379,6 +379,20 @@ namespace ndn_service_framework{
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
 
+            ndn::Name RequestServiceTargeted(const ndn::Name& provider,
+                                 const ndn::Name& serviceName,
+                                 ndn_service_framework::RequestMessage requestMessage,
+                                 int timeoutMs,
+                                 TimeoutHandler onTimeout,
+                                 ResponseHandler onResponseHandler);
+
+            ndn::Name RequestServiceDirect(const ndn::Name& provider,
+                                 const ndn::Name& serviceName,
+                                 ndn_service_framework::RequestMessage requestMessage,
+                                 int timeoutMs,
+                                 TimeoutHandler onTimeout,
+                                 ResponseHandler onResponseHandler);
+
             ndn::Name RequestService(const std::vector<ndn::Name>& providers,
                                  const ndn::Name& serviceName,
                                  const ndn::Name& functionName,
@@ -527,6 +541,67 @@ namespace ndn_service_framework{
                                       }
                                   },
                                   strategy);
+            }
+
+            template<typename RequestT, typename ResponseT>
+            ndn::Name RequestServiceTargeted(const ndn::Name& provider,
+                                           const ndn::Name& serviceName,
+                                           const RequestT& request,
+                                           std::function<void(const ResponseT&)> onResponse,
+                                           std::function<void()> onTimeout,
+                                           int timeoutMs)
+            {
+                std::string requestBytes;
+                if (!request.SerializeToString(&requestBytes)) {
+                    return ndn::Name();
+                }
+
+                ndn::Buffer payload(reinterpret_cast<const uint8_t*>(requestBytes.data()),
+                                    requestBytes.size());
+
+                ndn_service_framework::RequestMessage requestMessage;
+                requestMessage.setPayload(payload, payload.size());
+
+                return RequestServiceTargeted(
+                    provider,
+                    serviceName,
+                    std::move(requestMessage),
+                    timeoutMs,
+                    [timeout = std::move(onTimeout)](const ndn::Name&) {
+                        if (timeout) {
+                            timeout();
+                        }
+                    },
+                    [response = std::move(onResponse)](
+                        const ndn_service_framework::ResponseMessage& responseMessage) {
+                        const auto payload = responseMessage.getPayload();
+
+                        ResponseT typedResponse;
+                        if (!typedResponse.ParseFromArray(payload.data(), payload.size())) {
+                            return;
+                        }
+
+                        if (response) {
+                            response(typedResponse);
+                        }
+                    });
+            }
+
+            template<typename RequestT, typename ResponseT>
+            ndn::Name RequestServiceDirect(const ndn::Name& provider,
+                                           const ndn::Name& serviceName,
+                                           const RequestT& request,
+                                           std::function<void(const ResponseT&)> onResponse,
+                                           std::function<void()> onTimeout,
+                                           int timeoutMs)
+            {
+                return RequestServiceTargeted<RequestT, ResponseT>(
+                    provider,
+                    serviceName,
+                    request,
+                    std::move(onResponse),
+                    std::move(onTimeout),
+                    timeoutMs);
             }
 
             template<typename RequestT, typename ResponseT>
@@ -693,6 +768,7 @@ namespace ndn_service_framework{
                 bool scheduleImmediateAckTimeoutAfterPublish = false;
                 bool ackWindowExpired = false;
                 bool providerSelected = false;
+                bool directMode = false;
                 bool timedOut = false;
                 bool timeoutGraceActive = false;
                 size_t ackDecryptsInFlight = 0;
