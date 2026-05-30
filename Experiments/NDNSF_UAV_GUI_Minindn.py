@@ -35,6 +35,7 @@ APP_CONTROLLER = REPO / "build/examples/App_ServiceController"
 APP_DRONE = REPO / "build/examples/UavDroneApp"
 APP_GS = REPO / "build/examples/UavGroundStationApp"
 POLICY = REPO / "NDNSF-UAV-APP/configs/uav_demo.policies"
+DEFAULT_VIDEO_SOURCE = REPO / "NDNSF-UAV-APP/videos/drone.mp4"
 CONTROLLER_READY_MARKERS = [
     "ServiceController started...",
     "ServiceController started",
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gs-node", default="memphis")
     parser.add_argument("--drone-node", default="ucla")
     parser.add_argument("--drone-id", default="A")
-    parser.add_argument("--video-source", default="NDNSF-UAV-APP/videos/drone.mp4")
+    parser.add_argument("--video-source", default=str(DEFAULT_VIDEO_SOURCE))
     parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
     parser.add_argument("--video-width", type=int, default=480,
@@ -78,6 +79,13 @@ def app_cmd(binary: Path, argv: list[str]) -> str:
     parts = ["cd", shell_quote(REPO), "&&", "exec", shell_quote(binary)]
     parts.extend(shell_quote(arg) for arg in argv)
     return " ".join(parts)
+
+
+def resolve_repo_path(value: str) -> str:
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return str((REPO / path).resolve())
 
 
 def node_home(ndn, node_name: str) -> Path:
@@ -114,10 +122,12 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
         "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK": os.environ.get(
             "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK", "1"),
     }
-    # Keep caller-provided runtime search path if present; avoid forcing REPO/build,
-    # which can pick up stale incompatible shared objects inside this repo.
+    # MiniNDN demos in this checkout should exercise the freshly built framework
+    # instead of an older system install under /usr/local/lib.
+    ld_paths = [str(REPO / "build")]
     if os.environ.get("LD_LIBRARY_PATH"):
-        env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
+        ld_paths.append(os.environ["LD_LIBRARY_PATH"])
+    env["LD_LIBRARY_PATH"] = ":".join(ld_paths)
     for name in ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"):
         if os.environ.get(name):
             env[name] = os.environ[name]
@@ -347,7 +357,7 @@ def main() -> int:
 
         drone_cmd = app_cmd(APP_DRONE, [
             "--drone-id", args.drone_id,
-            "--video-source", args.video_source,
+            "--video-source", resolve_repo_path(args.video_source),
         ])
         drone_proc, drone_log = start(ndn.net[args.drone_node], "drone",
                                       drone_cmd, drone_env, output_dir, processes)

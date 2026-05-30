@@ -3366,6 +3366,26 @@ namespace ndn_service_framework
                 return false;
             }
 
+            const bool duplicateAck =
+                std::any_of(pendingCall->second.requestAcks.begin(),
+                            pendingCall->second.requestAcks.end(),
+                            [&] (const StoredAck& storedAck) {
+                                return storedAck.providerName.equals(parsedV2->providerName) &&
+                                       storedAck.serviceName.equals(parsedV2->serviceName) &&
+                                       storedAck.requestId.equals(parsedV2->requestId);
+                            });
+            if (duplicateAck) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_REPLAY_IGNORED timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << parsedV2->requestId.toUri()
+                          << " providerName=" << parsedV2->providerName.toUri()
+                          << " serviceName=" << parsedV2->serviceName.toUri());
+                if (completeAckDecrypt()) {
+                    evaluateAckSelection(parsedV2->requestId);
+                }
+                return false;
+            }
+
             pendingCall->second.providerTokens[parsedV2->providerName.toUri()] =
                 ackMessage.getProviderToken();
             pendingCall->second.requestAcks.push_back(
@@ -3560,11 +3580,29 @@ namespace ndn_service_framework
             return false;
         }
 
+        const ndn::Name unifiedServiceName = makeUnifiedServiceName(serviceName, functionName);
+        const bool duplicateAck =
+            std::any_of(pendingCall->second.requestAcks.begin(),
+                        pendingCall->second.requestAcks.end(),
+                        [&] (const StoredAck& storedAck) {
+                            return storedAck.providerName.equals(providerName) &&
+                                   storedAck.serviceName.equals(unifiedServiceName) &&
+                                   storedAck.requestId.equals(requestId);
+                        });
+        if (duplicateAck) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_REPLAY_IGNORED timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " providerName=" << providerName.toUri()
+                      << " serviceName=" << unifiedServiceName.toUri());
+            return false;
+        }
+
         pendingCall->second.providerTokens[providerName.toUri()] =
             ackMessage.getProviderToken();
         pendingCall->second.requestAcks.push_back(
             StoredAck{providerName,
-                      makeUnifiedServiceName(serviceName, functionName),
+                      unifiedServiceName,
                       requestId,
                       ackMessage});
         updateRequestLifecycleState(requestId, RequestLifecycleState::ACK_MATCHED);
