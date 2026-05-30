@@ -32,6 +32,7 @@
 #include <stdexcept>
 #include <string>
 #include <sstream>
+#include <set>
 #include <sys/file.h>
 #include <sys/wait.h>
 #include <thread>
@@ -130,6 +131,20 @@ responsePayload(const ndn_service_framework::ResponseMessage& response)
   return std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
 }
 
+std::vector<std::string>
+splitCsv(const std::string& value)
+{
+  std::vector<std::string> out;
+  std::stringstream ss(value);
+  std::string item;
+  while (std::getline(ss, item, ',')) {
+    if (!item.empty()) {
+      out.push_back(item);
+    }
+  }
+  return out;
+}
+
 ndn_service_framework::ResponseMessage
 makeResponse(bool status, const std::string& payload, const std::string& error = "No error")
 {
@@ -146,15 +161,20 @@ class GroundStationRuntime
 public:
   GroundStationRuntime(bool serveCertificates, int ackTimeoutMs, int timeoutMs,
                        std::string targetDroneId, uint64_t videoBitrateKbps,
-                       uint64_t videoFrameWidth)
+                       uint64_t videoFrameWidth,
+                       std::vector<std::string> patrolDroneIds = {})
     : m_serveCertificates(serveCertificates)
     , m_ackTimeoutMs(ackTimeoutMs)
     , m_timeoutMs(timeoutMs)
     , m_targetDroneId(std::move(targetDroneId))
     , m_videoBitrateKbps(videoBitrateKbps)
     , m_videoFrameWidth(videoFrameWidth)
+    , m_patrolDroneIds(std::move(patrolDroneIds))
     , m_videoPumpTimer(m_face.getIoContext())
   {
+    if (m_patrolDroneIds.empty()) {
+      m_patrolDroneIds.push_back(m_targetDroneId);
+    }
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
     m_gsCert = getOrCreateIdentity(m_keyChain, GROUND_STATION_IDENTITY);
     m_controllerCert = getOrCreateIdentity(m_keyChain, CONTROLLER_PREFIX);
@@ -274,6 +294,248 @@ public:
   isStreaming() const
   {
     return m_streaming.load();
+  }
+
+  bool
+  runAutoPatrolCompensationDemo(std::chrono::seconds timeout)
+  {
+    struct PatrolPart
+    {
+      std::string id;
+      std::string role;
+      std::string waypoints;
+      std::string assignedDrone;
+      std::string completedBy;
+      int attempt = 0;
+      bool done = false;
+    };
+
+    struct PatrolDemoState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      std::map<std::string, PatrolPart> parts;
+      std::set<std::string> timedOut;
+    };
+
+    if (m_patrolDroneIds.size() < 2) {
+      publishStatus("Patrol demo needs at least two drones");
+      return false;
+    }
+
+    const std::string taskId = "patrol-" + std::to_string(nowMilliseconds());
+    auto state = std::make_shared<PatrolDemoState>();
+    state->parts = {
+      {"part0", PatrolPart{"part0", "north-sector", "N0>N1>N2", m_patrolDroneIds[0], "", 0, false}},
+      {"part1", PatrolPart{"part1", "south-sector", "S0>S1>S2", m_patrolDroneIds[1], "", 0, false}},
+    };
+
+    auto logLedger = [&] (const std::string& line) {
+      NDN_LOG_INFO(line);
+      std::cout << line << std::endl;
+    };
+
+    auto allDone = [state] {
+      for (const auto& item : state->parts) {
+        if (!item.second.done) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    auto joinDroneIds = [] (const std::vector<std::string>& droneIds) {
+      std::string out;
+      for (size_t i = 0; i < droneIds.size(); ++i) {
+        if (i > 0) {
+          out += ",";
+        }
+        out += droneIds[i];
+      }
+      return out;
+    };
+
+    auto dispatchPart = [&] (const std::string& partId, std::vector<std::string> droneIds,
+                             int attempt, bool simulateNoResponse) {
+      const std::string candidateText = joinDroneIds(droneIds);
+      PatrolPart part;
+      {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        auto& storedPart = state->parts[partId];
+        storedPart.assignedDrone = candidateText;
+        storedPart.attempt = attempt;
+        part = storedPart;
+      }
+      const std::string payload = encodeFields({
+        {"type", "patrol-task"},
+        {"patrol_task_id", taskId},
+        {"mission_id", taskId},
+        {"attempt_id", std::to_string(attempt)},
+        {"part_id", part.id},
+        {"role", part.role},
+        {"area", "demo-area"},
+        {"waypoints", part.waypoints},
+        {"capture_required", "true"},
+        {"simulate_no_response", simulateNoResponse ? "true" : "false"},
+        {"simulate_delay_ms", "6500"},
+      });
+      logLedger("PATROL_ASSIGN task=" + taskId +
+                " attempt=" + std::to_string(attempt) +
+                " part=" + part.id +
+                " candidates=" + candidateText +
+                " simulate_no_response=" + (simulateNoResponse ? "true" : "false"));
+
+      auto requestMessage = makeRequest(payload);
+      std::vector<ndn::Name> providerNames;
+      providerNames.reserve(droneIds.size());
+      for (const auto& droneId : droneIds) {
+        providerNames.push_back(droneIdentity(droneId));
+      }
+      m_face.getIoContext().post([this, requestMessage = std::move(requestMessage),
+                                  providerNames = std::move(providerNames),
+                                  taskId, partId, candidateText,
+                                  attempt, state,
+                                  logLedger] () mutable {
+        if (!m_runtimeReady.load() || !m_user) {
+          logLedger("PATROL_RUNTIME_NOT_READY task=" + taskId +
+                    " part=" + partId);
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->timedOut.insert(partId);
+          state->cv.notify_all();
+          return;
+        }
+        auto selectIdleCandidate =
+          [providerNames, taskId, partId, attempt, logLedger](
+            const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+            std::vector<ndn_service_framework::AckSelectionCandidate> selected;
+            for (const auto& candidate : candidates) {
+              bool inCandidateSet = false;
+              for (const auto& providerName : providerNames) {
+                if (candidate.providerName.equals(providerName)) {
+                  inCandidateSet = true;
+                  break;
+                }
+              }
+              if (!inCandidateSet || !candidate.ack.getStatus()) {
+                if (!inCandidateSet) {
+                  continue;
+                }
+              }
+
+              const auto payload = candidate.ack.getPayload();
+              const auto fields = decodeFields(
+                std::string(reinterpret_cast<const char*>(payload.data()),
+                            payload.size()));
+              if (fieldOr(fields, "mission_busy", "false") == "true") {
+                logLedger("PATROL_ACK_BUSY task=" + taskId +
+                          " attempt=" + std::to_string(attempt) +
+                          " part=" + partId +
+                          " provider=" + candidate.providerName.toUri());
+                continue;
+              }
+              if (!candidate.ack.getStatus()) {
+                continue;
+              }
+
+              logLedger("PATROL_ACK_SELECTED task=" + taskId +
+                        " attempt=" + std::to_string(attempt) +
+                        " part=" + partId +
+                        " provider=" + candidate.providerName.toUri());
+              selected.push_back(candidate);
+              break;
+            }
+            return selected;
+          };
+        m_user->RequestService(
+          providerNames,
+          SERVICE_MISSION_ASSIGN,
+          std::move(requestMessage),
+          m_ackTimeoutMs,
+          std::move(selectIdleCandidate),
+          m_timeoutMs,
+          [taskId, partId, candidateText, attempt, state, logLedger](const ndn::Name&) {
+            logLedger("PATROL_PART_MISSING task=" + taskId +
+                      " attempt=" + std::to_string(attempt) +
+                      " part=" + partId +
+                      " candidates=" + candidateText);
+            {
+              std::lock_guard<std::mutex> guard(state->mutex);
+              if (!state->parts[partId].done) {
+                state->timedOut.insert(partId);
+              }
+            }
+            state->cv.notify_all();
+          },
+          [taskId, partId, candidateText, attempt, state, logLedger](
+            const ndn_service_framework::ResponseMessage& response) {
+            const auto fields = decodeFields(responsePayload(response));
+            const auto responder = fieldOr(fields, "drone_id", candidateText);
+            bool accepted = false;
+            {
+              std::lock_guard<std::mutex> guard(state->mutex);
+              auto& part = state->parts[partId];
+              if (!part.done && response.getStatus()) {
+                part.done = true;
+                part.completedBy = responder;
+                accepted = true;
+              }
+            }
+            if (accepted) {
+              logLedger("PATROL_PART_DONE task=" + taskId +
+                        " attempt=" + std::to_string(attempt) +
+                        " part=" + partId +
+                        " provider=" + responder +
+                        " status=true");
+            }
+            else {
+              logLedger("PATROL_LATE_RESPONSE_IGNORED task=" + taskId +
+                        " attempt=" + std::to_string(attempt) +
+                        " part=" + partId +
+                        " provider=" + responder +
+                        " status=" + (response.getStatus() ? "true" : "false"));
+            }
+            state->cv.notify_all();
+          });
+      });
+    };
+
+    logLedger("PATROL_TASK_START task=" + taskId + " parts=part0,part1");
+    logLedger("PATROL_ATTEMPT task=" + taskId + " attempt=1 parts=part0,part1");
+    dispatchPart("part0", {m_patrolDroneIds[0]}, 1, true);
+    dispatchPart("part1", {m_patrolDroneIds[1]}, 1, false);
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    {
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait_until(lock, deadline, [&] {
+        return state->parts["part1"].done &&
+               state->timedOut.find("part0") != state->timedOut.end();
+      });
+    }
+
+    {
+      std::lock_guard<std::mutex> guard(state->mutex);
+      if (!state->parts["part0"].done) {
+        logLedger("PATROL_COMPENSATION task=" + taskId +
+                  " attempt=2 parts=part0 candidates=" + joinDroneIds(m_patrolDroneIds));
+      }
+      else {
+        logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=1");
+        return true;
+      }
+    }
+    dispatchPart("part0", m_patrolDroneIds, 2, false);
+
+    {
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait_until(lock, deadline, allDone);
+      if (!allDone()) {
+        logLedger("PATROL_TASK_FAILED task=" + taskId);
+        return false;
+      }
+    }
+    logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=2");
+    return true;
   }
 
 private:
@@ -1171,6 +1433,7 @@ private:
   std::string m_targetDroneId;
   uint64_t m_videoBitrateKbps = 8000;
   uint64_t m_videoFrameWidth = 480;
+  std::vector<std::string> m_patrolDroneIds;
   ndn::Face m_face;
   boost::asio::steady_timer m_videoPumpTimer;
   ndn::KeyChain m_keyChain;
@@ -1456,8 +1719,10 @@ main(int argc, char** argv)
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const bool objectDetectionMode = hasFlag(argc, argv, "--serve-object-detection");
     const bool autoStart = hasFlag(argc, argv, "--auto-video-test");
+    const bool autoPatrolTest = hasFlag(argc, argv, "--auto-patrol-test");
     const int autoStopSeconds = std::stoi(getOption(argc, argv, "--auto-stop-seconds", "10"));
     const std::string targetDroneId = getOption(argc, argv, "--target-drone", "A");
+    auto patrolDroneIds = splitCsv(getOption(argc, argv, "--patrol-drones", targetDroneId));
     const int ackTimeoutMs = std::stoi(getOption(argc, argv, "--ack-timeout-ms", "500"));
     const int timeoutMs = std::stoi(getOption(argc, argv, "--timeout-ms", "10000"));
     const auto videoBitrateKbps = static_cast<uint64_t>(
@@ -1478,10 +1743,15 @@ main(int argc, char** argv)
 
     auto runtime = std::make_unique<GroundStationRuntime>(
       serveCertificates, ackTimeoutMs, timeoutMs, targetDroneId,
-      videoBitrateKbps, videoFrameWidth);
+      videoBitrateKbps, videoFrameWidth, patrolDroneIds);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
+    }
+    if (autoPatrolTest) {
+      const bool ok = runtime->runAutoPatrolCompensationDemo(std::chrono::seconds(30));
+      std::cout << "GS_PATROL_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
     }
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
     GroundStationWindow window(*runtime, autoStart, autoStopSeconds);

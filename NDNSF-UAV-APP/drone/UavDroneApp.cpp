@@ -787,8 +787,9 @@ private:
     auto backend = std::make_shared<MockFlightControllerBackend>(m_droneId);
     auto lastMission = std::make_shared<std::string>("idle");
     auto missionMutex = std::make_shared<std::mutex>();
+    auto missionBusy = std::make_shared<std::atomic<bool>>(false);
 
-    auto ackHandler = [this](const ndn_service_framework::RequestMessage&) {
+    auto ackHandler = [this](const ndn_service_framework::RequestMessage& request) {
       ndn_service_framework::ServiceProvider::AckDecision decision;
       decision.status = m_available;
       decision.message = m_available ? "drone ready" : "drone unavailable";
@@ -796,6 +797,23 @@ private:
         {"drone_id", m_droneId},
         {"backend", "mock-flight-controller"},
         {"queue", "0"},
+        {"streaming", isStreaming() ? "true" : "false"},
+      }));
+      return decision;
+    };
+
+    auto missionAckHandler = [this, missionBusy](
+                               const ndn_service_framework::RequestMessage&) {
+      const bool busy = missionBusy->load();
+      ndn_service_framework::ServiceProvider::AckDecision decision;
+      decision.status = m_available && !busy;
+      decision.message = decision.status ? "mission slot available" :
+                         (busy ? "mission slot busy" : "drone unavailable");
+      decision.payload = bufferFromString(encodeFields({
+        {"drone_id", m_droneId},
+        {"backend", "mock-flight-controller"},
+        {"mission_busy", busy ? "true" : "false"},
+        {"queue", busy ? "1" : "0"},
         {"streaming", isStreaming() ? "true" : "false"},
       }));
       return decision;
@@ -885,26 +903,54 @@ private:
 
     m_provider->addService(
       SERVICE_MISSION_ASSIGN,
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(missionAckHandler),
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
-        [backend, this, lastMission, missionMutex](
+        [backend, this, lastMission, missionMutex, missionBusy](
           const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
           const auto missionId = fieldOr(fields, "mission_id", "mission-unknown");
           const auto role = fieldOr(fields, "role", "survey");
+          const auto partId = fieldOr(fields, "part_id", role);
+          const auto attemptId = fieldOr(fields, "attempt_id", "1");
           const auto waypoints = fieldOr(fields, "waypoints", "");
+          bool expectedIdle = false;
+          if (!missionBusy->compare_exchange_strong(expectedIdle, true)) {
+            return makeResponse(false, encodeFields({
+              {"accepted", "false"},
+              {"reason", "mission-slot-busy"},
+              {"drone_id", m_droneId},
+              {"part_id", partId},
+              {"attempt_id", attemptId},
+            }), "mission slot busy");
+          }
+          struct BusyGuard
+          {
+            std::shared_ptr<std::atomic<bool>> flag;
+            ~BusyGuard()
+            {
+              flag->store(false);
+            }
+          } clearBusy{missionBusy};
+          if (fieldOr(fields, "simulate_no_response", "false") == "true") {
+            const auto delayMs = std::stoul(fieldOr(fields, "simulate_delay_ms", "6000"));
+            publishStatus("mission response delayed part=" + partId +
+                          " attempt=" + attemptId);
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+          }
 
           {
             std::lock_guard<std::mutex> guard(*missionMutex);
-            *lastMission = "executing:" + missionId + ":" + role;
+            *lastMission = "executing:" + missionId + ":" + partId;
           }
 
           backend->sendMavlink(buildMockMavlinkFrame("mission-waypoints", {
             {"mission_id", missionId},
             {"role", role},
+            {"part_id", partId},
+            {"attempt_id", attemptId},
             {"waypoints", waypoints},
           }));
-          const auto frameId = "mission-" + missionId + "-capture";
+          const auto frameId = "mission-" + missionId + "-" + partId + "-capture";
           const auto image = buildMockJpeg(m_droneId, frameId);
 
           return makeResponse(true, encodeFields({
@@ -912,6 +958,8 @@ private:
             {"mission_id", missionId},
             {"drone_id", m_droneId},
             {"role", role},
+            {"part_id", partId},
+            {"attempt_id", attemptId},
             {"status", "mission-executed-with-mock-fc"},
             {"captured_frame_id", frameId},
             {"captured_image_bytes", std::to_string(image.size())},
