@@ -429,7 +429,7 @@ NDNSF_SVS_ASYNC_PUBLISH=1
 NDNSF_SVS_PARALLEL_SYNC=1
 NDNSF_SVS_PARALLEL_WORKERS=4
 NDNSF_SVS_PARALLEL_QUEUE=256
-NDNSF_SVS_PARALLEL_PRODUCTION=0
+NDNSF_SVS_PARALLEL_PRODUCTION=4
 NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING=0
 NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK=1
 adaptive admission: disabled
@@ -451,8 +451,8 @@ ndn-cxx: 0.9.0 (/usr/local/lib/libndn-cxx.so.0.9.0)
 NFD: 24.07-14-g2b43d675
 MiniNDN: 0.7.0 (/home/tianxing/NDN/mini-ndn)
 Mininet: 2.3.1b4
-ndn-svs: /home/tianxing/NDN/ndn-svs commit 8b26f10
-NDNSF: /home/tianxing/NDN/ndn-service-framework commit 1259111
+ndn-svs: /home/tianxing/NDN/ndn-svs commit 70302b6
+NDNSF: this repository commit that records the profile
 OpenABE: /usr/local/lib/libopenabe.so, built against OpenSSL 1.1.x
 ```
 
@@ -496,12 +496,25 @@ RPS   Actual   Success   Avg ms   P50 ms   P95 ms   P99 ms   Timeout
 100   99.99    100%      166.40   165.67   169.04   174.19   0
 ```
 
-Current 60-second 100 RPS diagnostics show why later sustained runs can sit
-above the 166 ms short-window baseline. Do not change ndn-svs periodic Sync
-Interest timing for this benchmark unless the experiment explicitly studies
-that timer: periodic sync affects piggyback opportunities. Keep the Sync
-Interest suppression interval in the 1-5 ms range; the reproduction profile
-uses 1 ms.
+Current 60-second diagnostics with the StateVectorSync v3 bootstrap-time ndn-svs
+build confirm that the low-latency band is still reachable after switching the
+SVS wire format to `StateVectorEntry(Name, SeqNoEntry(BootstrapTime, SeqNo))`.
+The key harness setting is `NDNSF_SVS_PARALLEL_PRODUCTION=4`. A previous
+`--performance-mode` default accidentally forced this value to `0`, which pushed
+the same 20 RPS workload to about 210 ms. Restoring the performance profile to
+parallel Sync Interest production brought both 20 RPS and 100 RPS back to the
+160-170 ms band:
+
+```text
+Result directory                                      RPS    Actual   Success   Avg ms   P50 ms   P95 ms   P99 ms   Timeout
+results/newapi_testbed_rate_series_20260529_201154   20     20.00    100%      162.04   161.92   163.68   165.83   0
+results/newapi_testbed_rate_series_20260529_201458   100    100.00   100%      164.38   164.00   167.46   173.67   0
+```
+
+Do not change ndn-svs periodic Sync Interest timing for this benchmark unless
+the experiment explicitly studies that timer: periodic sync affects piggyback
+opportunities. Keep the Sync Interest suppression interval in the 1-5 ms range;
+the reproduction profile uses 1 ms.
 
 The current open-loop generator avoids zero-delay catch-up bursts. When the
 event loop falls behind, it records delayed publications and uses bounded
@@ -524,21 +537,9 @@ should therefore focus on the SVS/NFD delivery path and piggyback delivery
 effectiveness, not on periodic-sync timer changes, extra hot-path logging, or
 application crypto.
 
-A follow-up diagnostic isolated one important source of delivery jitter:
-parallel Sync Interest production. With `--svs-disable-parallel-production`
-and a 60-second send-but-not-measure warmup, the sustained 60-second 100 RPS
-run returned to the low-latency band. This was then verified as the default
-`--performance-mode` profile in `results/newapi_minindn_perf_20260529_131700`:
-
-```text
-Actual RPS  Success  Avg ms  P50 ms  P95 ms  P99 ms  Timeout
-100.000     100.00%  168.23  166.77  177.15  190.17  0
-```
-
-This indicates that the 166 ms behavior is reachable in sustained 60-second
-measurements after the system reaches steady state. Parallel production can
-hide local publication delay behind worker queues: local publish calls still
-look sub-millisecond in application traces, while end-to-end delivery gains
-extra tail. Use this profile when validating the latency floor, and use
-parallel production only when the experiment is specifically studying
-throughput/CPU tradeoffs.
+The main lesson from the 2026-05-29 regression is that a benchmark can look slow
+even when the protocol and code path are correct if the harness silently disables
+parallel SVS production. Keep `--performance-mode` aligned with the runtime
+profile above when validating the latency floor, and only set
+`--svs-disable-parallel-production` when an experiment is specifically studying
+single-threaded production behavior.
