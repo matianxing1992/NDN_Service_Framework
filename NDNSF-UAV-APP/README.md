@@ -359,6 +359,14 @@ In interactive mode, the launcher starts PX4 SITL with the jMAVSim GUI on the
 same MiniNDN node as DroneAPP by default, so the simulator window appears with
 the drone window and manual-control reactions are visible. Use
 `--no-start-jmavsim` to keep the mock flight-controller backend.
+DroneAPP starts as soon as the simulator process is launched; it does not block
+the GUI while PX4 finishes booting. The Drone window shows
+`Flight controller: starting`, `simulator connected`, and `ready for takeoff`
+from a small status file written by the launcher.
+PX4/jMAVSim output is filtered before it reaches `jmavsim-<drone>.log`: repeated
+`pxh>` prompt updates are dropped and the log is capped by
+`NDNSF_UAV_JMAVSIM_LOG_MAX_BYTES` (default 8 MiB). This avoids VM stalls caused
+by terminal prompt spam during interactive demos.
 
 After the script prints `NDNSF_UAV_GUI_MININDN_READY`, use the ground-station
 window to click `Start Video` and `Stop Video`. Logs are written under
@@ -422,6 +430,10 @@ preserves the current Python package path for PX4 build helpers such as
 `kconfiglib`. It also passes `CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5` by
 default for newer CMake versions; override this with `--px4-cmake-args` if your
 PX4 checkout no longer needs it.
+
+The launcher keeps framework logs quiet by default:
+`ndn_service_framework.*=WARN` with UAV app logs at `INFO`. Override
+`NDNSF_APP_NDN_LOG` only when debugging NDNSF internals.
 
 ## Full NDNSF Service Sketch
 

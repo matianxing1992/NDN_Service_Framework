@@ -311,6 +311,12 @@ ground station: memphis
 交互模式下，launcher 默认会在和 DroneAPP 相同的 MiniNDN 节点上启动 PX4 SITL 和 jMAVSim
 GUI，所以 simulator 窗口会和 drone 窗口一起出现，方便直接观察手操反应。如果只想使用 mock
 flight-controller backend，可以加 `--no-start-jmavsim`。
+DroneAPP 会在 simulator 进程启动后立刻显示出来，不会为了等待 PX4 完全 ready 而阻塞 GUI。
+Drone 窗口会通过 launcher 写入的小状态文件显示 `Flight controller: starting`、
+`simulator connected`、`ready for takeoff` 等状态。
+PX4/jMAVSim 输出会先经过过滤再写入 `jmavsim-<drone>.log`：重复的 `pxh>` prompt 会被丢弃，
+日志大小由 `NDNSF_UAV_JMAVSIM_LOG_MAX_BYTES` 限制（默认 8 MiB）。这样可以避免交互 demo
+期间终端 prompt 刷屏导致 VM 卡死。
 
 脚本打印 `NDNSF_UAV_GUI_MININDN_READY` 后，就可以在 ground-station 窗口点击 `Start Video`
 和 `Stop Video`。日志会写到 `results/uav_gui_minindn/`。这个命令应该从图形桌面 session
@@ -368,6 +374,9 @@ launcher 会把 MiniNDN 节点 HOME 放在 `/tmp/minindn/<node>` 下，因此它
 package path，供 PX4 build helper（例如 `kconfiglib`）使用。它也默认给较新的 CMake 版本传入
 `CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5`；如果你的 PX4 checkout 已经不需要这个参数，
 可以用 `--px4-cmake-args` 覆盖。
+
+launcher 默认会压低 framework 日志量：`ndn_service_framework.*=WARN`，UAV app 自身日志保持
+`INFO`。只有调试 NDNSF 内部问题时才建议用 `NDNSF_APP_NDN_LOG` 覆盖。
 
 ## 完整 NDNSF service 草图
 
