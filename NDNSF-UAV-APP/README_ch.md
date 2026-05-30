@@ -95,18 +95,30 @@ NDN Data 拉取，因此 generic request/response 路径只承载控制消息，
 `frame_last_packet_seq`、`bucket_packet_count`、`capture_ms` 和 `key_frame`，后面才是本
 packet 承载的 frame bytes。
 
+当前阶段采用轻量级前向纠错（FEC）：默认每帧使用 `N = K + 1`（一个校验分片）。发送端在同一
+`packetSeq` 序列内发布全部数据分片和校验分片，并在 header 中附带 `fec_data_shards`、
+`fec_parity_shards`、`fec_symbol_index`、`fec_symbol_count`、`fec_data_lengths`。
+ground station 按 frame 级别缓存分片；当某一帧只缺一个 data 分片时，用 XOR 与其余分片恢复后再喂给
+解码器。这样名字依然可预测，允许一定程度的丢包与乱序，而不会先天影响抓包与预获取。
+
 这种命名方便预获取：ground station 可以连续请求 `/<stream>/0`、`/1`、`/2`……，不再需要处理
 秒级边界。frame 重组依赖 Data content 里的 metadata，不依赖 NDN FinalBlockId。某个 frame 的
 所有 packet 到齐后，GUI 立刻显示这一帧。迟到或缺失的旧非关键帧 packet 会被跳过，避免影响
 实时性。后续切换到 H264/H265 时可以沿用同样命名，必要时等待 key frame，并在下一个可用 key
 frame 到来前丢弃过期 delta frame。
 
-ground station 会在同一个 `/<drone>/UAV/Camera/Video` 控制服务请求里带上目标图传 bitrate。
-drone 会先把请求值 clamp 到自己支持的 bitrate 范围，再据此选择 MJPEG encoder quality，也就是
-`ffmpeg -q:v`。响应里会同时返回 requested bitrate、accepted bitrate、FPS、encoder quality
-和 packet payload 大小。ground station 再用 accepted bitrate 以及每个 packet metadata 里的
+ground station 会在同一个 `/<drone>/UAV/Camera/Video` 控制服务请求里带上目标图传 bitrate
+和 frame width。drone 会先把请求值 clamp 到自己支持的 bitrate/width 范围，再据此选择
+MJPEG encoder quality，也就是 `ffmpeg -q:v`，并设置编码缩放宽度。响应里会同时返回 requested
+bitrate、accepted bitrate、requested width、accepted width、FPS、encoder quality 和 packet
+payload 大小。ground station 再用 accepted bitrate 以及每个 packet metadata 里的
 high-watermark 估计 prefetch window，避免盲目请求无边界的 packet sequence number。当前 demo
-默认是 4000 kbps、30 FPS 的 MJPEG stream。
+默认是 8000 kbps、480 px frame width、30 FPS 的 MJPEG stream。提高 bitrate 会增加 JPEG 质量和
+packet 数据量；提高 frame width 才会让 GUI 里显示的视频更大。
+
+点击 `Stop Video` 后，drone 会停止 encoder loop，清空 pending Interests 和缓存的 stream packets，
+并忽略已经停止的 stream 上迟到的 frame Interests。这样可以避免 GS 端视频停了，但 drone 还在继续
+服务旧缓存包。
 
 后续可以增加每个 stream 独立的小 SVS group 来发布 frame-name announcement，但它应该和主 UAV
 control group 分开，避免高频视频信令影响 command、telemetry 和 mission traffic。同一个控制服务
@@ -157,7 +169,8 @@ nfd-start
   --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
 
 ./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
-./build/examples/UavGroundStationApp --target-drone A --video-bitrate-kbps 4000
+./build/examples/UavGroundStationApp --target-drone A \
+  --video-bitrate-kbps 8000 --video-width 480
 ```
 
 在 ground-station 窗口点击 `Start Video`。drone 窗口应该显示正在图传，ground-station 窗口应该能
@@ -167,7 +180,8 @@ nfd-start
 
 ```bash
 ./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
-./build/examples/UavGroundStationApp --target-drone A --video-bitrate-kbps 4000 \
+./build/examples/UavGroundStationApp --target-drone A \
+  --video-bitrate-kbps 8000 --video-width 480 \
   --auto-video-test --auto-stop-seconds 10
 ```
 
@@ -189,9 +203,9 @@ MiniNDN launcher 会把 controller、drone GUI、ground-station GUI 分别放到
 sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py
 ```
 
-可以用 `--video-bitrate-kbps <kbps>` 修改请求的图传 bitrate。ground station 会把这个值通过
-NDNSF 控制服务发给 drone；drone 调整 encoder quality；ground station 再用接受的 bitrate
-计算预取预算。
+可以用 `--video-bitrate-kbps <kbps>` 修改请求的图传 bitrate，用 `--video-width <pixels>` 修改
+请求的编码 frame width。ground station 会把这些值通过 NDNSF 控制服务发给 drone；drone 调整
+encoder quality 和缩放宽度；ground station 再用接受的 bitrate 计算预取预算。
 
 默认节点分配：
 
@@ -209,7 +223,8 @@ ground station: memphis
 
 ```bash
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
-  --video-bitrate-kbps 4000 \
+  --video-bitrate-kbps 8000 \
+  --video-width 480 \
   --auto-video-test --auto-stop-seconds 8 --no-cli --no-xhost
 ```
 

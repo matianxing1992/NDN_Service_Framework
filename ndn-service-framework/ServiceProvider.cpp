@@ -511,10 +511,12 @@ namespace ndn_service_framework
         ndn::svs::SecurityOptions secOpts(m_keyChain);
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-        secOpts.interestSigner->signingInfo.setSigningKeyName(identityCert.getKeyName());
-        secOpts.dataSigner->signingInfo.setSigningCertName(identityCert.getName());
+        const auto identityKeyName = identityCert.getKeyName();
+        const auto identityCertName = identityCert.getName();
+        secOpts.interestSigner->signingInfo.setSigningKeyName(identityKeyName);
+        secOpts.dataSigner->signingInfo.setSigningCertName(identityCertName);
         secOpts.dataSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-        secOpts.pubSigner->signingInfo.setSigningCertName(identityCert.getName());
+        secOpts.pubSigner->signingInfo.setSigningCertName(identityCertName);
         secOpts.pubSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
         secOpts.validator = validator;
         secOpts.encapsulatedDataValidator = validator;

@@ -23,6 +23,11 @@ struct VideoPacket
   uint32_t frameSegmentCount = 0;
   bool keyFrame = false;
   std::string encoding;
+  uint32_t fecDataShards = 0;
+  uint32_t fecParityShards = 0;
+  uint32_t fecSymbolIndex = 0;
+  uint32_t fecSymbolCount = 0;
+  std::string fecDataLengths;
   std::vector<uint8_t> payload;
 };
 

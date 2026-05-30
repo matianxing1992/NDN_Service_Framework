@@ -11,6 +11,8 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
+#include <boost/asio/steady_timer.hpp>
+
 #include <gdkmm/pixbufloader.h>
 #include <gtkmm.h>
 
@@ -18,14 +20,20 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
+#include <cerrno>
 #include <cstring>
+#include <deque>
 #include <fcntl.h>
 #include <iostream>
+#include <signal.h>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <sys/file.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -137,12 +145,15 @@ class GroundStationRuntime
 {
 public:
   GroundStationRuntime(bool serveCertificates, int ackTimeoutMs, int timeoutMs,
-                       std::string targetDroneId, uint64_t videoBitrateKbps)
+                       std::string targetDroneId, uint64_t videoBitrateKbps,
+                       uint64_t videoFrameWidth)
     : m_serveCertificates(serveCertificates)
     , m_ackTimeoutMs(ackTimeoutMs)
     , m_timeoutMs(timeoutMs)
     , m_targetDroneId(std::move(targetDroneId))
     , m_videoBitrateKbps(videoBitrateKbps)
+    , m_videoFrameWidth(videoFrameWidth)
+    , m_videoPumpTimer(m_face.getIoContext())
   {
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
     m_gsCert = getOrCreateIdentity(m_keyChain, GROUND_STATION_IDENTITY);
@@ -154,6 +165,7 @@ public:
   {
     m_streaming = false;
     m_done = true;
+    stopDecoder();
     m_face.getIoContext().stop();
     if (m_faceThread.joinable()) {
       m_faceThread.join();
@@ -235,6 +247,10 @@ public:
   stopVideo()
   {
     m_streaming = false;
+    m_videoPumpScheduled = false;
+    boost::system::error_code ec;
+    m_videoPumpTimer.cancel(ec);
+    stopDecoder();
     postRequest(droneVideoControlService(m_targetDroneId),
                 encodeFields({{"type", "video-control"}, {"action", "stop"}}),
                 [this](const std::string& payload) {
@@ -253,6 +269,7 @@ private:
                   {"action", "start"},
                   {"fps", std::to_string(VIDEO_FPS)},
                   {"requested_bitrate_kbps", std::to_string(m_videoBitrateKbps)},
+                  {"requested_frame_width", std::to_string(m_videoFrameWidth)},
                 }),
                 [this](const std::string& payload) {
                   const auto fields = decodeFields(payload);
@@ -267,15 +284,22 @@ private:
                   configurePrefetch(fields);
                   m_keyLane = PacketLane{};
                   m_deltaLane = PacketLane{"packet", 0, 0, 0, 0};
+                  m_videoPumpScheduled = false;
                   m_streaming = true;
                   m_seenVideoStart = true;
                   m_firstFrameMs = 0;
                   m_receivedChunks = 0;
                   m_frameNacks = 0;
                   m_frameTimeouts = 0;
-                  m_frames.clear();
-                  m_readyFrames.clear();
-                  m_nextPlaybackFrame = 0;
+                  m_nextChunkSeqToDecode = 0;
+                  {
+                    std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+                    m_chunkQueue.clear();
+                    m_pendingChunks.clear();
+                    m_decoderOutBuffer.clear();
+                  }
+                  stopDecoder();
+                  startDecoder();
                   publishStatus("Video packet stream from " + prefix);
                   requestVideoPackets();
                 },
@@ -338,20 +362,27 @@ private:
     uint64_t probeNotBeforeMs = 0;
   };
 
-  struct FrameAssembly
+  struct StreamChunk
   {
-    uint32_t segmentCount = 0;
-    uint32_t received = 0;
-    uint64_t captureMs = 0;
-    bool keyFrame = false;
-    std::vector<std::vector<uint8_t>> segments;
+    uint64_t packetSeq = 0;
+    uint64_t arrivalMs = 0;
+    uint64_t elapsedMs = 0;
+    std::vector<uint8_t> payload;
   };
 
-  struct ReadyFrame
+  struct FecFrameState
   {
-    std::vector<uint8_t> image;
-    uint64_t elapsedMs = 0;
-    bool keyFrame = false;
+    bool initialized = false;
+    uint64_t frameSeq = 0;
+    uint64_t frameFirstPacketSeq = 0;
+    uint64_t frameLastPacketSeq = 0;
+    uint32_t dataShards = 0;
+    uint32_t parityShards = 0;
+    uint32_t symbolCount = 0;
+    uint64_t firstArrivalMs = 0;
+    std::vector<size_t> fecDataLengths;
+    std::map<uint32_t, std::vector<uint8_t>> shards;
+    bool complete = false;
   };
 
   void
@@ -361,6 +392,21 @@ private:
       return;
     }
     requestVideoLane(m_deltaLane, m_deltaWindow);
+  }
+
+  void
+  scheduleVideoPump(uint64_t delayMs)
+  {
+    if (!m_streaming.load() || m_videoPumpScheduled.exchange(true)) {
+      return;
+    }
+    m_videoPumpTimer.expires_after(std::chrono::milliseconds(delayMs));
+    m_videoPumpTimer.async_wait([this] (const boost::system::error_code& ec) {
+      m_videoPumpScheduled = false;
+      if (!ec && m_streaming.load()) {
+        requestVideoPackets();
+      }
+    });
   }
 
   static uint64_t
@@ -383,6 +429,9 @@ private:
     const auto payloadBytes = std::max<uint64_t>(
       512, fieldAsUint64(fields, "max_payload_bytes", 3600));
     const auto fps = std::max<uint64_t>(1, fieldAsUint64(fields, "fps", VIDEO_FPS));
+    const auto frameWidth = std::max<uint64_t>(
+      1, fieldAsUint64(fields, "accepted_frame_width",
+                       fieldAsUint64(fields, "frame_width", m_videoFrameWidth)));
     const auto bytesPerSecond = (bitrateKbps * 1000 + 7) / 8;
     const auto estimatedPacketsPerSecond =
       std::max<uint64_t>(fps, (bytesPerSecond + payloadBytes - 1) / payloadBytes);
@@ -396,6 +445,7 @@ private:
       (m_deltaPacketsPerSecond + 2) / 3, 24, 48);
 
     NDN_LOG_INFO("GS_VIDEO_PREFETCH bitrateKbps=" << bitrateKbps
+                 << " frameWidth=" << frameWidth
                  << " payloadBytes=" << payloadBytes
                  << " fps=" << fps
                  << " keyBudget=" << m_keyPacketsPerSecond
@@ -403,6 +453,7 @@ private:
                  << " keyWindow=" << m_keyWindow
                  << " deltaWindow=" << m_deltaWindow);
     std::cout << "GS_VIDEO_PREFETCH bitrateKbps=" << bitrateKbps
+              << " frameWidth=" << frameWidth
               << " keyBudget=" << m_keyPacketsPerSecond
               << " deltaBudget=" << m_deltaPacketsPerSecond
               << " deltaWindow=" << m_deltaWindow << std::endl;
@@ -419,11 +470,16 @@ private:
         lane.advertisedPackets + VIDEO_PACKET_LOOKAHEAD;
       if (lane.prefetchLimit == 0 &&
           lane.nextSeq >= highWaterLimit) {
+        if (lane.inFlight == 0 && lane.advertisedPackets > 0) {
+          lane.nextSeq = lane.advertisedPackets;
+        }
+        scheduleVideoPump(STREAM_PUMP_INTERVAL_MS);
         break;
       }
       if (lane.probeNotBeforeMs > 0 &&
           nowMilliseconds() < lane.probeNotBeforeMs &&
           lane.nextSeq >= lane.advertisedPackets) {
+        scheduleVideoPump(PROBE_RETRY_BACKOFF_MS);
         break;
       }
       const auto packetSeq = lane.nextSeq++;
@@ -461,7 +517,7 @@ private:
           try {
             const auto packet = decodeVideoPacket(bytes);
             updateLaneHighWatermark(lane, packet);
-            handleVideoPacket(packet, receivedMs);
+            queueStreamChunk(packet, receivedMs);
           }
           catch (const std::exception& e) {
             NDN_LOG_WARN("GS_VIDEO_PACKET_DECODE_FAILED " << e.what());
@@ -498,6 +554,7 @@ private:
             lane.probeNotBeforeMs = nowMilliseconds() + PROBE_RETRY_BACKOFF_MS;
           }
           advanceLaneIfStale(lane);
+          scheduleVideoPump(PROBE_RETRY_BACKOFF_MS);
           requestVideoPackets();
       });
     }
@@ -527,33 +584,6 @@ private:
     }
   }
 
-  bool
-  maybeAdvanceLaneForNextSecondPrefetch(PacketLane& lane)
-  {
-    if (lane.maxPacketsPerSecond == 0) {
-      return false;
-    }
-
-    const auto nowMs = nowMilliseconds();
-    const auto currentSecond = nowMs / 1000;
-    const auto millisInSecond = nowMs % 1000;
-    if (lane.second != currentSecond ||
-        millisInSecond < NEXT_SECOND_PREFETCH_AFTER_MS) {
-      return false;
-    }
-
-    lane.second = currentSecond + 1;
-    lane.nextSeq = 0;
-    lane.prefetchLimit = std::clamp<uint64_t>(
-      lane.maxPacketsPerSecond / 8, 6, 16);
-    lane.advertisedPackets = 0;
-    lane.probeNotBeforeMs = 0;
-    NDN_LOG_DEBUG("GS_VIDEO_PREFETCH_NEXT_SECOND kind=" << lane.kind
-                  << " second=" << lane.second
-                  << " limit=" << lane.prefetchLimit);
-    return true;
-  }
-
   void
   updateLaneHighWatermark(PacketLane& lane, const VideoPacket& packet)
   {
@@ -562,76 +592,187 @@ private:
   }
 
   void
-  handleVideoPacket(const VideoPacket& packet, uint64_t receivedMs)
+  queueStreamChunk(const VideoPacket& packet, uint64_t receivedMs)
   {
-    if (packet.frameSeq + 90 < m_latestDecodedFrame.load()) {
+    if (!m_decoderRunning.load() || packet.payload.empty()) {
       return;
     }
 
-    auto& frame = m_frames[packet.frameSeq];
-    if (frame.segmentCount == 0) {
-      frame.segmentCount = packet.frameSegmentCount;
-      frame.captureMs = packet.captureMs;
-      frame.keyFrame = packet.keyFrame;
-      frame.segments.resize(packet.frameSegmentCount);
-    }
-    if (packet.frameSegmentIndex >= frame.segments.size() ||
-        !frame.segments[packet.frameSegmentIndex].empty()) {
-      return;
-    }
-    frame.segments[packet.frameSegmentIndex] = packet.payload;
-    ++frame.received;
-
-    if (frame.received != frame.segmentCount) {
+    if (packet.fecDataShards > 0 || packet.fecParityShards > 0 || packet.fecSymbolCount > 0) {
+      processFecChunk(packet, receivedMs);
       return;
     }
 
-    std::vector<uint8_t> image;
-    size_t total = 0;
-    for (const auto& segment : frame.segments) {
-      total += segment.size();
-    }
-    image.reserve(total);
-    for (const auto& segment : frame.segments) {
-      image.insert(image.end(), segment.begin(), segment.end());
+    if (packet.packetSeq == UINT64_MAX) {
+      return;
     }
 
-    m_frames.erase(packet.frameSeq);
-    m_readyFrames[packet.frameSeq] = ReadyFrame{
-      std::move(image),
-      receivedMs - m_firstFrameMs,
-      packet.keyFrame,
-    };
-    flushPlaybackBuffer();
+    const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
+    insertChunkForDecode(packet.packetSeq, packet.payload, elapsedMs);
   }
 
   void
-  flushPlaybackBuffer()
+  processFecChunk(const VideoPacket& packet, uint64_t receivedMs)
   {
-    while (true) {
-      const auto ready = m_readyFrames.find(m_nextPlaybackFrame);
-      if (ready != m_readyFrames.end()) {
-        emitReadyFrame(ready);
-        ++m_nextPlaybackFrame;
-        continue;
-      }
-
-      if (m_readyFrames.empty()) {
-        break;
-      }
-
-      const auto newestReady = m_readyFrames.rbegin()->first;
-      if (newestReady < m_nextPlaybackFrame + PLAYBACK_REORDER_WINDOW_FRAMES) {
-        break;
-      }
-
-      const auto firstReady = m_readyFrames.begin()->first;
-      m_nextPlaybackFrame = std::max(m_nextPlaybackFrame + 1, firstReady);
+    if (!m_decoderRunning.load() || packet.payload.empty() ||
+        packet.fecSymbolCount == 0 || packet.fecDataShards == 0) {
+      return;
     }
 
-    for (auto it = m_frames.begin(); it != m_frames.end();) {
-      if (it->first + PLAYBACK_DROP_WINDOW_FRAMES < m_nextPlaybackFrame) {
-        it = m_frames.erase(it);
+    const auto frameSeq = packet.frameSeq;
+    auto& state = m_fecFrames[frameSeq];
+
+    if (!state.initialized) {
+      state.frameSeq = frameSeq;
+      state.frameFirstPacketSeq = packet.frameFirstPacketSeq;
+      state.frameLastPacketSeq = packet.frameLastPacketSeq;
+      state.dataShards = packet.fecDataShards;
+      state.parityShards = packet.fecParityShards;
+      state.symbolCount = packet.fecSymbolCount;
+      state.fecDataLengths = parseFecDataLengths(packet.fecDataLengths);
+      state.firstArrivalMs = receivedMs;
+      state.initialized = true;
+    }
+
+    state.dataShards = std::max<uint32_t>(state.dataShards, packet.fecDataShards);
+    state.parityShards = std::max<uint32_t>(state.parityShards, packet.fecParityShards);
+    state.symbolCount = std::max<uint32_t>(state.symbolCount, packet.fecSymbolCount);
+    state.frameLastPacketSeq =
+      packet.frameLastPacketSeq != 0 ?
+      packet.frameLastPacketSeq :
+      (packet.frameFirstPacketSeq + state.symbolCount - 1);
+    if (state.fecDataLengths.empty() && !packet.fecDataLengths.empty()) {
+      state.fecDataLengths = parseFecDataLengths(packet.fecDataLengths);
+    }
+
+    if (packet.fecSymbolIndex < packet.fecSymbolCount) {
+      state.shards.try_emplace(packet.fecSymbolIndex, packet.payload);
+    }
+
+    const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
+    attemptAndRecoverFrame(state);
+    if (packet.fecSymbolIndex < state.dataShards) {
+      insertChunkForDecode(packet.packetSeq, packet.payload, elapsedMs);
+    }
+  }
+
+  void
+  attemptAndRecoverFrame(FecFrameState& state)
+  {
+    if (state.complete || state.dataShards == 0 || state.symbolCount == 0) {
+      return;
+    }
+
+    uint32_t receivedDataShards = 0;
+    for (uint32_t i = 0; i < state.dataShards; ++i) {
+      if (state.shards.find(i) != state.shards.end()) {
+        ++receivedDataShards;
+      }
+    }
+
+    if (receivedDataShards == state.dataShards) {
+      state.complete = true;
+      cleanupFecFrames();
+      return;
+    }
+
+    if (receivedDataShards + state.parityShards < state.dataShards) {
+      return;
+    }
+
+    if (state.dataShards - receivedDataShards != 1) {
+      return;
+    }
+
+    for (uint32_t missingIdx = 0; missingIdx < state.dataShards; ++missingIdx) {
+      if (state.shards.find(missingIdx) != state.shards.end()) {
+        continue;
+      }
+      const auto recovered = recoverFecDataSymbol(state, missingIdx);
+      if (recovered.empty()) {
+        return;
+      }
+      const auto recoveredSeq = state.frameFirstPacketSeq + missingIdx;
+      const auto recoveredElapsed = (m_firstFrameMs == 0 ? 0 : state.firstArrivalMs - m_firstFrameMs);
+      insertChunkForDecode(recoveredSeq, recovered, recoveredElapsed);
+      state.shards[missingIdx] = recovered;
+      state.complete = true;
+      break;
+    }
+  }
+
+  std::vector<size_t>
+  parseFecDataLengths(const std::string& value)
+  {
+    std::vector<size_t> lengths;
+    if (value.empty()) {
+      return lengths;
+    }
+
+    std::stringstream parser(value);
+    std::string token;
+    while (std::getline(parser, token, ',')) {
+      if (token.empty()) {
+        continue;
+      }
+      try {
+        lengths.push_back(std::stoull(token));
+      }
+      catch (const std::exception&) {
+      }
+    }
+    return lengths;
+  }
+
+  std::vector<uint8_t>
+  recoverFecDataSymbol(const FecFrameState& state, uint32_t missingIdx)
+  {
+    if (missingIdx >= state.dataShards || state.fecDataLengths.empty()) {
+      return {};
+    }
+    if (missingIdx >= state.fecDataLengths.size()) {
+      return {};
+    }
+
+    const auto targetLen = state.fecDataLengths[missingIdx];
+    if (targetLen == 0) {
+      return {};
+    }
+
+    std::vector<uint8_t> recovered(targetLen, 0);
+    bool usedParity = false;
+    for (uint32_t i = 0; i < state.symbolCount; ++i) {
+      if (i == missingIdx) {
+        continue;
+      }
+      const auto it = state.shards.find(i);
+      if (it == state.shards.end()) {
+        continue;
+      }
+      const auto& payload = it->second;
+      for (size_t j = 0; j < targetLen; ++j) {
+        const auto byte = (j < payload.size()) ? payload[j] : 0;
+        recovered[j] ^= byte;
+      }
+      if (i >= state.dataShards) {
+        usedParity = true;
+      }
+    }
+
+    if (!usedParity) {
+      return {};
+    }
+    return recovered;
+  }
+
+  void
+  cleanupFecFrames()
+  {
+    for (auto it = m_fecFrames.begin(); it != m_fecFrames.end();) {
+      if (it->second.complete ||
+          (it->second.frameLastPacketSeq != 0 &&
+           it->second.frameLastPacketSeq < m_nextChunkSeqToDecode)) {
+        it = m_fecFrames.erase(it);
       }
       else {
         ++it;
@@ -640,15 +781,352 @@ private:
   }
 
   void
-  emitReadyFrame(std::map<uint64_t, ReadyFrame>::iterator it)
+  insertChunkForDecode(uint64_t packetSeq, const std::vector<uint8_t>& payload,
+                      uint64_t elapsedMs)
   {
-    const auto frameSeq = it->first;
-    auto frame = std::move(it->second);
-    m_readyFrames.erase(it);
-    if (m_frameCallback) {
-      m_frameCallback(std::move(frame.image), frameSeq, frame.elapsedMs);
+    if (packetSeq == UINT64_MAX) {
+      return;
     }
-    m_latestDecodedFrame = frameSeq;
+    if (packetSeq < m_nextChunkSeqToDecode) {
+      ++m_decoderDroppedChunks;
+      return;
+    }
+
+    bool notifyWriter = false;
+    {
+      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+      const auto inserted = m_pendingChunks.emplace(packetSeq, StreamChunk{});
+      if (inserted.second) {
+        StreamChunk chunk;
+        chunk.packetSeq = packetSeq;
+        chunk.arrivalMs = (m_firstFrameMs == 0 ? 0 : m_firstFrameMs + elapsedMs);
+        chunk.elapsedMs = elapsedMs;
+        chunk.payload = payload;
+        inserted.first->second = std::move(chunk);
+      }
+
+      while (!m_pendingChunks.empty()) {
+        auto it = m_pendingChunks.find(m_nextChunkSeqToDecode);
+        if (it == m_pendingChunks.end()) {
+          break;
+        }
+        m_chunkQueue.push_back(std::move(it->second));
+        m_pendingChunks.erase(it);
+        ++m_nextChunkSeqToDecode;
+        notifyWriter = true;
+      }
+
+      if (m_pendingChunks.size() > m_decoderReorderWindow * 4 &&
+          !m_pendingChunks.empty()) {
+        auto first = m_pendingChunks.begin();
+        if (first->first > m_nextChunkSeqToDecode) {
+          NDN_LOG_WARN("GS_VIDEO_SKIP_MISSING_CHUNKS start="
+                       << m_nextChunkSeqToDecode << " to=" << first->first - 1);
+          m_decoderDroppedChunks += (first->first - m_nextChunkSeqToDecode);
+          m_nextChunkSeqToDecode = first->first;
+        }
+      }
+
+      if (m_pendingChunks.empty() || m_pendingChunks.begin()->first == m_nextChunkSeqToDecode) {
+        m_decoderMissingChunkSeq = UINT64_MAX;
+        m_decoderMissingChunkStartMs = 0;
+      }
+      else if (m_decoderMissingChunkSeq != m_nextChunkSeqToDecode) {
+        m_decoderMissingChunkSeq = m_nextChunkSeqToDecode;
+        m_decoderMissingChunkStartMs = nowMilliseconds();
+      }
+    }
+
+    if (notifyWriter) {
+      m_decoderQueueCv.notify_one();
+    }
+  }
+
+  void
+  startDecoder()
+  {
+    if (m_decoderRunning.load()) {
+      return;
+    }
+    std::string command =
+      "ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay "
+      "-analyzeduration 0 -probesize 32 -f h264 -i pipe:0 -f image2pipe -vcodec mjpeg -";
+
+    if (!startDecoderProcess(command)) {
+      publishStatus("Failed to start video decoder");
+      return;
+    }
+
+    m_decoderRunning = true;
+    m_lastOutputChunkSeq = 0;
+    m_lastOutputChunkElapsedMs = 0;
+    m_decoderDroppedChunks = 0;
+    m_decoderMissingChunkSeq = UINT64_MAX;
+    m_decoderMissingChunkStartMs = 0;
+    m_decoderOutBuffer.clear();
+    {
+      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+      m_chunkQueue.clear();
+      m_pendingChunks.clear();
+      m_nextChunkSeqToDecode = 0;
+    }
+
+    m_decoderWriterThread = std::thread([this] { decoderWriterLoop(); });
+    m_decoderReaderThread = std::thread([this] { decoderReaderLoop(); });
+    publishStatus("Video decoder started");
+  }
+
+  void
+  stopDecoder()
+  {
+    m_decoderRunning = false;
+    m_decoderQueueCv.notify_all();
+
+    if (m_decoderInFd >= 0) {
+      shutdown(m_decoderInFd, SHUT_WR);
+      close(m_decoderInFd);
+      m_decoderInFd = -1;
+    }
+    if (m_decoderOutFd >= 0) {
+      close(m_decoderOutFd);
+      m_decoderOutFd = -1;
+    }
+    if (m_decoderWriterThread.joinable()) {
+      m_decoderWriterThread.join();
+    }
+    if (m_decoderReaderThread.joinable()) {
+      m_decoderReaderThread.join();
+    }
+
+    if (m_decoderPid > 0) {
+      kill(m_decoderPid, SIGTERM);
+      waitpid(m_decoderPid, nullptr, 0);
+      m_decoderPid = -1;
+    }
+
+    {
+      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+      m_chunkQueue.clear();
+      m_pendingChunks.clear();
+      m_decoderOutBuffer.clear();
+      m_decoderMissingChunkSeq = UINT64_MAX;
+      m_decoderMissingChunkStartMs = 0;
+    }
+    m_decoderDroppedChunks = 0;
+  }
+
+  void
+  decoderWriterLoop()
+  {
+    while (m_decoderRunning.load()) {
+      StreamChunk chunk;
+      {
+        std::unique_lock<std::mutex> guard(m_decoderQueueMutex);
+        m_decoderQueueCv.wait_for(guard, std::chrono::milliseconds(10), [this] {
+          return !m_decoderRunning.load() ||
+                 !m_chunkQueue.empty() ||
+                 shouldAdvanceMissingChunk();
+        });
+
+        if (!m_decoderRunning.load()) {
+          return;
+        }
+
+        const auto nowMs = nowMilliseconds();
+        advanceMissingChunkUnderTimeout(nowMs);
+        if (m_chunkQueue.empty()) {
+          continue;
+        }
+        chunk = std::move(m_chunkQueue.front());
+        m_chunkQueue.pop_front();
+      }
+
+      if (m_decoderInFd < 0) {
+        continue;
+      }
+
+      if (chunk.payload.empty()) {
+        continue;
+      }
+      m_lastOutputChunkSeq = chunk.packetSeq;
+      m_lastOutputChunkElapsedMs = chunk.elapsedMs;
+
+      const auto* data = chunk.payload.data();
+      auto remaining = chunk.payload.size();
+      while (remaining > 0 && m_decoderRunning.load()) {
+        const auto n = write(m_decoderInFd, data, remaining);
+        if (n > 0) {
+          remaining -= static_cast<size_t>(n);
+          data += n;
+          continue;
+        }
+        if (errno == EINTR) {
+          continue;
+        }
+        m_decoderRunning = false;
+        return;
+      }
+    }
+  }
+
+  void
+  decoderReaderLoop()
+  {
+    std::vector<uint8_t> buffer(8192);
+    while (m_decoderRunning.load()) {
+      const auto n = read(m_decoderOutFd, buffer.data(), buffer.size());
+      if (n <= 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        continue;
+      }
+      {
+        std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+        m_decoderOutBuffer.insert(m_decoderOutBuffer.end(), buffer.data(), buffer.data() + n);
+      }
+      emitDecodedFramesFromBuffer();
+    }
+  }
+
+  void
+  emitDecodedFramesFromBuffer()
+  {
+    std::vector<std::vector<uint8_t>> frameCandidates;
+    {
+      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+      static constexpr uint8_t kJpegStart[2] = {0xff, 0xd8};
+      static constexpr uint8_t kJpegEnd[2] = {0xff, 0xd9};
+
+      while (m_decoderOutBuffer.size() >= 4) {
+        const auto start = std::search(
+          m_decoderOutBuffer.begin(), m_decoderOutBuffer.end(), std::begin(kJpegStart), std::end(kJpegStart));
+        if (start == m_decoderOutBuffer.end()) {
+          m_decoderOutBuffer.clear();
+          break;
+        }
+        if (start != m_decoderOutBuffer.begin()) {
+          m_decoderOutBuffer.erase(m_decoderOutBuffer.begin(), start);
+          if (m_decoderOutBuffer.size() < 4) {
+            break;
+          }
+        }
+
+        const auto end = std::search(
+          m_decoderOutBuffer.begin() + 2, m_decoderOutBuffer.end(),
+          std::begin(kJpegEnd), std::end(kJpegEnd));
+        if (end == m_decoderOutBuffer.end()) {
+          break;
+        }
+        const auto endIt = end + 2;
+        if (endIt > m_decoderOutBuffer.end()) {
+          break;
+        }
+        frameCandidates.emplace_back(m_decoderOutBuffer.begin(), endIt);
+        m_decoderOutBuffer.erase(m_decoderOutBuffer.begin(), endIt);
+      }
+    }
+
+    for (auto& frame : frameCandidates) {
+      if (m_frameCallback) {
+        m_frameCallback(std::move(frame), m_lastOutputChunkSeq, m_lastOutputChunkElapsedMs);
+      }
+    }
+  }
+
+  bool
+  shouldAdvanceMissingChunk()
+  {
+    if (m_decoderMissingChunkSeq == UINT64_MAX || !m_decoderRunning.load()) {
+      return false;
+    }
+    const auto nowMs = nowMilliseconds();
+    return nowMs >= m_decoderMissingChunkStartMs + m_decoderMissingTimeoutMs;
+  }
+
+  void
+  advanceMissingChunkUnderTimeout(uint64_t nowMs)
+  {
+    if (m_decoderMissingChunkSeq == UINT64_MAX || m_pendingChunks.empty() ||
+        m_decoderRunning.load() == false) {
+      return;
+    }
+
+    const auto now = nowMs;
+    const auto first = m_pendingChunks.begin();
+    if (first->first <= m_nextChunkSeqToDecode) {
+      m_decoderMissingChunkSeq = UINT64_MAX;
+      m_decoderMissingChunkStartMs = 0;
+      return;
+    }
+
+    if (first->first > m_nextChunkSeqToDecode &&
+        now >= m_decoderMissingChunkStartMs + m_decoderMissingTimeoutMs) {
+      NDN_LOG_WARN("GS_VIDEO_SKIP_MISSING_CHUNKS_TIMEOUT start=" << m_decoderMissingChunkSeq
+                     << " to=" << first->first - 1
+                     << " timeoutMs=" << m_decoderMissingTimeoutMs
+                     << " nowMs=" << now);
+      m_decoderDroppedChunks += (first->first - m_nextChunkSeqToDecode);
+      m_nextChunkSeqToDecode = first->first;
+      m_decoderMissingChunkSeq = UINT64_MAX;
+      m_decoderMissingChunkStartMs = 0;
+
+      while (!m_pendingChunks.empty()) {
+        auto it = m_pendingChunks.find(m_nextChunkSeqToDecode);
+        if (it == m_pendingChunks.end()) {
+          m_decoderMissingChunkSeq = m_nextChunkSeqToDecode;
+          m_decoderMissingChunkStartMs = nowMs;
+          break;
+        }
+        m_chunkQueue.push_back(std::move(it->second));
+        m_pendingChunks.erase(it);
+        ++m_nextChunkSeqToDecode;
+      }
+      if (m_pendingChunks.empty() ||
+          (!m_pendingChunks.empty() && m_pendingChunks.begin()->first == m_nextChunkSeqToDecode)) {
+        m_decoderMissingChunkSeq = UINT64_MAX;
+        m_decoderMissingChunkStartMs = 0;
+      }
+      m_decoderQueueCv.notify_one();
+    }
+  }
+
+  bool
+  startDecoderProcess(const std::string& command)
+  {
+    int inPipe[2] = {-1, -1};
+    int outPipe[2] = {-1, -1};
+    if (::pipe(inPipe) != 0 || ::pipe(outPipe) != 0) {
+      NDN_LOG_WARN("GS_VIDEO_PIPE_ERROR errno=" << errno);
+      return false;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+      NDN_LOG_WARN("GS_VIDEO_DECODER_FORK_FAILED errno=" << errno);
+      return false;
+    }
+
+    if (pid == 0) {
+      dup2(inPipe[0], STDIN_FILENO);
+      dup2(outPipe[1], STDOUT_FILENO);
+      dup2(outPipe[1], STDERR_FILENO);
+
+      close(inPipe[0]);
+      close(inPipe[1]);
+      close(outPipe[0]);
+      close(outPipe[1]);
+      execl("/bin/sh", "/bin/sh", "-c", command.c_str(), (char*)nullptr);
+      _exit(1);
+    }
+
+    close(inPipe[0]);
+    close(outPipe[1]);
+    m_decoderPid = pid;
+    m_decoderInFd = inPipe[1];
+    m_decoderOutFd = outPipe[0];
+    return true;
   }
 
 private:
@@ -656,8 +1134,10 @@ private:
   int m_ackTimeoutMs;
   int m_timeoutMs;
   std::string m_targetDroneId;
-  uint64_t m_videoBitrateKbps = 4000;
+  uint64_t m_videoBitrateKbps = 8000;
+  uint64_t m_videoFrameWidth = 480;
   ndn::Face m_face;
+  boost::asio::steady_timer m_videoPumpTimer;
   ndn::KeyChain m_keyChain;
   ndn::security::Certificate m_gsCert;
   ndn::security::Certificate m_controllerCert;
@@ -673,25 +1153,40 @@ private:
   std::atomic<uint64_t> m_receivedChunks{0};
   std::atomic<uint64_t> m_frameNacks{0};
   std::atomic<uint64_t> m_frameTimeouts{0};
-  std::atomic<uint64_t> m_latestDecodedFrame{0};
   ndn::Name m_streamPrefix;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;
-  std::map<uint64_t, FrameAssembly> m_frames;
-  std::map<uint64_t, ReadyFrame> m_readyFrames;
-  uint64_t m_nextPlaybackFrame = 0;
   uint64_t m_keyPacketsPerSecond = 16;
   uint64_t m_deltaPacketsPerSecond = 160;
   uint64_t m_keyWindow = 16;
   uint64_t m_deltaWindow = 108;
+  uint64_t m_nextChunkSeqToDecode = 0;
+  uint64_t m_decoderDroppedChunks = 0;
+  uint64_t m_decoderMissingChunkSeq = UINT64_MAX;
+  uint64_t m_decoderMissingChunkStartMs = 0;
+  uint64_t m_lastOutputChunkSeq = 0;
+  uint64_t m_lastOutputChunkElapsedMs = 0;
   static constexpr uint64_t VIDEO_FPS = 30;
   static constexpr uint64_t INITIAL_PACKET_PROBE = 8;
   static constexpr uint64_t VIDEO_PACKET_LOOKAHEAD = 12;
   static constexpr uint64_t PROBE_RETRY_BACKOFF_MS = 80;
-  static constexpr uint64_t NEXT_SECOND_PREFETCH_AFTER_MS = 700;
-  static constexpr uint64_t PLAYBACK_REORDER_WINDOW_FRAMES = 3;
-  static constexpr uint64_t PLAYBACK_DROP_WINDOW_FRAMES = 90;
+  static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
+  static constexpr uint64_t m_decoderReorderWindow = 12;
+  static constexpr uint64_t m_decoderMissingTimeoutMs = 80;
   std::atomic<bool> m_done{false};
+  std::atomic<bool> m_videoPumpScheduled{false};
+  std::mutex m_decoderQueueMutex;
+  std::condition_variable m_decoderQueueCv;
+  std::deque<StreamChunk> m_chunkQueue;
+  std::map<uint64_t, StreamChunk> m_pendingChunks;
+  std::map<uint64_t, FecFrameState> m_fecFrames;
+  std::vector<uint8_t> m_decoderOutBuffer;
+  std::thread m_decoderWriterThread;
+  std::thread m_decoderReaderThread;
+  std::atomic<bool> m_decoderRunning{false};
+  int m_decoderInFd = -1;
+  int m_decoderOutFd = -1;
+  pid_t m_decoderPid = -1;
 };
 
 int
@@ -745,7 +1240,7 @@ public:
     , m_stop("Stop Video")
   {
     set_title("NDNSF UAV Ground Station");
-    set_default_size(760, 560);
+    set_default_size(920, 700);
     set_border_width(12);
 
     m_status.set_text("Video stopped");
@@ -926,7 +1421,9 @@ main(int argc, char** argv)
     const int ackTimeoutMs = std::stoi(getOption(argc, argv, "--ack-timeout-ms", "500"));
     const int timeoutMs = std::stoi(getOption(argc, argv, "--timeout-ms", "10000"));
     const auto videoBitrateKbps = static_cast<uint64_t>(
-      std::stoull(getOption(argc, argv, "--video-bitrate-kbps", "4000")));
+      std::stoull(getOption(argc, argv, "--video-bitrate-kbps", "8000")));
+    const auto videoFrameWidth = static_cast<uint64_t>(
+      std::stoull(getOption(argc, argv, "--video-width", "480")));
 
     if (objectDetectionMode) {
       ndn::Face faceForObjectDetection;
@@ -940,7 +1437,8 @@ main(int argc, char** argv)
     }
 
     auto runtime = std::make_unique<GroundStationRuntime>(
-      serveCertificates, ackTimeoutMs, timeoutMs, targetDroneId, videoBitrateKbps);
+      serveCertificates, ackTimeoutMs, timeoutMs, targetDroneId,
+      videoBitrateKbps, videoFrameWidth);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");

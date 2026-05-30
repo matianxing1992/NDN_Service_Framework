@@ -110,6 +110,15 @@ containing `frame_seq`, `frame_segment_index`, `frame_segment_count`,
 `frame_first_packet_seq`, `frame_last_packet_seq`, `bucket_packet_count`,
 `capture_ms`, and `key_frame`, followed by the frame bytes for that packet.
 
+In the current phase, each frame is protected by a lightweight forward-error
+correction code: `N = K + 1` (one parity shard by default). The sender publishes
+all data shards plus one parity shard with the same packet naming pattern and
+per-packet metadata (`fec_data_shards`, `fec_parity_shards`, `fec_symbol_index`,
+`fec_symbol_count`, and `fec_data_lengths`). The ground station buffers all
+received shards of a frame, and when at most one data shard is missing, it
+recovers it by XOR before feeding the decoder. This keeps packet naming fully
+predictable while still tolerating one loss or reordering hole.
+
 This naming keeps prefetch simple: the ground station can fetch
 `/<stream>/0`, `/1`, `/2`, ... without handling second boundaries. Reassembly is
 driven by the per-packet metadata, not by NDN FinalBlockId. Once all packets for
@@ -118,14 +127,21 @@ packets are skipped so later frames can remain live. A future H264/H265
 implementation can use the same name layout, waiting for key frames when needed
 and dropping stale delta frames until the next usable key frame.
 
-The ground station includes a requested video bitrate in the same
-`/<drone>/UAV/Camera/Video` control service request. The drone uses that value
-to choose its MJPEG encoder quality (`ffmpeg -q:v`) after clamping the request
-to the drone's supported bitrate range. The drone then returns the requested
-bitrate, accepted bitrate, FPS, encoder quality, and packet payload size. The
-ground station derives its prefetch window from those returned values and from
-the packet high-watermark carried in each packet.
-The default is currently 4000 kbps at 30 FPS for the demo MJPEG stream.
+The ground station includes requested video bitrate and frame width in the same
+`/<drone>/UAV/Camera/Video` control service request. The drone uses the bitrate
+to choose its MJPEG encoder quality (`ffmpeg -q:v`) and clamps both bitrate and
+width to its supported range. The drone then returns the requested bitrate,
+accepted bitrate, requested width, accepted width, FPS, encoder quality, and
+packet payload size. The ground station derives its prefetch window from those
+returned values and from the packet high-watermark carried in each packet.
+The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
+MJPEG stream. Raising bitrate improves JPEG quality and packet volume; raising
+frame width makes the displayed video larger.
+
+When `Stop Video` is invoked, the drone stops the encoder loop, clears pending
+Interests and cached stream packets, and ignores late frame Interests for the
+stopped stream. This prevents the GUI from stopping while the drone continues
+serving old cached packets.
 
 A later version can add a small per-stream SVS group for frame-name
 announcements, but it should remain separate from the main UAV control group so
@@ -181,7 +197,8 @@ nfd-start
   --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
 
 ./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
-./build/examples/UavGroundStationApp --target-drone A --video-bitrate-kbps 4000
+./build/examples/UavGroundStationApp --target-drone A \
+  --video-bitrate-kbps 8000 --video-width 480
 ```
 
 Click `Start Video` in the ground-station window. The drone window should switch
@@ -193,7 +210,8 @@ For an automated GUI smoke test without manual button clicks:
 
 ```bash
 ./build/examples/UavDroneApp --drone-id A --video-source /home/tianxing/NDN/drone.mp4
-./build/examples/UavGroundStationApp --target-drone A --video-bitrate-kbps 4000 \
+./build/examples/UavGroundStationApp --target-drone A \
+  --video-bitrate-kbps 8000 --video-width 480 \
   --auto-video-test --auto-stop-seconds 10
 ```
 
@@ -215,10 +233,11 @@ separate MiniNDN nodes while forwarding the windows to the host X11 session:
 sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py
 ```
 
-Use `--video-bitrate-kbps <kbps>` to change the requested stream bitrate. The
-ground station forwards that value through NDNSF, the drone adjusts its encoder
-quality, and the ground station sizes the prefetch budget from the accepted
-bitrate.
+Use `--video-bitrate-kbps <kbps>` to change the requested stream bitrate, and
+`--video-width <pixels>` to change the requested encoded frame width. The ground
+station forwards those values through NDNSF, the drone adjusts its encoder
+quality and scaling, and the ground station sizes the prefetch budget from the
+accepted bitrate.
 
 Default placement:
 
@@ -238,7 +257,8 @@ For a non-interactive smoke test that starts and stops video automatically:
 
 ```bash
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
-  --video-bitrate-kbps 4000 \
+  --video-bitrate-kbps 8000 \
+  --video-width 480 \
   --auto-video-test --auto-stop-seconds 8 --no-cli --no-xhost
 ```
 
