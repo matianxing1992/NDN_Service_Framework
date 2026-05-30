@@ -329,7 +329,7 @@ Expected smoke-test markers:
 DRONE_STATUS drone=A video streaming
 GS_STATUS Video packet stream from /example/uav/drone/A/video/<stream-id>
 GS_DECODED_FRAMES count=30
-GS_STATUS Video stopped, frames=<frames>
+GS_STATUS Video stopped, packets=<stream-packets>, fec_groups=<fec-groups>
 ```
 
 ## MiniNDN GUI Demo
@@ -354,6 +354,11 @@ controller: csu
 drone:      ucla
 ground station: memphis
 ```
+
+In interactive mode, the launcher starts PX4 SITL with the jMAVSim GUI on the
+same MiniNDN node as DroneAPP by default, so the simulator window appears with
+the drone window and manual-control reactions are visible. Use
+`--no-start-jmavsim` to keep the mock flight-controller backend.
 
 After the script prints `NDNSF_UAV_GUI_MININDN_READY`, use the ground-station
 window to click `Start Video` and `Stop Video`. Logs are written under
@@ -394,8 +399,8 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --auto-manual-control-test --no-cli
 ```
 
-To run PX4 SITL with jMAVSim on the same MiniNDN node as the drone and forward
-commands to PX4's GCS MAVLink UDP port:
+To explicitly run PX4 SITL with jMAVSim on the same MiniNDN node as the drone
+and forward commands to PX4's GCS MAVLink UDP port:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
