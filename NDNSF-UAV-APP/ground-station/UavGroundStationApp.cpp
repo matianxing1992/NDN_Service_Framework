@@ -404,6 +404,8 @@ main(int argc, char** argv)
     config.serviceTelemetryStatus = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-telemetry-status", "service-telemetry-status", config.serviceTelemetryStatus.toUri()));
     config.serviceCameraFrame = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-frame", "service-camera-frame", config.serviceCameraFrame.toUri()));
     config.serviceCameraVideoControlSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-video-control-suffix", "service-camera-video-control-suffix", config.serviceCameraVideoControlSuffix.toUri()));
+    config.serviceCameraRecordingManifestSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-manifest-suffix", "service-camera-recording-manifest-suffix", config.serviceCameraRecordingManifestSuffix.toUri()));
+    config.serviceCameraRecordingChunkSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-chunk-suffix", "service-camera-recording-chunk-suffix", config.serviceCameraRecordingChunkSuffix.toUri()));
     config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 

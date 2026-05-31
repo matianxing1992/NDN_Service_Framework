@@ -132,6 +132,8 @@ The same values can still be overridden from the command line when needed:
 --service-telemetry-status /UAV/Telemetry/GetStatus
 --service-camera-frame /UAV/Camera/GetFrame
 --service-camera-video-control-suffix /UAV/Camera/Video
+--service-camera-recording-manifest-suffix /UAV/Camera/Recording/Manifest
+--service-camera-recording-chunk-suffix /UAV/Camera/Recording/GetChunk
 --service-gs-object-detection /UAV/GS/ObjectDetection
 ```
 
@@ -735,6 +737,18 @@ current recording session id, object prefix, object naming pattern, chunk count,
 byte count, and first/last chunk object names. This lets GS or a post-mission
 report discover the local repo objects without guessing file paths or scanning
 the SQLite store.
+
+The ground station has `Find Recordings` and `Play Recording` buttons for the
+selected drone. `Find Recordings` calls the manifest service above. `Play
+Recording` then fetches chunks from the drone repo through:
+
+```text
+/<drone>/UAV/Camera/Recording/GetChunk
+```
+
+The request carries only the object name. The H264 bytes are returned
+chunk-by-chunk over Targeted NDNSF calls and fed into the same decoder used by
+live video playback.
 
 For a local recording smoke test that does not start the GUI or require GS
 interaction:

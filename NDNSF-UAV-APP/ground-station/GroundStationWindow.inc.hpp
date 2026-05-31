@@ -36,6 +36,8 @@ public:
     , m_startMission("Start Mission")
     , m_stopPatrol("Stop Patrol")
     , m_controlToggle("Start Control")
+    , m_refreshRecording("Find Recordings")
+    , m_playRecording("Play Recording")
     , m_mapZoomIn("+")
     , m_mapZoomOut("-")
     , m_mapCenterGs("Center GS")
@@ -103,6 +105,8 @@ public:
     m_buttons.pack_start(m_startMission, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_stopPatrol, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_controlToggle, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_refreshRecording, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_playRecording, Gtk::PACK_SHRINK);
     m_box.pack_start(m_buttons, Gtk::PACK_SHRINK);
 
     m_patrolHint.set_text("Patrol center / size");
@@ -400,6 +404,13 @@ public:
     });
     m_controlToggle.signal_clicked().connect([this] {
       setControlMode(!m_controlMode);
+    });
+    m_refreshRecording.signal_clicked().connect([this] {
+      m_runtime.requestRecordingManifest();
+    });
+    m_playRecording.signal_clicked().connect([this] {
+      beginLocalStreamView();
+      m_runtime.playLatestRecording();
     });
     m_keyboardMode.signal_toggled().connect([this] {
       if (!m_updatingInputMode && m_keyboardMode.get_active()) {
@@ -1215,7 +1226,7 @@ private:
   updateVideoViewForSelectedLocked()
   {
     const auto selectedDrone = m_runtime.targetDroneId();
-    const bool selectedStreaming = m_runtime.isStreamingForDrone(selectedDrone);
+    const bool selectedStreaming = m_runtime.isVideoDisplayActiveForDrone(selectedDrone);
     setPendingButtonStateLocked(!selectedStreaming, selectedStreaming);
     if (selectedStreaming) {
       if (!m_acceptFrames) {
@@ -1240,7 +1251,7 @@ private:
     uint64_t generation = 0;
     {
       std::lock_guard<std::mutex> guard(m_mutex);
-      if (!m_acceptFrames || !m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
+      if (!m_acceptFrames || !m_runtime.isVideoDisplayActiveForDrone(m_runtime.targetDroneId())) {
         return;
       }
       generation = m_streamGeneration;
@@ -1250,7 +1261,7 @@ private:
         std::lock_guard<std::mutex> guard(m_mutex);
         if (!m_acceptFrames ||
             generation != m_streamGeneration ||
-            !m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
+            !m_runtime.isVideoDisplayActiveForDrone(m_runtime.targetDroneId())) {
           return;
         }
       }
@@ -1922,6 +1933,8 @@ private:
   Gtk::Button m_startMission;
   Gtk::Button m_stopPatrol;
   Gtk::Button m_controlToggle;
+  Gtk::Button m_refreshRecording;
+  Gtk::Button m_playRecording;
   Gtk::Button m_mapZoomIn;
   Gtk::Button m_mapZoomOut;
   Gtk::Button m_mapCenterGs;

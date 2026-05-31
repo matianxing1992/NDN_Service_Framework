@@ -46,6 +46,7 @@ public:
       return;
     }
     m_streaming = false;
+    m_recordingPlaybackActive = false;
     if (m_yoloPrewarmThread.joinable()) {
       m_yoloPrewarmThread.join();
     }
@@ -211,6 +212,16 @@ public:
   stopVideo()
   {
     const auto droneId = targetDroneId();
+    if (m_recordingPlaybackActive.load() && activeRecordingPlaybackDroneId() == droneId) {
+      m_recordingPlaybackActive = false;
+      stopDecoder();
+      {
+        std::lock_guard<std::mutex> guard(m_videoStateMutex);
+        m_recordingPlaybackDroneId.clear();
+      }
+      publishStatus("Recording playback stopped drone=" + droneId);
+      return;
+    }
     const auto activeDrone = activeVideoDroneId();
     if (!m_streaming.load() || activeDrone != droneId) {
       publishStatus("No video streaming for selected drone " + droneId);
@@ -261,11 +272,37 @@ public:
     return m_streaming.load() && activeVideoDroneId() == droneId;
   }
 
+  bool
+  isVideoDisplayActiveForDrone(const std::string& droneId) const
+  {
+    return isStreamingForDrone(droneId) ||
+           (m_recordingPlaybackActive.load() && activeRecordingPlaybackDroneId() == droneId);
+  }
+
   std::string
   activeVideoDroneId() const
   {
     std::lock_guard<std::mutex> guard(m_videoStateMutex);
     return m_activeVideoDroneId;
+  }
+
+  std::string
+  activeRecordingPlaybackDroneId() const
+  {
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    return m_recordingPlaybackDroneId;
+  }
+
+  void
+  requestRecordingManifest()
+  {
+    requestRecordingManifestForDrone(targetDroneId(), false);
+  }
+
+  void
+  playLatestRecording()
+  {
+    requestRecordingManifestForDrone(targetDroneId(), true);
   }
 
   bool
@@ -1447,6 +1484,117 @@ private:
                 });
   }
 
+  struct RecordingManifest
+  {
+    std::string droneId;
+    std::string sessionId;
+    std::string objectPrefix;
+    uint64_t chunks = 0;
+    uint64_t bytes = 0;
+  };
+
+  void
+  requestRecordingManifestForDrone(const std::string& droneId, bool playAfterRefresh)
+  {
+    postRequestForDrone(
+      droneId,
+      droneCameraRecordingManifestService(m_config, droneId),
+      encodeFields({{"type", "camera-recording-manifest-request"}}),
+      [this, droneId, playAfterRefresh](const std::string& payload) {
+        const auto fields = decodeFields(payload);
+        RecordingManifest manifest;
+        manifest.droneId = fieldOr(fields, "drone_id", droneId);
+        manifest.sessionId = fieldOr(fields, "recording_session_id", "");
+        manifest.objectPrefix = fieldOr(fields, "recording_object_prefix", "");
+        manifest.chunks = fieldAsUint64(fields, "recording_chunks", 0);
+        manifest.bytes = fieldAsUint64(fields, "recording_bytes", 0);
+        {
+          std::lock_guard<std::mutex> guard(m_recordingManifestMutex);
+          m_recordingManifests[droneId] = manifest;
+        }
+        publishStatus("Recording manifest drone=" + droneId +
+                      " chunks=" + std::to_string(manifest.chunks) +
+                      " bytes=" + std::to_string(manifest.bytes) +
+                      " session=" + manifest.sessionId);
+        if (playAfterRefresh) {
+          startRecordingPlayback(manifest);
+        }
+      });
+  }
+
+  void
+  startRecordingPlayback(const RecordingManifest& manifest)
+  {
+    if (manifest.objectPrefix.empty() || manifest.sessionId.empty() || manifest.chunks == 0) {
+      publishStatus("No recorded video chunks for drone " + manifest.droneId);
+      return;
+    }
+
+    m_streaming = false;
+    m_videoPumpScheduled = false;
+    boost::system::error_code ec;
+    m_videoPumpTimer.cancel(ec);
+    stopDecoder();
+    m_firstFrameMs = nowMilliseconds();
+    m_receivedChunks = 0;
+    m_nextChunkSeqToDecode = 0;
+    {
+      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+      m_chunkQueue.clear();
+      m_pendingChunks.clear();
+      m_decoderOutBuffer.clear();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_videoStateMutex);
+      m_activeVideoDroneId.clear();
+      m_recordingPlaybackDroneId = manifest.droneId;
+    }
+    m_recordingPlaybackActive = true;
+    startDecoder();
+    publishStatus("Recording playback drone=" + manifest.droneId +
+                  " chunks=" + std::to_string(manifest.chunks));
+    fetchRecordingChunk(manifest, 0);
+  }
+
+  void
+  fetchRecordingChunk(RecordingManifest manifest, uint64_t index)
+  {
+    if (!m_recordingPlaybackActive.load() ||
+        activeRecordingPlaybackDroneId() != manifest.droneId ||
+        index >= manifest.chunks) {
+      if (index >= manifest.chunks) {
+        publishStatus("Recording playback completed drone=" + manifest.droneId +
+                      " chunks=" + std::to_string(manifest.chunks));
+      }
+      return;
+    }
+
+    const auto objectName = manifest.objectPrefix + "/" + manifest.sessionId +
+      "/chunk/" + std::to_string(index);
+    postTargetedRequestBytes(
+      droneIdentity(m_config, manifest.droneId),
+      manifest.droneId,
+      droneCameraRecordingChunkService(m_config, manifest.droneId),
+      encodeFields({{"type", "camera-recording-chunk-request"},
+                    {"object_name", objectName}}),
+      [this, manifest, index](std::vector<uint8_t> payload) mutable {
+        if (!payload.empty()) {
+          insertChunkForDecode(index, payload, nowMilliseconds() - m_firstFrameMs.load());
+        }
+        if (index + 1 < manifest.chunks) {
+          fetchRecordingChunk(std::move(manifest), index + 1);
+        }
+        else {
+          publishStatus("Recording playback fetched drone=" + manifest.droneId +
+                        " chunks=" + std::to_string(index + 1));
+        }
+      },
+      [this, manifest, index] {
+        publishStatus("Recording chunk timeout drone=" + manifest.droneId +
+                      " index=" + std::to_string(index));
+      });
+  }
+
   void
   publishStatus(const std::string& value)
   {
@@ -1523,6 +1671,108 @@ private:
                               " rtt_ms=" +
                               std::to_string(nowMilliseconds() - requestStartMs));
           onSuccess(payloadText);
+        });
+    });
+  }
+
+  void
+  postRequestForDroneBytes(const std::string& droneId,
+                           const ndn::Name& service,
+                           const std::string& payload,
+                           std::function<void(std::vector<uint8_t>)> onSuccess,
+                           std::function<void()> onTimeout = {})
+  {
+    m_face.getIoContext().post([this, service, payload,
+                                droneId,
+                                onSuccess = std::move(onSuccess),
+                                onTimeout = std::move(onTimeout)] {
+      if (!m_containerReady.load() || !m_user) {
+        publishStatus("NDNSF runtime not ready for " + service.toUri());
+        if (onTimeout) {
+          onTimeout();
+        }
+        return;
+      }
+      auto requestMessage = makeRequest(payload);
+      const auto requestStartMs = nowMilliseconds();
+      m_user->RequestService(
+        std::vector<ndn::Name>{droneIdentity(m_config, droneId)},
+        service,
+        std::move(requestMessage),
+        m_ackTimeoutMs,
+        ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
+        m_timeoutMs,
+        [this, service, onTimeout = std::move(onTimeout)](const ndn::Name&) {
+          if (onTimeout) {
+            onTimeout();
+          }
+          publishStatus("Timeout waiting for " + service.toUri());
+        },
+        [this, onSuccess, service, droneId, requestStartMs](
+          const ndn_service_framework::ResponseMessage& response) {
+          if (!response.getStatus()) {
+            publishStatus("Recording chunk fetch failed for " + service.toUri() +
+                          ": " + response.getErrorInfo());
+            return;
+          }
+          const auto payloadBuffer = response.getPayload();
+          std::vector<uint8_t> payloadBytes(payloadBuffer.data(),
+                                            payloadBuffer.data() + payloadBuffer.size());
+          publishUiOnlyStatus("Link drone=" + droneId +
+                              " service=" + service.toUri() +
+                              " rtt_ms=" +
+                              std::to_string(nowMilliseconds() - requestStartMs));
+          onSuccess(std::move(payloadBytes));
+        });
+    });
+  }
+
+  void
+  postTargetedRequestBytes(const ndn::Name& provider,
+                           const std::string& droneId,
+                           const ndn::Name& service,
+                           const std::string& payload,
+                           std::function<void(std::vector<uint8_t>)> onSuccess,
+                           std::function<void()> onTimeout = {})
+  {
+    m_face.getIoContext().post([this, provider, droneId, service, payload,
+                                onSuccess = std::move(onSuccess),
+                                onTimeout = std::move(onTimeout)] {
+      if (!m_containerReady.load() || !m_user) {
+        publishStatus("NDNSF runtime not ready for targeted " + service.toUri());
+        if (onTimeout) {
+          onTimeout();
+        }
+        return;
+      }
+      auto requestMessage = makeRequest(payload);
+      const auto requestStartMs = nowMilliseconds();
+      m_user->RequestServiceTargeted(
+        provider,
+        service,
+        std::move(requestMessage),
+        m_timeoutMs,
+        [this, service, onTimeout = std::move(onTimeout)](const ndn::Name&) {
+          if (onTimeout) {
+            onTimeout();
+          }
+          publishStatus("Timeout waiting for targeted " + service.toUri());
+        },
+        [this, onSuccess, service, droneId, requestStartMs](
+          const ndn_service_framework::ResponseMessage& response) {
+          if (!response.getStatus()) {
+            publishStatus("Targeted chunk fetch failed for " + service.toUri() +
+                          ": " + response.getErrorInfo());
+            return;
+          }
+          const auto payloadBuffer = response.getPayload();
+          std::vector<uint8_t> payloadBytes(payloadBuffer.data(),
+                                            payloadBuffer.data() + payloadBuffer.size());
+          publishUiOnlyStatus("Link drone=" + droneId +
+                              " service=" + service.toUri() +
+                              " rtt_ms=" +
+                              std::to_string(nowMilliseconds() - requestStartMs));
+          onSuccess(std::move(payloadBytes));
         });
     });
   }
@@ -2366,8 +2616,11 @@ private:
   mutable std::mutex m_targetMutex;
   mutable std::mutex m_missionReadyMutex;
   mutable std::mutex m_videoStateMutex;
+  mutable std::mutex m_recordingManifestMutex;
   std::vector<std::string> m_missionReadyDrones;
   std::string m_activeVideoDroneId;
+  std::string m_recordingPlaybackDroneId;
+  std::map<std::string, RecordingManifest> m_recordingManifests;
   uint64_t m_videoBitrateKbps = 8000;
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;
@@ -2397,6 +2650,7 @@ private:
   std::atomic<bool> m_seenVideoStart{false};
   std::atomic<bool> m_videoStartInFlight{false};
   std::atomic<bool> m_videoStopInFlight{false};
+  std::atomic<bool> m_recordingPlaybackActive{false};
   std::atomic<uint64_t> m_videoStartRetries{0};
   std::atomic<uint64_t> m_firstFrameMs{0};
   std::atomic<uint64_t> m_receivedChunks{0};

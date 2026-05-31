@@ -110,6 +110,8 @@ cp NDNSF-UAV-APP/configs/uav_runtime.conf /etc/ndnsf/uav_runtime.conf
 --service-telemetry-status /UAV/Telemetry/GetStatus
 --service-camera-frame /UAV/Camera/GetFrame
 --service-camera-video-control-suffix /UAV/Camera/Video
+--service-camera-recording-manifest-suffix /UAV/Camera/Recording/Manifest
+--service-camera-recording-chunk-suffix /UAV/Camera/Recording/GetChunk
 --service-gs-object-detection /UAV/GS/ObjectDetection
 ```
 
@@ -639,6 +641,17 @@ chunks 保存到本地 SQLite-backed embedded repo：
 例如 `/example/uav/drone/A/UAV/Camera/Recording/Manifest` 会返回当前 recording session id、
 object prefix、object naming pattern、chunk count、byte count，以及 first/last chunk object
 name。这样 GS 或任务后报告可以发现本地 repo objects，而不需要猜文件路径或扫描 SQLite store。
+
+ground station 针对当前选中的 drone 提供 `Find Recordings` 和 `Play Recording` 两个按钮。
+`Find Recordings` 调用上面的 manifest service；`Play Recording` 再通过下面的 chunk service
+从 drone repo 逐块取回视频：
+
+```text
+/<drone>/UAV/Camera/Recording/GetChunk
+```
+
+request 里只携带 object name。H264 bytes 会通过 Targeted NDNSF calls 按 chunk 返回，并交给
+和直播相同的低延迟解码器播放。
 
 如果只想验证本地 recording，不启动 GUI，也不需要 GS 交互，可以运行：
 
