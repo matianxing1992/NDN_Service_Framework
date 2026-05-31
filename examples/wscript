@@ -87,8 +87,8 @@ def build(bld):
                     '../NDNSF-UAV-APP/drone/UavDroneApp.cpp',
                     '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
                 ],
-                includes=['..', '../NDNSF-UAV-APP/shared'],
-                use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm',
+                includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm sqlite3',
                 cxxflags=['-Wno-error=extra-semi'],
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)

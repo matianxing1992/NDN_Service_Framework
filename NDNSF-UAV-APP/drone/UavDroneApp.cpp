@@ -1,5 +1,6 @@
 #include "../shared/UavNames.hpp"
 #include "../shared/UavProtocol.hpp"
+#include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -243,6 +244,22 @@ main(int argc, char** argv)
     const bool configurePx4SitlDemoParams = getConfigBool(
       argc, argv, appConfig, "--configure-px4-sitl-demo-params",
       "configure-px4-sitl-demo-params", false);
+    VideoPublisher::CameraRuntimeOptions cameraOptions;
+    cameraOptions.captureOnStart = getConfigBool(
+      argc, argv, appConfig, "--camera-capture-on-start",
+      "camera-capture-on-start", false);
+    cameraOptions.recordToLocalRepo = getConfigBool(
+      argc, argv, appConfig, "--camera-record-to-local-repo",
+      "camera-record-to-local-repo", false);
+    cameraOptions.recordRepoPath = getConfigOption(
+      argc, argv, appConfig, "--camera-record-repo-path",
+      "camera-record-repo-path", "");
+    cameraOptions.recordObjectPrefix = getConfigOption(
+      argc, argv, appConfig, "--camera-record-object-prefix",
+      "camera-record-object-prefix", "");
+    cameraOptions.recordChunkLimit = std::stoull(getConfigOption(
+      argc, argv, appConfig, "--camera-record-chunk-limit",
+      "camera-record-chunk-limit", "0"));
     const std::string flightControllerStatusFile =
       getConfigOption(argc, argv, appConfig, "--fc-status-file", "fc-status-file", "");
     UavRuntimeConfig config = loadUavRuntimeConfig(
@@ -262,7 +279,8 @@ main(int argc, char** argv)
     auto runtime = std::make_unique<DroneServiceContainer>(
       droneId, available, serveCertificates, config, videoPath,
       flightControllerBackend, mavlinkUdpHost, mavlinkUdpPort, mavlinkUdpListenPort,
-      mavlinkSerialDevice, mavlinkSerialBaud, configurePx4SitlDemoParams);
+      mavlinkSerialDevice, mavlinkSerialBaud, configurePx4SitlDemoParams,
+      std::move(cameraOptions));
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("drone NDNSF runtime did not become ready");
@@ -277,7 +295,9 @@ main(int argc, char** argv)
                  << " mavlink_listen_port=" << mavlinkUdpListenPort
                  << " mavlink_serial=" << mavlinkSerialDevice << "@" << mavlinkSerialBaud
                  << " configure_px4_sitl_demo_params="
-                 << (configurePx4SitlDemoParams ? "true" : "false"));
+                 << (configurePx4SitlDemoParams ? "true" : "false")
+                 << " camera_capture=" << (runtime->isCapturing() ? "on" : "off")
+                 << " camera_recording=" << (runtime->isRecording() ? "on" : "off"));
     std::cout << "DRONE_GUI_READY identity=" << runtime->identityUri()
               << " video_source=" << videoPath
               << " flight_controller_backend=" << flightControllerBackend
@@ -286,6 +306,8 @@ main(int argc, char** argv)
               << " mavlink_serial=" << mavlinkSerialDevice << "@" << mavlinkSerialBaud
               << " configure_px4_sitl_demo_params="
               << (configurePx4SitlDemoParams ? "true" : "false")
+              << " camera_capture=" << (runtime->isCapturing() ? "on" : "off")
+              << " camera_recording=" << (runtime->isRecording() ? "on" : "off")
               << std::endl;
     const int rc = app->run(window);
     std::cout << "DRONE_GUI_EXIT rc=" << rc << std::endl;
