@@ -187,6 +187,18 @@ makeResponse(bool status, const std::string& payload, const std::string& error =
   return response;
 }
 
+ndn_service_framework::ResponseMessage
+makeBinaryResponse(bool status, const std::vector<uint8_t>& payload,
+                   const std::string& error = "No error")
+{
+  ndn::Buffer responsePayload(payload.data(), payload.size());
+  ndn_service_framework::ResponseMessage response;
+  response.setStatus(status);
+  response.setErrorInfo(error);
+  response.setPayload(responsePayload, responsePayload.size());
+  return response;
+}
+
 ndn_service_framework::RequestMessage
 makeRequest(const std::string& payload, size_t strategy = ndn_service_framework::tlv::FirstResponding)
 {
@@ -284,6 +296,7 @@ main(int argc, char** argv)
     config.serviceCameraFrame = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-frame", "service-camera-frame", config.serviceCameraFrame.toUri()));
     config.serviceCameraVideoControlSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-video-control-suffix", "service-camera-video-control-suffix", config.serviceCameraVideoControlSuffix.toUri()));
     config.serviceCameraRecordingManifestSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-manifest-suffix", "service-camera-recording-manifest-suffix", config.serviceCameraRecordingManifestSuffix.toUri()));
+    config.serviceCameraRecordingChunkSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-chunk-suffix", "service-camera-recording-chunk-suffix", config.serviceCameraRecordingChunkSuffix.toUri()));
     config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
 
     if (autoCameraRecordSmoke) {
@@ -344,6 +357,8 @@ main(int argc, char** argv)
                 << " bytes=" << smokePublisher.recordingBytes()
                 << " chunks_after_stop=" << chunksAfterStop
                 << " last_chunk=" << fieldOr(manifest, "last_chunk_object", "none")
+                << " last_chunk_bytes="
+                << smokePublisher.recordingChunk(fieldOr(manifest, "last_chunk_object", "")).size()
                 << " repo=" << cameraOptions.recordRepoPath
                 << " prefix=" << smokePublisher.recordingPrefix()
                 << std::endl;

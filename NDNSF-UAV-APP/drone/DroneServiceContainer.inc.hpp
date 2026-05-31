@@ -1325,6 +1325,22 @@ public:
     return fields;
   }
 
+  std::vector<uint8_t>
+  recordingChunk(const std::string& objectName) const
+  {
+    if (!isRecording() || objectName.empty() || !m_recordingRepo) {
+      return {};
+    }
+    try {
+      return m_recordingRepo->get(objectName);
+    }
+    catch (const std::exception& e) {
+      NDN_LOG_WARN("CAMERA_RECORD_CHUNK_GET_FAILED object=" << objectName
+                   << " reason=" << e.what());
+      return {};
+    }
+  }
+
   ndn::Name
   streamPrefix() const
   {
@@ -1522,6 +1538,20 @@ private:
 
   void
   recordRawChunk(const uint8_t* data, size_t size, uint64_t captureMs)
+  {
+    if (!isRecording() || data == nullptr || size == 0) {
+      return;
+    }
+    size_t offset = 0;
+    while (offset < size) {
+      const auto chunkSize = std::min<size_t>(MAX_VIDEO_PACKET_PAYLOAD, size - offset);
+      recordSingleRawChunk(data + offset, chunkSize, captureMs);
+      offset += chunkSize;
+    }
+  }
+
+  void
+  recordSingleRawChunk(const uint8_t* data, size_t size, uint64_t captureMs)
   {
     if (!isRecording() || data == nullptr || size == 0) {
       return;
@@ -1952,6 +1982,14 @@ public:
     return m_videoPublisher->recordingManifestFields();
   }
 
+  std::vector<uint8_t>
+  recordingChunk(const std::string& objectName) const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    return m_videoPublisher != nullptr ? m_videoPublisher->recordingChunk(objectName)
+                                       : std::vector<uint8_t>{};
+  }
+
   std::string
   identityUri() const
   {
@@ -2063,6 +2101,34 @@ private:
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
         [this](const ndn_service_framework::RequestMessage&) {
           return makeResponse(true, encodeFields(recordingManifestFields()));
+        }));
+
+    const auto recordingChunkHandler =
+      [this](const ndn_service_framework::RequestMessage& request) {
+          const auto fields = decodeFields(payloadToString(request));
+          const auto objectName = fieldOr(fields, "object_name", "");
+          const auto chunk = recordingChunk(objectName);
+          if (chunk.empty()) {
+            return makeResponse(false, encodeFields({
+              {"status", "not-found"},
+              {"object_name", objectName},
+            }), "recording chunk not found");
+          }
+          return makeBinaryResponse(true, chunk);
+        };
+
+    m_provider->addService(
+      droneCameraRecordingChunkService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(recordingChunkHandler));
+
+    m_provider->addTargetedService(
+      droneCameraRecordingChunkService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::RequestHandler(
+        [recordingChunkHandler](const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                                const ndn::Name&,
+                                const ndn_service_framework::RequestMessage& request) {
+          return recordingChunkHandler(request);
         }));
 
     m_provider->addTargetedService(
@@ -2241,6 +2307,8 @@ private:
     publish(droneVideoControlService(m_config, m_droneId), "normal", "video-control");
     publish(droneCameraRecordingManifestService(m_config, m_droneId), "normal",
             "camera-recording-manifest");
+    publish(droneCameraRecordingChunkService(m_config, m_droneId), "targeted",
+            "camera-recording-chunk");
     publish(m_config.serviceMavlinkExecute, "targeted", "flight-control");
     publish(m_config.serviceTelemetryStatus, "normal", "telemetry");
     publish(m_config.serviceCameraFrame, "normal", "camera");
