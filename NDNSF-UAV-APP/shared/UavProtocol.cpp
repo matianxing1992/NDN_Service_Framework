@@ -60,6 +60,9 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   else if (key == "service-camera-video-control-suffix") {
     config.serviceCameraVideoControlSuffix = ndn::Name(value);
   }
+  else if (key == "service-camera-recording-manifest-suffix") {
+    config.serviceCameraRecordingManifestSuffix = ndn::Name(value);
+  }
   else if (key == "service-gs-object-detection") {
     config.serviceGsObjectDetection = ndn::Name(value);
   }
@@ -152,6 +155,22 @@ droneVideoControlService(const UavRuntimeConfig& config, const std::string& dron
 {
   ndn::Name service = droneIdentity(config, droneId);
   for (const auto& component : config.serviceCameraVideoControlSuffix) {
+    service.append(component);
+  }
+  return service;
+}
+
+ndn::Name
+droneCameraRecordingManifestService(const std::string& droneId)
+{
+  return droneCameraRecordingManifestService(UavRuntimeConfig{}, droneId);
+}
+
+ndn::Name
+droneCameraRecordingManifestService(const UavRuntimeConfig& config, const std::string& droneId)
+{
+  ndn::Name service = droneIdentity(config, droneId);
+  for (const auto& component : config.serviceCameraRecordingManifestSuffix) {
     service.append(component);
   }
   return service;

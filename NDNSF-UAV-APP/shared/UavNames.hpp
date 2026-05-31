@@ -18,6 +18,7 @@ inline const ndn::Name SERVICE_MISSION_ASSIGN("/UAV/Mission/Assign");
 inline const ndn::Name SERVICE_TELEMETRY_STATUS("/UAV/Telemetry/GetStatus");
 inline const ndn::Name SERVICE_CAMERA_FRAME("/UAV/Camera/GetFrame");
 inline const ndn::Name SERVICE_CAMERA_VIDEO_CONTROL_SUFFIX("/UAV/Camera/Video");
+inline const ndn::Name SERVICE_CAMERA_RECORDING_MANIFEST_SUFFIX("/UAV/Camera/Recording/Manifest");
 inline const ndn::Name SERVICE_GS_OBJECT_DETECTION("/UAV/GS/ObjectDetection");
 
 struct UavRuntimeConfig
@@ -32,6 +33,7 @@ struct UavRuntimeConfig
   ndn::Name serviceTelemetryStatus = SERVICE_TELEMETRY_STATUS;
   ndn::Name serviceCameraFrame = SERVICE_CAMERA_FRAME;
   ndn::Name serviceCameraVideoControlSuffix = SERVICE_CAMERA_VIDEO_CONTROL_SUFFIX;
+  ndn::Name serviceCameraRecordingManifestSuffix = SERVICE_CAMERA_RECORDING_MANIFEST_SUFFIX;
   ndn::Name serviceGsObjectDetection = SERVICE_GS_OBJECT_DETECTION;
 };
 
@@ -49,6 +51,12 @@ droneVideoControlService(const std::string& droneId);
 
 ndn::Name
 droneVideoControlService(const UavRuntimeConfig& config, const std::string& droneId);
+
+ndn::Name
+droneCameraRecordingManifestService(const std::string& droneId);
+
+ndn::Name
+droneCameraRecordingManifestService(const UavRuntimeConfig& config, const std::string& droneId);
 
 } // namespace ndnsf::examples::uav
 

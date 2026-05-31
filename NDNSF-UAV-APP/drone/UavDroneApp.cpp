@@ -283,6 +283,7 @@ main(int argc, char** argv)
     config.serviceTelemetryStatus = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-telemetry-status", "service-telemetry-status", config.serviceTelemetryStatus.toUri()));
     config.serviceCameraFrame = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-frame", "service-camera-frame", config.serviceCameraFrame.toUri()));
     config.serviceCameraVideoControlSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-video-control-suffix", "service-camera-video-control-suffix", config.serviceCameraVideoControlSuffix.toUri()));
+    config.serviceCameraRecordingManifestSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-manifest-suffix", "service-camera-recording-manifest-suffix", config.serviceCameraRecordingManifestSuffix.toUri()));
     config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
 
     if (autoCameraRecordSmoke) {
@@ -328,17 +329,21 @@ main(int argc, char** argv)
       if (smokePublisher.recordingChunks() < targetChunks ||
           smokePublisher.recordingBytes() == 0 ||
           smokePublisher.recordingChunks() <= chunksAfterStop) {
+        const auto manifest = smokePublisher.recordingManifestFields();
         std::cerr << "DRONE_CAMERA_RECORD_SMOKE_FAILED chunks="
                   << smokePublisher.recordingChunks()
                   << " bytes=" << smokePublisher.recordingBytes()
                   << " chunks_after_stop=" << chunksAfterStop
+                  << " last_chunk=" << fieldOr(manifest, "last_chunk_object", "none")
                   << " repo=" << cameraOptions.recordRepoPath << std::endl;
         return 1;
       }
+      const auto manifest = smokePublisher.recordingManifestFields();
       std::cout << "DRONE_CAMERA_RECORD_SMOKE_OK chunks="
                 << smokePublisher.recordingChunks()
                 << " bytes=" << smokePublisher.recordingBytes()
                 << " chunks_after_stop=" << chunksAfterStop
+                << " last_chunk=" << fieldOr(manifest, "last_chunk_object", "none")
                 << " repo=" << cameraOptions.recordRepoPath
                 << " prefix=" << smokePublisher.recordingPrefix()
                 << std::endl;

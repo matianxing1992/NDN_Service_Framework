@@ -1297,6 +1297,34 @@ public:
     return m_cameraOptions.recordObjectPrefix;
   }
 
+  Fields
+  recordingManifestFields() const
+  {
+    const auto chunks = recordingChunks();
+    Fields fields{
+      {"type", "camera-recording-manifest"},
+      {"drone_id", m_droneId},
+      {"capture", isCapturing() ? "on" : "off"},
+      {"recording", isRecording() ? "on" : "off"},
+      {"recording_session_id", m_recordingSessionId},
+      {"recording_object_prefix", m_cameraOptions.recordObjectPrefix},
+      {"recording_object_pattern",
+       m_cameraOptions.recordObjectPrefix + "/" + m_recordingSessionId + "/chunk/<index>"},
+      {"recording_chunks", std::to_string(chunks)},
+      {"recording_bytes", std::to_string(recordingBytes())},
+      {"recording_repo_path", m_cameraOptions.recordRepoPath},
+      {"recording_object_type", "video/h264-chunk"},
+      {"timestamp_ms", std::to_string(nowMilliseconds())},
+    };
+    if (chunks > 0) {
+      fields["first_chunk_object"] = m_cameraOptions.recordObjectPrefix + "/" +
+        m_recordingSessionId + "/chunk/0";
+      fields["last_chunk_object"] = m_cameraOptions.recordObjectPrefix + "/" +
+        m_recordingSessionId + "/chunk/" + std::to_string(chunks - 1);
+    }
+    return fields;
+  }
+
   ndn::Name
   streamPrefix() const
   {
@@ -1908,6 +1936,22 @@ public:
     return m_videoPublisher != nullptr ? m_videoPublisher->recordingBytes() : 0;
   }
 
+  Fields
+  recordingManifestFields() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    if (m_videoPublisher == nullptr) {
+      return Fields{
+        {"type", "camera-recording-manifest"},
+        {"drone_id", m_droneId},
+        {"recording", "off"},
+        {"recording_chunks", "0"},
+        {"recording_bytes", "0"},
+      };
+    }
+    return m_videoPublisher->recordingManifestFields();
+  }
+
   std::string
   identityUri() const
   {
@@ -2011,6 +2055,14 @@ private:
             {"reason", "unknown video control action"},
             {"action", action},
           }), "unknown video control action");
+        }));
+
+    m_provider->addService(
+      droneCameraRecordingManifestService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage&) {
+          return makeResponse(true, encodeFields(recordingManifestFields()));
         }));
 
     m_provider->addTargetedService(
@@ -2187,6 +2239,8 @@ private:
       m_provider->publishServiceInfo(serviceName, 45, std::move(meta));
     };
     publish(droneVideoControlService(m_config, m_droneId), "normal", "video-control");
+    publish(droneCameraRecordingManifestService(m_config, m_droneId), "normal",
+            "camera-recording-manifest");
     publish(m_config.serviceMavlinkExecute, "targeted", "flight-control");
     publish(m_config.serviceTelemetryStatus, "normal", "telemetry");
     publish(m_config.serviceCameraFrame, "normal", "camera");
