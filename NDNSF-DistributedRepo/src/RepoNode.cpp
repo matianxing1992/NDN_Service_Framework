@@ -1,6 +1,9 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 
+#include "ndn-service-framework/LocalServiceRegistry.hpp"
+
 #include <exception>
+#include <stdexcept>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
@@ -18,7 +21,15 @@ payloadOf(const ndn_service_framework::RequestMessage& request)
 
 RepoNode::RepoNode(ndn::Name servicePrefix, StorageCapability capability)
   : m_servicePrefix(std::move(servicePrefix))
-  , m_capability(std::move(capability))
+  , m_core(std::move(capability))
+{
+}
+
+RepoNode::RepoNode(ndn::Name servicePrefix,
+                   StorageCapability capability,
+                   std::shared_ptr<RepoStoreBackend> store)
+  : m_servicePrefix(std::move(servicePrefix))
+  , m_core(std::move(capability), std::move(store))
 {
 }
 
@@ -26,6 +37,18 @@ const ndn::Name&
 RepoNode::servicePrefix() const
 {
   return m_servicePrefix;
+}
+
+RepoCore&
+RepoNode::core()
+{
+  return m_core;
+}
+
+const RepoCore&
+RepoNode::core() const
+{
+  return m_core;
 }
 
 RepoObjectManifest
@@ -36,42 +59,32 @@ RepoNode::put(const std::string& objectName,
               const std::string& policyEpoch,
               std::vector<std::string> replicaNodes)
 {
-  RepoObjectManifest manifest;
-  manifest.objectName = objectName;
-  manifest.objectType = objectType;
-  manifest.sha256 = sha256Hex(payload);
-  manifest.size = payload.size();
-  manifest.segmentCount = 1;
-  manifest.replicationFactor = replicationFactor;
-  manifest.replicaNodes = std::move(replicaNodes);
-  manifest.policyEpoch = policyEpoch;
-  const auto response = handleStore(encodeStoreRequest(manifest, payload));
-  return parseManifestJson(toString(response));
+  return m_core.put(objectName, payload, objectType, replicationFactor,
+                    policyEpoch, std::move(replicaNodes));
 }
 
 std::vector<uint8_t>
 RepoNode::get(const std::string& objectName) const
 {
-  return handleFetch(toBytes(objectName));
+  return m_core.get(objectName);
 }
 
 RepoObjectManifest
 RepoNode::getManifest(const std::string& objectName) const
 {
-  return parseManifestJson(toString(handleManifest(toBytes(objectName))));
+  return m_core.getManifest(objectName);
 }
 
 std::vector<RepoObjectManifest>
 RepoNode::list() const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  return m_store.listManifests();
+  return m_core.list();
 }
 
 bool
 RepoNode::remove(const std::string& objectName)
 {
-  return toString(handleDelete(toBytes(objectName))) == "deleted";
+  return m_core.remove(objectName);
 }
 
 void
@@ -91,6 +104,19 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
             const ndn_service_framework::RequestMessage& request) {
       try {
         return makeResponse(handleStore(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "STORE_MANIFEST"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleStoreManifest(payloadOf(request)));
       }
       catch (const std::exception& e) {
         return makeError(e.what());
@@ -163,68 +189,149 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
     });
 }
 
+void
+RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry)
+{
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "STORE"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleStore(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "STORE_MANIFEST"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleStoreManifest(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "FETCH"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleFetch(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "MANIFEST"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleManifest(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "INVENTORY"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage&) {
+      try {
+        return makeResponse(handleInventory());
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "CAPABILITY"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage&) {
+      try {
+        return makeResponse(handleCapability());
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "DELETE"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleDelete(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+}
+
+void
+RepoNode::registerDeploymentServices(
+  ndn_service_framework::ServiceProvider* provider,
+  ndn_service_framework::LocalServiceRegistry* registry,
+  RepoDeploymentMode mode)
+{
+  if (enablesRemote(mode)) {
+    if (provider == nullptr) {
+      throw std::invalid_argument("remote repo deployment mode requires a ServiceProvider");
+    }
+    registerServices(*provider);
+  }
+
+  if (enablesEmbedded(mode)) {
+    if (registry == nullptr) {
+      throw std::invalid_argument(
+        "embedded repo deployment mode requires a LocalServiceRegistry");
+    }
+    registerLocalServices(*registry);
+  }
+}
+
 std::vector<uint8_t>
 RepoNode::handleStore(const std::vector<uint8_t>& request)
 {
-  RepoObjectManifest manifest;
-  std::vector<uint8_t> payload;
-  decodeStoreRequest(request, manifest, payload);
-  if (manifest.size != payload.size()) {
-    throw std::invalid_argument("repo object size does not match payload size");
-  }
-  if (manifest.sha256 != sha256Hex(payload)) {
-    throw std::invalid_argument("repo object sha256 does not match payload");
-  }
+  return m_core.handleStore(request);
+}
 
-  std::lock_guard<std::mutex> lock(m_mutex);
-  m_store.put(manifest, std::move(payload));
-  m_capability.usedBytes += manifest.size;
-  if (m_capability.freeBytes >= manifest.size) {
-    m_capability.freeBytes -= manifest.size;
-  }
-  else {
-    m_capability.freeBytes = 0;
-  }
-  return toBytes(manifest.toJson());
+std::vector<uint8_t>
+RepoNode::handleStoreManifest(const std::vector<uint8_t>& request)
+{
+  return m_core.handleStoreManifest(request);
 }
 
 std::vector<uint8_t>
 RepoNode::handleFetch(const std::vector<uint8_t>& request) const
 {
-  const auto objectName = toString(request);
-  std::lock_guard<std::mutex> lock(m_mutex);
-  return m_store.get(objectName).payload;
+  return m_core.handleFetch(request);
 }
 
 std::vector<uint8_t>
 RepoNode::handleManifest(const std::vector<uint8_t>& request) const
 {
-  const auto objectName = toString(request);
-  std::lock_guard<std::mutex> lock(m_mutex);
-  return toBytes(m_store.get(objectName).manifest.toJson());
+  return m_core.handleManifest(request);
 }
 
 std::vector<uint8_t>
 RepoNode::handleInventory() const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  return toBytes(encodeInventory(m_store.listManifests()));
+  return m_core.handleInventory();
 }
 
 std::vector<uint8_t>
 RepoNode::handleCapability() const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  return toBytes(m_capability.toJson());
+  return m_core.handleCapability();
 }
 
 std::vector<uint8_t>
 RepoNode::handleDelete(const std::vector<uint8_t>& request)
 {
-  const auto objectName = toString(request);
-  std::lock_guard<std::mutex> lock(m_mutex);
-  const bool removed = m_store.erase(objectName);
-  return toBytes(removed ? "deleted" : "not-found");
+  return m_core.handleDelete(request);
 }
 
 ndn_service_framework::ResponseMessage

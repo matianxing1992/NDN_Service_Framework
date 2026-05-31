@@ -137,6 +137,12 @@ encodeStoreRequest(const RepoObjectManifest& manifest,
   return encoded;
 }
 
+std::vector<uint8_t>
+encodeManifestRequest(const RepoObjectManifest& manifest)
+{
+  return toBytes(manifest.toJson());
+}
+
 void
 decodeStoreRequest(const std::vector<uint8_t>& request,
                    RepoObjectManifest& manifest,
@@ -174,6 +180,60 @@ parseManifestJson(const std::string& manifestJson)
   manifest.policyEpoch = extractJsonString(manifestJson, "policyEpoch");
   manifest.replicaNodes = extractJsonStringArray(manifestJson, "replicaNodes");
   return manifest;
+}
+
+std::vector<RepoObjectManifest>
+parseInventoryJson(const std::string& inventoryJson)
+{
+  std::vector<RepoObjectManifest> manifests;
+  size_t depth = 0;
+  size_t objectStart = std::string::npos;
+  bool inString = false;
+  bool escaping = false;
+
+  for (size_t i = 0; i < inventoryJson.size(); ++i) {
+    const char ch = inventoryJson[i];
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      }
+      else if (ch == '\\') {
+        escaping = true;
+      }
+      else if (ch == '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch == '"') {
+      inString = true;
+      continue;
+    }
+    if (ch == '{') {
+      if (depth == 0) {
+        objectStart = i;
+      }
+      ++depth;
+      continue;
+    }
+    if (ch == '}') {
+      if (depth == 0) {
+        throw std::invalid_argument("repo inventory JSON has unmatched object close");
+      }
+      --depth;
+      if (depth == 0 && objectStart != std::string::npos) {
+        manifests.push_back(
+          parseManifestJson(inventoryJson.substr(objectStart, i - objectStart + 1)));
+        objectStart = std::string::npos;
+      }
+    }
+  }
+
+  if (depth != 0 || inString) {
+    throw std::invalid_argument("repo inventory JSON is truncated");
+  }
+  return manifests;
 }
 
 std::string

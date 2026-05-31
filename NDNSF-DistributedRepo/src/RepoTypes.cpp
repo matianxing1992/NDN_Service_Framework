@@ -1,11 +1,17 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include <openssl/sha.h>
+#include <sqlite3.h>
 
 #include <algorithm>
+#include <cctype>
 #include <iomanip>
+#include <memory>
 #include <set>
 #include <sstream>
+#include <stdexcept>
+#include <utility>
 
 namespace ndnsf_distributed_repo {
 
@@ -52,7 +58,312 @@ scoreCandidate(const StorageCapability& candidate)
   return score;
 }
 
+std::string
+normalizeModeText(const std::string& value)
+{
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (const char ch : value) {
+    if (ch == '-' || ch == '_') {
+      continue;
+    }
+    normalized.push_back(static_cast<char>(
+      std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return normalized;
+}
+
 } // namespace
+
+class SqliteRepoStore : public RepoStoreBackend
+{
+public:
+  explicit SqliteRepoStore(std::string databasePath)
+    : m_databasePath(std::move(databasePath))
+  {
+    if (m_databasePath.empty()) {
+      throw std::invalid_argument("sqlite repo database path must not be empty");
+    }
+    if (sqlite3_open(m_databasePath.c_str(), &m_db) != SQLITE_OK) {
+      const std::string error = m_db != nullptr ? sqlite3_errmsg(m_db) : "unknown";
+      throw std::runtime_error("failed to open sqlite repo store: " + error);
+    }
+    exec("PRAGMA journal_mode=WAL");
+    exec("PRAGMA synchronous=NORMAL");
+    exec("CREATE TABLE IF NOT EXISTS objects ("
+         "object_name TEXT PRIMARY KEY,"
+         "manifest_json TEXT NOT NULL,"
+         "payload BLOB NOT NULL,"
+         "payload_size INTEGER NOT NULL,"
+         "sha256 TEXT NOT NULL,"
+         "object_type TEXT NOT NULL,"
+         "updated_at INTEGER NOT NULL)");
+  }
+
+  ~SqliteRepoStore() override
+  {
+    if (m_db != nullptr) {
+      sqlite3_close(m_db);
+      m_db = nullptr;
+    }
+  }
+
+  void put(const RepoObjectManifest& manifest, std::vector<uint8_t> payload) override
+  {
+    if (manifest.objectName.empty()) {
+      throw std::invalid_argument("repo object name must not be empty");
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    prepare("INSERT OR REPLACE INTO objects "
+            "(object_name, manifest_json, payload, payload_size, sha256, object_type, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'))",
+            &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, manifest.objectName);
+    const auto manifestJson = manifest.toJson();
+    bindText(stmt, 2, manifestJson);
+    if (sqlite3_bind_blob(stmt, 3, payload.data(), static_cast<int>(payload.size()),
+                          SQLITE_TRANSIENT) != SQLITE_OK) {
+      throwSqlite("failed to bind repo payload");
+    }
+    if (sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(payload.size())) != SQLITE_OK) {
+      throwSqlite("failed to bind repo payload size");
+    }
+    bindText(stmt, 5, manifest.sha256);
+    bindText(stmt, 6, manifest.objectType);
+    stepDone(stmt, "failed to store repo object");
+  }
+
+  void putManifest(const RepoObjectManifest& manifest) override
+  {
+    if (manifest.objectName.empty()) {
+      throw std::invalid_argument("repo object name must not be empty");
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    prepare("INSERT OR REPLACE INTO objects "
+            "(object_name, manifest_json, payload, payload_size, sha256, object_type, updated_at) "
+            "VALUES (?, ?, ?, 0, ?, ?, strftime('%s','now'))",
+            &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, manifest.objectName);
+    const auto manifestJson = manifest.toJson();
+    bindText(stmt, 2, manifestJson);
+    const uint8_t empty = 0;
+    if (sqlite3_bind_blob(stmt, 3, &empty, 0, SQLITE_TRANSIENT) != SQLITE_OK) {
+      throwSqlite("failed to bind empty repo manifest payload");
+    }
+    bindText(stmt, 4, manifest.sha256);
+    bindText(stmt, 5, manifest.objectType);
+    stepDone(stmt, "failed to store repo manifest");
+  }
+
+  StoredObject get(const std::string& objectName) const override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT manifest_json, payload FROM objects WHERE object_name=?", &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, objectName);
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) {
+      throw std::out_of_range("repo object not found: " + objectName);
+    }
+    if (rc != SQLITE_ROW) {
+      throwSqlite("failed to fetch repo object");
+    }
+
+    const auto manifestText = columnText(stmt, 0);
+    const auto payloadPtr = static_cast<const uint8_t*>(sqlite3_column_blob(stmt, 1));
+    const auto payloadSize = sqlite3_column_bytes(stmt, 1);
+    std::vector<uint8_t> payload;
+    if (payloadPtr != nullptr && payloadSize > 0) {
+      payload.assign(payloadPtr, payloadPtr + payloadSize);
+    }
+    return StoredObject{parseManifestJson(manifestText), std::move(payload)};
+  }
+
+  bool has(const std::string& objectName) const override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT 1 FROM objects WHERE object_name=? LIMIT 1", &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, objectName);
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+      return true;
+    }
+    if (rc == SQLITE_DONE) {
+      return false;
+    }
+    throwSqlite("failed to test repo object existence");
+  }
+
+  bool erase(const std::string& objectName) override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("DELETE FROM objects WHERE object_name=?", &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, objectName);
+    stepDone(stmt, "failed to delete repo object");
+    return sqlite3_changes(m_db) > 0;
+  }
+
+  size_t size() const override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT COUNT(*) FROM objects", &stmt);
+    StatementGuard guard(stmt);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+      throwSqlite("failed to count repo objects");
+    }
+    return static_cast<size_t>(sqlite3_column_int64(stmt, 0));
+  }
+
+  std::vector<RepoObjectManifest> listManifests() const override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT manifest_json FROM objects ORDER BY object_name", &stmt);
+    StatementGuard guard(stmt);
+    std::vector<RepoObjectManifest> manifests;
+    while (true) {
+      const int rc = sqlite3_step(stmt);
+      if (rc == SQLITE_DONE) {
+        break;
+      }
+      if (rc != SQLITE_ROW) {
+        throwSqlite("failed to list repo manifests");
+      }
+      manifests.push_back(parseManifestJson(columnText(stmt, 0)));
+    }
+    return manifests;
+  }
+
+  uint64_t usedBytes() const override
+  {
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT COALESCE(SUM(payload_size), 0) FROM objects", &stmt);
+    StatementGuard guard(stmt);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+      throwSqlite("failed to sum repo payload bytes");
+    }
+    return static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+  }
+
+private:
+  struct StatementGuard
+  {
+    explicit StatementGuard(sqlite3_stmt* statement)
+      : stmt(statement)
+    {
+    }
+
+    ~StatementGuard()
+    {
+      if (stmt != nullptr) {
+        sqlite3_finalize(stmt);
+      }
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+  };
+
+  void exec(const std::string& sql)
+  {
+    char* error = nullptr;
+    const int rc = sqlite3_exec(m_db, sql.c_str(), nullptr, nullptr, &error);
+    if (rc != SQLITE_OK) {
+      std::string message = error != nullptr ? error : sqlite3_errmsg(m_db);
+      sqlite3_free(error);
+      throw std::runtime_error("sqlite repo exec failed: " + message);
+    }
+  }
+
+  void prepare(const std::string& sql, sqlite3_stmt** stmt) const
+  {
+    if (sqlite3_prepare_v2(m_db, sql.c_str(), -1, stmt, nullptr) != SQLITE_OK) {
+      throwSqlite("failed to prepare sqlite repo statement");
+    }
+  }
+
+  void bindText(sqlite3_stmt* stmt, int index, const std::string& value) const
+  {
+    if (sqlite3_bind_text(stmt, index, value.c_str(), static_cast<int>(value.size()),
+                          SQLITE_TRANSIENT) != SQLITE_OK) {
+      throwSqlite("failed to bind sqlite repo text");
+    }
+  }
+
+  void stepDone(sqlite3_stmt* stmt, const std::string& error) const
+  {
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+      throwSqlite(error);
+    }
+  }
+
+  std::string columnText(sqlite3_stmt* stmt, int column) const
+  {
+    const auto text = sqlite3_column_text(stmt, column);
+    const auto size = sqlite3_column_bytes(stmt, column);
+    if (text == nullptr || size <= 0) {
+      return "";
+    }
+    return std::string(reinterpret_cast<const char*>(text), size);
+  }
+
+  [[noreturn]] void throwSqlite(const std::string& prefix) const
+  {
+    throw std::runtime_error(prefix + ": " + sqlite3_errmsg(m_db));
+  }
+
+private:
+  std::string m_databasePath;
+  sqlite3* m_db = nullptr;
+};
+
+RepoDeploymentMode
+parseRepoDeploymentMode(const std::string& value)
+{
+  const auto normalized = normalizeModeText(value);
+  if (normalized.empty() || normalized == "remote") {
+    return RepoDeploymentMode::Remote;
+  }
+  if (normalized == "embedded" || normalized == "local" ||
+      normalized == "inprocess") {
+    return RepoDeploymentMode::Embedded;
+  }
+  if (normalized == "both" || normalized == "remoteembedded" ||
+      normalized == "embeddedremote") {
+    return RepoDeploymentMode::Both;
+  }
+  throw std::invalid_argument("unknown repo deployment mode: " + value);
+}
+
+std::string
+toString(RepoDeploymentMode mode)
+{
+  switch (mode) {
+  case RepoDeploymentMode::Remote:
+    return "remote";
+  case RepoDeploymentMode::Embedded:
+    return "embedded";
+  case RepoDeploymentMode::Both:
+    return "both";
+  }
+  return "remote";
+}
+
+bool
+enablesRemote(RepoDeploymentMode mode)
+{
+  return mode == RepoDeploymentMode::Remote || mode == RepoDeploymentMode::Both;
+}
+
+bool
+enablesEmbedded(RepoDeploymentMode mode)
+{
+  return mode == RepoDeploymentMode::Embedded || mode == RepoDeploymentMode::Both;
+}
 
 std::string
 RepoObjectManifest::toJson() const
@@ -177,13 +488,19 @@ InMemoryRepoStore::put(const RepoObjectManifest& manifest,
   if (manifest.objectName.empty()) {
     throw std::invalid_argument("repo object name must not be empty");
   }
-  if (sha256Hex(payload) != manifest.sha256) {
-    throw std::invalid_argument("repo object payload does not match manifest sha256");
-  }
   m_objects[manifest.objectName] = StoredObject{manifest, std::move(payload)};
 }
 
-const StoredObject&
+void
+InMemoryRepoStore::putManifest(const RepoObjectManifest& manifest)
+{
+  if (manifest.objectName.empty()) {
+    throw std::invalid_argument("repo object name must not be empty");
+  }
+  m_objects[manifest.objectName] = StoredObject{manifest, {}};
+}
+
+StoredObject
 InMemoryRepoStore::get(const std::string& objectName) const
 {
   auto it = m_objects.find(objectName);
@@ -220,6 +537,28 @@ InMemoryRepoStore::listManifests() const
     manifests.push_back(item.second.manifest);
   }
   return manifests;
+}
+
+uint64_t
+InMemoryRepoStore::usedBytes() const
+{
+  uint64_t used = 0;
+  for (const auto& item : m_objects) {
+    used += item.second.payload.size();
+  }
+  return used;
+}
+
+std::shared_ptr<RepoStoreBackend>
+makeMemoryRepoStore()
+{
+  return std::make_shared<InMemoryRepoStore>();
+}
+
+std::shared_ptr<RepoStoreBackend>
+makeSqliteRepoStore(const std::string& databasePath)
+{
+  return std::make_shared<SqliteRepoStore>(databasePath);
 }
 
 } // namespace ndnsf_distributed_repo

@@ -386,22 +386,6 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler);
 
-            ndn::Name RequestServiceDirect(const ndn::Name& provider,
-                                 const ndn::Name& serviceName,
-                                 ndn_service_framework::RequestMessage requestMessage,
-                                 int timeoutMs,
-                                 TimeoutHandler onTimeout,
-                                 ResponseHandler onResponseHandler);
-
-            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
-                                 const ndn::Name& serviceName,
-                                 const ndn::Name& functionName,
-                                 ndn_service_framework::RequestMessage requestMessage,
-                                 int timeoutMs,
-                                 TimeoutHandler onTimeout,
-                                 ResponseHandler onResponseHandler,
-                                 size_t strategy = ndn_service_framework::tlv::FirstResponding);
-
             ndn::Name RequestService(const ndn::Name& serviceName,
                                  ndn_service_framework::RequestMessage requestMessage,
                                  int timeoutMs,
@@ -585,43 +569,6 @@ namespace ndn_service_framework{
                             response(typedResponse);
                         }
                     });
-            }
-
-            template<typename RequestT, typename ResponseT>
-            ndn::Name RequestServiceDirect(const ndn::Name& provider,
-                                           const ndn::Name& serviceName,
-                                           const RequestT& request,
-                                           std::function<void(const ResponseT&)> onResponse,
-                                           std::function<void()> onTimeout,
-                                           int timeoutMs)
-            {
-                return RequestServiceTargeted<RequestT, ResponseT>(
-                    provider,
-                    serviceName,
-                    request,
-                    std::move(onResponse),
-                    std::move(onTimeout),
-                    timeoutMs);
-            }
-
-            template<typename RequestT, typename ResponseT>
-            ndn::Name RequestService(const std::vector<ndn::Name>& providers,
-                                     const ndn::Name& serviceName,
-                                     const ndn::Name& functionName,
-                                     const RequestT& request,
-                                     std::function<void(const ResponseT&)> onResponse,
-                                     std::function<void()> onTimeout,
-                                     int timeoutMs,
-                                     size_t strategy = ndn_service_framework::tlv::FirstResponding)
-            {
-                return RequestService<RequestT, ResponseT>(
-                    providers,
-                    makeUnifiedServiceName(serviceName, functionName),
-                    request,
-                    std::move(onResponse),
-                    std::move(onTimeout),
-                    timeoutMs,
-                    strategy);
             }
 
             void handleResponse(const ndn::Name& requestId,

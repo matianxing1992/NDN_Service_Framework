@@ -81,7 +81,6 @@ namespace ndn_service_framework{
                 // Targeted services accept Request->Response invocation from
                 // a requester that already names this provider as the target.
                 Targeted,
-                Direct = Targeted,
             };
 
             struct CollaborationAssignment
@@ -295,12 +294,6 @@ namespace ndn_service_framework{
                             AckStrategyHandler ackHandler,
                             SimpleRequestHandler requestHandler);
 
-            void addDirectService(const ndn::Name& serviceName,
-                                  RequestHandler requestHandler);
-
-            void addDirectService(const ndn::Name& serviceName,
-                                  SimpleRequestHandler requestHandler);
-
             void addTargetedService(const ndn::Name& serviceName,
                                     RequestHandler requestHandler);
 
@@ -319,27 +312,6 @@ namespace ndn_service_framework{
                             SimpleAckStrategyHandler ackHandler,
                             SimpleRequestHandler requestHandler);
 
-            void addService(const ndn::Name& serviceName,
-                            const ndn::Name& functionName,
-                            AckStrategyHandler ackHandler,
-                            RequestHandler requestHandler);
-
-            void addService(const ndn::Name& serviceName,
-                            const ndn::Name& functionName,
-                            LegacyAckStrategyHandler ackHandler,
-                            RequestHandler requestHandler);
-
-            void addService(const ndn::Name& serviceName,
-                            const ndn::Name& functionName,
-                            RequestHandler requestHandler);
-
-            void RegisterService(const ServiceName& serviceName,
-                                 AckStrategyHandler ackHandler,
-                                 RequestHandler requestHandler);
-
-            void RegisterService(const ServiceName& serviceName,
-                                 RequestHandler requestHandler);
-
             void addCollaborationHandler(const ndn::Name& serviceName,
                                          AckStrategyHandler ackHandler,
                                          CollaborationHandler handler);
@@ -359,15 +331,7 @@ namespace ndn_service_framework{
             void setAckStrategyHandler(const ndn::Name& serviceName,
                                        AckStrategyHandler ackHandler);
 
-            void setAckStrategyHandler(const ndn::Name& serviceName,
-                                       const ndn::Name& functionName,
-                                       AckStrategyHandler ackHandler);
-
             void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
-                                             LegacyAckStrategyHandler ackHandler);
-
-            void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
-                                             const ndn::Name& functionName,
                                              LegacyAckStrategyHandler ackHandler);
 
             template<typename RequestT, typename ResponseT>
@@ -412,30 +376,7 @@ namespace ndn_service_framework{
                            });
             }
 
-            template<typename RequestT, typename ResponseT>
-            void addHandler(const ndn::Name& serviceName,
-                            const ndn::Name& functionName,
-                            std::function<void(const ndn::Name& requesterIdentity,
-                                               const RequestT& request,
-                                               ResponseT& response)> handler)
-            {
-                addHandler<RequestT, ResponseT>(makeUnifiedServiceName(serviceName, functionName),
-                                                std::move(handler));
-            }
-
-            template<typename RequestT, typename ResponseT>
-            void RegisterService(const ServiceName& serviceName,
-                                 std::function<void(const ndn::Name& requesterIdentity,
-                                                    const RequestT& request,
-                                                    ResponseT& response)> handler)
-            {
-                addHandler<RequestT, ResponseT>(serviceName, std::move(handler));
-            }
-
             bool hasService(const ndn::Name& serviceName) const;
-
-            bool hasService(const ndn::Name& serviceName,
-                            const ndn::Name& functionName) const;
 
             LargeDataFetchResult fetchAndDecryptLargeData(
                 const ndn::Name& encryptedDataName,
@@ -444,13 +385,6 @@ namespace ndn_service_framework{
             ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
                                             const ndn::Name& providerName,
                                             const ndn::Name& serviceName,
-                                            const ndn::Name& requestId,
-                                            const RequestMessage& requestMessage) const;
-
-            ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
-                                            const ndn::Name& providerName,
-                                            const ndn::Name& serviceName,
-                                            const ndn::Name& functionName,
                                             const ndn::Name& requestId,
                                             const RequestMessage& requestMessage) const;
 

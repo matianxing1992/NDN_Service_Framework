@@ -1,40 +1,19 @@
-#ifndef NDNSF_DISTRIBUTED_REPO_REPO_NODE_HPP
-#define NDNSF_DISTRIBUTED_REPO_REPO_NODE_HPP
+#ifndef NDNSF_DISTRIBUTED_REPO_REPO_CORE_HPP
+#define NDNSF_DISTRIBUTED_REPO_REPO_CORE_HPP
 
-#include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
-#include "ndn-service-framework/ServiceProvider.hpp"
-
-namespace ndn_service_framework {
-class LocalServiceRegistry;
-} // namespace ndn_service_framework
+#include <memory>
+#include <mutex>
 
 namespace ndnsf_distributed_repo {
 
-class RepoNode
+class RepoCore
 {
 public:
-  RepoNode(ndn::Name servicePrefix, StorageCapability capability);
-  RepoNode(ndn::Name servicePrefix,
-           StorageCapability capability,
-           std::shared_ptr<RepoStoreBackend> store);
-
-  const ndn::Name& servicePrefix() const;
-
-  RepoCore& core();
-
-  const RepoCore& core() const;
-
-  void registerServices(ndn_service_framework::ServiceProvider& provider);
-
-  void registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry);
-
-  void registerDeploymentServices(
-    ndn_service_framework::ServiceProvider* provider,
-    ndn_service_framework::LocalServiceRegistry* registry,
-    RepoDeploymentMode mode);
+  explicit RepoCore(StorageCapability capability);
+  RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBackend> store);
 
   RepoObjectManifest put(const std::string& objectName,
                          const std::vector<uint8_t>& payload,
@@ -51,6 +30,8 @@ public:
 
   bool remove(const std::string& objectName);
 
+  RepoObjectManifest putManifest(const RepoObjectManifest& manifest);
+
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
@@ -66,15 +47,15 @@ public:
   std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
 
 private:
-  ndn_service_framework::ResponseMessage makeResponse(const std::vector<uint8_t>& payload) const;
-
-  ndn_service_framework::ResponseMessage makeError(const std::string& error) const;
+  void refreshCapabilityUsage();
 
 private:
-  ndn::Name m_servicePrefix;
-  RepoCore m_core;
+  StorageCapability m_capability;
+  uint64_t m_capacityBytes = 0;
+  mutable std::mutex m_mutex;
+  std::shared_ptr<RepoStoreBackend> m_store;
 };
 
 } // namespace ndnsf_distributed_repo
 
-#endif // NDNSF_DISTRIBUTED_REPO_REPO_NODE_HPP
+#endif // NDNSF_DISTRIBUTED_REPO_REPO_CORE_HPP

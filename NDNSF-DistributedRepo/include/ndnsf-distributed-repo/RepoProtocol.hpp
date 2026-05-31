@@ -24,6 +24,9 @@ std::vector<uint8_t>
 encodeStoreRequest(const RepoObjectManifest& manifest,
                    const std::vector<uint8_t>& payload);
 
+std::vector<uint8_t>
+encodeManifestRequest(const RepoObjectManifest& manifest);
+
 void
 decodeStoreRequest(const std::vector<uint8_t>& request,
                    RepoObjectManifest& manifest,
@@ -31,6 +34,9 @@ decodeStoreRequest(const std::vector<uint8_t>& request,
 
 RepoObjectManifest
 parseManifestJson(const std::string& manifestJson);
+
+std::vector<RepoObjectManifest>
+parseInventoryJson(const std::string& inventoryJson);
 
 std::string
 encodeInventory(const std::vector<RepoObjectManifest>& manifests);

@@ -835,12 +835,6 @@ namespace ndn_service_framework
                    });
     }
 
-    void ServiceProvider::addDirectService(const ndn::Name& serviceName,
-                                           RequestHandler requestHandler)
-    {
-        addTargetedService(serviceName, std::move(requestHandler));
-    }
-
     void ServiceProvider::addTargetedService(const ndn::Name& serviceName,
                                              RequestHandler requestHandler)
     {
@@ -848,14 +842,6 @@ namespace ndn_service_framework
                    AckStrategyHandler{},
                    std::move(requestHandler),
                    ServiceMode::Targeted);
-    }
-
-    void ServiceProvider::addDirectService(const ndn::Name& serviceName,
-                                           SimpleRequestHandler requestHandler)
-    {
-        addTargetedService(
-            serviceName,
-            std::move(requestHandler));
     }
 
     void ServiceProvider::addTargetedService(const ndn::Name& serviceName,
@@ -870,47 +856,6 @@ namespace ndn_service_framework
                                                   const RequestMessage& requestMessage) {
                 return handler(requestMessage);
             });
-    }
-
-    void ServiceProvider::addService(const ndn::Name& serviceName,
-                                     const ndn::Name& functionName,
-                                     AckStrategyHandler ackHandler,
-                                     RequestHandler requestHandler)
-    {
-        addService(makeUnifiedServiceName(serviceName, functionName),
-                   std::move(ackHandler),
-                   std::move(requestHandler));
-    }
-
-    void ServiceProvider::addService(const ndn::Name& serviceName,
-                                     const ndn::Name& functionName,
-                                     LegacyAckStrategyHandler ackHandler,
-                                     RequestHandler requestHandler)
-    {
-        addService(makeUnifiedServiceName(serviceName, functionName),
-                   wrapLegacyAckStrategyHandler(std::move(ackHandler)),
-                   std::move(requestHandler));
-    }
-
-    void ServiceProvider::addService(const ndn::Name& serviceName,
-                                     const ndn::Name& functionName,
-                                     RequestHandler requestHandler)
-    {
-        addService(makeUnifiedServiceName(serviceName, functionName),
-                   std::move(requestHandler));
-    }
-
-    void ServiceProvider::RegisterService(const ServiceName& serviceName,
-                                          AckStrategyHandler ackHandler,
-                                          RequestHandler requestHandler)
-    {
-        addService(serviceName, std::move(ackHandler), std::move(requestHandler));
-    }
-
-    void ServiceProvider::RegisterService(const ServiceName& serviceName,
-                                          RequestHandler requestHandler)
-    {
-        addService(serviceName, std::move(requestHandler));
     }
 
     void ServiceProvider::addCollaborationHandler(const ndn::Name& serviceName,
@@ -1173,29 +1118,12 @@ namespace ndn_service_framework
         }
     }
 
-    void ServiceProvider::setAckStrategyHandler(const ndn::Name& serviceName,
-                                                const ndn::Name& functionName,
-                                                AckStrategyHandler ackHandler)
-    {
-        setAckStrategyHandler(makeUnifiedServiceName(serviceName, functionName),
-                              std::move(ackHandler));
-    }
-
     void ServiceProvider::setLegacyAckStrategyHandler(
         const ndn::Name& serviceName,
         LegacyAckStrategyHandler ackHandler)
     {
         setAckStrategyHandler(serviceName,
                               wrapLegacyAckStrategyHandler(std::move(ackHandler)));
-    }
-
-    void ServiceProvider::setLegacyAckStrategyHandler(
-        const ndn::Name& serviceName,
-        const ndn::Name& functionName,
-        LegacyAckStrategyHandler ackHandler)
-    {
-        setLegacyAckStrategyHandler(makeUnifiedServiceName(serviceName, functionName),
-                                    std::move(ackHandler));
     }
 
     bool ServiceProvider::hasService(const ndn::Name& serviceName) const
@@ -3018,12 +2946,6 @@ namespace ndn_service_framework
         return assignment;
     }
 
-    bool ServiceProvider::hasService(const ndn::Name& serviceName,
-                                     const ndn::Name& functionName) const
-    {
-        return hasService(makeUnifiedServiceName(serviceName, functionName));
-    }
-
     ResponseMessage ServiceProvider::dispatchRequest(
         const ndn::Name& requesterIdentity,
         const ndn::Name& providerName,
@@ -3046,21 +2968,6 @@ namespace ndn_service_framework
                                               serviceName,
                                               requestId,
                                               requestMessage);
-    }
-
-    ResponseMessage ServiceProvider::dispatchRequest(
-        const ndn::Name& requesterIdentity,
-        const ndn::Name& providerName,
-        const ndn::Name& serviceName,
-        const ndn::Name& functionName,
-        const ndn::Name& requestId,
-        const RequestMessage& requestMessage) const
-    {
-        return dispatchRequest(requesterIdentity,
-                               providerName,
-                               makeUnifiedServiceName(serviceName, functionName),
-                               requestId,
-                               requestMessage);
     }
 
     ResponseMessage ServiceProvider::handleDecryptedRequestByName(
