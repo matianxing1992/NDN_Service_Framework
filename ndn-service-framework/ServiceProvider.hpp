@@ -264,6 +264,9 @@ namespace ndn_service_framework{
                 ProviderRequestLifecycleState state);
 
             void UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails);
+            void publishServiceInfo(const ndn::Name& serviceName,
+                                    int serviceLifetimeSeconds,
+                                    std::map<std::string, std::string> serviceMetaInfo = {});
             
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 

@@ -47,6 +47,8 @@ NDN_LOG_INIT(ndn_service_framework.examples.UavGroundStationApp);
 using namespace ndnsf::examples::uav;
 using namespace std::chrono_literals;
 
+constexpr const char* PX4_SITL_TAKEOFF_AMSL_M = "505";
+
 class KeyChainInitLock
 {
 public:
@@ -302,9 +304,17 @@ public:
     return m_streaming.load();
   }
 
-  void
+  bool
   sendMavlinkCommand(const std::string& commandName, Fields params = {})
   {
+    const bool isManualControl = commandName == "manual_control";
+    auto& inFlight = isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight;
+    if (inFlight.exchange(true)) {
+      if (!isManualControl) {
+        publishStatus("MAVLink command busy; dropped " + commandName);
+      }
+      return false;
+    }
     params["target_drone"] = m_targetDroneId;
     const auto missionId = "manual-" + commandName + "-" + std::to_string(nowMilliseconds());
     const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
@@ -312,17 +322,30 @@ public:
       droneIdentity(m_targetDroneId),
       SERVICE_MAVLINK_EXECUTE,
       payload,
-      [this, commandName](const std::string& responsePayload) {
+      [this, commandName, isManualControl](const std::string& responsePayload) {
+        (isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight) = false;
         const auto fields = decodeFields(responsePayload);
         const auto accepted = fieldOr(fields, "accepted", "false");
         const auto bytes = fieldOr(fields, "forwarded_bytes", "0");
+        const auto ackResult = fieldOr(fields, "ack_result", "unknown");
+        const auto fcState = fieldOr(fields, "fc_state", "");
+        const auto altitude = fieldOr(fields, "altitude_m", "");
+        const auto speed = fieldOr(fields, "groundspeed_mps", "");
+        const auto battery = fieldOr(fields, "battery_percent", "");
         publishStatus("MAVLink " + commandName +
                       " accepted=" + accepted +
-                      " forwarded_bytes=" + bytes);
+                      " ack=" + ackResult +
+                      " forwarded_bytes=" + bytes +
+                      (fcState.empty() ? "" : " state=" + fcState) +
+                      (altitude.empty() ? "" : " alt=" + altitude + "m") +
+                      (speed.empty() ? "" : " speed=" + speed + "m/s") +
+                      (battery.empty() ? "" : " battery=" + battery + "%"));
       },
-      [this, commandName] {
+      [this, commandName, isManualControl] {
+        (isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight) = false;
         publishStatus("Timeout waiting for targeted MAVLink " + commandName);
       });
+    return true;
   }
 
   bool
@@ -1535,6 +1558,8 @@ private:
   std::atomic<uint64_t> m_receivedChunks{0};
   std::atomic<uint64_t> m_frameNacks{0};
   std::atomic<uint64_t> m_frameTimeouts{0};
+  std::atomic<bool> m_mavlinkCommandInFlight{false};
+  std::atomic<bool> m_manualControlInFlight{false};
   ndn::Name m_streamPrefix;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;
@@ -1618,10 +1643,18 @@ public:
   GroundStationWindow(GroundStationRuntime& runtime, bool autoStart,
                       int autoStopSeconds, int autoStartDelayMs,
                       bool autoMavlinkTest, bool autoKeyboardTest,
-                      bool autoManualControlTest)
+                      bool autoManualControlTest,
+                      std::vector<std::string> droneIds)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_buttons(Gtk::ORIENTATION_HORIZONTAL, 8)
+    , m_workspace(Gtk::ORIENTATION_HORIZONTAL, 10)
+    , m_vehicleFrame("Vehicles")
+    , m_vehiclePanel(Gtk::ORIENTATION_VERTICAL, 6)
+    , m_centerFrame("Fly View")
+    , m_centerPanel(Gtk::ORIENTATION_VERTICAL, 6)
+    , m_statusFrame("Inspector")
+    , m_statusPanel(Gtk::ORIENTATION_VERTICAL, 6)
     , m_start("Start Video")
     , m_stop("Stop Video")
     , m_arm("Arm")
@@ -1644,14 +1677,23 @@ public:
     , m_keyL("L  Land")
     , m_keyV("V  Video")
     , m_keyX("X  Stop Video")
+    , m_droneIds(std::move(droneIds))
   {
     set_title("NDNSF UAV Ground Station");
-    set_default_size(920, 700);
+    set_default_size(1180, 740);
     set_border_width(12);
     set_can_focus(true);
+    if (m_droneIds.empty()) {
+      m_droneIds.push_back("A");
+    }
 
     m_status.set_text("Video stopped");
     m_stats.set_text("Frames: 0");
+    m_mapMission.set_text("Map / mission workspace\n\n"
+                          "Current demo uses a lightweight map placeholder.\n"
+                          "Patrol sectors and selected drone status are shown here.");
+    m_services.set_text("Services: video, targeted MAVLink, telemetry, camera, mission");
+    m_telemetry.set_text("Telemetry: waiting for flight-controller response");
     m_stop.set_sensitive(false);
 
     m_buttons.pack_start(m_start, Gtk::PACK_SHRINK);
@@ -1661,6 +1703,41 @@ public:
     m_buttons.pack_start(m_land, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_controlToggle, Gtk::PACK_SHRINK);
     m_box.pack_start(m_buttons, Gtk::PACK_SHRINK);
+
+    m_vehiclePanel.set_border_width(8);
+    m_vehicleHint.set_text("Connected / expected drones");
+    m_vehiclePanel.pack_start(m_vehicleHint, Gtk::PACK_SHRINK);
+    for (size_t i = 0; i < m_droneIds.size(); ++i) {
+      const auto selected = i == 0;
+      auto* rowLabel = Gtk::manage(new Gtk::Label(
+        std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
+        (selected ? "  active" : "  standby")));
+      rowLabel->set_xalign(0.0F);
+      m_vehicleList.append(*rowLabel);
+    }
+    m_vehiclePanel.pack_start(m_vehicleList, Gtk::PACK_SHRINK);
+    m_vehicleFrame.add(m_vehiclePanel);
+    m_workspace.pack_start(m_vehicleFrame, Gtk::PACK_SHRINK);
+
+    m_centerPanel.set_border_width(8);
+    m_mapMission.set_xalign(0.0F);
+    m_centerPanel.pack_start(m_mapMission, Gtk::PACK_SHRINK);
+    m_centerPanel.pack_start(m_image, Gtk::PACK_EXPAND_WIDGET);
+    m_centerFrame.add(m_centerPanel);
+    m_workspace.pack_start(m_centerFrame, Gtk::PACK_EXPAND_WIDGET);
+
+    m_statusPanel.set_border_width(8);
+    m_status.set_xalign(0.0F);
+    m_stats.set_xalign(0.0F);
+    m_services.set_xalign(0.0F);
+    m_telemetry.set_xalign(0.0F);
+    m_statusPanel.pack_start(m_status, Gtk::PACK_SHRINK);
+    m_statusPanel.pack_start(m_stats, Gtk::PACK_SHRINK);
+    m_statusPanel.pack_start(m_services, Gtk::PACK_SHRINK);
+    m_statusPanel.pack_start(m_telemetry, Gtk::PACK_SHRINK);
+    m_statusFrame.add(m_statusPanel);
+    m_workspace.pack_start(m_statusFrame, Gtk::PACK_SHRINK);
+
     m_controlHelp.set_text(
       "Manual control: hold W/A/S/D/Q/E/R/F to fly. I/T/L send arm/takeoff/land. "
       "The active key turns black while pressed.");
@@ -1681,9 +1758,7 @@ public:
     m_controlPanel.pack_start(m_manualKeyRow, Gtk::PACK_SHRINK);
     m_controlPanel.pack_start(m_commandKeyRow, Gtk::PACK_SHRINK);
     m_box.pack_start(m_controlPanel, Gtk::PACK_SHRINK);
-    m_box.pack_start(m_status, Gtk::PACK_SHRINK);
-    m_box.pack_start(m_image, Gtk::PACK_EXPAND_WIDGET);
-    m_box.pack_start(m_stats, Gtk::PACK_SHRINK);
+    m_box.pack_start(m_workspace, Gtk::PACK_EXPAND_WIDGET);
     installControlCss();
     configureKeycap(m_keyW);
     configureKeycap(m_keyA);
@@ -1719,7 +1794,7 @@ public:
       m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
     });
     m_takeoff.signal_clicked().connect([this] {
-      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", "15"}});
+      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
     });
     m_land.signal_clicked().connect([this] {
       m_runtime.sendMavlinkCommand("land");
@@ -1762,6 +1837,9 @@ public:
           setPendingButtonStateLocked(true, false);
           m_acceptFrames = false;
         }
+        if (status.rfind("MAVLink ", 0) == 0) {
+          m_pendingTelemetry = status;
+        }
         m_pendingStatus = std::move(status);
       }
       m_statusDispatcher.emit();
@@ -1778,6 +1856,9 @@ public:
         m_pendingButtonState = false;
       }
       m_status.set_text(m_pendingStatus);
+      if (!m_pendingTelemetry.empty()) {
+        m_telemetry.set_text("Telemetry: " + m_pendingTelemetry);
+      }
     });
     m_frameDispatcher.connect([this] {
       Glib::RefPtr<Gdk::Pixbuf> pixbuf;
@@ -1817,9 +1898,9 @@ public:
       std::thread([this] {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", "15"}});
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+        std::this_thread::sleep_for(std::chrono::seconds(3));
         m_runtime.sendMavlinkCommand("land");
         std::this_thread::sleep_for(std::chrono::seconds(4));
         Glib::signal_idle().connect_once([this] {
@@ -1930,7 +2011,7 @@ private:
       m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
       return true;
     case GDK_KEY_t:
-      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", "15"}});
+      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
       return true;
     case GDK_KEY_l:
       m_runtime.sendMavlinkCommand("land");
@@ -2161,21 +2242,12 @@ private:
   void
   runManualControlLoop()
   {
-    bool sentNeutral = false;
     while (!m_manualControlDone.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
       if (!m_controlMode) {
-        sentNeutral = false;
         continue;
       }
-      if (m_manualActive.load()) {
-        sentNeutral = false;
-        sendManualControlOnce();
-      }
-      else if (!sentNeutral) {
-        sentNeutral = true;
-        sendManualControlOnce();
-      }
+      sendManualControlOnce();
     }
   }
 
@@ -2265,6 +2337,16 @@ private:
   GroundStationRuntime& m_runtime;
   Gtk::Box m_box;
   Gtk::Box m_buttons;
+  Gtk::Box m_workspace;
+  Gtk::Frame m_vehicleFrame;
+  Gtk::Box m_vehiclePanel;
+  Gtk::Label m_vehicleHint;
+  Gtk::ListBox m_vehicleList;
+  Gtk::Frame m_centerFrame;
+  Gtk::Box m_centerPanel;
+  Gtk::Label m_mapMission;
+  Gtk::Frame m_statusFrame;
+  Gtk::Box m_statusPanel;
   Gtk::Button m_start;
   Gtk::Button m_stop;
   Gtk::Button m_arm;
@@ -2289,12 +2371,15 @@ private:
   Gtk::Button m_keyV;
   Gtk::Button m_keyX;
   Gtk::Label m_status;
+  Gtk::Label m_services;
+  Gtk::Label m_telemetry;
   Gtk::Image m_image;
   Gtk::Label m_stats;
   Glib::Dispatcher m_statusDispatcher;
   Glib::Dispatcher m_frameDispatcher;
   std::mutex m_mutex;
   std::string m_pendingStatus = "Video stopped";
+  std::string m_pendingTelemetry;
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;
   uint64_t m_pendingSeq = 0;
   uint64_t m_pendingElapsedMs = 0;
@@ -2313,6 +2398,7 @@ private:
   uint64_t m_streamGeneration = 0;
   bool m_acceptFrames = false;
   std::atomic<uint64_t> m_decodedFrames{0};
+  std::vector<std::string> m_droneIds;
 };
 
 } // namespace
@@ -2365,7 +2451,8 @@ main(int argc, char** argv)
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
                                  autoStartDelayMs, autoMavlinkTest,
-                                 autoKeyboardTest, autoManualControlTest);
+                                 autoKeyboardTest, autoManualControlTest,
+                                 patrolDroneIds);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
               << " auto_video_test=" << (autoStart ? "true" : "false")

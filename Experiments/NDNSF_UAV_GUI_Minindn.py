@@ -15,6 +15,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 REPO = Path(__file__).resolve().parents[1]
@@ -69,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mavlink-udp-host", default="127.0.0.1")
     parser.add_argument("--mavlink-udp-port", default="18570",
                         help="PX4 SITL GCS MAVLink UDP local port for instance 0.")
+    parser.add_argument("--mavlink-udp-listen-port", default="14550",
+                        help="Local MAVLink GCS UDP port where PX4 sends command ACKs/telemetry.")
     parser.add_argument("--start-jmavsim", action="store_true",
                         help="Start PX4 SITL with jMAVSim on the same MiniNDN node as the drone.")
     parser.add_argument("--no-start-jmavsim", action="store_true",
@@ -80,12 +83,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run jMAVSim without its GUI.")
     parser.add_argument("--jmavsim-ready-timeout-seconds", type=int, default=90,
                         help="How long to wait for PX4/jMAVSim readiness before starting the Drone app.")
+    parser.add_argument("--no-configure-px4-sitl-demo-params", action="store_true",
+                        help="Do not let the Drone app set PX4 SITL demo failsafe parameters.")
     parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
     parser.add_argument("--video-width", type=int, default=480,
                         help="Requested encoded frame width passed to the drone video service.")
     parser.add_argument("--output-dir", default=str(REPO / "results/uav_gui_minindn"))
     parser.add_argument("--nfd-log-level", default="WARN")
+    parser.add_argument("--enable-ndnsd", action="store_true",
+                        help="Reserved for NDNSD service discovery experiments; not enabled by default.")
     parser.add_argument("--auto-video-test", action="store_true",
                         help="Have the GS auto-start and auto-stop video for smoke testing.")
     parser.add_argument("--auto-mavlink-test", action="store_true",
@@ -165,7 +172,6 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
                 "nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN",
             ),
         ),
-        "NDNSF_DISABLE_NDNSD": os.environ.get("NDNSF_DISABLE_NDNSD", "1"),
         "NDNSF_SVS_MAX_SUPPRESSION_MS": os.environ.get("NDNSF_SVS_MAX_SUPPRESSION_MS", "1"),
         "NDNSF_SVS_PARALLEL_SYNC": os.environ.get("NDNSF_SVS_PARALLEL_SYNC", "0"),
         "NDNSF_SVS_PARALLEL_WORKERS": os.environ.get("NDNSF_SVS_PARALLEL_WORKERS", "4"),
@@ -178,6 +184,9 @@ def make_env(args: argparse.Namespace, node_name: str, home: Path) -> dict[str, 
     }
     if os.environ.get("PATH"):
         env["PATH"] = os.environ["PATH"]
+    env["NDNSF_DISABLE_NDNSD"] = os.environ.get("NDNSF_DISABLE_NDNSD", "1")
+    if args.enable_ndnsd:
+        env["NDNSF_UAV_NDNSD_EXPERIMENT_REQUESTED"] = "1"
     python_paths = []
     if os.environ.get("PYTHONPATH"):
         python_paths.extend(part for part in os.environ["PYTHONPATH"].split(":") if part)
@@ -391,6 +400,15 @@ def stop(processes) -> None:
         log_file.close()
 
 
+def interrupt_when_process_exits(proc, label: str) -> None:
+    def _watch() -> None:
+        proc.wait()
+        print(f"{label} exited; stopping MiniNDN demo and cleaning up.")
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 def read_tail(path: Path, lines: int = 120) -> str:
     if not path.exists():
         return ""
@@ -505,9 +523,12 @@ def main() -> int:
                 "udp" if start_simulator else args.flight_controller_backend,
                 "--mavlink-udp-host", args.mavlink_udp_host,
                 "--mavlink-udp-port", args.mavlink_udp_port,
+                "--mavlink-udp-listen-port", args.mavlink_udp_listen_port,
             ])
             if start_simulator:
                 drone_cmd += " --fc-status-file " + shell_quote(simulator_status_files[drone_id])
+                if not args.no_configure_px4_sitl_demo_params:
+                    drone_cmd += " --configure-px4-sitl-demo-params"
             label = "drone" if len(drones) == 1 else f"drone-{drone_id}"
             drone_proc, drone_log = start(ndn.net[node_name], label,
                                           drone_cmd, drone_envs[drone_id],
@@ -564,6 +585,8 @@ def main() -> int:
         print("Use the Ground Station window buttons to start/stop video.")
         print("Type 'exit' in the MiniNDN CLI, or press Ctrl-C here, to stop the demo.")
         print("")
+        if not args.no_cli:
+            interrupt_when_process_exits(gs_proc, "ground-station GUI")
 
         if args.auto_patrol_test and args.no_cli:
             try:

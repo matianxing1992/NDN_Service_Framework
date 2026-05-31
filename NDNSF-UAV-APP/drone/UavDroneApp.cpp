@@ -15,15 +15,19 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <poll.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -130,7 +134,8 @@ class FlightControllerBackend
 {
 public:
   virtual ~FlightControllerBackend() = default;
-  virtual bool sendMavlink(const std::vector<uint8_t>& frame) = 0;
+  virtual Fields sendMavlink(const std::vector<uint8_t>& frame,
+                             const std::string& commandName) = 0;
   virtual std::string description() const = 0;
 };
 
@@ -142,14 +147,25 @@ public:
   {
   }
 
-  bool
-  sendMavlink(const std::vector<uint8_t>& frame) override
+  Fields
+  sendMavlink(const std::vector<uint8_t>& frame,
+              const std::string& commandName) override
   {
     ++m_forwardedCount;
     NDN_LOG_INFO("MOCK_FC_FORWARD drone=" << m_droneId
                  << " bytes=" << frame.size()
                  << " count=" << m_forwardedCount.load());
-    return true;
+    return {
+      {"accepted", "true"},
+      {"ack_source", "mock"},
+      {"ack_result", "mock-accepted"},
+      {"command", commandName},
+      {"fc_state", "mock-ready"},
+      {"altitude_m", "42.0"},
+      {"groundspeed_mps", "0.0"},
+      {"battery_percent", "87.5"},
+      {"forwarded_bytes", std::to_string(frame.size())},
+    };
   }
 
   std::string
@@ -166,33 +182,57 @@ private:
 class UdpFlightControllerBackend : public FlightControllerBackend
 {
 public:
-  UdpFlightControllerBackend(std::string droneId, std::string host, std::string port)
+  UdpFlightControllerBackend(std::string droneId, std::string host, std::string port,
+                             std::string listenPort, bool configurePx4SitlDemoParams)
     : m_droneId(std::move(droneId))
     , m_host(std::move(host))
     , m_port(std::move(port))
+    , m_listenPort(std::move(listenPort))
+    , m_configurePx4SitlDemoParams(configurePx4SitlDemoParams)
   {
   }
 
   ~UdpFlightControllerBackend()
   {
+    m_manualReplayDone = true;
+    if (m_manualReplayThread.joinable()) {
+      m_manualReplayThread.join();
+    }
     if (m_socket >= 0) {
       close(m_socket);
     }
+    if (m_listenSocket >= 0) {
+      close(m_listenSocket);
+    }
   }
 
-  bool
-  sendMavlink(const std::vector<uint8_t>& frame) override
+  Fields
+  sendMavlink(const std::vector<uint8_t>& frame,
+              const std::string& commandName) override
   {
+    std::lock_guard<std::mutex> guard(m_socketMutex);
     if (!ensureConnected()) {
-      return false;
+      return {
+        {"accepted", "false"},
+        {"ack_source", "udp"},
+        {"ack_result", "connect-failed"},
+        {"command", commandName},
+        {"forwarded_bytes", "0"},
+      };
     }
-    const auto n = send(m_socket, frame.data(), frame.size(), 0);
+    const auto n = sendFrameLocked(frame);
     if (n < 0 || static_cast<size_t>(n) != frame.size()) {
       NDN_LOG_WARN("UDP_FC_FORWARD_FAILED drone=" << m_droneId
                    << " host=" << m_host
                    << " port=" << m_port
                    << " bytes=" << frame.size());
-      return false;
+      return {
+        {"accepted", "false"},
+        {"ack_source", "udp"},
+        {"ack_result", "send-failed"},
+        {"command", commandName},
+        {"forwarded_bytes", std::to_string(frame.size())},
+      };
     }
     ++m_forwardedCount;
     NDN_LOG_INFO("UDP_FC_FORWARD drone=" << m_droneId
@@ -200,7 +240,22 @@ public:
                  << " port=" << m_port
                  << " bytes=" << frame.size()
                  << " count=" << m_forwardedCount.load());
-    return true;
+    if (commandName == "manual_control") {
+      updateManualReplayLocked(frame);
+    }
+    auto result = commandName == "manual_control" ?
+                  drainMavlinkTelemetry(std::chrono::milliseconds(5)) :
+                  waitForCommandAck(commandName, std::chrono::milliseconds(700));
+    if (commandName == "manual_control") {
+      result["ack_result"] = "manual-control-forwarded";
+    }
+    result["accepted"] = "true";
+    result["ack_source"] = "udp";
+    result["command"] = commandName;
+    result["forwarded_bytes"] = std::to_string(frame.size());
+    result["fc_state"] = fieldOr(result, "ack_result", "forwarded");
+    appendLatestTelemetry(result);
+    return result;
   }
 
   std::string
@@ -210,10 +265,388 @@ public:
   }
 
 private:
+  ssize_t
+  sendFrameLocked(const std::vector<uint8_t>& frame)
+  {
+    return send(m_socket, frame.data(), frame.size(), 0);
+  }
+
+  void
+  updateManualReplayLocked(const std::vector<uint8_t>& frame)
+  {
+    m_latestManualFrame = frame;
+    m_manualReplayDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    if (!m_manualReplayThread.joinable()) {
+      m_manualReplayThread = std::thread([this] {
+        manualReplayLoop();
+      });
+    }
+  }
+
+  void
+  manualReplayLoop()
+  {
+    while (!m_manualReplayDone.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      std::lock_guard<std::mutex> guard(m_socketMutex);
+      if (m_socket < 0 || m_latestManualFrame.empty()) {
+        continue;
+      }
+      if (std::chrono::steady_clock::now() > m_manualReplayDeadline) {
+        continue;
+      }
+      const auto n = sendFrameLocked(m_latestManualFrame);
+      if (n == static_cast<ssize_t>(m_latestManualFrame.size())) {
+        ++m_manualReplayCount;
+      }
+    }
+  }
+
+  static std::string
+  mavlinkAckResultName(uint8_t result)
+  {
+    switch (result) {
+      case 0:
+        return "accepted";
+      case 1:
+        return "temporarily-rejected";
+      case 2:
+        return "denied";
+      case 3:
+        return "unsupported";
+      case 4:
+        return "failed";
+      case 5:
+        return "in-progress";
+      case 6:
+        return "cancelled";
+      default:
+        return "unknown-" + std::to_string(result);
+    }
+  }
+
+  static uint16_t
+  readLe16(const uint8_t* value)
+  {
+    return static_cast<uint16_t>(value[0]) |
+           static_cast<uint16_t>(static_cast<uint16_t>(value[1]) << 8);
+  }
+
+  static int16_t
+  readI16(const uint8_t* value)
+  {
+    return static_cast<int16_t>(readLe16(value));
+  }
+
+  static uint32_t
+  readLe32(const uint8_t* value)
+  {
+    return static_cast<uint32_t>(value[0]) |
+           (static_cast<uint32_t>(value[1]) << 8) |
+           (static_cast<uint32_t>(value[2]) << 16) |
+           (static_cast<uint32_t>(value[3]) << 24);
+  }
+
+  static int32_t
+  readI32(const uint8_t* value)
+  {
+    return static_cast<int32_t>(readLe32(value));
+  }
+
+  static float
+  readFloatLe(const uint8_t* value)
+  {
+    float out = 0.0F;
+    static_assert(sizeof(out) == 4, "float must be 32 bits");
+    std::memcpy(&out, value, sizeof(out));
+    return out;
+  }
+
+  static std::string
+  formatDouble(double value, int precision = 2)
+  {
+    std::ostringstream os;
+    os.setf(std::ios::fixed);
+    os.precision(precision);
+    os << value;
+    return os.str();
+  }
+
+  static uint16_t
+  commandIdForName(const std::string& commandName)
+  {
+    if (commandName == "arm" || commandName == "disarm") {
+      return 400;
+    }
+    if (commandName == "takeoff") {
+      return 22;
+    }
+    if (commandName == "land") {
+      return 21;
+    }
+    return 0;
+  }
+
+  Fields
+  waitForCommandAck(const std::string& commandName, std::chrono::milliseconds timeout)
+  {
+    const auto wantedCommand = commandIdForName(commandName);
+    if (wantedCommand == 0) {
+      return {{"ack_result", "not-command-long"}};
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+      std::array<pollfd, 2> pfds{};
+      nfds_t fdCount = 0;
+      pfds[fdCount].fd = m_socket;
+      pfds[fdCount].events = POLLIN;
+      ++fdCount;
+      if (m_listenSocket >= 0) {
+        pfds[fdCount].fd = m_listenSocket;
+        pfds[fdCount].events = POLLIN;
+        ++fdCount;
+      }
+      const int pollRc = poll(pfds.data(), fdCount,
+                              static_cast<int>(std::max<int64_t>(1, remaining.count())));
+      if (pollRc <= 0) {
+        break;
+      }
+      auto ack = drainReadyMavlinkPackets(pfds.data(), fdCount, wantedCommand, commandName);
+      if (!ack.empty()) {
+        appendLatestTelemetry(ack);
+        return ack;
+      }
+    }
+    Fields result{{"ack_result", "no-command-ack"}};
+    appendLatestTelemetry(result);
+    return result;
+  }
+
+  Fields
+  drainMavlinkTelemetry(std::chrono::milliseconds timeout)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      std::array<pollfd, 2> pfds{};
+      nfds_t fdCount = 0;
+      pfds[fdCount].fd = m_socket;
+      pfds[fdCount].events = POLLIN;
+      ++fdCount;
+      if (m_listenSocket >= 0) {
+        pfds[fdCount].fd = m_listenSocket;
+        pfds[fdCount].events = POLLIN;
+        ++fdCount;
+      }
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+      const int pollRc = poll(pfds.data(), fdCount,
+                              static_cast<int>(std::max<int64_t>(1, remaining.count())));
+      if (pollRc <= 0) {
+        break;
+      }
+      drainReadyMavlinkPackets(pfds.data(), fdCount, 0, "");
+    }
+    Fields result;
+    appendLatestTelemetry(result);
+    return result;
+  }
+
+  Fields
+  drainReadyMavlinkPackets(pollfd* pfds, nfds_t fdCount,
+                           uint16_t wantedCommand, const std::string& commandName)
+  {
+    std::array<uint8_t, 4096> buffer{};
+    for (nfds_t fdIndex = 0; fdIndex < fdCount; ++fdIndex) {
+      if ((pfds[fdIndex].revents & POLLIN) == 0) {
+        continue;
+      }
+      while (true) {
+        const auto n = recv(pfds[fdIndex].fd, buffer.data(), buffer.size(), MSG_DONTWAIT);
+        if (n <= 0) {
+          break;
+        }
+        auto ack = parseMavlinkFrames(buffer.data(), static_cast<size_t>(n),
+                                      wantedCommand, commandName);
+        if (!ack.empty()) {
+          return ack;
+        }
+      }
+    }
+    return {};
+  }
+
+  Fields
+  parseMavlinkFrames(const uint8_t* buffer, size_t size,
+                     uint16_t wantedCommand, const std::string& commandName)
+  {
+    for (size_t i = 0; i + 8 <= size; ++i) {
+      uint32_t msgId = 0;
+      const uint8_t* payload = nullptr;
+      size_t payloadLen = 0;
+      size_t frameLen = 0;
+      if (buffer[i] == 0xfe) {
+        payloadLen = buffer[i + 1];
+        frameLen = payloadLen + 8;
+        if (i + frameLen > size) {
+          break;
+        }
+        msgId = buffer[i + 5];
+        payload = &buffer[i + 6];
+      }
+      else if (buffer[i] == 0xfd && i + 12 <= size) {
+        payloadLen = buffer[i + 1];
+        const bool signedFrame = (buffer[i + 2] & 0x01) != 0;
+        frameLen = 10 + payloadLen + 2 + (signedFrame ? 13 : 0);
+        if (i + frameLen > size) {
+          break;
+        }
+        msgId = static_cast<uint32_t>(buffer[i + 7]) |
+                (static_cast<uint32_t>(buffer[i + 8]) << 8) |
+                (static_cast<uint32_t>(buffer[i + 9]) << 16);
+        payload = &buffer[i + 10];
+      }
+      else {
+        continue;
+      }
+
+      auto ack = parseMavlinkPayload(msgId, payload, payloadLen, wantedCommand, commandName);
+      if (!ack.empty()) {
+        return ack;
+      }
+      i += frameLen - 1;
+    }
+    return {};
+  }
+
+  Fields
+  parseMavlinkPayload(uint32_t msgId, const uint8_t* payload, size_t payloadLen,
+                      uint16_t wantedCommand, const std::string& commandName)
+  {
+    if (msgId == 0 && payloadLen >= 9) {
+      const auto baseMode = payload[6];
+      const auto systemStatus = payload[7];
+      m_latestTelemetry["armed"] = (baseMode & 0x80) != 0 ? "true" : "false";
+      m_latestTelemetry["base_mode"] = std::to_string(baseMode);
+      m_latestTelemetry["system_status"] = std::to_string(systemStatus);
+      m_latestTelemetry["fc_state"] = m_latestTelemetry["armed"] == "true" ? "armed" : "disarmed";
+    }
+    else if (msgId == 1 && payloadLen >= 31) {
+      const auto battery = static_cast<int8_t>(payload[30]);
+      if (battery >= 0) {
+        m_latestTelemetry["battery_percent"] = std::to_string(static_cast<int>(battery));
+      }
+    }
+    else if (msgId == 32 && payloadLen >= 28) {
+      const auto z = readFloatLe(payload + 12);
+      const auto vx = readFloatLe(payload + 16);
+      const auto vy = readFloatLe(payload + 20);
+      const auto vz = readFloatLe(payload + 24);
+      m_latestTelemetry["altitude_m"] = formatDouble(-z);
+      m_latestTelemetry["groundspeed_mps"] = formatDouble(std::sqrt(vx * vx + vy * vy + vz * vz));
+    }
+    else if (msgId == 33 && payloadLen >= 36) {
+      const auto relativeAltMm = readI32(payload + 28);
+      const auto vx = readI16(payload + 32) / 100.0;
+      const auto vy = readI16(payload + 34) / 100.0;
+      m_latestTelemetry["altitude_m"] = formatDouble(relativeAltMm / 1000.0);
+      m_latestTelemetry["groundspeed_mps"] = formatDouble(std::sqrt(vx * vx + vy * vy));
+    }
+    else if (msgId == 77 && payloadLen >= 3 && wantedCommand != 0) {
+      const auto command = readLe16(payload);
+      const auto ackResult = payload[2];
+      if (command == wantedCommand) {
+        const auto resultName = mavlinkAckResultName(ackResult);
+        NDN_LOG_INFO("UDP_FC_COMMAND_ACK drone=" << m_droneId
+                     << " command=" << commandName
+                     << " result=" << resultName);
+        return {
+          {"ack_result", resultName},
+          {"ack_command_id", std::to_string(command)},
+          {"ack_raw_result", std::to_string(ackResult)},
+        };
+      }
+    }
+    return {};
+  }
+
+  void
+  appendLatestTelemetry(Fields& result) const
+  {
+    for (const auto& [key, value] : m_latestTelemetry) {
+      result.emplace(key, value);
+    }
+    result.emplace("altitude_m", "unknown");
+    result.emplace("groundspeed_mps", "unknown");
+    result.emplace("battery_percent", "unknown");
+  }
+
+  void
+  ensureListenSocket()
+  {
+    if (m_sendSocketBoundToListenPort) {
+      return;
+    }
+    if (m_listenSocket >= 0 || m_listenPort.empty() || m_listenPort == "0") {
+      return;
+    }
+    const auto portValue = static_cast<uint16_t>(std::stoul(m_listenPort));
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+      NDN_LOG_WARN("UDP_FC_LISTEN_SOCKET_FAILED port=" << m_listenPort);
+      return;
+    }
+    int reuse = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(portValue);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      NDN_LOG_WARN("UDP_FC_LISTEN_BIND_FAILED port=" << m_listenPort
+                   << " errno=" << errno);
+      close(fd);
+      return;
+    }
+    m_listenSocket = fd;
+    NDN_LOG_INFO("UDP_FC_LISTENING drone=" << m_droneId
+                 << " port=" << m_listenPort);
+  }
+
+  bool
+  bindSendSocketToListenPort(int fd)
+  {
+    if (m_listenPort.empty() || m_listenPort == "0") {
+      return false;
+    }
+    const auto portValue = static_cast<uint16_t>(std::stoul(m_listenPort));
+    int reuse = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(portValue);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      NDN_LOG_WARN("UDP_FC_SEND_BIND_FAILED port=" << m_listenPort
+                   << " errno=" << errno);
+      return false;
+    }
+    m_sendSocketBoundToListenPort = true;
+    NDN_LOG_INFO("UDP_FC_SEND_BOUND drone=" << m_droneId
+                 << " local_port=" << m_listenPort);
+    return true;
+  }
+
   bool
   ensureConnected()
   {
     if (m_socket >= 0) {
+      ensureListenSocket();
+      configurePx4SitlDemoParamsLocked();
       return true;
     }
 
@@ -235,10 +668,12 @@ private:
       if (fd < 0) {
         continue;
       }
+      bindSendSocketToListenPort(fd);
       if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
         break;
       }
       close(fd);
+      m_sendSocketBoundToListenPort = false;
       fd = -1;
     }
     freeaddrinfo(result);
@@ -248,18 +683,63 @@ private:
       return false;
     }
     m_socket = fd;
+    ensureListenSocket();
     NDN_LOG_INFO("UDP_FC_CONNECTED drone=" << m_droneId
                  << " host=" << m_host
                  << " port=" << m_port);
+    configurePx4SitlDemoParamsLocked();
     return true;
+  }
+
+  void
+  configurePx4SitlDemoParamsLocked()
+  {
+    if (!m_configurePx4SitlDemoParams || m_px4SitlDemoParamsConfigured || m_socket < 0) {
+      return;
+    }
+    struct ParamSet
+    {
+      const char* name;
+      float value;
+      uint8_t type;
+    };
+    constexpr uint8_t mavParamTypeInt32 = 6;
+    constexpr uint8_t mavParamTypeReal32 = 9;
+    const std::array<ParamSet, 3> params{{
+      {"COM_RC_LOSS_T", 30.0F, mavParamTypeReal32},
+      {"COM_FAIL_ACT_T", 25.0F, mavParamTypeReal32},
+      {"NAV_RCL_ACT", 1.0F, mavParamTypeInt32},
+    }};
+    for (const auto& param : params) {
+      const auto frame = buildMavlinkParamSetFrame(param.name, param.value, param.type);
+      const auto n = sendFrameLocked(frame);
+      NDN_LOG_INFO("UDP_FC_DEMO_PARAM_SET drone=" << m_droneId
+                   << " param=" << param.name
+                   << " value=" << param.value
+                   << " sent=" << (n == static_cast<ssize_t>(frame.size()) ? "true" : "false"));
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    m_px4SitlDemoParamsConfigured = true;
   }
 
 private:
   std::string m_droneId;
   std::string m_host;
   std::string m_port;
+  std::string m_listenPort;
+  bool m_configurePx4SitlDemoParams = false;
+  bool m_px4SitlDemoParamsConfigured = false;
   int m_socket = -1;
+  int m_listenSocket = -1;
+  bool m_sendSocketBoundToListenPort = false;
+  std::mutex m_socketMutex;
+  Fields m_latestTelemetry;
+  std::vector<uint8_t> m_latestManualFrame;
+  std::chrono::steady_clock::time_point m_manualReplayDeadline{};
+  std::thread m_manualReplayThread;
+  std::atomic<bool> m_manualReplayDone{false};
   std::atomic<size_t> m_forwardedCount{0};
+  std::atomic<size_t> m_manualReplayCount{0};
 };
 
 class VideoPublisher
@@ -795,7 +1275,8 @@ class DroneRuntime
 public:
   DroneRuntime(std::string droneId, bool available, bool serveCertificates,
                std::string videoPath, std::string flightControllerBackend,
-               std::string mavlinkUdpHost, std::string mavlinkUdpPort)
+               std::string mavlinkUdpHost, std::string mavlinkUdpPort,
+               std::string mavlinkUdpListenPort, bool configurePx4SitlDemoParams)
     : m_serveCertificates(serveCertificates)
     , m_droneId(std::move(droneId))
     , m_available(available)
@@ -803,6 +1284,8 @@ public:
     , m_flightControllerBackend(std::move(flightControllerBackend))
     , m_mavlinkUdpHost(std::move(mavlinkUdpHost))
     , m_mavlinkUdpPort(std::move(mavlinkUdpPort))
+    , m_mavlinkUdpListenPort(std::move(mavlinkUdpListenPort))
+    , m_configurePx4SitlDemoParams(configurePx4SitlDemoParams)
   {
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
     m_providerCert = getOrCreateIdentity(m_keyChain, m_identity);
@@ -845,9 +1328,15 @@ public:
         m_runtimeReady = true;
         publishStatus("NDNSF runtime ready");
 
+        auto nextServiceAdvertisement = std::chrono::steady_clock::now();
         while (!m_done.load()) {
           m_face.getIoContext().run_for(std::chrono::milliseconds(10));
           m_face.getIoContext().restart();
+          const auto now = std::chrono::steady_clock::now();
+          if (now >= nextServiceAdvertisement) {
+            publishServiceAdvertisements();
+            nextServiceAdvertisement = now + std::chrono::seconds(15);
+          }
         }
       }
       catch (const std::exception& e) {
@@ -927,7 +1416,8 @@ private:
     std::shared_ptr<FlightControllerBackend> backend;
     if (m_flightControllerBackend == "udp") {
       backend = std::make_shared<UdpFlightControllerBackend>(
-        m_droneId, m_mavlinkUdpHost, m_mavlinkUdpPort);
+        m_droneId, m_mavlinkUdpHost, m_mavlinkUdpPort, m_mavlinkUdpListenPort,
+        m_configurePx4SitlDemoParams);
     }
     else {
       backend = std::make_shared<MockFlightControllerBackend>(m_droneId);
@@ -1001,14 +1491,12 @@ private:
                         const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
           const auto frame = hexDecode(fieldOr(fields, "mavlink_hex", ""));
-          const bool ok = backend->sendMavlink(frame);
-          return makeResponse(ok, encodeFields({
-            {"accepted", ok ? "true" : "false"},
-            {"backend", backend->description()},
-            {"drone_id", m_droneId},
-            {"command", fieldOr(fields, "command", "unknown")},
-            {"forwarded_bytes", std::to_string(frame.size())},
-          }), ok ? "No error" : "mock flight-controller rejected frame");
+          auto result = backend->sendMavlink(frame, fieldOr(fields, "command", "unknown"));
+          const bool ok = fieldOr(result, "accepted", "false") == "true";
+          result["backend"] = backend->description();
+          result["drone_id"] = m_droneId;
+          return makeResponse(ok, encodeFields(result),
+                              ok ? "No error" : "flight-controller rejected frame");
         }));
 
     m_provider->addService(
@@ -1097,7 +1585,7 @@ private:
             {"part_id", partId},
             {"attempt_id", attemptId},
             {"waypoints", waypoints},
-          }));
+          }), "mission-waypoints");
           const auto frameId = "mission-" + missionId + "-" + partId + "-capture";
           const auto image = buildMockJpeg(m_droneId, frameId);
 
@@ -1117,6 +1605,35 @@ private:
         }));
   }
 
+  void
+  publishServiceAdvertisements()
+  {
+    std::lock_guard<std::mutex> guard(m_runtimeMutex);
+    if (!m_provider) {
+      return;
+    }
+    const auto common = Fields{
+      {"drone_id", m_droneId},
+      {"identity", m_identity.toUri()},
+      {"backend", m_flightControllerBackend},
+      {"available", m_available ? "true" : "false"},
+    };
+    auto publish = [this, &common](const ndn::Name& serviceName,
+                                   const std::string& mode,
+                                   const std::string& category) {
+      auto meta = common;
+      meta["mode"] = mode;
+      meta["category"] = category;
+      meta["published_by"] = "NDNSF-UAV-APP";
+      m_provider->publishServiceInfo(serviceName, 45, std::move(meta));
+    };
+    publish(droneVideoControlService(m_droneId), "normal", "video-control");
+    publish(SERVICE_MAVLINK_EXECUTE, "targeted", "flight-control");
+    publish(SERVICE_TELEMETRY_STATUS, "normal", "telemetry");
+    publish(SERVICE_CAMERA_FRAME, "normal", "camera");
+    publish(SERVICE_MISSION_ASSIGN, "normal", "mission");
+  }
+
 private:
   bool m_serveCertificates;
   std::string m_droneId;
@@ -1126,6 +1643,8 @@ private:
   std::string m_flightControllerBackend;
   std::string m_mavlinkUdpHost;
   std::string m_mavlinkUdpPort;
+  std::string m_mavlinkUdpListenPort;
+  bool m_configurePx4SitlDemoParams = false;
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
   ndn::security::Certificate m_providerCert;
@@ -1239,12 +1758,17 @@ main(int argc, char** argv)
       getOption(argc, argv, "--mavlink-udp-host", "127.0.0.1");
     const std::string mavlinkUdpPort =
       getOption(argc, argv, "--mavlink-udp-port", "18570");
+    const std::string mavlinkUdpListenPort =
+      getOption(argc, argv, "--mavlink-udp-listen-port", "14550");
+    const bool configurePx4SitlDemoParams =
+      hasFlag(argc, argv, "--configure-px4-sitl-demo-params");
     const std::string flightControllerStatusFile =
       getOption(argc, argv, "--fc-status-file", "");
 
     auto runtime = std::make_unique<DroneRuntime>(
       droneId, available, serveCertificates, videoPath,
-      flightControllerBackend, mavlinkUdpHost, mavlinkUdpPort);
+      flightControllerBackend, mavlinkUdpHost, mavlinkUdpPort, mavlinkUdpListenPort,
+      configurePx4SitlDemoParams);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("drone NDNSF runtime did not become ready");
@@ -1255,11 +1779,17 @@ main(int argc, char** argv)
                  << " available=" << available
                  << " video_source=" << videoPath
                  << " flight_controller_backend=" << flightControllerBackend
-                 << " mavlink_udp=" << mavlinkUdpHost << ":" << mavlinkUdpPort);
+                 << " mavlink_udp=" << mavlinkUdpHost << ":" << mavlinkUdpPort
+                 << " mavlink_listen_port=" << mavlinkUdpListenPort
+                 << " configure_px4_sitl_demo_params="
+                 << (configurePx4SitlDemoParams ? "true" : "false"));
     std::cout << "DRONE_GUI_READY identity=" << runtime->identityUri()
               << " video_source=" << videoPath
               << " flight_controller_backend=" << flightControllerBackend
               << " mavlink_udp=" << mavlinkUdpHost << ":" << mavlinkUdpPort
+              << " mavlink_listen_port=" << mavlinkUdpListenPort
+              << " configure_px4_sitl_demo_params="
+              << (configurePx4SitlDemoParams ? "true" : "false")
               << std::endl;
     const int rc = app->run(window);
     std::cout << "DRONE_GUI_EXIT rc=" << rc << std::endl;

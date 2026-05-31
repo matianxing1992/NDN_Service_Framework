@@ -200,8 +200,20 @@ GUI 应该是同一套 service layer 上的 ground-station frontend：
 - object-detection result overlay；
 - drone availability 和 selected-provider view。
 
+当前 ground-station 窗口按 QGroundControl Fly View 的思路做了第一版结构：
+左侧是多无人机列表，中间是 map/mission context 与视频区域，右侧是 telemetry、服务能力和
+command status inspector。它还不是完整 QGC；map 仍然是轻量任务占位，但布局已经为后续
+vehicle switching、video/map 前景切换和 mission tools 留出了位置。
+
 命令路径保持不变：GUI action 在 ground station 端构造 MAVLink bytes，然后通过 NDNSF Targeted
 service invocation 发送 opaque MAVLink frame。
+
+NDNSF 内置 NDNSD 默认仍然不启用。对 UAV demo 来说，NDNSD 可以作为低频服务公告通道：
+DroneAPP 可以间歇性发布自己安装的服务，例如 video control、Targeted MAVLink execution、
+telemetry、camera frame 和 mission assignment。core 现在提供了通用的
+`ServiceProvider::publishServiceInfo(...)` 钩子，但 MiniNDN launcher 仍然保持
+`NDNSF_DISABLE_NDNSD=1`，因为旧 NDNSD runtime 路径需要单独做兼容性修复后才适合放进 GUI demo。
+性能和低延迟测试应保持默认禁用。
 
 ## 构建
 
@@ -245,8 +257,31 @@ L land           V video start
 X video stop
 ```
 
-按住某个键时，对应 keycap 会变成黑色，让 operator 明确知道当前按下的是哪个控制键。按住手操键时，
-GS 会以较低固定频率发送 MAVLink `MANUAL_CONTROL`；松开后会发送 neutral update。点击 `Start Video`
+按住某个键时，对应 keycap 会变成黑色，让 operator 明确知道当前按下的是哪个控制键。control mode
+开启期间，GS 会持续低频发送 Targeted `MANUAL_CONTROL` 更新；没有按键时也会发送 neutral update。
+Drone 会在本机用较高频率短时间重放最新 manual frame，这样即使 NDNSF request/response 有抖动，
+PX4 看到的仍然是连续控制流。Manual-control response 会带回当前可用的飞控状态字段，例如
+`altitude_m`、`groundspeed_mps`、`battery_percent` 和 controller state。
+当 MiniNDN launcher 自己启动 PX4 SITL 时，也会给 DroneAPP 传入
+`--configure-px4-sitl-demo-params`。DroneAPP 会通过 MAVLink `PARAM_SET`
+设置几个只服务于 demo 的参数，让 PX4 更能容忍 Targeted 手操控制流里的网络抖动：
+`COM_RC_LOSS_T=30`、`COM_FAIL_ACT_T=25`、`NAV_RCL_ACT=1`。手动启动 DroneAPP
+时默认不会启用这个选项，因此真实飞控仍然保留自己的安全策略，除非 operator 显式选择 SITL demo
+行为。
+
+基本操作顺序：
+
+1. 等 Drone 窗口显示 `ready for takeoff`。
+2. 点击 `Arm` 或按 `I`。Arm 的意思是解锁飞控，让飞控允许电机转动并接受飞行命令；只有准备起飞时才使用。
+3. 点击 `Takeoff` 或按 `T`。在 PX4/jMAVSim demo 中，这会让无人机起飞到较低的固定悬停高度。
+4. 点击 `Start Control` 后再按键手操。`R` 是上升，`F` 是下降；松开按键会发送 neutral control。
+5. 结束前点击 `Land` 或按 `L`。
+
+PX4/jMAVSim demo 里，`Takeoff` 当前会生成原始 MAVLink `MAV_CMD_NAV_TAKEOFF`，并使用适合默认
+SITL world 的绝对高度值。默认高度特意调得比较低，方便在模拟器视角里观察。后续 telemetry
+打通后，应把 operator 输入的相对起飞高度转换为当前 vehicle AMSL 高度，再生成 MAVLink command。
+
+点击 `Start Video`
 或在 control mode 下按 `v` 后，drone 窗口应该显示正在图传，ground-station 窗口应该能播放收到的
 live video packet stream。点击 `Stop Video` 或在 control mode 下按 `X` 后，drone 窗口应该回到
 `Video stopped`。
@@ -317,6 +352,10 @@ Drone 窗口会通过 launcher 写入的小状态文件显示 `Flight controller
 PX4/jMAVSim 输出会先经过过滤再写入 `jmavsim-<drone>.log`：重复的 `pxh>` prompt 会被丢弃，
 日志大小由 `NDNSF_UAV_JMAVSIM_LOG_MAX_BYTES` 限制（默认 8 MiB）。这样可以避免交互 demo
 期间终端 prompt 刷屏导致 VM 卡死。
+launcher 默认也会启用 DroneAPP 的 PX4 SITL demo 参数设置；如果想保持 PX4 原始 RC/手操
+failsafe 参数，可以加 `--no-configure-px4-sitl-demo-params`。
+`--enable-ndnsd` 目前只作为 NDNSD 实验入口保留；在完成 NDNSD runtime 兼容性修复前，
+launcher 仍然导出 `NDNSF_DISABLE_NDNSD=1`。
 
 脚本打印 `NDNSF_UAV_GUI_MININDN_READY` 后，就可以在 ground-station 窗口点击 `Start Video`
 和 `Stop Video`。日志会写到 `results/uav_gui_minindn/`。这个命令应该从图形桌面 session
@@ -361,6 +400,11 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --flight-controller-backend udp \
   --mavlink-udp-port 18570
 ```
+
+Drone app 也会绑定本地 MAVLink GCS 端口，默认是 `14550`，用于接收 PX4 侧的 command ACK 和
+telemetry。如果这个端口已经被其它 GCS 进程占用，可以用 `--mavlink-udp-listen-port` 覆盖。
+在交互式 MiniNDN 模式下，关闭 ground-station GUI 会让 launcher 自动退出并清理 PX4/jMAVSim，
+避免模拟器进程在后台继续占用 CPU。
 
 如果要做不需要人工操作的 PX4/jMAVSim smoke test：
 

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -376,13 +377,13 @@ buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& param
   else if (commandName == "takeoff") {
     command = 22; // MAV_CMD_NAV_TAKEOFF
     p[6] = fieldFloatOr(params, "altitude_m", 15.0F);
-    p[4] = fieldFloatOr(params, "latitude", 0.0F);
-    p[5] = fieldFloatOr(params, "longitude", 0.0F);
+    p[4] = fieldFloatOr(params, "latitude", std::numeric_limits<float>::quiet_NaN());
+    p[5] = fieldFloatOr(params, "longitude", std::numeric_limits<float>::quiet_NaN());
   }
   else if (commandName == "land") {
     command = 21; // MAV_CMD_NAV_LAND
-    p[4] = fieldFloatOr(params, "latitude", 0.0F);
-    p[5] = fieldFloatOr(params, "longitude", 0.0F);
+    p[4] = fieldFloatOr(params, "latitude", std::numeric_limits<float>::quiet_NaN());
+    p[5] = fieldFloatOr(params, "longitude", std::numeric_limits<float>::quiet_NaN());
   }
   else {
     return buildMockMavlinkFrame(commandName, params);
@@ -406,6 +407,31 @@ buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& param
 }
 
 } // namespace
+
+std::vector<uint8_t>
+buildMavlinkParamSetFrame(const std::string& paramName, float value,
+                          uint8_t paramType, const Fields& params)
+{
+  constexpr uint8_t paramSetMsgId = 23;
+  constexpr uint8_t paramSetCrcExtra = 168;
+
+  const auto targetSystem = fieldUint8Or(params, "target_system", 1);
+  const auto targetComponent = fieldUint8Or(params, "target_component", 1);
+  const auto sourceSystem = fieldUint8Or(params, "source_system", 255);
+  const auto sourceComponent = fieldUint8Or(params, "source_component", 190);
+
+  std::vector<uint8_t> payload;
+  payload.reserve(23);
+  appendFloatLe(payload, value);
+  payload.push_back(targetSystem);
+  payload.push_back(targetComponent);
+  for (size_t i = 0; i < 16; ++i) {
+    payload.push_back(i < paramName.size() ? static_cast<uint8_t>(paramName[i]) : 0);
+  }
+  payload.push_back(paramType);
+  return buildMavlinkV1Frame(paramSetMsgId, paramSetCrcExtra,
+                             sourceSystem, sourceComponent, std::move(payload));
+}
 
 std::vector<uint8_t>
 buildMockJpeg(const std::string& droneId, const std::string& frameId)
