@@ -1078,16 +1078,51 @@ private:
 class VideoPublisher
 {
 public:
+  struct CameraRuntimeOptions
+  {
+    bool captureOnStart = false;
+    bool recordToLocalRepo = false;
+    std::string recordRepoPath;
+    std::string recordObjectPrefix;
+    uint64_t recordChunkLimit = 0;
+  };
+
   VideoPublisher(ndn::Face& face, ndn::KeyChain& keyChain,
-                 UavRuntimeConfig config, std::string droneId, std::string videoPath)
+                 UavRuntimeConfig config, std::string droneId, std::string videoPath,
+                 CameraRuntimeOptions options)
     : m_face(face)
     , m_keyChain(keyChain)
     , m_config(std::move(config))
     , m_droneId(std::move(droneId))
     , m_videoPath(std::move(videoPath))
+    , m_cameraOptions(std::move(options))
   {
     m_videoPrefix = droneIdentity(m_config, m_droneId).append("video");
     m_streamPrefix = ndn::Name(m_videoPrefix).append(m_streamId);
+    if (m_cameraOptions.recordObjectPrefix.empty()) {
+      m_cameraOptions.recordObjectPrefix = droneIdentity(m_config, m_droneId)
+        .append("repo")
+        .append("camera")
+        .append("recording")
+        .toUri();
+    }
+    if (m_cameraOptions.recordToLocalRepo) {
+      ndnsf_distributed_repo::StorageCapability capability;
+      capability.repoNode = droneIdentity(m_config, m_droneId).append("local-repo").toUri();
+      capability.freeBytes = 4'000'000'000ULL;
+      capability.storageClasses = {"video", "camera-recording"};
+      if (m_cameraOptions.recordRepoPath.empty()) {
+        m_recordingRepo = std::make_unique<ndnsf_distributed_repo::RepoCore>(
+          capability);
+      }
+      else {
+        m_recordingRepo = std::make_unique<ndnsf_distributed_repo::RepoCore>(
+          capability,
+          ndnsf_distributed_repo::makeSqliteRepoStore(m_cameraOptions.recordRepoPath));
+      }
+      m_recordingSessionId = "record-" + std::to_string(nowMilliseconds());
+    }
+    m_captureEnabled = m_cameraOptions.captureOnStart || m_cameraOptions.recordToLocalRepo;
     m_captureThread = std::thread([this] { this->captureLoop(); });
   }
 
@@ -1101,6 +1136,7 @@ public:
   {
     m_done = true;
     m_streaming = false;
+    m_captureEnabled = false;
     if (m_captureThread.joinable()) {
       m_captureThread.join();
     }
@@ -1142,10 +1178,17 @@ public:
     m_fecCurrentFrameStartMs = 0;
     m_jpegBuffer.clear();
     m_streaming = true;
+    m_captureEnabled = true;
     const auto startSecond = nowMilliseconds() / 1000;
     return {
       {"status", "streaming"},
       {"drone_id", m_droneId},
+      {"capture", isCapturing() ? "on" : "off"},
+      {"recording", isRecording() ? "on" : "off"},
+      {"recording_session_id", m_recordingSessionId},
+      {"recording_object_prefix", m_cameraOptions.recordObjectPrefix},
+      {"recording_chunks", std::to_string(m_recordingChunks.load())},
+      {"recording_bytes", std::to_string(m_recordingBytes.load())},
       {"stream_id", m_streamId},
       {"stream_prefix", m_streamPrefix.toUri()},
       {"fps", std::to_string(m_targetFps)},
@@ -1178,6 +1221,9 @@ public:
     const auto streamPacketsPublished = m_nextSeq.load();
     const auto fecGroupsPublished = m_nextFecFrameSeq.load();
     m_streaming = false;
+    if (!m_cameraOptions.captureOnStart && !m_cameraOptions.recordToLocalRepo) {
+      m_captureEnabled = false;
+    }
     m_pending.clear();
     m_packets.clear();
     m_order.clear();
@@ -1189,6 +1235,12 @@ public:
     return {
       {"status", "stopped"},
       {"drone_id", m_droneId},
+      {"capture", isCapturing() ? "on" : "off"},
+      {"recording", isRecording() ? "on" : "off"},
+      {"recording_session_id", m_recordingSessionId},
+      {"recording_object_prefix", m_cameraOptions.recordObjectPrefix},
+      {"recording_chunks", std::to_string(m_recordingChunks.load())},
+      {"recording_bytes", std::to_string(m_recordingBytes.load())},
       {"stream_id", m_streamId},
       {"stream_packets_published", std::to_string(streamPacketsPublished)},
       {"fec_groups_published", std::to_string(fecGroupsPublished)},
@@ -1203,6 +1255,18 @@ public:
     return m_streaming.load();
   }
 
+  bool
+  isCapturing() const
+  {
+    return m_captureEnabled.load();
+  }
+
+  bool
+  isRecording() const
+  {
+    return m_cameraOptions.recordToLocalRepo && m_recordingRepo != nullptr;
+  }
+
   uint64_t
   streamPacketsPublished() const
   {
@@ -1213,6 +1277,24 @@ public:
   fecGroupsPublished() const
   {
     return m_nextFecFrameSeq.load();
+  }
+
+  uint64_t
+  recordingChunks() const
+  {
+    return m_recordingChunks.load();
+  }
+
+  uint64_t
+  recordingBytes() const
+  {
+    return m_recordingBytes.load();
+  }
+
+  std::string
+  recordingPrefix() const
+  {
+    return m_cameraOptions.recordObjectPrefix;
   }
 
   ndn::Name
@@ -1411,6 +1493,39 @@ private:
   }
 
   void
+  recordRawChunk(const uint8_t* data, size_t size, uint64_t captureMs)
+  {
+    if (!isRecording() || data == nullptr || size == 0) {
+      return;
+    }
+    if (m_cameraOptions.recordChunkLimit != 0 &&
+        m_recordingChunks.load() >= m_cameraOptions.recordChunkLimit) {
+      return;
+    }
+    const auto index = m_recordingChunks.fetch_add(1);
+    if (m_cameraOptions.recordChunkLimit != 0 && index >= m_cameraOptions.recordChunkLimit) {
+      return;
+    }
+
+    std::vector<uint8_t> payload(data, data + size);
+    const auto objectName = m_cameraOptions.recordObjectPrefix + "/" +
+      m_recordingSessionId + "/chunk/" + std::to_string(index);
+    try {
+      m_recordingRepo->put(objectName,
+                           payload,
+                           "video/h264-chunk",
+                           1,
+                           "capture_ms=" + std::to_string(captureMs),
+                           {droneIdentity(m_config, m_droneId).toUri()});
+      m_recordingBytes += static_cast<uint64_t>(payload.size());
+    }
+    catch (const std::exception& e) {
+      NDN_LOG_WARN("CAMERA_RECORD_CHUNK_FAILED object=" << objectName
+                   << " reason=" << e.what());
+    }
+  }
+
+  void
   publishCurrentFrame(uint64_t captureMs)
   {
     const auto dataShardCount = m_fecPendingChunks.size();
@@ -1509,12 +1624,13 @@ private:
     std::unique_ptr<FILE, decltype(&pclose)> pipe(nullptr, pclose);
     std::vector<uint8_t> chunkBuffer;
     while (!m_done.load()) {
-      if (!m_streaming.load()) {
+      if (!m_captureEnabled.load()) {
         pipe.reset();
         {
           std::lock_guard<std::mutex> guard(m_mutex);
           m_jpegBuffer.clear();
         }
+        chunkBuffer.clear();
         std::this_thread::sleep_for(50ms);
         continue;
       }
@@ -1554,12 +1670,19 @@ private:
         continue;
       }
 
+      const auto captureMs = nowMilliseconds();
+      recordRawChunk(buffer.data(), n, captureMs);
+      if (!m_streaming.load()) {
+        chunkBuffer.clear();
+        continue;
+      }
+
       chunkBuffer.insert(chunkBuffer.end(), buffer.begin(), buffer.begin() + n);
       while (chunkBuffer.size() >= MAX_VIDEO_PACKET_PAYLOAD) {
         const auto chunkSize = std::min(MAX_VIDEO_PACKET_PAYLOAD, chunkBuffer.size());
         std::vector<uint8_t> packetBytes(chunkBuffer.begin(), chunkBuffer.begin() + chunkSize);
         chunkBuffer.erase(chunkBuffer.begin(), chunkBuffer.begin() + chunkSize);
-        appendStreamChunk(std::move(packetBytes), nowMilliseconds());
+        appendStreamChunk(std::move(packetBytes), captureMs);
       }
       if (!m_fecPendingChunks.empty() &&
           m_fecCurrentFrameStartMs != 0 &&
@@ -1586,6 +1709,9 @@ private:
   UavRuntimeConfig m_config;
   std::string m_droneId;
   std::string m_videoPath;
+  CameraRuntimeOptions m_cameraOptions;
+  std::unique_ptr<ndnsf_distributed_repo::RepoCore> m_recordingRepo;
+  std::string m_recordingSessionId = "record-idle";
   mutable std::mutex m_mutex;
   std::mutex m_signMutex;
   ndn::Name m_videoPrefix;
@@ -1593,12 +1719,15 @@ private:
   std::string m_streamId = "idle";
   bool m_filterRegistered = false;
   std::atomic<bool> m_streaming{false};
+  std::atomic<bool> m_captureEnabled{false};
   std::atomic<bool> m_done{false};
   std::atomic<uint64_t> m_nextSeq{0};
   std::atomic<uint64_t> m_nextPacketSeq{0};
   std::atomic<uint64_t> m_nextFecFrameSeq{0};
   std::atomic<uint64_t> m_frameInterests{0};
   std::atomic<uint64_t> m_framePuts{0};
+  std::atomic<uint64_t> m_recordingChunks{0};
+  std::atomic<uint64_t> m_recordingBytes{0};
   std::atomic<uint64_t> m_targetFps{30};
   std::atomic<uint64_t> m_requestedBitrateKbps{8000};
   std::atomic<uint64_t> m_acceptedBitrateKbps{8000};
@@ -1627,7 +1756,8 @@ public:
                std::string mavlinkUdpHost, std::string mavlinkUdpPort,
                std::string mavlinkUdpListenPort, std::string mavlinkSerialDevice,
                std::string mavlinkSerialBaud,
-               bool configurePx4SitlDemoParams)
+               bool configurePx4SitlDemoParams,
+               VideoPublisher::CameraRuntimeOptions cameraOptions)
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_droneId(std::move(droneId))
@@ -1640,6 +1770,7 @@ public:
     , m_mavlinkSerialDevice(std::move(mavlinkSerialDevice))
     , m_mavlinkSerialBaud(std::move(mavlinkSerialBaud))
     , m_configurePx4SitlDemoParams(configurePx4SitlDemoParams)
+    , m_cameraOptions(std::move(cameraOptions))
   {
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
     m_providerCert = getOrCreateIdentity(m_keyChain, m_identity);
@@ -1671,7 +1802,7 @@ public:
             m_face, m_keyChain, m_providerCert.getName());
         }
         auto videoPublisher = std::make_unique<VideoPublisher>(
-          m_face, m_keyChain, m_config, m_droneId, m_videoPath);
+          m_face, m_keyChain, m_config, m_droneId, m_videoPath, m_cameraOptions);
         {
           std::lock_guard<std::mutex> guard(m_containerMutex);
           m_provider = std::move(provider);
@@ -1735,6 +1866,20 @@ public:
     return m_videoPublisher != nullptr && m_videoPublisher->isStreaming();
   }
 
+  bool
+  isCapturing() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    return m_videoPublisher != nullptr && m_videoPublisher->isCapturing();
+  }
+
+  bool
+  isRecording() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    return m_videoPublisher != nullptr && m_videoPublisher->isRecording();
+  }
+
   uint64_t
   streamPacketsPublished() const
   {
@@ -1747,6 +1892,20 @@ public:
   {
     std::lock_guard<std::mutex> guard(m_containerMutex);
     return m_videoPublisher != nullptr ? m_videoPublisher->fecGroupsPublished() : 0;
+  }
+
+  uint64_t
+  recordingChunks() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    return m_videoPublisher != nullptr ? m_videoPublisher->recordingChunks() : 0;
+  }
+
+  uint64_t
+  recordingBytes() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    return m_videoPublisher != nullptr ? m_videoPublisher->recordingBytes() : 0;
   }
 
   std::string
@@ -1799,6 +1958,9 @@ private:
         {"drone_id", m_droneId},
         {"backend", backend->description()},
         {"queue", "0"},
+        {"capture", isCapturing() ? "true" : "false"},
+        {"recording", isRecording() ? "true" : "false"},
+        {"recording_chunks", std::to_string(recordingChunks())},
         {"streaming", isStreaming() ? "true" : "false"},
       }));
       return decision;
@@ -1814,6 +1976,8 @@ private:
       decision.payload = bufferFromString(encodeFields({
         {"drone_id", m_droneId},
         {"backend", backend->description()},
+        {"capture", isCapturing() ? "true" : "false"},
+        {"recording", isRecording() ? "true" : "false"},
         {"mission_busy", busy ? "true" : "false"},
         {"queue", busy ? "1" : "0"},
         {"streaming", isStreaming() ? "true" : "false"},
@@ -1878,6 +2042,10 @@ private:
           telemetry.emplace("lon", "-89.9375");
           telemetry["mission_status"] = mission;
           telemetry["video"] = isStreaming() ? "streaming" : "stopped";
+          telemetry["capture"] = isCapturing() ? "on" : "off";
+          telemetry["recording"] = isRecording() ? "on" : "off";
+          telemetry["recording_chunks"] = std::to_string(recordingChunks());
+          telemetry["recording_bytes"] = std::to_string(recordingBytes());
           telemetry["timestamp_ms"] = std::to_string(nowMilliseconds());
           return makeResponse(true, encodeFields(telemetry));
         };
@@ -2103,6 +2271,7 @@ private:
   std::string m_mavlinkSerialDevice;
   std::string m_mavlinkSerialBaud;
   bool m_configurePx4SitlDemoParams = false;
+  VideoPublisher::CameraRuntimeOptions m_cameraOptions;
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
   ndn::security::Certificate m_providerCert;

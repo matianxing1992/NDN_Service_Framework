@@ -500,7 +500,7 @@ different paths:
 
 ```text
 Ground station -> /example/uav/drone/A/UAV/Camera/Video/start/<nonce>
-  Start the camera stream.
+  Start live downlink for this drone.
 
 Drone -> drone-owned frame Data names
   Publishes signed video packets:
@@ -511,7 +511,7 @@ Ground station -> frame Data names
   frame metadata, so names stay sequential even when frame sizes vary.
 
 Ground station -> /example/uav/drone/A/UAV/Camera/Video/stop/<nonce>
-  Drone stops capturing and serving new frames.
+  Drone stops the live downlink and serving new stream packets.
 ```
 
 The current GUI video control path uses NDNSF generic service invocation. The
@@ -520,6 +520,29 @@ service name; the provider prefix is part of the service name to make this
 camera-control service globally unique. High-rate video packets are still
 fetched as signed NDN Data under the drone namespace, so the generic
 request/response path carries control only, not the video byte stream.
+
+Camera capture, local recording, and live downlink are intentionally separate:
+
+```text
+camera capture
+  Drone-local camera acquisition. It may be enabled at DroneAPP startup.
+
+local recording
+  Drone-local storage of raw H264 chunks in an embedded NDNSF-DistributedRepo.
+  This is controlled by the drone config, not by the ground station's video
+  button.
+
+live streaming
+  Low-latency NDN Data publication requested by the ground station through the
+  provider-specific video-control service.
+```
+
+This means a drone can keep its camera running and record to its local repo even
+when no ground station is watching. Conversely, the ground station can request a
+temporary live downlink without changing the drone's recording policy. The
+drone video-control response reports the effective `capture`, `recording`,
+`recording_session_id`, `recording_object_prefix`, `recording_chunks`, and
+`recording_bytes` values.
 
 For real deployment, `UavDroneApp` reads a local camera device such as
 `/dev/video0` through `ffmpeg`/V4L2, encodes a low-latency H264 byte stream, and
@@ -566,10 +589,11 @@ The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
 H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
 
-When `Stop Video` is invoked, the drone stops the encoder loop, clears pending
+When `Stop Video` is invoked, the drone stops the live stream, clears pending
 Interests and cached stream packets, and ignores late frame Interests for the
-stopped stream. This prevents the GUI from stopping while the drone continues
-serving old cached packets.
+stopped stream. If the drone config enables `camera-capture-on-start` or
+`camera-record-to-local-repo`, the camera capture loop may continue running
+locally after the live stream stops.
 
 A later version can add a small per-stream SVS group for frame-name
 announcements, but it should remain separate from the main UAV control group so
@@ -683,6 +707,22 @@ nfd-start
 For file-based local debugging without a camera, pass a video file to
 `--video-source`; the MiniNDN launcher does this automatically only as a
 fallback after trying a real or virtual camera.
+
+Drone camera policy is configured on the drone side. To keep capture running
+from startup and persist raw H264 chunks to a local SQLite-backed embedded repo:
+
+```bash
+./build/examples/UavDroneApp \
+  --drone-id A \
+  --video-source /dev/video0 \
+  --camera-capture-on-start \
+  --camera-record-to-local-repo \
+  --camera-record-repo-path /var/lib/ndnsf-uav/drone-A-camera.sqlite3 \
+  --camera-record-object-prefix /muas/drone/A/repo/camera/recording
+```
+
+The default example `drone-A.conf`/`drone-B.conf` leaves recording disabled;
+set `camera-record-to-local-repo true` there for unattended deployments.
 
 Click `Arm`, `Takeoff`, or `Land` in the ground-station window to send Targeted
 MAVLink commands to the drone. For manual flight, click `Start Control` and

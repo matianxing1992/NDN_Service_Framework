@@ -15,11 +15,13 @@ public:
 
     m_title.set_markup("<b>Drone " + m_runtime.identityUri() + "</b>");
     m_status.set_text("Video stopped");
+    m_cameraState.set_text("Camera: capture off, recording off, streaming off");
     m_flightControllerStatus.set_text(initialFlightControllerStatus());
     m_frames.set_text("Stream packets: 0, FEC groups: 0");
 
     m_box.pack_start(m_title, Gtk::PACK_SHRINK);
     m_box.pack_start(m_status, Gtk::PACK_SHRINK);
+    m_box.pack_start(m_cameraState, Gtk::PACK_SHRINK);
     m_box.pack_start(m_flightControllerStatus, Gtk::PACK_SHRINK);
     m_box.pack_start(m_frames, Gtk::PACK_SHRINK);
     add(m_box);
@@ -38,7 +40,13 @@ public:
     });
     Glib::signal_timeout().connect([this] {
       m_frames.set_text("Stream packets: " + std::to_string(m_runtime.streamPacketsPublished()) +
-                        ", FEC groups: " + std::to_string(m_runtime.fecGroupsPublished()));
+                        ", FEC groups: " + std::to_string(m_runtime.fecGroupsPublished()) +
+                        ", recorded chunks: " + std::to_string(m_runtime.recordingChunks()));
+      m_cameraState.set_text(
+        std::string("Camera: capture ") + (m_runtime.isCapturing() ? "on" : "off") +
+        ", recording " + (m_runtime.isRecording() ? "on" : "off") +
+        ", streaming " + (m_runtime.isStreaming() ? "on" : "off") +
+        ", repo bytes " + std::to_string(m_runtime.recordingBytes()));
       m_flightControllerStatus.set_text(readFlightControllerStatus());
       if (!m_runtime.isStreaming()) {
         m_status.set_text("Video stopped");
@@ -76,6 +84,7 @@ private:
   Gtk::Box m_box;
   Gtk::Label m_title;
   Gtk::Label m_status;
+  Gtk::Label m_cameraState;
   Gtk::Label m_flightControllerStatus;
   Gtk::Label m_frames;
   Glib::Dispatcher m_dispatcher;
