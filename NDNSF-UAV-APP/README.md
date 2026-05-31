@@ -723,6 +723,18 @@ from startup and persist raw H264 chunks to a local SQLite-backed embedded repo:
 
 The default example `drone-A.conf`/`drone-B.conf` leaves recording disabled;
 set `camera-record-to-local-repo true` there for unattended deployments.
+When recording is enabled, the drone also exposes a provider-specific manifest
+service:
+
+```text
+/<drone>/UAV/Camera/Recording/Manifest
+```
+
+For example, `/example/uav/drone/A/UAV/Camera/Recording/Manifest` returns the
+current recording session id, object prefix, object naming pattern, chunk count,
+byte count, and first/last chunk object names. This lets GS or a post-mission
+report discover the local repo objects without guessing file paths or scanning
+the SQLite store.
 
 For a local recording smoke test that does not start the GUI or require GS
 interaction:
@@ -737,8 +749,8 @@ rm -f /tmp/ndnsf-uav-camera-record-smoke.sqlite3
   --camera-record-chunk-limit 3
 ```
 
-Success prints `DRONE_CAMERA_RECORD_SMOKE_OK` after raw H264 chunks have been
-stored in the local repo.
+Success prints `DRONE_CAMERA_RECORD_SMOKE_OK` with the last chunk object name
+after raw H264 chunks have been stored in the local repo.
 
 Click `Arm`, `Takeoff`, or `Land` in the ground-station window to send Targeted
 MAVLink commands to the drone. For manual flight, click `Start Control` and
