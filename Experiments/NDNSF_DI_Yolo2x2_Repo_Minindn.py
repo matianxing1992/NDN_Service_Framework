@@ -135,33 +135,62 @@ def main() -> None:
         (key_source / ".ndn").mkdir(parents=True, exist_ok=True)
         (key_source / ".ndn/client.conf").write_text("transport=unix:///run/nfd/csu.sock\n",
                                                      encoding="utf-8")
-        passphrase = "ndnsf-minindn"
+        root_identity = "/example/hello"
+        root_cert = OUT / "root.cert"
+        subprocess.run(
+            "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} > {}; "
+            "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                perf.shell_quote(key_source),
+                perf.shell_quote(key_source / ".ndn/client.conf"),
+                perf.shell_quote(root_identity),
+                perf.shell_quote(root_cert),
+                perf.shell_quote(key_source),
+                perf.shell_quote(key_source / ".ndn/client.conf"),
+                perf.shell_quote(root_cert),
+            ),
+            shell=True,
+            check=True,
+        )
+        certs = {}
         for host_name, identity in identities.items():
-            bag = OUT / f"{host_name}.safebag"
+            req = OUT / f"{host_name}.req"
+            cert = OUT / f"{host_name}.cert"
+            perf.node_cmd(
+                ndn.net[host_name],
+                "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -n -t r {} > {}".format(
+                    perf.shell_quote(homes[host_name]),
+                    perf.shell_quote(homes[host_name] / ".ndn/client.conf"),
+                    perf.shell_quote(identity),
+                    perf.shell_quote(req)))
             subprocess.run(
-                "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} >/dev/null 2>&1 || true; "
-                "HOME={} NDN_CLIENT_CONF={} ndnsec export -P {} -o {} -i {}".format(
+                "HOME={} NDN_CLIENT_CONF={} ndnsec cert-gen -s {} -i ROOT {} > {}".format(
                     perf.shell_quote(key_source),
                     perf.shell_quote(key_source / ".ndn/client.conf"),
-                    perf.shell_quote(identity),
-                    perf.shell_quote(key_source),
-                    perf.shell_quote(key_source / ".ndn/client.conf"),
-                    perf.shell_quote(passphrase),
-                    perf.shell_quote(bag),
-                    perf.shell_quote(identity),
-                ),
+                    perf.shell_quote(root_identity),
+                    perf.shell_quote(req),
+                    perf.shell_quote(cert)),
                 shell=True,
                 check=True,
             )
-            target_hosts = set(identities) if host_name == "csu" else {"csu", host_name}
-            for target_host in target_hosts:
+            certs[host_name] = cert
+
+        # Install the trust anchor and all public identity certificates
+        # everywhere. Private keys stay in the keychain of the node that
+        # generated each certificate request.
+        for target_host in identities:
+            perf.node_cmd(
+                ndn.net[target_host],
+                "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(homes[target_host]),
+                    perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
+                    perf.shell_quote(root_cert)))
+            for cert in certs.values():
                 perf.node_cmd(
                     ndn.net[target_host],
-                    "HOME={} NDN_CLIENT_CONF={} ndnsec import -P {} {} >/dev/null 2>&1 || true".format(
+                    "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
                         perf.shell_quote(homes[target_host]),
                         perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
-                        perf.shell_quote(passphrase),
-                        perf.shell_quote(bag)))
+                        perf.shell_quote(cert)))
 
         env = {
             **os.environ,
