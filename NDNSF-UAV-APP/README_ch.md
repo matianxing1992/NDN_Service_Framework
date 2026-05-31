@@ -631,6 +631,20 @@ chunks 保存到本地 SQLite-backed embedded repo：
 默认示例 `drone-A.conf` / `drone-B.conf` 仍然关闭 recording；真实无人值守部署时可以在
 每台 drone 自己的配置文件里设置 `camera-record-to-local-repo true`。
 
+如果只想验证本地 recording，不启动 GUI，也不需要 GS 交互，可以运行：
+
+```bash
+rm -f /tmp/ndnsf-uav-camera-record-smoke.sqlite3
+./build/examples/UavDroneApp \
+  --auto-camera-record-smoke \
+  --video-source NDNSF-UAV-APP/videos/drone.mp4 \
+  --camera-record-to-local-repo \
+  --camera-record-repo-path /tmp/ndnsf-uav-camera-record-smoke.sqlite3 \
+  --camera-record-chunk-limit 3
+```
+
+成功时会在原始 H264 chunks 写入本地 repo 后打印 `DRONE_CAMERA_RECORD_SMOKE_OK`。
+
 在 ground-station 窗口点击 `Arm`、`Takeoff` 或 `Land`，可以通过 Targeted MAVLink command
 控制目标 drone。如果要手操飞行，先点击 `Start Control`，然后在控制面板里选择 `Keyboard`
 或 `Xbox Gamepad`。如果本机没有可读的 `/dev/input/js*` 手柄设备，手柄选项会灰色不可选。
