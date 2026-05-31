@@ -1,9 +1,19 @@
 # NDNSF-UAV-APP
 
-`NDNSF-UAV-APP` is a C++ reference UAV network application built on NDNSF. It is
+`NDNSF-UAV-APP` is a C++ UAV Service Container Application built on NDNSF. It is
 kept beside `NDNSF-DistributedRepo` and `NDNSF-DistributedInference` because it
 is an application layer above the generic NDNSF runtime, not a low-level core
 example.
+
+The key idea is that one process can host multiple NDNSF service instances and
+client-side workflows. `UavDroneApp` is a drone-side container for services such
+as MAVLink execution, video control, telemetry, camera frames, and mission
+assignment. `UavGroundStationApp` is a ground-station container for control
+clients, video playback, mission coordination, telemetry display, and services
+that drones may call back into, such as object detection. The container process
+owns deployment concerns such as identity, trust schema, policy fetch, GUI, and
+local hardware adapters, while each named NDNSF service remains independently
+addressable and permission-controlled.
 
 ## Why This Application Exists
 
@@ -30,11 +40,16 @@ The first version demonstrates the main UAV workflow:
 - The ground station starts/stops video streaming through a provider-specific
   control service named under the target drone; the drone publishes frames
   under its own namespace, and the ground station fetches frames by name.
-- The ground station assigns a patrol/inspection mission with role-specific
-  waypoints.
-- The drone returns a mock image capture result and mock detection summary.
-- The ground station can provide `/UAV/GS/ObjectDetection` for future
-  drone-to-ground-station object detection requests.
+- The ground station assigns one patrol/inspection mission to multiple drones
+  by splitting the area into role-specific waypoint sectors.
+- The drone returns a mock image capture result and can ask the ground station
+  to run real low-rate object detection on the latest live video frame already
+  decoded at the ground station.
+- The ground station provides `/UAV/GS/ObjectDetection`; while live video is
+  enabled, the drone periodically asks this service whether its camera stream
+  contains `Car` or `Truck` and displays an alert in the Drone window. The
+  request payload is metadata only; image bytes are not stuffed into service
+  requests.
 - Multiple drones can advertise the same services; if one drone suppresses ACKs
   or is unavailable, NDNSF provider selection can choose another drone.
 
@@ -49,18 +64,245 @@ commands, as well as low-rate `MANUAL_CONTROL` updates from the keyboard, use
 request/response-only Targeted calls to `/UAV/MAVLink/Execute`, reducing command
 latency while still validating the provider and rejecting token replay.
 
-## Current Binaries
+## Service Containers
 
 ```text
 UavDroneApp
-  Drone-side provider for MAVLink execution, telemetry, camera frames, and
-  mission assignment.
+  Drone-side service container. It hosts MAVLink execution, telemetry, camera
+  frame, video-control, and mission-assignment service instances, plus local
+  adapters for the camera/video source and flight controller.
 
 UavGroundStationApp
-  Ground-station user for video, MAVLink command, and patrol workflows. With
-  --serve-object-detection, it becomes a ground-station object detection
-  provider.
+  Ground-station service container. It hosts NDNSF users for MAVLink command,
+  video, telemetry, and patrol workflows, plus the built-in
+  /UAV/GS/ObjectDetection provider that drones can call. The standalone
+  --serve-object-detection mode remains available for focused service tests.
 ```
+
+This container model is intentional: real UAV deployments need several related
+services to share the same identity, local GUI state, hardware adapters, and
+process lifecycle without merging their service names or permissions into one
+monolithic RPC endpoint.
+
+## Physical Deployment On One PC And Multiple Drones
+
+This section is for a private deployment where one PC acts as the ground station
+and controller, and each physical drone runs one DroneAPP instance. It does not
+require connecting to the public NDN Testbed.
+
+Recommended placement:
+
+```text
+PC / ground station:
+  NFD
+  App_ServiceController
+  UavGroundStationApp
+  optional /UAV/GS/ObjectDetection provider
+
+Each drone:
+  NFD
+  UavDroneApp
+  MAVLink connection to the flight controller
+  camera or video source
+```
+
+The binaries keep convenient defaults from `shared/UavNames.hpp`, including
+`/example/uav/controller`, `/example/uav/gs`, and
+`/example/uav/drone/<id>`, but deployment identities are not hardcoded into the
+application logic. For a real deployment, pass names on the command line and
+keep the policy file and trust schema consistent with those names:
+
+```text
+--group-prefix /example/uav/group
+--controller-prefix /example/uav/controller
+--ground-station-identity /example/uav/gs      # ground station only
+--drone-prefix /example/uav/drone              # drone identity = <prefix>/<id>
+--trust-schema /absolute/path/to/uav-trust.conf
+```
+
+If the deployment wants names such as `/ndn/ndnsf/uav-demo/...`, use those
+options instead of editing and rebuilding the app, and update
+`configs/uav_demo.policies` plus the deployment trust schema together.
+
+### Certificate Bootstrap
+
+If the operator has physical access to the PC and drones, NDNCERT is optional.
+Use the manual root-signed certificate flow from the top-level README: each node
+generates its private key locally, sends only the certificate request to the
+CA/root machine, and installs the returned certificate plus the root
+certificate.
+
+Minimal example with the current UAV namespace:
+
+```bash
+# On the PC / CA machine
+ndnsec key-gen -t r /example/uav > root.cert
+ndnsec cert-install -f root.cert
+
+# On drone A
+ndnsec key-gen -n -t r /example/uav/drone/A > drone-A.req
+
+# Back on the PC / CA machine
+ndnsec cert-gen -s /example/uav -i ROOT drone-A.req > drone-A.cert
+
+# Back on drone A
+ndnsec cert-install -f root.cert
+ndnsec cert-install -f drone-A.cert
+ndnsec-ls-identity -c
+```
+
+Repeat the request/sign/install steps for `/example/uav/gs`,
+`/example/uav/controller`, and every drone identity. Do not export/import a
+safebag in this flow; the private key should remain on the machine that owns
+the identity.
+
+### Production Trust Schema
+
+The example trust schemas use `type any` only for local examples and automated
+regressions. A physical deployment must replace that anchor with the actual
+deployment root certificate. Do not use `examples/trust-any.conf` for physical
+deployment.
+
+Copy `examples/trust-schema.conf` to a deployment-specific file and replace:
+
+```conf
+trust-anchor
+{
+  type any
+}
+```
+
+with an absolute path to the root certificate:
+
+```conf
+trust-anchor
+{
+  type file
+  file-name "/absolute/path/to/root.cert"
+}
+```
+
+All controller, ground-station, drone, repo, and provider certificates should
+be signed by this root or by a hierarchical child CA under the same namespace.
+
+### Network And NFD
+
+Every machine must run NFD, and the machines must have faces/routes that make
+these prefixes reachable:
+
+```text
+/example/uav
+/example/uav/controller
+/example/uav/gs
+/example/uav/drone/<id>
+```
+
+The exact face and routing setup depends on the deployment network. For a first
+private LAN test, configure static UDP faces between the PC and each drone and
+advertise the UAV namespace toward the PC/controller.
+
+### Deployment Preflight
+
+Before starting the containers on real machines, run the preflight checker. It
+does not change system state; it checks that NFD is reachable, the expected
+identity certificate is installed, the trust schema exists, and local adapters
+such as ffmpeg, YOLO, video source, and MAVLink UDP ports are plausible.
+
+On the PC / ground station:
+
+```bash
+python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
+  --role ground-station \
+  --identity /example/uav/gs \
+  --trust-schema /absolute/path/to/uav-trust.conf \
+  --yolo-model yolo26n.pt
+```
+
+On drone A:
+
+```bash
+python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
+  --role drone \
+  --identity /example/uav/drone/A \
+  --trust-schema /absolute/path/to/uav-trust.conf \
+  --video-source NDNSF-UAV-APP/videos/drone.mp4 \
+  --flight-controller-backend udp \
+  --mavlink-udp-host 127.0.0.1 \
+  --mavlink-udp-port 18570 \
+  --mavlink-udp-listen-port 14550
+```
+
+Warnings, such as `type any` in a trust schema, should be fixed before flight.
+Failures must be fixed before starting the service containers.
+
+### Start Order
+
+On the PC:
+
+```bash
+nfd-start
+
+./build/examples/App_ServiceController \
+  --controller-prefix /example/uav/controller \
+  --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
+
+./build/examples/UavGroundStationApp \
+  --target-drone A \
+  --patrol-drones A,B,C \
+  --video-bitrate-kbps 8000 \
+  --video-width 480 \
+  --group-prefix /example/uav/group \
+  --controller-prefix /example/uav/controller \
+  --ground-station-identity /example/uav/gs \
+  --drone-prefix /example/uav/drone \
+  --trust-schema /absolute/path/to/uav-trust.conf
+```
+
+In interactive ground-station mode, if `--ground-station-identity` is not
+provided, the app opens a small certificate picker before the NDNSF runtime is
+started. The picker lists identities already installed in the local ndn-cxx PIB.
+Choose the identity whose certificate is trusted by the deployment trust
+schema. Automated MiniNDN/smoke modes skip this dialog; pass
+`--no-cert-dialog` to skip it in manual runs.
+
+On drone A:
+
+```bash
+nfd-start
+
+./build/examples/UavDroneApp \
+  --drone-id A \
+  --video-source NDNSF-UAV-APP/videos/drone.mp4 \
+  --flight-controller-backend udp \
+  --mavlink-udp-host 127.0.0.1 \
+  --mavlink-udp-port 18570 \
+  --mavlink-udp-listen-port 14550 \
+  --group-prefix /example/uav/group \
+  --controller-prefix /example/uav/controller \
+  --drone-prefix /example/uav/drone \
+  --trust-schema /absolute/path/to/uav-trust.conf
+```
+
+Use the same command on other drones with unique `--drone-id` values and
+flight-controller connection settings.
+
+### Operator Workflow
+
+1. Start NFD and `App_ServiceController` on the PC.
+2. Start `UavDroneApp` on every drone and wait for the Drone window to report
+   ready.
+3. Start `UavGroundStationApp` on the PC.
+4. Select a target drone in the left vehicle list.
+5. Click `Arm`, then `Takeoff`.
+6. Click `Start Control` for keyboard manual control.
+7. Click `Start Video` to start the selected drone's video stream.
+8. Click `Land` before shutdown.
+
+Use the mock backend or SITL before a real flight controller. Do not enable
+SITL-only safety-parameter changes on a real flight controller unless the
+operator explicitly understands the effect. Mission assignment remains a shared
+NDNSF service selected by ACK metadata, while MAVLink control and telemetry for
+a specific drone use Targeted requests.
 
 ## Services
 
@@ -79,7 +321,14 @@ globally unique. Video control is provider-specific because the operator is
 starting or stopping one physical drone camera. Start and stop are both carried
 under `/example/uav/drone/A/UAV/Camera/Video`; the control action distinguishes
 start from stop. `/UAV/GS/ObjectDetection` is provided by the ground station for
-heavier compute on uploaded frames.
+heavier compute on the latest decoded live frame. The ObjectDetection request
+carries compact metadata such as frame id, drone id, and requested target
+classes. Large images, recorded clips, reports, and other big objects should be
+published as NDN segmented Data using the ndn-cxx segmenter/SegmentFetcher
+pattern, or stored through `NDNSF-DistributedRepo` under a publisher-owned
+name, then referenced by name in the service request. Keeping service requests
+small avoids turning NDNSF invocation payloads into an ad-hoc file-transfer
+channel.
 
 ## Patrol Task Compensation
 
@@ -170,9 +419,16 @@ camera-control service globally unique. High-rate video packets are still
 fetched as signed NDN Data under the drone namespace, so the generic
 request/response path carries control only, not the video byte stream.
 
-The current implementation loops `NDNSF-UAV-APP/videos/drone.mp4` through
-`ffmpeg`, encodes low-latency MJPEG frames, and splits each frame into NDN-sized
-video packets. This is not ordinary NDN segmentation of one object. Each Data
+For real deployment, `UavDroneApp` reads a local camera device such as
+`/dev/video0` through `ffmpeg`/V4L2, encodes a low-latency H264 byte stream, and
+splits that stream into NDN-sized video packets. The MiniNDN launcher follows
+the same shape: it first looks for an installed USB/V4L2 camera, and if none is
+available it uses `v4l2loopback` plus `ffmpeg` to turn
+`NDNSF-UAV-APP/videos/drone.mp4` into a virtual camera device. If neither a real
+nor virtual camera is available, the launcher logs that no camera is available
+and falls back to direct file input only for local troubleshooting. This keeps
+DroneAPP logic focused on camera capture and streaming, while the experiment
+script owns demo camera simulation. This is not ordinary NDN segmentation of one object. Each Data
 packet is an independent video packet named only by the stream start timestamp
 and a monotonically increasing `packetSeq`; it never mixes bytes from two
 different frames. The Data content begins with a compact metadata header
@@ -198,14 +454,14 @@ implementation can use the same name layout, waiting for key frames when needed
 and dropping stale delta frames until the next usable key frame.
 
 The ground station includes requested video bitrate and frame width in the same
-`/<drone>/UAV/Camera/Video` control service request. The drone uses the bitrate
-to choose its MJPEG encoder quality (`ffmpeg -q:v`) and clamps both bitrate and
-width to its supported range. The drone then returns the requested bitrate,
+`/<drone>/UAV/Camera/Video` control service request. The drone clamps both
+bitrate and width to its supported range and maps the accepted bitrate to an
+H264 CRF quality setting for `ffmpeg`. The drone then returns the requested bitrate,
 accepted bitrate, requested width, accepted width, FPS, encoder quality, and
 packet payload size. The ground station derives its prefetch window from those
 returned values and from the packet high-watermark carried in each packet.
 The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
-MJPEG stream. Raising bitrate improves JPEG quality and packet volume; raising
+H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
 
 When `Stop Video` is invoked, the drone stops the encoder loop, clears pending
@@ -241,9 +497,41 @@ The current ground-station window follows the same rough organization as a
 QGroundControl Fly View: a left vehicle list for multi-drone awareness, a center
 fly workspace for map/mission context and video, and a right inspector for
 telemetry, services, and command status. It is intentionally simpler than QGC:
-the map is still a lightweight mission placeholder, but the layout leaves room
-for QGC-like vehicle switching, video/map foreground switching, and mission
-tools.
+the map is still a lightweight OpenStreetMap tile plus text workspace rather
+than a full GIS map, but it starts centered on the ground station near the
+University of Memphis and draws labeled `GS`, drone, and mission waypoint markers.
+The map toolbar has zoom-in, zoom-out, `Center GS`, `Undo WP`, and `Clear WPs`
+buttons; dragging the map pans to nearby areas, and `Center GS` returns the
+view to the ground station. This mirrors the QGroundControl split between
+planning and flying at a smaller scale: click the map repeatedly to append
+`WP1`, `WP2`, and later mission waypoints, use undo/clear while planning, then
+upload and start the mission from the fly controls. Drone markers are updated
+from `/UAV/Telemetry/GetStatus`; with the
+UDP MAVLink backend, that telemetry is populated from the flight controller, so
+the marker tracks the same vehicle that ManualControl is commanding. The left
+vehicle list can switch the active target drone, while the telemetry poller
+rotates across the expected drone list so Drone A and Drone B can both remain
+visible on the map. When at least two explicit waypoints are present,
+`Upload Patrol Mission` clusters the route by the number of patrol drones. Each
+drone receives one compact waypoint cluster, the cluster is ordered into a short
+local route, and the final waypoint returns to that drone's departure position
+sampled from telemetry at mission-upload time. If telemetry is unavailable, the
+route falls back to the first waypoint in that cluster as the return point.
+Otherwise it falls back to the center latitude/longitude and side-length boxes
+and generates one adjacent patrol sector per drone.
+
+For offline demos, prepare a small Memphis tile cache before running MiniNDN:
+
+```bash
+python3 NDNSF-UAV-APP/tools/prepare_memphis_offline_map.py
+```
+
+The default cache is a 3x3 OpenStreetMap tile window around the University of
+Memphis at zoom levels 14, 15, and 16, stored under `NDNSF-UAV-APP/maps/osm/`.
+The ground-station GUI reads this offline cache first, then `/tmp`, and only
+then tries the network. The MiniNDN launcher also prefetches these levels on
+the host side when the tracked cache is missing, so the map zoom buttons still
+work after node network namespaces are isolated.
 
 The command path should remain identical: GUI actions build MAVLink bytes at the
 ground station, then send opaque MAVLink frames through NDNSF Targeted service
@@ -285,10 +573,14 @@ nfd-start
   --controller-prefix /example/uav/controller \
   --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
 
-./build/examples/UavDroneApp --drone-id A --video-source NDNSF-UAV-APP/videos/drone.mp4
+./build/examples/UavDroneApp --drone-id A --video-source /dev/video0
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480
 ```
+
+For file-based local debugging without a camera, pass a video file to
+`--video-source`; the MiniNDN launcher does this automatically only as a
+fallback after trying a real or virtual camera.
 
 Click `Arm`, `Takeoff`, or `Land` in the ground-station window to send Targeted
 MAVLink commands to the drone. For keyboard operation, click `Start Control`.
@@ -380,6 +672,7 @@ DRONE_STATUS drone=A video streaming
 GS_STATUS Video packet stream from /example/uav/drone/A/video/<stream-id>
 GS_DECODED_FRAMES count=30
 GS_STATUS Video stopped, packets=<stream-packets>, fec_groups=<fec-groups>
+DRONE_STATUS drone=A object detection frame=<n> objects=Car
 ```
 
 ## MiniNDN GUI Demo
@@ -409,6 +702,12 @@ In interactive mode, the launcher starts PX4 SITL with the jMAVSim GUI on the
 same MiniNDN node as DroneAPP by default, so the simulator window appears with
 the drone window and manual-control reactions are visible. Use
 `--no-start-jmavsim` to keep the mock flight-controller backend.
+Running the launcher without extra flags starts the two-drone interactive demo:
+Drone A runs on `ucla`, Drone B runs on `wustl`, and the ground station lists
+both vehicles for target switching. The launcher also prefetches the initial
+University of Memphis OpenStreetMap tile on the host before MiniNDN isolates
+node network namespaces if the offline cache is missing, so the map pane has a
+real tile immediately.
 DroneAPP starts as soon as the simulator process is launched; it does not block
 the GUI while PX4 finishes booting. The Drone window shows
 `Flight controller: starting`, `simulator connected`, and `ready for takeoff`
@@ -423,6 +722,85 @@ failsafe parameters untouched.
 `--enable-ndnsd` is currently reserved for NDNSD experiments; the launcher still
 exports `NDNSF_DISABLE_NDNSD=1` until the NDNSD runtime compatibility pass is
 done.
+Use `--multi-drone-gui` to start the patrol-drone set in an interactive GUI run
+and populate the ground-station vehicle list, for example with
+`--patrol-drone-ids A,B --patrol-drone-nodes ucla,wustl`.
+The ground-station window also has an `Upload Patrol Mission` button that runs
+the same cooperative patrol upload flow from the GUI. Use `+`/`-` to change
+zoom, drag the map to inspect nearby areas, and press `Center GS` to return to
+the ground station. Click the map repeatedly to append `WP1`, `WP2`, and later
+waypoints; `Undo WP` removes the last point, and `Clear WPs` resets the plan.
+If at least two map waypoints exist, the ground station clusters that route by
+the patrol-drone count and sends only each drone's resulting waypoint text in
+the NDNSF request payload. Each assigned route ends by returning to that
+drone's departure position sampled from telemetry at upload time. If no route is drawn, it uses the three patrol input
+boxes: center latitude, center longitude, and side length in meters, and
+generates one adjacent patrol sector per drone. Uploading a
+mission only installs waypoints in PX4. Pressing `Start Mission` now follows a
+QGroundControl-style phased sequence: arm all patrol drones, then send takeoff
+to all patrol drones, then start the uploaded mission on all patrol drones. A
+short stagger is kept inside each phase so the Targeted MAVLink path does not
+drop back-to-back requests. The start sequence uses only drones that
+successfully accepted the current mission upload; drones with missing or timed
+out uploads are skipped so an old PX4 mission cannot be started by accident.
+`Stop Patrol` sends `land` to the patrol drones.
+
+For a one-drone mission-upload smoke test, useful before starting a heavier
+single PX4/jMAVSim instance:
+
+```bash
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-single-mission-test \
+  --no-start-jmavsim --no-cli --no-xhost
+```
+
+To exercise the same path against one simulator, remove `--no-start-jmavsim`
+and use `--flight-controller-backend udp`. This starts only one DroneAPP and one
+simulator, then sends a small rectangular mission to the target drone.
+The launcher sets PX4/jMAVSim home to the same University of Memphis position
+used by the ground-station map by default:
+`--sim-home-lat 35.1186 --sim-home-lon -89.9375 --sim-home-alt 100`. This
+matters because jMAVSim's upstream default home is near Zurich; if the simulator
+keeps that default, PX4 rejects Memphis waypoints as millions of meters away, so
+the vehicle can take off but will not enter the uploaded mission.
+The validated single-simulator command is:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-single-mission-test \
+  --auto-single-mission-start-test \
+  --flight-controller-backend udp \
+  --start-jmavsim --jmavsim-headless --no-cli
+```
+
+A successful run prints `NDNSF_UAV_SINGLE_MISSION_MININDN_SMOKE_OK`; the ground
+station log should show `mission_transport=mavlink-mission-upload` and
+`mission_ack=accepted`, while the drone log should show `UDP_FC_MISSION_COUNT`,
+four `UDP_FC_MISSION_REQUEST` / `UDP_FC_MISSION_ITEM_SENT` pairs for the
+default rectangle, `UDP_FC_MISSION_ACK ... result=accepted`, and
+`UDP_FC_COMMAND_ACK ... command=start_mission result=accepted`.
+
+For the non-interactive two-drone cooperative patrol smoke test:
+
+```bash
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-patrol-test \
+  --patrol-drone-ids A,B \
+  --patrol-drone-nodes ucla,wustl \
+  --no-start-jmavsim --no-cli --no-xhost
+```
+
+The ground station clusters drawn waypoints by the patrol-drone count, or
+generates one adjacent patrol sector per drone when no route is drawn. It
+assigns those parts through `/UAV/Mission/Assign`, appends a telemetry-based
+return-to-departure waypoint to each drone's route, and sends a compensation request if a part is
+missing. With the UDP MAVLink backend, DroneAPP now tries the standard
+MAVLink mission upload handshake (`MISSION_COUNT`, `MISSION_REQUEST(_INT)`,
+`MISSION_ITEM_INT`, `MISSION_ACK`). With the mock backend, the deterministic
+smoke path still reports command-long waypoint forwarding. Drone responses
+report `mission_transport`, `mission_ack`, `waypoints_forwarded`,
+`waypoint_acks_accepted`, and `last_waypoint_ack`, so field tests can tell
+whether the simulator/flight controller accepted the mission.
 
 After the script prints `NDNSF_UAV_GUI_MININDN_READY`, use the ground-station
 window to click `Start Video` and `Stop Video`. Logs are written under
@@ -440,7 +818,14 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 ```
 
 The smoke test exits after checking that the ground station decoded video
-frames and that the drone entered and left streaming mode.
+frames and that the drone entered and left streaming mode. In the integrated
+runtime, the ground station also serves `/UAV/GS/ObjectDetection`; during live
+video the drone periodically calls it and logs `Car`/`Truck` detections. The
+default detector uses the long-lived `tools/yolo_detect_worker.py` with
+`yolo26n.pt`, so the model is loaded once and reused across low-rate requests.
+Override it with `--yolo-model` and `--yolo-worker-script` when deploying a
+different local model or worker. `--yolo-script` remains as the one-shot
+fallback helper. CPU inference is intentionally low-rate, currently about 1 Hz.
 
 For a non-interactive Targeted MAVLink smoke test:
 
@@ -488,6 +873,30 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --auto-manual-control-test --no-cli
 ```
 
+For the two-drone jMAVSim path, the launcher starts PX4 with explicit
+instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
+`make px4_sitl jmavsim` target twice. Drone A uses PX4 MAVLink UDP port
+`18570` and simulator TCP port `4560`; Drone B uses `18571` and `4561`.
+
+To smoke-test switching manual control between two drones:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-two-drone-switch-test --multi-drone-gui \
+  --flight-controller-backend udp \
+  --start-jmavsim --jmavsim-headless --no-cli
+```
+
+To smoke-test cooperative patrol mission upload with two PX4/jMAVSim
+instances:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-patrol-test --multi-drone-gui \
+  --flight-controller-backend udp \
+  --start-jmavsim --jmavsim-headless --no-cli
+```
+
 The launcher keeps MiniNDN node homes under `/tmp/minindn/<node>`, so it
 preserves the current Python package path for PX4 build helpers such as
 `kconfiglib`. It also passes `CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5` by
@@ -525,24 +934,23 @@ another drone that provides the same service.
 
 ## Future Versions
 
-1. Add a real MAVLink UDP backend for ArduPilot SITL / PX4 SITL while keeping
-   `MockFlightControllerBackend` for deterministic tests.
-2. Add keyboard and gamepad control modes at the ground station. These modes
-   still build MAVLink bytes at the ground station and send opaque frames
-   through NDNSF.
-3. Add an optional per-stream small SVS group for frame-name announcements and
-   wider prefetch windows.
-4. Tune H264/H265 GOP, bitrate, chunk sizing, and keyframe recovery for lossy
-   wireless links while keeping immediate playback semantics.
-5. Add a wxWidgets or refined gtkmm ground-station GUI for mission planning, telemetry, video
-   preview, keyboard/gamepad control, and detection overlays.
-6. Let drones call `/UAV/GS/ObjectDetection` with captured frames and consume
-   detection results during mission execution.
-7. Add multi-drone patrol planning with dynamic task reassignment,
-   battery-aware role selection, and coverage reports.
-8. Store mission images, telemetry logs, and reports through
+1. Replace the current OpenStreetMap tile image plus marker overlay with a
+   full map widget, cached/offline tiles, click-to-add waypoints, and richer
+   multi-drone marker layers.
+2. Extend the current waypoint-sector patrol demo into a complete mission
+   editor: polygon drawing, automatic partitioning, compensation requests for
+   missing parts, battery-aware reassignment, and coverage reports.
+3. Harden the MAVLink UDP mission upload path against PX4/ArduPilot edge cases:
+   clear/replace existing missions, mission-current behavior, retry windows,
+   mission progress telemetry, and operator-visible failure reasons.
+4. Add gamepad control at the ground station. Keyboard/manual modes already
+   build MAVLink bytes at the ground station and send opaque frames through
+   NDNSF Targeted calls.
+5. Tune H264/H265 GOP, bitrate, chunk sizing, FEC, and keyframe recovery for
+   lossy wireless links while keeping immediate playback semantics.
+6. Store mission images, telemetry logs, and reports through
    `NDNSF-DistributedRepo`, using publisher-owned data names and signed
    segments.
-9. Connect selected image/object-detection workflows to
+7. Connect selected image/object-detection workflows to
    `NDNSF-DistributedInference` when model execution is split across ground
    stations and drones.
