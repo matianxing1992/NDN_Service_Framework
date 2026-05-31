@@ -222,28 +222,33 @@ def node_cmd(node, command):
 def initialize_keychains(nodes, controller, output_dir):
     security_dir = output_dir / "security"
     security_dir.mkdir(parents=True, exist_ok=True)
-    identities = [
-        "/example/hello/controller",
-        "/example/hello/provider",
-        "/example/hello/provider/A",
-        "/example/hello/provider/B",
-        "/example/hello/provider/C",
-        "/example/hello/user",
-    ]
+    identity_owners = {
+        "/example/hello/controller": "memphis",
+        "/example/hello/user": "memphis",
+        "/example/hello/provider": "ucla",
+        "/example/hello/provider/A": "ucla",
+        "/example/hello/provider/B": "wustl",
+        "/example/hello/provider/C": "uiuc",
+    }
+    nodes_by_name = {node.name: node for node in nodes}
     for node in nodes:
-        for identity in identities:
+        for identity in ["/example/hello"] + list(identity_owners):
             node_cmd(node, f"ndnsec delete {perf.shell_quote(identity)} >/dev/null 2>&1 || true")
-    exported = []
-    for index, identity in enumerate(identities):
+    root_cert = security_dir / "root.cert"
+    node_cmd(controller, f"ndnsec key-gen -t r /example/hello > {perf.shell_quote(root_cert)}")
+    node_cmd(controller, f"ndnsec cert-install -f {perf.shell_quote(root_cert)} >/dev/null 2>&1 || true")
+    certs = []
+    for index, (identity, owner_name) in enumerate(identity_owners.items()):
+        owner = nodes_by_name[owner_name]
         cert = security_dir / f"identity-{index}.cert"
-        key = security_dir / f"identity-{index}.ndnkey"
-        node_cmd(controller, f"ndnsec key-gen -t r {perf.shell_quote(identity)} > {perf.shell_quote(cert)}")
-        node_cmd(controller, f"ndnsec cert-install -f {perf.shell_quote(cert)} >/dev/null 2>&1 || true")
-        node_cmd(controller, f"ndnsec-export -P 123456 -o {perf.shell_quote(key)} -i {perf.shell_quote(identity)}")
-        exported.append(key)
+        req = security_dir / f"identity-{index}.req"
+        node_cmd(owner, f"ndnsec key-gen -n -t r {perf.shell_quote(identity)} > {perf.shell_quote(req)}")
+        node_cmd(controller, f"ndnsec cert-gen -s /example/hello -i ROOT {perf.shell_quote(req)} > {perf.shell_quote(cert)}")
+        certs.append(cert)
     for node in nodes:
-        for key in exported:
-            node_cmd(node, f"ndnsec import -P 123456 {perf.shell_quote(key)} >/dev/null 2>&1 || true")
+        node_cmd(node, f"ndnsec cert-install -f {perf.shell_quote(root_cert)} >/dev/null 2>&1 || true")
+        for cert in certs:
+            node_cmd(node, f"ndnsec cert-install -f {perf.shell_quote(cert)} >/dev/null 2>&1 || true")
 
 
 def configure_ndn_multicast(nodes):
