@@ -197,8 +197,8 @@ user.RequestServiceTargeted<MavlinkCommand, MavlinkResult>(
   timeoutMs);
 ```
 
-`RequestServiceDirect(...)` 和 `addDirectService(...)` 保留为兼容别名，但新代码
-应使用语义更准确的 `Targeted` 术语。
+已知 provider 的低延迟调用只使用 `Targeted` API 名称。旧的 Direct API 名称
+不再作为兼容别名保留。
 
 Targeted invocation 的安全模型：
 
@@ -217,6 +217,32 @@ Targeted invocation 的安全模型：
 这样已知 provider 的控制命令仍然可以低延迟执行，同时不丢失 provider
 authorization 和 replay resistance。缓存 token pool 用完后，下一次
 `RequestServiceTargeted(...)` 会自动重新走 bootstrap/refill 流程。
+
+对于同一个进程内部的可信服务组合，NDNSF 也提供 `LocalServiceRegistry`。
+这不是一种网络调用模式，远程 caller 看不到也不能选择它。只有 container 显式把某个
+service 注册到 local registry 后，这个 service 才能被 local call；未注册时 local call
+默认失败。Local invocation 会绕过 NDNSF 签名、NAC-ABE、permission fetch、SVS 发布以及
+token/replay 检查，所以只能用于同一个可信进程或 service container 内部：
+
+```cpp
+ndn_service_framework::LocalServiceRegistry localRegistry;
+
+localRegistry.registerLocalService<TelemetryRequest, TelemetryStatus>(
+  ndn::Name("/UAV/Telemetry/GetStatus"),
+  telemetryHandler);
+
+auto result = localRegistry.localInvoke<TelemetryRequest, TelemetryStatus>(
+  ndn::Name("/UAV/Telemetry/GetStatus"),
+  request);
+
+auto future = localRegistry.localInvokeAsync<TelemetryRequest, TelemetryStatus>(
+  ndn::Name("/UAV/Telemetry/GetStatus"),
+  request);
+```
+
+跨进程、跨节点或不可信 caller 仍然必须使用普通 `RequestService(...)` 或
+`RequestServiceTargeted(...)`。Local invocation 不会增加 `/NDNSF/LOCAL/...` 名字，
+也不能被远程节点通过 request 指定。
 
 `RequestT` 和 `ResponseT` 只需要提供类似 protobuf 的方法：
 

@@ -212,8 +212,8 @@ user.RequestServiceTargeted<MavlinkCommand, MavlinkResult>(
   timeoutMs);
 ```
 
-`RequestServiceDirect(...)` and `addDirectService(...)` remain compatibility
-aliases, but new code should use the more precise `Targeted` terminology.
+Known-provider low-latency calls use only the `Targeted` API names. The old
+Direct API names are intentionally not kept as compatibility aliases.
 
 Security model for Targeted invocation:
 
@@ -233,6 +233,34 @@ This keeps known-provider commands low-latency without losing provider
 authorization or replay resistance. When the cached token pool is exhausted,
 the next `RequestServiceTargeted(...)` call automatically uses the bootstrap
 flow again.
+
+For trusted composition inside one process, NDNSF also provides
+`LocalServiceRegistry`. This is not a network invocation mode and is not
+visible to remote callers. A service becomes local-callable only when the
+container explicitly registers it in the local registry; otherwise local calls
+fail closed. Local invocation bypasses NDNSF signing, NAC-ABE, permission
+fetching, SVS publication, and token/replay checks, so it should only be used
+inside one trusted process or service container:
+
+```cpp
+ndn_service_framework::LocalServiceRegistry localRegistry;
+
+localRegistry.registerLocalService<TelemetryRequest, TelemetryStatus>(
+  ndn::Name("/UAV/Telemetry/GetStatus"),
+  telemetryHandler);
+
+auto result = localRegistry.localInvoke<TelemetryRequest, TelemetryStatus>(
+  ndn::Name("/UAV/Telemetry/GetStatus"),
+  request);
+
+auto future = localRegistry.localInvokeAsync<TelemetryRequest, TelemetryStatus>(
+  ndn::Name("/UAV/Telemetry/GetStatus"),
+  request);
+```
+
+Use normal `RequestService(...)` or `RequestServiceTargeted(...)` for any
+cross-process, cross-node, or untrusted caller. Local invocation does not add
+`/NDNSF/LOCAL/...` names and cannot be requested by a remote node.
 
 `RequestT` and `ResponseT` only need protobuf-like methods:
 

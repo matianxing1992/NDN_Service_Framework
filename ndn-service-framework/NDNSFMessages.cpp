@@ -4,6 +4,29 @@ namespace ndn_service_framework {
 
 RequestMessage::RequestMessage() {}
 
+RequestMessage::RequestMessage(const RequestMessage& other)
+{
+    *this = other;
+}
+
+RequestMessage&
+RequestMessage::operator=(const RequestMessage& other)
+{
+    if (this != &other) {
+        tokens_ = other.tokens_;
+        userToken_ = other.userToken_;
+        providerToken_ = other.providerToken_;
+        payload_ = other.payload_;
+        payloadSize_ = other.payloadSize_;
+        strategy_ = other.strategy_;
+        requestMode_ = other.requestMode_;
+        targetProvider_ = other.targetProvider_;
+        policyEpoch_ = other.policyEpoch_;
+        m_wire = ndn::Block();
+    }
+    return *this;
+}
+
 void RequestMessage::setTokens(const std::map<std::string, std::string>& tokens) {
     tokens_ = tokens;
 }
@@ -88,7 +111,7 @@ void RequestMessage::Clear() {
 
 ndn::Block RequestMessage::WireEncode() const {
     if (m_wire.hasWire()) {
-        m_wire.reset();
+        m_wire = ndn::Block();
     }
     ndn::Block block(tlv::RequestMessageType);
     for (const auto& token : tokens_) {
@@ -167,6 +190,27 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
 
 ResponseMessage::ResponseMessage() {}
 
+ResponseMessage::ResponseMessage(const ResponseMessage& other)
+{
+    *this = other;
+}
+
+ResponseMessage&
+ResponseMessage::operator=(const ResponseMessage& other)
+{
+    if (this != &other) {
+        status_ = other.status_;
+        errorInfo_ = other.errorInfo_;
+        tokens_ = other.tokens_;
+        userToken_ = other.userToken_;
+        payload_ = other.payload_;
+        payloadSize_ = other.payloadSize_;
+        policyEpoch_ = other.policyEpoch_;
+        m_wire = ndn::Block();
+    }
+    return *this;
+}
+
 void ResponseMessage::setStatus(bool status) {
     status_ = status;
 }
@@ -233,7 +277,7 @@ void ResponseMessage::Clear() {
 
 ndn::Block ResponseMessage::WireEncode() const {
     if (m_wire.hasWire()) {
-        m_wire.reset();
+        m_wire = ndn::Block();
     }
     ndn::Block block(tlv::ResponseMessageType);
     // 编码 status
@@ -294,6 +338,27 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
 }
 
 RequestAckMessage::RequestAckMessage() {}
+
+RequestAckMessage::RequestAckMessage(const RequestAckMessage& other)
+{
+    *this = other;
+}
+
+RequestAckMessage&
+RequestAckMessage::operator=(const RequestAckMessage& other)
+{
+    if (this != &other) {
+        status_ = other.status_;
+        message_ = other.message_;
+        userToken_ = other.userToken_;
+        providerToken_ = other.providerToken_;
+        payload_ = other.payload_;
+        payloadSize_ = other.payloadSize_;
+        policyEpoch_ = other.policyEpoch_;
+        m_wire.reset();
+    }
+    return *this;
+}
 
 void RequestAckMessage::setStatus(bool status) {
     status_ = status;
@@ -419,6 +484,24 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
 }
 
 ServiceSelectionMessage::ServiceSelectionMessage() {}
+
+ServiceSelectionMessage::ServiceSelectionMessage(const ServiceSelectionMessage& other)
+{
+    *this = other;
+}
+
+ServiceSelectionMessage&
+ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
+{
+    if (this != &other) {
+        requestIDs_ = other.requestIDs_;
+        providerToken_ = other.providerToken_;
+        assignmentPayload_ = other.assignmentPayload_;
+        policyEpoch_ = other.policyEpoch_;
+        m_wire.reset();
+    }
+    return *this;
+}
 
 void ServiceSelectionMessage::setRequestIDs(const std::vector<std::string>& requestIDs) {
     requestIDs_ = requestIDs;

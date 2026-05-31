@@ -378,7 +378,7 @@ main(int argc, char** argv)
       std::make_shared<std::deque<std::chrono::steady_clock::time_point>>();
     auto completionTimesMutex = std::make_shared<std::mutex>();
 
-    provider.RegisterService(
+    provider.addService(
       ndn::Name("/HELLO"),
       ndn_service_framework::ServiceProvider::AckStrategyHandler(
         [providerLabel, ackStatus, ackMessage, ackPayloadText, performanceMode, perfLogGate,

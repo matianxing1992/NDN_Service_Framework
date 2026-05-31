@@ -6,6 +6,10 @@
 
 #include "ndn-service-framework/ServiceUser.hpp"
 
+namespace ndn_service_framework {
+class LocalServiceRegistry;
+}
+
 namespace ndnsf_distributed_repo {
 
 class RepoNode;
@@ -38,6 +42,75 @@ public:
 
   static bool remove(RepoNode& node,
                      const std::string& objectName);
+
+  /**
+   * Store a large object as object-level chunks named
+   * <objectName>/seg/<index>, then store a manifest-only parent object.
+   *
+   * Repo storage is opaque: the repo does not perform APP trust, signature, or
+   * hash verification while storing. Use getSegmented() on the APP side to
+   * reassemble and verify size/hash against the returned manifest.
+   */
+  static RepoObjectManifest putSegmented(
+    RepoNode& node,
+    const std::string& objectName,
+    const std::vector<uint8_t>& payload,
+    StoreOptions options = {},
+    size_t maxSegmentPayload = 6000);
+
+  /**
+   * Fetch chunks described by manifest, reassemble them, and verify APP-side
+   * size/hash metadata. Throws std::runtime_error on mismatch.
+   */
+  static std::vector<uint8_t> getSegmented(
+    const RepoNode& node,
+    const RepoObjectManifest& manifest);
+
+  static RepoObjectManifest localPut(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    const std::vector<uint8_t>& payload,
+    StoreOptions options = {});
+
+  static std::vector<uint8_t> localGet(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+
+  static RepoObjectManifest localGetManifest(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+
+  static std::vector<RepoObjectManifest> localList(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+
+  static bool localRemove(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+
+  /**
+   * Same as putSegmented(), but invokes a repo registered in the same trusted
+   * LocalServiceRegistry instead of using NDNSF network messages.
+   */
+  static RepoObjectManifest localPutSegmented(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    const std::vector<uint8_t>& payload,
+    StoreOptions options = {},
+    size_t maxSegmentPayload = 6000);
+
+  /**
+   * Same as getSegmented(), but fetches chunks from the local registry.
+   */
+  static std::vector<uint8_t> localGetSegmented(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest);
 
   static RepoObjectManifest makeManifest(std::string objectName,
                                          std::string objectType,

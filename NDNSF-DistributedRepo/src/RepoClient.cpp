@@ -1,9 +1,78 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 
+#include "ndn-service-framework/LocalServiceRegistry.hpp"
+
+#include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
+
+namespace {
+
+std::vector<uint8_t>
+payloadBytes(const ndn_service_framework::ResponseMessage& response)
+{
+  const auto payload = response.getPayload();
+  return std::vector<uint8_t>(payload.begin(), payload.end());
+}
+
+std::vector<uint8_t>
+localRequest(ndn_service_framework::LocalServiceRegistry& registry,
+             const ndn::Name& repoServicePrefix,
+             const std::string& operation,
+             const std::vector<uint8_t>& payload)
+{
+  auto response = registry.localInvokeRaw(
+    makeRepoServiceName(repoServicePrefix, operation),
+    RepoClient::makeRequest(payload));
+  if (!response.getStatus()) {
+    throw std::runtime_error("local repo " + operation + " failed: " +
+                             response.getErrorInfo());
+  }
+  return payloadBytes(response);
+}
+
+std::string
+segmentObjectName(const std::string& objectName, size_t segmentIndex)
+{
+  return objectName + "/seg/" + std::to_string(segmentIndex);
+}
+
+RepoObjectManifest
+makeParentManifest(const std::string& objectName,
+                   const std::vector<uint8_t>& payload,
+                   const StoreOptions& options,
+                   size_t segmentCount)
+{
+  RepoObjectManifest manifest;
+  manifest.objectName = objectName;
+  manifest.objectType = options.objectType;
+  manifest.sha256 = sha256Hex(payload);
+  manifest.size = payload.size();
+  manifest.segmentCount = static_cast<uint32_t>(segmentCount);
+  manifest.replicationFactor = options.replicationFactor;
+  manifest.replicaNodes = options.replicaNodes;
+  manifest.policyEpoch = options.policyEpoch;
+  return manifest;
+}
+
+void
+verifySegmentedPayload(const RepoObjectManifest& manifest,
+                       const std::vector<uint8_t>& payload)
+{
+  if (payload.size() != manifest.size) {
+    throw std::runtime_error("segmented repo object size mismatch: " +
+                             manifest.objectName);
+  }
+  if (!manifest.sha256.empty() && sha256Hex(payload) != manifest.sha256) {
+    throw std::runtime_error("segmented repo object sha256 mismatch: " +
+                             manifest.objectName);
+  }
+}
+
+} // namespace
 
 RepoObjectManifest
 RepoClient::put(RepoNode& node,
@@ -41,6 +110,158 @@ bool
 RepoClient::remove(RepoNode& node, const std::string& objectName)
 {
   return node.remove(objectName);
+}
+
+RepoObjectManifest
+RepoClient::putSegmented(RepoNode& node,
+                         const std::string& objectName,
+                         const std::vector<uint8_t>& payload,
+                         StoreOptions options,
+                         size_t maxSegmentPayload)
+{
+  maxSegmentPayload = std::max<size_t>(1, maxSegmentPayload);
+  if (payload.size() <= maxSegmentPayload) {
+    return put(node, objectName, payload, std::move(options));
+  }
+
+  const size_t segmentCount =
+    (payload.size() + maxSegmentPayload - 1) / maxSegmentPayload;
+  StoreOptions segmentOptions = options;
+  segmentOptions.objectType = options.objectType + ".segment";
+  for (size_t i = 0; i < segmentCount; ++i) {
+    const auto start = i * maxSegmentPayload;
+    const auto end = std::min(payload.size(), start + maxSegmentPayload);
+    const std::vector<uint8_t> segmentPayload(payload.begin() + start,
+                                              payload.begin() + end);
+    put(node, segmentObjectName(objectName, i), segmentPayload, segmentOptions);
+  }
+
+  auto manifest = makeParentManifest(objectName, payload, options, segmentCount);
+  return node.core().putManifest(manifest);
+}
+
+std::vector<uint8_t>
+RepoClient::getSegmented(const RepoNode& node, const RepoObjectManifest& manifest)
+{
+  if (manifest.segmentCount <= 1) {
+    auto payload = get(node, manifest.objectName);
+    verifySegmentedPayload(manifest, payload);
+    return payload;
+  }
+
+  std::vector<uint8_t> payload;
+  payload.reserve(static_cast<size_t>(manifest.size));
+  for (uint32_t i = 0; i < manifest.segmentCount; ++i) {
+    auto segment = get(node, segmentObjectName(manifest.objectName, i));
+    payload.insert(payload.end(), segment.begin(), segment.end());
+  }
+  verifySegmentedPayload(manifest, payload);
+  return payload;
+}
+
+RepoObjectManifest
+RepoClient::localPut(ndn_service_framework::LocalServiceRegistry& registry,
+                     const ndn::Name& repoServicePrefix,
+                     const std::string& objectName,
+                     const std::vector<uint8_t>& payload,
+                     StoreOptions options)
+{
+  auto manifest = makeManifest(objectName,
+                               options.objectType,
+                               payload,
+                               options.replicationFactor,
+                               std::move(options.replicaNodes),
+                               std::move(options.policyEpoch));
+  return parseManifestJson(toString(localRequest(
+    registry, repoServicePrefix, "STORE", encodeStoreRequest(manifest, payload))));
+}
+
+std::vector<uint8_t>
+RepoClient::localGet(ndn_service_framework::LocalServiceRegistry& registry,
+                     const ndn::Name& repoServicePrefix,
+                     const std::string& objectName)
+{
+  return localRequest(registry, repoServicePrefix, "FETCH", toBytes(objectName));
+}
+
+RepoObjectManifest
+RepoClient::localGetManifest(ndn_service_framework::LocalServiceRegistry& registry,
+                             const ndn::Name& repoServicePrefix,
+                             const std::string& objectName)
+{
+  return parseManifestJson(toString(localRequest(
+    registry, repoServicePrefix, "MANIFEST", toBytes(objectName))));
+}
+
+std::vector<RepoObjectManifest>
+RepoClient::localList(ndn_service_framework::LocalServiceRegistry& registry,
+                      const ndn::Name& repoServicePrefix)
+{
+  return parseInventoryJson(toString(localRequest(
+    registry, repoServicePrefix, "INVENTORY", {})));
+}
+
+bool
+RepoClient::localRemove(ndn_service_framework::LocalServiceRegistry& registry,
+                        const ndn::Name& repoServicePrefix,
+                        const std::string& objectName)
+{
+  return toString(localRequest(registry, repoServicePrefix, "DELETE",
+                               toBytes(objectName))) == "deleted";
+}
+
+RepoObjectManifest
+RepoClient::localPutSegmented(ndn_service_framework::LocalServiceRegistry& registry,
+                              const ndn::Name& repoServicePrefix,
+                              const std::string& objectName,
+                              const std::vector<uint8_t>& payload,
+                              StoreOptions options,
+                              size_t maxSegmentPayload)
+{
+  maxSegmentPayload = std::max<size_t>(1, maxSegmentPayload);
+  if (payload.size() <= maxSegmentPayload) {
+    return localPut(registry, repoServicePrefix, objectName, payload,
+                    std::move(options));
+  }
+
+  const size_t segmentCount =
+    (payload.size() + maxSegmentPayload - 1) / maxSegmentPayload;
+  StoreOptions segmentOptions = options;
+  segmentOptions.objectType = options.objectType + ".segment";
+  for (size_t i = 0; i < segmentCount; ++i) {
+    const auto start = i * maxSegmentPayload;
+    const auto end = std::min(payload.size(), start + maxSegmentPayload);
+    const std::vector<uint8_t> segmentPayload(payload.begin() + start,
+                                              payload.begin() + end);
+    localPut(registry, repoServicePrefix, segmentObjectName(objectName, i),
+             segmentPayload, segmentOptions);
+  }
+
+  auto manifest = makeParentManifest(objectName, payload, options, segmentCount);
+  return parseManifestJson(toString(localRequest(
+    registry, repoServicePrefix, "STORE_MANIFEST", encodeManifestRequest(manifest))));
+}
+
+std::vector<uint8_t>
+RepoClient::localGetSegmented(ndn_service_framework::LocalServiceRegistry& registry,
+                              const ndn::Name& repoServicePrefix,
+                              const RepoObjectManifest& manifest)
+{
+  if (manifest.segmentCount <= 1) {
+    auto payload = localGet(registry, repoServicePrefix, manifest.objectName);
+    verifySegmentedPayload(manifest, payload);
+    return payload;
+  }
+
+  std::vector<uint8_t> payload;
+  payload.reserve(static_cast<size_t>(manifest.size));
+  for (uint32_t i = 0; i < manifest.segmentCount; ++i) {
+    auto segment = localGet(registry, repoServicePrefix,
+                            segmentObjectName(manifest.objectName, i));
+    payload.insert(payload.end(), segment.begin(), segment.end());
+  }
+  verifySegmentedPayload(manifest, payload);
+  return payload;
 }
 
 RepoObjectManifest

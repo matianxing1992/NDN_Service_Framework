@@ -76,7 +76,6 @@ namespace tlv {
         // intended provider.
         TargetedRequest = 1,
         TargetedBootstrapRequest = 2,
-        DirectRequest = TargetedRequest,
     };
 
     enum {
@@ -97,6 +96,8 @@ public:
 class RequestMessage : public AbstractMessage {
 public:
     RequestMessage();
+    RequestMessage(const RequestMessage& other);
+    RequestMessage& operator=(const RequestMessage& other);
 
     void setTokens(const std::map<std::string, std::string>& tokens);
     void setUserToken(const std::string& userToken);
@@ -136,6 +137,8 @@ private:
 class ResponseMessage : public AbstractMessage {
 public:
     ResponseMessage();
+    ResponseMessage(const ResponseMessage& other);
+    ResponseMessage& operator=(const ResponseMessage& other);
 
     void setStatus(bool status);
     void setErrorInfo(const std::string& errorInfo);
@@ -155,7 +158,7 @@ public:
     bool WireDecode(const ndn::Block& block) override;
 
 private:
-    bool status_;
+    bool status_ = false;
     std::string errorInfo_;
     std::map<std::string, std::string> tokens_;
     std::string userToken_;
@@ -168,6 +171,8 @@ private:
 class RequestAckMessage : public AbstractMessage {
 public:
     RequestAckMessage();
+    RequestAckMessage(const RequestAckMessage& other);
+    RequestAckMessage& operator=(const RequestAckMessage& other);
 
     void setStatus(bool status);
     void setMessage(const std::string& message);
@@ -187,7 +192,7 @@ public:
     bool WireDecode(const ndn::Block& block) override;
 
 private:
-    bool status_;
+    bool status_ = false;
     std::string message_;
     std::string userToken_;
     std::string providerToken_;
@@ -200,6 +205,8 @@ private:
 class ServiceSelectionMessage : public AbstractMessage {
 public:
     ServiceSelectionMessage();
+    ServiceSelectionMessage(const ServiceSelectionMessage& other);
+    ServiceSelectionMessage& operator=(const ServiceSelectionMessage& other);
 
     void setRequestIDs(const std::vector<std::string>& requestIDs);
     void setProviderToken(const std::string& providerToken);

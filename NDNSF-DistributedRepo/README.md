@@ -12,9 +12,10 @@ as both a reusable C++ API and an NDNSF service layer:
 - `PlacementPolicy`: controlled replication requirements.
 - `selectReplicas`: deterministic placement over candidate storage nodes.
 - `InMemoryRepoStore`: a local smoke-test store used by examples.
+- `RepoCore`: reusable in-process storage logic with no dependency on NDNSF
+  networking.
 - `RepoNode`: a repo node that can register NDNSF services on a
-  `ServiceProvider`, plus local `put/get/list/remove` helpers for C++ apps and
-  tests.
+  `ServiceProvider` and delegates storage operations to `RepoCore`.
 - `RepoClient`: high-level `put/get/list/remove` helpers, plus lower-level
   request helpers for applications that need direct `ServiceUser` control.
 - `py_repoclient`: a Python binding for the reusable repo client/protocol API.
@@ -25,29 +26,32 @@ The service name is application-configurable. By default, all repo nodes share:
 /NDNSF/DistributedRepo
 ```
 
-The operation is carried in the request payload, not in the service name. Current
-operations include:
+The C++ repo node exposes operation-specific services under this prefix, for
+example `/NDNSF/DistributedRepo/STORE` and `/NDNSF/DistributedRepo/FETCH`.
+Current C++ operations include:
 
 ```text
 CAPABILITY
 STORE
-STORE_FROM_NDN
 STORE_MANIFEST
 FETCH
-FETCH_PREPARE
 MANIFEST
 INVENTORY
 DELETE
 ```
 
+Python/NDNSF-DI helpers may also use higher-level operations such as
+`STORE_FROM_NDN` and `FETCH_PREPARE` for app-owned segmented Data packets.
+
 Objects are described by `RepoObjectManifest`, which contains object name,
 object type, SHA-256, size, segment count, replication factor, selected replica
-nodes, and policy epoch. Large object transfer uses ndn-cxx Segmenter and
-SegmentFetcher directly through the NDNSF Python binding, while placement and
-replica selection use NDNSF service discovery and ACK metadata. This keeps the
-repo generic: the payload may be a model shard, runner, ONNX file, PyTorch
-artifact, activation tensor, payment-workflow record, telemetry log, JSON
-configuration, or any other NDNSF application object.
+nodes, and policy epoch. Large object transfer can use app-owned ndn-cxx
+Segmenter/SegmentFetcher Data packets, or the C++ `RepoClient` object-level
+segmented helpers. Placement and replica selection use NDNSF service discovery
+and ACK metadata. This keeps the repo generic: the payload may be a model
+shard, runner, ONNX file, PyTorch artifact, activation tensor,
+payment-workflow record, telemetry log, JSON configuration, or any other NDNSF
+application object.
 
 The recommended Python-facing generic object API hides most NDNSF setup
 details. In a running deployment, repo nodes can preload the deployment config
@@ -175,6 +179,131 @@ auto objects = RepoClient::list(node);
 RepoClient::remove(node, manifest.objectName);
 ```
 
+For larger payloads, use the segmented C++ helper. It stores each chunk as a
+separate repo object named `<object>/seg/<N>` and stores a manifest-only parent
+object. The repo stores opaque bytes and does not perform APP trust, signature,
+or hash validation while storing; applications verify the manifest/hash after
+fetching.
+
+```cpp
+auto manifest = RepoClient::putSegmented(
+  node,
+  "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/model/yolo-stage0",
+  payload,
+  options,
+  6000);
+auto verifiedPayload = RepoClient::getSegmented(node, manifest);
+```
+
+## C++ Standalone Repo Node
+
+`DistributedRepoNodeApp` runs the same `RepoNode` adapter as a standalone NDNSF
+provider. It is configured with a small key/value file:
+
+```bash
+./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
+  --config NDNSF-DistributedRepo/configs/repo-node.conf
+```
+
+The default example config sets:
+
+```text
+service-prefix /NDNSF/DistributedRepo
+identity /example/repo/repo/A
+controller-prefix /example/repo/controller
+repo-node /example/repo/repo/A
+deployment-mode remote
+```
+
+`deployment-mode remote` is the normal standalone mode. The app also accepts
+`embedded` and `both` so the same config vocabulary can be shared with service
+containers, but local invocation is only useful to code running in the same
+trusted process.
+
+For build and config validation without starting NFD or a controller:
+
+```bash
+./build/NDNSF-DistributedRepo/DistributedRepoNodeApp \
+  --config NDNSF-DistributedRepo/configs/repo-node.conf \
+  --deployment-mode embedded \
+  --dry-run \
+  --local-smoke
+```
+
+## Embedded Repo Plan
+
+NDNSF-DistributedRepo is being organized so the same repo implementation can run
+either as a standalone repo application or as an embedded service inside another
+trusted NDNSF service container.
+
+The intended layering is:
+
+```text
+RepoCore
+  pure storage logic: put/get/manifest/list/delete/capability
+
+RepoNode
+  NDNSF service adapter: registers STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE
+  on a ServiceProvider and delegates every operation to RepoCore
+
+Repo app or embedding container
+  chooses whether to expose RepoNode remotely, register local services, or both
+```
+
+Current first step: `RepoCore` owns the object store, manifest validation, and
+capacity accounting. `RepoNode` keeps the existing public API and standalone
+service registration behavior, but now delegates storage work to `RepoCore`.
+`RepoNode::registerLocalServices(LocalServiceRegistry&)` exposes the same
+STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE handlers for trusted
+in-process invocation.
+`RepoDeploymentMode` selects which exposure path to enable:
+
+```cpp
+RepoNode node(servicePrefix, capability);
+LocalServiceRegistry localRegistry;
+
+node.registerDeploymentServices(
+  nullptr,
+  &localRegistry,
+  RepoDeploymentMode::Embedded);
+```
+
+Embedded callers should use the local `RepoClient` helpers instead of hand
+building repo service names or raw `RequestMessage` objects:
+
+```cpp
+StoreOptions options;
+options.objectType = "model";
+options.replicationFactor = 1;
+options.replicaNodes = {"/repo/embedded"};
+
+auto manifest = RepoClient::localPut(
+  localRegistry,
+  servicePrefix,
+  "/app/user/NDNSF-DISTRIBUTED-REPO/OBJECT/model/yolo-stage0",
+  payload,
+  options);
+auto payloadAgain = RepoClient::localGet(
+  localRegistry,
+  servicePrefix,
+  manifest.objectName);
+```
+
+Supported mode strings are `remote`, `embedded`, and `both`. Empty config keeps
+the default `remote` behavior for existing standalone repo deployments.
+
+Next steps:
+
+1. Let higher-level applications such as NDNSF-UAV-APP and
+   NDNSF-DistributedInference load this deployment mode from their service
+   container config and wire the embedded registry into their own components.
+2. Keep remote callers on the normal NDNSF service path with permissions,
+   signatures, NAC-ABE, and token/replay protection.
+
+Local invocation is only an optimization for trusted same-process composition.
+It must not become a wire-protocol mode and must not let remote callers bypass
+NDNSF access control.
+
 AI-specific helpers such as `store_artifact(...)` belong in
 NDNSF-DistributedInference. NDNSF-DistributedRepo only stores opaque named
 objects.
@@ -199,6 +328,24 @@ and payload bytes, and the `payload_size` column is used to compute remaining
 capacity. Each repo node also maintains an in-memory LRU cache for recently
 stored or recently fetched objects. The cache is an optimization only; SQLite
 is the source of truth.
+
+The C++ repo library exposes the same choice through `RepoStoreBackend`.
+`RepoCore` defaults to an in-memory store for tests and embedded ephemeral use,
+while `makeSqliteRepoStore(path)` gives a persistent backend:
+
+```cpp
+RepoCore core(capability, makeSqliteRepoStore("/var/lib/ndnsf/repo/repo.sqlite3"));
+```
+
+`DistributedRepoNodeApp` reads this from config:
+
+```text
+storage-backend sqlite
+storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
+```
+
+Objects written through the SQLite backend remain fetchable after the repo app
+or embedding process restarts.
 
 This implementation stores reassembled object payloads. A future lower-level
 optimization can store the wire encoding of received `ndn::Data` segments and

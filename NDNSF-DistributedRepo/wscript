@@ -24,6 +24,7 @@ def _install_py_repoclient(bld):
 def build(bld):
     repo_sources = [
         'src/RepoClient.cpp',
+        'src/RepoCore.cpp',
         'src/RepoNode.cpp',
         'src/RepoProtocol.cpp',
         'src/RepoTypes.cpp',
@@ -33,14 +34,22 @@ def build(bld):
               target='ndnsf-distributed-repo',
               source=repo_sources,
               includes=['include', '..'],
-              use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL',
+              use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
               install_path=None)
 
     bld.program(name='DistributedRepoSmoke',
                 target='DistributedRepoSmoke',
                 source=['examples/DistributedRepoSmoke.cpp'],
                 includes=['include', '..'],
-                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL',
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
+                install_path=None)
+
+    bld.program(name='DistributedRepoNodeApp',
+                target='DistributedRepoNodeApp',
+                source=['apps/DistributedRepoNodeApp.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
     bld.add_post_fun(_install_py_repoclient)

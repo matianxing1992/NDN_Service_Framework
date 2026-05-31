@@ -2796,39 +2796,6 @@ namespace ndn_service_framework
         return requestId;
     }
 
-    ndn::Name ServiceUser::RequestServiceDirect(const ndn::Name& provider,
-                                      const ndn::Name& serviceName,
-                                      ndn_service_framework::RequestMessage requestMessage,
-                                      int timeoutMs,
-                                      TimeoutHandler onTimeout,
-                                      ResponseHandler onResponseHandler)
-    {
-        return RequestServiceTargeted(provider,
-                                      serviceName,
-                                      std::move(requestMessage),
-                                      timeoutMs,
-                                      std::move(onTimeout),
-                                      std::move(onResponseHandler));
-    }
-
-    ndn::Name ServiceUser::RequestService(const std::vector<ndn::Name>& providers,
-                                      const ndn::Name& serviceName,
-                                      const ndn::Name& functionName,
-                                      ndn_service_framework::RequestMessage requestMessage,
-                                      int timeoutMs,
-                                      TimeoutHandler onTimeout,
-                                      ResponseHandler onResponseHandler,
-                                      size_t strategy)
-    {
-        return RequestService(providers,
-                          makeUnifiedServiceName(serviceName, functionName),
-                          std::move(requestMessage),
-                          timeoutMs,
-                          std::move(onTimeout),
-                          std::move(onResponseHandler),
-                          strategy);
-    }
-
     ndn::Name ServiceUser::RequestService(const ndn::Name& serviceName,
                                       ndn_service_framework::RequestMessage requestMessage,
                                       int timeoutMs,
