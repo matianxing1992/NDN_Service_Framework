@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -13,20 +14,144 @@
 
 namespace ndnsf::examples::uav {
 
+namespace {
+
+std::string
+trimConfigText(std::string text)
+{
+  const auto first = text.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return "";
+  }
+  const auto last = text.find_last_not_of(" \t\r\n");
+  return text.substr(first, last - first + 1);
+}
+
+void
+assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::string& value)
+{
+  if (key == "group-prefix") {
+    config.groupPrefix = ndn::Name(value);
+  }
+  else if (key == "controller-prefix") {
+    config.controllerPrefix = ndn::Name(value);
+  }
+  else if (key == "ground-station-identity") {
+    config.groundStationIdentity = ndn::Name(value);
+  }
+  else if (key == "drone-prefix") {
+    config.droneIdentityPrefix = ndn::Name(value);
+  }
+  else if (key == "trust-schema") {
+    config.trustSchema = value;
+  }
+  else if (key == "service-mavlink-execute") {
+    config.serviceMavlinkExecute = ndn::Name(value);
+  }
+  else if (key == "service-mission-assign") {
+    config.serviceMissionAssign = ndn::Name(value);
+  }
+  else if (key == "service-telemetry-status") {
+    config.serviceTelemetryStatus = ndn::Name(value);
+  }
+  else if (key == "service-camera-frame") {
+    config.serviceCameraFrame = ndn::Name(value);
+  }
+  else if (key == "service-camera-video-control-suffix") {
+    config.serviceCameraVideoControlSuffix = ndn::Name(value);
+  }
+  else if (key == "service-gs-object-detection") {
+    config.serviceGsObjectDetection = ndn::Name(value);
+  }
+}
+
+} // namespace
+
+Fields
+loadKeyValueConfig(const std::string& path)
+{
+  Fields fields;
+  if (path.empty()) {
+    return fields;
+  }
+
+  std::ifstream input(path);
+  if (!input) {
+    throw std::runtime_error("cannot open UAV config: " + path);
+  }
+
+  std::string line;
+  while (std::getline(input, line)) {
+    const auto comment = line.find('#');
+    if (comment != std::string::npos) {
+      line.resize(comment);
+    }
+    line = trimConfigText(line);
+    if (line.empty()) {
+      continue;
+    }
+
+    std::string key;
+    std::string value;
+    const auto equal = line.find('=');
+    if (equal != std::string::npos) {
+      key = trimConfigText(line.substr(0, equal));
+      value = trimConfigText(line.substr(equal + 1));
+    }
+    else {
+      std::istringstream is(line);
+      is >> key;
+      std::getline(is, value);
+      value = trimConfigText(value);
+    }
+    if (!key.empty() && !value.empty()) {
+      fields[key] = value;
+    }
+  }
+  return fields;
+}
+
+UavRuntimeConfig
+loadUavRuntimeConfig(const std::string& path)
+{
+  UavRuntimeConfig config;
+  if (path.empty()) {
+    return config;
+  }
+
+  for (const auto& [key, value] : loadKeyValueConfig(path)) {
+    assignConfigValue(config, key, value);
+  }
+
+  return config;
+}
+
 ndn::Name
 droneIdentity(const std::string& droneId)
 {
+  return droneIdentity(UavRuntimeConfig{}, droneId);
+}
+
+ndn::Name
+droneIdentity(const UavRuntimeConfig& config, const std::string& droneId)
+{
   if (droneId.empty()) {
-    return DRONE_IDENTITY_PREFIX;
+    return config.droneIdentityPrefix;
   }
-  return ndn::Name(DRONE_IDENTITY_PREFIX).append(droneId);
+  return ndn::Name(config.droneIdentityPrefix).append(droneId);
 }
 
 ndn::Name
 droneVideoControlService(const std::string& droneId)
 {
-  ndn::Name service = droneIdentity(droneId);
-  for (const auto& component : SERVICE_CAMERA_VIDEO_CONTROL_SUFFIX) {
+  return droneVideoControlService(UavRuntimeConfig{}, droneId);
+}
+
+ndn::Name
+droneVideoControlService(const UavRuntimeConfig& config, const std::string& droneId)
+{
+  ndn::Name service = droneIdentity(config, droneId);
+  for (const auto& component : config.serviceCameraVideoControlSuffix) {
     service.append(component);
   }
   return service;
@@ -248,6 +373,21 @@ appendInt16Le(std::vector<uint8_t>& out, int16_t value)
   appendUint16Le(out, static_cast<uint16_t>(value));
 }
 
+void
+appendUint32Le(std::vector<uint8_t>& out, uint32_t value)
+{
+  out.push_back(static_cast<uint8_t>(value & 0xff));
+  out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+  out.push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+  out.push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+}
+
+void
+appendInt32Le(std::vector<uint8_t>& out, int32_t value)
+{
+  appendUint32Le(out, static_cast<uint32_t>(value));
+}
+
 float
 fieldFloatOr(const Fields& fields, const std::string& key, float fallback)
 {
@@ -374,6 +514,11 @@ buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& param
     command = 400;
     p[0] = 0.0F;
   }
+  else if (commandName == "emergency_stop") {
+    command = 400; // MAV_CMD_COMPONENT_ARM_DISARM, force disarm magic.
+    p[0] = 0.0F;
+    p[1] = fieldFloatOr(params, "force_code", 21196.0F);
+  }
   else if (commandName == "takeoff") {
     command = 22; // MAV_CMD_NAV_TAKEOFF
     p[6] = fieldFloatOr(params, "altitude_m", 15.0F);
@@ -384,6 +529,18 @@ buildMavlinkCommandLongFrame(const std::string& commandName, const Fields& param
     command = 21; // MAV_CMD_NAV_LAND
     p[4] = fieldFloatOr(params, "latitude", std::numeric_limits<float>::quiet_NaN());
     p[5] = fieldFloatOr(params, "longitude", std::numeric_limits<float>::quiet_NaN());
+  }
+  else if (commandName == "start_mission") {
+    command = 300; // MAV_CMD_MISSION_START
+    p[0] = fieldFloatOr(params, "first_item", 0.0F);
+    p[1] = fieldFloatOr(params, "last_item", 0.0F);
+  }
+  else if (commandName == "goto" || commandName == "waypoint") {
+    command = 16; // MAV_CMD_NAV_WAYPOINT
+    p[0] = fieldFloatOr(params, "hold_time_s", 0.0F);
+    p[4] = fieldFloatOr(params, "latitude", std::numeric_limits<float>::quiet_NaN());
+    p[5] = fieldFloatOr(params, "longitude", std::numeric_limits<float>::quiet_NaN());
+    p[6] = fieldFloatOr(params, "altitude_m", 15.0F);
   }
   else {
     return buildMockMavlinkFrame(commandName, params);
@@ -430,6 +587,81 @@ buildMavlinkParamSetFrame(const std::string& paramName, float value,
   }
   payload.push_back(paramType);
   return buildMavlinkV1Frame(paramSetMsgId, paramSetCrcExtra,
+                             sourceSystem, sourceComponent, std::move(payload));
+}
+
+std::vector<uint8_t>
+buildMavlinkHeartbeatFrame(const Fields& params)
+{
+  constexpr uint8_t heartbeatMsgId = 0;
+  constexpr uint8_t heartbeatCrcExtra = 50;
+  const auto sourceSystem = fieldUint8Or(params, "source_system", 255);
+  const auto sourceComponent = fieldUint8Or(params, "source_component", 190);
+  const auto mavTypeGcs = fieldUint8Or(params, "type", 6);
+  const auto autopilotInvalid = fieldUint8Or(params, "autopilot", 8);
+
+  std::vector<uint8_t> payload;
+  payload.reserve(9);
+  appendUint32Le(payload, 0); // custom_mode
+  payload.push_back(mavTypeGcs);
+  payload.push_back(autopilotInvalid);
+  payload.push_back(0); // base_mode
+  payload.push_back(0); // system_status
+  payload.push_back(3); // mavlink_version
+  return buildMavlinkV1Frame(heartbeatMsgId, heartbeatCrcExtra,
+                             sourceSystem, sourceComponent, std::move(payload));
+}
+
+std::vector<uint8_t>
+buildMavlinkMissionCountFrame(uint16_t count, const Fields& params)
+{
+  constexpr uint8_t missionCountMsgId = 44;
+  constexpr uint8_t missionCountCrcExtra = 221;
+  const auto targetSystem = fieldUint8Or(params, "target_system", 1);
+  const auto targetComponent = fieldUint8Or(params, "target_component", 1);
+  const auto sourceSystem = fieldUint8Or(params, "source_system", 255);
+  const auto sourceComponent = fieldUint8Or(params, "source_component", 190);
+
+  std::vector<uint8_t> payload;
+  payload.reserve(4);
+  appendUint16Le(payload, count);
+  payload.push_back(targetSystem);
+  payload.push_back(targetComponent);
+  return buildMavlinkV1Frame(missionCountMsgId, missionCountCrcExtra,
+                             sourceSystem, sourceComponent, std::move(payload));
+}
+
+std::vector<uint8_t>
+buildMavlinkMissionItemIntFrame(uint16_t seq, double latitude, double longitude,
+                                float altitudeM, bool current,
+                                const Fields& params)
+{
+  constexpr uint8_t missionItemIntMsgId = 73;
+  constexpr uint8_t missionItemIntCrcExtra = 38;
+  const auto targetSystem = fieldUint8Or(params, "target_system", 1);
+  const auto targetComponent = fieldUint8Or(params, "target_component", 1);
+  const auto sourceSystem = fieldUint8Or(params, "source_system", 255);
+  const auto sourceComponent = fieldUint8Or(params, "source_component", 190);
+  constexpr uint16_t mavCmdNavWaypoint = 16;
+  constexpr uint8_t mavFrameGlobalRelativeAltInt = 6;
+
+  std::vector<uint8_t> payload;
+  payload.reserve(37);
+  appendFloatLe(payload, fieldFloatOr(params, "hold_time_s", 0.0F));
+  appendFloatLe(payload, fieldFloatOr(params, "acceptance_radius_m", 2.0F));
+  appendFloatLe(payload, fieldFloatOr(params, "pass_radius_m", 0.0F));
+  appendFloatLe(payload, fieldFloatOr(params, "yaw_deg", std::numeric_limits<float>::quiet_NaN()));
+  appendInt32Le(payload, static_cast<int32_t>(std::llround(latitude * 10000000.0)));
+  appendInt32Le(payload, static_cast<int32_t>(std::llround(longitude * 10000000.0)));
+  appendFloatLe(payload, altitudeM);
+  appendUint16Le(payload, seq);
+  appendUint16Le(payload, mavCmdNavWaypoint);
+  payload.push_back(targetSystem);
+  payload.push_back(targetComponent);
+  payload.push_back(mavFrameGlobalRelativeAltInt);
+  payload.push_back(current ? 1 : 0);
+  payload.push_back(1); // autocontinue
+  return buildMavlinkV1Frame(missionItemIntMsgId, missionItemIntCrcExtra,
                              sourceSystem, sourceComponent, std::move(payload));
 }
 
@@ -503,7 +735,8 @@ makeMissionPayload(const std::string& missionId,
                    const std::string& role,
                    const std::string& area,
                    const std::vector<std::string>& waypoints,
-                   bool captureRequired)
+                   bool captureRequired,
+                   const std::string& objectDetectionService)
 {
   std::ostringstream wp;
   for (size_t i = 0; i < waypoints.size(); ++i) {
@@ -519,7 +752,7 @@ makeMissionPayload(const std::string& missionId,
     {"area", area},
     {"waypoints", wp.str()},
     {"capture_required", captureRequired ? "true" : "false"},
-    {"object_detection_service", SERVICE_GS_OBJECT_DETECTION.toUri()},
+    {"object_detection_service", objectDetectionService},
   });
 }
 
