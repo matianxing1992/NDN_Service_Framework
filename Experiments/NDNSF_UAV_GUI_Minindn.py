@@ -9,6 +9,7 @@ each process talks to its own MiniNDN NFD socket.
 from __future__ import annotations
 
 import argparse
+import glob
 import importlib.util
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
+import math
 
 REPO = Path(__file__).resolve().parents[1]
 MININDN_ROOT = Path("/tmp/minindn")
@@ -37,6 +40,7 @@ APP_CONTROLLER = REPO / "build/examples/App_ServiceController"
 APP_DRONE = REPO / "build/examples/UavDroneApp"
 APP_GS = REPO / "build/examples/UavGroundStationApp"
 POLICY = REPO / "NDNSF-UAV-APP/configs/uav_demo.policies"
+DEFAULT_RUNTIME_CONFIG = REPO / "NDNSF-UAV-APP/configs/uav_runtime.conf"
 DEFAULT_VIDEO_SOURCE = REPO / "NDNSF-UAV-APP/videos/drone.mp4"
 CONTROLLER_READY_MARKERS = [
     "ServiceController started...",
@@ -63,7 +67,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Comma-separated MiniNDN nodes for the auto patrol demo.")
     parser.add_argument("--patrol-drone-ids", default="A,B",
                         help="Comma-separated drone IDs for the auto patrol demo.")
-    parser.add_argument("--video-source", default=str(DEFAULT_VIDEO_SOURCE))
+    parser.add_argument("--runtime-config", default=str(DEFAULT_RUNTIME_CONFIG),
+                        help="UAV namespace/service config passed to Drone and Ground Station apps.")
+    parser.add_argument("--app-config-dir", default=str(REPO / "NDNSF-UAV-APP/configs"),
+                        help="Directory containing per-instance drone-<id>.conf and ground-station.conf.")
+    parser.add_argument("--gs-app-config", default="",
+                        help="Explicit per-instance config for the ground station.")
+    parser.add_argument("--video-source", default=str(DEFAULT_VIDEO_SOURCE),
+                        help="Video file used as virtual-camera input or direct file fallback.")
+    parser.add_argument("--camera-mode", default="auto", choices=["auto", "device", "file"],
+                        help="auto: use a real /dev/video* camera or create a virtual camera from --video-source; "
+                             "device: require --camera-device; file: pass --video-source directly.")
+    parser.add_argument("--camera-device", default="",
+                        help="Explicit V4L2 camera device, for example /dev/video0.")
+    parser.add_argument("--virtual-camera-device", default="/dev/video42",
+                        help="V4L2 loopback device used when no physical camera is available.")
+    parser.add_argument("--no-virtual-camera", action="store_true",
+                        help="Do not create a v4l2loopback camera from --video-source when no camera exists.")
     parser.add_argument("--flight-controller-backend", default="mock",
                         choices=["mock", "udp"],
                         help="Drone flight-controller backend. Use udp for PX4/jMAVSim SITL.")
@@ -79,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--px4-dir", default=str(Path.home() / "PX4-Autopilot"))
     parser.add_argument("--px4-cmake-args", default="-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
                         help="Extra CMAKE_ARGS passed to PX4 make when starting jMAVSim.")
+    parser.add_argument("--sim-home-lat", default="35.1186",
+                        help="PX4/jMAVSim home latitude. Defaults to University of Memphis.")
+    parser.add_argument("--sim-home-lon", default="-89.9375",
+                        help="PX4/jMAVSim home longitude. Defaults to University of Memphis.")
+    parser.add_argument("--sim-home-alt", default="100",
+                        help="PX4/jMAVSim home altitude AMSL in meters.")
     parser.add_argument("--jmavsim-headless", action="store_true",
                         help="Run jMAVSim without its GUI.")
     parser.add_argument("--jmavsim-ready-timeout-seconds", type=int, default=90,
@@ -101,8 +127,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS trigger the same keyboard shortcuts as a/t/l for smoke testing.")
     parser.add_argument("--auto-manual-control-test", action="store_true",
                         help="Have the GS hold manual-control keys and send MAVLink MANUAL_CONTROL.")
+    parser.add_argument("--auto-two-drone-switch-test", action="store_true",
+                        help="Have the GS switch between two drones and send Targeted MANUAL_CONTROL to each.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
+    parser.add_argument("--auto-single-mission-test", action="store_true",
+                        help="Run a one-drone mission upload smoke test instead of the video GUI smoke.")
+    parser.add_argument("--auto-single-mission-start-test", action="store_true",
+                        help="After the single-drone mission upload smoke test, arm/takeoff/start mission.")
+    parser.add_argument("--multi-drone-gui", action="store_true",
+                        help="Start the patrol-drone set for an interactive multi-drone ground-station GUI.")
     parser.add_argument("--auto-stop-seconds", type=int, default=10)
     parser.add_argument("--auto-start-delay-ms", type=int, default=3000,
                         help="Delay before auto video start; useful for reproducing early manual clicks.")
@@ -127,14 +161,82 @@ def csv_values(value: str) -> list[str]:
     return [item for item in (part.strip() for part in value.split(",")) if item]
 
 
+def load_runtime_config(path: str) -> dict[str, str]:
+    config = {
+        "group-prefix": "/example/uav/group",
+        "controller-prefix": "/example/uav/controller",
+        "ground-station-identity": "/example/uav/gs",
+        "drone-prefix": "/example/uav/drone",
+        "root-identity": "/example/uav",
+    }
+    if not path:
+        return config
+    config_path = Path(path)
+    if not config_path.exists():
+        return config
+    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" in line:
+            key, value = [part.strip() for part in line.split("=", 1)]
+        else:
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            key, value = parts[0], parts[1].strip()
+        if key and value:
+            config[key] = value
+    return config
+
+
+def append_name(prefix: str, component: str) -> str:
+    return prefix.rstrip("/") + "/" + component
+
+
+def app_config_path(args: argparse.Namespace, filename: str) -> str:
+    path = Path(filename)
+    if path.is_absolute():
+        return str(path)
+    return str((Path(args.app_config_dir) / filename).resolve())
+
+
 def active_drones(args: argparse.Namespace) -> list[tuple[str, str]]:
-    if not args.auto_patrol_test:
+    interactive_default = not args.no_cli
+    if not (args.auto_patrol_test or args.auto_two_drone_switch_test or
+            args.multi_drone_gui or interactive_default):
         return [(args.drone_id, args.drone_node)]
     ids = csv_values(args.patrol_drone_ids)
     nodes = csv_values(args.patrol_drone_nodes)
     if len(ids) != len(nodes) or len(ids) < 2:
         raise ValueError("--auto-patrol-test requires matching --patrol-drone-ids and --patrol-drone-nodes with at least two entries")
     return list(zip(ids, nodes))
+
+
+def prefetch_default_map_tile() -> None:
+    """Fetch Memphis OSM tiles before MiniNDN isolates node networks."""
+    lat = 35.1186
+    lon = -89.9375
+    for zoom in (14, 15, 16):
+        lat_rad = lat * math.pi / 180.0
+        n = 2.0 ** zoom
+        center_x = int(math.floor((lon + 180.0) / 360.0 * n))
+        center_y = int(math.floor((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n))
+        for x in range(center_x - 1, center_x + 2):
+            for y in range(center_y - 1, center_y + 2):
+                offline_path = REPO / "NDNSF-UAV-APP/maps/osm" / str(zoom) / str(x) / f"{y}.png"
+                if offline_path.exists() and offline_path.stat().st_size > 0:
+                    continue
+                path = Path(f"/tmp/ndnsf-uav-map-{zoom}-{x}-{y}.png")
+                if path.exists() and path.stat().st_size > 0:
+                    continue
+                url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
+                try:
+                    request = urllib.request.Request(url, headers={"User-Agent": "ndnsf-uav-app"})
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        path.write_bytes(response.read())
+                except Exception as e:
+                    log(f"warning: could not prefetch map tile {url}: {e}")
 
 
 def resolve_repo_path(value: str) -> str:
@@ -225,8 +327,94 @@ def run_shell(command: str) -> None:
     subprocess.run(command, shell=True, check=True)
 
 
+def video_devices() -> list[str]:
+    devices = sorted(glob.glob("/dev/video*"))
+    usable = []
+    for device in devices:
+        if not os.access(device, os.R_OK):
+            continue
+        info_result = subprocess.run(
+            ["v4l2-ctl", "--device", device, "--info"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        info_text = info_result.stdout
+        if "NDNSF-UAV-Camera" in info_text:
+            continue
+        caps_result = subprocess.run(
+            ["v4l2-ctl", "--device", device, "--all"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        caps_text = caps_result.stdout
+        if ("Video Capture" in info_text or "Video Capture" in caps_text or
+                "Video Capture Multiplanar" in caps_text):
+            usable.append(device)
+    return usable
+
+
+def start_virtual_camera(args: argparse.Namespace, output_dir: Path, processes):
+    if args.no_virtual_camera:
+        return None
+    device = args.virtual_camera_device
+    video_source = resolve_repo_path(args.video_source)
+    if not Path(video_source).exists():
+        log(f"warning: virtual camera source missing: {video_source}")
+        return None
+    if not Path(device).exists():
+        video_nr = device[len("/dev/video"):] if device.startswith("/dev/video") else device
+        if not video_nr.isdigit():
+            log(f"warning: unsupported virtual camera device name: {device}")
+            return None
+        subprocess.run([
+            "modprobe", "v4l2loopback",
+            f"video_nr={video_nr}",
+            "card_label=NDNSF-UAV-Camera",
+            "exclusive_caps=1",
+        ], check=False)
+    deadline = time.time() + 3
+    while time.time() < deadline and not Path(device).exists():
+        time.sleep(0.1)
+    if not Path(device).exists():
+        log("warning: v4l2loopback is unavailable; no virtual camera created")
+        return None
+
+    log_path = output_dir / "virtual-camera.log"
+    log_file = log_path.open("wb")
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning",
+        "-re", "-stream_loop", "-1", "-i", video_source,
+        "-vf", "fps=30,scale=640:-2,format=yuyv422",
+        "-f", "v4l2", device,
+    ]
+    log(f"start virtual camera {device} from {video_source}")
+    proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT)
+    processes.append((proc, log_file, log_path))
+    time.sleep(1.0)
+    if proc.poll() is not None:
+        log(f"warning: virtual camera ffmpeg exited; see {log_path}")
+        return None
+    return device
+
+
+def select_camera_source(args: argparse.Namespace, output_dir: Path, processes) -> tuple[str, str]:
+    if args.camera_mode == "file":
+        return resolve_repo_path(args.video_source), "file"
+    if args.camera_device:
+        if Path(args.camera_device).exists():
+            return args.camera_device, "camera-device"
+        raise RuntimeError(f"requested camera device does not exist: {args.camera_device}")
+    devices = video_devices()
+    if devices:
+        return devices[0], "camera-device"
+    if args.camera_mode == "device":
+        raise RuntimeError("no V4L2 camera device is available")
+    virtual_device = start_virtual_camera(args, output_dir, processes)
+    if virtual_device:
+        return virtual_device, "virtual-camera"
+    log("warning: no camera available; falling back to direct file input")
+    return resolve_repo_path(args.video_source), "file-fallback"
+
+
 def setup_node_keychains(ndn, args: argparse.Namespace, output_dir: Path) -> dict[str, Path]:
     drones = active_drones(args)
+    runtime = load_runtime_config(args.runtime_config)
     homes = {
         args.controller_node: node_home(ndn, args.controller_node),
         args.gs_node: node_home(ndn, args.gs_node),
@@ -244,20 +432,47 @@ def setup_node_keychains(ndn, args: argparse.Namespace, output_dir: Path) -> dic
 
     passphrase = "ndnsf-uav-minindn"
     identities = {
-        args.controller_node: "/example/uav/controller",
-        args.gs_node: "/example/uav/gs",
+        args.controller_node: runtime["controller-prefix"],
+        args.gs_node: runtime["ground-station-identity"],
     }
     for drone_id, node_name in drones:
-        identities[node_name] = f"/example/uav/drone/{drone_id}"
+        identities[node_name] = append_name(runtime["drone-prefix"], drone_id)
     bags = []
+    root_identity = runtime["root-identity"]
+    root_cert = output_dir / "root.cert"
+    run_shell(
+        "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} > {}; "
+        "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+            shell_quote(key_source),
+            shell_quote(key_source_conf),
+            shell_quote(root_identity),
+            shell_quote(root_cert),
+            shell_quote(key_source),
+            shell_quote(key_source_conf),
+            shell_quote(root_cert),
+        )
+    )
     for node_name, identity in identities.items():
         bag = output_dir / f"{node_name}.safebag"
+        req = output_dir / f"{node_name}.req"
+        cert = output_dir / f"{node_name}.cert"
         run_shell(
-            "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} >/dev/null; "
+            "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -n -t r {} > {}; "
+            "HOME={} NDN_CLIENT_CONF={} ndnsec cert-gen -s {} -i ROOT {} > {}; "
+            "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true; "
             "HOME={} NDN_CLIENT_CONF={} ndnsec export -P {} -o {} -i {}".format(
                 shell_quote(key_source),
                 shell_quote(key_source_conf),
                 shell_quote(identity),
+                shell_quote(req),
+                shell_quote(key_source),
+                shell_quote(key_source_conf),
+                shell_quote(root_identity),
+                shell_quote(req),
+                shell_quote(cert),
+                shell_quote(key_source),
+                shell_quote(key_source_conf),
+                shell_quote(cert),
                 shell_quote(key_source),
                 shell_quote(key_source_conf),
                 shell_quote(passphrase),
@@ -269,6 +484,13 @@ def setup_node_keychains(ndn, args: argparse.Namespace, output_dir: Path) -> dic
 
     for target_node, home in homes.items():
         client_conf = home / ".ndn" / "client.conf"
+        perf.node_cmd(
+            ndn.net[target_node],
+            "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                shell_quote(home),
+                shell_quote(client_conf),
+                shell_quote(root_cert),
+            ))
         for bag in bags:
             perf.node_cmd(
                 ndn.net[target_node],
@@ -298,36 +520,45 @@ def maybe_allow_x11(args: argparse.Namespace) -> None:
 
 def configure_routes(ndn, args: argparse.Namespace) -> None:
     drones = active_drones(args)
+    runtime = load_runtime_config(args.runtime_config)
+    controller_prefix = runtime["controller-prefix"]
+    gs_prefix = runtime["ground-station-identity"]
+    group_prefix = runtime["group-prefix"]
+    root_prefix = runtime["root-identity"]
     routing = NdnRoutingHelper(ndn.net, "udp", "link-state")
     routing.addOrigin(
         [ndn.net[args.controller_node]],
-        ["/example/uav/controller", "/example/uav/controller/KEY", "/example/uav/controller/DKEY"],
+        [controller_prefix, f"{controller_prefix}/KEY", f"{controller_prefix}/DKEY"],
     )
     routing.addOrigin(
         [ndn.net[args.gs_node]],
-        ["/example/uav/gs", "/example/uav/gs/KEY", "/example/uav/group"],
+        [gs_prefix, f"{gs_prefix}/KEY", group_prefix],
     )
     for drone_id, node_name in drones:
-        drone_prefix = f"/example/uav/drone/{drone_id}"
+        drone_prefix = append_name(runtime["drone-prefix"], drone_id)
         routing.addOrigin(
             [ndn.net[node_name]],
-            [drone_prefix, f"{drone_prefix}/KEY", "/example/uav/group"],
+            [drone_prefix, f"{drone_prefix}/KEY", group_prefix],
         )
     routing.calculateRoutes()
     for node in ndn.net.hosts:
-        for prefix in ("/example/uav", "/example/uav/group", "/example/uav/group/sync"):
+        for prefix in (root_prefix, group_prefix, f"{group_prefix}/sync"):
             Nfdc.setStrategy(node, prefix, Nfdc.STRATEGY_MULTICAST)
 
 
 def dump_uav_routes(ndn, args: argparse.Namespace, output_dir: Path) -> None:
-    drone_prefixes = [f"/example/uav/drone/{drone_id}" for drone_id, _ in active_drones(args)]
+    runtime = load_runtime_config(args.runtime_config)
+    root_prefix = runtime["root-identity"]
+    drone_prefixes = [append_name(runtime["drone-prefix"], drone_id)
+                      for drone_id, _ in active_drones(args)]
     for node_name in [args.gs_node] + [node_name for _, node_name in active_drones(args)]:
         node = ndn.net[node_name]
         route_log = output_dir / f"{node_name}-nfd-routes.log"
         text = perf.node_cmd(
             node,
-            "nfdc fib list | grep -E '({}|/example/uav)' || true".format(
-                "|".join(shell_quote(prefix).strip("'") for prefix in drone_prefixes)))
+            "nfdc fib list | grep -E '({}|{})' || true".format(
+                "|".join(shell_quote(prefix).strip("'") for prefix in drone_prefixes),
+                shell_quote(root_prefix).strip("'")))
         route_log.write_text(text, encoding="utf-8")
 
 
@@ -341,25 +572,53 @@ def start(node, name: str, command: str, env: dict[str, str], output_dir: Path, 
     return proc, log_path
 
 
+def mavlink_instance_port(base_port: str, instance: int) -> str:
+    return str(int(base_port) + instance)
+
+
 def start_jmavsim(ndn, args: argparse.Namespace, drone_node: str,
-                  drone_id: str, env: dict[str, str], output_dir: Path,
+                  drone_id: str, instance: int, env: dict[str, str], output_dir: Path,
                   processes) -> tuple[subprocess.Popen, Path, Path]:
     px4_dir = Path(args.px4_dir).resolve()
     if not (px4_dir / "Tools/simulation/jmavsim/jmavsim_run.sh").exists():
         raise RuntimeError(f"PX4 jMAVSim script not found under {px4_dir}")
+    px4_build = px4_dir / "build/px4_sitl_default"
+    px4_bin = px4_build / "bin/px4"
+    px4_etc = px4_build / "etc"
+    instance_dir = px4_build / f"instance_{instance}"
+    simulator_port = 4560 + instance
     status_file = output_dir / f"jmavsim-{drone_id}.status"
     status_file.write_text("starting\n", encoding="utf-8")
     sim_env = dict(env)
     sim_env["NDNSF_UAV_JMAVSIM_STATUS_FILE"] = str(status_file)
-    headless = "HEADLESS=1 " if args.jmavsim_headless else ""
-    # Use the existing PX4 make target so PX4 and jMAVSim share the same node
-    # namespace. If the PX4 build already exists this normally starts quickly;
-    # otherwise PX4 may build first.
+    headless_value = "1" if args.jmavsim_headless else ""
+    # Do not invoke `make px4_sitl jmavsim` per drone: that target always starts
+    # PX4 instance 0 and the jmavsim_iris init script kills other jMAVSim Java
+    # processes. Run PX4 with an explicit instance id in external-simulator mode
+    # and start the matching jMAVSim process ourselves.
     command = (
         f"cd {shell_quote(px4_dir)} && "
-        f"export PX4_SIM_MODEL=iris && "
         f"export CMAKE_ARGS={shell_quote(args.px4_cmake_args)} && "
-        f"{headless}make px4_sitl jmavsim </dev/null 2>&1 | "
+        f"if [ ! -x {shell_quote(px4_bin)} ]; then make px4_sitl_default; fi && "
+        f"mkdir -p {shell_quote(instance_dir)} && "
+        f"cd {shell_quote(instance_dir)} && "
+        f"echo NDNSF_UAV_SIM_HOME lat={shell_quote(args.sim_home_lat)} "
+        f"lon={shell_quote(args.sim_home_lon)} alt={shell_quote(args.sim_home_alt)} && "
+        f"( export PX4_SIM_MODEL=none_iris SYS_AUTOSTART=10016 "
+        f"PX4_HOME_LAT={shell_quote(args.sim_home_lat)} "
+        f"PX4_HOME_LON={shell_quote(args.sim_home_lon)} "
+        f"PX4_HOME_ALT={shell_quote(args.sim_home_alt)}; "
+        f"trap 'kill ${{PX4_PID:-}} ${{JMAVSIM_PID:-}} 2>/dev/null || true; exit 0' INT TERM EXIT; "
+        f"{shell_quote(px4_bin)} -i {instance} -d {shell_quote(px4_etc)} & "
+        f"PX4_PID=$!; "
+        f"sleep 1; "
+        f"env HEADLESS={shell_quote(headless_value)} "
+        f"{shell_quote(px4_dir / 'Tools/simulation/jmavsim/jmavsim_run.sh')} "
+        f"-p {simulator_port} -l -r 250 & "
+        f"JMAVSIM_PID=$!; "
+        f"wait -n $PX4_PID $JMAVSIM_PID; "
+        f"kill $PX4_PID $JMAVSIM_PID 2>/dev/null || true; "
+        f"wait $PX4_PID $JMAVSIM_PID 2>/dev/null || true ) 2>&1 | "
         f"python3 {shell_quote(REPO / 'Experiments/uav_jmavsim_log_filter.py')}"
     )
     proc, log_path = start(ndn.net[drone_node], f"jmavsim-{drone_id}",
@@ -377,6 +636,10 @@ def cleanup_px4_jmavsim(px4_dir: str) -> None:
     for pattern in patterns:
         subprocess.run(["pkill", "-TERM", "-f", pattern], check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.25)
+    for pattern in patterns:
+        subprocess.run(["pkill", "-KILL", "-f", pattern], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def should_start_jmavsim(args: argparse.Namespace) -> bool:
@@ -392,11 +655,15 @@ def should_start_jmavsim(args: argparse.Namespace) -> bool:
 def stop(processes) -> None:
     for proc, log_file, _ in reversed(processes):
         if proc.poll() is None:
-            proc.send_signal(signal.SIGINT)
+            proc.send_signal(signal.SIGTERM)
             try:
-                proc.wait(timeout=3)
+                proc.wait(timeout=0.8)
             except Exception:
                 proc.kill()
+                try:
+                    proc.wait(timeout=0.5)
+                except Exception:
+                    pass
         log_file.close()
 
 
@@ -460,14 +727,18 @@ def main() -> int:
     args = build_parser().parse_args()
     sys.argv = [sys.argv[0]]
     setLogLevel("info")
+    runtime = load_runtime_config(args.runtime_config)
     if not os.environ.get("DISPLAY"):
         raise RuntimeError("DISPLAY is not set; run from a graphical session, e.g. sudo -E ...")
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    maybe_allow_x11(args)
-
     processes = []
+    maybe_allow_x11(args)
+    prefetch_default_map_tile()
+    video_source, video_source_kind = select_camera_source(args, output_dir, processes)
+    log(f"UAV video source selected: {video_source_kind} {video_source}")
+
     ndn = None
     Minindn.cleanUp()
     Minindn.verifyDependencies()
@@ -489,7 +760,7 @@ def main() -> int:
         gs_env = make_env(args, args.gs_node, homes[args.gs_node])
 
         controller_cmd = app_cmd(APP_CONTROLLER, [
-            "--controller-prefix", "/example/uav/controller",
+            "--controller-prefix", runtime["controller-prefix"],
             "--policy-file", str(POLICY.relative_to(REPO)),
         ])
         if not wait_for_nfd_socket(args.controller_node, 5):
@@ -508,21 +779,26 @@ def main() -> int:
 
         drone_logs = {}
         simulator_status_files = {}
-        for drone_id, node_name in drones:
+        if should_start_jmavsim(args):
+            cleanup_px4_jmavsim(args.px4_dir)
+        for drone_index, (drone_id, node_name) in enumerate(drones):
             start_simulator = should_start_jmavsim(args)
             if start_simulator:
-                cleanup_px4_jmavsim(args.px4_dir)
                 jmavsim_proc, jmavsim_log, status_file = start_jmavsim(
-                    ndn, args, node_name, drone_id,
+                    ndn, args, node_name, drone_id, drone_index,
                     drone_envs[drone_id], output_dir, processes)
                 simulator_status_files[drone_id] = status_file
+            mavlink_udp_port = mavlink_instance_port(args.mavlink_udp_port, drone_index)
+            drone_app_config = app_config_path(args, f"drone-{drone_id}.conf")
             drone_cmd = app_cmd(APP_DRONE, [
+                "--app-config", drone_app_config,
+                "--runtime-config", str(Path(args.runtime_config).resolve()),
                 "--drone-id", drone_id,
-                "--video-source", resolve_repo_path(args.video_source),
+                "--video-source", video_source,
                 "--flight-controller-backend",
                 "udp" if start_simulator else args.flight_controller_backend,
                 "--mavlink-udp-host", args.mavlink_udp_host,
-                "--mavlink-udp-port", args.mavlink_udp_port,
+                "--mavlink-udp-port", mavlink_udp_port,
                 "--mavlink-udp-listen-port", args.mavlink_udp_listen_port,
             ])
             if start_simulator:
@@ -538,7 +814,9 @@ def main() -> int:
                 raise RuntimeError(f"drone {drone_id} GUI did not start; see {drone_log}")
 
             if (start_simulator and
-                (args.auto_mavlink_test or args.auto_keyboard_test or args.auto_manual_control_test)):
+                (args.auto_mavlink_test or args.auto_keyboard_test or
+                 args.auto_manual_control_test or args.auto_two_drone_switch_test or
+                 args.auto_patrol_test or args.auto_single_mission_test)):
                 if not wait_log_any(jmavsim_log, JMAVSIM_READY_MARKERS,
                                     args.jmavsim_ready_timeout_seconds,
                                     proc=jmavsim_proc):
@@ -548,9 +826,14 @@ def main() -> int:
                     )
 
         gs_argv = [
+            "--app-config", str(Path(args.gs_app_config).resolve())
+            if args.gs_app_config else app_config_path(args, "ground-station.conf"),
+            "--runtime-config", str(Path(args.runtime_config).resolve()),
             "--target-drone", args.drone_id,
             "--video-bitrate-kbps", str(args.video_bitrate_kbps),
             "--video-width", str(args.video_width),
+            "--patrol-drones", ",".join(drone_id for drone_id, _ in drones),
+            "--no-cert-dialog",
         ]
         if args.auto_video_test:
             gs_argv += [
@@ -564,16 +847,26 @@ def main() -> int:
             gs_argv += ["--auto-keyboard-test"]
         if args.auto_manual_control_test:
             gs_argv += ["--auto-manual-control-test"]
+        if args.auto_two_drone_switch_test:
+            gs_argv += ["--auto-two-drone-switch-test"]
         if args.auto_patrol_test:
+            patrol_timeout_ms = "30000" if should_start_jmavsim(args) else "3000"
             gs_argv += [
                 "--auto-patrol-test",
-                "--patrol-drones", ",".join(drone_id for drone_id, _ in drones),
                 "--ack-timeout-ms", "700",
-                "--timeout-ms", "3000",
+                "--timeout-ms", patrol_timeout_ms,
             ]
+        if args.auto_single_mission_test:
+            gs_argv += [
+                "--auto-single-mission-test",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "30000",
+            ]
+            if args.auto_single_mission_start_test:
+                gs_argv += ["--auto-single-mission-start-test"]
         gs_proc, gs_log = start(ndn.net[args.gs_node], "ground-station",
                                 app_cmd(APP_GS, gs_argv), gs_env, output_dir, processes)
-        if not args.auto_patrol_test and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
+        if not (args.auto_patrol_test or args.auto_single_mission_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
         print("")
@@ -590,39 +883,72 @@ def main() -> int:
 
         if args.auto_patrol_test and args.no_cli:
             try:
-                gs_proc.wait(timeout=45)
+                gs_proc.wait(timeout=70)
             except subprocess.TimeoutExpired as e:
                 raise RuntimeError(f"ground station patrol smoke did not finish; see {gs_log}") from e
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
             require_log(gs_log, "PATROL_TASK_START")
-            require_log(gs_log, "PATROL_PART_MISSING")
-            require_log(gs_log, "PATROL_COMPENSATION")
-            require_log(gs_log, "PATROL_ACK_BUSY")
-            require_log(gs_log, "attempt=1 part=part1 provider=B")
-            require_log(gs_log, "attempt=2 part=part0 provider=B")
             require_log(gs_log, "PATROL_TASK_DONE")
-            require_log(drone_logs[drones[0][0]], "mission response delayed")
-            print("NDNSF_UAV_PATROL_MININDN_SMOKE_OK")
-        elif (args.auto_mavlink_test or args.auto_keyboard_test or
-              args.auto_manual_control_test) and args.no_cli:
+            if should_start_jmavsim(args):
+                require_log(gs_log, "attempt=1 part=part0 provider=A")
+                require_log(gs_log, "attempt=1 part=part1 provider=B")
+                for drone_id, _ in drones[:2]:
+                    require_log(drone_logs[drone_id], "UDP_FC_MISSION_ACK drone=" + drone_id + " result=accepted")
+                print("NDNSF_UAV_PATROL_JMAVSIM_MININDN_SMOKE_OK")
+            else:
+                require_log(gs_log, "PATROL_PART_MISSING")
+                require_log(gs_log, "PATROL_COMPENSATION")
+                require_log(gs_log, "PATROL_ACK_BUSY")
+                require_log(gs_log, "attempt=1 part=part1 provider=B")
+                require_log(gs_log, "attempt=2 part=part0 provider=B")
+                require_log(drone_logs[drones[0][0]], "mission response delayed")
+                print("NDNSF_UAV_PATROL_MININDN_SMOKE_OK")
+        elif args.auto_single_mission_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station single mission smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "SINGLE_MISSION_START")
+            require_log(gs_log, "SINGLE_MISSION_DONE")
+            if args.auto_single_mission_start_test:
+                require_log(gs_log, "SINGLE_MISSION_COMMAND command=start_mission ok=true")
+            require_log(gs_log, "GS_SINGLE_MISSION_EXIT ok=true")
+            print("NDNSF_UAV_SINGLE_MISSION_MININDN_SMOKE_OK")
+        elif (args.auto_mavlink_test or args.auto_keyboard_test or
+              args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:
+            try:
+                gs_proc.wait(timeout=70)
             except subprocess.TimeoutExpired as e:
                 raise RuntimeError(f"ground station MAVLink smoke did not finish; see {gs_log}") from e
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
-            require_log(gs_log, "GS_TARGETED_RESPONSE service=/UAV/MAVLink/Execute")
-            require_log(gs_log, "MAVLink arm accepted=true")
-            require_log(gs_log, "MAVLink takeoff accepted=true")
-            require_log(gs_log, "MAVLink land accepted=true")
+            if not args.auto_two_drone_switch_test:
+                require_log(gs_log, "GS_TARGETED_RESPONSE service=/UAV/MAVLink/Execute")
+                require_log(gs_log, "MAVLink arm drone=" + args.drone_id + " accepted=true")
+                require_log(gs_log, "MAVLink takeoff drone=" + args.drone_id + " accepted=true")
+                require_log(gs_log, "MAVLink land drone=" + args.drone_id + " accepted=true")
             if args.auto_manual_control_test:
-                require_log(gs_log, "MAVLink manual_control accepted=true")
-            require_log_any(drone_logs[args.drone_id], [
-                "MOCK_FC_FORWARD drone=" + args.drone_id,
-                "UDP_FC_FORWARD drone=" + args.drone_id,
-            ])
-            print("NDNSF_UAV_MAVLINK_TARGETED_MININDN_SMOKE_OK")
+                require_log(gs_log, "MAVLink manual_control drone=" + args.drone_id + " accepted=true")
+            if args.auto_two_drone_switch_test:
+                drone_ids = [drone_id for drone_id, _ in drones]
+                require_log(gs_log, "Selected drone " + drone_ids[1])
+                require_log(gs_log, "Selected drone " + drone_ids[0])
+                for drone_id in drone_ids[:2]:
+                    require_log(gs_log, "MAVLink manual_control drone=" + drone_id + " accepted=true")
+                    require_log_any(drone_logs[drone_id], [
+                        "MOCK_FC_FORWARD drone=" + drone_id,
+                        "MAVLINK_FC_FORWARD drone=" + drone_id,
+                    ])
+                print("NDNSF_UAV_TWO_DRONE_SWITCH_MININDN_SMOKE_OK")
+            else:
+                require_log_any(drone_logs[args.drone_id], [
+                    "MOCK_FC_FORWARD drone=" + args.drone_id,
+                    "MAVLINK_FC_FORWARD drone=" + args.drone_id,
+                ])
+                print("NDNSF_UAV_MAVLINK_TARGETED_MININDN_SMOKE_OK")
         elif args.auto_video_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=max(45, args.auto_stop_seconds + 35))

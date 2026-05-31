@@ -335,13 +335,16 @@ authorities, and controllers may fetch these certificates during DKEY,
 permission, and bootstrap flows.
 
 NDNSF deployments should use an application root identity as the trust anchor.
+Prefer making this root identity the application namespace itself, such as
+`/example/hello`, `/example/uav`, or `/example/repo`, rather than adding a
+non-parent suffix such as `/root`.
 Each node first creates its own identity key, then obtains an NDN certificate
 for that key signed by the application root. The node keeps the private key for
 its own identity, installs the root certificate as the local trust anchor, and
 serves its root-signed certificate by name. The MiniNDN HELLO harness follows
-this model by creating `/example/hello/root` and using it to sign the
-controller, user, and provider certificates before distributing the node
-keychains.
+this model by creating `/example/hello` and using it to sign
+`/example/hello/controller`, `/example/hello/user`, and provider certificates
+before distributing the node keychains.
 
 The framework provides `ndn_service_framework::CertificatePublisher` for this:
 
@@ -358,6 +361,44 @@ Data under its exact certificate name, and by default registers the certificate'
 `--no-serve-certificates` for deployments that already serve certificates
 through another mechanism.
 
+Manual certificate bootstrap with physical access:
+
+When the operator has physical access to every machine, NDNCERT is optional.
+The safest manual flow is to let each node generate its own private key locally;
+only the certificate request leaves the node. The CA/root machine signs that
+request and returns a public certificate.
+
+On the CA/root machine:
+
+```bash
+ndnsec key-gen -t r /ndn/ndnsf/demo > root.cert
+ndnsec cert-install -f root.cert
+```
+
+On one node, for example drone A:
+
+```bash
+ndnsec key-gen -n -t r /ndn/ndnsf/demo/drone/A > drone-A.req
+```
+
+Copy `drone-A.req` to the CA/root machine and sign it:
+
+```bash
+ndnsec cert-gen -s /ndn/ndnsf/demo -i ROOT drone-A.req > drone-A.cert
+```
+
+Copy `root.cert` and `drone-A.cert` back to drone A and install them:
+
+```bash
+ndnsec cert-install -f root.cert
+ndnsec cert-install -f drone-A.cert
+ndnsec-ls-identity -c
+```
+
+Do not export/import a safebag in this flow; the node private key never leaves
+the node. Use safebags only when a deployment intentionally generates keys on
+one machine and transfers private keys to another machine.
+
 3.6 Example:
 
 `/examples/generic-dynamic-user-provider.cpp` is the minimal generic dynamic example. It uses `ServiceProvider::addHandler<RequestT, ResponseT>` and `ServiceUser::RequestService<RequestT, ResponseT>` directly, without generated service users, generated service providers, generated services, or stubs. It uses local/mock request publication so it can demonstrate the request/response flow without requiring real NFD/network.
@@ -373,9 +414,11 @@ Build it with:
 
 See `/examples/wscript` for how to compile the examples.
 
-3.6 How to run examples:
+3.7 How to run examples:
 
-NDN requires creating a corresponding root certificate, then using the root certificate to generate the corresponding sub-certificates. Both the root certificate and these sub-certificates need to be installed on each node. `/Experiments/NDNSFExperiment_AutoConfig.py` provides an example of how to create certificates, which you need to modify according to your own requirements.
+Before running examples on multiple machines, install identity certificates as
+described in the manual certificate bootstrap section above. Local regression
+scripts create their own temporary keychain material automatically.
 
 The current HELLO examples are exercised by the regression scripts below.
 

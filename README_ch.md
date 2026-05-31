@@ -304,7 +304,13 @@ NAC-ABE 仍然是 NDNSF service request/response message、未来 selection payl
 
 NDN certificate 本身也是具名 Data packet。在分布式部署中，user、provider、controller 和 AA certificate 必须能通过 certificate name 被路由/FIB 到达，就像普通 service Data 一样。远端 validator、NAC-ABE authority 和 controller 可能会在 DKEY、permission 和 bootstrap 流程中 fetch 这些 certificate。
 
-NDNSF 部署应使用一个应用级 root identity 作为 trust anchor。每个节点先创建自己的 identity key，然后获取由应用 root 签名的 NDN certificate。节点只保留自己的私钥，安装 root certificate 作为本地信任锚，并按 certificate name 对外服务自己的 root-signed certificate。MiniNDN HELLO harness 现在也采用这个流程：先创建 `/example/hello/root`，再用它签发 controller、user 和 provider certificates，然后把对应 keychain 材料分发到各节点。
+NDNSF 部署应使用一个应用级 root identity 作为 trust anchor。推荐让 root identity 就是应用
+namespace 本身，例如 `/example/hello`、`/example/uav` 或 `/example/repo`，而不是额外加一个
+非父节点后缀，例如 `/root`。每个节点先创建自己的 identity key，然后获取由应用 root 签名的 NDN
+certificate。节点只保留自己的私钥，安装 root certificate 作为本地信任锚，并按 certificate name
+对外服务自己的 root-signed certificate。MiniNDN HELLO harness 现在也采用这个流程：先创建
+`/example/hello`，再用它签发 `/example/hello/controller`、`/example/hello/user` 和 provider
+certificates，然后把对应 keychain 材料分发到各节点。
 
 框架提供 `ndn_service_framework::CertificatePublisher`：
 
@@ -316,6 +322,39 @@ ndn_service_framework::CertificatePublisher certPublisher(
 ```
 
 它会在本地 KeyChain 中找到 certificate，在精确 certificate name 下服务已有 certificate Data，默认注册 certificate 的 `.../KEY/<key-id>` prefix。HELLO 示例默认启用这个功能；如果部署环境已经用其它机制服务 certificate，可以使用 `--no-serve-certificates`。
+
+有物理 access 时的手动证书 bootstrap：
+
+如果 operator 能接触每台机器，NDNCERT 是可选的。最安全的手动流程是每个节点在本机生成自己的私钥；只有 certificate request 离开节点。CA/root 机器只负责签这个 request，然后把公开 certificate 发回节点。
+
+在 CA/root 机器上：
+
+```bash
+ndnsec key-gen -t r /ndn/ndnsf/demo > root.cert
+ndnsec cert-install -f root.cert
+```
+
+在某个节点上，例如 drone A：
+
+```bash
+ndnsec key-gen -n -t r /ndn/ndnsf/demo/drone/A > drone-A.req
+```
+
+把 `drone-A.req` 复制到 CA/root 机器并签发：
+
+```bash
+ndnsec cert-gen -s /ndn/ndnsf/demo -i ROOT drone-A.req > drone-A.cert
+```
+
+把 `root.cert` 和 `drone-A.cert` 复制回 drone A，并在 drone A 上安装：
+
+```bash
+ndnsec cert-install -f root.cert
+ndnsec cert-install -f drone-A.cert
+ndnsec-ls-identity -c
+```
+
+这个流程不要 export/import safebag；节点私钥永远不离开本机。只有当部署方式明确要求在一台机器上集中生成 key、再把 private key 发给另一台机器时，才使用 safebag。
 
 ### 3.6 示例
 
@@ -334,7 +373,7 @@ ndn_service_framework::CertificatePublisher certPublisher(
 
 ### 3.7 如何运行示例
 
-NDN 需要先创建对应 root certificate，再用 root certificate 生成子 certificate。root certificate 和这些子 certificate 都需要安装到每个节点。`/Experiments/NDNSFExperiment_AutoConfig.py` 展示了如何创建 certificate；实际部署时需要按自己的需求修改。
+如果要在多台机器上运行示例，请先按上面的手动证书 bootstrap 流程安装 identity certificates。本地 regression scripts 会自动创建临时 keychain material。
 
 当前 HELLO 示例由下面这些 regression script 测试：
 

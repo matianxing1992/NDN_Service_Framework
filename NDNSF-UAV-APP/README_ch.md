@@ -86,21 +86,57 @@ PC / ground station:
   摄像头或视频源
 ```
 
-当前二进制保留 `shared/UavNames.hpp` 中的默认 namespace，包括
+当前二进制默认读取 `configs/uav_runtime.conf`。这个文件保留了 demo 用的
 `/example/uav/controller`、`/example/uav/gs` 和 `/example/uav/drone/<id>`，
-但真实部署身份不应该写死在应用逻辑里。部署时可以通过命令行传入名字，并确保 policy file
-和 trust schema 与这些名字一致：
+但真实部署的 identity namespace 和 service name 应该写在复制出来的 runtime config
+里，而不是改进 C++ 代码。实机部署时先复制配置文件，修改其中的 namespace，并确保
+policy file 和 trust schema 与这些名字一致：
 
 ```text
+cp NDNSF-UAV-APP/configs/uav_runtime.conf /etc/ndnsf/uav_runtime.conf
+```
+
+需要临时覆盖时，也可以继续使用命令行参数：
+
+```text
+--runtime-config /etc/ndnsf/uav_runtime.conf
 --group-prefix /example/uav/group
 --controller-prefix /example/uav/controller
 --ground-station-identity /example/uav/gs      # 仅 ground station 需要
 --drone-prefix /example/uav/drone              # drone identity = <prefix>/<id>
 --trust-schema /absolute/path/to/uav-trust.conf
+--service-mavlink-execute /UAV/MAVLink/Execute
+--service-mission-assign /UAV/Mission/Assign
+--service-telemetry-status /UAV/Telemetry/GetStatus
+--service-camera-frame /UAV/Camera/GetFrame
+--service-camera-video-control-suffix /UAV/Camera/Video
+--service-gs-object-detection /UAV/GS/ObjectDetection
 ```
 
-如果想改成 `/ndn/ndnsf/uav-demo/...` 这样的命名，优先使用这些命令行参数，而不是改代码并重新编译；
-同时同步更新 `configs/uav_demo.policies` 和部署用 trust schema。
+每个正在运行的 APP 实例还可以用 `--app-config` 加载自己的实例配置。
+上面的 runtime config 是整个部署共享的；app config 是每个进程独有的。
+两架无人机就是靠这个区分 drone id、摄像头设备、MAVLink 端口或串口设备，同时共享同一套
+service namespace：
+
+```text
+UavDroneApp --app-config /etc/ndnsf/drone-A.conf
+UavDroneApp --app-config /etc/ndnsf/drone-B.conf
+UavGroundStationApp --app-config /etc/ndnsf/ground-station.conf
+```
+
+示例模板在：
+
+```text
+NDNSF-UAV-APP/configs/drone-A.conf
+NDNSF-UAV-APP/configs/drone-B.conf
+NDNSF-UAV-APP/configs/ground-station.conf
+```
+
+命令行参数会覆盖 app config 和 runtime config，所以 MiniNDN 和临时实验仍然可以不改文件，
+直接覆盖端口、视频源或目标无人机。
+
+如果想改成 `/ndn/ndnsf/uav-demo/...` 这样的命名，优先修改 runtime config 或使用命令行参数，
+不要改代码并重新编译；同时同步更新 `configs/uav_demo.policies` 和部署用 trust schema。
 
 ### 证书 bootstrap
 
@@ -202,6 +238,14 @@ python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
   --mavlink-udp-listen-port 14550
 ```
 
+如果使用串口飞控连接，把 MAVLink backend 参数换成：
+
+```bash
+  --flight-controller-backend serial \
+  --mavlink-serial-device /dev/ttyAMA0 \
+  --mavlink-serial-baud 57600
+```
+
 如果看到 warning，例如 trust schema 里仍然使用 `type any`，实飞前应该修正。failure 必须先修好，
 再启动 service containers。
 
@@ -252,7 +296,53 @@ nfd-start
   --trust-schema /absolute/path/to/uav-trust.conf
 ```
 
-其它无人机使用相同命令，但要使用唯一的 `--drone-id` 和各自的飞控连接参数。
+其它无人机使用相同命令，但要使用唯一的 `--drone-id` 和各自的飞控连接参数。如果 companion
+computer 通过串口 MAVLink 连接 PX4 飞控，可以使用：
+
+```bash
+./build/examples/UavDroneApp \
+  --drone-id A \
+  --video-source /dev/video0 \
+  --flight-controller-backend serial \
+  --mavlink-serial-device /dev/ttyAMA0 \
+  --mavlink-serial-baud 57600 \
+  --group-prefix /example/uav/group \
+  --controller-prefix /example/uav/controller \
+  --drone-prefix /example/uav/drone \
+  --trust-schema /absolute/path/to/uav-trust.conf
+```
+
+如果无人机上使用 `mavlink-router`，继续使用 `--flight-controller-backend udp`，并把
+`--mavlink-udp-host` / `--mavlink-udp-port` 指向 router 的本地 endpoint。`mavlink-router`
+这个 backend 名字也可以作为 UDP 路径的 alias。
+
+### 飞控 readiness 和安全策略
+
+`UavDroneApp` 现在会从 UDP 或 serial backend 解析常见 MAVLink 状态消息。Telemetry response
+会在飞控提供时包含 `heartbeat_seen`、`armed`、`flight_controller_ready`、`gps_ready`、
+`battery_ready`、`readiness`、`ready_for_takeoff`、`gps_fix_type`、
+`gps_satellites_visible`、`altitude_m`、`groundspeed_mps` 和 `battery_percent`。
+Ground station 会在 telemetry / mission 视图里显示这些字段，让 operator 能看到当前选中的
+drone 是否真的 ready。
+
+命令 response 不再只代表“bytes 已转发”。对于标准 MAVLink `COMMAND_ACK`，backend 会返回
+`ack_result`、`ack_command_id` 和 `ack_raw_result`。非 manual command 只有在飞控 ACK 为
+`accepted` 或 `in-progress` 时才算成功；否则 NDNSF response 会是失败。
+
+Manual-control safety 采用保守策略。Drone 只会在很短的新鲜窗口内重放最新 `MANUAL_CONTROL`
+frame。窗口过期后，它会发送一次 neutral manual-control frame，然后停止重放，直到收到新的
+GS command。这样可以避免链路卡住后旧的键盘/手柄输入一直持续生效。
+
+任何真机电机测试前：
+
+1. 拆掉螺旋桨。
+2. 确认证书、trust schema、NFD route 和 Drone/GS identity 名字都正确。
+3. 先用 `mock` 或 SITL 验证 flight-controller backend。
+4. 确认 telemetry 能看到 heartbeat、GPS/EKF readiness、电池状态、arming 状态和 command ACK。
+5. 在无桨状态测试 `Arm`、`Disarm`/`Land`、neutral manual control 和 emergency-stop 行为。
+6. 然后才进入系留或低风险真机短测。
+
+不要把未经验证的 demo 直接装桨运行。
 
 ### 操作流程
 
@@ -506,19 +596,32 @@ nfd-start
 会优先尝试真实/虚拟摄像头，只有失败时才回退到这种直接文件输入。
 
 在 ground-station 窗口点击 `Arm`、`Takeoff` 或 `Land`，可以通过 Targeted MAVLink command
-控制目标 drone。如果要用键盘操作，先点击 `Start Control`。GUI 会显示手操 keycap：
+控制目标 drone。如果要手操飞行，先点击 `Start Control`，然后在控制面板里选择 `Keyboard`
+或 `Xbox Gamepad`。如果本机没有可读的 `/dev/input/js*` 手柄设备，手柄选项会灰色不可选。
+布局采用接近 QGroundControl/Mode-2 的习惯：左摇杆负责 yaw/throttle，右摇杆负责
+roll/pitch。
+
+键盘布局：
 
 ```text
-W forward        S back
-A yaw left       D yaw right
-Q roll left      E roll right
-R throttle up    F throttle down
-I arm            T takeoff
-L land           V video start
-X video stop
+左摇杆模拟                         右摇杆模拟
+        R throttle up                     W pitch forward
+A yaw left   D yaw right          Q roll left   E roll right
+        F throttle down                   S pitch back
+
+命令键：I arm, T takeoff, L land, V video start, X video stop
 ```
 
-按住某个键时，对应 keycap 会变成黑色，让 operator 明确知道当前按下的是哪个控制键。control mode
+Xbox 手柄布局：
+
+```text
+左摇杆：yaw / throttle
+右摇杆：roll / pitch
+A: arm       Y: takeoff
+B: land      X: start/stop video
+```
+
+按住某个键、拨动摇杆或按下手柄按钮时，对应控件会变成黑色，让 operator 明确知道当前输入。control mode
 开启期间，GS 会持续低频发送 Targeted `MANUAL_CONTROL` 更新；没有按键时也会发送 neutral update。
 Drone 会在本机用较高频率短时间重放最新 manual frame，这样即使 NDNSF request/response 有抖动，
 PX4 看到的仍然是连续控制流。Manual-control response 会带回当前可用的飞控状态字段，例如
@@ -818,11 +921,9 @@ nfdc strategy set /example/uav/group /localhost/nfd/strategy/multicast
    对缺失 part 发 compensation request、按电量重新分配，以及 coverage report。
 3. 继续加固 MAVLink UDP mission upload 路径：清理/替换旧 mission、mission-current 行为、
    retry window、mission progress telemetry，以及 operator 可读的失败原因。
-4. 在 ground station 增加手柄控制。键盘/manual 模式已经在 ground station 端构造 MAVLink bytes，
-   并通过 NDNSF Targeted 调用发送 opaque frame。
-5. 针对有损无线链路调优 H264/H265 GOP、bitrate、chunk size、FEC 和 keyframe recovery，
+4. 针对有损无线链路调优 H264/H265 GOP、bitrate、chunk size、FEC 和 keyframe recovery，
    同时保留即时播放语义。
-6. 通过 `NDNSF-DistributedRepo` 存储任务图像、telemetry log 和 report，数据名使用
+5. 通过 `NDNSF-DistributedRepo` 存储任务图像、telemetry log 和 report，数据名使用
    publisher-owned namespace，并存储签名后的 segments。
 7. 把部分图像/object-detection workflow 接到 `NDNSF-DistributedInference`，用于 ground station
    和 drones 之间的分割模型执行。

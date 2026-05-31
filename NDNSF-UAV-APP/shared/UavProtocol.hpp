@@ -40,6 +40,9 @@ encodeFields(const Fields& fields);
 Fields
 decodeFields(const std::string& payload);
 
+Fields
+loadKeyValueConfig(const std::string& path);
+
 std::vector<uint8_t>
 encodeVideoPacket(const VideoPacket& packet);
 
@@ -50,8 +53,19 @@ std::vector<uint8_t>
 buildMockMavlinkFrame(const std::string& commandName, const Fields& params);
 
 std::vector<uint8_t>
+buildMavlinkHeartbeatFrame(const Fields& params = {});
+
+std::vector<uint8_t>
 buildMavlinkParamSetFrame(const std::string& paramName, float value,
                           uint8_t paramType, const Fields& params = {});
+
+std::vector<uint8_t>
+buildMavlinkMissionCountFrame(uint16_t count, const Fields& params = {});
+
+std::vector<uint8_t>
+buildMavlinkMissionItemIntFrame(uint16_t seq, double latitude, double longitude,
+                                float altitudeM, bool current,
+                                const Fields& params = {});
 
 std::vector<uint8_t>
 buildMockJpeg(const std::string& droneId, const std::string& frameId);
@@ -72,7 +86,8 @@ makeMissionPayload(const std::string& missionId,
                    const std::string& role,
                    const std::string& area,
                    const std::vector<std::string>& waypoints,
-                   bool captureRequired);
+                   bool captureRequired,
+                   const std::string& objectDetectionService = "/UAV/GS/ObjectDetection");
 
 std::string
 fieldOr(const Fields& fields, const std::string& key, const std::string& fallback);

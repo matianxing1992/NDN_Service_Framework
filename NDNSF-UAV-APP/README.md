@@ -106,22 +106,61 @@ Each drone:
   camera or video source
 ```
 
-The binaries keep convenient defaults from `shared/UavNames.hpp`, including
-`/example/uav/controller`, `/example/uav/gs`, and
-`/example/uav/drone/<id>`, but deployment identities are not hardcoded into the
-application logic. For a real deployment, pass names on the command line and
-keep the policy file and trust schema consistent with those names:
+The binaries load deployment names from `configs/uav_runtime.conf` by default.
+That file keeps convenient demo values such as `/example/uav/controller`,
+`/example/uav/gs`, and `/example/uav/drone/<id>`, but real deployment
+identities and service names should live in a copied runtime config rather than
+being edited into C++ code. For a real deployment, copy the runtime config,
+change the namespace there, and keep the policy file and trust schema
+consistent with those names:
 
 ```text
+cp NDNSF-UAV-APP/configs/uav_runtime.conf /etc/ndnsf/uav_runtime.conf
+```
+
+The same values can still be overridden from the command line when needed:
+
+```text
+--runtime-config /etc/ndnsf/uav_runtime.conf
 --group-prefix /example/uav/group
 --controller-prefix /example/uav/controller
 --ground-station-identity /example/uav/gs      # ground station only
 --drone-prefix /example/uav/drone              # drone identity = <prefix>/<id>
 --trust-schema /absolute/path/to/uav-trust.conf
+--service-mavlink-execute /UAV/MAVLink/Execute
+--service-mission-assign /UAV/Mission/Assign
+--service-telemetry-status /UAV/Telemetry/GetStatus
+--service-camera-frame /UAV/Camera/GetFrame
+--service-camera-video-control-suffix /UAV/Camera/Video
+--service-gs-object-detection /UAV/GS/ObjectDetection
 ```
 
+Each running APP instance can also load its own config with `--app-config`.
+The runtime config above is deployment-wide; the app config is per process.
+This is how two drones keep different IDs, camera devices, MAVLink ports, or
+serial devices while sharing the same service namespace:
+
+```text
+UavDroneApp --app-config /etc/ndnsf/drone-A.conf
+UavDroneApp --app-config /etc/ndnsf/drone-B.conf
+UavGroundStationApp --app-config /etc/ndnsf/ground-station.conf
+```
+
+Example templates are provided in:
+
+```text
+NDNSF-UAV-APP/configs/drone-A.conf
+NDNSF-UAV-APP/configs/drone-B.conf
+NDNSF-UAV-APP/configs/ground-station.conf
+```
+
+Command-line options override both app config and runtime config, so MiniNDN
+and quick experiments can still adjust ports, video source, or target drones
+without editing files.
+
 If the deployment wants names such as `/ndn/ndnsf/uav-demo/...`, use those
-options instead of editing and rebuilding the app, and update
+runtime config values or command-line options instead of editing and rebuilding
+the app, and update
 `configs/uav_demo.policies` plus the deployment trust schema together.
 
 ### Certificate Bootstrap
@@ -232,6 +271,14 @@ python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
   --mavlink-udp-listen-port 14550
 ```
 
+For a serial flight-controller link, replace the MAVLink backend options with:
+
+```bash
+  --flight-controller-backend serial \
+  --mavlink-serial-device /dev/ttyAMA0 \
+  --mavlink-serial-baud 57600
+```
+
 Warnings, such as `type any` in a trust schema, should be fixed before flight.
 Failures must be fixed before starting the service containers.
 
@@ -284,7 +331,62 @@ nfd-start
 ```
 
 Use the same command on other drones with unique `--drone-id` values and
-flight-controller connection settings.
+flight-controller connection settings. For a companion computer connected to a
+PX4 flight controller over a serial MAVLink port, use:
+
+```bash
+./build/examples/UavDroneApp \
+  --drone-id A \
+  --video-source /dev/video0 \
+  --flight-controller-backend serial \
+  --mavlink-serial-device /dev/ttyAMA0 \
+  --mavlink-serial-baud 57600 \
+  --group-prefix /example/uav/group \
+  --controller-prefix /example/uav/controller \
+  --drone-prefix /example/uav/drone \
+  --trust-schema /absolute/path/to/uav-trust.conf
+```
+
+If the drone uses `mavlink-router`, keep `--flight-controller-backend udp` and
+point `--mavlink-udp-host` / `--mavlink-udp-port` at the router's local endpoint.
+The `mavlink-router` backend name is accepted as an alias for this UDP path.
+
+### Flight-Controller Readiness And Safety
+
+`UavDroneApp` now parses common MAVLink status messages from the UDP or serial
+backend. Telemetry responses include `heartbeat_seen`, `armed`,
+`flight_controller_ready`, `gps_ready`, `battery_ready`, `readiness`,
+`ready_for_takeoff`, `gps_fix_type`, `gps_satellites_visible`,
+`altitude_m`, `groundspeed_mps`, and `battery_percent` when the flight
+controller publishes them. The ground station shows these fields in the
+telemetry/mission view so the operator can see whether the selected drone is
+actually ready.
+
+Command responses no longer mean only "bytes were forwarded": for standard
+MAVLink `COMMAND_ACK` messages the backend reports `ack_result`,
+`ack_command_id`, and `ack_raw_result`. Non-manual commands are considered
+accepted only when the flight controller acknowledges them as `accepted` or
+`in-progress`; otherwise the NDNSF response is a failure.
+
+Manual-control safety is intentionally conservative. The drone repeats the
+latest `MANUAL_CONTROL` frame only inside a short freshness window. When that
+window expires, it sends one neutral manual-control frame and stops replaying
+until a new GS command arrives. This prevents stale keyboard/gamepad input from
+continuing indefinitely after a link stall.
+
+Before any real motor test:
+
+1. Remove propellers.
+2. Verify certificates, trust schema, NFD routes, and Drone/GS identity names.
+3. Verify the flight-controller backend with `mock` or SITL first.
+4. Verify that telemetry reports a heartbeat, GPS/EKF readiness, battery state,
+   arming state, and command ACKs.
+5. Test `Arm`, `Disarm`/`Land`, neutral manual control, and emergency-stop
+   behavior with no propellers.
+6. Only then proceed to a restrained or low-risk real-flight test.
+
+Do not directly run the demo with propellers installed on an unvalidated
+vehicle.
 
 ### Operator Workflow
 
@@ -583,21 +685,34 @@ For file-based local debugging without a camera, pass a video file to
 fallback after trying a real or virtual camera.
 
 Click `Arm`, `Takeoff`, or `Land` in the ground-station window to send Targeted
-MAVLink commands to the drone. For keyboard operation, click `Start Control`.
-The GUI displays manual-control keycaps:
+MAVLink commands to the drone. For manual flight, click `Start Control` and
+choose `Keyboard` or `Xbox Gamepad` in the control panel. The gamepad option is
+disabled when no readable `/dev/input/js*` device is present. The layout follows
+the usual QGroundControl/Mode-2 mental model: the left stick controls
+yaw/throttle, and the right stick controls roll/pitch.
+
+Keyboard layout:
 
 ```text
-W forward        S back
-A yaw left       D yaw right
-Q roll left      E roll right
-R throttle up    F throttle down
-I arm            T takeoff
-L land           V video start
-X video stop
+Left stick emulation              Right stick emulation
+        R throttle up                     W pitch forward
+A yaw left   D yaw right          Q roll left   E roll right
+        F throttle down                   S pitch back
+
+Commands: I arm, T takeoff, L land, V video start, X video stop
 ```
 
-While a key is held, its keycap turns black so the operator can see which
-command is active. While control mode is enabled, the ground station keeps
+Xbox gamepad layout:
+
+```text
+Left stick:  yaw / throttle
+Right stick: roll / pitch
+A: arm       Y: takeoff
+B: land      X: start/stop video
+```
+
+While a key, stick, or gamepad button is active, the corresponding control turns
+black so the operator can see which command is active. While control mode is enabled, the ground station keeps
 sending low-rate Targeted `MANUAL_CONTROL` updates, including neutral updates
 when no key is pressed. The drone repeats the latest manual frame locally at a
 higher rate for a short freshness window, so PX4 sees a continuous control
@@ -943,10 +1058,7 @@ another drone that provides the same service.
 3. Harden the MAVLink UDP mission upload path against PX4/ArduPilot edge cases:
    clear/replace existing missions, mission-current behavior, retry windows,
    mission progress telemetry, and operator-visible failure reasons.
-4. Add gamepad control at the ground station. Keyboard/manual modes already
-   build MAVLink bytes at the ground station and send opaque frames through
-   NDNSF Targeted calls.
-5. Tune H264/H265 GOP, bitrate, chunk sizing, FEC, and keyframe recovery for
+4. Tune H264/H265 GOP, bitrate, chunk sizing, FEC, and keyframe recovery for
    lossy wireless links while keeping immediate playback semantics.
 6. Store mission images, telemetry logs, and reports through
    `NDNSF-DistributedRepo`, using publisher-owned data names and signed
