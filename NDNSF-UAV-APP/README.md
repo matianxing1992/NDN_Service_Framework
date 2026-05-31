@@ -237,9 +237,27 @@ The GUI should be a ground-station frontend over the same service layer:
 - object-detection result overlay;
 - drone availability and selected-provider view.
 
+The current ground-station window follows the same rough organization as a
+QGroundControl Fly View: a left vehicle list for multi-drone awareness, a center
+fly workspace for map/mission context and video, and a right inspector for
+telemetry, services, and command status. It is intentionally simpler than QGC:
+the map is still a lightweight mission placeholder, but the layout leaves room
+for QGC-like vehicle switching, video/map foreground switching, and mission
+tools.
+
 The command path should remain identical: GUI actions build MAVLink bytes at the
 ground station, then send opaque MAVLink frames through NDNSF Targeted service
 invocation.
+
+NDNSF's built-in NDNSD integration remains disabled by default. For UAV demos it
+can be useful as a low-frequency service advertisement channel: each DroneAPP
+can periodically publish installed services such as video control, Targeted
+MAVLink execution, telemetry, camera frame, and mission assignment. The core now
+has a generic `ServiceProvider::publishServiceInfo(...)` hook for that purpose,
+but the MiniNDN launcher still keeps `NDNSF_DISABLE_NDNSD=1` because the older
+NDNSD runtime path needs a separate compatibility pass before it is safe for the
+GUI demo. Performance and latency tests should keep the default disabled
+setting.
 
 ## Build
 
@@ -287,8 +305,40 @@ X video stop
 ```
 
 While a key is held, its keycap turns black so the operator can see which
-command is active. Holding a manual key sends MAVLink `MANUAL_CONTROL` frames at
-a low fixed rate; releasing the key sends a neutral update.
+command is active. While control mode is enabled, the ground station keeps
+sending low-rate Targeted `MANUAL_CONTROL` updates, including neutral updates
+when no key is pressed. The drone repeats the latest manual frame locally at a
+higher rate for a short freshness window, so PX4 sees a continuous control
+stream even when NDNSF request/response timing jitters. Manual-control responses
+include the currently available flight-controller status fields such as
+`altitude_m`, `groundspeed_mps`, `battery_percent`, and controller state.
+When the MiniNDN launcher starts PX4 SITL itself, DroneAPP is also passed
+`--configure-px4-sitl-demo-params`. This sends a few MAVLink `PARAM_SET`
+messages to make the demo tolerate Targeted-control jitter better
+(`COM_RC_LOSS_T=30`, `COM_FAIL_ACT_T=25`, `NAV_RCL_ACT=1`). The flag is not
+enabled by default for a manually started DroneAPP, so real flight controllers
+keep their own safety policy unless the operator explicitly opts into the
+SITL demo behavior.
+
+Basic operation order:
+
+1. Wait until the Drone window reports `ready for takeoff`.
+2. Click `Arm` or press `I`. Arming unlocks the flight controller so it is
+   allowed to spin motors and accept flight commands; use it only when the
+   vehicle is ready to fly.
+3. Click `Takeoff` or press `T`. In the PX4/jMAVSim demo, this sends the drone
+   to a low fixed hover altitude.
+4. Click `Start Control`, then hold keys to maneuver. Use `R` to climb and `F`
+   to descend; release keys to send neutral control.
+5. Click `Land` or press `L` before closing the demo.
+
+The PX4/jMAVSim demo currently sends `Takeoff` as a raw MAVLink
+`MAV_CMD_NAV_TAKEOFF` with an absolute altitude value suitable for the default
+SITL world. The default is intentionally low for the simulator camera view. A
+later telemetry pass should translate the operator's relative
+takeoff altitude into the vehicle's current AMSL altitude before building the
+MAVLink command.
+
 The drone window should switch to `video streaming`, and the ground-station
 window should display the live video packet stream. Click `Stop Video` or press
 `X` in control mode to stop the stream; the drone window should switch back to
@@ -367,6 +417,12 @@ PX4/jMAVSim output is filtered before it reaches `jmavsim-<drone>.log`: repeated
 `pxh>` prompt updates are dropped and the log is capped by
 `NDNSF_UAV_JMAVSIM_LOG_MAX_BYTES` (default 8 MiB). This avoids VM stalls caused
 by terminal prompt spam during interactive demos.
+The launcher also enables DroneAPP's PX4 SITL demo parameter setup by default;
+use `--no-configure-px4-sitl-demo-params` to leave PX4's RC/manual-control
+failsafe parameters untouched.
+`--enable-ndnsd` is currently reserved for NDNSD experiments; the launcher still
+exports `NDNSF_DISABLE_NDNSD=1` until the NDNSD runtime compatibility pass is
+done.
 
 After the script prints `NDNSF_UAV_GUI_MININDN_READY`, use the ground-station
 window to click `Start Video` and `Stop Video`. Logs are written under
@@ -416,6 +472,13 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --flight-controller-backend udp \
   --mavlink-udp-port 18570
 ```
+
+The Drone app also binds its local MAVLink GCS port, default `14550`, for
+PX4-side command acknowledgments and telemetry. Override it with
+`--mavlink-udp-listen-port` if another GCS process is already using that port.
+In interactive MiniNDN mode, closing the ground-station GUI stops the launcher
+and cleans up PX4/jMAVSim so simulator processes do not keep burning CPU in the
+background.
 
 For a non-interactive PX4/jMAVSim smoke test:
 

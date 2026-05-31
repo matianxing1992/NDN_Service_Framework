@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <ctime>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
@@ -736,6 +737,28 @@ namespace ndn_service_framework
         NDN_LOG_WARN("Registered service handler for " << serviceUri
                      << " mode="
                      << (mode == ServiceMode::Targeted ? "Targeted" : "Normal"));
+    }
+
+    void ServiceProvider::publishServiceInfo(
+        const ndn::Name& serviceName,
+        int serviceLifetimeSeconds,
+        std::map<std::string, std::string> serviceMetaInfo)
+    {
+        if (!m_ServiceDiscovery.isEnabled()) {
+            NDN_LOG_DEBUG("[ServiceProvider] NDNSD disabled; skip service info publish for "
+                          << serviceName);
+            return;
+        }
+        ndnsd::discovery::Details details;
+        details.serviceName = serviceName;
+        details.applicationPrefix = identity;
+        details.serviceLifetime = serviceLifetimeSeconds;
+        details.publishTimestamp = std::time(nullptr);
+        details.serviceMetaInfo = std::move(serviceMetaInfo);
+        m_ServiceDiscovery.publishServiceDetail(details);
+        NDN_LOG_INFO("[ServiceProvider] NDNSD service info published identity="
+                     << identity << " service=" << serviceName
+                     << " lifetime=" << serviceLifetimeSeconds);
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,

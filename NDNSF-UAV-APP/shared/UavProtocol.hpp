@@ -50,6 +50,10 @@ std::vector<uint8_t>
 buildMockMavlinkFrame(const std::string& commandName, const Fields& params);
 
 std::vector<uint8_t>
+buildMavlinkParamSetFrame(const std::string& paramName, float value,
+                          uint8_t paramType, const Fields& params = {});
+
+std::vector<uint8_t>
 buildMockJpeg(const std::string& droneId, const std::string& frameId);
 
 std::string
