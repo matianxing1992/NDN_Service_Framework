@@ -18,15 +18,22 @@
 #include <gtkmm.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <csignal>
 #include <cerrno>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <fcntl.h>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <map>
+#include <pwd.h>
 #include <signal.h>
 #include <memory>
 #include <mutex>
@@ -35,6 +42,7 @@
 #include <sstream>
 #include <set>
 #include <sys/file.h>
+#include <sys/select.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -48,6 +56,23 @@ using namespace ndnsf::examples::uav;
 using namespace std::chrono_literals;
 
 constexpr const char* PX4_SITL_TAKEOFF_AMSL_M = "505";
+
+std::string
+mavlinkTargetSystemForDrone(const std::string& droneId)
+{
+  if (droneId.size() == 1 && droneId[0] >= 'A' && droneId[0] <= 'Z') {
+    return std::to_string(static_cast<int>(droneId[0] - 'A') + 1);
+  }
+  if (droneId.size() == 1 && droneId[0] >= 'a' && droneId[0] <= 'z') {
+    return std::to_string(static_cast<int>(droneId[0] - 'a') + 1);
+  }
+  if (!droneId.empty() &&
+      std::all_of(droneId.begin(), droneId.end(),
+                  [] (char ch) { return ch >= '0' && ch <= '9'; })) {
+    return droneId;
+  }
+  return "1";
+}
 
 class KeyChainInitLock
 {
@@ -87,8 +112,52 @@ getOption(int argc, char** argv, const std::string& option, const std::string& f
   return fallback;
 }
 
+std::string
+shellQuote(const std::string& value)
+{
+  std::string output = "'";
+  for (const auto ch : value) {
+    if (ch == '\'') {
+      output += "'\\''";
+    }
+    else {
+      output.push_back(ch);
+    }
+  }
+  output.push_back('\'');
+  return output;
+}
+
+std::string
+pythonUserEnvironmentPrefix()
+{
+  const char* sudoUser = std::getenv("SUDO_USER");
+  if (geteuid() != 0 || sudoUser == nullptr || *sudoUser == '\0') {
+    return "";
+  }
+
+  if (auto* passwd = getpwnam(sudoUser)) {
+    const std::string home = passwd->pw_dir;
+    return "HOME=" + shellQuote(home) + " XDG_CACHE_HOME=" +
+           shellQuote(home + "/.cache") + " ";
+  }
+
+  return "";
+}
+
 bool
 hasFlag(int argc, char** argv, const std::string& option)
+{
+  for (int i = 1; i < argc; ++i) {
+    if (argv[i] == option) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
+hasOption(int argc, char** argv, const std::string& option)
 {
   for (int i = 1; i < argc; ++i) {
     if (argv[i] == option) {
@@ -109,6 +178,69 @@ getOrCreateIdentity(ndn::KeyChain& keyChain, const ndn::Name& identity)
       .getDefaultKey()
       .getDefaultCertificate();
   }
+}
+
+std::vector<ndn::Name>
+listInstalledIdentities()
+{
+  std::vector<ndn::Name> identities;
+  ndn::KeyChain keyChain;
+  const auto& container = keyChain.getPib().getIdentities();
+  for (auto it = container.begin(); it != container.end(); ++it) {
+    identities.push_back((*it).getName());
+  }
+  std::sort(identities.begin(), identities.end());
+  return identities;
+}
+
+ndn::Name
+chooseGroundStationIdentity(const ndn::Name& configuredIdentity)
+{
+  const auto identities = listInstalledIdentities();
+  if (identities.empty()) {
+    return configuredIdentity;
+  }
+
+  Gtk::Dialog dialog("Select NDNSF ground-station certificate", true);
+  dialog.set_default_size(520, 220);
+  dialog.add_button("Use Selected Certificate", Gtk::RESPONSE_OK);
+  dialog.add_button("Use Configured Name", Gtk::RESPONSE_CANCEL);
+
+  auto* content = dialog.get_content_area();
+  Gtk::Box box(Gtk::ORIENTATION_VERTICAL, 10);
+  box.set_border_width(14);
+  Gtk::Label title;
+  title.set_markup("<b>Choose the local identity used by this Ground Station</b>");
+  title.set_xalign(0.0F);
+  Gtk::Label hint("The selected identity must have a certificate trusted by the UAV deployment trust schema.");
+  hint.set_line_wrap(true);
+  hint.set_xalign(0.0F);
+  Gtk::ComboBoxText combo;
+  int active = 0;
+  for (size_t i = 0; i < identities.size(); ++i) {
+    const auto text = identities[i].toUri();
+    combo.append(text);
+    if (identities[i] == configuredIdentity) {
+      active = static_cast<int>(i);
+    }
+  }
+  combo.set_active(active);
+  Gtk::Label configured("Configured fallback: " + configuredIdentity.toUri());
+  configured.set_xalign(0.0F);
+  box.pack_start(title, Gtk::PACK_SHRINK);
+  box.pack_start(hint, Gtk::PACK_SHRINK);
+  box.pack_start(combo, Gtk::PACK_SHRINK);
+  box.pack_start(configured, Gtk::PACK_SHRINK);
+  content->pack_start(box, Gtk::PACK_EXPAND_WIDGET);
+  dialog.show_all_children();
+
+  if (dialog.run() == Gtk::RESPONSE_OK) {
+    const auto selected = combo.get_active_text();
+    if (!selected.empty()) {
+      return ndn::Name(selected);
+    }
+  }
+  return configuredIdentity;
 }
 
 ndn::Buffer
@@ -159,35 +291,55 @@ makeResponse(bool status, const std::string& payload, const std::string& error =
   return response;
 }
 
-class GroundStationRuntime
+class GroundStationServiceContainer
 {
 public:
-  GroundStationRuntime(bool serveCertificates, int ackTimeoutMs, int timeoutMs,
+  GroundStationServiceContainer(bool serveCertificates, int ackTimeoutMs, int timeoutMs,
+                       UavRuntimeConfig config,
                        std::string targetDroneId, uint64_t videoBitrateKbps,
                        uint64_t videoFrameWidth,
-                       std::vector<std::string> patrolDroneIds = {})
+                       std::vector<std::string> patrolDroneIds = {},
+                       std::string yoloModel = "yolo26n.pt",
+                       std::string yoloScript = "NDNSF-UAV-APP/tools/yolo_detect_once.py",
+                       std::string yoloWorkerScript = "NDNSF-UAV-APP/tools/yolo_detect_worker.py")
     : m_serveCertificates(serveCertificates)
+    , m_config(std::move(config))
     , m_ackTimeoutMs(ackTimeoutMs)
     , m_timeoutMs(timeoutMs)
     , m_targetDroneId(std::move(targetDroneId))
     , m_videoBitrateKbps(videoBitrateKbps)
     , m_videoFrameWidth(videoFrameWidth)
     , m_patrolDroneIds(std::move(patrolDroneIds))
+    , m_yoloModel(std::move(yoloModel))
+    , m_yoloScript(std::move(yoloScript))
+    , m_yoloWorkerScript(std::move(yoloWorkerScript))
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
       m_patrolDroneIds.push_back(m_targetDroneId);
     }
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
-    m_gsCert = getOrCreateIdentity(m_keyChain, GROUND_STATION_IDENTITY);
-    m_controllerCert = getOrCreateIdentity(m_keyChain, CONTROLLER_PREFIX);
-    m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(GROUND_STATION_IDENTITY));
+    m_gsCert = getOrCreateIdentity(m_keyChain, m_config.groundStationIdentity);
+    m_controllerCert = getOrCreateIdentity(m_keyChain, m_config.controllerPrefix);
+    m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_config.groundStationIdentity));
   }
 
-  ~GroundStationRuntime()
+  ~GroundStationServiceContainer()
   {
+    shutdownRuntime();
+  }
+
+  void
+  shutdownRuntime()
+  {
+    if (m_done.exchange(true)) {
+      return;
+    }
     m_streaming = false;
-    m_done = true;
+    if (m_yoloPrewarmThread.joinable()) {
+      m_yoloPrewarmThread.join();
+    }
+    stopYoloWorker();
     stopDecoder();
     m_face.getIoContext().stop();
     if (m_faceThread.joinable()) {
@@ -205,12 +357,19 @@ public:
             m_face, m_keyChain, m_gsCert.getName());
         }
         m_user = std::make_unique<ndn_service_framework::ServiceUser>(
-          m_face, GROUP_PREFIX, m_gsCert, m_controllerCert, TRUST_SCHEMA);
+          m_face, m_config.groupPrefix, m_gsCert, m_controllerCert, m_config.trustSchema);
         m_user->setHandlerThreads(2);
         m_user->init();
-        m_user->fetchPermissionsFromController(CONTROLLER_PREFIX);
-        m_runtimeReady = true;
+        m_user->fetchPermissionsFromController(m_config.controllerPrefix);
+        installServiceInstances();
+        m_objectDetectionProvider->init();
+        m_objectDetectionProvider->fetchPermissionsFromController(m_config.controllerPrefix);
+        m_containerReady = true;
         publishStatus("NDNSF runtime ready");
+        m_yoloPrewarmThread = std::thread([this] {
+          std::lock_guard<std::mutex> guard(m_yoloMutex);
+          startYoloWorkerLocked();
+        });
 
         while (!m_done.load()) {
           m_face.getIoContext().run_for(std::chrono::milliseconds(10));
@@ -229,7 +388,7 @@ public:
   {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      if (m_runtimeReady.load()) {
+      if (m_containerReady.load()) {
         return true;
       }
       if (m_done.load()) {
@@ -237,7 +396,7 @@ public:
       }
       std::this_thread::sleep_for(50ms);
     }
-    return m_runtimeReady.load();
+    return m_containerReady.load();
   }
 
   void
@@ -252,11 +411,77 @@ public:
     m_frameCallback = std::move(callback);
   }
 
+  std::string
+  targetDroneId() const
+  {
+    std::lock_guard<std::mutex> guard(m_targetMutex);
+    return m_targetDroneId;
+  }
+
+  void
+  setTargetDroneId(std::string droneId)
+  {
+    if (droneId.empty()) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_targetMutex);
+      if (m_targetDroneId == droneId) {
+        return;
+      }
+      m_targetDroneId = std::move(droneId);
+    }
+    publishStatus("Selected drone " + targetDroneId());
+  }
+
+  std::vector<std::string>
+  missionReadyDrones() const
+  {
+    std::lock_guard<std::mutex> guard(m_missionReadyMutex);
+    return m_missionReadyDrones;
+  }
+
+  void
+  requestTelemetryStatus()
+  {
+    requestTelemetryStatusForDrone(targetDroneId());
+  }
+
+  void
+  requestTelemetryStatusForDrone(const std::string& droneId)
+  {
+    if (m_telemetryInFlight.exchange(true)) {
+      return;
+    }
+    postTargetedRequest(
+      droneIdentity(m_config, droneId),
+      SERVICE_TELEMETRY_STATUS,
+      encodeFields({{"type", "telemetry-status"}, {"target_drone", droneId}}),
+      [this, droneId](const std::string& payload) {
+        m_telemetryInFlight = false;
+        const auto fields = decodeFields(payload);
+        publishStatus("Telemetry drone=" + fieldOr(fields, "drone_id", droneId) +
+                      " alt=" + fieldOr(fields, "altitude_m", "unknown") + "m" +
+                      " lat=" + fieldOr(fields, "lat", "unknown") +
+                      " lon=" + fieldOr(fields, "lon", "unknown") +
+                      " battery=" + fieldOr(fields, "battery_percent", "unknown") + "%" +
+                      " mission=" + fieldOr(fields, "mission_status", "unknown") +
+                      " video=" + fieldOr(fields, "video", "unknown"));
+      },
+      [this, droneId] {
+        m_telemetryInFlight = false;
+        publishStatus("Telemetry timeout for drone " + droneId);
+      });
+  }
+
   void
   startVideo()
   {
+    const auto droneId = targetDroneId();
     if (m_streaming.load()) {
-      publishStatus("Video already streaming");
+      const auto activeDrone = activeVideoDroneId();
+      publishStatus("Video already streaming drone=" +
+                    (activeDrone.empty() ? std::string("unknown") : activeDrone));
       return;
     }
     if (m_videoStartInFlight.exchange(true)) {
@@ -265,12 +490,18 @@ public:
     }
     m_seenVideoStart = false;
     m_videoStartRetries = 0;
-    startVideoAttempt();
+    startVideoAttempt(droneId);
   }
 
   void
   stopVideo()
   {
+    const auto droneId = targetDroneId();
+    const auto activeDrone = activeVideoDroneId();
+    if (!m_streaming.load() || activeDrone != droneId) {
+      publishStatus("No video streaming for selected drone " + droneId);
+      return;
+    }
     if (m_videoStopInFlight.exchange(true)) {
       publishStatus("Video stop already pending");
       return;
@@ -281,12 +512,18 @@ public:
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
     stopDecoder();
-    postRequest(droneVideoControlService(m_targetDroneId),
+    postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
                 encodeFields({{"type", "video-control"}, {"action", "stop"}}),
-                [this](const std::string& payload) {
+                [this, droneId](const std::string& payload) {
                   m_videoStopInFlight = false;
+                  {
+                    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+                    if (m_activeVideoDroneId == droneId) {
+                      m_activeVideoDroneId.clear();
+                    }
+                  }
                   const auto fields = decodeFields(payload);
-                  publishStatus("Video stopped, packets=" +
+                  publishStatus("Video stopped drone=" + droneId + ", packets=" +
                                 fieldOr(fields, "stream_packets_published",
                                         fieldOr(fields, "frames_published", "0")) +
                                 ", fec_groups=" +
@@ -305,7 +542,26 @@ public:
   }
 
   bool
+  isStreamingForDrone(const std::string& droneId) const
+  {
+    return m_streaming.load() && activeVideoDroneId() == droneId;
+  }
+
+  std::string
+  activeVideoDroneId() const
+  {
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    return m_activeVideoDroneId;
+  }
+
+  bool
   sendMavlinkCommand(const std::string& commandName, Fields params = {})
+  {
+    return sendMavlinkCommandToDrone(targetDroneId(), commandName, std::move(params));
+  }
+
+  bool
+  sendMavlinkCommandToDrone(const std::string& droneId, const std::string& commandName, Fields params = {})
   {
     const bool isManualControl = commandName == "manual_control";
     auto& inFlight = isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight;
@@ -315,14 +571,16 @@ public:
       }
       return false;
     }
-    params["target_drone"] = m_targetDroneId;
+    params["target_drone"] = droneId;
+    params.emplace("target_system", mavlinkTargetSystemForDrone(droneId));
+    params.emplace("target_component", "1");
     const auto missionId = "manual-" + commandName + "-" + std::to_string(nowMilliseconds());
     const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
     postTargetedRequest(
-      droneIdentity(m_targetDroneId),
+      droneIdentity(m_config, droneId),
       SERVICE_MAVLINK_EXECUTE,
       payload,
-      [this, commandName, isManualControl](const std::string& responsePayload) {
+      [this, commandName, isManualControl, droneId](const std::string& responsePayload) {
         (isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight) = false;
         const auto fields = decodeFields(responsePayload);
         const auto accepted = fieldOr(fields, "accepted", "false");
@@ -333,6 +591,7 @@ public:
         const auto speed = fieldOr(fields, "groundspeed_mps", "");
         const auto battery = fieldOr(fields, "battery_percent", "");
         publishStatus("MAVLink " + commandName +
+                      " drone=" + droneId +
                       " accepted=" + accepted +
                       " ack=" + ackResult +
                       " forwarded_bytes=" + bytes +
@@ -349,8 +608,230 @@ public:
   }
 
   bool
+  sendMavlinkCommandToDroneSync(const std::string& droneId, const std::string& commandName,
+                                Fields params, std::chrono::milliseconds timeout)
+  {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool ok = false;
+    std::string ackResult = "unknown";
+    params["target_drone"] = droneId;
+    params.emplace("target_system", mavlinkTargetSystemForDrone(droneId));
+    params.emplace("target_component", "1");
+    const auto missionId = "auto-" + commandName + "-" + std::to_string(nowMilliseconds());
+    const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
+    postTargetedRequest(
+      droneIdentity(m_config, droneId),
+      SERVICE_MAVLINK_EXECUTE,
+      payload,
+      [&](const std::string& responsePayload) {
+        const auto fields = decodeFields(responsePayload);
+        ackResult = fieldOr(fields, "ack_result", "unknown");
+        const auto accepted = fieldOr(fields, "accepted", "false");
+        {
+          std::lock_guard<std::mutex> guard(mutex);
+          ok = accepted == "true" &&
+               (ackResult == "accepted" || ackResult.rfind("mock", 0) == 0);
+          done = true;
+        }
+        cv.notify_all();
+      },
+      [&] {
+        std::lock_guard<std::mutex> guard(mutex);
+        ackResult = "timeout";
+        done = true;
+        ok = false;
+        cv.notify_all();
+      });
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait_for(lock, timeout, [&] { return done; });
+    std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
+              << " ok=" << (done && ok ? "true" : "false")
+              << " ack=" << ackResult << std::endl;
+    return done && ok;
+  }
+
+  Fields
+  requestTelemetryStatusForDroneSync(const std::string& droneId,
+                                     std::chrono::milliseconds timeout)
+  {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    Fields out;
+    postTargetedRequest(
+      droneIdentity(m_config, droneId),
+      SERVICE_TELEMETRY_STATUS,
+      encodeFields({{"type", "telemetry-status"}, {"target_drone", droneId}}),
+      [&](const std::string& payload) {
+        {
+          std::lock_guard<std::mutex> guard(mutex);
+          out = decodeFields(payload);
+          done = true;
+        }
+        cv.notify_all();
+      },
+      [&] {
+        std::lock_guard<std::mutex> guard(mutex);
+        done = true;
+        cv.notify_all();
+      });
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait_for(lock, timeout, [&] { return done; });
+    return out;
+  }
+
+  bool
+  runSingleDroneMissionUploadTest(std::chrono::seconds timeout, bool startMission)
+  {
+    const std::string droneId = targetDroneId();
+    const std::string taskId = "mission-upload-" + std::to_string(nowMilliseconds());
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool ok = false;
+
+    auto makeWaypoints = [] {
+      std::ostringstream os;
+      os << std::fixed << std::setprecision(5)
+         << "single-drone:"
+         << 35.11860 << "," << -89.93750 << ">"
+         << 35.11920 << "," << -89.93750 << ">"
+         << 35.11920 << "," << -89.93680 << ">"
+         << 35.11860 << "," << -89.93680;
+      return os.str();
+    };
+    const std::string payload = encodeFields({
+      {"type", "patrol-task"},
+      {"patrol_task_id", taskId},
+      {"mission_id", taskId},
+      {"attempt_id", "1"},
+      {"part_id", "single"},
+      {"role", "single-drone-survey"},
+      {"area", "single-drone-demo-area"},
+      {"waypoints", makeWaypoints()},
+      {"altitude_m", "12"},
+      {"capture_required", "true"},
+    });
+    std::cout << "SINGLE_MISSION_START task=" << taskId
+              << " provider=" << droneId << std::endl;
+
+    auto requestMessage = makeRequest(payload);
+    std::vector<ndn::Name> providerNames{droneIdentity(m_config, droneId)};
+    m_face.getIoContext().post([this, requestMessage = std::move(requestMessage),
+                                providerNames, taskId, &mutex, &cv, &done, &ok] () mutable {
+      if (!m_containerReady.load() || !m_user) {
+        std::lock_guard<std::mutex> guard(mutex);
+        done = true;
+        ok = false;
+        cv.notify_all();
+        return;
+      }
+      auto selectIdleCandidate =
+        [providerNames](const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+          std::vector<ndn_service_framework::AckSelectionCandidate> selected;
+          for (const auto& candidate : candidates) {
+            if (!candidate.ack.getStatus() || !candidate.providerName.equals(providerNames.front())) {
+              continue;
+            }
+            const auto payload = candidate.ack.getPayload();
+            const auto fields = decodeFields(
+              std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+            if (fieldOr(fields, "mission_busy", "false") == "true") {
+              continue;
+            }
+            selected.push_back(candidate);
+            break;
+          }
+          return selected;
+        };
+      m_user->RequestService(
+        providerNames,
+        SERVICE_MISSION_ASSIGN,
+        std::move(requestMessage),
+        m_ackTimeoutMs,
+        std::move(selectIdleCandidate),
+        m_timeoutMs,
+        [&mutex, &cv, &done, &ok, taskId](const ndn::Name&) {
+          std::cout << "SINGLE_MISSION_TIMEOUT task=" << taskId << std::endl;
+          std::lock_guard<std::mutex> guard(mutex);
+          done = true;
+          ok = false;
+          cv.notify_all();
+        },
+        [&mutex, &cv, &done, &ok, taskId](const ndn_service_framework::ResponseMessage& response) {
+          const auto fields = decodeFields(responsePayload(response));
+          const bool responseOk = response.getStatus() && fieldOr(fields, "accepted", "false") == "true";
+          std::cout << "SINGLE_MISSION_DONE task=" << taskId
+                    << " ok=" << (responseOk ? "true" : "false")
+                    << " provider=" << fieldOr(fields, "drone_id", "unknown")
+                    << " mission_transport=" << fieldOr(fields, "mission_transport", "unknown")
+                    << " mission_ack=" << fieldOr(fields, "mission_ack", "unknown")
+                    << " waypoints_forwarded=" << fieldOr(fields, "waypoints_forwarded", "0")
+                    << std::endl;
+          std::lock_guard<std::mutex> guard(mutex);
+          ok = responseOk;
+          done = true;
+          cv.notify_all();
+        });
+    });
+
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait_for(lock, timeout, [&] { return done; });
+    if (!(done && ok) || !startMission) {
+      return done && ok;
+    }
+    lock.unlock();
+
+    if (!sendMavlinkCommandToDroneSync(droneId, "arm", {{"arm", "true"}},
+                                       std::chrono::milliseconds(m_timeoutMs))) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1800));
+    if (!sendMavlinkCommandToDroneSync(droneId, "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}},
+                                       std::chrono::milliseconds(m_timeoutMs))) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(6500));
+    if (!sendMavlinkCommandToDroneSync(droneId, "start_mission", {},
+                                       std::chrono::milliseconds(m_timeoutMs))) {
+      return false;
+    }
+    for (int i = 0; i < 6; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+      const auto telemetry = requestTelemetryStatusForDroneSync(
+        droneId, std::chrono::milliseconds(m_timeoutMs));
+      std::cout << "SINGLE_MISSION_TELEMETRY sample=" << i
+                << " drone=" << fieldOr(telemetry, "drone_id", droneId)
+                << " lat=" << fieldOr(telemetry, "lat", "unknown")
+                << " lon=" << fieldOr(telemetry, "lon", "unknown")
+                << " local_north_m=" << fieldOr(telemetry, "local_north_m", "unknown")
+                << " local_east_m=" << fieldOr(telemetry, "local_east_m", "unknown")
+                << " alt=" << fieldOr(telemetry, "altitude_m", "unknown")
+                << " speed=" << fieldOr(telemetry, "groundspeed_mps", "unknown")
+                << std::endl;
+    }
+    return true;
+  }
+
+  bool
   runAutoPatrolCompensationDemo(std::chrono::seconds timeout)
   {
+    return runPatrolCompensationTask(timeout, 35.1186, -89.9375, 140.0, true);
+  }
+
+  bool
+  runPatrolCompensationTask(std::chrono::seconds timeout, double centerLat, double centerLon,
+                            double sideMeters, bool simulateFirstPartMissing,
+                            const std::vector<std::pair<double, double>>& routeWaypoints = {})
+  {
+    struct GeoPoint
+    {
+      double lat = 0.0;
+      double lon = 0.0;
+    };
+
     struct PatrolPart
     {
       std::string id;
@@ -376,11 +857,229 @@ public:
     }
 
     const std::string taskId = "patrol-" + std::to_string(nowMilliseconds());
+    {
+      std::lock_guard<std::mutex> guard(m_missionReadyMutex);
+      m_missionReadyDrones.clear();
+    }
     auto state = std::make_shared<PatrolDemoState>();
-    state->parts = {
-      {"part0", PatrolPart{"part0", "north-sector", "N0>N1>N2", m_patrolDroneIds[0], "", 0, false}},
-      {"part1", PatrolPart{"part1", "south-sector", "S0>S1>S2", m_patrolDroneIds[1], "", 0, false}},
+    sideMeters = std::clamp(sideMeters, 40.0, 1000.0);
+    const auto latStep = sideMeters / 111320.0;
+    const auto lonStep = sideMeters / (111320.0 * std::max(0.2, std::cos(centerLat * M_PI / 180.0)));
+    auto makeWaypointText = [] (const std::string& sector,
+                                const std::vector<GeoPoint>& points) {
+      std::ostringstream os;
+      os << sector << ":";
+      for (size_t i = 0; i < points.size(); ++i) {
+        if (i > 0) {
+          os << ">";
+        }
+        os << std::fixed << std::setprecision(6)
+           << points[i].lat << "," << points[i].lon;
+      }
+      return os.str();
     };
+
+    auto distanceSq = [] (const GeoPoint& a, const GeoPoint& b, double referenceLat) {
+      const auto latScale = 111320.0;
+      const auto lonScale = 111320.0 * std::max(0.2, std::cos(referenceLat * M_PI / 180.0));
+      const auto dLat = (a.lat - b.lat) * latScale;
+      const auto dLon = (a.lon - b.lon) * lonScale;
+      return dLat * dLat + dLon * dLon;
+    };
+
+    auto nearestNeighborRoute = [&distanceSq] (std::vector<GeoPoint> points, double referenceLat) {
+      std::vector<GeoPoint> route;
+      if (points.empty()) {
+        return route;
+      }
+      auto startIt = std::min_element(points.begin(), points.end(),
+        [] (const GeoPoint& a, const GeoPoint& b) {
+          if (a.lat == b.lat) {
+            return a.lon < b.lon;
+          }
+          return a.lat < b.lat;
+        });
+      route.push_back(*startIt);
+      points.erase(startIt);
+      while (!points.empty()) {
+        const auto current = route.back();
+        auto nextIt = std::min_element(points.begin(), points.end(),
+          [current, referenceLat, &distanceSq] (const GeoPoint& a, const GeoPoint& b) {
+            return distanceSq(current, a, referenceLat) < distanceSq(current, b, referenceLat);
+          });
+        route.push_back(*nextIt);
+        points.erase(nextIt);
+      }
+      return route;
+    };
+
+    auto clusterRouteWaypoints =
+      [&distanceSq, &nearestNeighborRoute, &makeWaypointText, centerLat] (
+        const std::vector<std::pair<double, double>>& points,
+        size_t requestedClusters) {
+        std::vector<PatrolPart> parts;
+        if (points.empty() || requestedClusters == 0) {
+          return parts;
+        }
+        std::vector<GeoPoint> allPoints;
+        allPoints.reserve(points.size());
+        for (const auto& point : points) {
+          allPoints.push_back({point.first, point.second});
+        }
+        const size_t clusterCount = std::min(requestedClusters, allPoints.size());
+        std::vector<GeoPoint> centers;
+        centers.reserve(clusterCount);
+        auto sorted = allPoints;
+        std::sort(sorted.begin(), sorted.end(), [] (const GeoPoint& a, const GeoPoint& b) {
+          if (a.lon == b.lon) {
+            return a.lat < b.lat;
+          }
+          return a.lon < b.lon;
+        });
+        for (size_t i = 0; i < clusterCount; ++i) {
+          const size_t index = std::min(sorted.size() - 1,
+                                        i * sorted.size() / clusterCount);
+          centers.push_back(sorted[index]);
+        }
+
+        std::vector<size_t> assignments(allPoints.size(), 0);
+        for (int iteration = 0; iteration < 8; ++iteration) {
+          std::vector<std::vector<GeoPoint>> groups(clusterCount);
+          for (size_t pointIndex = 0; pointIndex < allPoints.size(); ++pointIndex) {
+            size_t best = 0;
+            double bestDistance = distanceSq(allPoints[pointIndex], centers.front(), centerLat);
+            for (size_t centerIndex = 1; centerIndex < centers.size(); ++centerIndex) {
+              const auto candidateDistance =
+                distanceSq(allPoints[pointIndex], centers[centerIndex], centerLat);
+              if (candidateDistance < bestDistance) {
+                best = centerIndex;
+                bestDistance = candidateDistance;
+              }
+            }
+            assignments[pointIndex] = best;
+            groups[best].push_back(allPoints[pointIndex]);
+          }
+          for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+            if (groups[groupIndex].empty()) {
+              continue;
+            }
+            GeoPoint nextCenter{};
+            for (const auto& point : groups[groupIndex]) {
+              nextCenter.lat += point.lat;
+              nextCenter.lon += point.lon;
+            }
+            nextCenter.lat /= static_cast<double>(groups[groupIndex].size());
+            nextCenter.lon /= static_cast<double>(groups[groupIndex].size());
+            centers[groupIndex] = nextCenter;
+          }
+        }
+
+        std::vector<std::vector<GeoPoint>> groups(clusterCount);
+        for (size_t pointIndex = 0; pointIndex < allPoints.size(); ++pointIndex) {
+          groups[assignments[pointIndex]].push_back(allPoints[pointIndex]);
+        }
+        for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+          if (groups[groupIndex].empty()) {
+            continue;
+          }
+          const auto role = "waypoint-cluster-" + std::to_string(groupIndex);
+          const auto route = nearestNeighborRoute(groups[groupIndex], centerLat);
+          const auto id = "part" + std::to_string(parts.size());
+          parts.push_back(PatrolPart{id, role, makeWaypointText(role, route),
+                                     "", "", 0, false});
+        }
+        return parts;
+      };
+
+    auto makeAutoSectorParts =
+      [&makeWaypointText, centerLat, centerLon, latStep, lonStep] (size_t partCount) {
+        std::vector<PatrolPart> parts;
+        parts.reserve(partCount);
+        const auto spacing = lonStep * 1.20;
+        const auto startLon = centerLon - spacing * (static_cast<double>(partCount) - 1.0) / 2.0;
+        for (size_t i = 0; i < partCount; ++i) {
+          const auto sectorLon = startLon + spacing * static_cast<double>(i);
+          const auto sectorLat = centerLat - latStep / 2.0;
+          const auto role = "patrol-cluster-" + std::to_string(i);
+          std::vector<GeoPoint> route{
+            {sectorLat, sectorLon - lonStep / 2.0},
+            {sectorLat + latStep, sectorLon - lonStep / 2.0},
+            {sectorLat + latStep, sectorLon + lonStep / 2.0},
+            {sectorLat, sectorLon + lonStep / 2.0},
+          };
+          const auto id = "part" + std::to_string(parts.size());
+          parts.push_back(PatrolPart{id, role, makeWaypointText(role, route),
+                                     "", "", 0, false});
+        }
+        return parts;
+      };
+
+    auto parseFirstWaypointOr = [] (const std::string& waypoints, GeoPoint fallback) {
+      const auto colon = waypoints.find(':');
+      const auto bodyStart = colon == std::string::npos ? 0 : colon + 1;
+      const auto itemEnd = waypoints.find('>', bodyStart);
+      const auto item = waypoints.substr(bodyStart, itemEnd == std::string::npos ?
+                                                   std::string::npos : itemEnd - bodyStart);
+      const auto comma = item.find(',');
+      if (comma == std::string::npos) {
+        return fallback;
+      }
+      try {
+        return GeoPoint{std::stod(item.substr(0, comma)),
+                        std::stod(item.substr(comma + 1))};
+      }
+      catch (const std::exception&) {
+        return fallback;
+      }
+    };
+
+    auto appendReturnWaypoint = [] (std::string waypoints, GeoPoint returnPoint) {
+      if (waypoints.empty()) {
+        waypoints = "route";
+      }
+      if (waypoints.find(':') == std::string::npos) {
+        waypoints += ':';
+      }
+      else if (waypoints.back() != ':') {
+        waypoints += '>';
+      }
+      std::ostringstream point;
+      point << std::fixed << std::setprecision(6)
+            << returnPoint.lat << "," << returnPoint.lon;
+      waypoints += point.str();
+      return waypoints;
+    };
+
+    auto departurePointForDrone = [this] (const std::string& droneId, GeoPoint fallback) {
+      const auto telemetry = requestTelemetryStatusForDroneSync(droneId, std::chrono::milliseconds(900));
+      try {
+        const auto lat = std::stod(fieldOr(telemetry, "lat", ""));
+        const auto lon = std::stod(fieldOr(telemetry, "lon", ""));
+        if (std::isfinite(lat) && std::isfinite(lon)) {
+          return GeoPoint{lat, lon};
+        }
+      }
+      catch (const std::exception&) {
+      }
+      return fallback;
+    };
+
+    std::vector<PatrolPart> plannedParts;
+    if (routeWaypoints.size() >= 2) {
+      plannedParts = clusterRouteWaypoints(routeWaypoints, m_patrolDroneIds.size());
+    }
+    if (plannedParts.empty()) {
+      plannedParts = makeAutoSectorParts(m_patrolDroneIds.size());
+    }
+    for (size_t i = 0; i < plannedParts.size(); ++i) {
+      const auto droneId = m_patrolDroneIds[i % m_patrolDroneIds.size()];
+      plannedParts[i].assignedDrone = droneId;
+      const auto routeStart = parseFirstWaypointOr(plannedParts[i].waypoints,
+                                                   GeoPoint{centerLat, centerLon});
+      const auto departure = departurePointForDrone(droneId, routeStart);
+      plannedParts[i].waypoints = appendReturnWaypoint(plannedParts[i].waypoints, departure);
+      state->parts.emplace(plannedParts[i].id, plannedParts[i]);
+    }
 
     auto logLedger = [&] (const std::string& line) {
       NDN_LOG_INFO(line);
@@ -407,6 +1106,17 @@ public:
       return out;
     };
 
+    auto joinPartIds = [state] {
+      std::string out;
+      for (const auto& item : state->parts) {
+        if (!out.empty()) {
+          out += ",";
+        }
+        out += item.first;
+      }
+      return out;
+    };
+
     auto dispatchPart = [&] (const std::string& partId, std::vector<std::string> droneIds,
                              int attempt, bool simulateNoResponse) {
       const std::string candidateText = joinDroneIds(droneIds);
@@ -418,7 +1128,7 @@ public:
         storedPart.attempt = attempt;
         part = storedPart;
       }
-      const std::string payload = encodeFields({
+      Fields payloadFields{
         {"type", "patrol-task"},
         {"patrol_task_id", taskId},
         {"mission_id", taskId},
@@ -430,25 +1140,31 @@ public:
         {"capture_required", "true"},
         {"simulate_no_response", simulateNoResponse ? "true" : "false"},
         {"simulate_delay_ms", "6500"},
-      });
+      };
+      if (droneIds.size() == 1) {
+        payloadFields.emplace("target_system", mavlinkTargetSystemForDrone(droneIds.front()));
+        payloadFields.emplace("target_component", "1");
+      }
+      const std::string payload = encodeFields(payloadFields);
       logLedger("PATROL_ASSIGN task=" + taskId +
                 " attempt=" + std::to_string(attempt) +
                 " part=" + part.id +
                 " candidates=" + candidateText +
-                " simulate_no_response=" + (simulateNoResponse ? "true" : "false"));
+                " simulate_no_response=" + (simulateNoResponse ? "true" : "false") +
+                " waypoints=" + part.waypoints);
 
       auto requestMessage = makeRequest(payload);
       std::vector<ndn::Name> providerNames;
       providerNames.reserve(droneIds.size());
       for (const auto& droneId : droneIds) {
-        providerNames.push_back(droneIdentity(droneId));
+        providerNames.push_back(droneIdentity(m_config, droneId));
       }
       m_face.getIoContext().post([this, requestMessage = std::move(requestMessage),
                                   providerNames = std::move(providerNames),
                                   taskId, partId, candidateText,
                                   attempt, state,
                                   logLedger] () mutable {
-        if (!m_runtimeReady.load() || !m_user) {
+        if (!m_containerReady.load() || !m_user) {
           logLedger("PATROL_RUNTIME_NOT_READY task=" + taskId +
                     " part=" + partId);
           std::lock_guard<std::mutex> guard(state->mutex);
@@ -518,7 +1234,7 @@ public:
             }
             state->cv.notify_all();
           },
-          [taskId, partId, candidateText, attempt, state, logLedger](
+          [this, taskId, partId, candidateText, attempt, state, logLedger](
             const ndn_service_framework::ResponseMessage& response) {
             const auto fields = decodeFields(responsePayload(response));
             const auto responder = fieldOr(fields, "drone_id", candidateText);
@@ -533,11 +1249,22 @@ public:
               }
             }
             if (accepted) {
+              {
+                std::lock_guard<std::mutex> readyGuard(m_missionReadyMutex);
+                if (std::find(m_missionReadyDrones.begin(), m_missionReadyDrones.end(),
+                              responder) == m_missionReadyDrones.end()) {
+                  m_missionReadyDrones.push_back(responder);
+                }
+              }
               logLedger("PATROL_PART_DONE task=" + taskId +
                         " attempt=" + std::to_string(attempt) +
                         " part=" + partId +
                         " provider=" + responder +
-                        " status=true");
+                        " status=true" +
+                        " mission_transport=" + fieldOr(fields, "mission_transport", "unknown") +
+                        " waypoints_forwarded=" + fieldOr(fields, "waypoints_forwarded", "0") +
+                        " waypoint_acks_accepted=" + fieldOr(fields, "waypoint_acks_accepted", "0") +
+                        " last_waypoint_ack=" + fieldOr(fields, "last_waypoint_ack", "unknown"));
             }
             else {
               logLedger("PATROL_LATE_RESPONSE_IGNORED task=" + taskId +
@@ -551,32 +1278,66 @@ public:
       });
     };
 
-    logLedger("PATROL_TASK_START task=" + taskId + " parts=part0,part1");
-    logLedger("PATROL_ATTEMPT task=" + taskId + " attempt=1 parts=part0,part1");
-    dispatchPart("part0", {m_patrolDroneIds[0]}, 1, true);
-    dispatchPart("part1", {m_patrolDroneIds[1]}, 1, false);
+    const auto allPartIds = joinPartIds();
+    logLedger("PATROL_TASK_START task=" + taskId +
+              " parts=" + allPartIds +
+              " drones=" + joinDroneIds(m_patrolDroneIds) +
+              " assignment=clustered-waypoints-return-to-start" +
+              " center_lat=" + std::to_string(centerLat) +
+              " center_lon=" + std::to_string(centerLon) +
+              " side_m=" + std::to_string(sideMeters));
+    logLedger("PATROL_ATTEMPT task=" + taskId + " attempt=1 parts=" + allPartIds);
+    size_t dispatchIndex = 0;
+    for (const auto& item : state->parts) {
+      const auto droneId = m_patrolDroneIds[dispatchIndex % m_patrolDroneIds.size()];
+      dispatchPart(item.first, {droneId}, 1,
+                   simulateFirstPartMissing && dispatchIndex == 0);
+      ++dispatchIndex;
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    state->cv.notify_all();
+
+    std::vector<std::string> missingParts;
     {
       std::unique_lock<std::mutex> lock(state->mutex);
       state->cv.wait_until(lock, deadline, [&] {
-        return state->parts["part1"].done &&
-               state->timedOut.find("part0") != state->timedOut.end();
+        if (allDone()) {
+          return true;
+        }
+        for (const auto& item : state->parts) {
+          if (state->timedOut.find(item.first) != state->timedOut.end()) {
+            return true;
+          }
+        }
+        return false;
       });
-    }
-
-    {
-      std::lock_guard<std::mutex> guard(state->mutex);
-      if (!state->parts["part0"].done) {
-        logLedger("PATROL_COMPENSATION task=" + taskId +
-                  " attempt=2 parts=part0 candidates=" + joinDroneIds(m_patrolDroneIds));
-      }
-      else {
+      if (allDone()) {
         logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=1");
         return true;
       }
+      for (const auto& item : state->parts) {
+        if (!item.second.done &&
+            state->timedOut.find(item.first) != state->timedOut.end()) {
+          missingParts.push_back(item.first);
+        }
+      }
+      if (missingParts.empty()) {
+        for (const auto& item : state->parts) {
+          if (!item.second.done) {
+            missingParts.push_back(item.first);
+          }
+        }
+      }
     }
-    dispatchPart("part0", m_patrolDroneIds, 2, false);
+
+    for (const auto& partId : missingParts) {
+      logLedger("PATROL_COMPENSATION task=" + taskId +
+                " attempt=2 parts=" + partId +
+                " candidates=" + joinDroneIds(m_patrolDroneIds));
+      dispatchPart(partId, m_patrolDroneIds, 2, false);
+    }
 
     {
       std::unique_lock<std::mutex> lock(state->mutex);
@@ -592,9 +1353,321 @@ public:
 
 private:
   void
-  startVideoAttempt()
+  installServiceInstances()
   {
-    postRequest(droneVideoControlService(m_targetDroneId),
+    m_objectDetectionProvider = std::make_unique<ndn_service_framework::ServiceProvider>(
+      m_face, m_config.groupPrefix, m_gsCert, m_controllerCert, m_config.trustSchema);
+    m_objectDetectionProvider->setHandlerThreads(2);
+    m_objectDetectionProvider->setAckThreads(1);
+    installObjectDetectionService();
+  }
+
+  void
+  installObjectDetectionService()
+  {
+    m_objectDetectionProvider->addService(
+      SERVICE_GS_OBJECT_DETECTION,
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(
+        [this](const ndn_service_framework::RequestMessage&) {
+          ndn_service_framework::ServiceProvider::AckDecision decision;
+          decision.status = m_streaming.load();
+          decision.message = decision.status ? "object detection ready" : "video not streaming";
+          decision.payload = bufferFromString(encodeFields(Fields{
+            {"gs", m_config.groundStationIdentity.toUri()},
+            {"ready", decision.status ? "true" : "false"},
+          }));
+          return decision;
+        }),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage& request) {
+          const auto payload = request.getPayload();
+          const auto fields = decodeFields(std::string(
+            reinterpret_cast<const char*>(payload.data()), payload.size()));
+          const auto frameId = fieldOr(fields, "frame_id", "live-frame");
+          const auto frameSeq = std::stoull(fieldOr(fields, "frame_seq", "0"));
+          auto detection = runYoloDetection(frameId);
+          const bool ok = fieldOr(detection, "ok", "false") == "true";
+          const bool car = fieldOr(detection, "car", "false") == "true";
+          const bool truck = fieldOr(detection, "truck", "false") == "true";
+          const auto objects = fieldOr(detection, "objects", "none");
+          return makeResponse(true, encodeFields({
+            {"frame_id", frameId},
+            {"frame_seq", std::to_string(frameSeq)},
+            {"objects", objects},
+            {"car", car ? "true" : "false"},
+            {"truck", truck ? "true" : "false"},
+            {"detector_ok", ok ? "true" : "false"},
+            {"car_count", fieldOr(detection, "car_count", "0")},
+            {"truck_count", fieldOr(detection, "truck_count", "0")},
+            {"car_conf", fieldOr(detection, "car_conf", "0")},
+            {"truck_conf", fieldOr(detection, "truck_conf", "0")},
+            {"model", fieldOr(detection, "model", m_yoloModel)},
+            {"summary", ok ? (objects == "none" ? "no target vehicle" : "detected " + objects)
+                           : fieldOr(detection, "error", "detector failed")},
+          }));
+        }));
+  }
+
+  bool
+  readYoloWorkerLineLocked(std::string& line, int timeoutMs)
+  {
+    line.clear();
+    if (m_yoloWorkerOutFd < 0) {
+      return false;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+      fd_set readSet;
+      FD_ZERO(&readSet);
+      FD_SET(m_yoloWorkerOutFd, &readSet);
+
+      timeval tv{};
+      tv.tv_sec = 0;
+      tv.tv_usec = 100000;
+      const auto ready = select(m_yoloWorkerOutFd + 1, &readSet, nullptr, nullptr, &tv);
+      if (ready < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        return false;
+      }
+      if (ready == 0) {
+        continue;
+      }
+
+      char ch = 0;
+      const auto n = read(m_yoloWorkerOutFd, &ch, 1);
+      if (n <= 0) {
+        return false;
+      }
+      if (ch == '\n') {
+        while (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
+        if (!line.empty()) {
+          return true;
+        }
+        continue;
+      }
+      line.push_back(ch);
+    }
+    return false;
+  }
+
+  bool
+  startYoloWorkerLocked()
+  {
+    if (m_yoloWorkerPid > 0 && m_yoloWorkerInFd >= 0 && m_yoloWorkerOutFd >= 0) {
+      return true;
+    }
+    stopYoloWorkerLocked();
+
+    int toChild[2] = {-1, -1};
+    int fromChild[2] = {-1, -1};
+    if (pipe(toChild) != 0 || pipe(fromChild) != 0) {
+      return false;
+    }
+
+    const auto pid = fork();
+    if (pid < 0) {
+      close(toChild[0]);
+      close(toChild[1]);
+      close(fromChild[0]);
+      close(fromChild[1]);
+      return false;
+    }
+
+    if (pid == 0) {
+      dup2(toChild[0], STDIN_FILENO);
+      dup2(fromChild[1], STDOUT_FILENO);
+      close(toChild[0]);
+      close(toChild[1]);
+      close(fromChild[0]);
+      close(fromChild[1]);
+      const auto command =
+        pythonUserEnvironmentPrefix() +
+        "python3 " + shellQuote(m_yoloWorkerScript) +
+        " --model " + shellQuote(m_yoloModel) +
+        " --conf 0.25 --classes car,truck";
+      execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
+      _exit(127);
+    }
+
+    close(toChild[0]);
+    close(fromChild[1]);
+    m_yoloWorkerPid = pid;
+    m_yoloWorkerInFd = toChild[1];
+    m_yoloWorkerOutFd = fromChild[0];
+
+    std::string line;
+    while (readYoloWorkerLineLocked(line, 30000)) {
+      const auto fields = decodeFields(line);
+      if (fieldOr(fields, "ready", "false") == "true") {
+        NDN_LOG_INFO("GS_OBJECT_DETECTION worker ready model=" << fieldOr(fields, "model", m_yoloModel));
+        return true;
+      }
+      if (fieldOr(fields, "ready", "") == "false") {
+        NDN_LOG_WARN("GS_OBJECT_DETECTION worker unavailable: " << fieldOr(fields, "error", "unknown"));
+        stopYoloWorkerLocked();
+        return false;
+      }
+    }
+
+    NDN_LOG_WARN("GS_OBJECT_DETECTION worker did not become ready");
+    stopYoloWorkerLocked();
+    return false;
+  }
+
+  void
+  stopYoloWorker()
+  {
+    std::lock_guard<std::mutex> guard(m_yoloMutex);
+    stopYoloWorkerLocked();
+  }
+
+  void
+  stopYoloWorkerLocked()
+  {
+    if (m_yoloWorkerInFd >= 0) {
+      const std::string quit = "__quit__\n";
+      const auto ignored = write(m_yoloWorkerInFd, quit.data(), quit.size());
+      (void)ignored;
+      close(m_yoloWorkerInFd);
+      m_yoloWorkerInFd = -1;
+    }
+    if (m_yoloWorkerOutFd >= 0) {
+      close(m_yoloWorkerOutFd);
+      m_yoloWorkerOutFd = -1;
+    }
+    if (m_yoloWorkerPid > 0) {
+      int status = 0;
+      if (waitpid(m_yoloWorkerPid, &status, WNOHANG) == 0) {
+        kill(m_yoloWorkerPid, SIGTERM);
+        waitpid(m_yoloWorkerPid, nullptr, 0);
+      }
+      m_yoloWorkerPid = -1;
+    }
+  }
+
+  Fields
+  runYoloDetectionOnceLocked(const std::string& imagePath)
+  {
+    const auto command =
+      pythonUserEnvironmentPrefix() +
+      "python3 " + shellQuote(m_yoloScript) +
+      " --model " + shellQuote(m_yoloModel) +
+      " --image " + shellQuote(imagePath) +
+      " --conf 0.25 --classes car,truck";
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+    std::string resultText;
+    if (pipe) {
+      std::array<char, 512> buffer{};
+      while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
+        resultText += buffer.data();
+      }
+    }
+    if (resultText.empty()) {
+      return {
+        {"ok", "false"},
+        {"error", "YOLO helper produced no output"},
+        {"objects", "none"},
+        {"car", "false"},
+        {"truck", "false"},
+      };
+    }
+
+    std::string resultLine;
+    std::istringstream lines(resultText);
+    for (std::string line; std::getline(lines, line);) {
+      while (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      if (!line.empty()) {
+        resultLine = line;
+      }
+    }
+    if (resultLine.empty()) {
+      return {
+        {"ok", "false"},
+        {"error", "YOLO helper produced no parseable output"},
+        {"objects", "none"},
+        {"car", "false"},
+        {"truck", "false"},
+      };
+    }
+    return decodeFields(resultLine);
+  }
+
+  Fields
+  runYoloDetectionWorkerLocked(const std::string& imagePath)
+  {
+    if (!startYoloWorkerLocked()) {
+      return runYoloDetectionOnceLocked(imagePath);
+    }
+
+    const auto request = imagePath + "\n";
+    if (write(m_yoloWorkerInFd, request.data(), request.size()) !=
+        static_cast<ssize_t>(request.size())) {
+      stopYoloWorkerLocked();
+      return runYoloDetectionOnceLocked(imagePath);
+    }
+
+    std::string line;
+    while (readYoloWorkerLineLocked(line, 15000)) {
+      const auto fields = decodeFields(line);
+      if (fields.find("ok") != fields.end()) {
+        return fields;
+      }
+    }
+
+    NDN_LOG_WARN("GS_OBJECT_DETECTION worker timed out; falling back to one-shot helper");
+    stopYoloWorkerLocked();
+    return runYoloDetectionOnceLocked(imagePath);
+  }
+
+  Fields
+  runYoloDetection(const std::string& frameId)
+  {
+    std::vector<uint8_t> image;
+    {
+      std::lock_guard<std::mutex> frameGuard(m_latestDecodedFrameMutex);
+      image = m_latestDecodedFrame;
+    }
+    if (image.empty()) {
+      return {
+        {"ok", "false"},
+        {"error", "no decoded live frame available at ground station"},
+        {"objects", "none"},
+        {"car", "false"},
+        {"truck", "false"},
+      };
+    }
+
+    std::lock_guard<std::mutex> guard(m_yoloMutex);
+    const auto imagePath = "/tmp/ndnsf-uav-yolo-" + std::to_string(getuid()) +
+                           "-" + std::to_string(nowMilliseconds()) + ".jpg";
+    {
+      std::ofstream output(imagePath, std::ios::binary);
+      output.write(reinterpret_cast<const char*>(image.data()),
+                   static_cast<std::streamsize>(image.size()));
+    }
+
+    auto fields = runYoloDetectionWorkerLocked(imagePath);
+    std::remove(imagePath.c_str());
+    fields["frame_id"] = frameId;
+    NDN_LOG_INFO("GS_OBJECT_DETECTION frame=" << frameId
+                 << " ok=" << fieldOr(fields, "ok", "false")
+                 << " objects=" << fieldOr(fields, "objects", "none")
+                 << " error=" << fieldOr(fields, "error", ""));
+    return fields;
+  }
+
+  void
+  startVideoAttempt(std::string droneId)
+  {
+    postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
                 encodeFields({
                   {"type", "video-control"},
                   {"action", "start"},
@@ -602,7 +1675,7 @@ private:
                   {"requested_bitrate_kbps", std::to_string(m_videoBitrateKbps)},
                   {"requested_frame_width", std::to_string(m_videoFrameWidth)},
                 }),
-                [this](const std::string& payload) {
+                [this, droneId](const std::string& payload) {
                   const auto fields = decodeFields(payload);
                   const auto prefix = fieldOr(fields, "stream_prefix", "");
                   const auto seqText = fieldOr(fields, "next_seq", "0");
@@ -612,6 +1685,10 @@ private:
                   }
 
                   m_streamPrefix = ndn::Name(prefix);
+                  {
+                    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+                    m_activeVideoDroneId = droneId;
+                  }
                   configurePrefetch(fields);
                   m_keyLane = PacketLane{};
                   m_deltaLane = PacketLane{"packet", 0, 0, 0, 0};
@@ -632,18 +1709,18 @@ private:
                   }
                   stopDecoder();
                   startDecoder();
-                  publishStatus("Video packet stream from " + prefix);
+                  publishStatus("Video packet stream drone=" + droneId + " from " + prefix);
                   requestVideoPackets();
                 },
-                [this] {
+                [this, droneId] {
                   if (m_seenVideoStart.load()) {
                     return true;
                   }
                   const uint64_t retry = m_videoStartRetries.fetch_add(1);
                   if (retry < MAX_VIDEO_START_RETRIES) {
                     publishStatus("Video start retry " + std::to_string(retry + 1));
-                    m_face.getIoContext().post([this] {
-                      startVideoAttempt();
+                    m_face.getIoContext().post([this, droneId] {
+                      startVideoAttempt(droneId);
                     });
                     return true;
                   }
@@ -672,11 +1749,23 @@ private:
               std::function<bool()> ignoreTimeout = {},
               std::function<void()> onTimeout = {})
   {
+    postRequestForDrone(targetDroneId(), service, payload, std::move(onSuccess),
+                        std::move(ignoreTimeout), std::move(onTimeout));
+  }
+
+  void
+  postRequestForDrone(const std::string& droneId,
+              const ndn::Name& service, const std::string& payload,
+              std::function<void(std::string)> onSuccess,
+              std::function<bool()> ignoreTimeout = {},
+              std::function<void()> onTimeout = {})
+  {
     m_face.getIoContext().post([this, service, payload,
+                                droneId,
                                 onSuccess = std::move(onSuccess),
                                 ignoreTimeout = std::move(ignoreTimeout),
                                 onTimeout = std::move(onTimeout)] {
-      if (!m_runtimeReady.load() || !m_user) {
+      if (!m_containerReady.load() || !m_user) {
         publishStatus("NDNSF runtime not ready for " + service.toUri());
         if (onTimeout) {
           onTimeout();
@@ -685,7 +1774,7 @@ private:
       }
       auto requestMessage = makeRequest(payload);
       m_user->RequestService(
-        std::vector<ndn::Name>{droneIdentity(m_targetDroneId)},
+        std::vector<ndn::Name>{droneIdentity(m_config, droneId)},
         service,
         std::move(requestMessage),
         m_ackTimeoutMs,
@@ -719,7 +1808,7 @@ private:
     m_face.getIoContext().post([this, provider, service, payload,
                                 onSuccess = std::move(onSuccess),
                                 onTimeout = std::move(onTimeout)] {
-      if (!m_runtimeReady.load() || !m_user) {
+      if (!m_containerReady.load() || !m_user) {
         publishStatus("NDNSF runtime not ready for targeted " + service.toUri());
         if (onTimeout) {
           onTimeout();
@@ -1430,6 +2519,10 @@ private:
     }
 
     for (auto& frame : frameCandidates) {
+      {
+        std::lock_guard<std::mutex> guard(m_latestDecodedFrameMutex);
+        m_latestDecodedFrame = frame;
+      }
       if (m_frameCallback) {
         m_frameCallback(std::move(frame), m_lastOutputChunkSeq, m_lastOutputChunkElapsedMs);
       }
@@ -1532,12 +2625,28 @@ private:
 
 private:
   bool m_serveCertificates;
+  UavRuntimeConfig m_config;
   int m_ackTimeoutMs;
   int m_timeoutMs;
   std::string m_targetDroneId;
+  mutable std::mutex m_targetMutex;
+  mutable std::mutex m_missionReadyMutex;
+  mutable std::mutex m_videoStateMutex;
+  std::vector<std::string> m_missionReadyDrones;
+  std::string m_activeVideoDroneId;
   uint64_t m_videoBitrateKbps = 8000;
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;
+  std::string m_yoloModel;
+  std::string m_yoloScript;
+  std::string m_yoloWorkerScript;
+  std::mutex m_yoloMutex;
+  std::thread m_yoloPrewarmThread;
+  pid_t m_yoloWorkerPid = -1;
+  int m_yoloWorkerInFd = -1;
+  int m_yoloWorkerOutFd = -1;
+  std::mutex m_latestDecodedFrameMutex;
+  std::vector<uint8_t> m_latestDecodedFrame;
   ndn::Face m_face;
   boost::asio::steady_timer m_videoPumpTimer;
   ndn::KeyChain m_keyChain;
@@ -1545,10 +2654,11 @@ private:
   ndn::security::Certificate m_controllerCert;
   std::unique_ptr<ndn_service_framework::CertificatePublisher> m_certPublisher;
   std::unique_ptr<ndn_service_framework::ServiceUser> m_user;
+  std::unique_ptr<ndn_service_framework::ServiceProvider> m_objectDetectionProvider;
   std::thread m_faceThread;
   std::function<void(std::string)> m_statusCallback;
   std::function<void(std::vector<uint8_t>, uint64_t, uint64_t)> m_frameCallback;
-  std::atomic<bool> m_runtimeReady{false};
+  std::atomic<bool> m_containerReady{false};
   std::atomic<bool> m_streaming{false};
   std::atomic<bool> m_seenVideoStart{false};
   std::atomic<bool> m_videoStartInFlight{false};
@@ -1560,6 +2670,7 @@ private:
   std::atomic<uint64_t> m_frameTimeouts{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
   std::atomic<bool> m_manualControlInFlight{false};
+  std::atomic<bool> m_telemetryInFlight{false};
   ndn::Name m_streamPrefix;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;
@@ -1601,6 +2712,7 @@ int
 serveObjectDetection(ndn::Face& face, ndn::KeyChain& keyChain,
                      const ndn::security::Certificate& gsCert,
                      const ndn::security::Certificate& controllerCert,
+                     const UavRuntimeConfig& config,
                      bool serveCertificates)
 {
   std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
@@ -1610,7 +2722,7 @@ serveObjectDetection(ndn::Face& face, ndn::KeyChain& keyChain,
   }
 
   ndn_service_framework::ServiceProvider provider(
-    face, GROUP_PREFIX, gsCert, controllerCert, TRUST_SCHEMA);
+    face, config.groupPrefix, gsCert, controllerCert, config.trustSchema);
   provider.setHandlerThreads(2);
   provider.setAckThreads(2);
   provider.addService(
@@ -1631,7 +2743,7 @@ serveObjectDetection(ndn::Face& face, ndn::KeyChain& keyChain,
         }));
       }));
   provider.init();
-  provider.fetchPermissionsFromController(CONTROLLER_PREFIX);
+  provider.fetchPermissionsFromController(config.controllerPrefix);
   NDN_LOG_INFO("UavGroundStationApp object detection service ready");
   face.processEvents();
   return 0;
@@ -1640,19 +2752,22 @@ serveObjectDetection(ndn::Face& face, ndn::KeyChain& keyChain,
 class GroundStationWindow : public Gtk::Window
 {
 public:
-  GroundStationWindow(GroundStationRuntime& runtime, bool autoStart,
+  GroundStationWindow(GroundStationServiceContainer& runtime, bool autoStart,
                       int autoStopSeconds, int autoStartDelayMs,
                       bool autoMavlinkTest, bool autoKeyboardTest,
                       bool autoManualControlTest,
+                      bool autoTwoDroneSwitchTest,
                       std::vector<std::string> droneIds)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_buttons(Gtk::ORIENTATION_HORIZONTAL, 8)
+    , m_patrolControls(Gtk::ORIENTATION_HORIZONTAL, 6)
     , m_workspace(Gtk::ORIENTATION_HORIZONTAL, 10)
     , m_vehicleFrame("Vehicles")
     , m_vehiclePanel(Gtk::ORIENTATION_VERTICAL, 6)
     , m_centerFrame("Fly View")
     , m_centerPanel(Gtk::ORIENTATION_VERTICAL, 6)
+    , m_mapControls(Gtk::ORIENTATION_HORIZONTAL, 6)
     , m_statusFrame("Inspector")
     , m_statusPanel(Gtk::ORIENTATION_VERTICAL, 6)
     , m_start("Start Video")
@@ -1660,7 +2775,15 @@ public:
     , m_arm("Arm")
     , m_takeoff("Takeoff")
     , m_land("Land")
+    , m_patrol("Upload Patrol Mission")
+    , m_startMission("Start Mission")
+    , m_stopPatrol("Stop Patrol")
     , m_controlToggle("Start Control")
+    , m_mapZoomIn("+")
+    , m_mapZoomOut("-")
+    , m_mapCenterGs("Center GS")
+    , m_mapUndoWp("Undo WP")
+    , m_mapClearWp("Clear WPs")
     , m_controlPanel(Gtk::ORIENTATION_VERTICAL, 6)
     , m_manualKeyRow(Gtk::ORIENTATION_HORIZONTAL, 6)
     , m_commandKeyRow(Gtk::ORIENTATION_HORIZONTAL, 6)
@@ -1690,8 +2813,11 @@ public:
     m_status.set_text("Video stopped");
     m_stats.set_text("Frames: 0");
     m_mapMission.set_text("Map / mission workspace\n\n"
-                          "Current demo uses a lightweight map placeholder.\n"
-                          "Patrol sectors and selected drone status are shown here.");
+                          "GS center: University of Memphis\n"
+                          "Selected drone: " + m_runtime.targetDroneId() + "\n"
+                          "Markers: GS, drone A/B, and mission waypoints\n"
+                          "Click to append WP1/WP2/..., drag to pan, Center GS to return.\n"
+                          "Upload Patrol Mission sends the route; arm/takeoff/mission mode makes PX4 fly it.");
     m_services.set_text("Services: video, targeted MAVLink, telemetry, camera, mission");
     m_telemetry.set_text("Telemetry: waiting for flight-controller response");
     m_stop.set_sensitive(false);
@@ -1701,8 +2827,24 @@ public:
     m_buttons.pack_start(m_arm, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_takeoff, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_land, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_patrol, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_startMission, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_stopPatrol, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_controlToggle, Gtk::PACK_SHRINK);
     m_box.pack_start(m_buttons, Gtk::PACK_SHRINK);
+
+    m_patrolHint.set_text("Patrol center / size");
+    m_patrolLat.set_text("35.1186");
+    m_patrolLon.set_text("-89.9375");
+    m_patrolSizeMeters.set_text("140");
+    m_patrolLat.set_width_chars(9);
+    m_patrolLon.set_width_chars(10);
+    m_patrolSizeMeters.set_width_chars(6);
+    m_patrolControls.pack_start(m_patrolHint, Gtk::PACK_SHRINK);
+    m_patrolControls.pack_start(m_patrolLat, Gtk::PACK_SHRINK);
+    m_patrolControls.pack_start(m_patrolLon, Gtk::PACK_SHRINK);
+    m_patrolControls.pack_start(m_patrolSizeMeters, Gtk::PACK_SHRINK);
+    m_box.pack_start(m_patrolControls, Gtk::PACK_SHRINK);
 
     m_vehiclePanel.set_border_width(8);
     m_vehicleHint.set_text("Connected / expected drones");
@@ -1715,12 +2857,86 @@ public:
       rowLabel->set_xalign(0.0F);
       m_vehicleList.append(*rowLabel);
     }
+    m_vehicleList.signal_row_selected().connect([this](Gtk::ListBoxRow* row) {
+      if (row == nullptr) {
+        return;
+      }
+      const auto index = row->get_index();
+      if (index < 0 || static_cast<size_t>(index) >= m_droneIds.size()) {
+        return;
+      }
+      m_runtime.setTargetDroneId(m_droneIds[static_cast<size_t>(index)]);
+      updateVehicleRows();
+      updateVideoViewForSelected();
+      m_runtime.requestTelemetryStatus();
+    });
     m_vehiclePanel.pack_start(m_vehicleList, Gtk::PACK_SHRINK);
     m_vehicleFrame.add(m_vehiclePanel);
     m_workspace.pack_start(m_vehicleFrame, Gtk::PACK_SHRINK);
 
     m_centerPanel.set_border_width(8);
     m_mapMission.set_xalign(0.0F);
+    m_mapZoomIn.set_tooltip_text("Zoom in");
+    m_mapZoomOut.set_tooltip_text("Zoom out");
+    m_mapCenterGs.set_tooltip_text("Return map view to the ground station");
+    m_mapUndoWp.set_tooltip_text("Remove the last mission waypoint");
+    m_mapClearWp.set_tooltip_text("Clear all mission waypoints");
+    m_mapControls.pack_start(m_mapZoomIn, Gtk::PACK_SHRINK);
+    m_mapControls.pack_start(m_mapZoomOut, Gtk::PACK_SHRINK);
+    m_mapControls.pack_start(m_mapCenterGs, Gtk::PACK_SHRINK);
+    m_mapControls.pack_start(m_mapUndoWp, Gtk::PACK_SHRINK);
+    m_mapControls.pack_start(m_mapClearWp, Gtk::PACK_SHRINK);
+    m_centerPanel.pack_start(m_mapControls, Gtk::PACK_SHRINK);
+    m_mapImage.set_size_request(256, 256);
+    m_mapEventBox.set_size_request(256, 256);
+    m_mapImage.set_halign(Gtk::ALIGN_START);
+    m_mapImage.set_valign(Gtk::ALIGN_START);
+    m_mapEventBox.set_halign(Gtk::ALIGN_START);
+    m_mapEventBox.set_valign(Gtk::ALIGN_START);
+    m_mapEventBox.add(m_mapImage);
+    m_mapEventBox.add_events(Gdk::BUTTON_PRESS_MASK |
+                             Gdk::BUTTON_RELEASE_MASK |
+                             Gdk::POINTER_MOTION_MASK |
+                             Gdk::SCROLL_MASK |
+                             Gdk::SMOOTH_SCROLL_MASK);
+    m_mapEventBox.signal_button_press_event().connect([this](GdkEventButton* event) {
+      if (event == nullptr || event->button != 1) {
+        return false;
+      }
+      beginMapDrag(event->x, event->y);
+      return true;
+    });
+    m_mapEventBox.signal_button_release_event().connect([this](GdkEventButton* event) {
+      if (event == nullptr || event->button != 1) {
+        return false;
+      }
+      finishMapDrag(event->x, event->y);
+      return true;
+    });
+    m_mapEventBox.signal_motion_notify_event().connect([this](GdkEventMotion* event) {
+      if (event == nullptr || !m_mapDragging) {
+        return false;
+      }
+      updateMapDrag(event->x, event->y);
+      return true;
+    });
+    m_mapEventBox.signal_scroll_event().connect([this](GdkEventScroll* event) {
+      if (event == nullptr) {
+        return false;
+      }
+      if (event->direction == GDK_SCROLL_UP ||
+          (event->direction == GDK_SCROLL_SMOOTH && event->delta_y < 0.0)) {
+        zoomMap(1);
+        return true;
+      }
+      if (event->direction == GDK_SCROLL_DOWN ||
+          (event->direction == GDK_SCROLL_SMOOTH && event->delta_y > 0.0)) {
+        zoomMap(-1);
+        return true;
+      }
+      return false;
+    });
+    m_centerPanel.pack_start(m_mapEventBox, Gtk::PACK_SHRINK);
     m_centerPanel.pack_start(m_mapMission, Gtk::PACK_SHRINK);
     m_centerPanel.pack_start(m_image, Gtk::PACK_EXPAND_WIDGET);
     m_centerFrame.add(m_centerPanel);
@@ -1777,16 +2993,19 @@ public:
     add(m_box);
     show_all_children();
     m_controlPanel.hide();
+    if (auto* firstRow = m_vehicleList.get_row_at_index(0)) {
+      m_vehicleList.select_row(*firstRow);
+      updateVehicleRows();
+    }
+    refreshMapTile();
 
     m_start.signal_clicked().connect([this] {
       m_start.set_sensitive(false);
-      m_stop.set_sensitive(true);
-      beginLocalStreamView();
+      m_stop.set_sensitive(false);
       m_runtime.startVideo();
     });
     m_stop.signal_clicked().connect([this] {
       m_stop.set_sensitive(false);
-      m_start.set_sensitive(true);
       m_acceptFrames = false;
       m_runtime.stopVideo();
     });
@@ -1799,8 +3018,56 @@ public:
     m_land.signal_clicked().connect([this] {
       m_runtime.sendMavlinkCommand("land");
     });
+    m_patrol.signal_clicked().connect([this] {
+      m_patrol.set_sensitive(false);
+      m_status.set_text("Uploading cooperative patrol mission...");
+      double centerLat = 35.1186;
+      double centerLon = -89.9375;
+      double sideMeters = 140.0;
+      try {
+        centerLat = std::stod(m_patrolLat.get_text());
+        centerLon = std::stod(m_patrolLon.get_text());
+        sideMeters = std::stod(m_patrolSizeMeters.get_text());
+      }
+      catch (const std::exception&) {
+        m_status.set_text("Invalid patrol input; using University of Memphis fallback");
+      }
+      const auto routeWaypoints = m_planWaypoints;
+      std::thread([this, centerLat, centerLon, sideMeters, routeWaypoints] {
+        const bool ok = m_runtime.runPatrolCompensationTask(
+          std::chrono::seconds(30), centerLat, centerLon, sideMeters, false, routeWaypoints);
+        Glib::signal_idle().connect_once([this, ok] {
+          m_status.set_text(ok ? "Patrol mission uploaded; arm/takeoff and start mission mode to fly it"
+                               : "Patrol mission upload failed");
+          m_patrol.set_sensitive(true);
+        });
+      }).detach();
+    });
+    m_startMission.signal_clicked().connect([this] {
+      m_status.set_text("Starting patrol mission by phase: arm all, take off all, start all...");
+      scheduleMissionStartPhase(0, 0);
+    });
+    m_stopPatrol.signal_clicked().connect([this] {
+      m_status.set_text("Stopping patrol: landing patrol drones...");
+      schedulePatrolLandSequence(0);
+    });
     m_controlToggle.signal_clicked().connect([this] {
       setControlMode(!m_controlMode);
+    });
+    m_mapZoomIn.signal_clicked().connect([this] {
+      zoomMap(1);
+    });
+    m_mapZoomOut.signal_clicked().connect([this] {
+      zoomMap(-1);
+    });
+    m_mapCenterGs.signal_clicked().connect([this] {
+      centerMapOnGroundStation();
+    });
+    m_mapUndoWp.signal_clicked().connect([this] {
+      undoMissionWaypoint();
+    });
+    m_mapClearWp.signal_clicked().connect([this] {
+      clearMissionWaypoints();
     });
     signal_key_press_event().connect(
       [this](GdkEventKey* event) {
@@ -1823,22 +3090,38 @@ public:
       {
         std::lock_guard<std::mutex> guard(m_mutex);
         if (status.rfind("Video packet stream", 0) == 0) {
-          setPendingButtonStateLocked(false, true);
-          beginLocalStreamViewLocked();
+          const auto droneId = statusField(status, "drone", "");
+          if (droneId == m_runtime.targetDroneId()) {
+            beginLocalStreamViewLocked();
+          }
+          updateVideoViewForSelectedLocked();
         }
         else if (status.rfind("Video stopped", 0) == 0) {
-          setPendingButtonStateLocked(true, false);
-          m_acceptFrames = false;
+          updateVideoViewForSelectedLocked();
           status += ", decoded=" + std::to_string(m_decodedFrames.load());
         }
         else if (status.rfind("Timeout waiting for ", 0) == 0 ||
                  status.rfind("Video control response missing", 0) == 0 ||
-                 status.rfind("NDNSF runtime not ready", 0) == 0) {
-          setPendingButtonStateLocked(true, false);
-          m_acceptFrames = false;
+                 status.rfind("NDNSF runtime not ready", 0) == 0 ||
+                 status.rfind("No video streaming for selected drone ", 0) == 0 ||
+                 status.rfind("Video already streaming drone=", 0) == 0) {
+          updateVideoViewForSelectedLocked();
         }
-        if (status.rfind("MAVLink ", 0) == 0) {
+        if (status.rfind("MAVLink ", 0) == 0 ||
+            status.rfind("Telemetry ", 0) == 0) {
           m_pendingTelemetry = status;
+          if (status.rfind("Telemetry ", 0) == 0) {
+            m_pendingMap = mapTextForTelemetry(status);
+            m_pendingMapLat = statusField(status, "lat", "35.1186");
+            m_pendingMapLon = statusField(status, "lon", "-89.9375");
+            try {
+              m_dronePositions[statusField(status, "drone", m_runtime.targetDroneId())] = {
+                std::stod(m_pendingMapLat), std::stod(m_pendingMapLon)
+              };
+            }
+            catch (const std::exception&) {
+            }
+          }
         }
         m_pendingStatus = std::move(status);
       }
@@ -1855,9 +3138,18 @@ public:
         m_stop.set_sensitive(m_pendingStopSensitive);
         m_pendingButtonState = false;
       }
+      if (m_pendingClearFrame) {
+        m_image.clear();
+        m_stats.set_text("Decoded frames: 0");
+        m_pendingClearFrame = false;
+      }
       m_status.set_text(m_pendingStatus);
       if (!m_pendingTelemetry.empty()) {
         m_telemetry.set_text("Telemetry: " + m_pendingTelemetry);
+      }
+      if (!m_pendingMap.empty()) {
+        m_mapMission.set_text(m_pendingMap);
+        refreshMapTile();
       }
     });
     m_frameDispatcher.connect([this] {
@@ -1877,6 +3169,16 @@ public:
                          "  stream elapsed: " + std::to_string(elapsedMs) + " ms");
       }
     });
+    Glib::signal_timeout().connect([this] {
+      if (!m_droneIds.empty()) {
+        const auto droneId = m_droneIds[m_telemetryPollIndex++ % m_droneIds.size()];
+        m_runtime.requestTelemetryStatusForDrone(droneId);
+      }
+      else {
+        m_runtime.requestTelemetryStatus();
+      }
+      return true;
+    }, 1500);
 
 	    if (autoStart) {
 	      std::thread([this, autoStopSeconds, autoStartDelayMs] {
@@ -1887,7 +3189,7 @@ public:
         }
         std::this_thread::sleep_for(std::chrono::seconds(autoStopSeconds));
         m_runtime.stopVideo();
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::seconds(5));
         Glib::signal_idle().connect_once([this] {
           hide();
         });
@@ -1967,6 +3269,46 @@ public:
         });
       }).detach();
     }
+    if (autoTwoDroneSwitchTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        if (m_droneIds.size() < 2) {
+          Glib::signal_idle().connect_once([this] {
+            m_status.set_text("Two-drone switch test needs at least two drones");
+            hide();
+          });
+          return;
+        }
+        const auto first = m_droneIds[0];
+        const auto second = m_droneIds[1];
+        Glib::signal_idle().connect_once([this, second] {
+          setControlMode(true);
+          m_runtime.setTargetDroneId(second);
+          updateVehicleRows();
+          updateVideoViewForSelected();
+          m_runtime.requestTelemetryStatus();
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        m_runtime.sendMavlinkCommand("manual_control", {
+          {"x", "500"}, {"y", "0"}, {"z", "520"}, {"r", "0"},
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        Glib::signal_idle().connect_once([this, first] {
+          m_runtime.setTargetDroneId(first);
+          updateVehicleRows();
+          updateVideoViewForSelected();
+          m_runtime.requestTelemetryStatus();
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        m_runtime.sendMavlinkCommand("manual_control", {
+          {"x", "-500"}, {"y", "0"}, {"z", "520"}, {"r", "0"},
+        });
+        std::this_thread::sleep_for(std::chrono::seconds(4));
+        Glib::signal_idle().connect_once([this] {
+          hide();
+        });
+      }).detach();
+    }
     m_manualControlThread = std::thread([this] {
       runManualControlLoop();
     });
@@ -1974,6 +3316,12 @@ public:
 
   ~GroundStationWindow() override
   {
+    m_acceptFrames = false;
+    if (m_runtime.isStreaming()) {
+      m_runtime.stopVideo();
+    }
+    m_controlMode = false;
+    m_manualActive = false;
     m_manualControlDone = true;
     if (m_manualControlThread.joinable()) {
       m_manualControlThread.join();
@@ -2017,17 +3365,15 @@ private:
       m_runtime.sendMavlinkCommand("land");
       return true;
     case GDK_KEY_v:
-      if (!m_runtime.isStreaming()) {
+      if (!m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
         m_start.set_sensitive(false);
-        m_stop.set_sensitive(true);
-        beginLocalStreamView();
+        m_stop.set_sensitive(false);
         m_runtime.startVideo();
       }
       return true;
     case GDK_KEY_x:
-      if (m_runtime.isStreaming()) {
+      if (m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
         m_stop.set_sensitive(false);
-        m_start.set_sensitive(true);
         m_acceptFrames = false;
         m_runtime.stopVideo();
       }
@@ -2290,12 +3636,45 @@ private:
   }
 
   void
+  updateVideoViewForSelected()
+  {
+    {
+      std::lock_guard<std::mutex> guard(m_mutex);
+      updateVideoViewForSelectedLocked();
+    }
+    m_statusDispatcher.emit();
+  }
+
+  void
+  updateVideoViewForSelectedLocked()
+  {
+    const auto selectedDrone = m_runtime.targetDroneId();
+    const bool selectedStreaming = m_runtime.isStreamingForDrone(selectedDrone);
+    setPendingButtonStateLocked(!selectedStreaming, selectedStreaming);
+    if (selectedStreaming) {
+      if (!m_acceptFrames) {
+        beginLocalStreamViewLocked();
+      }
+      m_pendingClearFrame = false;
+      return;
+    }
+
+    ++m_streamGeneration;
+    m_acceptFrames = false;
+    m_pendingPixbuf.reset();
+    m_pendingSeq = 0;
+    m_pendingElapsedMs = 0;
+    m_decodedFrames = 0;
+    m_pendingClearFrame = true;
+  }
+
+  void
   pushEncodedChunk(std::vector<uint8_t> chunk, uint64_t seq, uint64_t elapsedMs)
   {
     uint64_t generation = 0;
     {
       std::lock_guard<std::mutex> guard(m_mutex);
-      if (!m_acceptFrames) {
+      if (!m_acceptFrames || !m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
         return;
       }
       generation = m_streamGeneration;
@@ -2303,7 +3682,9 @@ private:
     Glib::signal_idle().connect_once([this, chunk = std::move(chunk), seq, elapsedMs, generation] {
       {
         std::lock_guard<std::mutex> guard(m_mutex);
-        if (!m_acceptFrames || generation != m_streamGeneration) {
+        if (!m_acceptFrames ||
+            generation != m_streamGeneration ||
+            !m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
           return;
         }
       }
@@ -2333,10 +3714,616 @@ private:
     });
   }
 
+  void
+  updateVehicleRows()
+  {
+    const auto selectedDrone = m_runtime.targetDroneId();
+    for (size_t i = 0; i < m_droneIds.size(); ++i) {
+      auto* row = m_vehicleList.get_row_at_index(static_cast<int>(i));
+      if (row == nullptr) {
+        continue;
+      }
+      auto* label = dynamic_cast<Gtk::Label*>(row->get_child());
+      if (label == nullptr) {
+        continue;
+      }
+      const bool selected = m_droneIds[i] == selectedDrone;
+      label->set_text(std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
+                      (selected ? "  active" : "  standby"));
+    }
+    m_mapMission.set_text("Map / mission workspace\n\n"
+                          "GS center: University of Memphis\n"
+                          "Selected drone: " + selectedDrone + "\n"
+                          "Map markers show GS, drones, and mission waypoints.\n"
+                          "Click map to append waypoints, then upload/start the mission.");
+    m_services.set_text("Services for Drone " + selectedDrone +
+                        ": video, targeted MAVLink, telemetry, camera, mission");
+    refreshMapTile();
+  }
+
+  static std::string
+  statusField(const std::string& status, const std::string& key,
+              const std::string& fallback = "unknown")
+  {
+    const auto marker = key + "=";
+    const auto start = status.find(marker);
+    if (start == std::string::npos) {
+      return fallback;
+    }
+    const auto valueStart = start + marker.size();
+    const auto valueEnd = status.find(' ', valueStart);
+    return status.substr(valueStart, valueEnd == std::string::npos ?
+                         std::string::npos : valueEnd - valueStart);
+  }
+
+  static std::string
+  mapTextForTelemetry(const std::string& status)
+  {
+    const auto drone = statusField(status, "drone");
+    const auto lat = statusField(status, "lat");
+    const auto lon = statusField(status, "lon");
+    const auto alt = statusField(status, "alt");
+    const auto mission = statusField(status, "mission");
+    return "Map / mission workspace\n\n"
+           "Selected drone: " + drone + "\n"
+           "Position: lat " + lat + "  lon " + lon + "\n"
+           "Altitude: " + alt + "\n"
+           "Mission: " + mission + "\n\n"
+           "Map tile: OpenStreetMap, centered on the ground station.\n"
+           "Click the map to append mission waypoints.";
+  }
+
+  struct MapMarker
+  {
+    std::string label;
+    double lat = 35.1186;
+    double lon = -89.9375;
+    uint8_t r = 220;
+    uint8_t g = 20;
+    uint8_t b = 40;
+  };
+
+  static std::pair<double, double>
+  tileFloatForLatLon(double lat, double lon, int zoom)
+  {
+    const auto latRad = lat * M_PI / 180.0;
+    const auto n = std::pow(2.0, zoom);
+    return {
+      (lon + 180.0) / 360.0 * n,
+      (1.0 - std::asinh(std::tan(latRad)) / M_PI) / 2.0 * n
+    };
+  }
+
+  static std::pair<double, double>
+  latLonForTilePixel(int tileX, int tileY, int zoom, double pixelX, double pixelY)
+  {
+    const auto n = std::pow(2.0, zoom);
+    const auto x = (static_cast<double>(tileX) + pixelX / 256.0) / n;
+    const auto y = (static_cast<double>(tileY) + pixelY / 256.0) / n;
+    const auto lon = x * 360.0 - 180.0;
+    const auto latRad = std::atan(std::sinh(M_PI * (1.0 - 2.0 * y)));
+    return {latRad * 180.0 / M_PI, lon};
+  }
+
+  static std::pair<double, double>
+  latLonForTileFloat(double tileX, double tileY, int zoom)
+  {
+    const auto n = std::pow(2.0, zoom);
+    const auto lon = tileX / n * 360.0 - 180.0;
+    const auto latRad = std::atan(std::sinh(M_PI * (1.0 - 2.0 * tileY / n)));
+    return {latRad * 180.0 / M_PI, lon};
+  }
+
+  static void
+  drawTinyText(const Glib::RefPtr<Gdk::Pixbuf>& pixbuf, int x, int y,
+               const std::string& text, uint8_t r, uint8_t g, uint8_t b)
+  {
+    if (!pixbuf) {
+      return;
+    }
+    const int width = pixbuf->get_width();
+    const int height = pixbuf->get_height();
+    const int channels = pixbuf->get_n_channels();
+    const int rowstride = pixbuf->get_rowstride();
+    auto* pixels = pixbuf->get_pixels();
+    if (pixels == nullptr || channels < 3) {
+      return;
+    }
+
+    auto setPixel = [&] (int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+      if (x < 0 || y < 0 || x >= width || y >= height) {
+        return;
+      }
+      auto* p = pixels + y * rowstride + x * channels;
+      p[0] = r;
+      p[1] = g;
+      p[2] = b;
+      if (channels >= 4) {
+        p[3] = 255;
+      }
+    };
+
+    auto patternFor = [] (char ch) -> std::array<const char*, 7> {
+      switch (ch) {
+      case 'A': return {"01110", "10001", "10001", "11111", "10001", "10001", "10001"};
+      case 'B': return {"11110", "10001", "10001", "11110", "10001", "10001", "11110"};
+      case 'D': return {"11110", "10001", "10001", "10001", "10001", "10001", "11110"};
+      case 'G': return {"01110", "10001", "10000", "10111", "10001", "10001", "01110"};
+      case 'N': return {"10001", "11001", "10101", "10011", "10001", "10001", "10001"};
+      case 'O': return {"01110", "10001", "10001", "10001", "10001", "10001", "01110"};
+      case 'P': return {"11110", "10001", "10001", "11110", "10000", "10000", "10000"};
+      case 'R': return {"11110", "10001", "10001", "11110", "10100", "10010", "10001"};
+      case 'S': return {"01111", "10000", "10000", "01110", "00001", "00001", "11110"};
+      case 'W': return {"10001", "10001", "10001", "10101", "10101", "11011", "10001"};
+      case '0': return {"01110", "10001", "10011", "10101", "11001", "10001", "01110"};
+      case '1': return {"00100", "01100", "00100", "00100", "00100", "00100", "01110"};
+      case '2': return {"01110", "10001", "00001", "00010", "00100", "01000", "11111"};
+      case '3': return {"11110", "00001", "00001", "01110", "00001", "00001", "11110"};
+      case '4': return {"00010", "00110", "01010", "10010", "11111", "00010", "00010"};
+      case '5': return {"11111", "10000", "10000", "11110", "00001", "00001", "11110"};
+      case '6': return {"01110", "10000", "10000", "11110", "10001", "10001", "01110"};
+      case '7': return {"11111", "00001", "00010", "00100", "01000", "01000", "01000"};
+      case '8': return {"01110", "10001", "10001", "01110", "10001", "10001", "01110"};
+      case '9': return {"01110", "10001", "10001", "01111", "00001", "00001", "01110"};
+      default: return {"00000", "00000", "00000", "00000", "00000", "00000", "00000"};
+      }
+    };
+
+    int cursor = x;
+    for (char ch : text) {
+      if (ch >= 'a' && ch <= 'z') {
+        ch = static_cast<char>(ch - 'a' + 'A');
+      }
+      if (ch == ' ') {
+        cursor += 4;
+        continue;
+      }
+      const auto pattern = patternFor(ch);
+      for (int row = 0; row < 7; ++row) {
+        for (int col = 0; col < 5; ++col) {
+          if (pattern[row][col] == '1') {
+            setPixel(cursor + col, y + row, r, g, b);
+          }
+        }
+      }
+      cursor += 6;
+    }
+  }
+
+  static void
+  drawMapMarker(const Glib::RefPtr<Gdk::Pixbuf>& pixbuf, int cx, int cy,
+                const std::string& label, uint8_t r, uint8_t g, uint8_t b)
+  {
+    if (!pixbuf) {
+      return;
+    }
+    const int width = pixbuf->get_width();
+    const int height = pixbuf->get_height();
+    const int channels = pixbuf->get_n_channels();
+    const int rowstride = pixbuf->get_rowstride();
+    auto* pixels = pixbuf->get_pixels();
+    if (pixels == nullptr || channels < 3) {
+      return;
+    }
+
+    auto setPixel = [&] (int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+      if (x < 0 || y < 0 || x >= width || y >= height) {
+        return;
+      }
+      auto* p = pixels + y * rowstride + x * channels;
+      p[0] = r;
+      p[1] = g;
+      p[2] = b;
+      if (channels >= 4) {
+        p[3] = 255;
+      }
+    };
+
+    for (int dy = -8; dy <= 8; ++dy) {
+      for (int dx = -8; dx <= 8; ++dx) {
+        const auto dist2 = dx * dx + dy * dy;
+        if (dist2 <= 64 && dist2 >= 36) {
+          setPixel(cx + dx, cy + dy, 255, 255, 255);
+        }
+        if (std::abs(dx) <= 1 || std::abs(dy) <= 1) {
+          setPixel(cx + dx, cy + dy, r, g, b);
+        }
+      }
+    }
+    for (int d = -4; d <= 4; ++d) {
+      setPixel(cx + d, cy + d, r, g, b);
+      setPixel(cx + d, cy - d, r, g, b);
+    }
+    drawTinyText(pixbuf, std::clamp(cx + 10, 0, width - 24),
+                 std::clamp(cy - 4, 0, height - 8), label, r, g, b);
+  }
+
+  std::vector<MapMarker>
+  currentMapMarkers() const
+  {
+    std::vector<MapMarker> markers;
+    markers.push_back({"GS", m_groundStationLat, m_groundStationLon, 20, 80, 220});
+    for (size_t i = 0; i < m_droneIds.size(); ++i) {
+      const auto& droneId = m_droneIds[i];
+      const auto found = m_dronePositions.find(droneId);
+      double lat = m_groundStationLat;
+      double lon = m_groundStationLon + (static_cast<double>(i) + 1.0) * 0.0007;
+      if (found != m_dronePositions.end()) {
+        lat = found->second.first;
+        lon = found->second.second;
+      }
+      if (std::abs(lat - m_groundStationLat) < 0.00001 &&
+          std::abs(lon - m_groundStationLon) < 0.00001) {
+        lon += (static_cast<double>(i) + 1.0) * 0.00055;
+      }
+      markers.push_back({droneId, lat, lon,
+                         static_cast<uint8_t>(i == 0 ? 220 : 20),
+                         static_cast<uint8_t>(i == 0 ? 40 : 160),
+                         static_cast<uint8_t>(i == 0 ? 40 : 70)});
+    }
+    if (!m_planWaypoints.empty()) {
+      for (size_t i = 0; i < m_planWaypoints.size(); ++i) {
+        markers.push_back({"WP" + std::to_string(i + 1),
+                           m_planWaypoints[i].first, m_planWaypoints[i].second,
+                           245, 160, 20});
+      }
+    }
+    else if (m_hasPatrolCenter) {
+      markers.push_back({"WP", m_patrolCenterLat, m_patrolCenterLon, 245, 160, 20});
+    }
+    return markers;
+  }
+
+  void
+  updatePatrolInputsFromWaypoints()
+  {
+    if (m_planWaypoints.empty()) {
+      m_hasPatrolCenter = false;
+      return;
+    }
+    double latSum = 0.0;
+    double lonSum = 0.0;
+    for (const auto& point : m_planWaypoints) {
+      latSum += point.first;
+      lonSum += point.second;
+    }
+    m_patrolCenterLat = latSum / static_cast<double>(m_planWaypoints.size());
+    m_patrolCenterLon = lonSum / static_cast<double>(m_planWaypoints.size());
+    m_hasPatrolCenter = true;
+    std::ostringstream latText;
+    std::ostringstream lonText;
+    latText << std::fixed << std::setprecision(6) << m_patrolCenterLat;
+    lonText << std::fixed << std::setprecision(6) << m_patrolCenterLon;
+    m_patrolLat.set_text(latText.str());
+    m_patrolLon.set_text(lonText.str());
+  }
+
+  void
+  undoMissionWaypoint()
+  {
+    if (m_planWaypoints.empty()) {
+      return;
+    }
+    m_planWaypoints.pop_back();
+    updatePatrolInputsFromWaypoints();
+    m_mapMission.set_text("Map / mission workspace\n\n"
+                          "Removed last waypoint. Current mission waypoint count: " +
+                          std::to_string(m_planWaypoints.size()) + ".");
+    refreshMapTile();
+  }
+
+  void
+  clearMissionWaypoints()
+  {
+    m_planWaypoints.clear();
+    updatePatrolInputsFromWaypoints();
+    m_mapMission.set_text("Map / mission workspace\n\n"
+                          "Mission waypoints cleared. Click the map to append WP1/WP2/...");
+    refreshMapTile();
+  }
+
+  void
+  scheduleMissionStartPhase(int phase, size_t droneIndex)
+  {
+    const auto readyDrones = m_runtime.missionReadyDrones();
+    if (readyDrones.empty()) {
+      m_status.set_text("No uploaded patrol mission is ready; upload mission before Start Mission");
+      return;
+    }
+    if (droneIndex >= readyDrones.size()) {
+      if (phase == 0) {
+        m_status.set_text("Mission sequence: all patrol drones armed; taking off next");
+        Glib::signal_timeout().connect([this] {
+          scheduleMissionStartPhase(1, 0);
+          return false;
+        }, 1800);
+        return;
+      }
+      if (phase == 1) {
+        m_status.set_text("Mission sequence: all patrol drones takeoff sent; starting missions next");
+        Glib::signal_timeout().connect([this] {
+          scheduleMissionStartPhase(2, 0);
+          return false;
+        }, 6500);
+        return;
+      }
+      m_status.set_text("Mission start sequence sent to patrol drones");
+      return;
+    }
+
+    const auto droneId = readyDrones[droneIndex];
+    if (phase == 0) {
+      m_status.set_text("Mission sequence: arming Drone " + droneId +
+                        " (" + std::to_string(droneIndex + 1) + "/" +
+                        std::to_string(readyDrones.size()) + ")");
+      m_runtime.sendMavlinkCommandToDrone(droneId, "arm", {{"arm", "true"}});
+      Glib::signal_timeout().connect([this, droneIndex] {
+        scheduleMissionStartPhase(0, droneIndex + 1);
+        return false;
+      }, 900);
+      return;
+    }
+    if (phase == 1) {
+      m_status.set_text("Mission sequence: takeoff Drone " + droneId +
+                        " (" + std::to_string(droneIndex + 1) + "/" +
+                        std::to_string(readyDrones.size()) + ")");
+      m_runtime.sendMavlinkCommandToDrone(droneId, "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+      Glib::signal_timeout().connect([this, droneIndex] {
+        scheduleMissionStartPhase(1, droneIndex + 1);
+        return false;
+      }, 900);
+      return;
+    }
+
+    m_status.set_text("Mission sequence: starting mission on Drone " + droneId +
+                      " (" + std::to_string(droneIndex + 1) + "/" +
+                      std::to_string(readyDrones.size()) + ")");
+    m_runtime.sendMavlinkCommandToDrone(droneId, "start_mission");
+    Glib::signal_timeout().connect([this, droneIndex] {
+      scheduleMissionStartPhase(2, droneIndex + 1);
+      return false;
+    }, 900);
+  }
+
+  void
+  schedulePatrolLandSequence(size_t droneIndex)
+  {
+    if (droneIndex >= m_droneIds.size()) {
+      m_status.set_text("Stop Patrol sequence sent to patrol drones");
+      return;
+    }
+    const auto droneId = m_droneIds[droneIndex];
+    m_status.set_text("Stop Patrol: landing Drone " + droneId);
+    m_runtime.sendMavlinkCommandToDrone(droneId, "land");
+    Glib::signal_timeout().connect([this, droneIndex] {
+      schedulePatrolLandSequence(droneIndex + 1);
+      return false;
+    }, 1800);
+  }
+
+  std::pair<double, double>
+  mapEventToImagePixel(double pixelX, double pixelY)
+  {
+    const auto allocation = m_mapImage.get_allocation();
+    const auto width = std::max(1, allocation.get_width());
+    const auto height = std::max(1, allocation.get_height());
+    const auto imageX = std::clamp(pixelX - static_cast<double>(allocation.get_x()),
+                                   0.0, static_cast<double>(width - 1));
+    const auto imageY = std::clamp(pixelY - static_cast<double>(allocation.get_y()),
+                                   0.0, static_cast<double>(height - 1));
+    return {
+      imageX * 256.0 / static_cast<double>(width),
+      imageY * 256.0 / static_cast<double>(height)
+    };
+  }
+
+  void
+  beginMapDrag(double pixelX, double pixelY)
+  {
+    const auto imagePixel = mapEventToImagePixel(pixelX, pixelY);
+    m_mapDragging = true;
+    m_mapDragStartX = imagePixel.first;
+    m_mapDragStartY = imagePixel.second;
+    const auto [tileX, tileY] = tileFloatForLatLon(m_mapCenterLat, m_mapCenterLon, m_mapZoom);
+    m_mapDragStartTileX = tileX;
+    m_mapDragStartTileY = tileY;
+  }
+
+  void
+  finishMapDrag(double pixelX, double pixelY)
+  {
+    if (!m_mapDragging) {
+      return;
+    }
+    const auto imagePixel = mapEventToImagePixel(pixelX, pixelY);
+    m_mapDragging = false;
+    const auto dx = imagePixel.first - m_mapDragStartX;
+    const auto dy = imagePixel.second - m_mapDragStartY;
+    if (dx * dx + dy * dy < 36.0) {
+      placePatrolCenterFromMapClick(imagePixel.first, imagePixel.second);
+      return;
+    }
+    m_mapMission.set_text("Map / mission workspace\n\n"
+                          "Map panned. Click to append a waypoint, or press Center GS.");
+    refreshMapTile();
+  }
+
+  void
+  updateMapDrag(double pixelX, double pixelY)
+  {
+    const auto imagePixel = mapEventToImagePixel(pixelX, pixelY);
+    const auto dx = imagePixel.first - m_mapDragStartX;
+    const auto dy = imagePixel.second - m_mapDragStartY;
+    if (dx * dx + dy * dy < 16.0) {
+      return;
+    }
+    const auto newTileX = m_mapDragStartTileX - dx / 256.0;
+    const auto newTileY = m_mapDragStartTileY - dy / 256.0;
+    const auto [lat, lon] = latLonForTileFloat(newTileX, newTileY, m_mapZoom);
+    m_mapCenterLat = lat;
+    m_mapCenterLon = lon;
+    refreshMapTile();
+  }
+
+  void
+  zoomMap(int delta)
+  {
+    m_mapZoom = std::clamp(m_mapZoom + delta, 2, 19);
+    refreshMapTile();
+  }
+
+  void
+  centerMapOnGroundStation()
+  {
+    m_mapCenterLat = m_groundStationLat;
+    m_mapCenterLon = m_groundStationLon;
+    m_mapMission.set_text("Map / mission workspace\n\n"
+                          "Map centered on GS / University of Memphis.\n"
+                          "Click to append mission waypoints, drag to pan, +/- to zoom.");
+    refreshMapTile();
+  }
+
+  void
+  placePatrolCenterFromMapClick(double pixelX, double pixelY)
+  {
+    const auto latLon = latLonForTileFloat(
+      (m_mapSourcePixelX + std::clamp(pixelX, 0.0, 255.0)) / 256.0,
+      (m_mapSourcePixelY + std::clamp(pixelY, 0.0, 255.0)) / 256.0,
+      m_mapZoom);
+    m_planWaypoints.push_back(latLon);
+    updatePatrolInputsFromWaypoints();
+    std::ostringstream pointText;
+    pointText << std::fixed << std::setprecision(6)
+              << latLon.first << "," << latLon.second;
+    m_mapMission.set_text("Map / mission workspace\n\n"
+                          "GS center: University of Memphis\n"
+                          "Added WP" + std::to_string(m_planWaypoints.size()) +
+                          " at " + pointText.str() + "\n"
+                          "Upload Patrol Mission sends this route; Undo/Clear edits it.");
+    refreshMapTile();
+  }
+
+  void
+  refreshMapTile()
+  {
+    const int zoom = m_mapZoom;
+    const auto [xFloat, yFloat] = tileFloatForLatLon(m_mapCenterLat, m_mapCenterLon, zoom);
+    const auto centerPixelX = xFloat * 256.0;
+    const auto centerPixelY = yFloat * 256.0;
+    const auto sourcePixelX = centerPixelX - 128.0;
+    const auto sourcePixelY = centerPixelY - 128.0;
+    const auto baseTileX = static_cast<int>(std::floor(sourcePixelX / 256.0));
+    const auto baseTileY = static_cast<int>(std::floor(sourcePixelY / 256.0));
+    const auto cropX = std::clamp(static_cast<int>(std::round(sourcePixelX - baseTileX * 256.0)), 0, 255);
+    const auto cropY = std::clamp(static_cast<int>(std::round(sourcePixelY - baseTileY * 256.0)), 0, 255);
+    m_mapTileX = baseTileX;
+    m_mapTileY = baseTileY;
+    m_mapSourcePixelX = sourcePixelX;
+    m_mapSourcePixelY = sourcePixelY;
+    const auto generation = ++m_mapRenderGeneration;
+    const auto markers = currentMapMarkers();
+    const auto tileKey = std::to_string(zoom) + "/" + std::to_string(baseTileX) +
+                         "/" + std::to_string(baseTileY) + "/" +
+                         std::to_string(cropX / 8) + "/" + std::to_string(cropY / 8);
+    if (m_mapTileLoading.load()) {
+      m_mapRefreshPending = true;
+      return;
+    }
+    m_mapRefreshPending = false;
+    m_mapTileKey = tileKey;
+    m_mapTileLoading = true;
+    std::thread([this, zoom, baseTileX, baseTileY, cropX, cropY,
+                 sourcePixelX, sourcePixelY, markers, generation] {
+      struct LoadedTile
+      {
+        int x = 0;
+        int y = 0;
+        std::string path;
+      };
+
+      std::vector<LoadedTile> tiles;
+      bool ok = true;
+      for (int dy = 0; dy <= 1; ++dy) {
+        for (int dx = 0; dx <= 1; ++dx) {
+          const auto tileX = baseTileX + dx;
+          const auto tileY = baseTileY + dy;
+          const auto tileKey = std::to_string(zoom) + "/" + std::to_string(tileX) +
+                               "/" + std::to_string(tileY);
+          auto tilePath = "NDNSF-UAV-APP/maps/osm/" + std::to_string(zoom) +
+                          "/" + std::to_string(tileX) + "/" +
+                          std::to_string(tileY) + ".png";
+          auto tileOk = access(tilePath.c_str(), R_OK) == 0;
+          if (!tileOk) {
+            tilePath = "/tmp/ndnsf-uav-map-" + std::to_string(zoom) + "-" +
+                       std::to_string(tileX) + "-" + std::to_string(tileY) + ".png";
+            tileOk = access(tilePath.c_str(), R_OK) == 0;
+          }
+          if (!tileOk) {
+            const auto url = "https://tile.openstreetmap.org/" + tileKey + ".png";
+            const auto command = "curl -fsSL --max-time 5 -A ndnsf-uav-app -o " +
+                                 shellQuote(tilePath) + " " + shellQuote(url);
+            tileOk = std::system(command.c_str()) == 0;
+          }
+          ok = ok && tileOk;
+          if (tileOk) {
+            tiles.push_back({tileX, tileY, tilePath});
+          }
+        }
+      }
+      Glib::signal_idle().connect_once([this, tiles, ok, baseTileX, baseTileY,
+                                        cropX, cropY, sourcePixelX, sourcePixelY,
+                                        markers, zoom, generation] {
+        m_mapTileLoading = false;
+        auto refreshPending = [this] {
+          if (m_mapRefreshPending.exchange(false)) {
+            refreshMapTile();
+          }
+        };
+        if (generation != m_mapRenderGeneration.load()) {
+          refreshPending();
+          return;
+        }
+        if (!ok) {
+          refreshPending();
+          return;
+        }
+        try {
+          auto canvas = Gdk::Pixbuf::create(Gdk::COLORSPACE_RGB, true, 8, 512, 512);
+          canvas->fill(0xffffffff);
+          for (const auto& tile : tiles) {
+            auto pixbuf = Gdk::Pixbuf::create_from_file(tile.path, 256, 256, true);
+            if (pixbuf) {
+              pixbuf->copy_area(0, 0, 256, 256, canvas,
+                                (tile.x - baseTileX) * 256,
+                                (tile.y - baseTileY) * 256);
+            }
+          }
+          auto marked = Gdk::Pixbuf::create(Gdk::COLORSPACE_RGB, true, 8, 256, 256);
+          canvas->copy_area(cropX, cropY, 256, 256, marked, 0, 0);
+            for (const auto& marker : markers) {
+              const auto [mxFloat, myFloat] = tileFloatForLatLon(marker.lat, marker.lon, zoom);
+            const auto markerX = static_cast<int>(std::round(mxFloat * 256.0 - sourcePixelX));
+            const auto markerY = static_cast<int>(std::round(myFloat * 256.0 - sourcePixelY));
+            if (markerX < -24 || markerY < -24 || markerX > 280 || markerY > 280) {
+              continue;
+            }
+              drawMapMarker(marked, markerX, markerY, marker.label, marker.r, marker.g, marker.b);
+            }
+            m_mapImage.set(marked);
+        }
+        catch (const Glib::Error& e) {
+          NDN_LOG_WARN("GS_MAP_TILE_LOAD_FAILED " << e.what());
+        }
+        refreshPending();
+      });
+    }).detach();
+  }
+
 private:
-  GroundStationRuntime& m_runtime;
+  GroundStationServiceContainer& m_runtime;
   Gtk::Box m_box;
   Gtk::Box m_buttons;
+  Gtk::Box m_patrolControls;
   Gtk::Box m_workspace;
   Gtk::Frame m_vehicleFrame;
   Gtk::Box m_vehiclePanel;
@@ -2344,6 +4331,9 @@ private:
   Gtk::ListBox m_vehicleList;
   Gtk::Frame m_centerFrame;
   Gtk::Box m_centerPanel;
+  Gtk::Box m_mapControls;
+  Gtk::EventBox m_mapEventBox;
+  Gtk::Image m_mapImage;
   Gtk::Label m_mapMission;
   Gtk::Frame m_statusFrame;
   Gtk::Box m_statusPanel;
@@ -2352,7 +4342,19 @@ private:
   Gtk::Button m_arm;
   Gtk::Button m_takeoff;
   Gtk::Button m_land;
+  Gtk::Button m_patrol;
+  Gtk::Button m_startMission;
+  Gtk::Button m_stopPatrol;
   Gtk::Button m_controlToggle;
+  Gtk::Button m_mapZoomIn;
+  Gtk::Button m_mapZoomOut;
+  Gtk::Button m_mapCenterGs;
+  Gtk::Button m_mapUndoWp;
+  Gtk::Button m_mapClearWp;
+  Gtk::Label m_patrolHint;
+  Gtk::Entry m_patrolLat;
+  Gtk::Entry m_patrolLon;
+  Gtk::Entry m_patrolSizeMeters;
   Gtk::Box m_controlPanel;
   Gtk::Box m_manualKeyRow;
   Gtk::Box m_commandKeyRow;
@@ -2380,12 +4382,40 @@ private:
   std::mutex m_mutex;
   std::string m_pendingStatus = "Video stopped";
   std::string m_pendingTelemetry;
+  std::string m_pendingMap;
+  std::string m_pendingMapLat = "35.1186";
+  std::string m_pendingMapLon = "-89.9375";
+  std::string m_mapTileKey;
+  std::atomic<bool> m_mapTileLoading{false};
+  std::atomic<bool> m_mapRefreshPending{false};
+  std::atomic<uint64_t> m_mapRenderGeneration{0};
+  const double m_groundStationLat = 35.1186;
+  const double m_groundStationLon = -89.9375;
+  double m_mapCenterLat = 35.1186;
+  double m_mapCenterLon = -89.9375;
+  int m_mapZoom = 15;
+  int m_mapTileX = 0;
+  int m_mapTileY = 0;
+  double m_mapSourcePixelX = 0.0;
+  double m_mapSourcePixelY = 0.0;
+  bool m_mapDragging = false;
+  double m_mapDragStartX = 0.0;
+  double m_mapDragStartY = 0.0;
+  double m_mapDragStartTileX = 0.0;
+  double m_mapDragStartTileY = 0.0;
+  bool m_hasPatrolCenter = false;
+  double m_patrolCenterLat = 35.1186;
+  double m_patrolCenterLon = -89.9375;
+  std::vector<std::pair<double, double>> m_planWaypoints;
+  std::map<std::string, std::pair<double, double>> m_dronePositions;
+  size_t m_telemetryPollIndex = 0;
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;
   uint64_t m_pendingSeq = 0;
   uint64_t m_pendingElapsedMs = 0;
   bool m_pendingButtonState = false;
   bool m_pendingStartSensitive = true;
   bool m_pendingStopSensitive = false;
+  bool m_pendingClearFrame = false;
   bool m_controlMode = false;
   std::set<guint> m_pressedKeys;
   std::thread m_manualControlThread;
@@ -2413,7 +4443,10 @@ main(int argc, char** argv)
 	    const bool autoMavlinkTest = hasFlag(argc, argv, "--auto-mavlink-test");
 	    const bool autoKeyboardTest = hasFlag(argc, argv, "--auto-keyboard-test");
 	    const bool autoManualControlTest = hasFlag(argc, argv, "--auto-manual-control-test");
+	    const bool autoTwoDroneSwitchTest = hasFlag(argc, argv, "--auto-two-drone-switch-test");
 	    const bool autoPatrolTest = hasFlag(argc, argv, "--auto-patrol-test");
+	    const bool autoSingleMissionTest = hasFlag(argc, argv, "--auto-single-mission-test");
+	    const bool autoSingleMissionStartTest = hasFlag(argc, argv, "--auto-single-mission-start-test");
 	    const int autoStopSeconds = std::stoi(getOption(argc, argv, "--auto-stop-seconds", "10"));
 	    const int autoStartDelayMs = std::stoi(getOption(argc, argv, "--auto-start-delay-ms", "3000"));
     const std::string targetDroneId = getOption(argc, argv, "--target-drone", "A");
@@ -2424,21 +4457,42 @@ main(int argc, char** argv)
       std::stoull(getOption(argc, argv, "--video-bitrate-kbps", "8000")));
     const auto videoFrameWidth = static_cast<uint64_t>(
       std::stoull(getOption(argc, argv, "--video-width", "480")));
+    const std::string yoloModel = getOption(argc, argv, "--yolo-model", "yolo26n.pt");
+    const std::string yoloScript = getOption(argc, argv, "--yolo-script",
+                                             "NDNSF-UAV-APP/tools/yolo_detect_once.py");
+    const std::string yoloWorkerScript = getOption(argc, argv, "--yolo-worker-script",
+                                                   "NDNSF-UAV-APP/tools/yolo_detect_worker.py");
+    UavRuntimeConfig config;
+    config.groupPrefix = ndn::Name(getOption(argc, argv, "--group-prefix", config.groupPrefix.toUri()));
+    config.controllerPrefix = ndn::Name(getOption(argc, argv, "--controller-prefix", config.controllerPrefix.toUri()));
+    config.groundStationIdentity = ndn::Name(getOption(argc, argv, "--ground-station-identity", config.groundStationIdentity.toUri()));
+    config.droneIdentityPrefix = ndn::Name(getOption(argc, argv, "--drone-prefix", config.droneIdentityPrefix.toUri()));
+    config.trustSchema = getOption(argc, argv, "--trust-schema", config.trustSchema);
+    auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 
     if (objectDetectionMode) {
       ndn::Face faceForObjectDetection;
       KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
       ndn::KeyChain keyChain;
-      auto gsCert = getOrCreateIdentity(keyChain, GROUND_STATION_IDENTITY);
-      auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
-      keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(GROUND_STATION_IDENTITY));
-      return serveObjectDetection(faceForObjectDetection, keyChain, gsCert, controllerCert,
+      auto gsCert = getOrCreateIdentity(keyChain, config.groundStationIdentity);
+      auto controllerCert = getOrCreateIdentity(keyChain, config.controllerPrefix);
+      keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(config.groundStationIdentity));
+      return serveObjectDetection(faceForObjectDetection, keyChain, gsCert, controllerCert, config,
                                   serveCertificates);
     }
 
-    auto runtime = std::make_unique<GroundStationRuntime>(
-      serveCertificates, ackTimeoutMs, timeoutMs, targetDroneId,
-      videoBitrateKbps, videoFrameWidth, patrolDroneIds);
+    const bool interactiveGui = !(autoStart || autoMavlinkTest || autoKeyboardTest ||
+                                  autoManualControlTest || autoTwoDroneSwitchTest ||
+                                  autoPatrolTest || autoSingleMissionTest);
+    if (interactiveGui && !hasFlag(argc, argv, "--no-cert-dialog") &&
+        !hasOption(argc, argv, "--ground-station-identity")) {
+      config.groundStationIdentity = chooseGroundStationIdentity(config.groundStationIdentity);
+    }
+
+    auto runtime = std::make_unique<GroundStationServiceContainer>(
+      serveCertificates, ackTimeoutMs, timeoutMs, config, targetDroneId,
+      videoBitrateKbps, videoFrameWidth, patrolDroneIds, yoloModel, yoloScript,
+      yoloWorkerScript);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
@@ -2448,10 +4502,16 @@ main(int argc, char** argv)
       std::cout << "GS_PATROL_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
-    auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
+    if (autoSingleMissionTest) {
+      const bool ok = runtime->runSingleDroneMissionUploadTest(std::chrono::seconds(45),
+                                                               autoSingleMissionStartTest);
+      std::cout << "GS_SINGLE_MISSION_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
 	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
                                  autoStartDelayMs, autoMavlinkTest,
                                  autoKeyboardTest, autoManualControlTest,
+                                 autoTwoDroneSwitchTest,
                                  patrolDroneIds);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
@@ -2459,8 +4519,10 @@ main(int argc, char** argv)
               << " auto_mavlink_test=" << (autoMavlinkTest ? "true" : "false")
               << " auto_keyboard_test=" << (autoKeyboardTest ? "true" : "false")
               << " auto_manual_control_test=" << (autoManualControlTest ? "true" : "false")
+              << " auto_two_drone_switch_test=" << (autoTwoDroneSwitchTest ? "true" : "false")
               << std::endl;
     const int rc = app->run(window);
+    runtime->shutdownRuntime();
     std::cout << "GS_GUI_EXIT rc=" << rc << std::endl;
     return rc;
   }
