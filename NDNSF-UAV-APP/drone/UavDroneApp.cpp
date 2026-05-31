@@ -260,6 +260,15 @@ main(int argc, char** argv)
     cameraOptions.recordChunkLimit = std::stoull(getConfigOption(
       argc, argv, appConfig, "--camera-record-chunk-limit",
       "camera-record-chunk-limit", "0"));
+    const bool autoCameraRecordSmoke = getConfigBool(
+      argc, argv, appConfig, "--auto-camera-record-smoke",
+      "auto-camera-record-smoke", false);
+    const auto autoCameraRecordExpectedChunks = std::stoull(getConfigOption(
+      argc, argv, appConfig, "--auto-camera-record-expected-chunks",
+      "auto-camera-record-expected-chunks", "3"));
+    const auto autoCameraRecordTimeoutSeconds = std::stoull(getConfigOption(
+      argc, argv, appConfig, "--auto-camera-record-timeout-seconds",
+      "auto-camera-record-timeout-seconds", "10"));
     const std::string flightControllerStatusFile =
       getConfigOption(argc, argv, appConfig, "--fc-status-file", "fc-status-file", "");
     UavRuntimeConfig config = loadUavRuntimeConfig(
@@ -275,6 +284,66 @@ main(int argc, char** argv)
     config.serviceCameraFrame = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-frame", "service-camera-frame", config.serviceCameraFrame.toUri()));
     config.serviceCameraVideoControlSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-video-control-suffix", "service-camera-video-control-suffix", config.serviceCameraVideoControlSuffix.toUri()));
     config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
+
+    if (autoCameraRecordSmoke) {
+      cameraOptions.captureOnStart = true;
+      cameraOptions.recordToLocalRepo = true;
+      if (cameraOptions.recordChunkLimit < autoCameraRecordExpectedChunks + 100) {
+        cameraOptions.recordChunkLimit = autoCameraRecordExpectedChunks + 100;
+      }
+      if (cameraOptions.recordRepoPath.empty()) {
+        cameraOptions.recordRepoPath = "/tmp/ndnsf-uav-camera-record-smoke.sqlite3";
+      }
+
+      ndn::Face smokeFace;
+      ndn::KeyChain smokeKeyChain;
+      VideoPublisher smokePublisher(
+        smokeFace, smokeKeyChain, config, droneId, videoPath, cameraOptions);
+
+      const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(autoCameraRecordTimeoutSeconds);
+      while (std::chrono::steady_clock::now() < deadline &&
+             smokePublisher.recordingChunks() < 1) {
+        std::this_thread::sleep_for(100ms);
+      }
+      const auto chunksBeforeStream = smokePublisher.recordingChunks();
+      smokePublisher.start(Fields{
+        {"requested_bitrate_kbps", "8000"},
+        {"requested_frame_width", "480"},
+        {"fps", "30"},
+      });
+      while (std::chrono::steady_clock::now() < deadline &&
+             smokePublisher.recordingChunks() <= chunksBeforeStream) {
+        std::this_thread::sleep_for(100ms);
+      }
+      smokePublisher.stop();
+      const auto chunksAfterStop = smokePublisher.recordingChunks();
+      const auto targetChunks = std::max<uint64_t>(
+        autoCameraRecordExpectedChunks, chunksAfterStop + 1);
+      while (std::chrono::steady_clock::now() < deadline &&
+             smokePublisher.recordingChunks() < targetChunks) {
+        std::this_thread::sleep_for(100ms);
+      }
+      smokePublisher.shutdown();
+      if (smokePublisher.recordingChunks() < targetChunks ||
+          smokePublisher.recordingBytes() == 0 ||
+          smokePublisher.recordingChunks() <= chunksAfterStop) {
+        std::cerr << "DRONE_CAMERA_RECORD_SMOKE_FAILED chunks="
+                  << smokePublisher.recordingChunks()
+                  << " bytes=" << smokePublisher.recordingBytes()
+                  << " chunks_after_stop=" << chunksAfterStop
+                  << " repo=" << cameraOptions.recordRepoPath << std::endl;
+        return 1;
+      }
+      std::cout << "DRONE_CAMERA_RECORD_SMOKE_OK chunks="
+                << smokePublisher.recordingChunks()
+                << " bytes=" << smokePublisher.recordingBytes()
+                << " chunks_after_stop=" << chunksAfterStop
+                << " repo=" << cameraOptions.recordRepoPath
+                << " prefix=" << smokePublisher.recordingPrefix()
+                << std::endl;
+      return 0;
+    }
 
     auto runtime = std::make_unique<DroneServiceContainer>(
       droneId, available, serveCertificates, config, videoPath,
