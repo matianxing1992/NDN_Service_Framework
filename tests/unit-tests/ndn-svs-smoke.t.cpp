@@ -231,7 +231,6 @@ BOOST_AUTO_TEST_CASE(DummyFacesDeliverV2RequestPublication)
                                      svsOptions,
                                      securityOptions);
 
-  faceA.linkTo(faceB);
   auto forwardAInterest = faceA.onSendInterest.connect(
     [&] (const ndn::Interest& interest) { faceB.receive(interest); });
   auto forwardBInterest = faceB.onSendInterest.connect(
@@ -271,7 +270,7 @@ BOOST_AUTO_TEST_CASE(DummyFacesDeliverV2RequestPublication)
       receivedProducerPrefix = publication.producerPrefix;
       receivedPayload.assign(publication.data.begin(), publication.data.end());
     },
-    true);
+    false);
 
   userPubSub.publish(requestName,
                      ndn::span<const uint8_t>(expectedPayload.data(), expectedPayload.size()));
@@ -338,7 +337,6 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
                                      svsOptions,
                                      securityOptions);
 
-  userFace.linkTo(providerFace);
   auto forwardUserInterest = userFace.onSendInterest.connect(
     [&] (const ndn::Interest& interest) { providerFace.receive(interest); });
   auto forwardProviderInterest = providerFace.onSendInterest.connect(
