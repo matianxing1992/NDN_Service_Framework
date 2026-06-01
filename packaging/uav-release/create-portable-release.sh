@@ -73,6 +73,12 @@ for binary in "${required_bins[@]}"; do
   cp -a "$binary" "$stage/bin/"
 done
 
+optional_runtime_bins=()
+if command -v ffmpeg >/dev/null 2>&1; then
+  cp -a "$(command -v ffmpeg)" "$stage/bin/ffmpeg"
+  optional_runtime_bins+=("$stage/bin/ffmpeg")
+fi
+
 cp -a "$repo_root/NDNSF-UAV-APP/configs/"*.conf "$stage/config/"
 cp -a "$repo_root/NDNSF-UAV-APP/configs/"*.policies "$stage/config/" 2>/dev/null || true
 cp -a "$repo_root/examples/trust-schema.conf" "$stage/config/trust-schema.conf"
@@ -87,7 +93,7 @@ for cfg in "$stage/config"/drone-*.conf; do
   [[ -f "$cfg" ]] || continue
   sed -i \
     -e 's|^runtime-config .*|runtime-config config/uav_runtime.conf|' \
-    -e 's|^video-source .*|video-source videos/drone.mp4|' \
+    -e 's|^video-source .*|video-source auto|' \
     "$cfg"
 done
 
@@ -148,6 +154,11 @@ for binary in "${required_bins[@]}"; do
     [[ -n "$lib" ]] && queue+=("$lib")
   done < <(collect_libraries "$binary")
 done
+for binary in "${optional_runtime_bins[@]}"; do
+  while IFS= read -r lib; do
+    [[ -n "$lib" ]] && queue+=("$lib")
+  done < <(collect_libraries "$binary")
+done
 
 while ((${#queue[@]})); do
   lib="${queue[0]}"
@@ -178,7 +189,8 @@ set_bundle_runpath() {
 
 for exe in "$stage/bin/App_ServiceController" \
            "$stage/bin/UavGroundStationApp" \
-           "$stage/bin/UavDroneApp"; do
+           "$stage/bin/UavDroneApp" \
+           "${optional_runtime_bins[@]}"; do
   set_bundle_runpath "$exe"
 done
 
@@ -187,6 +199,7 @@ cat > "$stage/bin/ndnsf-uav-controller" <<'EOF'
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$here/bin${PATH:+:$PATH}"
 config_dir="${NDNSF_UAV_CONFIG_DIR:-}"
 if [[ -z "$config_dir" ]]; then
   if [[ -d "$PWD/config" ]]; then
@@ -197,6 +210,8 @@ if [[ -z "$config_dir" ]]; then
     config_dir="$here/config"
   fi
 fi
+deploy_root="$(cd "$config_dir/.." && pwd)"
+cd "$deploy_root"
 args=("$@")
 has_arg() {
   local needle="$1"
@@ -217,6 +232,7 @@ cat > "$stage/bin/ndnsf-uav-gs" <<'EOF'
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$here/bin${PATH:+:$PATH}"
 config_dir="${NDNSF_UAV_CONFIG_DIR:-}"
 if [[ -z "$config_dir" ]]; then
   if [[ -d "$PWD/config" ]]; then
@@ -227,6 +243,8 @@ if [[ -z "$config_dir" ]]; then
     config_dir="$here/config"
   fi
 fi
+deploy_root="$(cd "$config_dir/.." && pwd)"
+cd "$deploy_root"
 args=("$@")
 has_arg() {
   local needle="$1"
@@ -238,6 +256,7 @@ has_arg() {
 defaults=()
 has_arg --runtime-config || defaults+=(--runtime-config "$config_dir/uav_runtime.conf")
 has_arg --app-config || defaults+=(--app-config "$config_dir/ground-station.conf")
+has_arg --trust-schema || defaults+=(--trust-schema "$config_dir/trust-schema.conf")
 exec "$here/bin/UavGroundStationApp" "${defaults[@]}" "${args[@]}"
 EOF
 
@@ -246,6 +265,7 @@ cat > "$stage/bin/ndnsf-uav-drone" <<'EOF'
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$here/bin${PATH:+:$PATH}"
 config_dir="${NDNSF_UAV_CONFIG_DIR:-}"
 if [[ -z "$config_dir" ]]; then
   if [[ -d "$PWD/config" ]]; then
@@ -256,6 +276,8 @@ if [[ -z "$config_dir" ]]; then
     config_dir="$here/config"
   fi
 fi
+deploy_root="$(cd "$config_dir/.." && pwd)"
+cd "$deploy_root"
 args=("$@")
 has_arg() {
   local needle="$1"
@@ -267,6 +289,7 @@ has_arg() {
 defaults=()
 has_arg --runtime-config || defaults+=(--runtime-config "$config_dir/uav_runtime.conf")
 has_arg --app-config || defaults+=(--app-config "$config_dir/drone-A.conf")
+has_arg --trust-schema || defaults+=(--trust-schema "$config_dir/trust-schema.conf")
 exec "$here/bin/UavDroneApp" "${defaults[@]}" "${args[@]}"
 EOF
 
@@ -347,7 +370,7 @@ enough:
 
 \`\`\`bash
 ./bin/ndnsf-uav-controller
-./bin/ndnsf-uav-gs
+./bin/ndnsf-uav-gs --app-config config/ground-station.conf
 ./bin/ndnsf-uav-drone --drone-id A
 ./bin/ndnsf-uav-drone --app-config config/drone-B.conf --drone-id B
 \`\`\`

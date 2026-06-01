@@ -575,16 +575,24 @@ drone video-control response reports the effective `capture`, `recording`,
 `recording_session_id`, `recording_object_prefix`, `recording_chunks`, and
 `recording_bytes` values.
 
-For real deployment, `UavDroneApp` reads a local camera device such as
-`/dev/video0` through `ffmpeg`/V4L2, encodes a low-latency H264 byte stream, and
-splits that stream into NDN-sized video packets. The MiniNDN launcher follows
-the same shape: it first looks for an installed USB/V4L2 camera, and if none is
-available it uses `v4l2loopback` plus `ffmpeg` to turn
-`NDNSF-UAV-APP/videos/drone.mp4` into a virtual camera device. If neither a real
-nor virtual camera is available, the launcher logs that no camera is available
-and falls back to direct file input only for local troubleshooting. This keeps
-DroneAPP logic focused on camera capture and streaming, while the experiment
-script owns demo camera simulation. This is not ordinary NDN segmentation of one object. Each Data
+For real deployment, `UavDroneApp` reads `video-source auto` from the drone
+config by default. In this mode it selects the first local V4L2 capture device
+such as `/dev/video0`; if no usable camera is present, it falls back to the
+sample video `videos/drone.mp4` for local troubleshooting. A deployment can
+force a specific USB camera or file by setting `video-source /dev/videoX` or a
+file path in the drone config. USB UVC camera capture uses adaptive defaults:
+`camera-v4l2-input-format auto`, `camera-v4l2-input-size auto`, and
+`camera-v4l2-input-fps 0`. In this mode the drone queries the camera and chooses
+a conservative format and size, preferring YUYV 640x480 when available. A frame
+rate value of `0` means the drone does not force the V4L2 input frame interval
+and only downsamples later in the encoder filter. This avoids cameras or
+embedded USB controllers that fail when probed with explicit frame-rate
+settings. Check the real camera first with
+`ffmpeg -f v4l2 -list_formats all -i /dev/videoX`, then override these keys only
+when the device and port are stable. The selected
+source is encoded through `ffmpeg`/V4L2 as a low-latency H264 byte stream and
+split into NDN-sized video
+packets. This is not ordinary NDN segmentation of one object. Each Data
 packet is an independent video packet named only by the stream start timestamp
 and a monotonically increasing `packetSeq`; it never mixes bytes from two
 different frames. The Data content begins with a compact metadata header

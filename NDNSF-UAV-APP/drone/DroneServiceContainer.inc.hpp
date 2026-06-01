@@ -1085,6 +1085,9 @@ public:
     std::string recordRepoPath;
     std::string recordObjectPrefix;
     uint64_t recordChunkLimit = 0;
+    std::string v4l2InputFormat = "auto";
+    std::string v4l2InputSize = "auto";
+    uint64_t v4l2InputFps = 0;
   };
 
   VideoPublisher(ndn::Face& face, ndn::KeyChain& keyChain,
@@ -1895,10 +1898,24 @@ private:
         const auto fps = m_targetFps.load();
         const auto width = m_acceptedFrameWidth.load();
         const auto crf = m_encoderQuality.load();
-        const auto inputArgs = isVideoDevice(m_videoPath) ?
-          " -thread_queue_size 512 -f v4l2 -framerate " + std::to_string(fps) +
-          " -i " + shellQuote(m_videoPath) :
-          " -re -stream_loop -1 -i " + shellQuote(m_videoPath);
+        std::string inputArgs;
+        if (isVideoDevice(m_videoPath)) {
+          const auto v4l2Input = resolveV4l2Input(m_videoPath, m_cameraOptions);
+          inputArgs = " -thread_queue_size 512 -f v4l2";
+          if (!v4l2Input.format.empty()) {
+            inputArgs += " -input_format " + shellQuote(v4l2Input.format);
+          }
+          if (!v4l2Input.size.empty()) {
+            inputArgs += " -video_size " + shellQuote(v4l2Input.size);
+          }
+          if (v4l2Input.fps > 0) {
+            inputArgs += " -framerate " + std::to_string(v4l2Input.fps);
+          }
+          inputArgs += " -i " + shellQuote(m_videoPath);
+        }
+        else {
+          inputArgs = " -re -stream_loop -1 -i " + shellQuote(m_videoPath);
+        }
         const auto command =
           "ffmpeg -loglevel error" + inputArgs +
           " -vf fps=" + std::to_string(fps) +
@@ -1949,6 +1966,192 @@ private:
   isVideoDevice(const std::string& path)
   {
     return path.rfind("/dev/video", 0) == 0;
+  }
+
+  struct V4l2InputSelection
+  {
+    std::string format;
+    std::string size;
+    uint64_t fps = 0;
+  };
+
+  static std::string
+  fourccToFfmpeg(uint32_t fourcc)
+  {
+    switch (fourcc) {
+    case V4L2_PIX_FMT_YUYV:
+      return "yuyv422";
+    case V4L2_PIX_FMT_MJPEG:
+      return "mjpeg";
+    case V4L2_PIX_FMT_H264:
+      return "h264";
+    case V4L2_PIX_FMT_NV12:
+      return "nv12";
+    case V4L2_PIX_FMT_RGB24:
+      return "rgb24";
+    default:
+      return "";
+    }
+  }
+
+  static bool
+  isAutoValue(const std::string& value)
+  {
+    return value.empty() || value == "auto";
+  }
+
+  static std::string
+  frameSizeToString(uint32_t width, uint32_t height)
+  {
+    if (width == 0 || height == 0) {
+      return "";
+    }
+    return std::to_string(width) + "x" + std::to_string(height);
+  }
+
+  static std::string
+  chooseSizeForFormat(int fd, uint32_t pixelFormat)
+  {
+    std::string first;
+    std::string firstReasonable;
+    for (uint32_t i = 0; ; ++i) {
+      v4l2_frmsizeenum size {};
+      size.index = i;
+      size.pixel_format = pixelFormat;
+      if (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &size) != 0) {
+        break;
+      }
+      if (size.type == V4L2_FRMSIZE_TYPE_DISCRETE) {
+        const auto value = frameSizeToString(size.discrete.width, size.discrete.height);
+        if (first.empty()) {
+          first = value;
+        }
+        if (size.discrete.width == 640 && size.discrete.height == 480) {
+          return value;
+        }
+        if (firstReasonable.empty() &&
+            size.discrete.width <= 1280 && size.discrete.height <= 720) {
+          firstReasonable = value;
+        }
+      }
+      else if (size.type == V4L2_FRMSIZE_TYPE_STEPWISE ||
+               size.type == V4L2_FRMSIZE_TYPE_CONTINUOUS) {
+        const auto minWidth = size.stepwise.min_width;
+        const auto minHeight = size.stepwise.min_height;
+        const auto maxWidth = size.stepwise.max_width;
+        const auto maxHeight = size.stepwise.max_height;
+        if (minWidth <= 640 && minHeight <= 480 &&
+            maxWidth >= 640 && maxHeight >= 480) {
+          return "640x480";
+        }
+        return frameSizeToString(minWidth, minHeight);
+      }
+    }
+    if (!firstReasonable.empty()) {
+      return firstReasonable;
+    }
+    return first;
+  }
+
+  static V4l2InputSelection
+  resolveV4l2Input(const std::string& path, const CameraRuntimeOptions& options)
+  {
+    V4l2InputSelection selection;
+    if (!isAutoValue(options.v4l2InputFormat)) {
+      selection.format = options.v4l2InputFormat;
+    }
+    if (!isAutoValue(options.v4l2InputSize)) {
+      selection.size = options.v4l2InputSize;
+    }
+    selection.fps = options.v4l2InputFps;
+
+    if (!isAutoValue(options.v4l2InputFormat) &&
+        !isAutoValue(options.v4l2InputSize)) {
+      return selection;
+    }
+
+    const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+      NDN_LOG_WARN("V4L2_CAMERA_PROBE_FAILED path=" << path
+                   << " reason=open errno=" << errno);
+      return selection;
+    }
+
+    struct ScopedFd
+    {
+      explicit ScopedFd(int value)
+        : fd(value)
+      {
+      }
+      ~ScopedFd()
+      {
+        if (fd >= 0) {
+          close(fd);
+        }
+      }
+      int fd = -1;
+    } scoped(fd);
+
+    struct Candidate
+    {
+      uint32_t fourcc = 0;
+      std::string format;
+      std::string size;
+      int priority = 100;
+    };
+
+    std::vector<Candidate> candidates;
+    for (uint32_t i = 0; ; ++i) {
+      v4l2_fmtdesc fmt {};
+      fmt.index = i;
+      fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+      if (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) != 0) {
+        break;
+      }
+      auto ffmpegFormat = fourccToFfmpeg(fmt.pixelformat);
+      if (ffmpegFormat.empty()) {
+        continue;
+      }
+      int priority = 50;
+      if (ffmpegFormat == "yuyv422") {
+        priority = 0;
+      }
+      else if (ffmpegFormat == "mjpeg") {
+        priority = 10;
+      }
+      else if (ffmpegFormat == "h264") {
+        priority = 20;
+      }
+      candidates.push_back(Candidate{
+        fmt.pixelformat,
+        std::move(ffmpegFormat),
+        chooseSizeForFormat(fd, fmt.pixelformat),
+        priority
+      });
+    }
+
+    if (candidates.empty()) {
+      NDN_LOG_WARN("V4L2_CAMERA_PROBE_EMPTY path=" << path);
+      return selection;
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [] (const Candidate& lhs, const Candidate& rhs) {
+                return lhs.priority < rhs.priority;
+              });
+
+    const auto& chosen = candidates.front();
+    if (isAutoValue(options.v4l2InputFormat)) {
+      selection.format = chosen.format;
+    }
+    if (isAutoValue(options.v4l2InputSize)) {
+      selection.size = chosen.size;
+    }
+    NDN_LOG_INFO("V4L2_CAMERA_AUTO path=" << path
+                 << " format=" << selection.format
+                 << " size=" << selection.size
+                 << " fps=" << selection.fps);
+    return selection;
   }
 
   static constexpr size_t MAX_VIDEO_PACKET_PAYLOAD = 3600;

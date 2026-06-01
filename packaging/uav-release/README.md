@@ -49,6 +49,21 @@ videos/    sample camera input video
 scripts/   dependency check helper
 ```
 
+Drone configs default to `video-source auto`: the drone selects the first local
+V4L2 capture device and falls back to `videos/drone.mp4` when no usable camera is
+present. Set `video-source /dev/videoX` or a file path to force a source.
+The default V4L2 capture format is adaptive:
+`camera-v4l2-input-format auto`, `camera-v4l2-input-size auto`, and
+`camera-v4l2-input-fps 0`. In this mode the drone queries the camera and chooses
+a conservative format and size, preferring YUYV 640x480 when available. A frame
+rate value of `0` does not force the V4L2 input frame interval and lets the
+encoder downsample later. Override these only after checking the target camera with
+`ffmpeg -f v4l2 -list_formats all -i /dev/videoX`.
+
+If `ffmpeg` is available on the build host, it is copied into `bin/` and the
+wrappers put the release `bin/` directory first in `PATH`. This is required for
+USB/V4L2 camera capture because the drone video pipeline invokes `ffmpeg`.
+
 If `patchelf` is installed, the ELF RUNPATH is set to:
 
 ```text
@@ -107,8 +122,10 @@ RELEASE/NDNSF-UAV-nixos-aarch64-local-test.closure.gz
 ```
 
 The closure includes the Nix glibc loader and the Nix runtime paths needed by
-the packaged UAV binaries. It still does not include NFD, certificates, PX4,
-jMAVSim, camera devices, or machine-specific routes.
+the packaged UAV binaries. It also includes Nix `ffmpeg-headless` for USB/V4L2
+camera capture without pulling unnecessary GUI media tooling into the closure.
+It still does not include NFD, certificates, PX4, jMAVSim, camera devices, or
+machine-specific routes.
 
 ## Install and Run the Ubuntu Tarball
 
@@ -151,6 +168,11 @@ export NDNSF_UAV_CONFIG_DIR=$PWD/config
 "$app/bin/ndnsf-uav-drone" --drone-id A
 "$app/bin/ndnsf-uav-gs"
 ```
+
+The wrappers pass `--runtime-config`, `--app-config`, and `--trust-schema`
+from `NDNSF_UAV_CONFIG_DIR` so they do not depend on the shell's current working
+directory. They also switch to the deployment root, so relative config values
+such as `videos/drone.mp4` resolve against the copied release directory.
 
 ## MiniNDN Release Smoke Test
 

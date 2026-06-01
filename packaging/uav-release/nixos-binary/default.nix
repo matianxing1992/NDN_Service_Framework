@@ -25,9 +25,15 @@ pkgs.stdenvNoCC.mkDerivation {
     mkdir -p "$out"
     tar -xzf "$src" --strip-components=1 -C "$out"
     chmod -R u+w "$out"
+    cat > "$out/bin/ffmpeg" <<EOF
+#!${pkgs.bash}/bin/bash
+unset LD_LIBRARY_PATH
+exec ${pkgs.ffmpeg-headless}/bin/ffmpeg "\$@"
+EOF
+    chmod +x "$out/bin/ffmpeg"
 
     interp="${pkgs.stdenv.cc.bintools.dynamicLinker}"
-    rpath="$out/lib:${pkgs.glibc}/lib:${pkgs.stdenv.cc.cc.lib}/lib"
+    rpath="$out/lib:${pkgs.ffmpeg-headless}/lib:${pkgs.glibc}/lib:${pkgs.stdenv.cc.cc.lib}/lib"
 
     for f in $(find "$out/bin" "$out/lib" -type f 2>/dev/null); do
       if file -b "$f" | grep -q ELF; then
