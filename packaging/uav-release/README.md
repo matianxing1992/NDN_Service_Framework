@@ -143,6 +143,7 @@ configuration templates into a writable directory and point the wrappers there:
 rm -rf ~/NDNSF-UAV-deploy
 mkdir -p ~/NDNSF-UAV-deploy
 cp -a "$app/config" "$app/certs" "$app/videos" ~/NDNSF-UAV-deploy/
+chmod -R u+w ~/NDNSF-UAV-deploy
 cd ~/NDNSF-UAV-deploy
 export NDNSF_UAV_CONFIG_DIR=$PWD/config
 "$app/scripts/check-runtime-deps.sh"
