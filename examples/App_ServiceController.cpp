@@ -65,6 +65,7 @@ main(int argc, char** argv)
     ndn::ValidatorConfig validator(face);
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string policyFile = getOption(argc, argv, "--policy-file", "examples/hello.policies");
+    const std::string trustSchema = getOption(argc, argv, "--trust-schema", "examples/trust-schema.conf");
     const ndn::Name controllerPrefix(
       getOption(argc, argv, "--controller-prefix", DEFAULT_CONTROLLER_PREFIX.toUri()));
 
@@ -76,7 +77,7 @@ main(int argc, char** argv)
     getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("C"));
     getOrCreateIdentity(keyChain, USER_IDENTITY);
 
-    validator.load("examples/trust-schema.conf");
+    validator.load(trustSchema);
 
     std::cout << "[App_ServiceController] authority identity="
               << controllerCert.getIdentity().toUri()

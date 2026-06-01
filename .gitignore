@@ -20,7 +20,10 @@ pythonWrapper/*.egg-info/
 # Generated/local outputs
 docs/
 results/
-release-artifacts/
+RELEASE/*
+!RELEASE/README.md
+!RELEASE/*.tar.gz
+!RELEASE/*.closure.gz
 *.pt
 *.onnx
 

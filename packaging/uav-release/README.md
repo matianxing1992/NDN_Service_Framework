@@ -1,90 +1,168 @@
 # NDNSF-UAV Portable Release Packaging
 
-The first supported release target is Ubuntu 20.04 x86_64 built on Ubuntu
-20.04. The package is a portable tarball rather than a source installer:
+This directory contains the packaging helpers for releasing NDNSF-UAV as a
+binary application instead of a source checkout. The release directory should
+contain only the final downloadable artifacts:
 
-```bash
-./waf build
-packaging/uav-release/create-portable-release.sh
+```text
+RELEASE/
+  NDNSF-UAV-ubuntu20-x86_64-<version>.tar.gz
+  NDNSF-UAV-nixos-x86_64-<version>.closure.gz
+  NDNSF-UAV-nixos-aarch64-<version>.closure.gz
 ```
 
-For a partially static UAV build, configure a separate output directory:
+The Ubuntu tarball is for Ubuntu 20.04 x86_64 style deployments. The two Nix
+closures are for NixOS-style deployment on x86_64 and aarch64. NFD is not
+bundled; each target machine should run its own NFD and configure faces,
+routes, keychain state, and certificates normally.
+
+## Build the Ubuntu x86_64 Tarball
+
+Build the UAV executables first:
 
 ```bash
-./waf configure -o build-uav-static --enable-static --disable-shared --with-examples
-./waf build -o build-uav-static \
-  --targets=App_ServiceController,UavDroneApp,UavGroundStationApp
+./waf build -j$(nproc) --targets=App_ServiceController,UavDroneApp,UavGroundStationApp
 ```
 
-This links NDNSF and NDNSF-DistributedRepo from static archives into the three
-UAV executables. It does not make the executables fully static unless static
-archives for all external dependencies also exist. On the current Ubuntu 20.04
-development host, `libndn-cxx.a` is not installed, so the partially static
-executables still depend dynamically on `libndn-cxx`, ndn-svs, NDNSD, NAC-ABE,
-OpenABE, RELIC, GTK, Boost, OpenSSL, and normal system libraries.
-
-MiniNDN can verify that these partially static executables run inside MiniNDN
-nodes:
+Create the release under `RELEASE/`:
 
 ```bash
-NDNSF_UAV_APP_BUILD_DIR="$PWD/build-uav-static/examples" \
-  xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
-    --auto-recording-playback-test --no-cli --no-xhost --camera-mode file \
-    --output-dir results/uav_recording_playback_static_smoke
+NDNSF_UAV_RELEASE_VERSION=local-test \
+NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
+  packaging/uav-release/create-portable-release.sh RELEASE
 ```
 
-MiniNDN does not create a clean filesystem without host libraries; it creates
-network namespaces and per-node runtime directories. Use a Docker container,
-chroot, VM, or a fresh target machine to prove that a release does not depend
-on undeclared host libraries.
+On the Ubuntu 20.04 x86_64 development host this creates:
 
-To verify an unpacked release directory with MiniNDN, use the release-specific
-launcher. It explicitly loads APP binaries from `release-artifacts/<release>/bin`:
-
-```bash
-python3 Experiments/NDNSF_UAV_GUI_Minindn_Release.py \
-  --release-dir release-artifacts/NDNSF-UAV-ubuntu20-x86_64-local-test \
-  --auto-recording-playback-test --no-cli --no-xhost --camera-mode file \
-  --output-dir results/uav_recording_playback_release_smoke
+```text
+RELEASE/NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz
 ```
-
-If `--release-dir` is omitted, the launcher uses the newest unpacked
-`release-artifacts/NDNSF-UAV-*` directory.
 
 The tarball includes:
 
-- `bin/App_ServiceController`
-- `bin/UavGroundStationApp`
-- `bin/UavDroneApp`
-- wrapper commands `bin/ndnsf-uav-controller`, `bin/ndnsf-uav-gs`, and
-  `bin/ndnsf-uav-drone`
-- UAV config templates and demo policies
-- private runtime libraries discovered from `ldd`, including `ndn-cxx`,
-  NDNSF, ndn-svs, NDNSD, NAC-ABE, OpenABE, and RELIC when present
+```text
+bin/       controller, ground-station, and drone binaries plus wrappers
+lib/       private runtime libraries discovered from ldd
+config/    editable runtime configs, policies, and trust schema
+certs/     empty deployment certificate directory
+videos/    sample camera input video
+scripts/   dependency check helper
+```
 
-If `patchelf` is installed on the build host, the executable RUNPATH is patched
-to:
+If `patchelf` is installed, the ELF RUNPATH is set to:
 
 ```text
 $ORIGIN/../lib
 ```
 
-That makes the apps prefer the colocated `lib/` directory over global
-installations. The wrapper commands also set `LD_LIBRARY_PATH` to the same
-directory as a fallback.
+The wrapper commands also set `LD_LIBRARY_PATH` as a fallback.
 
-NFD is not bundled. It is a host daemon with sockets, routes, faces, keychain
-state, and system service integration. Each target machine should run its own
-compatible NFD and expose the normal local NFD socket.
+## Build Nix Closures
 
-For sparse Ubuntu 20.04 lab machines, the script can also bundle most
-`ldd`-discovered system libraries:
+A normal portable tarball is not enough for NixOS because NixOS does not use the
+usual `/lib64/ld-linux-*.so.*` dynamic loader path. For NixOS targets, wrap a
+portable tarball into a Nix store package and export its closure.
+
+If the build host does not already have Nix, install it first and reopen the
+shell, or source the daemon profile:
 
 ```bash
-NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
-  packaging/uav-release/create-portable-release.sh
+sh <(curl -L https://nixos.org/nix/install) --daemon
+. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
 ```
 
-This larger mode is meant for same-OS deployments. It deliberately does not
-try to bundle glibc, the dynamic loader, kernel drivers, NFD, certificates,
-camera devices, PX4, or jMAVSim.
+On the local x86_64 host:
+
+```bash
+NDNSF_UAV_RELEASE_VERSION=local-test \
+  packaging/uav-release/create-nixos-closure.sh \
+  RELEASE/NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz \
+  RELEASE
+```
+
+This creates:
+
+```text
+RELEASE/NDNSF-UAV-nixos-x86_64-local-test.closure.gz
+```
+
+On an aarch64 build host, such as the Debian 12 GCP ARM VM used for Odroid C4
+release preparation, build an aarch64 portable tarball and closure there:
+
+```bash
+./waf build -j$(nproc) --targets=App_ServiceController,UavDroneApp,UavGroundStationApp
+NDNSF_UAV_RELEASE_VERSION=local-test \
+NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
+  packaging/uav-release/create-portable-release.sh RELEASE
+NDNSF_UAV_RELEASE_VERSION=local-test \
+  packaging/uav-release/create-nixos-closure.sh \
+  RELEASE/NDNSF-UAV-debian12-aarch64-local-test.tar.gz \
+  RELEASE
+```
+
+Only copy the final Nix closure back into this repository's `RELEASE/`:
+
+```text
+RELEASE/NDNSF-UAV-nixos-aarch64-local-test.closure.gz
+```
+
+The closure includes the Nix glibc loader and the Nix runtime paths needed by
+the packaged UAV binaries. It still does not include NFD, certificates, PX4,
+jMAVSim, camera devices, or machine-specific routes.
+
+## Install and Run the Ubuntu Tarball
+
+For Ubuntu 20.04 x86_64 machines:
+
+```bash
+tar -xzf NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz
+cd NDNSF-UAV-ubuntu20-x86_64-local-test
+./scripts/check-runtime-deps.sh
+./bin/ndnsf-uav-controller
+./bin/ndnsf-uav-gs
+./bin/ndnsf-uav-drone --drone-id A
+```
+
+Before real deployment, edit `config/*.conf`, install the required NDN
+certificates/safebags, start NFD, and configure routes.
+
+## Install and Run a Nix Closure
+
+Copy the matching closure to the NixOS target and import it:
+
+```bash
+gzip -dc NDNSF-UAV-nixos-aarch64-local-test.closure.gz | nix-store --import | tee imported-paths.txt
+app=$(grep 'ndnsf-uav-release' imported-paths.txt | tail -1)
+echo "$app"
+```
+
+The imported store path is read-only. For real deployment, copy the included
+configuration templates into a writable directory and point the wrappers there:
+
+```bash
+rm -rf ~/NDNSF-UAV-deploy
+mkdir -p ~/NDNSF-UAV-deploy
+cp -a "$app/config" "$app/certs" "$app/videos" ~/NDNSF-UAV-deploy/
+cd ~/NDNSF-UAV-deploy
+export NDNSF_UAV_CONFIG_DIR=$PWD/config
+"$app/scripts/check-runtime-deps.sh"
+"$app/bin/ndnsf-uav-controller"
+"$app/bin/ndnsf-uav-drone" --drone-id A
+"$app/bin/ndnsf-uav-gs"
+```
+
+## MiniNDN Release Smoke Test
+
+MiniNDN does not create a clean filesystem without host libraries; it creates
+network namespaces and per-node runtime directories. It is still useful for
+checking that the packaged apps can run through the NDNSF demo path.
+
+```bash
+python3 Experiments/NDNSF_UAV_GUI_Minindn_Release.py \
+  --release-dir RELEASE/NDNSF-UAV-ubuntu20-x86_64-local-test \
+  --auto-recording-playback-test --no-cli --no-xhost --camera-mode file \
+  --output-dir results/uav_recording_playback_release_smoke
+```
+
+If `--release-dir` is omitted, the launcher uses the newest unpacked
+`RELEASE/NDNSF-UAV-*` directory.
