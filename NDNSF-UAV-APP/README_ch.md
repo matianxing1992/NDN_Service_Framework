@@ -258,6 +258,15 @@ python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
 `ndnsec cert-dump -i /example/uav/drone/A > drone-A.cert`，复制到 Controller，然后让
 preflight 对比 Controller keychain 中用于加密权限的证书是否就是这张证书。
 
+release wrapper 也可以在启动 app 前自动运行同样的检查：
+
+```bash
+NDNSF_UAV_PREFLIGHT=1 ./bin/ndnsf-uav-controller
+NDNSF_UAV_PREFLIGHT=1 \
+NDNSF_UAV_PREFLIGHT_ARGS="--expected-cert /example/uav/drone/A=certs/drone-A.cert" \
+  ./bin/ndnsf-uav-controller
+```
+
 在 PC / ground station 上：
 
 ```bash

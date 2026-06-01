@@ -295,6 +295,15 @@ deployment. Export the public certificate on each remote node with
 `ndnsec cert-dump -i /example/uav/drone/A > drone-A.cert`, copy it to the
 Controller, and make preflight compare it with the Controller keychain.
 
+Release wrappers can run the same check automatically before starting the app:
+
+```bash
+NDNSF_UAV_PREFLIGHT=1 ./bin/ndnsf-uav-controller
+NDNSF_UAV_PREFLIGHT=1 \
+NDNSF_UAV_PREFLIGHT_ARGS="--expected-cert /example/uav/drone/A=certs/drone-A.cert" \
+  ./bin/ndnsf-uav-controller
+```
+
 On the PC / ground station:
 
 ```bash

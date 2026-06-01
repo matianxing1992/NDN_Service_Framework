@@ -55,6 +55,9 @@ schema, identity certificates, and stale local certificate choices. For
 multi-machine deployments, pass `--expected-cert IDENTITY=FILE` on the
 Controller machine so it verifies that the certificate used for encrypted
 permission delivery matches the certificate installed on the remote node.
+The release wrappers can run the same preflight automatically when
+`NDNSF_UAV_PREFLIGHT=1` is set. Extra preflight-only arguments, such as
+`--expected-cert`, can be passed through `NDNSF_UAV_PREFLIGHT_ARGS`.
 
 Drone configs default to `video-source auto`: the drone selects the first local
 V4L2 capture device and falls back to `videos/drone.mp4` when no usable camera is
@@ -180,6 +183,15 @@ The wrappers pass `--runtime-config`, `--app-config`, and `--trust-schema`
 from `NDNSF_UAV_CONFIG_DIR` so they do not depend on the shell's current working
 directory. They also switch to the deployment root, so relative config values
 such as `videos/drone.mp4` resolve against the copied release directory.
+
+To make a wrapper run preflight before starting the app:
+
+```bash
+NDNSF_UAV_PREFLIGHT=1 "$app/bin/ndnsf-uav-controller"
+NDNSF_UAV_PREFLIGHT=1 \
+NDNSF_UAV_PREFLIGHT_ARGS="--expected-cert /example/uav/drone/A=certs/drone-A.cert" \
+  "$app/bin/ndnsf-uav-controller"
+```
 
 ## MiniNDN Release Smoke Test
 
