@@ -3,10 +3,29 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 version="${NDNSF_UAV_RELEASE_VERSION:-$(date +%Y%m%d_%H%M%S)}"
-output_dir="${1:-$repo_root/release-artifacts}"
+output_dir="${1:-$repo_root/RELEASE}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
-release_name="NDNSF-UAV-ubuntu20-x86_64-$version"
+
+detect_release_target() {
+  local os_id os_version arch
+  os_id="$(. /etc/os-release 2>/dev/null && printf '%s' "${ID:-linux}")"
+  os_version="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_ID:-unknown}")"
+  arch="$(uname -m)"
+
+  case "$os_id:$os_version" in
+    ubuntu:20.04) os_id="ubuntu20" ;;
+    ubuntu:22.04) os_id="ubuntu22" ;;
+    ubuntu:24.04) os_id="ubuntu24" ;;
+    debian:12) os_id="debian12" ;;
+    *) os_id="${os_id}${os_version//./}" ;;
+  esac
+
+  printf '%s-%s' "$os_id" "$arch"
+}
+
+release_target="${NDNSF_UAV_RELEASE_TARGET:-$(detect_release_target)}"
+release_name="NDNSF-UAV-$release_target-$version"
 stage="$output_dir/$release_name"
 
 include_system_libs="${NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS:-0}"
@@ -15,13 +34,15 @@ usage() {
   cat <<USAGE
 Usage: $0 [output-dir]
 
-Build a portable NDNSF-UAV release directory and tarball for Ubuntu 20.04 x86_64.
+Build a portable NDNSF-UAV release directory and tarball for the current host.
 
 Environment:
   NDNSF_UAV_RELEASE_VERSION=<name>          Override release suffix.
+  NDNSF_UAV_RELEASE_TARGET=<target>         Override target label, for example
+                                            ubuntu20-x86_64 or debian12-aarch64.
   NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1   Also bundle most ldd-discovered
-                                            Ubuntu runtime libraries. This is
-                                            larger, but useful for same-OS
+                                            runtime libraries. This is larger,
+                                            but useful for same-OS/same-arch
                                             lab machines with sparse packages.
 
 The bundle always includes NDNSF, ndn-cxx, ndn-svs, NDNSD, NAC-ABE, OpenABE,
@@ -35,7 +56,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 rm -rf "$stage"
-mkdir -p "$stage"/{bin,lib,config,certs,scripts,share/ndnsf-uav/videos}
+mkdir -p "$stage"/{bin,lib,scripts,config,certs,videos,share/ndnsf-uav/videos}
 
 required_bins=(
   "$repo_root/build/examples/App_ServiceController"
@@ -54,7 +75,21 @@ done
 
 cp -a "$repo_root/NDNSF-UAV-APP/configs/"*.conf "$stage/config/"
 cp -a "$repo_root/NDNSF-UAV-APP/configs/"*.policies "$stage/config/" 2>/dev/null || true
+cp -a "$repo_root/examples/trust-schema.conf" "$stage/config/trust-schema.conf"
 cp -a "$repo_root/NDNSF-UAV-APP/videos/drone.mp4" "$stage/share/ndnsf-uav/videos/" 2>/dev/null || true
+cp -a "$repo_root/NDNSF-UAV-APP/videos/drone.mp4" "$stage/videos/" 2>/dev/null || true
+
+sed -i \
+  -e 's|^trust-schema .*|trust-schema config/trust-schema.conf|' \
+  "$stage/config/uav_runtime.conf"
+
+for cfg in "$stage/config"/drone-*.conf; do
+  [[ -f "$cfg" ]] || continue
+  sed -i \
+    -e 's|^runtime-config .*|runtime-config config/uav_runtime.conf|' \
+    -e 's|^video-source .*|video-source videos/drone.mp4|' \
+    "$cfg"
+done
 
 is_required_private_lib() {
   local path="$1"
@@ -85,13 +120,16 @@ is_never_bundle_lib() {
 copy_lib() {
   local lib="$1"
   [[ -f "$lib" || -L "$lib" ]] || return 0
-  local base
+  local base real real_base
   base="$(basename "$lib")"
   cp -aL "$lib" "$stage/lib/$base"
-  if [[ -L "$lib" ]]; then
-    local real
-    real="$(readlink -f "$lib")"
-    [[ -f "$real" ]] && cp -aL "$real" "$stage/lib/$(basename "$real")"
+  real="$(readlink -f "$lib" 2>/dev/null || true)"
+  if [[ -n "$real" && -f "$real" ]]; then
+    real_base="$(basename "$real")"
+    cp -aL "$real" "$stage/lib/$real_base"
+    if [[ "$base" != "$real_base" && ! -e "$stage/lib/$base" ]]; then
+      ln -s "$real_base" "$stage/lib/$base"
+    fi
   fi
 }
 
@@ -124,7 +162,7 @@ while ((${#queue[@]})); do
   fi
 
   if is_required_private_lib "$real" || [[ "$include_system_libs" == "1" ]]; then
-    copy_lib "$real"
+    copy_lib "$lib"
     while IFS= read -r dep; do
       [[ -n "$dep" ]] && queue+=("$dep")
     done < <(collect_libraries "$real" 2>/dev/null || true)
@@ -149,7 +187,29 @@ cat > "$stage/bin/ndnsf-uav-controller" <<'EOF'
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$here/bin/App_ServiceController" "$@"
+config_dir="${NDNSF_UAV_CONFIG_DIR:-}"
+if [[ -z "$config_dir" ]]; then
+  if [[ -d "$PWD/config" ]]; then
+    config_dir="$PWD/config"
+  elif [[ -d "$here/../config" ]]; then
+    config_dir="$here/../config"
+  else
+    config_dir="$here/config"
+  fi
+fi
+args=("$@")
+has_arg() {
+  local needle="$1"
+  for arg in "${args[@]}"; do
+    [[ "$arg" == "$needle" ]] && return 0
+  done
+  return 1
+}
+defaults=()
+has_arg --policy-file || defaults+=(--policy-file "$config_dir/uav_demo.policies")
+has_arg --trust-schema || defaults+=(--trust-schema "$config_dir/trust-schema.conf")
+has_arg --controller-prefix || defaults+=(--controller-prefix /example/uav/controller)
+exec "$here/bin/App_ServiceController" "${defaults[@]}" "${args[@]}"
 EOF
 
 cat > "$stage/bin/ndnsf-uav-gs" <<'EOF'
@@ -157,7 +217,28 @@ cat > "$stage/bin/ndnsf-uav-gs" <<'EOF'
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$here/bin/UavGroundStationApp" "$@"
+config_dir="${NDNSF_UAV_CONFIG_DIR:-}"
+if [[ -z "$config_dir" ]]; then
+  if [[ -d "$PWD/config" ]]; then
+    config_dir="$PWD/config"
+  elif [[ -d "$here/../config" ]]; then
+    config_dir="$here/../config"
+  else
+    config_dir="$here/config"
+  fi
+fi
+args=("$@")
+has_arg() {
+  local needle="$1"
+  for arg in "${args[@]}"; do
+    [[ "$arg" == "$needle" ]] && return 0
+  done
+  return 1
+}
+defaults=()
+has_arg --runtime-config || defaults+=(--runtime-config "$config_dir/uav_runtime.conf")
+has_arg --app-config || defaults+=(--app-config "$config_dir/ground-station.conf")
+exec "$here/bin/UavGroundStationApp" "${defaults[@]}" "${args[@]}"
 EOF
 
 cat > "$stage/bin/ndnsf-uav-drone" <<'EOF'
@@ -165,7 +246,28 @@ cat > "$stage/bin/ndnsf-uav-drone" <<'EOF'
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$here/bin/UavDroneApp" "$@"
+config_dir="${NDNSF_UAV_CONFIG_DIR:-}"
+if [[ -z "$config_dir" ]]; then
+  if [[ -d "$PWD/config" ]]; then
+    config_dir="$PWD/config"
+  elif [[ -d "$here/../config" ]]; then
+    config_dir="$here/../config"
+  else
+    config_dir="$here/config"
+  fi
+fi
+args=("$@")
+has_arg() {
+  local needle="$1"
+  for arg in "${args[@]}"; do
+    [[ "$arg" == "$needle" ]] && return 0
+  done
+  return 1
+}
+defaults=()
+has_arg --runtime-config || defaults+=(--runtime-config "$config_dir/uav_runtime.conf")
+has_arg --app-config || defaults+=(--app-config "$config_dir/drone-A.conf")
+exec "$here/bin/UavDroneApp" "${defaults[@]}" "${args[@]}"
 EOF
 
 chmod +x "$stage/bin/"*
@@ -182,7 +284,9 @@ for exe in "$here"/bin/App_ServiceController \
            "$here"/bin/UavGroundStationApp \
            "$here"/bin/UavDroneApp; do
   echo "-- $(basename "$exe")"
-  readelf -d "$exe" | grep -E 'RPATH|RUNPATH' || true
+  if command -v readelf >/dev/null 2>&1; then
+    readelf -d "$exe" | grep -E 'RPATH|RUNPATH' || true
+  fi
   ldd "$exe" | grep -E 'lib(ndn-cxx|ndn-service-framework|ndn-svs|ndnsd|nac-abe|openabe|relic)' || true
   if ldd "$exe" | grep -q "not found"; then
     ldd "$exe" | grep "not found" || true
@@ -206,12 +310,20 @@ chmod +x "$stage/scripts/check-runtime-deps.sh"
 cat > "$stage/README_RELEASE.md" <<EOF
 # NDNSF-UAV Portable Release
 
+Target label: $release_target
 Built on: $(lsb_release -ds 2>/dev/null || true)
+Architecture: $(uname -m)
 
-This bundle is intended for Ubuntu 20.04 x86_64 machines. It bundles the
-NDNSF runtime libraries and the NDN libraries used by the apps, including
-ndn-cxx when it is visible through ldd. NFD is not bundled; run NFD on each
-machine and configure faces/routes/certificates normally.
+This bundle is intended for machines with the same OS family, architecture,
+and compatible glibc/runtime loader as the build host. It bundles the NDNSF
+runtime libraries and the NDN libraries used by the apps, including ndn-cxx
+when it is visible through ldd. NFD is not bundled; run NFD on each machine
+and configure faces/routes/certificates normally.
+
+Configuration templates, policies, an empty certificates directory, and sample
+videos are included in this release under config/, certs/, and videos/. For
+deployment, edit these files in the extracted release directory, or copy them
+to another writable directory and set NDNSF_UAV_CONFIG_DIR.
 
 Run a quick dependency check:
 
@@ -227,6 +339,17 @@ Example commands:
 ./bin/ndnsf-uav-gs --runtime-config config/uav_runtime.conf --app-config config/ground-station.conf
 
 ./bin/ndnsf-uav-drone --runtime-config config/uav_runtime.conf --app-config config/drone-A.conf --drone-id A
+\`\`\`
+
+If the current working directory contains a deployment \`config/\` directory, the
+wrapper scripts provide default paths, so the short commands are normally
+enough:
+
+\`\`\`bash
+./bin/ndnsf-uav-controller
+./bin/ndnsf-uav-gs
+./bin/ndnsf-uav-drone --drone-id A
+./bin/ndnsf-uav-drone --app-config config/drone-B.conf --drone-id B
 \`\`\`
 
 If patchelf is available on the build host, the binaries are patched with:

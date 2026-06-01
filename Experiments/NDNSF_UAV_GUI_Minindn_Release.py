@@ -2,7 +2,7 @@
 """Run the NDNSF UAV MiniNDN demo with a packaged release directory.
 
 This launcher is intentionally separate from NDNSF_UAV_GUI_Minindn.py so it is
-obvious that the APP binaries come from release-artifacts/<release>/bin instead
+obvious that the APP binaries come from RELEASE/<release>/bin instead
 of build/examples. It still reuses the normal MiniNDN topology and arguments.
 """
 
@@ -16,7 +16,7 @@ import sys
 
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_ROOT = REPO / "release-artifacts"
+DEFAULT_RELEASE_ROOT = REPO / "RELEASE"
 DEFAULT_RELEASE_PREFIX = "NDNSF-UAV-"
 
 
@@ -35,11 +35,11 @@ def newest_release_dir(root: Path) -> Path | None:
 
 def parse_release_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
-        description="Run NDNSF UAV MiniNDN with binaries from a release-artifacts directory",
+        description="Run NDNSF UAV MiniNDN with binaries from a RELEASE directory",
         add_help=True)
     parser.add_argument("--release-dir", default="",
                         help="Path to an unpacked NDNSF-UAV release directory. "
-                             "Default: newest release-artifacts/NDNSF-UAV-* directory.")
+                             "Default: newest RELEASE/NDNSF-UAV-* directory.")
     parser.add_argument("--print-release-command", action="store_true",
                         help="Print the underlying command shape and exit.")
     return parser.parse_known_args(argv)

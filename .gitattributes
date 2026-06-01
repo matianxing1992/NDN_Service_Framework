@@ -1,0 +1,2 @@
+RELEASE/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+RELEASE/*.closure.gz filter=lfs diff=lfs merge=lfs -text
