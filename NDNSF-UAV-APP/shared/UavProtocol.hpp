@@ -31,6 +31,62 @@ struct VideoPacket
   std::vector<uint8_t> payload;
 };
 
+struct TelemetryState
+{
+  std::string droneId = "unknown";
+  std::string lat = "unknown";
+  std::string lon = "unknown";
+  std::string altitudeM = "unknown";
+  std::string groundspeedMps = "unknown";
+  std::string batteryPercent = "unknown";
+  std::string heartbeatSeen = "false";
+  std::string flightControllerReady = "unknown";
+  std::string gpsReady = "unknown";
+  std::string ekfReady = "unknown";
+  std::string batteryReady = "unknown";
+  std::string armed = "unknown";
+  std::string gpsFixType = "unknown";
+  std::string gpsFixName = "unknown";
+  std::string gpsSatellitesVisible = "unknown";
+  std::string flightControllerState = "unknown";
+  std::string systemStatus = "unknown";
+  std::string systemStatusName = "unknown";
+  std::string landedState = "unknown";
+  std::string landedStateName = "unknown";
+  std::string vtolStateName = "unknown";
+  std::string batteryVoltageV = "unknown";
+  std::string batteryCurrentA = "unknown";
+  std::string readiness = "not-ready";
+  std::string readinessReason = "waiting-heartbeat";
+  std::string video = "unknown";
+  std::string capture = "unknown";
+  std::string recording = "unknown";
+  uint64_t timestampMs = 0;
+
+  static TelemetryState fromFields(const Fields& fields);
+  Fields toFields() const;
+  std::string statusLine() const;
+  std::string mapSummary(const std::string& selectedDrone) const;
+};
+
+struct MissionState
+{
+  std::string droneId = "unknown";
+  std::string missionId = "none";
+  std::string partId = "none";
+  std::string phase = "idle";
+  std::string detail = "idle";
+  std::string ack = "unknown";
+  std::string transport = "unknown";
+  std::string waypointsForwarded = "0";
+  std::string waypointAcksAccepted = "0";
+  uint64_t updatedMs = 0;
+
+  static MissionState fromFields(const Fields& fields);
+  Fields toFields() const;
+  std::string statusLine() const;
+};
+
 uint64_t
 nowMilliseconds();
 

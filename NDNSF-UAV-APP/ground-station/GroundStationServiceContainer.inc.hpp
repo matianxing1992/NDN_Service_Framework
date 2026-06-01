@@ -201,32 +201,68 @@ public:
   void
   requestTelemetryStatusForDrone(const std::string& droneId)
   {
-    if (m_telemetryInFlight.exchange(true)) {
-      return;
+    {
+      std::lock_guard<std::mutex> guard(m_telemetryMutex);
+      if (m_telemetryInFlightDrones.find(droneId) != m_telemetryInFlightDrones.end()) {
+        return;
+      }
+      m_telemetryInFlightDrones.insert(droneId);
     }
     postTargetedRequest(
       droneIdentity(m_config, droneId),
       m_config.serviceTelemetryStatus,
       encodeFields({{"type", "telemetry-status"}, {"target_drone", droneId}}),
       [this, droneId](const std::string& payload) {
-        m_telemetryInFlight = false;
+        clearTelemetryInFlight(droneId);
         const auto fields = decodeFields(payload);
-        publishStatus("Telemetry drone=" + fieldOr(fields, "drone_id", droneId) +
-                      " alt=" + fieldOr(fields, "altitude_m", "unknown") + "m" +
-                      " lat=" + fieldOr(fields, "lat", "unknown") +
-                      " lon=" + fieldOr(fields, "lon", "unknown") +
-                      " battery=" + fieldOr(fields, "battery_percent", "unknown") + "%" +
-                      " ready=" + fieldOr(fields, "readiness", "unknown") +
-                      " reason=" + fieldOr(fields, "readiness_reason", "unknown") +
-                      " armed=" + fieldOr(fields, "armed", "unknown") +
-                      " gps=" + fieldOr(fields, "gps_ready", "unknown") +
-                      " mission=" + fieldOr(fields, "mission_status", "unknown") +
-                      " video=" + fieldOr(fields, "video", "unknown"));
+        auto telemetry = TelemetryState::fromFields(fields);
+        if (telemetry.droneId == "unknown") {
+          telemetry.droneId = droneId;
+        }
+        const auto mission = MissionState::fromFields(fields);
+        updateDroneState(telemetry, mission);
+        publishStatus(telemetry.statusLine() +
+                      " mission=" + mission.phase +
+                      " mission_detail=" + mission.detail);
       },
       [this, droneId] {
-        m_telemetryInFlight = false;
+        clearTelemetryInFlight(droneId);
         publishStatus("Telemetry timeout for drone " + droneId);
       });
+  }
+
+  std::optional<TelemetryState>
+  telemetryForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    const auto found = m_telemetryByDrone.find(droneId);
+    if (found == m_telemetryByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
+  std::optional<MissionState>
+  missionForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    const auto found = m_missionByDrone.find(droneId);
+    if (found == m_missionByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
+  std::vector<TelemetryState>
+  telemetrySnapshots() const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    std::vector<TelemetryState> out;
+    out.reserve(m_telemetryByDrone.size());
+    for (const auto& item : m_telemetryByDrone) {
+      out.push_back(item.second);
+    }
+    return out;
   }
 
   void
@@ -355,6 +391,13 @@ public:
   sendMavlinkCommandToDrone(const std::string& droneId, const std::string& commandName, Fields params = {})
   {
     const bool isManualControl = commandName == "manual_control";
+    if (commandName == "takeoff") {
+      std::string reason;
+      if (!validateTakeoffReadiness(droneId, reason)) {
+        publishStatus("Takeoff blocked drone=" + droneId + " reason=" + reason);
+        return false;
+      }
+    }
     auto& inFlight = isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight;
     if (inFlight.exchange(true)) {
       if (!isManualControl) {
@@ -402,6 +445,14 @@ public:
   sendMavlinkCommandToDroneSync(const std::string& droneId, const std::string& commandName,
                                 Fields params, std::chrono::milliseconds timeout)
   {
+    if (commandName == "takeoff") {
+      std::string reason;
+      if (!validateTakeoffReadiness(droneId, reason)) {
+        std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
+                  << " ok=false ack=takeoff-blocked reason=" << reason << std::endl;
+        return false;
+      }
+    }
     std::mutex mutex;
     std::condition_variable cv;
     bool done = false;
@@ -470,7 +521,114 @@ public:
       });
     std::unique_lock<std::mutex> lock(mutex);
     cv.wait_for(lock, timeout, [&] { return done; });
+    if (!out.empty()) {
+      auto telemetry = TelemetryState::fromFields(out);
+      if (telemetry.droneId == "unknown") {
+        telemetry.droneId = droneId;
+      }
+      updateDroneState(telemetry, MissionState::fromFields(out));
+    }
     return out;
+  }
+
+  bool
+  runTelemetryLiveTest(std::chrono::seconds timeout)
+  {
+    const auto droneId = targetDroneId();
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto commandTimeout = std::chrono::milliseconds(m_timeoutMs);
+
+    struct TelemetryCheck
+    {
+      bool gpsFix = false;
+      bool ekfReady = false;
+      bool landedKnown = false;
+      bool landedChanged = false;
+      bool batteryVoltage = false;
+      bool armedTrue = false;
+      bool latLon = false;
+      std::string firstLanded;
+    } check;
+
+    auto sample = [&](const std::string& phase, int index) {
+      const auto fields = requestTelemetryStatusForDroneSync(droneId, commandTimeout);
+      auto telemetry = TelemetryState::fromFields(fields);
+      if (telemetry.droneId == "unknown") {
+        telemetry.droneId = droneId;
+      }
+      updateDroneState(telemetry, MissionState::fromFields(fields));
+      const auto known = [](const std::string& value) {
+        return !value.empty() && value != "unknown";
+      };
+      check.gpsFix = check.gpsFix || known(telemetry.gpsFixName);
+      check.ekfReady = check.ekfReady || telemetry.ekfReady == "true";
+      check.landedKnown = check.landedKnown || known(telemetry.landedStateName);
+      check.batteryVoltage = check.batteryVoltage || known(telemetry.batteryVoltageV);
+      check.armedTrue = check.armedTrue || telemetry.armed == "true";
+      check.latLon = check.latLon || (known(telemetry.lat) && known(telemetry.lon));
+      if (known(telemetry.landedStateName)) {
+        if (check.firstLanded.empty()) {
+          check.firstLanded = telemetry.landedStateName;
+        }
+        else if (check.firstLanded != telemetry.landedStateName) {
+          check.landedChanged = true;
+        }
+      }
+      std::cout << "TELEMETRY_LIVE sample=" << index
+                << " phase=" << phase
+                << " drone=" << telemetry.droneId
+                << " gps_fix_name=" << telemetry.gpsFixName
+                << " ekf_ready=" << telemetry.ekfReady
+                << " landed_state_name=" << telemetry.landedStateName
+                << " battery_voltage_v=" << telemetry.batteryVoltageV
+                << " armed=" << telemetry.armed
+                << " lat=" << telemetry.lat
+                << " lon=" << telemetry.lon
+                << " readiness=" << telemetry.readiness
+                << " reason=" << telemetry.readinessReason
+                << std::endl;
+    };
+
+    int sampleIndex = 0;
+    sample("initial", sampleIndex++);
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    const bool armOk = sendMavlinkCommandToDroneSync(
+      droneId, "arm", {{"arm", "true"}}, commandTimeout);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    sample("armed", sampleIndex++);
+
+    const bool takeoffOk = sendMavlinkCommandToDroneSync(
+      droneId, "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}}, commandTimeout);
+    for (int i = 0; i < 4 && std::chrono::steady_clock::now() < deadline; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+      sample("takeoff", sampleIndex++);
+    }
+
+    const bool landOk = sendMavlinkCommandToDroneSync(droneId, "land", {}, commandTimeout);
+    for (int i = 0; i < 4 && std::chrono::steady_clock::now() < deadline; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+      sample("land", sampleIndex++);
+    }
+
+    const bool ok = armOk && takeoffOk && landOk &&
+                    check.gpsFix && check.ekfReady && check.landedKnown &&
+                    check.landedChanged && check.batteryVoltage &&
+                    check.armedTrue && check.latLon;
+    std::cout << "TELEMETRY_LIVE_RESULT ok=" << (ok ? "true" : "false")
+              << " arm_ok=" << (armOk ? "true" : "false")
+              << " takeoff_ok=" << (takeoffOk ? "true" : "false")
+              << " land_ok=" << (landOk ? "true" : "false")
+              << " gps_fix=" << (check.gpsFix ? "true" : "false")
+              << " ekf_ready=" << (check.ekfReady ? "true" : "false")
+              << " landed_known=" << (check.landedKnown ? "true" : "false")
+              << " landed_changed=" << (check.landedChanged ? "true" : "false")
+              << " battery_voltage=" << (check.batteryVoltage ? "true" : "false")
+              << " armed_true=" << (check.armedTrue ? "true" : "false")
+              << " lat_lon=" << (check.latLon ? "true" : "false")
+              << std::endl;
+    return ok;
   }
 
   bool
@@ -551,15 +709,19 @@ public:
           ok = false;
           cv.notify_all();
         },
-        [&mutex, &cv, &done, &ok, taskId](const ndn_service_framework::ResponseMessage& response) {
+        [this, &mutex, &cv, &done, &ok, taskId](const ndn_service_framework::ResponseMessage& response) {
           const auto fields = decodeFields(responsePayload(response));
+          const auto mission = MissionState::fromFields(fields);
           const bool responseOk = response.getStatus() && fieldOr(fields, "accepted", "false") == "true";
+          updateMissionState(mission);
           std::cout << "SINGLE_MISSION_DONE task=" << taskId
                     << " ok=" << (responseOk ? "true" : "false")
-                    << " provider=" << fieldOr(fields, "drone_id", "unknown")
-                    << " mission_transport=" << fieldOr(fields, "mission_transport", "unknown")
-                    << " mission_ack=" << fieldOr(fields, "mission_ack", "unknown")
-                    << " waypoints_forwarded=" << fieldOr(fields, "waypoints_forwarded", "0")
+                    << " provider=" << mission.droneId
+                    << " phase=" << mission.phase
+                    << " detail=" << mission.detail
+                    << " mission_transport=" << mission.transport
+                    << " mission_ack=" << mission.ack
+                    << " waypoints_forwarded=" << mission.waypointsForwarded
                     << std::endl;
           std::lock_guard<std::mutex> guard(mutex);
           ok = responseOk;
@@ -1028,7 +1190,8 @@ public:
           [this, taskId, partId, candidateText, attempt, state, logLedger](
             const ndn_service_framework::ResponseMessage& response) {
             const auto fields = decodeFields(responsePayload(response));
-            const auto responder = fieldOr(fields, "drone_id", candidateText);
+            const auto mission = MissionState::fromFields(fields);
+            const auto responder = mission.droneId == "unknown" ? candidateText : mission.droneId;
             bool accepted = false;
             {
               std::lock_guard<std::mutex> guard(state->mutex);
@@ -1040,6 +1203,7 @@ public:
               }
             }
             if (accepted) {
+              updateMissionState(mission);
               {
                 std::lock_guard<std::mutex> readyGuard(m_missionReadyMutex);
                 if (std::find(m_missionReadyDrones.begin(), m_missionReadyDrones.end(),
@@ -1052,10 +1216,12 @@ public:
                         " part=" + partId +
                         " provider=" + responder +
                         " status=true" +
-                        " mission_transport=" + fieldOr(fields, "mission_transport", "unknown") +
-                        " waypoints_forwarded=" + fieldOr(fields, "waypoints_forwarded", "0") +
-                        " waypoint_acks_accepted=" + fieldOr(fields, "waypoint_acks_accepted", "0") +
-                        " last_waypoint_ack=" + fieldOr(fields, "last_waypoint_ack", "unknown"));
+                        " phase=" + mission.phase +
+                        " detail=" + mission.detail +
+                        " mission_transport=" + mission.transport +
+                        " waypoints_forwarded=" + mission.waypointsForwarded +
+                        " waypoint_acks_accepted=" + mission.waypointAcksAccepted +
+                        " mission_ack=" + mission.ack);
             }
             else {
               logLedger("PATROL_LATE_RESPONSE_IGNORED task=" + taskId +
@@ -1143,6 +1309,91 @@ public:
   }
 
 private:
+  void
+  clearTelemetryInFlight(const std::string& droneId)
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    m_telemetryInFlightDrones.erase(droneId);
+  }
+
+  void
+  updateDroneState(const TelemetryState& telemetry, const MissionState& mission)
+  {
+    const auto droneId = telemetry.droneId == "unknown" ? mission.droneId : telemetry.droneId;
+    if (droneId.empty() || droneId == "unknown") {
+      return;
+    }
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    auto storedTelemetry = telemetry;
+    storedTelemetry.droneId = droneId;
+    m_telemetryByDrone[droneId] = storedTelemetry;
+    auto storedMission = mission;
+    if (storedMission.droneId == "unknown") {
+      storedMission.droneId = droneId;
+    }
+    m_missionByDrone[droneId] = storedMission;
+  }
+
+  void
+  updateMissionState(const MissionState& mission)
+  {
+    if (mission.droneId.empty() || mission.droneId == "unknown") {
+      return;
+    }
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    m_missionByDrone[mission.droneId] = mission;
+  }
+
+  bool
+  validateTakeoffReadiness(const std::string& droneId, std::string& reason)
+  {
+    auto telemetry = telemetryForDrone(droneId);
+    if (!telemetry || telemetry->timestampMs == 0 ||
+        nowMilliseconds() > telemetry->timestampMs + 2500) {
+      const auto fields = requestTelemetryStatusForDroneSync(
+        droneId, std::chrono::milliseconds(std::min(m_timeoutMs, 2500)));
+      if (!fields.empty()) {
+        auto fresh = TelemetryState::fromFields(fields);
+        if (fresh.droneId == "unknown") {
+          fresh.droneId = droneId;
+        }
+        updateDroneState(fresh, MissionState::fromFields(fields));
+        telemetry = fresh;
+      }
+    }
+
+    if (!telemetry) {
+      reason = "no-telemetry";
+      return false;
+    }
+    if (telemetry->heartbeatSeen != "true") {
+      reason = "waiting-heartbeat";
+      return false;
+    }
+    if (telemetry->flightControllerReady != "true") {
+      reason = "flight-controller-not-ready";
+      return false;
+    }
+    if (telemetry->gpsReady != "true") {
+      reason = "gps-not-ready";
+      return false;
+    }
+    if (telemetry->ekfReady != "true") {
+      reason = "ekf-not-ready";
+      return false;
+    }
+    if (telemetry->batteryReady != "true") {
+      reason = "battery-not-ready";
+      return false;
+    }
+    if (telemetry->armed != "true") {
+      reason = "not-armed";
+      return false;
+    }
+    reason = "ok";
+    return true;
+  }
+
   void
   installServiceInstances()
   {
@@ -2007,11 +2258,17 @@ private:
     const auto estimatedPacketsPerSecond =
       std::max<uint64_t>(fps, (bytesPerSecond + payloadBytes - 1) / payloadBytes);
 
+    m_videoPayloadBytes = payloadBytes;
+    m_videoFps = fps;
     m_keyPacketsPerSecond = std::clamp<uint64_t>(
       (estimatedPacketsPerSecond + 7) / 8, 4, 16);
     m_deltaPacketsPerSecond = std::clamp<uint64_t>(
-      estimatedPacketsPerSecond + m_keyPacketsPerSecond + 8, 24, 180);
+      estimatedPacketsPerSecond + m_keyPacketsPerSecond + fps / 2, 24, 512);
     m_keyWindow = std::clamp<uint64_t>(m_keyPacketsPerSecond, 4, 16);
+    m_dynamicWindowMax = packetsForDurationMs(900, 32, 384);
+    m_dynamicLookaheadMax = packetsForDurationMs(350, 8, 160);
+    m_decoderReorderWindow = packetsForDurationMs(120, 6, 96);
+    m_decoderBacklogLimit = std::clamp<uint64_t>(m_decoderReorderWindow * 4, 24, 384);
     m_videoRttEwmaMs = DEFAULT_VIDEO_RTT_MS;
     m_deltaWindow = dynamicVideoWindow();
 
@@ -2023,12 +2280,20 @@ private:
                  << " deltaBudget=" << m_deltaPacketsPerSecond
                  << " keyWindow=" << m_keyWindow
                  << " deltaWindow=" << m_deltaWindow
+                 << " lookaheadMax=" << m_dynamicLookaheadMax
+                 << " reorderWindow=" << m_decoderReorderWindow
+                 << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
                  << " rttMs=" << videoRttMs());
     std::cout << "GS_VIDEO_PREFETCH bitrateKbps=" << bitrateKbps
               << " frameWidth=" << frameWidth
+              << " payloadBytes=" << payloadBytes
+              << " fps=" << fps
               << " keyBudget=" << m_keyPacketsPerSecond
               << " deltaBudget=" << m_deltaPacketsPerSecond
               << " deltaWindow=" << m_deltaWindow
+              << " lookaheadMax=" << m_dynamicLookaheadMax
+              << " reorderWindow=" << m_decoderReorderWindow
+              << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
               << " rttMs=" << videoRttMs() << std::endl;
   }
 
@@ -2065,7 +2330,7 @@ private:
   {
     const auto rtt = videoRttMs();
     const auto targetBufferMs = std::clamp<uint64_t>(rtt + 80, 180, 750);
-    return packetsForDurationMs(targetBufferMs, 8, 128);
+    return packetsForDurationMs(targetBufferMs, 8, m_dynamicWindowMax);
   }
 
   uint64_t
@@ -2073,7 +2338,7 @@ private:
   {
     const auto rtt = videoRttMs();
     const auto futureMs = std::clamp<uint64_t>(rtt / 3 + 40, 50, 250);
-    return packetsForDurationMs(futureMs, 2, 64);
+    return packetsForDurationMs(futureMs, 2, m_dynamicLookaheadMax);
   }
 
   uint64_t
@@ -2091,7 +2356,11 @@ private:
   uint64_t
   dynamicDecoderMissingTimeoutMs() const
   {
-    return std::clamp<uint64_t>(videoRttMs() + videoRttMs() / 2, 180, 1200);
+    const auto frameMs = std::max<uint64_t>(1, 1000 / std::max<uint64_t>(1, m_videoFps));
+    const auto minWaitMs = std::clamp<uint64_t>(std::max<uint64_t>(frameMs * 2, videoRttMs() / 2),
+                                               100, 350);
+    const auto maxWaitMs = std::clamp<uint64_t>(videoRttMs() * 2 + frameMs * 3, 300, 1800);
+    return std::clamp<uint64_t>(videoRttMs() + frameMs * 3, minWaitMs, maxWaitMs);
   }
 
   void
@@ -2489,7 +2758,7 @@ private:
         notifyWriter = true;
       }
 
-      if (m_pendingChunks.size() > m_decoderReorderWindow * 4 &&
+      if (m_pendingChunks.size() > m_decoderBacklogLimit &&
           !m_pendingChunks.empty()) {
         auto first = m_pendingChunks.begin();
         if (first->first > m_nextChunkSeqToDecode) {
@@ -2959,7 +3228,10 @@ private:
   std::atomic<uint64_t> m_frameTimeouts{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
   std::atomic<bool> m_manualControlInFlight{false};
-  std::atomic<bool> m_telemetryInFlight{false};
+  mutable std::mutex m_telemetryMutex;
+  std::set<std::string> m_telemetryInFlightDrones;
+  std::map<std::string, TelemetryState> m_telemetryByDrone;
+  std::map<std::string, MissionState> m_missionByDrone;
   ndn::Name m_streamPrefix;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;
@@ -2967,6 +3239,12 @@ private:
   uint64_t m_deltaPacketsPerSecond = 160;
   uint64_t m_keyWindow = 16;
   uint64_t m_deltaWindow = 108;
+  uint64_t m_videoPayloadBytes = 3600;
+  uint64_t m_videoFps = 30;
+  uint64_t m_dynamicWindowMax = 128;
+  uint64_t m_dynamicLookaheadMax = 64;
+  uint64_t m_decoderReorderWindow = 12;
+  uint64_t m_decoderBacklogLimit = 48;
   uint64_t m_nextChunkSeqToDecode = 0;
   uint64_t m_decoderDroppedChunks = 0;
   uint64_t m_decoderMissingChunkSeq = UINT64_MAX;
@@ -2977,7 +3255,6 @@ private:
   static constexpr uint64_t INITIAL_PACKET_PROBE = 4;
   static constexpr uint64_t DEFAULT_VIDEO_RTT_MS = 120;
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
-  static constexpr uint64_t m_decoderReorderWindow = 12;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
   std::atomic<uint64_t> m_videoRttEwmaMs{DEFAULT_VIDEO_RTT_MS};
   std::atomic<bool> m_done{false};

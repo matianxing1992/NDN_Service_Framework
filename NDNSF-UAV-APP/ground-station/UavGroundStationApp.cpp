@@ -40,6 +40,7 @@
 #include <signal.h>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <sstream>
@@ -370,6 +371,7 @@ main(int argc, char** argv)
       argc, argv, appConfig, "--serve-object-detection", "serve-object-detection", false);
     const bool autoStart = getConfigBool(argc, argv, appConfig, "--auto-video-test", "auto-video-test", false);
     const bool autoMavlinkTest = getConfigBool(argc, argv, appConfig, "--auto-mavlink-test", "auto-mavlink-test", false);
+    const bool autoTelemetryTest = getConfigBool(argc, argv, appConfig, "--auto-telemetry-test", "auto-telemetry-test", false);
     const bool autoKeyboardTest = getConfigBool(argc, argv, appConfig, "--auto-keyboard-test", "auto-keyboard-test", false);
     const bool autoManualControlTest = getConfigBool(argc, argv, appConfig, "--auto-manual-control-test", "auto-manual-control-test", false);
     const bool autoTwoDroneSwitchTest = getConfigBool(argc, argv, appConfig, "--auto-two-drone-switch-test", "auto-two-drone-switch-test", false);
@@ -422,7 +424,7 @@ main(int argc, char** argv)
                                   serveCertificates);
     }
 
-    const bool interactiveGui = !(autoStart || autoMavlinkTest || autoKeyboardTest ||
+    const bool interactiveGui = !(autoStart || autoMavlinkTest || autoTelemetryTest || autoKeyboardTest ||
                                   autoManualControlTest || autoTwoDroneSwitchTest ||
                                   autoRecordingPlaybackTest ||
                                   autoPatrolTest || autoSingleMissionTest);
@@ -450,6 +452,11 @@ main(int argc, char** argv)
       std::cout << "GS_SINGLE_MISSION_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoTelemetryTest) {
+      const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45));
+      std::cout << "GS_TELEMETRY_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
 	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
                                  autoStartDelayMs, autoMavlinkTest,
                                  autoKeyboardTest, autoManualControlTest,
@@ -460,6 +467,7 @@ main(int argc, char** argv)
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
               << " auto_video_test=" << (autoStart ? "true" : "false")
               << " auto_mavlink_test=" << (autoMavlinkTest ? "true" : "false")
+              << " auto_telemetry_test=" << (autoTelemetryTest ? "true" : "false")
               << " auto_keyboard_test=" << (autoKeyboardTest ? "true" : "false")
               << " auto_manual_control_test=" << (autoManualControlTest ? "true" : "false")
               << " auto_two_drone_switch_test=" << (autoTwoDroneSwitchTest ? "true" : "false")

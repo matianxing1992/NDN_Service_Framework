@@ -429,6 +429,66 @@ private:
     }
   }
 
+  static std::string
+  mavlinkSystemStatusName(uint8_t status)
+  {
+    switch (status) {
+      case 0: return "uninitialized";
+      case 1: return "boot";
+      case 2: return "calibrating";
+      case 3: return "standby";
+      case 4: return "active";
+      case 5: return "critical";
+      case 6: return "emergency";
+      case 7: return "poweroff";
+      case 8: return "flight-termination";
+      default: return "unknown-" + std::to_string(status);
+    }
+  }
+
+  static std::string
+  mavlinkGpsFixName(uint8_t fixType)
+  {
+    switch (fixType) {
+      case 0: return "no-gps";
+      case 1: return "no-fix";
+      case 2: return "2d-fix";
+      case 3: return "3d-fix";
+      case 4: return "dgps";
+      case 5: return "rtk-float";
+      case 6: return "rtk-fixed";
+      case 7: return "static";
+      case 8: return "ppp";
+      default: return "unknown-" + std::to_string(fixType);
+    }
+  }
+
+  static std::string
+  mavlinkLandedStateName(uint8_t state)
+  {
+    switch (state) {
+      case 0: return "undefined";
+      case 1: return "on-ground";
+      case 2: return "in-air";
+      case 3: return "takeoff";
+      case 4: return "landing";
+      default: return "unknown-" + std::to_string(state);
+    }
+  }
+
+  static std::string
+  mavlinkVtolStateName(uint8_t state)
+  {
+    switch (state) {
+      case 0: return "undefined";
+      case 1: return "transition-to-fw";
+      case 2: return "transition-to-mc";
+      case 3: return "mc";
+      case 4: return "fw";
+      default: return "unknown-" + std::to_string(state);
+    }
+  }
+
   static uint16_t
   readLe16(const uint8_t* value)
   {
@@ -725,12 +785,21 @@ private:
       m_latestTelemetry["armed"] = (baseMode & 0x80) != 0 ? "true" : "false";
       m_latestTelemetry["base_mode"] = std::to_string(baseMode);
       m_latestTelemetry["system_status"] = std::to_string(systemStatus);
+      m_latestTelemetry["system_status_name"] = mavlinkSystemStatusName(systemStatus);
       m_latestTelemetry["fc_state"] = m_latestTelemetry["armed"] == "true" ? "armed" : "disarmed";
       m_latestTelemetry["flight_controller_ready"] =
         systemStatus >= 3 && systemStatus <= 4 ? "true" : "false";
     }
     else if (msgId == 1 && payloadLen >= 31) {
+      const auto voltageMv = readLe16(payload + 14);
+      const auto currentCa = readI16(payload + 20);
       const auto battery = static_cast<int8_t>(payload[30]);
+      if (voltageMv != UINT16_MAX && voltageMv > 0) {
+        m_latestTelemetry["battery_voltage_v"] = formatDouble(voltageMv / 1000.0, 2);
+      }
+      if (currentCa != -1) {
+        m_latestTelemetry["battery_current_a"] = formatDouble(currentCa / 100.0, 2);
+      }
       if (battery >= 0) {
         m_latestTelemetry["battery_percent"] = std::to_string(static_cast<int>(battery));
         m_latestTelemetry["battery_ready"] = battery > 15 ? "true" : "false";
@@ -740,8 +809,18 @@ private:
       const auto fixType = payload[28];
       const auto satellites = payload[29];
       m_latestTelemetry["gps_fix_type"] = std::to_string(fixType);
+      m_latestTelemetry["gps_fix_name"] = mavlinkGpsFixName(fixType);
       m_latestTelemetry["gps_satellites_visible"] = std::to_string(satellites);
       m_latestTelemetry["gps_ready"] = fixType >= 3 ? "true" : "false";
+      m_latestTelemetry["ekf_ready"] = fixType >= 3 && satellites >= 6 ? "true" : "false";
+      const auto latE7 = readI32(payload + 8);
+      const auto lonE7 = readI32(payload + 12);
+      const auto altMm = readI32(payload + 16);
+      if (latE7 != 0 || lonE7 != 0) {
+        m_latestTelemetry["lat"] = formatDouble(latE7 / 10000000.0, 7);
+        m_latestTelemetry["lon"] = formatDouble(lonE7 / 10000000.0, 7);
+      }
+      m_latestTelemetry["gps_altitude_m"] = formatDouble(altMm / 1000.0);
     }
     else if (msgId == 32 && payloadLen >= 28) {
       const auto x = readFloatLe(payload + 4);
@@ -764,6 +843,14 @@ private:
       m_latestTelemetry["lon"] = formatDouble(lonE7 / 10000000.0, 7);
       m_latestTelemetry["altitude_m"] = formatDouble(relativeAltMm / 1000.0);
       m_latestTelemetry["groundspeed_mps"] = formatDouble(std::sqrt(vx * vx + vy * vy));
+    }
+    else if (msgId == 245 && payloadLen >= 2) {
+      const auto vtolState = payload[0];
+      const auto landedState = payload[1];
+      m_latestTelemetry["vtol_state"] = std::to_string(vtolState);
+      m_latestTelemetry["vtol_state_name"] = mavlinkVtolStateName(vtolState);
+      m_latestTelemetry["landed_state"] = std::to_string(landedState);
+      m_latestTelemetry["landed_state_name"] = mavlinkLandedStateName(landedState);
     }
     else if (msgId == 77 && payloadLen >= 3 && wantedCommand != 0) {
       const auto command = readLe16(payload);
@@ -792,34 +879,29 @@ private:
     result.emplace("heartbeat_seen", "false");
     result.emplace("flight_controller_ready", "unknown");
     result.emplace("gps_ready", "unknown");
+    result.emplace("ekf_ready", "unknown");
     result.emplace("battery_ready", "unknown");
     result.emplace("armed", "unknown");
     result.emplace("gps_fix_type", "unknown");
+    result.emplace("gps_fix_name", "unknown");
     result.emplace("gps_satellites_visible", "unknown");
+    result.emplace("system_status", "unknown");
+    result.emplace("system_status_name", "unknown");
+    result.emplace("landed_state", "unknown");
+    result.emplace("landed_state_name", "unknown");
+    result.emplace("vtol_state_name", "unknown");
     result.emplace("altitude_m", "unknown");
     result.emplace("groundspeed_mps", "unknown");
     result.emplace("battery_percent", "unknown");
-    const auto heartbeat = fieldOr(result, "heartbeat_seen", "false") == "true";
-    const auto fc = fieldOr(result, "flight_controller_ready", "unknown");
-    const auto gps = fieldOr(result, "gps_ready", "unknown");
-    const auto battery = fieldOr(result, "battery_ready", "unknown");
-    std::string reason;
-    if (!heartbeat) {
-      reason = "waiting-heartbeat";
+    result.emplace("battery_voltage_v", "unknown");
+    result.emplace("battery_current_a", "unknown");
+    auto state = TelemetryState::fromFields(result);
+    if (state.timestampMs == 0) {
+      state.timestampMs = nowMilliseconds();
     }
-    else if (fc == "false") {
-      reason = "fc-not-ready";
+    for (const auto& [key, value] : state.toFields()) {
+      result[key] = value;
     }
-    else if (gps == "false") {
-      reason = "gps-not-ready";
-    }
-    else if (battery == "false") {
-      reason = "battery-low";
-    }
-    const bool ready = reason.empty();
-    result["ready_for_takeoff"] = ready ? "true" : "false";
-    result["readiness"] = ready ? "ready" : "not-ready";
-    result["readiness_reason"] = ready ? "ok" : reason;
   }
 
   void
@@ -2429,7 +2511,8 @@ private:
     else {
       backend = std::make_shared<MockFlightControllerBackend>(m_droneId);
     }
-    auto lastMission = std::make_shared<std::string>("idle");
+    auto missionState = std::make_shared<MissionState>();
+    missionState->droneId = m_droneId;
     auto missionMutex = std::make_shared<std::mutex>();
     auto missionBusy = std::make_shared<std::atomic<bool>>(false);
 
@@ -2450,9 +2533,17 @@ private:
       return decision;
     };
 
-    auto missionAckHandler = [this, missionBusy, backend](
+    auto missionAckHandler = [this, missionState, missionMutex, missionBusy, backend](
                                const ndn_service_framework::RequestMessage&) {
-      const bool busy = missionBusy->load();
+      MissionState mission;
+      {
+        std::lock_guard<std::mutex> guard(*missionMutex);
+        mission = *missionState;
+      }
+      const bool assigned = mission.phase == "uploading" ||
+                            mission.phase == "uploaded" ||
+                            mission.phase == "executing";
+      const bool busy = missionBusy->load() || assigned;
       ndn_service_framework::ServiceProvider::AckDecision decision;
       decision.status = m_available && !busy;
       decision.message = decision.status ? "mission slot available" :
@@ -2463,6 +2554,8 @@ private:
         {"capture", isCapturing() ? "true" : "false"},
         {"recording", isRecording() ? "true" : "false"},
         {"mission_busy", busy ? "true" : "false"},
+        {"mission_phase", mission.phase},
+        {"mission_detail", busy ? mission.detail : "mission-slot-available"},
         {"queue", busy ? "1" : "0"},
         {"streaming", isStreaming() ? "true" : "false"},
       }));
@@ -2511,13 +2604,28 @@ private:
       m_config.serviceMavlinkExecute,
       ndn_service_framework::ServiceProvider::AckStrategyHandler{},
       ndn_service_framework::ServiceProvider::RequestHandler(
-        [backend, this](const ndn::Name&, const ndn::Name&, const ndn::Name&,
-                        const ndn::Name&,
-                        const ndn_service_framework::RequestMessage& request) {
+        [backend, this, missionState, missionMutex](
+          const ndn::Name&, const ndn::Name&, const ndn::Name&,
+          const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
+          const auto command = fieldOr(fields, "command", "unknown");
           const auto frame = hexDecode(fieldOr(fields, "mavlink_hex", ""));
-          auto result = backend->sendMavlink(frame, fieldOr(fields, "command", "unknown"));
+          auto result = backend->sendMavlink(frame, command);
           const bool ok = fieldOr(result, "accepted", "false") == "true";
+          if (ok && (command == "start_mission" || command == "land" ||
+                     command == "emergency_stop" || command == "disarm")) {
+            std::lock_guard<std::mutex> guard(*missionMutex);
+            missionState->droneId = m_droneId;
+            missionState->updatedMs = nowMilliseconds();
+            if (command == "start_mission") {
+              missionState->phase = "executing";
+              missionState->detail = "flight-controller-mission-started";
+            }
+            else {
+              missionState->phase = "stopping";
+              missionState->detail = command + "-sent-to-flight-controller";
+            }
+          }
           result["backend"] = backend->description();
           result["drone_id"] = m_droneId;
           return makeResponse(ok, encodeFields(result),
@@ -2526,17 +2634,19 @@ private:
       ServiceInvocationMode::TargetedOnly);
 
     auto telemetryHandler =
-      [backend, this, lastMission, missionMutex](const ndn_service_framework::RequestMessage&) {
-          std::string mission;
+      [backend, this, missionState, missionMutex](const ndn_service_framework::RequestMessage&) {
+          MissionState mission;
           {
             std::lock_guard<std::mutex> guard(*missionMutex);
-            mission = *lastMission;
+            mission = *missionState;
           }
           auto telemetry = backend->latestTelemetry();
+          auto missionFields = mission.toFields();
+          telemetry.insert(missionFields.begin(), missionFields.end());
           telemetry["drone_id"] = m_droneId;
           telemetry.emplace("lat", "35.1186");
           telemetry.emplace("lon", "-89.9375");
-          telemetry["mission_status"] = mission;
+          telemetry["mission_status"] = mission.phase;
           telemetry["video"] = isStreaming() ? "streaming" : "stopped";
           telemetry["capture"] = isCapturing() ? "on" : "off";
           telemetry["recording"] = isRecording() ? "on" : "off";
@@ -2573,7 +2683,7 @@ private:
       m_config.serviceMissionAssign,
       ndn_service_framework::ServiceProvider::AckStrategyHandler(missionAckHandler),
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
-        [backend, this, lastMission, missionMutex, missionBusy](
+        [backend, this, missionState, missionMutex, missionBusy](
           const ndn_service_framework::RequestMessage& request) {
           const auto fields = decodeFields(payloadToString(request));
           const auto missionId = fieldOr(fields, "mission_id", "mission-unknown");
@@ -2608,7 +2718,12 @@ private:
 
           {
             std::lock_guard<std::mutex> guard(*missionMutex);
-            *lastMission = "executing:" + missionId + ":" + partId;
+            missionState->droneId = m_droneId;
+            missionState->missionId = missionId;
+            missionState->partId = partId;
+            missionState->phase = "uploading";
+            missionState->detail = "forwarding-waypoints-to-flight-controller";
+            missionState->updatedMs = nowMilliseconds();
           }
 
           const auto waypointPairs = parseWaypointPairs(waypoints);
@@ -2634,28 +2749,40 @@ private:
           const auto image = buildMockJpeg(m_droneId, frameId);
           const auto forwardedWaypoints = fieldOr(missionResult, "waypoints_forwarded", "0");
           const bool missionAccepted = fieldOr(missionResult, "accepted", "true") == "true";
-
-          return makeResponse(missionAccepted, encodeFields({
+          const auto updatedMissionState = MissionState{
+            m_droneId,
+            missionId,
+            partId,
+            missionAccepted ? "uploaded" : "failed",
+            forwardedWaypoints != "0" ? "mission-waypoints-forwarded-to-fc"
+                                      : "mission-executed-with-mock-fc",
+            fieldOr(missionResult, "mission_ack", "unknown"),
+            fieldOr(missionResult, "mission_transport", "unknown"),
+            forwardedWaypoints,
+            fieldOr(missionResult, "waypoint_acks_accepted", "0"),
+            nowMilliseconds(),
+          };
+          {
+            std::lock_guard<std::mutex> guard(*missionMutex);
+            *missionState = updatedMissionState;
+          }
+          auto responseFields = updatedMissionState.toFields();
+          responseFields.insert({
             {"accepted", missionAccepted ? "true" : "false"},
-            {"mission_id", missionId},
-            {"drone_id", m_droneId},
             {"role", role},
-            {"part_id", partId},
             {"attempt_id", attemptId},
-            {"status", forwardedWaypoints != "0" ? "mission-waypoints-forwarded-to-fc"
-                                                  : "mission-executed-with-mock-fc"},
+            {"status", updatedMissionState.detail},
             {"mission_backend", backend->description()},
-            {"mission_transport", fieldOr(missionResult, "mission_transport", "unknown")},
-            {"mission_ack", fieldOr(missionResult, "mission_ack", "unknown")},
-            {"waypoints_forwarded", forwardedWaypoints},
-            {"waypoint_acks_accepted", fieldOr(missionResult, "waypoint_acks_accepted", "0")},
             {"last_waypoint_ack", fieldOr(missionResult, "last_waypoint_ack", "unknown")},
             {"mission_item_requests", fieldOr(missionResult, "mission_item_requests", "0")},
             {"captured_frame_id", frameId},
             {"captured_image_bytes", std::to_string(image.size())},
             {"object_detection_service", m_config.serviceGsObjectDetection.toUri()},
             {"detection_summary", "mock-detected=road,vehicle;confidence=0.91"},
-          }), missionAccepted ? "No error" : "flight controller did not accept mission");
+          });
+
+          return makeResponse(missionAccepted, encodeFields(responseFields),
+                              missionAccepted ? "No error" : "flight controller did not accept mission");
         }),
       ServiceInvocationMode::NormalOnly);
   }

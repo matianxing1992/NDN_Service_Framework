@@ -125,6 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS auto-start and auto-stop video for smoke testing.")
     parser.add_argument("--auto-mavlink-test", action="store_true",
                         help="Have the GS send Arm/Takeoff/Land over Targeted NDNSF for smoke testing.")
+    parser.add_argument("--auto-telemetry-test", action="store_true",
+                        help="Have the GS verify PX4/jMAVSim telemetry fields and state changes.")
     parser.add_argument("--auto-keyboard-test", action="store_true",
                         help="Have the GS trigger the same keyboard shortcuts as a/t/l for smoke testing.")
     parser.add_argument("--auto-manual-control-test", action="store_true",
@@ -831,6 +833,7 @@ def main() -> int:
 
             if (start_simulator and
                 (args.auto_mavlink_test or args.auto_keyboard_test or
+                 args.auto_telemetry_test or
                  args.auto_manual_control_test or args.auto_two_drone_switch_test or
                  args.auto_recording_playback_test or
                  args.auto_patrol_test or args.auto_single_mission_test)):
@@ -860,6 +863,8 @@ def main() -> int:
             ]
         if args.auto_mavlink_test:
             gs_argv += ["--auto-mavlink-test"]
+        if args.auto_telemetry_test:
+            gs_argv += ["--auto-telemetry-test", "--timeout-ms", "30000"]
         if args.auto_keyboard_test:
             gs_argv += ["--auto-keyboard-test"]
         if args.auto_manual_control_test:
@@ -889,7 +894,7 @@ def main() -> int:
                 gs_argv += ["--auto-single-mission-start-test"]
         gs_proc, gs_log = start(ndn.net[args.gs_node], "ground-station",
                                 app_cmd(APP_GS, gs_argv), gs_env, output_dir, processes)
-        if not (args.auto_patrol_test or args.auto_single_mission_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
+        if not (args.auto_patrol_test or args.auto_single_mission_test or args.auto_telemetry_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
         print("")
@@ -940,6 +945,23 @@ def main() -> int:
                 require_log(gs_log, "SINGLE_MISSION_COMMAND command=start_mission ok=true")
             require_log(gs_log, "GS_SINGLE_MISSION_EXIT ok=true")
             print("NDNSF_UAV_SINGLE_MISSION_MININDN_SMOKE_OK")
+        elif args.auto_telemetry_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=70)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station telemetry smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "TELEMETRY_LIVE_RESULT ok=true")
+            require_log(gs_log, "GS_TELEMETRY_EXIT ok=true")
+            require_log(gs_log, "gps_fix_name=")
+            require_log(gs_log, "ekf_ready=true")
+            require_log(gs_log, "landed_state_name=")
+            require_log(gs_log, "battery_voltage_v=")
+            require_log(gs_log, "armed=true")
+            require_log(gs_log, "lat=")
+            require_log(gs_log, "lon=")
+            print("NDNSF_UAV_TELEMETRY_MININDN_SMOKE_OK")
         elif (args.auto_mavlink_test or args.auto_keyboard_test or
               args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:
             try:
