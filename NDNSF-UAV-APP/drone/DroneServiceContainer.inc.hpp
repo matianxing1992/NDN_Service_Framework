@@ -2253,12 +2253,12 @@ public:
   {
     m_faceThread = std::thread([this] {
       try {
-        auto provider = std::make_unique<ndn_service_framework::ServiceProvider>(
-          m_face, m_config.groupPrefix, m_providerCert, m_controllerCert, m_config.trustSchema);
         if (m_serveCertificates) {
           m_certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
             m_face, m_keyChain, m_providerCert.getName());
         }
+        auto provider = std::make_unique<ndn_service_framework::ServiceProvider>(
+          m_face, m_config.groupPrefix, m_providerCert, m_controllerCert, m_config.trustSchema);
         auto videoPublisher = std::make_unique<VideoPublisher>(
           m_face, m_keyChain, m_config, m_droneId, m_videoPath, m_cameraOptions);
         {
