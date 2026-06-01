@@ -84,6 +84,7 @@ cp -a "$repo_root/NDNSF-UAV-APP/configs/"*.policies "$stage/config/" 2>/dev/null
 cp -a "$repo_root/examples/trust-schema.conf" "$stage/config/trust-schema.conf"
 cp -a "$repo_root/NDNSF-UAV-APP/videos/drone.mp4" "$stage/share/ndnsf-uav/videos/" 2>/dev/null || true
 cp -a "$repo_root/NDNSF-UAV-APP/videos/drone.mp4" "$stage/videos/" 2>/dev/null || true
+cp -a "$repo_root/NDNSF-UAV-APP/tools/uav_deployment_check.py" "$stage/scripts/ndnsf-uav-preflight.py"
 
 sed -i \
   -e 's|^trust-schema .*|trust-schema config/trust-schema.conf|' \
@@ -295,6 +296,29 @@ EOF
 
 chmod +x "$stage/bin/"*
 
+cat > "$stage/scripts/ndnsf-uav-preflight" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export LD_LIBRARY_PATH="$here/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$here/bin${PATH:+:$PATH}"
+config_dir="${NDNSF_UAV_CONFIG_DIR:-}"
+if [[ -z "$config_dir" ]]; then
+  if [[ -d "$PWD/config" ]]; then
+    config_dir="$PWD/config"
+  elif [[ -d "$here/../config" ]]; then
+    config_dir="$here/../config"
+  else
+    config_dir="$here/config"
+  fi
+fi
+deploy_root="$(cd "$config_dir/.." && pwd)"
+cd "$deploy_root"
+exec python3 "$here/scripts/ndnsf-uav-preflight.py" \
+  --runtime-config "$config_dir/uav_runtime.conf" "$@"
+EOF
+chmod +x "$stage/scripts/ndnsf-uav-preflight" "$stage/scripts/ndnsf-uav-preflight.py"
+
 cat > "$stage/scripts/check-runtime-deps.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -352,6 +376,25 @@ Run a quick dependency check:
 
 \`\`\`bash
 ./scripts/check-runtime-deps.sh
+\`\`\`
+
+Run deployment preflight checks before starting each role. These checks verify
+NFD reachability, config files, trust schema, and local keychain certificates.
+They also fail when an identity has multiple local key/certificate choices,
+which prevents a controller from encrypting permissions to a stale certificate:
+
+\`\`\`bash
+./scripts/ndnsf-uav-preflight --role controller --policy-file config/uav_demo.policies
+./scripts/ndnsf-uav-preflight --role ground-station --app-config config/ground-station.conf
+./scripts/ndnsf-uav-preflight --role drone --app-config config/drone-A.conf
+\`\`\`
+
+For multi-machine deployment, export each node's public certificate and compare
+it on the controller before startup:
+
+\`\`\`bash
+./scripts/ndnsf-uav-preflight --role controller \\
+  --expected-cert /example/uav/drone/A=certs/drone-A.cert
 \`\`\`
 
 Example commands:

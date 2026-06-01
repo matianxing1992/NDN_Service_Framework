@@ -276,16 +276,33 @@ advertise the UAV namespace toward the PC/controller.
 Before starting the containers on real machines, run the preflight checker. It
 does not change system state; it checks that NFD is reachable, the expected
 identity certificate is installed, the trust schema exists, and local adapters
-such as ffmpeg, YOLO, video source, and MAVLink UDP ports are plausible.
+such as ffmpeg, YOLO, video source, and MAVLink UDP ports are plausible. It also
+fails if one identity has multiple local key/certificate choices, because that
+can make the Controller encrypt permission responses to an old certificate.
+
+On the Controller:
+
+```bash
+python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
+  --role controller \
+  --runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf \
+  --policy-file NDNSF-UAV-APP/configs/uav_demo.policies \
+  --expected-cert /example/uav/drone/A=/path/to/drone-A.cert
+```
+
+The `--expected-cert` argument is optional but recommended in multi-machine
+deployment. Export the public certificate on each remote node with
+`ndnsec cert-dump -i /example/uav/drone/A > drone-A.cert`, copy it to the
+Controller, and make preflight compare it with the Controller keychain.
 
 On the PC / ground station:
 
 ```bash
 python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
   --role ground-station \
-  --identity /example/uav/gs \
-  --trust-schema /absolute/path/to/uav-trust.conf \
-  --yolo-model yolo26n.pt
+  --runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf \
+  --app-config NDNSF-UAV-APP/configs/ground-station.conf \
+  --trust-schema /absolute/path/to/uav-trust.conf
 ```
 
 On drone A:
@@ -293,9 +310,9 @@ On drone A:
 ```bash
 python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
   --role drone \
-  --identity /example/uav/drone/A \
+  --runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf \
+  --app-config NDNSF-UAV-APP/configs/drone-A.conf \
   --trust-schema /absolute/path/to/uav-trust.conf \
-  --video-source NDNSF-UAV-APP/videos/drone.mp4 \
   --flight-controller-backend udp \
   --mavlink-udp-host 127.0.0.1 \
   --mavlink-udp-port 18570 \
