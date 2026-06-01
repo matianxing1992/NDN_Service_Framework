@@ -282,6 +282,175 @@ BOOST_AUTO_TEST_CASE(TargetedServiceConsumesCachedTokenForFastPath)
   BOOST_CHECK_EQUAL(handlerCalls, 1);
 }
 
+BOOST_AUTO_TEST_CASE(NormalAndTargetedRegistrationsCoexistForSameService)
+{
+  auto setResponsePayload = [] (ResponseMessage& response, const std::string& value) {
+    ndn::Buffer payload(reinterpret_cast<const uint8_t*>(value.data()), value.size());
+    response.setPayload(payload, payload.size());
+  };
+  auto responsePayloadToString = [] (const ResponseMessage& response) {
+    const auto payload = response.getPayload();
+    return std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+  };
+
+  ndn::security::KeyChain keyChain("pib-memory:targeted-provider-coexist",
+                                   "tpm-memory:targeted-provider-coexist");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/drone-a");
+  const ndn::Name requesterName("/test/user/gs");
+  const ndn::Name serviceName("/Targeted/Telemetry/GetStatus");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName));
+
+  size_t normalCalls = 0;
+  size_t targetedCalls = 0;
+  provider.addService(
+    serviceName,
+    ServiceProvider::AckStrategyHandler{},
+    [&](const RequestMessage&) {
+      ++normalCalls;
+      ResponseMessage response;
+      response.setStatus(true);
+      setResponsePayload(response, "normal");
+      return response;
+    });
+  provider.addTargetedService(
+    serviceName,
+    [&](const RequestMessage&) {
+      ++targetedCalls;
+      ResponseMessage response;
+      response.setStatus(true);
+      setResponsePayload(response, "targeted");
+      return response;
+    });
+
+  auto normalRequest = makeRequestMessageWithUserToken("get", "normal-user-token");
+  const auto normalResponse = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/normal-coexist")),
+    normalRequest);
+  BOOST_REQUIRE(normalResponse.getStatus());
+  BOOST_CHECK_EQUAL(normalCalls, 1);
+  BOOST_CHECK_EQUAL(targetedCalls, 0);
+  BOOST_CHECK_EQUAL(responsePayloadToString(normalResponse), "normal");
+
+  auto bootstrapRequest = makeRequestMessageWithUserToken("get", "bootstrap-user-token");
+  bootstrapRequest.setRequestMode(tlv::TargetedBootstrapRequest);
+  bootstrapRequest.setTargetProvider(providerName);
+  const auto bootstrapResponse = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/bootstrap-coexist")),
+    bootstrapRequest);
+  BOOST_REQUIRE(bootstrapResponse.getStatus());
+  BOOST_CHECK_EQUAL(normalCalls, 1);
+  BOOST_CHECK_EQUAL(targetedCalls, 1);
+  BOOST_CHECK_EQUAL(responsePayloadToString(bootstrapResponse), "targeted");
+  BOOST_CHECK_EQUAL(bootstrapResponse.getTokens().at("targeted.count"), "8");
+
+  auto targetedRequest = makeRequestMessageWithUserToken("get", "fast-user-token");
+  targetedRequest.setRequestMode(tlv::TargetedRequest);
+  targetedRequest.setTargetProvider(providerName);
+  targetedRequest.setProviderToken("provider-token");
+  provider.addTargetedProviderTokenForTest(requesterName,
+                                           serviceName,
+                                           "provider-token",
+                                           "fast-user-token");
+  const auto targetedResponse = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/targeted-coexist")),
+    targetedRequest);
+  BOOST_REQUIRE(targetedResponse.getStatus());
+  BOOST_CHECK_EQUAL(normalCalls, 1);
+  BOOST_CHECK_EQUAL(targetedCalls, 2);
+  BOOST_CHECK_EQUAL(responsePayloadToString(targetedResponse), "targeted");
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitNormalAndTargetedInvocationModeRegistersBothPaths)
+{
+  auto setResponsePayload = [] (ResponseMessage& response, const std::string& value) {
+    ndn::Buffer payload(reinterpret_cast<const uint8_t*>(value.data()), value.size());
+    response.setPayload(payload, payload.size());
+  };
+  auto responsePayloadToString = [] (const ResponseMessage& response) {
+    const auto payload = response.getPayload();
+    return std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+  };
+
+  ndn::security::KeyChain keyChain("pib-memory:targeted-provider-explicit-mode",
+                                   "tpm-memory:targeted-provider-explicit-mode");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/drone-a");
+  const ndn::Name requesterName("/test/user/gs");
+  const ndn::Name serviceName("/UAV/Telemetry/GetStatus");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName));
+
+  size_t calls = 0;
+  provider.addService(
+    serviceName,
+    ServiceProvider::AckStrategyHandler{},
+    ServiceProvider::SimpleRequestHandler(
+      [&](const RequestMessage&) {
+        ++calls;
+        ResponseMessage response;
+        response.setStatus(true);
+        setResponsePayload(response, "telemetry");
+        return response;
+      }),
+    ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
+
+  auto normalRequest = makeRequestMessageWithUserToken("get", "normal-user-token");
+  const auto normalResponse = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/normal-explicit-mode")),
+    normalRequest);
+  BOOST_REQUIRE(normalResponse.getStatus());
+  BOOST_CHECK_EQUAL(responsePayloadToString(normalResponse), "telemetry");
+  BOOST_CHECK_EQUAL(calls, 1);
+
+  auto bootstrapRequest = makeRequestMessageWithUserToken("get", "bootstrap-user-token");
+  bootstrapRequest.setRequestMode(tlv::TargetedBootstrapRequest);
+  bootstrapRequest.setTargetProvider(providerName);
+  const auto bootstrapResponse = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/bootstrap-explicit-mode")),
+    bootstrapRequest);
+  BOOST_REQUIRE(bootstrapResponse.getStatus());
+  BOOST_CHECK_EQUAL(responsePayloadToString(bootstrapResponse), "telemetry");
+  BOOST_CHECK_EQUAL(bootstrapResponse.getTokens().at("targeted.count"), "8");
+  BOOST_CHECK_EQUAL(calls, 2);
+
+  auto targetedRequest = makeRequestMessageWithUserToken("get", "fast-user-token");
+  targetedRequest.setRequestMode(tlv::TargetedRequest);
+  targetedRequest.setTargetProvider(providerName);
+  targetedRequest.setProviderToken("provider-token");
+  provider.addTargetedProviderTokenForTest(requesterName,
+                                           serviceName,
+                                           "provider-token",
+                                           "fast-user-token");
+  const auto targetedResponse = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/targeted-explicit-mode")),
+    targetedRequest);
+  BOOST_REQUIRE(targetedResponse.getStatus());
+  BOOST_CHECK_EQUAL(responsePayloadToString(targetedResponse), "telemetry");
+  BOOST_CHECK_EQUAL(calls, 3);
+}
+
 BOOST_AUTO_TEST_CASE(TargetedProviderRequiresPermissionAndUserToken)
 {
   ndn::security::KeyChain keyChain("pib-memory:targeted-provider-permission",

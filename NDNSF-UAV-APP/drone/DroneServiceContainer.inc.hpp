@@ -1121,6 +1121,18 @@ public:
           ndnsf_distributed_repo::makeSqliteRepoStore(m_cameraOptions.recordRepoPath));
       }
       m_recordingSessionId = "record-" + std::to_string(nowMilliseconds());
+      m_recordingKeyId = droneIdentity(m_config, m_droneId)
+        .append("repo")
+        .append("camera")
+        .append("recording")
+        .append("hybrid-key")
+        .toUri();
+      m_recordingContentKey = loadOrCreateRecordingContentKey();
+      ensureRecordingFilterRegistered();
+      NDN_LOG_INFO("CAMERA_RECORDING_ENCRYPTION drone=" << m_droneId
+                   << " algorithm=hybrid-aes-256-gcm-at-rest"
+                   << " key_id=" << m_recordingKeyId
+                   << " key_scope=local-drone-runtime");
     }
     m_captureEnabled = m_cameraOptions.captureOnStart || m_cameraOptions.recordToLocalRepo;
     m_captureThread = std::thread([this] { this->captureLoop(); });
@@ -1312,8 +1324,11 @@ public:
        m_cameraOptions.recordObjectPrefix + "/" + m_recordingSessionId + "/chunk/<index>"},
       {"recording_chunks", std::to_string(chunks)},
       {"recording_bytes", std::to_string(recordingBytes())},
-      {"recording_repo_path", m_cameraOptions.recordRepoPath},
       {"recording_object_type", "video/h264-chunk"},
+      {"recording_encryption", isRecording() ? "hybrid-aes-256-gcm-at-rest" : "none"},
+      {"recording_encryption_key_id", m_recordingKeyId},
+      {"recording_encryption_content_key_hex", recordingContentKeyHex()},
+      {"recording_encryption_access", "NDNSF user permission on recording manifest service"},
       {"timestamp_ms", std::to_string(nowMilliseconds())},
     };
     if (chunks > 0) {
@@ -1332,10 +1347,26 @@ public:
       return {};
     }
     try {
-      return m_recordingRepo->get(objectName);
+      return decryptRecordingChunk(objectName, m_recordingRepo->get(objectName));
     }
     catch (const std::exception& e) {
       NDN_LOG_WARN("CAMERA_RECORD_CHUNK_GET_FAILED object=" << objectName
+                   << " reason=" << e.what());
+      return {};
+    }
+  }
+
+  std::vector<uint8_t>
+  recordingChunkData(const std::string& objectName) const
+  {
+    if (!isRecording() || objectName.empty() || !m_recordingRepo) {
+      return {};
+    }
+    try {
+      return m_recordingRepo->get(objectName);
+    }
+    catch (const std::exception& e) {
+      NDN_LOG_WARN("CAMERA_RECORD_CHUNK_DATA_GET_FAILED object=" << objectName
                    << " reason=" << e.what());
       return {};
     }
@@ -1473,6 +1504,48 @@ private:
   }
 
   void
+  ensureRecordingFilterRegistered()
+  {
+    if (m_recordingFilterRegistered || m_cameraOptions.recordObjectPrefix.empty()) {
+      return;
+    }
+    const ndn::Name recordingPrefix(m_cameraOptions.recordObjectPrefix);
+    m_face.setInterestFilter(
+      recordingPrefix,
+      [this] (const auto&, const ndn::Interest& interest) {
+        this->onRecordingChunkInterest(interest);
+      },
+      [] (const ndn::Name&) {},
+      [] (const ndn::Name& prefix, const std::string& reason) {
+        NDN_LOG_WARN("CAMERA_RECORDING_PREFIX_REGISTER_FAILED prefix="
+                     << prefix << " reason=" << reason);
+      });
+    m_recordingFilterRegistered = true;
+  }
+
+  void
+  onRecordingChunkInterest(const ndn::Interest& interest)
+  {
+    const auto objectName = interest.getName().toUri();
+    const auto payload = recordingChunkData(objectName);
+    if (payload.empty()) {
+      NDN_LOG_DEBUG("CAMERA_RECORDING_CHUNK_MISS object=" << objectName);
+      return;
+    }
+
+    auto data = std::make_shared<ndn::Data>(interest.getName());
+    data->setFreshnessPeriod(2_s);
+    data->setContent(ndn::span<const uint8_t>(payload.data(), payload.size()));
+    {
+      std::lock_guard<std::mutex> guard(m_signMutex);
+      m_keyChain.sign(*data);
+    }
+    m_face.getIoContext().post([this, data] {
+      m_face.put(*data);
+    });
+  }
+
+  void
   putPacket(const ndn::Name& name, const std::vector<uint8_t>& packet)
   {
     const auto putCount = ++m_framePuts;
@@ -1565,22 +1638,143 @@ private:
       return;
     }
 
-    std::vector<uint8_t> payload(data, data + size);
     const auto objectName = m_cameraOptions.recordObjectPrefix + "/" +
       m_recordingSessionId + "/chunk/" + std::to_string(index);
     try {
+      auto payload = encryptRecordingChunk(objectName, data, size);
       m_recordingRepo->put(objectName,
                            payload,
-                           "video/h264-chunk",
+                           "video/h264-chunk+hybrid-aes-256-gcm",
                            1,
-                           "capture_ms=" + std::to_string(captureMs),
+                           "capture_ms=" + std::to_string(captureMs) +
+                             ";encryption=hybrid-aes-256-gcm-at-rest" +
+                             ";key_id=" + m_recordingKeyId,
                            {droneIdentity(m_config, m_droneId).toUri()});
-      m_recordingBytes += static_cast<uint64_t>(payload.size());
+      m_recordingBytes += static_cast<uint64_t>(size);
     }
     catch (const std::exception& e) {
       NDN_LOG_WARN("CAMERA_RECORD_CHUNK_FAILED object=" << objectName
                    << " reason=" << e.what());
     }
+  }
+
+  ndn::Buffer
+  loadOrCreateRecordingContentKey() const
+  {
+    if (m_cameraOptions.recordRepoPath.empty()) {
+      return randomRecordingContentKey();
+    }
+
+    const auto keyPath = m_cameraOptions.recordRepoPath + ".content-key";
+    {
+      std::ifstream input(keyPath, std::ios::binary);
+      if (input) {
+        std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+        if (bytes.size() == ndn_service_framework::HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+          return ndn::Buffer(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+        }
+        NDN_LOG_WARN("CAMERA_RECORDING_KEY_INVALID path=" << keyPath
+                     << " bytes=" << bytes.size()
+                     << " regenerating=true");
+      }
+    }
+
+    auto key = randomRecordingContentKey();
+    {
+      std::ofstream output(keyPath, std::ios::binary | std::ios::trunc);
+      if (!output) {
+        throw std::runtime_error("cannot create camera recording content key: " + keyPath);
+      }
+      output.write(reinterpret_cast<const char*>(key.data()), key.size());
+    }
+    chmod(keyPath.c_str(), S_IRUSR | S_IWUSR);
+    return key;
+  }
+
+  static ndn::Buffer
+  randomRecordingContentKey()
+  {
+    ndn::Buffer key(ndn_service_framework::HybridMessageCrypto::MESSAGE_KEY_SIZE);
+    if (RAND_bytes(key.data(), static_cast<int>(key.size())) != 1) {
+      throw std::runtime_error("RAND_bytes failed for camera recording content key");
+    }
+    return key;
+  }
+
+  ndn::Buffer
+  recordingAssociatedData(const std::string& objectName) const
+  {
+    const auto value = "ndnsf-uav-recording|" + droneIdentity(m_config, m_droneId).toUri() +
+      "|" + m_recordingSessionId + "|" + objectName;
+    return ndn::Buffer(reinterpret_cast<const uint8_t*>(value.data()), value.size());
+  }
+
+  std::vector<uint8_t>
+  encryptRecordingChunk(const std::string& objectName, const uint8_t* data, size_t size) const
+  {
+    if (m_recordingContentKey.empty()) {
+      throw std::runtime_error("camera recording content key is not initialized");
+    }
+    const auto ad = recordingAssociatedData(objectName);
+    const auto encrypted = ndn_service_framework::hybridAesGcmEncrypt(
+      m_recordingContentKey,
+      ndn::span<const uint8_t>(data, size),
+      ndn::span<const uint8_t>(ad.data(), ad.size()));
+
+    ndn_service_framework::HybridMessageEnvelope envelope;
+    envelope.setAlgorithm("AES-256-GCM");
+    envelope.setKeyId(m_recordingKeyId);
+    envelope.setEpochId("camera-recording-persistent-v1");
+    envelope.setMessageType("uav-camera-recording-chunk");
+    envelope.setNonce(encrypted.nonce);
+    envelope.setCipherText(encrypted.ciphertext);
+    envelope.setAuthTag(encrypted.tag);
+    const auto wire = envelope.WireEncode();
+    return std::vector<uint8_t>(wire.data(), wire.data() + wire.size());
+  }
+
+  std::string
+  recordingContentKeyHex() const
+  {
+    return hexEncode(std::vector<uint8_t>(m_recordingContentKey.begin(),
+                                          m_recordingContentKey.end()));
+  }
+
+  std::vector<uint8_t>
+  decryptRecordingChunk(const std::string& objectName,
+                        const std::vector<uint8_t>& encryptedPayload) const
+  {
+    if (encryptedPayload.empty()) {
+      return {};
+    }
+
+    auto [ok, block] = ndn::Block::fromBuffer(
+      ndn::span<const uint8_t>(encryptedPayload.data(), encryptedPayload.size()));
+    ndn_service_framework::HybridMessageEnvelope envelope;
+    if (!ok || !envelope.WireDecode(block)) {
+      NDN_LOG_WARN("CAMERA_RECORDING_LEGACY_PLAINTEXT object=" << objectName);
+      return encryptedPayload;
+    }
+    if (envelope.getKeyId() != m_recordingKeyId ||
+        envelope.getMessageType() != "uav-camera-recording-chunk") {
+      NDN_LOG_WARN("CAMERA_RECORDING_DECRYPT_REJECT object=" << objectName
+                   << " key_id=" << envelope.getKeyId()
+                   << " message_type=" << envelope.getMessageType());
+      return {};
+    }
+
+    const auto ad = recordingAssociatedData(objectName);
+    ndn::Buffer plaintext;
+    if (!ndn_service_framework::hybridAesGcmDecrypt(
+          m_recordingContentKey,
+          envelope,
+          ndn::span<const uint8_t>(ad.data(), ad.size()),
+          plaintext)) {
+      NDN_LOG_WARN("CAMERA_RECORDING_DECRYPT_FAILED object=" << objectName);
+      return {};
+    }
+    return std::vector<uint8_t>(plaintext.begin(), plaintext.end());
   }
 
   void
@@ -1770,12 +1964,15 @@ private:
   CameraRuntimeOptions m_cameraOptions;
   std::unique_ptr<ndnsf_distributed_repo::RepoCore> m_recordingRepo;
   std::string m_recordingSessionId = "record-idle";
+  std::string m_recordingKeyId;
+  ndn::Buffer m_recordingContentKey;
   mutable std::mutex m_mutex;
   std::mutex m_signMutex;
   ndn::Name m_videoPrefix;
   ndn::Name m_streamPrefix;
   std::string m_streamId = "idle";
   bool m_filterRegistered = false;
+  bool m_recordingFilterRegistered = false;
   std::atomic<bool> m_streaming{false};
   std::atomic<bool> m_captureEnabled{false};
   std::atomic<bool> m_done{false};
@@ -2010,6 +2207,8 @@ private:
   void
   installServiceInstances()
   {
+    using ServiceInvocationMode = ndn_service_framework::ServiceProvider::ServiceInvocationMode;
+
     m_provider->setHandlerThreads(2);
     m_provider->setAckThreads(2);
     m_provider->setPerformanceMode(false);
@@ -2093,7 +2292,8 @@ private:
             {"reason", "unknown video control action"},
             {"action", action},
           }), "unknown video control action");
-        }));
+        }),
+      ServiceInvocationMode::NormalOnly);
 
     m_provider->addService(
       droneCameraRecordingManifestService(m_config, m_droneId),
@@ -2101,38 +2301,12 @@ private:
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
         [this](const ndn_service_framework::RequestMessage&) {
           return makeResponse(true, encodeFields(recordingManifestFields()));
-        }));
-
-    const auto recordingChunkHandler =
-      [this](const ndn_service_framework::RequestMessage& request) {
-          const auto fields = decodeFields(payloadToString(request));
-          const auto objectName = fieldOr(fields, "object_name", "");
-          const auto chunk = recordingChunk(objectName);
-          if (chunk.empty()) {
-            return makeResponse(false, encodeFields({
-              {"status", "not-found"},
-              {"object_name", objectName},
-            }), "recording chunk not found");
-          }
-          return makeBinaryResponse(true, chunk);
-        };
+        }),
+      ServiceInvocationMode::NormalOnly);
 
     m_provider->addService(
-      droneCameraRecordingChunkService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(recordingChunkHandler));
-
-    m_provider->addTargetedService(
-      droneCameraRecordingChunkService(m_config, m_droneId),
-      ndn_service_framework::ServiceProvider::RequestHandler(
-        [recordingChunkHandler](const ndn::Name&, const ndn::Name&, const ndn::Name&,
-                                const ndn::Name&,
-                                const ndn_service_framework::RequestMessage& request) {
-          return recordingChunkHandler(request);
-        }));
-
-    m_provider->addTargetedService(
       m_config.serviceMavlinkExecute,
+      ndn_service_framework::ServiceProvider::AckStrategyHandler{},
       ndn_service_framework::ServiceProvider::RequestHandler(
         [backend, this](const ndn::Name&, const ndn::Name&, const ndn::Name&,
                         const ndn::Name&,
@@ -2145,7 +2319,8 @@ private:
           result["drone_id"] = m_droneId;
           return makeResponse(ok, encodeFields(result),
                               ok ? "No error" : "flight-controller rejected frame");
-        }));
+        }),
+      ServiceInvocationMode::TargetedOnly);
 
     auto telemetryHandler =
       [backend, this, lastMission, missionMutex](const ndn_service_framework::RequestMessage&) {
@@ -2171,10 +2346,8 @@ private:
     m_provider->addService(
       m_config.serviceTelemetryStatus,
       ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(telemetryHandler));
-    m_provider->addTargetedService(
-      m_config.serviceTelemetryStatus,
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(telemetryHandler));
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(telemetryHandler),
+      ServiceInvocationMode::NormalAndTargeted);
 
     m_provider->addService(
       m_config.serviceCameraFrame,
@@ -2190,7 +2363,8 @@ private:
             {"image_hex", hexEncode(image)},
             {"timestamp_ms", std::to_string(nowMilliseconds())},
           }));
-        }));
+        }),
+      ServiceInvocationMode::NormalOnly);
 
     m_provider->addService(
       m_config.serviceMissionAssign,
@@ -2279,7 +2453,8 @@ private:
             {"object_detection_service", m_config.serviceGsObjectDetection.toUri()},
             {"detection_summary", "mock-detected=road,vehicle;confidence=0.91"},
           }), missionAccepted ? "No error" : "flight controller did not accept mission");
-        }));
+        }),
+      ServiceInvocationMode::NormalOnly);
   }
 
   void
@@ -2296,23 +2471,21 @@ private:
       {"available", m_available ? "true" : "false"},
     };
     auto publish = [this, &common](const ndn::Name& serviceName,
-                                   const std::string& mode,
+                                   const std::string& invocationMode,
                                    const std::string& category) {
       auto meta = common;
-      meta["mode"] = mode;
+      meta["invocation_mode"] = invocationMode;
       meta["category"] = category;
       meta["published_by"] = "NDNSF-UAV-APP";
       m_provider->publishServiceInfo(serviceName, 45, std::move(meta));
     };
-    publish(droneVideoControlService(m_config, m_droneId), "normal", "video-control");
-    publish(droneCameraRecordingManifestService(m_config, m_droneId), "normal",
+    publish(droneVideoControlService(m_config, m_droneId), "normal-only", "video-control");
+    publish(droneCameraRecordingManifestService(m_config, m_droneId), "normal-only",
             "camera-recording-manifest");
-    publish(droneCameraRecordingChunkService(m_config, m_droneId), "targeted",
-            "camera-recording-chunk");
-    publish(m_config.serviceMavlinkExecute, "targeted", "flight-control");
-    publish(m_config.serviceTelemetryStatus, "normal", "telemetry");
-    publish(m_config.serviceCameraFrame, "normal", "camera");
-    publish(m_config.serviceMissionAssign, "normal", "mission");
+    publish(m_config.serviceMavlinkExecute, "targeted-only", "flight-control");
+    publish(m_config.serviceTelemetryStatus, "normal-and-targeted", "telemetry");
+    publish(m_config.serviceCameraFrame, "normal-only", "camera");
+    publish(m_config.serviceMissionAssign, "normal-only", "mission");
   }
 
   void

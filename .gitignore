@@ -3,6 +3,7 @@
 
 # Waf build system
 /build/
+/build-uav-static/
 .local-boost171/
 .waf-*-*/
 .waf3-*-*/
@@ -19,6 +20,7 @@ pythonWrapper/*.egg-info/
 # Generated/local outputs
 docs/
 results/
+release-artifacts/
 *.pt
 *.onnx
 

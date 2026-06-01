@@ -106,6 +106,36 @@ Each drone:
   camera or video source
 ```
 
+For release deployments, build a portable Ubuntu 20.04 tarball on an Ubuntu
+20.04 build host:
+
+```bash
+./waf build
+packaging/uav-release/create-portable-release.sh
+```
+
+The tarball contains wrapper commands for the controller, ground station, and
+drone apps, plus bundled NDNSF runtime libraries. It also bundles `ndn-cxx`,
+`ndn-svs`, NDNSD, NAC-ABE, OpenABE, and RELIC when those libraries are visible
+through `ldd` on the build host. NFD is intentionally not bundled: it is a host
+daemon with local sockets, faces, routes, and keychain state. Each machine
+should run its own compatible NFD.
+
+For sparse Ubuntu 20.04 lab machines, build the larger same-OS bundle:
+
+```bash
+NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
+  packaging/uav-release/create-portable-release.sh
+```
+
+After copying the tarball to a target machine:
+
+```bash
+tar -xzf ndnsf-uav-ubuntu20-x86_64-*.tar.gz
+cd ndnsf-uav-ubuntu20-x86_64-*
+./scripts/check-runtime-deps.sh
+```
+
 The binaries load deployment names from `configs/uav_runtime.conf` by default.
 That file keeps convenient demo values such as `/example/uav/controller`,
 `/example/uav/gs`, and `/example/uav/drone/<id>`, but real deployment
@@ -133,7 +163,6 @@ The same values can still be overridden from the command line when needed:
 --service-camera-frame /UAV/Camera/GetFrame
 --service-camera-video-control-suffix /UAV/Camera/Video
 --service-camera-recording-manifest-suffix /UAV/Camera/Recording/Manifest
---service-camera-recording-chunk-suffix /UAV/Camera/Recording/GetChunk
 --service-gs-object-detection /UAV/GS/ObjectDetection
 ```
 
@@ -736,19 +765,24 @@ For example, `/example/uav/drone/A/UAV/Camera/Recording/Manifest` returns the
 current recording session id, object prefix, object naming pattern, chunk count,
 byte count, and first/last chunk object names. This lets GS or a post-mission
 report discover the local repo objects without guessing file paths or scanning
-the SQLite store.
+the SQLite store. The manifest intentionally exposes service object names, not
+the drone's local SQLite file path.
 
 The ground station has `Find Recordings` and `Play Recording` buttons for the
 selected drone. `Find Recordings` calls the manifest service above. `Play
-Recording` then fetches chunks from the drone repo through:
+Recording` then uses a recording helper to fetch the encrypted repo Data named
+by that manifest. The chunk path is intentionally not an NDNSF service:
 
 ```text
-/<drone>/UAV/Camera/Recording/GetChunk
+/<drone>/repo/camera/recording/<session-id>/chunk/<index>
 ```
 
-The request carries only the object name. The H264 bytes are returned
-chunk-by-chunk over Targeted NDNSF calls and fed into the same decoder used by
-live video playback.
+The manifest service is the authorization point. Its NDNSF-protected response
+includes the recording encryption metadata and content key for authorized
+viewers. The repo stores only hybrid AES-GCM encrypted H264 chunks; the drone
+serves those encrypted chunks as ordinary signed NDN Data, and the ground
+station decrypts them locally before feeding the live-video decoder. Fetching
+the Data without the manifest key is not enough to view the recording.
 
 For a local recording smoke test that does not start the GUI or require GS
 interaction:

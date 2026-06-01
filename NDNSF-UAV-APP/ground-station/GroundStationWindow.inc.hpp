@@ -9,6 +9,7 @@ public:
                       bool autoMavlinkTest, bool autoKeyboardTest,
                       bool autoManualControlTest,
                       bool autoTwoDroneSwitchTest,
+                      bool autoRecordingPlaybackTest,
                       std::vector<std::string> droneIds)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
@@ -92,7 +93,7 @@ public:
                           "Markers: GS, drone A/B, and mission waypoints\n"
                           "Click to append WP1/WP2/..., drag to pan, Center GS to return.\n"
                           "Upload Patrol Mission sends the route; arm/takeoff/mission mode makes PX4 fly it.");
-    m_services.set_text("Services: video, targeted MAVLink, telemetry, camera, mission");
+    m_services.set_text(m_runtime.serviceCatalogForDrone(m_runtime.targetDroneId()));
     m_telemetry.set_text("Telemetry: waiting for flight-controller response");
     m_stop.set_sensitive(false);
 
@@ -142,6 +143,7 @@ public:
         return;
       }
       m_runtime.setTargetDroneId(m_droneIds[static_cast<size_t>(index)]);
+      m_runtime.logServiceCatalogForDrone(m_droneIds[static_cast<size_t>(index)]);
       updateVehicleRows();
       updateVideoViewForSelected();
       m_runtime.requestTelemetryStatus();
@@ -699,6 +701,24 @@ public:
           {"x", "-500"}, {"y", "0"}, {"z", "520"}, {"r", "0"},
         });
         std::this_thread::sleep_for(std::chrono::seconds(4));
+        Glib::signal_idle().connect_once([this] {
+          hide();
+        });
+      }).detach();
+    }
+    if (autoRecordingPlaybackTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        Glib::signal_idle().connect_once([this] {
+          beginLocalStreamView();
+          m_runtime.requestRecordingManifest();
+          m_runtime.playLatestRecording();
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(35);
+        while (std::chrono::steady_clock::now() < deadline &&
+               m_decodedFrames.load() < 10) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
         Glib::signal_idle().connect_once([this] {
           hide();
         });
@@ -1278,7 +1298,7 @@ private:
             m_pendingElapsedMs = elapsedMs;
           }
           ++m_decodedFrames;
-          if (m_decodedFrames.load() % 30 == 0) {
+          if (m_decodedFrames.load() <= 3 || m_decodedFrames.load() % 30 == 0) {
             std::cout << "GS_DECODED_FRAMES count=" << m_decodedFrames.load() << std::endl;
           }
           m_frameDispatcher.emit();
@@ -1313,8 +1333,7 @@ private:
                           "Selected drone: " + selectedDrone + "\n"
                           "Map markers show GS, drones, and mission waypoints.\n"
                           "Click map to append waypoints, then upload/start the mission.");
-    m_services.set_text("Services for Drone " + selectedDrone +
-                        ": video, targeted MAVLink, telemetry, camera, mission");
+    m_services.set_text(m_runtime.serviceCatalogForDrone(selectedDrone));
     refreshMapTile();
   }
 

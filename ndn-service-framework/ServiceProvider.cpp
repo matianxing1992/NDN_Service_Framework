@@ -726,7 +726,18 @@ namespace ndn_service_framework
                                      RequestHandler requestHandler,
                                      ServiceMode mode)
     {
-        m_services[serviceName] = {std::move(ackHandler), std::move(requestHandler), mode};
+        auto& service = m_services[serviceName];
+        if (mode == ServiceMode::Targeted) {
+            service.targetedRequestHandler = std::move(requestHandler);
+            if (!service.requestHandler) {
+                service.mode = ServiceMode::Targeted;
+            }
+        }
+        else {
+            service.ackHandler = std::move(ackHandler);
+            service.requestHandler = std::move(requestHandler);
+            service.mode = ServiceMode::Normal;
+        }
         const auto serviceUri = serviceName.toUri();
         if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
             m_serviceNames.end()) {
@@ -737,6 +748,44 @@ namespace ndn_service_framework
         NDN_LOG_WARN("Registered service handler for " << serviceUri
                      << " mode="
                      << (mode == ServiceMode::Targeted ? "Targeted" : "Normal"));
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     AckStrategyHandler ackHandler,
+                                     RequestHandler requestHandler,
+                                     ServiceInvocationMode invocationMode)
+    {
+        auto& service = m_services[serviceName];
+        if (invocationMode == ServiceInvocationMode::NormalOnly ||
+            invocationMode == ServiceInvocationMode::NormalAndTargeted) {
+            service.ackHandler = std::move(ackHandler);
+            service.requestHandler = requestHandler;
+            service.mode = ServiceMode::Normal;
+        }
+        if (invocationMode == ServiceInvocationMode::TargetedOnly ||
+            invocationMode == ServiceInvocationMode::NormalAndTargeted) {
+            service.targetedRequestHandler = std::move(requestHandler);
+            if (invocationMode == ServiceInvocationMode::TargetedOnly) {
+                service.mode = ServiceMode::Targeted;
+            }
+        }
+
+        const auto serviceUri = serviceName.toUri();
+        if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
+            m_serviceNames.end()) {
+            m_serviceNames.push_back(serviceUri);
+        }
+        const char* modeText = "NormalOnly";
+        if (invocationMode == ServiceInvocationMode::TargetedOnly) {
+            modeText = "TargetedOnly";
+        }
+        else if (invocationMode == ServiceInvocationMode::NormalAndTargeted) {
+            modeText = "NormalAndTargeted";
+        }
+        NDN_LOG_WARN("[ServiceProvider] registered service prefix="
+                  << serviceUri);
+        NDN_LOG_WARN("Registered service handler for " << serviceUri
+                     << " invocation-mode=" << modeText);
     }
 
     void ServiceProvider::publishServiceInfo(
@@ -793,6 +842,24 @@ namespace ndn_service_framework
     }
 
     void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     AckStrategyHandler ackHandler,
+                                     SimpleRequestHandler requestHandler,
+                                     ServiceInvocationMode invocationMode)
+    {
+        addService(serviceName,
+                   std::move(ackHandler),
+                   [handler = std::move(requestHandler)](
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const ndn::Name&,
+                       const RequestMessage& requestMessage) {
+                       return handler(requestMessage);
+                   },
+                   invocationMode);
+    }
+
+    void ServiceProvider::addService(const ndn::Name& serviceName,
                                      LegacyAckStrategyHandler ackHandler,
                                      SimpleRequestHandler requestHandler)
     {
@@ -835,13 +902,45 @@ namespace ndn_service_framework
                    });
     }
 
+    void ServiceProvider::addService(const ndn::Name& serviceName,
+                                     SimpleAckStrategyHandler ackHandler,
+                                     SimpleRequestHandler requestHandler,
+                                     ServiceInvocationMode invocationMode)
+    {
+        AckStrategyHandler wrappedAckHandler;
+        if (ackHandler) {
+            wrappedAckHandler = [handler = std::move(ackHandler)](
+                                    const RequestMessage& requestMessage) {
+                AckDecision decision;
+                decision.status = handler(requestMessage);
+                decision.message = decision.status ? "Permission Granted" : "Permission Denied";
+                return decision;
+            };
+        }
+
+        addService(serviceName,
+                   std::move(wrappedAckHandler),
+                   std::move(requestHandler),
+                   invocationMode);
+    }
+
     void ServiceProvider::addTargetedService(const ndn::Name& serviceName,
                                              RequestHandler requestHandler)
     {
-        addService(serviceName,
-                   AckStrategyHandler{},
-                   std::move(requestHandler),
-                   ServiceMode::Targeted);
+        auto& service = m_services[serviceName];
+        service.targetedRequestHandler = std::move(requestHandler);
+        if (!service.requestHandler) {
+            service.mode = ServiceMode::Targeted;
+        }
+        const auto serviceUri = serviceName.toUri();
+        if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
+            m_serviceNames.end()) {
+            m_serviceNames.push_back(serviceUri);
+        }
+        NDN_LOG_WARN("[ServiceProvider] registered service prefix="
+                  << serviceUri);
+        NDN_LOG_WARN("Registered service handler for " << serviceUri
+                     << " mode=Targeted");
     }
 
     void ServiceProvider::addTargetedService(const ndn::Name& serviceName,
@@ -1632,22 +1731,13 @@ namespace ndn_service_framework
         }
 
         auto service = m_services.find(serviceName);
-        if (service == m_services.end() || !service->second.requestHandler) {
+        if (service == m_services.end() || !service->second.targetedRequestHandler) {
             publishExecutionFailureOnEventLoop(requesterIdentity,
                                                identity,
                                                serviceName,
                                                requestId,
                                                requestMessage,
                                                "Targeted service has no handler");
-            return true;
-        }
-        if (service->second.mode != ServiceMode::Targeted) {
-            publishExecutionFailureOnEventLoop(requesterIdentity,
-                                               identity,
-                                               serviceName,
-                                               requestId,
-                                               requestMessage,
-                                               "Service is not registered for targeted mode");
             return true;
         }
         std::string tokenError;
@@ -1676,11 +1766,11 @@ namespace ndn_service_framework
                                            requestMessage)) {
             ResponseMessage response;
             try {
-                response = service->second.requestHandler(requesterIdentity,
-                                                          identity,
-                                                          serviceName,
-                                                          requestId,
-                                                          requestMessage);
+                response = service->second.targetedRequestHandler(requesterIdentity,
+                                                                  identity,
+                                                                  serviceName,
+                                                                  requestId,
+                                                                  requestMessage);
             }
             catch (const std::exception& e) {
                 response = makeErrorResponse(
@@ -1711,10 +1801,19 @@ namespace ndn_service_framework
         }
 
         auto service = m_services.find(serviceName);
-        if (service == m_services.end() || !service->second.requestHandler) {
+        if (service == m_services.end()) {
             return false;
         }
-        auto requestHandler = service->second.requestHandler;
+        const bool targetedMode =
+            requestMessage.getRequestMode() == tlv::TargetedRequest ||
+            requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest;
+        auto requestHandler =
+            targetedMode
+                ? service->second.targetedRequestHandler
+                : service->second.requestHandler;
+        if (!requestHandler) {
+            return false;
+        }
 
         const bool queued = m_handlerPool.post(
             [this,
@@ -1924,7 +2023,7 @@ namespace ndn_service_framework
         auto registeredService = m_services.find(serviceName);
         if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
             registeredService != m_services.end() &&
-            registeredService->second.mode == ServiceMode::Targeted) {
+            registeredService->second.targetedRequestHandler) {
             attachTargetedTokenBatch(requesterName, serviceName, response);
         }
         response.setPolicyEpoch(m_currentPolicyEpoch);
@@ -2958,16 +3057,22 @@ namespace ndn_service_framework
             return makeErrorResponse("No handler registered for " + serviceName.toUri());
         }
 
-        if (!service->second.requestHandler) {
+        const bool targetedMode =
+            requestMessage.getRequestMode() == tlv::TargetedRequest ||
+            requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest;
+        const auto& requestHandler =
+            targetedMode ? service->second.targetedRequestHandler
+                         : service->second.requestHandler;
+        if (!requestHandler) {
             return makeErrorResponse("Registered service has no request handler for " +
                                      serviceName.toUri());
         }
 
-        return service->second.requestHandler(requesterIdentity,
-                                              providerName,
-                                              serviceName,
-                                              requestId,
-                                              requestMessage);
+        return requestHandler(requesterIdentity,
+                              providerName,
+                              serviceName,
+                              requestId,
+                              requestMessage);
     }
 
     ResponseMessage ServiceProvider::handleDecryptedRequestByName(
@@ -2999,7 +3104,7 @@ namespace ndn_service_framework
                                              requestMessage.getTargetProvider().toUri());
                 }
                 if (service == m_services.end() ||
-                    service->second.mode != ServiceMode::Targeted) {
+                    !service->second.targetedRequestHandler) {
                     return makeErrorResponse("Service is not registered for targeted mode for " +
                                              parsedV2->serviceName.toUri());
                 }
@@ -3022,13 +3127,14 @@ namespace ndn_service_framework
                                              requestMessage.getTargetProvider().toUri());
                 }
                 if (service == m_services.end() ||
-                    service->second.mode != ServiceMode::Targeted) {
+                    !service->second.targetedRequestHandler) {
                     return makeErrorResponse("Service is not registered for targeted mode for " +
                                              parsedV2->serviceName.toUri());
                 }
             }
             else if (service != m_services.end() &&
-                     service->second.mode == ServiceMode::Targeted) {
+                     !service->second.requestHandler &&
+                     service->second.targetedRequestHandler) {
                 return makeErrorResponse("Service is targeted-only for " +
                                          parsedV2->serviceName.toUri());
             }
@@ -3047,7 +3153,7 @@ namespace ndn_service_framework
             }
             if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
                 service != m_services.end() &&
-                service->second.mode == ServiceMode::Targeted) {
+                service->second.targetedRequestHandler) {
                 attachTargetedTokenBatch(parsedV2->requesterName,
                                          parsedV2->serviceName,
                                          response);
@@ -3085,7 +3191,7 @@ namespace ndn_service_framework
                                          requestMessage.getTargetProvider().toUri());
             }
             if (service == m_services.end() ||
-                service->second.mode != ServiceMode::Targeted) {
+                !service->second.targetedRequestHandler) {
                 return makeErrorResponse("Service is not registered for targeted mode for " +
                                          parsed->serviceName.toUri());
             }
@@ -3108,13 +3214,14 @@ namespace ndn_service_framework
                                          requestMessage.getTargetProvider().toUri());
             }
             if (service == m_services.end() ||
-                service->second.mode != ServiceMode::Targeted) {
+                !service->second.targetedRequestHandler) {
                 return makeErrorResponse("Service is not registered for targeted mode for " +
                                          parsed->serviceName.toUri());
             }
         }
         else if (service != m_services.end() &&
-                 service->second.mode == ServiceMode::Targeted) {
+                 !service->second.requestHandler &&
+                 service->second.targetedRequestHandler) {
             return makeErrorResponse("Service is targeted-only for " +
                                      parsed->serviceName.toUri());
         }
@@ -3133,7 +3240,7 @@ namespace ndn_service_framework
         }
         if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest &&
             service != m_services.end() &&
-            service->second.mode == ServiceMode::Targeted) {
+            service->second.targetedRequestHandler) {
             attachTargetedTokenBatch(parsed->requesterIdentity,
                                      parsed->serviceName,
                                      response);
@@ -4382,18 +4489,30 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
         auto service = m_services.find(serviceName);
         auto collabService = m_collaborationServices.find(serviceName);
         if (service != m_services.end() &&
-            service->second.mode == ServiceMode::Targeted) {
-            if (requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest) {
-                if (requestMessage.getTargetProvider().empty() ||
-                    !requestMessage.getTargetProvider().equals(identity)) {
-                    NDN_LOG_DEBUG("Ignore targeted bootstrap for different provider target="
-                                  << requestMessage.getTargetProvider().toUri()
-                                  << " local=" << identity.toUri()
-                                  << " requestId=" << requestId.toUri());
-                    return;
-                }
+            requestMessage.getRequestMode() == tlv::TargetedBootstrapRequest) {
+            if (!service->second.targetedRequestHandler) {
+                AckDecision decision;
+                decision.status = false;
+                decision.message = "Service is not registered for targeted mode";
+                finishAckDecisionOnEventLoop(requesterIdentity,
+                                             serviceName,
+                                             requestId,
+                                             std::move(requestMessage),
+                                             std::move(decision));
+                return;
             }
-            else {
+            if (requestMessage.getTargetProvider().empty() ||
+                !requestMessage.getTargetProvider().equals(identity)) {
+                NDN_LOG_DEBUG("Ignore targeted bootstrap for different provider target="
+                              << requestMessage.getTargetProvider().toUri()
+                              << " local=" << identity.toUri()
+                              << " requestId=" << requestId.toUri());
+                return;
+            }
+        }
+        else if (service != m_services.end() &&
+                 !service->second.requestHandler &&
+                 service->second.targetedRequestHandler) {
             AckDecision decision;
             decision.status = false;
             decision.message = "Service is targeted-only";
@@ -4403,7 +4522,6 @@ void ServiceProvider::finishDecodedRequestOnEventLoop(
                                          std::move(requestMessage),
                                          std::move(decision));
             return;
-            }
         }
         AckDecision decision = makeDefaultAckDecision();
         AckStrategyHandler ackHandler;

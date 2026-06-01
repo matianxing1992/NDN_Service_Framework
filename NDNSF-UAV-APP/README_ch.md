@@ -86,6 +86,34 @@ PC / ground station:
   摄像头或视频源
 ```
 
+如果要发布 release，建议在 Ubuntu 20.04 build host 上生成 portable tarball：
+
+```bash
+./waf build
+packaging/uav-release/create-portable-release.sh
+```
+
+这个 tarball 会包含 controller、ground station 和 drone app 的 wrapper commands，
+以及 NDNSF runtime libraries。只要 build host 上 `ldd` 能看到，它也会把 `ndn-cxx`、
+`ndn-svs`、NDNSD、NAC-ABE、OpenABE 和 RELIC 一起打进去。NFD 故意不打包：
+它是每台机器自己的 host daemon，管理本机 socket、faces、routes 和 keychain state。
+每台机器都应该运行自己的兼容 NFD。
+
+如果目标是依赖很少的 Ubuntu 20.04 实验机器，可以生成更大的 same-OS bundle：
+
+```bash
+NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
+  packaging/uav-release/create-portable-release.sh
+```
+
+把 tarball 拷到目标机器后：
+
+```bash
+tar -xzf ndnsf-uav-ubuntu20-x86_64-*.tar.gz
+cd ndnsf-uav-ubuntu20-x86_64-*
+./scripts/check-runtime-deps.sh
+```
+
 当前二进制默认读取 `configs/uav_runtime.conf`。这个文件保留了 demo 用的
 `/example/uav/controller`、`/example/uav/gs` 和 `/example/uav/drone/<id>`，
 但真实部署的 identity namespace 和 service name 应该写在复制出来的 runtime config
@@ -111,7 +139,6 @@ cp NDNSF-UAV-APP/configs/uav_runtime.conf /etc/ndnsf/uav_runtime.conf
 --service-camera-frame /UAV/Camera/GetFrame
 --service-camera-video-control-suffix /UAV/Camera/Video
 --service-camera-recording-manifest-suffix /UAV/Camera/Recording/Manifest
---service-camera-recording-chunk-suffix /UAV/Camera/Recording/GetChunk
 --service-gs-object-detection /UAV/GS/ObjectDetection
 ```
 
@@ -641,17 +668,20 @@ chunks 保存到本地 SQLite-backed embedded repo：
 例如 `/example/uav/drone/A/UAV/Camera/Recording/Manifest` 会返回当前 recording session id、
 object prefix、object naming pattern、chunk count、byte count，以及 first/last chunk object
 name。这样 GS 或任务后报告可以发现本地 repo objects，而不需要猜文件路径或扫描 SQLite store。
+manifest 故意只暴露 service object names，不暴露 drone 本地 SQLite 文件路径。
 
 ground station 针对当前选中的 drone 提供 `Find Recordings` 和 `Play Recording` 两个按钮。
-`Find Recordings` 调用上面的 manifest service；`Play Recording` 再通过下面的 chunk service
-从 drone repo 逐块取回视频：
+`Find Recordings` 调用上面的 manifest service；`Play Recording` 使用 recording helper
+按照 manifest 里的对象名去取加密 repo Data。chunk 路径故意不是 NDNSF service：
 
 ```text
-/<drone>/UAV/Camera/Recording/GetChunk
+/<drone>/repo/camera/recording/<session-id>/chunk/<index>
 ```
 
-request 里只携带 object name。H264 bytes 会通过 Targeted NDNSF calls 按 chunk 返回，并交给
-和直播相同的低延迟解码器播放。
+manifest service 是授权点。它的 NDNSF-protected response 会把 recording encryption metadata
+和 content key 只返回给有权限的 viewer。repo 里保存的是 hybrid AES-GCM 加密后的 H264 chunks；
+drone 只把这些 encrypted chunks 作为普通 signed NDN Data 提供，ground station 取回后在本地
+解密，再交给和直播相同的低延迟解码器播放。只拿到 chunk Data 但没有 manifest key，不能观看录像。
 
 如果只想验证本地 recording，不启动 GUI，也不需要 GS 交互，可以运行：
 
