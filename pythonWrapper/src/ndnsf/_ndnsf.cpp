@@ -11,6 +11,8 @@
 #include <ndn-cxx/util/segment-fetcher.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
 
+#include <boost/asio/post.hpp>
+
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -1640,7 +1642,7 @@ PyServiceResponse
     };
 
     if (m_running.load()) {
-      m_face.getIoContext().post(submit);
+      boost::asio::post(m_face.getIoContext(), submit);
       const auto deadline = std::chrono::steady_clock::now() +
                             std::chrono::milliseconds(timeoutMs + 3000);
       py::gil_scoped_release release;
@@ -1825,7 +1827,7 @@ PyServiceResponse
     };
 
     if (m_running.load()) {
-      m_face.getIoContext().post(std::move(submit));
+      boost::asio::post(m_face.getIoContext(), std::move(submit));
       const auto deadline = std::chrono::steady_clock::now() +
                             std::chrono::milliseconds(timeoutMs + 3000);
       py::gil_scoped_release release;
@@ -1940,7 +1942,7 @@ PyServiceResponse
     };
 
     if (m_running.load()) {
-      m_face.getIoContext().post(submit);
+      boost::asio::post(m_face.getIoContext(), submit);
       const auto deadline = std::chrono::steady_clock::now() +
                             std::chrono::milliseconds(timeoutMs + 3000);
       py::gil_scoped_release release;
@@ -1986,7 +1988,7 @@ PyServiceResponse
     auto selection = selectionPolicyByName(strategy);
     auto responseCallback = keepPyFunction(std::move(onResponse));
     auto timeoutCallback = keepPyFunction(std::move(onTimeout));
-    m_face.getIoContext().post(
+    boost::asio::post(m_face.getIoContext(),
       [this, serviceName, payload, selection, ackTimeoutMs, timeoutMs,
        responseCallback = std::move(responseCallback),
        timeoutCallback = std::move(timeoutCallback)] {

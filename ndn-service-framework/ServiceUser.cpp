@@ -1,5 +1,7 @@
 #include "ServiceUser.hpp"
 
+#include <boost/asio/post.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -501,7 +503,7 @@ namespace ndn_service_framework
             std::make_shared<AllSelectedPolicy>();
     }
 
-    ServiceUser::ServiceUser(ndn::Face &face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) : 
+    ServiceUser::ServiceUser(ndn::Face &face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) :
         m_face(face),
         m_scheduler(m_face.getIoContext()),
         identity(identityCert.getIdentity()),
@@ -2290,7 +2292,7 @@ namespace ndn_service_framework
     {
         // log the request;
         NDN_LOG_INFO("PublishRequest: " <<  ServiceName << FunctionName << RequestID);
-        
+
         ndn_service_framework::BloomFilter bloomFilter;
         std::vector<std::pair<std::string, std::string>> pairs; // serviceFullName->token mapping
         // find serviceFullName->token mapping from UPT;
@@ -2314,7 +2316,7 @@ namespace ndn_service_framework
         requestMessage.setPayload(const_cast<ndn::Buffer&>(payload),payload.size());
         requestMessage.setStrategy(strategy);
         requestMessage.WireEncode().data();
-        
+
         ndn::Name requestName = ndn_service_framework::makeRequestName(identity, ServiceName, FunctionName, ndn::Name(bloomFilter.toHexString()), RequestID);
         ndn::Name requestNameWithoutPrefix = ndn_service_framework::makeRequestNameWithoutPrefix(ServiceName, FunctionName, ndn::Name(bloomFilter.toHexString()),RequestID);
 
@@ -2327,7 +2329,7 @@ namespace ndn_service_framework
             pendingIt->second.requestMessage = requestMessage;
             pendingIt->second.strategy = strategy;
         }
-    
+
         PublishMessage(requestName,requestNameWithoutPrefix,requestMessage);
 
         // register selection strategy
@@ -2340,7 +2342,7 @@ namespace ndn_service_framework
             m_AckInfoMap[RequestID] = std::vector<ndn_service_framework::AckInfo>();
 
             m_scheduler.schedule(100_ms,[this,RequestID](){
-                // find vector<AckInfo> from m_AckInfoMap by RequestID 
+                // find vector<AckInfo> from m_AckInfoMap by RequestID
                 auto ackInfoVec = m_AckInfoMap.find(RequestID);
                 if (ackInfoVec == m_AckInfoMap.end()){
                     NDN_LOG_ERROR("AckInfo vector not found for RequestID: " << RequestID.toUri());
@@ -2363,7 +2365,7 @@ namespace ndn_service_framework
                 NDN_LOG_INFO("Choosen AckInfo for RandomSelection: " << randomAckInfo.providerName.toUri() << " " << randomAckInfo.requestID.toUri());
                 // publish service selection message
                 PublishServiceSelectionMessage(randomAckInfo.providerName, randomAckInfo.serviceName, randomAckInfo.functionName, randomAckInfo.requestID);
-                
+
             });
         }
     }
@@ -3349,7 +3351,7 @@ namespace ndn_service_framework
                 return;
             }
 
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this, responseName, requestId,
                  raw,
                  responseMessage = std::move(responseMessage)]() mutable {
@@ -4361,7 +4363,7 @@ namespace ndn_service_framework
 
             // consume tokenName using NAC-ABE
             ndn::Name providerName, ServiceName, FunctionName, seqNum;
-            
+
             auto result = ndn_service_framework::parsePermissionTokenName(ndn::Name(tokenName));
             if(result){
                 std::tie(providerName, ServiceName, FunctionName, seqNum) = result.value();
@@ -4370,9 +4372,9 @@ namespace ndn_service_framework
                 std::bind(&ServiceUser::OnPermissionTokenDecryptionSuccessCallback, this, providerName, ServiceName, FunctionName, seqNum, _1),
                 std::bind(&ServiceUser::OnPermissionTokenDecryptionErrorCallback, this, providerName, ServiceName, FunctionName, seqNum, _1));
             }else{
-                NDN_LOG_ERROR("Invalid token name: " << tokenName); 
+                NDN_LOG_ERROR("Invalid token name: " << tokenName);
             }
-            
+
         } else {
             NDN_LOG_ERROR("No tokenNames found in service publish callback");
         }
@@ -4728,7 +4730,7 @@ namespace ndn_service_framework
         ndn::Name providerName, userName, ServiceName, FunctionName, seqNum;
         auto results = parseRequestAckName(subscription.name);
         if (!results)
-        {   
+        {
             NDN_LOG_ERROR("parseRequestAckName failed: " << subscription.name);
             return;
         }
@@ -4774,7 +4776,7 @@ namespace ndn_service_framework
             NDN_LOG_TRACE("Skip decrypting irrelevant ACK: " << subscription.name);
             return;
         }
-        
+
         if(subscription.data.size() > 0){
             const auto decryptStartUs = nowMicroseconds();
             if (plaintextAckDiagEnabled()) {
@@ -5021,7 +5023,7 @@ void ServiceUser::OnRequestAckDecryptionSuccessCallback(
             error = e.what();
         }
 
-        m_face.getIoContext().post(
+        boost::asio::post(m_face.getIoContext(),
             [this, providerName, ServiceName, FunctionName, requestID,
              AckMessage = std::move(AckMessage), error = std::move(error)]() mutable {
                 if (!error.empty()) {
@@ -5385,8 +5387,8 @@ void ServiceUser::finishRequestAckOnEventLoop(
         // log names and tokens
         NDN_LOG_INFO("OnPermissionTokenDecryptionSuccessCallback: " << providerName.toUri() << ServiceName.toUri() << FunctionName.toUri() << seqNum.toUri() << "token:" << std::string(dataPtr, buffer.size()));
         // insert token into UPT
-        UPT.insertPermission(ndn::Name(providerName.toUri()).append(ServiceName).append(FunctionName).toUri(), 
-            ndn::Name(ServiceName.toUri()).append(FunctionName).toUri(), 
+        UPT.insertPermission(ndn::Name(providerName.toUri()).append(ServiceName).append(FunctionName).toUri(),
+            ndn::Name(ServiceName.toUri()).append(FunctionName).toUri(),
             std::string(dataPtr, buffer.size()));
     }
 
@@ -5428,7 +5430,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
     {
         NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
         replyFromIMS(interest);
-        
+
     }
     void ServiceUser::serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data> &contentData, ndn::nacabe::SPtrVector<ndn::Data> &ckData)
     {
@@ -5442,7 +5444,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
         for (auto data : ckData)
         {
-            m_IMS.insert(*data); 
+            m_IMS.insert(*data);
         }
     }
 
@@ -5452,7 +5454,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
     {
         const auto plaintextBlock = message.WireEncode();
         auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
-        m_face.getIoContext().post(
+        boost::asio::post(m_face.getIoContext(),
             [this, messageName, plaintext = std::move(plaintext)]() mutable {
                 publishHybridEncodedMessage(messageName, std::move(plaintext));
             });
@@ -5563,7 +5565,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 error = e.what();
             }
             const auto aesEndUs = timelineSteadyMicroseconds();
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this, messageName, requestId, serviceName, messageType,
                  keyId, epochId, aesStartUs, aesEndUs, wrappedKeyAttached,
                  ciphertextBytes, error = std::move(error),
@@ -5697,7 +5699,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 ndn::Buffer plaintext;
                 const bool ok = hybridAesGcmDecrypt(
                     key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), plaintext);
-                m_face.getIoContext().post(
+                boost::asio::post(m_face.getIoContext(),
                     [this, ok, envelope, plaintext = std::move(plaintext),
                      onSuccess = std::move(onSuccess),
                      onError = std::move(onError)]() mutable {
@@ -5837,7 +5839,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                       << " contentSegments=0"
                       << " ckSegments=0");
             const auto queuedAtUs = nowMicroseconds();
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this, messageName, queuedAtUs, buffer = std::move(buffer)]() mutable {
                     ndn::Block contentBlock(buffer);
                     const auto beginUs = nowMicroseconds();
@@ -6023,7 +6025,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         m_svsps->subscribeWithRegex(ndn::Regex(regex_str2),
                                     std::bind(&ServiceUser::OnResponse, this, _1),
                                     true, false);
-        
+
     }
     void ServiceUser::requestForServiceInfo()
     {

@@ -12,6 +12,8 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
+#include <boost/asio/post.hpp>
+
 #include <openssl/rand.h>
 
 #include <gtkmm.h>

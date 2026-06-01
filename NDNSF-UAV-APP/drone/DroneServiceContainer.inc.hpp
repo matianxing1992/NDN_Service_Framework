@@ -1543,7 +1543,7 @@ private:
       std::lock_guard<std::mutex> guard(m_signMutex);
       m_keyChain.sign(*data);
     }
-    m_face.getIoContext().post([this, data] {
+    boost::asio::post(m_face.getIoContext(), [this, data] {
       m_face.put(*data);
     });
   }
@@ -1564,7 +1564,7 @@ private:
       std::lock_guard<std::mutex> guard(m_signMutex);
       m_keyChain.sign(*data);
     }
-    m_face.getIoContext().post([this, data] {
+    boost::asio::post(m_face.getIoContext(), [this, data] {
       m_face.put(*data);
     });
   }
@@ -2715,7 +2715,7 @@ private:
           {"target_objects", "Car,Truck"},
           {"image_source", "ground-station-latest-decoded-video-frame"},
         });
-        m_face.getIoContext().post([this, payload, frameSeq] {
+        boost::asio::post(m_face.getIoContext(), [this, payload, frameSeq] {
           if (!m_user || !m_containerReady.load()) {
             return;
           }
