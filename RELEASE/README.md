@@ -80,12 +80,15 @@ export NDNSF_UAV_CONFIG_DIR=/path/to/config
 Import the matching closure:
 
 ```bash
-gzip -dc NDNSF-UAV-nixos-aarch64-local-test.closure.gz | nix-store --import | tee imported-paths.txt
+gzip -dc NDNSF-UAV-nixos-aarch64-local-test.closure.gz | \
+  sudo nix-store --option require-sigs false --import | tee imported-paths.txt
 app=$(grep 'ndnsf-uav-release' imported-paths.txt | tail -1)
 echo "$app"
 ```
 
 Use `NDNSF-UAV-nixos-x86_64-local-test.closure.gz` instead on x86_64 NixOS.
+`require-sigs false` is needed because these closures are local release
+artifacts, not paths signed by a public Nix binary cache.
 
 The Nix store path is read-only, so copy the bundled templates to a writable
 deployment directory:
@@ -106,7 +109,7 @@ and then run:
 "$app/scripts/check-runtime-deps.sh"
 "$app/bin/ndnsf-uav-controller"
 "$app/bin/ndnsf-uav-drone" --drone-id A
-"$app/bin/ndnsf-uav-gs"
+"$app/bin/ndnsf-uav-gs" --app-config config/ground-station.conf
 ```
 
 ## Notes
