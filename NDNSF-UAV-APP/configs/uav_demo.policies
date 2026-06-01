@@ -12,6 +12,7 @@ provider-policies
             /UAV/Telemetry/GetStatus
             /UAV/Camera/GetFrame
             /example/uav/drone/A/UAV/Camera/Video
+            /example/uav/drone/A/UAV/Camera/Recording/Manifest
         }
     }
 
@@ -25,6 +26,7 @@ provider-policies
             /UAV/Telemetry/GetStatus
             /UAV/Camera/GetFrame
             /example/uav/drone/B/UAV/Camera/Video
+            /example/uav/drone/B/UAV/Camera/Recording/Manifest
         }
     }
 
@@ -38,6 +40,7 @@ provider-policies
             /UAV/Telemetry/GetStatus
             /UAV/Camera/GetFrame
             /example/uav/drone/C/UAV/Camera/Video
+            /example/uav/drone/C/UAV/Camera/Recording/Manifest
         }
     }
 
@@ -63,8 +66,11 @@ user-policies
             /UAV/Telemetry/GetStatus
             /UAV/Camera/GetFrame
             /example/uav/drone/A/UAV/Camera/Video
+            /example/uav/drone/A/UAV/Camera/Recording/Manifest
             /example/uav/drone/B/UAV/Camera/Video
+            /example/uav/drone/B/UAV/Camera/Recording/Manifest
             /example/uav/drone/C/UAV/Camera/Video
+            /example/uav/drone/C/UAV/Camera/Recording/Manifest
             /UAV/GS/ObjectDetection
         }
     }

@@ -36,9 +36,11 @@ from minindn.util import MiniNDNCLI, getPopen  # noqa: E402
 
 
 DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/testbed(loss=0%).conf"
-APP_CONTROLLER = REPO / "build/examples/App_ServiceController"
-APP_DRONE = REPO / "build/examples/UavDroneApp"
-APP_GS = REPO / "build/examples/UavGroundStationApp"
+APP_BUILD_DIR = Path(os.environ.get("NDNSF_UAV_APP_BUILD_DIR",
+                                    str(REPO / "build/examples")))
+APP_CONTROLLER = APP_BUILD_DIR / "App_ServiceController"
+APP_DRONE = APP_BUILD_DIR / "UavDroneApp"
+APP_GS = APP_BUILD_DIR / "UavGroundStationApp"
 POLICY = REPO / "NDNSF-UAV-APP/configs/uav_demo.policies"
 DEFAULT_RUNTIME_CONFIG = REPO / "NDNSF-UAV-APP/configs/uav_runtime.conf"
 DEFAULT_VIDEO_SOURCE = REPO / "NDNSF-UAV-APP/videos/drone.mp4"
@@ -129,6 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS hold manual-control keys and send MAVLink MANUAL_CONTROL.")
     parser.add_argument("--auto-two-drone-switch-test", action="store_true",
                         help="Have the GS switch between two drones and send Targeted MANUAL_CONTROL to each.")
+    parser.add_argument("--auto-recording-playback-test", action="store_true",
+                        help="Have the drone record to its local repo and the GS discover/replay the recording.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-single-mission-test", action="store_true",
@@ -801,6 +805,18 @@ def main() -> int:
                 "--mavlink-udp-port", mavlink_udp_port,
                 "--mavlink-udp-listen-port", args.mavlink_udp_listen_port,
             ])
+            if args.auto_recording_playback_test:
+                repo_path = output_dir / f"drone-{drone_id}-camera-recording.sqlite3"
+                try:
+                    repo_path.unlink()
+                except FileNotFoundError:
+                    pass
+                drone_cmd += (
+                    " --camera-capture-on-start"
+                    " --camera-record-to-local-repo"
+                    " --camera-record-repo-path " + shell_quote(repo_path) +
+                    " --camera-record-chunk-limit 240"
+                )
             if start_simulator:
                 drone_cmd += " --fc-status-file " + shell_quote(simulator_status_files[drone_id])
                 if not args.no_configure_px4_sitl_demo_params:
@@ -816,6 +832,7 @@ def main() -> int:
             if (start_simulator and
                 (args.auto_mavlink_test or args.auto_keyboard_test or
                  args.auto_manual_control_test or args.auto_two_drone_switch_test or
+                 args.auto_recording_playback_test or
                  args.auto_patrol_test or args.auto_single_mission_test)):
                 if not wait_log_any(jmavsim_log, JMAVSIM_READY_MARKERS,
                                     args.jmavsim_ready_timeout_seconds,
@@ -849,6 +866,12 @@ def main() -> int:
             gs_argv += ["--auto-manual-control-test"]
         if args.auto_two_drone_switch_test:
             gs_argv += ["--auto-two-drone-switch-test"]
+        if args.auto_recording_playback_test:
+            gs_argv += [
+                "--auto-recording-playback-test",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "12000",
+            ]
         if args.auto_patrol_test:
             patrol_timeout_ms = "30000" if should_start_jmavsim(args) else "3000"
             gs_argv += [
@@ -949,6 +972,19 @@ def main() -> int:
                     "MAVLINK_FC_FORWARD drone=" + args.drone_id,
                 ])
                 print("NDNSF_UAV_MAVLINK_TARGETED_MININDN_SMOKE_OK")
+        elif args.auto_recording_playback_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=75)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station recording playback smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "Recording manifest drone=" + args.drone_id)
+            require_log(gs_log, "Recording playback drone=" + args.drone_id)
+            require_log(gs_log, "Recording playback fetched drone=" + args.drone_id)
+            require_log(gs_log, "GS_DECODED_FRAMES count=1")
+            require_log(drone_logs[args.drone_id], "camera_recording=on")
+            print("NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK")
         elif args.auto_video_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=max(45, args.auto_stop_seconds + 35))

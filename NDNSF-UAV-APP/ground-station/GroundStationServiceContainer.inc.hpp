@@ -52,6 +52,9 @@ public:
     }
     stopYoloWorker();
     stopDecoder();
+    if (m_recordingPlaybackDecodeThread.joinable()) {
+      m_recordingPlaybackDecodeThread.join();
+    }
     m_face.getIoContext().stop();
     if (m_faceThread.joinable()) {
       m_faceThread.join();
@@ -150,6 +153,43 @@ public:
   {
     std::lock_guard<std::mutex> guard(m_missionReadyMutex);
     return m_missionReadyDrones;
+  }
+
+  std::string
+  serviceCatalogForDrone(const std::string& droneId) const
+  {
+    std::ostringstream os;
+    os << "Services for Drone " << droneId << ":\n";
+    os << "video-control normal-only "
+       << droneVideoControlService(m_config, droneId).toUri() << "\n";
+    os << "recording-manifest normal-only "
+       << droneCameraRecordingManifestService(m_config, droneId).toUri() << "\n";
+    os << "recording-chunk helper encrypted-ndn-data "
+       << droneIdentity(m_config, droneId).append("repo").append("camera").append("recording").toUri()
+       << "\n";
+    os << "mavlink-execute targeted-only "
+       << m_config.serviceMavlinkExecute.toUri() << "\n";
+    os << "telemetry normal-and-targeted "
+       << m_config.serviceTelemetryStatus.toUri() << "\n";
+    os << "camera-frame normal-only "
+       << m_config.serviceCameraFrame.toUri() << "\n";
+    os << "mission normal-only "
+       << m_config.serviceMissionAssign.toUri() << "\n";
+    os << "gs-object-detection normal-only "
+       << m_config.serviceGsObjectDetection.toUri();
+    return os.str();
+  }
+
+  void
+  logServiceCatalogForDrone(const std::string& droneId) const
+  {
+    std::istringstream lines(serviceCatalogForDrone(droneId));
+    std::string line;
+    while (std::getline(lines, line)) {
+      if (!line.empty()) {
+        NDN_LOG_INFO("GS_SERVICE_CATALOG " << line);
+      }
+    }
   }
 
   void
@@ -1116,6 +1156,8 @@ private:
   void
   installObjectDetectionService()
   {
+    using ServiceInvocationMode = ndn_service_framework::ServiceProvider::ServiceInvocationMode;
+
     m_objectDetectionProvider->addService(
       m_config.serviceGsObjectDetection,
       ndn_service_framework::ServiceProvider::AckStrategyHandler(
@@ -1156,7 +1198,8 @@ private:
             {"summary", ok ? (objects == "none" ? "no target vehicle" : "detected " + objects)
                            : fieldOr(detection, "error", "detector failed")},
           }));
-        }));
+        }),
+      ServiceInvocationMode::NormalOnly);
   }
 
   bool
@@ -1489,6 +1532,9 @@ private:
     std::string droneId;
     std::string sessionId;
     std::string objectPrefix;
+    std::string encryption;
+    std::string keyId;
+    std::vector<uint8_t> contentKey;
     uint64_t chunks = 0;
     uint64_t bytes = 0;
   };
@@ -1506,6 +1552,9 @@ private:
         manifest.droneId = fieldOr(fields, "drone_id", droneId);
         manifest.sessionId = fieldOr(fields, "recording_session_id", "");
         manifest.objectPrefix = fieldOr(fields, "recording_object_prefix", "");
+        manifest.encryption = fieldOr(fields, "recording_encryption", "none");
+        manifest.keyId = fieldOr(fields, "recording_encryption_key_id", "");
+        manifest.contentKey = hexDecode(fieldOr(fields, "recording_encryption_content_key_hex", ""));
         manifest.chunks = fieldAsUint64(fields, "recording_chunks", 0);
         manifest.bytes = fieldAsUint64(fields, "recording_bytes", 0);
         {
@@ -1515,7 +1564,8 @@ private:
         publishStatus("Recording manifest drone=" + droneId +
                       " chunks=" + std::to_string(manifest.chunks) +
                       " bytes=" + std::to_string(manifest.bytes) +
-                      " session=" + manifest.sessionId);
+                      " session=" + manifest.sessionId +
+                      " encryption=" + manifest.encryption);
         if (playAfterRefresh) {
           startRecordingPlayback(manifest);
         }
@@ -1542,6 +1592,7 @@ private:
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
       m_chunkQueue.clear();
       m_pendingChunks.clear();
+      m_recordingPlaybackChunks.clear();
       m_decoderOutBuffer.clear();
     }
     {
@@ -1553,11 +1604,15 @@ private:
     startDecoder();
     publishStatus("Recording playback drone=" + manifest.droneId +
                   " chunks=" + std::to_string(manifest.chunks));
-    fetchRecordingChunk(manifest, 0);
+    constexpr uint64_t recordingFetchWindow = 16;
+    const auto initialFetches = std::min<uint64_t>(recordingFetchWindow, manifest.chunks);
+    for (uint64_t index = 0; index < initialFetches; ++index) {
+      fetchRecordingChunk(manifest, index, recordingFetchWindow);
+    }
   }
 
   void
-  fetchRecordingChunk(RecordingManifest manifest, uint64_t index)
+  fetchRecordingChunk(RecordingManifest manifest, uint64_t index, uint64_t stride)
   {
     if (!m_recordingPlaybackActive.load() ||
         activeRecordingPlaybackDroneId() != manifest.droneId ||
@@ -1571,28 +1626,123 @@ private:
 
     const auto objectName = manifest.objectPrefix + "/" + manifest.sessionId +
       "/chunk/" + std::to_string(index);
-    postTargetedRequestBytes(
-      droneIdentity(m_config, manifest.droneId),
-      manifest.droneId,
-      droneCameraRecordingChunkService(m_config, manifest.droneId),
-      encodeFields({{"type", "camera-recording-chunk-request"},
-                    {"object_name", objectName}}),
-      [this, manifest, index](std::vector<uint8_t> payload) mutable {
+    if (index < 3 || index + 1 == manifest.chunks) {
+      publishStatus("Recording chunk request drone=" + manifest.droneId +
+                    " index=" + std::to_string(index));
+    }
+    fetchRecordingChunkData(
+      manifest,
+      objectName,
+      [this, manifest, index, stride](std::vector<uint8_t> payload) mutable {
         if (!payload.empty()) {
+          {
+            std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+            m_recordingPlaybackChunks[index] = payload;
+          }
           insertChunkForDecode(index, payload, nowMilliseconds() - m_firstFrameMs.load());
+          const auto receivedCount = ++m_receivedChunks;
+          if (receivedCount <= 3 || receivedCount % 30 == 0) {
+            publishStatus("Recording playback chunk drone=" + manifest.droneId +
+                          " count=" + std::to_string(receivedCount) +
+                          " index=" + std::to_string(index));
+          }
         }
-        if (index + 1 < manifest.chunks) {
-          fetchRecordingChunk(std::move(manifest), index + 1);
+        if (index + stride < manifest.chunks) {
+          fetchRecordingChunk(std::move(manifest), index + stride, stride);
         }
-        else {
+        else if (m_receivedChunks.load() >= manifest.chunks) {
           publishStatus("Recording playback fetched drone=" + manifest.droneId +
-                        " chunks=" + std::to_string(index + 1));
+                        " chunks=" + std::to_string(m_receivedChunks.load()));
+          m_closeDecoderInputWhenQueueDrained = true;
+          m_decoderQueueCv.notify_one();
+          decodeRecordingFromFetchedChunksAsync(manifest);
         }
       },
       [this, manifest, index] {
         publishStatus("Recording chunk timeout drone=" + manifest.droneId +
                       " index=" + std::to_string(index));
       });
+  }
+
+  void
+  fetchRecordingChunkData(const RecordingManifest& manifest,
+                          const std::string& objectName,
+                          std::function<void(std::vector<uint8_t>)> onData,
+                          std::function<void()> onTimeout)
+  {
+    m_face.getIoContext().post([this, manifest, objectName,
+                                onData = std::move(onData),
+                                onTimeout = std::move(onTimeout)]() mutable {
+      ndn::Interest interest{ndn::Name(objectName)};
+      interest.setCanBePrefix(false);
+      interest.setMustBeFresh(false);
+      interest.setInterestLifetime(2500_ms);
+      m_face.expressInterest(
+        interest,
+        [this, manifest, objectName, onData = std::move(onData)](
+          const ndn::Interest&, const ndn::Data& data) mutable {
+          std::vector<uint8_t> encrypted(data.getContent().value(),
+                                         data.getContent().value() + data.getContent().value_size());
+          auto plaintext = decryptRecordingChunkData(manifest, objectName, encrypted);
+          onData(std::move(plaintext));
+        },
+        [this, objectName](const ndn::Interest&, const ndn::lp::Nack&) {
+          publishStatus("Recording chunk Nack object=" + objectName);
+        },
+        [onTimeout = std::move(onTimeout)](const ndn::Interest&) mutable {
+          onTimeout();
+        });
+    });
+  }
+
+  std::vector<uint8_t>
+  decryptRecordingChunkData(const RecordingManifest& manifest,
+                            const std::string& objectName,
+                            const std::vector<uint8_t>& encryptedPayload) const
+  {
+    if (encryptedPayload.empty()) {
+      return {};
+    }
+    if (manifest.encryption != "hybrid-aes-256-gcm-at-rest") {
+      return encryptedPayload;
+    }
+    if (manifest.contentKey.size() != ndn_service_framework::HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+      NDN_LOG_WARN("GS_RECORDING_DECRYPT_NO_KEY object=" << objectName
+                   << " key_bytes=" << manifest.contentKey.size());
+      return {};
+    }
+
+    auto [ok, block] = ndn::Block::fromBuffer(
+      ndn::span<const uint8_t>(encryptedPayload.data(), encryptedPayload.size()));
+    ndn_service_framework::HybridMessageEnvelope envelope;
+    if (!ok || !envelope.WireDecode(block)) {
+      NDN_LOG_WARN("GS_RECORDING_DECRYPT_BAD_ENVELOPE object=" << objectName);
+      return {};
+    }
+    if (envelope.getKeyId() != manifest.keyId ||
+        envelope.getMessageType() != "uav-camera-recording-chunk") {
+      NDN_LOG_WARN("GS_RECORDING_DECRYPT_REJECT object=" << objectName
+                   << " key_id=" << envelope.getKeyId()
+                   << " expected_key_id=" << manifest.keyId
+                   << " message_type=" << envelope.getMessageType());
+      return {};
+    }
+
+    const auto adString = "ndnsf-uav-recording|" +
+      droneIdentity(m_config, manifest.droneId).toUri() + "|" +
+      manifest.sessionId + "|" + objectName;
+    const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adString.data()), adString.size());
+    ndn::Buffer key(manifest.contentKey.data(), manifest.contentKey.size());
+    ndn::Buffer plaintext;
+    if (!ndn_service_framework::hybridAesGcmDecrypt(
+          key,
+          envelope,
+          ndn::span<const uint8_t>(ad.data(), ad.size()),
+          plaintext)) {
+      NDN_LOG_WARN("GS_RECORDING_DECRYPT_FAILED object=" << objectName);
+      return {};
+    }
+    return std::vector<uint8_t>(plaintext.begin(), plaintext.end());
   }
 
   void
@@ -1671,58 +1821,6 @@ private:
                               " rtt_ms=" +
                               std::to_string(nowMilliseconds() - requestStartMs));
           onSuccess(payloadText);
-        });
-    });
-  }
-
-  void
-  postRequestForDroneBytes(const std::string& droneId,
-                           const ndn::Name& service,
-                           const std::string& payload,
-                           std::function<void(std::vector<uint8_t>)> onSuccess,
-                           std::function<void()> onTimeout = {})
-  {
-    m_face.getIoContext().post([this, service, payload,
-                                droneId,
-                                onSuccess = std::move(onSuccess),
-                                onTimeout = std::move(onTimeout)] {
-      if (!m_containerReady.load() || !m_user) {
-        publishStatus("NDNSF runtime not ready for " + service.toUri());
-        if (onTimeout) {
-          onTimeout();
-        }
-        return;
-      }
-      auto requestMessage = makeRequest(payload);
-      const auto requestStartMs = nowMilliseconds();
-      m_user->RequestService(
-        std::vector<ndn::Name>{droneIdentity(m_config, droneId)},
-        service,
-        std::move(requestMessage),
-        m_ackTimeoutMs,
-        ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
-        m_timeoutMs,
-        [this, service, onTimeout = std::move(onTimeout)](const ndn::Name&) {
-          if (onTimeout) {
-            onTimeout();
-          }
-          publishStatus("Timeout waiting for " + service.toUri());
-        },
-        [this, onSuccess, service, droneId, requestStartMs](
-          const ndn_service_framework::ResponseMessage& response) {
-          if (!response.getStatus()) {
-            publishStatus("Recording chunk fetch failed for " + service.toUri() +
-                          ": " + response.getErrorInfo());
-            return;
-          }
-          const auto payloadBuffer = response.getPayload();
-          std::vector<uint8_t> payloadBytes(payloadBuffer.data(),
-                                            payloadBuffer.data() + payloadBuffer.size());
-          publishUiOnlyStatus("Link drone=" + droneId +
-                              " service=" + service.toUri() +
-                              " rtt_ms=" +
-                              std::to_string(nowMilliseconds() - requestStartMs));
-          onSuccess(std::move(payloadBytes));
         });
     });
   }
@@ -2324,7 +2422,7 @@ private:
     }
     std::string command =
       "ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay "
-      "-analyzeduration 0 -probesize 32 -f h264 -i pipe:0 -f image2pipe -vcodec mjpeg -";
+      "-analyzeduration 100000 -probesize 32768 -f h264 -i pipe:0 -f image2pipe -vcodec mjpeg -";
 
     if (!startDecoderProcess(command)) {
       publishStatus("Failed to start video decoder");
@@ -2337,6 +2435,7 @@ private:
     m_decoderDroppedChunks = 0;
     m_decoderMissingChunkSeq = UINT64_MAX;
     m_decoderMissingChunkStartMs = 0;
+    m_closeDecoderInputWhenQueueDrained = false;
     m_decoderOutBuffer.clear();
     {
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
@@ -2351,16 +2450,113 @@ private:
   }
 
   void
-  stopDecoder()
+  decodeRecordingFromFetchedChunksAsync(RecordingManifest manifest)
   {
-    m_decoderRunning = false;
-    m_decoderQueueCv.notify_all();
+    std::map<uint64_t, std::vector<uint8_t>> chunks;
+    {
+      std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+      chunks = m_recordingPlaybackChunks;
+    }
+    if (chunks.empty()) {
+      return;
+    }
 
+    if (m_recordingPlaybackDecodeThread.joinable()) {
+      m_recordingPlaybackDecodeThread.join();
+    }
+    m_recordingPlaybackDecodeThread =
+      std::thread([this, manifest = std::move(manifest), chunks = std::move(chunks)]() mutable {
+      const auto tempPath = "/tmp/ndnsf-uav-recording-playback-" +
+        std::to_string(getpid()) + "-" + std::to_string(nowMilliseconds()) + ".h264";
+      {
+        std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
+        if (!out) {
+          publishStatus("Recording playback temp file failed drone=" + manifest.droneId);
+          return;
+        }
+        for (const auto& [index, payload] : chunks) {
+          (void)index;
+          out.write(reinterpret_cast<const char*>(payload.data()),
+                    static_cast<std::streamsize>(payload.size()));
+        }
+      }
+
+      const auto command =
+        "ffmpeg -hide_banner -loglevel error -f h264 -i " + shellQuote(tempPath) +
+        " -f image2pipe -vcodec mjpeg -";
+      std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+      if (!pipe) {
+        publishStatus("Recording playback decoder failed drone=" + manifest.droneId);
+        unlink(tempPath.c_str());
+        return;
+      }
+
+      std::vector<uint8_t> outBuffer;
+      std::array<uint8_t, 8192> buffer{};
+      uint64_t frameCount = 0;
+      while (m_recordingPlaybackActive.load() &&
+             activeRecordingPlaybackDroneId() == manifest.droneId) {
+        const auto n = fread(buffer.data(), 1, buffer.size(), pipe.get());
+        if (n == 0) {
+          break;
+        }
+        outBuffer.insert(outBuffer.end(), buffer.begin(), buffer.begin() + n);
+
+        static constexpr uint8_t kJpegStart[2] = {0xff, 0xd8};
+        static constexpr uint8_t kJpegEnd[2] = {0xff, 0xd9};
+        while (outBuffer.size() >= 4) {
+          const auto start = std::search(outBuffer.begin(), outBuffer.end(),
+                                         std::begin(kJpegStart), std::end(kJpegStart));
+          if (start == outBuffer.end()) {
+            outBuffer.clear();
+            break;
+          }
+          if (start != outBuffer.begin()) {
+            outBuffer.erase(outBuffer.begin(), start);
+            if (outBuffer.size() < 4) {
+              break;
+            }
+          }
+          const auto end = std::search(outBuffer.begin() + 2, outBuffer.end(),
+                                       std::begin(kJpegEnd), std::end(kJpegEnd));
+          if (end == outBuffer.end()) {
+            break;
+          }
+          const auto endIt = end + 2;
+          std::vector<uint8_t> frame(outBuffer.begin(), endIt);
+          outBuffer.erase(outBuffer.begin(), endIt);
+          {
+            std::lock_guard<std::mutex> guard(m_latestDecodedFrameMutex);
+            m_latestDecodedFrame = frame;
+          }
+          ++frameCount;
+          if (m_frameCallback) {
+            m_frameCallback(std::move(frame), frameCount, frameCount * 33);
+          }
+          std::this_thread::sleep_for(33ms);
+        }
+      }
+      unlink(tempPath.c_str());
+    });
+  }
+
+  void
+  closeDecoderInput()
+  {
     if (m_decoderInFd >= 0) {
       shutdown(m_decoderInFd, SHUT_WR);
       close(m_decoderInFd);
       m_decoderInFd = -1;
     }
+  }
+
+  void
+  stopDecoder()
+  {
+    m_decoderRunning = false;
+    m_decoderQueueCv.notify_all();
+
+    closeDecoderInput();
     if (m_decoderOutFd >= 0) {
       close(m_decoderOutFd);
       m_decoderOutFd = -1;
@@ -2409,6 +2605,9 @@ private:
         const auto nowMs = nowMilliseconds();
         advanceMissingChunkUnderTimeout(nowMs);
         if (m_chunkQueue.empty()) {
+          if (m_closeDecoderInputWhenQueueDrained.exchange(false)) {
+            closeDecoderInput();
+          }
           continue;
         }
         chunk = std::move(m_chunkQueue.front());
@@ -2686,11 +2885,14 @@ private:
   std::condition_variable m_decoderQueueCv;
   std::deque<StreamChunk> m_chunkQueue;
   std::map<uint64_t, StreamChunk> m_pendingChunks;
+  std::map<uint64_t, std::vector<uint8_t>> m_recordingPlaybackChunks;
   std::map<uint64_t, FecFrameState> m_fecFrames;
   std::vector<uint8_t> m_decoderOutBuffer;
   std::thread m_decoderWriterThread;
   std::thread m_decoderReaderThread;
+  std::thread m_recordingPlaybackDecodeThread;
   std::atomic<bool> m_decoderRunning{false};
+  std::atomic<bool> m_closeDecoderInputWhenQueueDrained{false};
   int m_decoderInFd = -1;
   int m_decoderOutFd = -1;
   pid_t m_decoderPid = -1;
@@ -2703,6 +2905,8 @@ serveObjectDetection(ndn::Face& face, ndn::KeyChain& keyChain,
                      const UavRuntimeConfig& config,
                      bool serveCertificates)
 {
+  using ServiceInvocationMode = ndn_service_framework::ServiceProvider::ServiceInvocationMode;
+
   std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
   if (serveCertificates) {
     certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
@@ -2729,7 +2933,8 @@ serveObjectDetection(ndn::Face& face, ndn::KeyChain& keyChain,
           {"objects", "road,vehicle,person"},
           {"summary", "mock detection generated at ground station"},
         }));
-      }));
+      }),
+    ServiceInvocationMode::NormalOnly);
   provider.init();
   provider.fetchPermissionsFromController(config.controllerPrefix);
   NDN_LOG_INFO("UavGroundStationApp object detection service ready");

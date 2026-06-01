@@ -83,6 +83,13 @@ namespace ndn_service_framework{
                 Targeted,
             };
 
+            enum class ServiceInvocationMode
+            {
+                NormalOnly,
+                TargetedOnly,
+                NormalAndTargeted,
+            };
+
             struct CollaborationAssignment
             {
                 CollaborationRole role;
@@ -284,6 +291,11 @@ namespace ndn_service_framework{
                             ServiceMode mode);
 
             void addService(const ndn::Name& serviceName,
+                            AckStrategyHandler ackHandler,
+                            RequestHandler requestHandler,
+                            ServiceInvocationMode invocationMode);
+
+            void addService(const ndn::Name& serviceName,
                             LegacyAckStrategyHandler ackHandler,
                             RequestHandler requestHandler);
 
@@ -293,6 +305,11 @@ namespace ndn_service_framework{
             void addService(const ndn::Name& serviceName,
                             AckStrategyHandler ackHandler,
                             SimpleRequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            AckStrategyHandler ackHandler,
+                            SimpleRequestHandler requestHandler,
+                            ServiceInvocationMode invocationMode);
 
             void addTargetedService(const ndn::Name& serviceName,
                                     RequestHandler requestHandler);
@@ -311,6 +328,11 @@ namespace ndn_service_framework{
             void addService(const ndn::Name& serviceName,
                             SimpleAckStrategyHandler ackHandler,
                             SimpleRequestHandler requestHandler);
+
+            void addService(const ndn::Name& serviceName,
+                            SimpleAckStrategyHandler ackHandler,
+                            SimpleRequestHandler requestHandler,
+                            ServiceInvocationMode invocationMode);
 
             void addCollaborationHandler(const ndn::Name& serviceName,
                                          AckStrategyHandler ackHandler,
@@ -477,6 +499,7 @@ namespace ndn_service_framework{
             {
                 AckStrategyHandler ackHandler;
                 RequestHandler requestHandler;
+                RequestHandler targetedRequestHandler;
                 ServiceMode mode = ServiceMode::Normal;
             };
 
