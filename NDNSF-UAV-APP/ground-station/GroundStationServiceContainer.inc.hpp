@@ -510,7 +510,7 @@ public:
 
     auto requestMessage = makeRequest(payload);
     std::vector<ndn::Name> providerNames{droneIdentity(m_config, droneId)};
-    m_face.getIoContext().post([this, requestMessage = std::move(requestMessage),
+    boost::asio::post(m_face.getIoContext(), [this, requestMessage = std::move(requestMessage),
                                 providerNames, taskId, &mutex, &cv, &done, &ok] () mutable {
       if (!m_containerReady.load() || !m_user) {
         std::lock_guard<std::mutex> guard(mutex);
@@ -950,7 +950,7 @@ public:
       for (const auto& droneId : droneIds) {
         providerNames.push_back(droneIdentity(m_config, droneId));
       }
-      m_face.getIoContext().post([this, requestMessage = std::move(requestMessage),
+      boost::asio::post(m_face.getIoContext(), [this, requestMessage = std::move(requestMessage),
                                   providerNames = std::move(providerNames),
                                   taskId, partId, candidateText,
                                   attempt, state,
@@ -1514,7 +1514,7 @@ private:
                   const uint64_t retry = m_videoStartRetries.fetch_add(1);
                   if (retry < MAX_VIDEO_START_RETRIES) {
                     publishStatus("Video start retry " + std::to_string(retry + 1));
-                    m_face.getIoContext().post([this, droneId] {
+                    boost::asio::post(m_face.getIoContext(), [this, droneId] {
                       startVideoAttempt(droneId);
                     });
                     return true;
@@ -1671,7 +1671,7 @@ private:
                           std::function<void(std::vector<uint8_t>)> onData,
                           std::function<void()> onTimeout)
   {
-    m_face.getIoContext().post([this, manifest, objectName,
+    boost::asio::post(m_face.getIoContext(), [this, manifest, objectName,
                                 onData = std::move(onData),
                                 onTimeout = std::move(onTimeout)]() mutable {
       ndn::Interest interest{ndn::Name(objectName)};
@@ -1781,7 +1781,7 @@ private:
               std::function<bool()> ignoreTimeout = {},
               std::function<void()> onTimeout = {})
   {
-    m_face.getIoContext().post([this, service, payload,
+    boost::asio::post(m_face.getIoContext(), [this, service, payload,
                                 droneId,
                                 onSuccess = std::move(onSuccess),
                                 ignoreTimeout = std::move(ignoreTimeout),
@@ -1834,7 +1834,7 @@ private:
                            std::function<void(std::vector<uint8_t>)> onSuccess,
                            std::function<void()> onTimeout = {})
   {
-    m_face.getIoContext().post([this, provider, droneId, service, payload,
+    boost::asio::post(m_face.getIoContext(), [this, provider, droneId, service, payload,
                                 onSuccess = std::move(onSuccess),
                                 onTimeout = std::move(onTimeout)] {
       if (!m_containerReady.load() || !m_user) {
@@ -1882,7 +1882,7 @@ private:
                       std::function<void(std::string)> onSuccess,
                       std::function<void()> onTimeout = {})
   {
-    m_face.getIoContext().post([this, provider, service, payload,
+    boost::asio::post(m_face.getIoContext(), [this, provider, service, payload,
                                 onSuccess = std::move(onSuccess),
                                 onTimeout = std::move(onTimeout)] {
       if (!m_containerReady.load() || !m_user) {

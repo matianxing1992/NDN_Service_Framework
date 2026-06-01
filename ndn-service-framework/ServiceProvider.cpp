@@ -1,5 +1,7 @@
 #include <ServiceProvider.hpp>
 
+#include <boost/asio/post.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -476,7 +478,7 @@ namespace ndn_service_framework
         }
     }
 
-    ServiceProvider::ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) 
+    ServiceProvider::ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath)
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
         identity(identityCert.getIdentity()),
@@ -526,7 +528,7 @@ namespace ndn_service_framework
             std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
 
         m_signingInfo = ndn::security::signingByCertificate(identityCert);
-        
+
         ndn::svs::SecurityOptions secOpts(m_keyChain);
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
@@ -1536,7 +1538,7 @@ namespace ndn_service_framework
                     decision.message = "ACK handler failed";
                 }
 
-                m_face.getIoContext().post(
+                boost::asio::post(m_face.getIoContext(),
                     [this,
                      requesterIdentity,
                      serviceName,
@@ -1839,7 +1841,7 @@ namespace ndn_service_framework
                     response = makeErrorResponse("Request handler failed");
                 }
 
-                m_face.getIoContext().post(
+                boost::asio::post(m_face.getIoContext(),
                     [this,
                      requesterName,
                      providerName,
@@ -1965,7 +1967,7 @@ namespace ndn_service_framework
                             NDN_LOG_ERROR("Collaboration handler failed for "
                                           << serviceName.toUri());
                         }
-                        m_face.getIoContext().post(
+                        boost::asio::post(m_face.getIoContext(),
                             [this, requestId, serviceName] {
                                 updateProviderRequestLifecycleState(
                                     requestId, serviceName,
@@ -2180,7 +2182,7 @@ namespace ndn_service_framework
                 error = e.what();
             }
 
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this, name, encoded = std::move(encoded),
                  error = std::move(error)]() mutable {
                     if (!error.empty()) {
@@ -2302,7 +2304,7 @@ namespace ndn_service_framework
         auto error = std::make_shared<std::string>();
         auto encoded = std::make_shared<ndn::Buffer>();
 
-        m_face.getIoContext().post([this, dataName, completed, mutex, cv, error, encoded] {
+        boost::asio::post(m_face.getIoContext(), [this, dataName, completed, mutex, cv, error, encoded] {
             ndn::Interest interest(dataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
@@ -2388,7 +2390,7 @@ namespace ndn_service_framework
             response.setUserToken(requestMessage.getUserToken());
         }
         response.setPolicyEpoch(m_currentPolicyEpoch);
-        m_face.getIoContext().post(
+        boost::asio::post(m_face.getIoContext(),
             [this,
              requesterName,
              serviceName,
@@ -2667,7 +2669,7 @@ namespace ndn_service_framework
         auto startFetch = [this, state, finishIfReady, provisioningLifetime](
                               const ndn::Name& dataName,
                               std::function<void(const ndn::Buffer&)> onPlaintext) mutable {
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this,
                  state,
                  finishIfReady,
@@ -2808,7 +2810,7 @@ namespace ndn_service_framework
                 ok = false;
             }
 
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this, ok, data = std::move(data), dataName]() mutable {
                     if (!ok) {
                         NDN_LOG_ERROR("Collaboration data authentication failed for "
@@ -2856,7 +2858,7 @@ namespace ndn_service_framework
         interest.setMustBeFresh(true);
         interest.setInterestLifetime(ndn::time::seconds(4));
 
-        m_face.getIoContext().post(
+        boost::asio::post(m_face.getIoContext(),
             [this, interest, requestId, keyScope, fetchKey]() mutable {
                 try {
                     nacConsumer.consume(
@@ -3395,7 +3397,7 @@ namespace ndn_service_framework
     {
         const auto plaintextBlock = message.WireEncode();
         auto plaintext = ndn::Buffer(plaintextBlock.begin(), plaintextBlock.end());
-        m_face.getIoContext().post(
+        boost::asio::post(m_face.getIoContext(),
             [this, messageName, plaintext = std::move(plaintext)]() mutable {
                 publishHybridEncodedMessage(messageName, std::move(plaintext));
             });
@@ -3507,7 +3509,7 @@ namespace ndn_service_framework
                 error = e.what();
             }
             const auto aesEndUs = timelineSteadyMicroseconds();
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this, messageName, requestId, serviceName, messageType,
                  keyId, epochId, aesStartUs, aesEndUs, wrappedKeyAttached,
                  ciphertextBytes, error = std::move(error),
@@ -3643,7 +3645,7 @@ namespace ndn_service_framework
                 ndn::Buffer plaintext;
                 const bool ok = hybridAesGcmDecrypt(
                     key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), plaintext);
-                m_face.getIoContext().post(
+                boost::asio::post(m_face.getIoContext(),
                     [this, ok, envelope, plaintext = std::move(plaintext),
                      onSuccess = std::move(onSuccess),
                      onError = std::move(onError)]() mutable {
@@ -3817,7 +3819,7 @@ namespace ndn_service_framework
                       << " contentSegments=0"
                       << " ckSegments=0");
             const auto queuedAtUs = nowMicroseconds();
-            m_face.getIoContext().post(
+            boost::asio::post(m_face.getIoContext(),
                 [this, messageName, queuedAtUs, buffer = std::move(buffer)]() mutable {
                     ndn::Block contentBlock(buffer);
                     const auto beginUs = nowMicroseconds();
@@ -4053,7 +4055,7 @@ namespace ndn_service_framework
                               << " contentBytes=" << buffer.size()
                               << " contentSegments=" << contentData.size()
                               << " ckSegments=" << ckData.size());
-                    m_face.getIoContext().post(
+                    boost::asio::post(m_face.getIoContext(),
                         [this,
                          messageName,
                          queuedAtUs,
@@ -4124,7 +4126,7 @@ namespace ndn_service_framework
             NDN_LOG_ERROR("NAC-ABE produce queue is full; dropping publish for "
                           << messageName.toUri());
         }
-        
+
     }
 
     void ServiceProvider::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)
@@ -4142,10 +4144,10 @@ namespace ndn_service_framework
 
             // parse token and get return values
             ndn::Name providerName, ServiceName, FunctionName, seqNum;
-                
+
             auto result = ndn_service_framework::parsePermissionTokenName(ndn::Name(tokenName));
             if (!result){
-                NDN_LOG_ERROR("Invalid Permission Token Name: " << tokenName);    
+                NDN_LOG_ERROR("Invalid Permission Token Name: " << tokenName);
                 return;
             }
             std::tie(providerName, ServiceName, FunctionName, seqNum) = result.value();
@@ -4154,7 +4156,7 @@ namespace ndn_service_framework
             // log tokenName and token
             NDN_LOG_INFO("TokenName: " << tokenName << " Token: " << token);
 
-            UPT.insertPermission(ndn::Name(identity.toUri()).append(ServiceName).append(FunctionName).toUri(), 
+            UPT.insertPermission(ndn::Name(identity.toUri()).append(ServiceName).append(FunctionName).toUri(),
                                 ndn::Name(ServiceName.toUri()).append(FunctionName).toUri(),
                                 token);
             // encrypt the token with nac-abe; and then serve it using IMS
@@ -4166,8 +4168,8 @@ namespace ndn_service_framework
             // std::tie(contentData, ckData) =
             //     nacProducer.produce(ndn_service_framework::makePermissionTokenNameWithoutPrefix(ServiceName, FunctionName, seqNum),
             //         ndn_service_framework::ConcatenateString(attributes), ndn::make_span(reinterpret_cast<const uint8_t *>(token.data()), token.size()), m_signingInfo);
-            
-            
+
+
             // serve data
             for (auto data : contentData)
                 m_IMS.insert(*data);
@@ -4265,9 +4267,9 @@ namespace ndn_service_framework
             }
             return;
         }
-        
+
         ndn::Name RequesterName, ServiceName, FunctionName, bloomFilterName, RequestId;
-        
+
         auto resutls = ndn_service_framework::parseRequestName(subscription.name);
         if(!resutls)
         {
@@ -4278,7 +4280,7 @@ namespace ndn_service_framework
 
         // check whether its identity in the bloom filter
         std::string bfStr = bloomFilterName.toUri().substr(1);
-        
+
         ndn_service_framework::BloomFilter bloomFilter;
         if(!bloomFilter.fromHexString(bfStr))
         {
@@ -4306,14 +4308,14 @@ namespace ndn_service_framework
                                     ndn::Block(subscription.data),
                                     std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallback, this, RequesterName, ServiceName, FunctionName, bloomFilterName, RequestId,  _1),
                                     std::bind(&ServiceProvider::OnRequestDecryptionErrorCallback, this, RequesterName, ServiceName, FunctionName, RequestId, _1));
-       
+
             }else{
                 nacConsumer.consume(subscription.name,
                                     std::bind(&ServiceProvider::OnRequestDecryptionSuccessCallback, this, RequesterName, ServiceName, FunctionName, bloomFilterName, RequestId,  _1),
                                     std::bind(&ServiceProvider::OnRequestDecryptionErrorCallback, this, RequesterName, ServiceName, FunctionName, RequestId, _1));
-       
+
             }
-           
+
             //preprocessRequest(RequesterName, ServiceName, FunctionName, bloomFilterName, RequestId);
         }
         else    // if the identity is not in the bloom filter, return error message
@@ -4347,7 +4349,7 @@ void ServiceProvider::OnRequestDecryptionSuccessCallbackV2(
             return;
         }
 
-        m_face.getIoContext().post(
+        boost::asio::post(m_face.getIoContext(),
             [this, requesterIdentity, serviceName, bloomFilterName, requestId,
              raw,
              requestMessage = std::move(requestMessage)]() mutable {
@@ -4852,7 +4854,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 //     {
 //         //  /<identity>/NDNSF/RESPONSE/<requesterIdentity>/<ServiceName>/<FunctionName>/<request-id>
 //         // identity will be appended by NAC-ABE
-        
+
 //         ndn::Name responseName = ndn_service_framework::makeResponseName(identity, requesterIdentity, ServiceName, FunctionName, RequestID);
 //         ndn::Name responseNameWithoutPrefix = ndn_service_framework::makeResponseNameWithoutPrefix(requesterIdentity, ServiceName, FunctionName, RequestID);
 //         NDN_LOG_INFO("PublishResponse:"<<responseName);
@@ -4915,7 +4917,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         // log interest
         NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
         replyFromIMS(interest);
-        
+
     }
 
     void ServiceProvider::serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data> &contentData, ndn::nacabe::SPtrVector<ndn::Data> &ckData)
@@ -4929,7 +4931,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         for (auto data : ckData)
         {
-            m_IMS.insert(*data); 
+            m_IMS.insert(*data);
         }
     }
 
@@ -4953,7 +4955,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         auto error = std::make_shared<std::string>();
         auto plaintext = std::make_shared<ndn::Buffer>();
 
-        m_face.getIoContext().post([this, encryptedDataName, completed, mutex, cv, error, plaintext] {
+        boost::asio::post(m_face.getIoContext(), [this, encryptedDataName, completed, mutex, cv, error, plaintext] {
             ndn::Interest interest(encryptedDataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
@@ -5350,14 +5352,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                 ndn::Block(subscription.data),
                                 std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionSuccessCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1),
                                 std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionErrorCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1));
-    
+
         }else{
             nacConsumer.consume(subscription.name,
                                 std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionSuccessCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1),
                                 std::bind(&ServiceProvider::OnServiceSelectionMessageDecryptionErrorCallback, this, requesterName, providerName, ServiceName, FunctionName, msgId, _1));
         }
-        
- 
+
+
 
     }
 
@@ -5804,7 +5806,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         // log register
         NDN_LOG_WARN("Register NDNSF Messages in ndn-svs");
-        for(auto serviceName:m_serviceNames){ 
+        for(auto serviceName:m_serviceNames){
             // register Request Message
             ndn::Name sname(serviceName);
             std::string regex_str =

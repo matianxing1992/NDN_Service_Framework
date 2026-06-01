@@ -12,6 +12,7 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
+#include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 
 #include <gdk/gdkkeysyms.h>

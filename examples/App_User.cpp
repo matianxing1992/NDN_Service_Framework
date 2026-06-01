@@ -6,6 +6,8 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
+#include <boost/asio/post.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1579,7 +1581,7 @@ main(int argc, char** argv)
               [&, csv, states, completedRequestIds, timeoutCount,
                intervalTimeouts, sampleOutstanding, sampleAdaptive](
                 const ndn::Name& timedOutRequestId) {
-                face.getIoContext().post(
+                boost::asio::post(face.getIoContext(),
                   [&, csv, states, completedRequestIds, timeoutCount,
                    intervalTimeouts, sampleOutstanding, sampleAdaptive,
                    timedOutRequestId] {
@@ -1628,7 +1630,7 @@ main(int argc, char** argv)
                 const std::string responseText(
                   reinterpret_cast<const char*>(payload.data()),
                   payload.size());
-                face.getIoContext().post(
+                boost::asio::post(face.getIoContext(),
                   [&, csv, states, completedRequestIds, state, successCount,
                    lateResponseCount, intervalLateResponses, intervalSuccesses,
                    latencies, intervalLatencies, sampleOutstanding, sampleAdaptive,
