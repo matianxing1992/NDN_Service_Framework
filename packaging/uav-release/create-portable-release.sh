@@ -221,10 +221,37 @@ has_arg() {
   done
   return 1
 }
+arg_value() {
+  local needle="$1"
+  local fallback="$2"
+  local i
+  for ((i = 0; i < ${#args[@]}; ++i)); do
+    if [[ "${args[$i]}" == "$needle" && $((i + 1)) -lt ${#args[@]} ]]; then
+      printf '%s' "${args[$((i + 1))]}"
+      return 0
+    fi
+    if [[ "${args[$i]}" == "$needle="* ]]; then
+      printf '%s' "${args[$i]#*=}"
+      return 0
+    fi
+  done
+  printf '%s' "$fallback"
+}
 defaults=()
 has_arg --policy-file || defaults+=(--policy-file "$config_dir/uav_demo.policies")
 has_arg --trust-schema || defaults+=(--trust-schema "$config_dir/trust-schema.conf")
 has_arg --controller-prefix || defaults+=(--controller-prefix /example/uav/controller)
+if [[ "${NDNSF_UAV_PREFLIGHT:-0}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  preflight_extra=()
+  if [[ -n "${NDNSF_UAV_PREFLIGHT_ARGS:-}" ]]; then
+    read -r -a preflight_extra <<< "$NDNSF_UAV_PREFLIGHT_ARGS"
+  fi
+  "$here/scripts/ndnsf-uav-preflight" \
+    --role controller \
+    --policy-file "$(arg_value --policy-file "$config_dir/uav_demo.policies")" \
+    --trust-schema "$(arg_value --trust-schema "$config_dir/trust-schema.conf")" \
+    "${preflight_extra[@]}"
+fi
 exec "$here/bin/App_ServiceController" "${defaults[@]}" "${args[@]}"
 EOF
 
@@ -254,10 +281,38 @@ has_arg() {
   done
   return 1
 }
+arg_value() {
+  local needle="$1"
+  local fallback="$2"
+  local i
+  for ((i = 0; i < ${#args[@]}; ++i)); do
+    if [[ "${args[$i]}" == "$needle" && $((i + 1)) -lt ${#args[@]} ]]; then
+      printf '%s' "${args[$((i + 1))]}"
+      return 0
+    fi
+    if [[ "${args[$i]}" == "$needle="* ]]; then
+      printf '%s' "${args[$i]#*=}"
+      return 0
+    fi
+  done
+  printf '%s' "$fallback"
+}
 defaults=()
 has_arg --runtime-config || defaults+=(--runtime-config "$config_dir/uav_runtime.conf")
 has_arg --app-config || defaults+=(--app-config "$config_dir/ground-station.conf")
 has_arg --trust-schema || defaults+=(--trust-schema "$config_dir/trust-schema.conf")
+if [[ "${NDNSF_UAV_PREFLIGHT:-0}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  preflight_extra=()
+  if [[ -n "${NDNSF_UAV_PREFLIGHT_ARGS:-}" ]]; then
+    read -r -a preflight_extra <<< "$NDNSF_UAV_PREFLIGHT_ARGS"
+  fi
+  "$here/scripts/ndnsf-uav-preflight" \
+    --role ground-station \
+    --runtime-config "$(arg_value --runtime-config "$config_dir/uav_runtime.conf")" \
+    --app-config "$(arg_value --app-config "$config_dir/ground-station.conf")" \
+    --trust-schema "$(arg_value --trust-schema "$config_dir/trust-schema.conf")" \
+    "${preflight_extra[@]}"
+fi
 exec "$here/bin/UavGroundStationApp" "${defaults[@]}" "${args[@]}"
 EOF
 
@@ -287,10 +342,38 @@ has_arg() {
   done
   return 1
 }
+arg_value() {
+  local needle="$1"
+  local fallback="$2"
+  local i
+  for ((i = 0; i < ${#args[@]}; ++i)); do
+    if [[ "${args[$i]}" == "$needle" && $((i + 1)) -lt ${#args[@]} ]]; then
+      printf '%s' "${args[$((i + 1))]}"
+      return 0
+    fi
+    if [[ "${args[$i]}" == "$needle="* ]]; then
+      printf '%s' "${args[$i]#*=}"
+      return 0
+    fi
+  done
+  printf '%s' "$fallback"
+}
 defaults=()
 has_arg --runtime-config || defaults+=(--runtime-config "$config_dir/uav_runtime.conf")
 has_arg --app-config || defaults+=(--app-config "$config_dir/drone-A.conf")
 has_arg --trust-schema || defaults+=(--trust-schema "$config_dir/trust-schema.conf")
+if [[ "${NDNSF_UAV_PREFLIGHT:-0}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+  preflight_extra=()
+  if [[ -n "${NDNSF_UAV_PREFLIGHT_ARGS:-}" ]]; then
+    read -r -a preflight_extra <<< "$NDNSF_UAV_PREFLIGHT_ARGS"
+  fi
+  "$here/scripts/ndnsf-uav-preflight" \
+    --role drone \
+    --runtime-config "$(arg_value --runtime-config "$config_dir/uav_runtime.conf")" \
+    --app-config "$(arg_value --app-config "$config_dir/drone-A.conf")" \
+    --trust-schema "$(arg_value --trust-schema "$config_dir/trust-schema.conf")" \
+    "${preflight_extra[@]}"
+fi
 exec "$here/bin/UavDroneApp" "${defaults[@]}" "${args[@]}"
 EOF
 
@@ -387,6 +470,23 @@ which prevents a controller from encrypting permissions to a stale certificate:
 ./scripts/ndnsf-uav-preflight --role controller --policy-file config/uav_demo.policies
 ./scripts/ndnsf-uav-preflight --role ground-station --app-config config/ground-station.conf
 ./scripts/ndnsf-uav-preflight --role drone --app-config config/drone-A.conf
+\`\`\`
+
+The wrapper commands can run the same checks automatically before startup:
+
+\`\`\`bash
+NDNSF_UAV_PREFLIGHT=1 ./bin/ndnsf-uav-controller
+NDNSF_UAV_PREFLIGHT=1 ./bin/ndnsf-uav-gs --app-config config/ground-station.conf
+NDNSF_UAV_PREFLIGHT=1 ./bin/ndnsf-uav-drone --app-config config/drone-A.conf --drone-id A
+\`\`\`
+
+Pass deployment-specific preflight options through \`NDNSF_UAV_PREFLIGHT_ARGS\`.
+For example, on the controller:
+
+\`\`\`bash
+NDNSF_UAV_PREFLIGHT=1 \\
+NDNSF_UAV_PREFLIGHT_ARGS="--expected-cert /example/uav/drone/A=certs/drone-A.cert" \\
+  ./bin/ndnsf-uav-controller
 \`\`\`
 
 For multi-machine deployment, export each node's public certificate and compare

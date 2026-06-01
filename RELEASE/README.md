@@ -111,6 +111,23 @@ and then run preflight checks before starting each role:
 "$app/scripts/ndnsf-uav-preflight" --role drone --app-config config/drone-A.conf
 ```
 
+The wrapper commands can run the same checks automatically before startup:
+
+```bash
+NDNSF_UAV_PREFLIGHT=1 "$app/bin/ndnsf-uav-controller"
+NDNSF_UAV_PREFLIGHT=1 "$app/bin/ndnsf-uav-drone" --drone-id A
+NDNSF_UAV_PREFLIGHT=1 "$app/bin/ndnsf-uav-gs" --app-config config/ground-station.conf
+```
+
+Pass deployment-specific preflight options through `NDNSF_UAV_PREFLIGHT_ARGS`.
+For example, on the controller:
+
+```bash
+NDNSF_UAV_PREFLIGHT=1 \
+NDNSF_UAV_PREFLIGHT_ARGS="--expected-cert /example/uav/drone/A=certs/drone-A.cert" \
+  "$app/bin/ndnsf-uav-controller"
+```
+
 For multi-machine deployment, export each node's public certificate and make
 the controller compare it before startup. This catches the common failure where
 the controller still has an old certificate for a drone and encrypts provider
