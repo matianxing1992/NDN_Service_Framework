@@ -33,6 +33,7 @@ public:
     , m_arm("Arm")
     , m_takeoff("Takeoff")
     , m_land("Land")
+    , m_emergencyStop("Emergency Stop")
     , m_patrol("Upload Patrol Mission")
     , m_startMission("Start Mission")
     , m_stopPatrol("Stop Patrol")
@@ -96,12 +97,15 @@ public:
     m_services.set_text(m_runtime.serviceCatalogForDrone(m_runtime.targetDroneId()));
     m_telemetry.set_text("Telemetry: waiting for flight-controller response");
     m_stop.set_sensitive(false);
+    m_startMission.set_sensitive(false);
+    m_stopPatrol.set_sensitive(false);
 
     m_buttons.pack_start(m_start, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_stop, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_arm, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_takeoff, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_land, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_emergencyStop, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_patrol, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_startMission, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_stopPatrol, Gtk::PACK_SHRINK);
@@ -371,6 +375,9 @@ public:
     m_land.signal_clicked().connect([this] {
       m_runtime.sendMavlinkCommand("land");
     });
+    m_emergencyStop.signal_clicked().connect([this] {
+      m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
+    });
     m_patrol.signal_clicked().connect([this] {
       m_patrol.set_sensitive(false);
       m_status.set_text("Uploading cooperative patrol mission...");
@@ -393,15 +400,20 @@ public:
           m_status.set_text(ok ? "Patrol mission uploaded; arm/takeoff and start mission mode to fly it"
                                : "Patrol mission upload failed");
           m_patrol.set_sensitive(true);
+          updateVehicleRows();
         });
       }).detach();
     });
     m_startMission.signal_clicked().connect([this] {
       m_status.set_text("Starting patrol mission by phase: arm all, take off all, start all...");
+      m_startMission.set_sensitive(false);
+      m_stopPatrol.set_sensitive(true);
       scheduleMissionStartPhase(0, 0);
     });
     m_stopPatrol.signal_clicked().connect([this] {
       m_status.set_text("Stopping patrol: landing patrol drones...");
+      m_startMission.set_sensitive(false);
+      m_stopPatrol.set_sensitive(false);
       schedulePatrolLandSequence(0);
     });
     m_controlToggle.signal_clicked().connect([this] {
@@ -482,19 +494,26 @@ public:
           const auto statusDrone = statusField(status, "drone", m_runtime.targetDroneId());
           const auto selectedDrone = m_runtime.targetDroneId();
           if (status.rfind("Telemetry ", 0) == 0) {
-            m_pendingMapLat = statusField(status, "lat", "35.1186");
-            m_pendingMapLon = statusField(status, "lon", "-89.9375");
-            try {
-              m_dronePositions[statusDrone] = {
-                std::stod(m_pendingMapLat), std::stod(m_pendingMapLon)
-              };
-              m_pendingMapRefresh = true;
+            const auto telemetry = m_runtime.telemetryForDrone(statusDrone);
+            const auto mission = m_runtime.missionForDrone(statusDrone);
+            if (telemetry) {
+              try {
+                m_dronePositions[statusDrone] = {
+                  std::stod(telemetry->lat), std::stod(telemetry->lon)
+                };
+                m_pendingMapRefresh = true;
+              }
+              catch (const std::exception&) {
+              }
+              if (statusDrone == selectedDrone) {
+                m_pendingTelemetry = telemetry->statusLine() +
+                  (mission ? " " + mission->statusLine() : "");
+                m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone);
+              }
+              m_pendingVehicleRowsRefresh = true;
             }
-            catch (const std::exception&) {
-            }
-            if (statusDrone == selectedDrone) {
+            else if (statusDrone == selectedDrone) {
               m_pendingTelemetry = status;
-              m_pendingMap = mapTextForTelemetry(status, selectedDrone);
             }
           }
           else if (statusDrone == selectedDrone) {
@@ -534,6 +553,10 @@ public:
       }
       if (!m_pendingTelemetry.empty()) {
         m_telemetry.set_text("Telemetry: " + m_pendingTelemetry);
+      }
+      if (m_pendingVehicleRowsRefresh) {
+        updateVehicleRows();
+        m_pendingVehicleRowsRefresh = false;
       }
       if (!m_pendingMap.empty()) {
         m_mapMission.set_text(m_pendingMap);
@@ -1325,16 +1348,56 @@ private:
         continue;
       }
       const bool selected = m_droneIds[i] == selectedDrone;
-      label->set_text(std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
-                      (selected ? "  active" : "  standby"));
+      const auto telemetry = m_runtime.telemetryForDrone(m_droneIds[i]);
+      const auto mission = m_runtime.missionForDrone(m_droneIds[i]);
+      std::string rowText = std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
+                            (selected ? " active" : " standby");
+      if (telemetry) {
+        rowText += " " + telemetry->readiness;
+        rowText += " armed=" + telemetry->armed;
+        rowText += " gps=" + telemetry->gpsFixName;
+        rowText += " bat=" + telemetry->batteryPercent + "%";
+      }
+      if (mission && mission->phase != "idle") {
+        rowText += " mission=" + mission->phase;
+      }
+      label->set_text(rowText);
     }
-    m_mapMission.set_text("Map / mission workspace\n\n"
-                          "GS center: University of Memphis\n"
-                          "Selected drone: " + selectedDrone + "\n"
-                          "Map markers show GS, drones, and mission waypoints.\n"
-                          "Click map to append waypoints, then upload/start the mission.");
+    const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
+    const auto mission = m_runtime.missionForDrone(selectedDrone);
+    if (telemetry) {
+      m_mapMission.set_text(mapTextForTelemetry(*telemetry, mission, selectedDrone));
+    }
+    else {
+      m_mapMission.set_text("Map / mission workspace\n\n"
+                            "GS center: University of Memphis\n"
+                            "Selected drone: " + selectedDrone + "\n"
+                            "Map markers show GS, drones, and mission waypoints.\n"
+                            "Click map to append waypoints, then upload/start the mission.");
+    }
     m_services.set_text(m_runtime.serviceCatalogForDrone(selectedDrone));
+    updateMissionControls();
     refreshMapTile();
+  }
+
+  void
+  updateMissionControls()
+  {
+    const auto readyDrones = m_runtime.missionReadyDrones();
+    bool hasUploaded = !readyDrones.empty();
+    bool hasExecuting = false;
+    bool hasStopping = false;
+    for (const auto& droneId : m_droneIds) {
+      const auto mission = m_runtime.missionForDrone(droneId);
+      if (!mission) {
+        continue;
+      }
+      hasUploaded = hasUploaded || mission->phase == "uploaded";
+      hasExecuting = hasExecuting || mission->phase == "executing";
+      hasStopping = hasStopping || mission->phase == "stopping";
+    }
+    m_startMission.set_sensitive(hasUploaded && !hasExecuting && !hasStopping);
+    m_stopPatrol.set_sensitive(hasUploaded || hasExecuting || hasStopping);
   }
 
   static std::string
@@ -1353,25 +1416,14 @@ private:
   }
 
   static std::string
-  mapTextForTelemetry(const std::string& status, const std::string& selectedDrone)
+  mapTextForTelemetry(const TelemetryState& telemetry,
+                      const std::optional<MissionState>& mission,
+                      const std::string& selectedDrone)
   {
-    const auto drone = statusField(status, "drone");
-    const auto lat = statusField(status, "lat");
-    const auto lon = statusField(status, "lon");
-    const auto alt = statusField(status, "alt");
-    const auto mission = statusField(status, "mission");
-    const auto ready = statusField(status, "ready");
-    const auto reason = statusField(status, "reason");
-    const auto armed = statusField(status, "armed");
-    return "Map / mission workspace\n\n"
-           "Selected drone: " + selectedDrone + "\n"
-           "Telemetry source: Drone " + drone + "\n"
-           "Position: lat " + lat + "  lon " + lon + "\n"
-           "Altitude: " + alt + "\n"
-           "Readiness: " + ready + " (" + reason + ")  Armed: " + armed + "\n"
-           "Mission: " + mission + "\n\n"
-           "Map tile: OpenStreetMap, centered on the ground station.\n"
-           "Click the map to append mission waypoints.";
+    const auto missionPhase = mission ? mission->phase : "idle";
+    const auto missionDetail = mission ? mission->detail : "idle";
+    return telemetry.mapSummary(selectedDrone) + "\n"
+           "Mission: " + missionPhase + " (" + missionDetail + ")";
   }
 
   struct MapMarker
@@ -1649,6 +1701,7 @@ private:
         return;
       }
       m_status.set_text("Mission start sequence sent to patrol drones");
+      updateVehicleRows();
       return;
     }
 
@@ -1691,6 +1744,7 @@ private:
   {
     if (droneIndex >= m_droneIds.size()) {
       m_status.set_text("Stop Patrol sequence sent to patrol drones");
+      updateVehicleRows();
       return;
     }
     const auto droneId = m_droneIds[droneIndex];
@@ -1948,6 +2002,7 @@ private:
   Gtk::Button m_arm;
   Gtk::Button m_takeoff;
   Gtk::Button m_land;
+  Gtk::Button m_emergencyStop;
   Gtk::Button m_patrol;
   Gtk::Button m_startMission;
   Gtk::Button m_stopPatrol;
@@ -2018,6 +2073,7 @@ private:
   bool m_pendingMapRefresh = false;
   std::string m_pendingMapLat = "35.1186";
   std::string m_pendingMapLon = "-89.9375";
+  bool m_pendingVehicleRowsRefresh = false;
   std::string m_mapTileKey;
   std::atomic<bool> m_mapTileLoading{false};
   std::atomic<bool> m_mapRefreshPending{false};

@@ -408,16 +408,33 @@ If the drone uses `mavlink-router`, keep `--flight-controller-backend udp` and
 point `--mavlink-udp-host` / `--mavlink-udp-port` at the router's local endpoint.
 The `mavlink-router` backend name is accepted as an alias for this UDP path.
 
+### GPS Source
+
+DroneAPP obtains GPS and EKF readiness from the flight controller through
+MAVLink telemetry. In the intended real-drone deployment, the GPS unit is
+connected to the flight controller, and PX4/ArduPilot remains the authoritative
+component for GPS fusion, arming checks, takeoff readiness, and flight control.
+The companion computer does not scan USB or serial GPS devices directly.
+
 ### Flight-Controller Readiness And Safety
 
 `UavDroneApp` now parses common MAVLink status messages from the UDP or serial
 backend. Telemetry responses include `heartbeat_seen`, `armed`,
 `flight_controller_ready`, `gps_ready`, `battery_ready`, `readiness`,
 `ready_for_takeoff`, `gps_fix_type`, `gps_satellites_visible`,
-`altitude_m`, `groundspeed_mps`, and `battery_percent` when the flight
-controller publishes them. The ground station shows these fields in the
-telemetry/mission view so the operator can see whether the selected drone is
-actually ready.
+`gps_fix_name`, `ekf_ready`, `system_status_name`, `landed_state_name`,
+`battery_voltage_v`, `battery_current_a`, `altitude_m`, `groundspeed_mps`, and
+`battery_percent` when the flight controller publishes them. The ground station
+shows these fields in the telemetry/mission view so the operator can see
+whether the selected drone is actually ready.
+
+The ground station keeps these values as typed `TelemetryState` and
+`MissionState` snapshots. The vehicle list, map markers, inspector panel, and
+mission controls refresh from the same state model instead of parsing temporary
+status strings, so multi-drone UI state remains tied to the selected drone.
+Mission upload responses and later telemetry both update the same
+`MissionState`; `uploaded`, `executing`, and `stopping` phases now drive the
+Start Mission and Stop Patrol buttons.
 
 Command responses no longer mean only "bytes were forwarded": for standard
 MAVLink `COMMAND_ACK` messages the backend reports `ack_result`,
@@ -430,6 +447,11 @@ latest `MANUAL_CONTROL` frame only inside a short freshness window. When that
 window expires, it sends one neutral manual-control frame and stops replaying
 until a new GS command arrives. This prevents stale keyboard/gamepad input from
 continuing indefinitely after a link stall.
+
+Takeoff is guarded by the telemetry state: the GS requires heartbeat,
+flight-controller readiness, GPS/EKF readiness, battery readiness, and an armed
+state before sending the Targeted takeoff command. The UI also exposes an
+Emergency Stop button that uses the Targeted MAVLink path.
 
 Before any real motor test:
 
@@ -650,6 +672,11 @@ H264 CRF quality setting for `ffmpeg`. The drone then returns the requested bitr
 accepted bitrate, requested width, accepted width, FPS, encoder quality, and
 packet payload size. The ground station derives its prefetch window from those
 returned values and from the packet high-watermark carried in each packet.
+It also uses the measured video RTT to adapt the live prefetch window,
+lookahead, decoder reorder window, Interest lifetime, probe backoff, and
+missing-packet skip timeout. This keeps low-bitrate/low-FPS camera streams from
+overfetching while giving higher-bitrate streams enough in-flight Interests to
+avoid stalls.
 The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
 H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
@@ -1137,6 +1164,19 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --start-jmavsim --jmavsim-headless \
   --auto-manual-control-test --no-cli
 ```
+
+To regression-test live PX4/jMAVSim telemetry fields and state changes:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --start-jmavsim --jmavsim-headless \
+  --flight-controller-backend udp \
+  --auto-telemetry-test --no-cli
+```
+
+This checks `gps_fix_name`, `ekf_ready`, `landed_state_name`,
+`battery_voltage_v`, `armed`, and `lat/lon` while the GS runs
+arm/takeoff/land over NDNSF Targeted requests.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance

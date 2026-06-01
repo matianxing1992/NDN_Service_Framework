@@ -241,6 +241,209 @@ decodeFields(const std::string& payload)
   return fields;
 }
 
+TelemetryState
+TelemetryState::fromFields(const Fields& fields)
+{
+  TelemetryState state;
+  state.droneId = fieldOr(fields, "drone_id", state.droneId);
+  state.lat = fieldOr(fields, "lat", state.lat);
+  state.lon = fieldOr(fields, "lon", state.lon);
+  state.altitudeM = fieldOr(fields, "altitude_m", state.altitudeM);
+  state.groundspeedMps = fieldOr(fields, "groundspeed_mps", state.groundspeedMps);
+  state.batteryPercent = fieldOr(fields, "battery_percent", state.batteryPercent);
+  state.heartbeatSeen = fieldOr(fields, "heartbeat_seen", state.heartbeatSeen);
+  state.flightControllerReady = fieldOr(fields, "flight_controller_ready", state.flightControllerReady);
+  state.gpsReady = fieldOr(fields, "gps_ready", state.gpsReady);
+  state.ekfReady = fieldOr(fields, "ekf_ready", state.ekfReady);
+  state.batteryReady = fieldOr(fields, "battery_ready", state.batteryReady);
+  state.armed = fieldOr(fields, "armed", state.armed);
+  state.gpsFixType = fieldOr(fields, "gps_fix_type", state.gpsFixType);
+  state.gpsFixName = fieldOr(fields, "gps_fix_name", state.gpsFixName);
+  state.gpsSatellitesVisible = fieldOr(fields, "gps_satellites_visible", state.gpsSatellitesVisible);
+  state.flightControllerState = fieldOr(fields, "fc_state", state.flightControllerState);
+  state.systemStatus = fieldOr(fields, "system_status", state.systemStatus);
+  state.systemStatusName = fieldOr(fields, "system_status_name", state.systemStatusName);
+  state.landedState = fieldOr(fields, "landed_state", state.landedState);
+  state.landedStateName = fieldOr(fields, "landed_state_name", state.landedStateName);
+  state.vtolStateName = fieldOr(fields, "vtol_state_name", state.vtolStateName);
+  state.batteryVoltageV = fieldOr(fields, "battery_voltage_v", state.batteryVoltageV);
+  state.batteryCurrentA = fieldOr(fields, "battery_current_a", state.batteryCurrentA);
+  state.video = fieldOr(fields, "video", state.video);
+  state.capture = fieldOr(fields, "capture", state.capture);
+  state.recording = fieldOr(fields, "recording", state.recording);
+
+  const auto timestamp = fieldOr(fields, "timestamp_ms", "");
+  if (!timestamp.empty()) {
+    try {
+      state.timestampMs = std::stoull(timestamp);
+    }
+    catch (const std::exception&) {
+      state.timestampMs = 0;
+    }
+  }
+
+  std::string reason = fieldOr(fields, "readiness_reason", "");
+  if (reason.empty()) {
+    if (state.heartbeatSeen != "true") {
+      reason = "waiting-heartbeat";
+    }
+    else if (state.flightControllerReady == "false") {
+      reason = "fc-not-ready";
+    }
+    else if (state.gpsReady == "false") {
+      reason = "gps-not-ready";
+    }
+    else if (state.ekfReady == "false") {
+      reason = "ekf-not-ready";
+    }
+    else if (state.batteryReady == "false") {
+      reason = "battery-low";
+    }
+    else if (state.flightControllerReady == "unknown" ||
+             state.gpsReady == "unknown" ||
+             state.ekfReady == "unknown" ||
+             state.batteryReady == "unknown") {
+      reason = "readiness-unknown";
+    }
+    else {
+      reason = "ok";
+    }
+  }
+  state.readinessReason = reason;
+  state.readiness = fieldOr(fields, "readiness", reason == "ok" ? "ready" : "not-ready");
+  return state;
+}
+
+Fields
+TelemetryState::toFields() const
+{
+  return {
+    {"drone_id", droneId},
+    {"lat", lat},
+    {"lon", lon},
+    {"altitude_m", altitudeM},
+    {"groundspeed_mps", groundspeedMps},
+    {"battery_percent", batteryPercent},
+    {"heartbeat_seen", heartbeatSeen},
+    {"flight_controller_ready", flightControllerReady},
+    {"gps_ready", gpsReady},
+    {"ekf_ready", ekfReady},
+    {"battery_ready", batteryReady},
+    {"armed", armed},
+    {"gps_fix_type", gpsFixType},
+    {"gps_fix_name", gpsFixName},
+    {"gps_satellites_visible", gpsSatellitesVisible},
+    {"fc_state", flightControllerState},
+    {"system_status", systemStatus},
+    {"system_status_name", systemStatusName},
+    {"landed_state", landedState},
+    {"landed_state_name", landedStateName},
+    {"vtol_state_name", vtolStateName},
+    {"battery_voltage_v", batteryVoltageV},
+    {"battery_current_a", batteryCurrentA},
+    {"readiness", readiness},
+    {"readiness_reason", readinessReason},
+    {"ready_for_takeoff", readiness == "ready" ? "true" : "false"},
+    {"video", video},
+    {"capture", capture},
+    {"recording", recording},
+    {"timestamp_ms", std::to_string(timestampMs)},
+  };
+}
+
+std::string
+TelemetryState::statusLine() const
+{
+  return "Telemetry drone=" + droneId +
+         " alt=" + altitudeM + "m" +
+         " lat=" + lat +
+         " lon=" + lon +
+         " battery=" + batteryPercent + "%" +
+         " ready=" + readiness +
+         " reason=" + readinessReason +
+         " armed=" + armed +
+         " gps=" + gpsReady +
+         " ekf=" + ekfReady +
+         " landed=" + landedStateName +
+         " speed=" + groundspeedMps + "m/s" +
+         " video=" + video;
+}
+
+std::string
+TelemetryState::mapSummary(const std::string& selectedDrone) const
+{
+  return "Map / mission workspace\n\n"
+         "Selected drone: " + selectedDrone + "\n"
+         "Telemetry source: Drone " + droneId + "\n"
+         "Position: lat " + lat + "  lon " + lon + "\n"
+         "Altitude: " + altitudeM + "\n"
+         "Readiness: " + readiness + " (" + readinessReason + ")  Armed: " + armed + "\n"
+         "GPS: " + gpsReady + " fix=" + gpsFixName + " (" + gpsFixType + ")" +
+         " sats=" + gpsSatellitesVisible + " EKF=" + ekfReady + "\n"
+         "Flight controller: " + systemStatusName + " landed=" + landedStateName +
+         " vtol=" + vtolStateName + "\n"
+         "Battery: " + batteryPercent + "% " + batteryVoltageV + "V " +
+         batteryCurrentA + "A  Speed: " + groundspeedMps + " m/s\n"
+         "Video: " + video + "  Capture: " + capture + "  Recording: " + recording + "\n\n"
+         "Map tile: OpenStreetMap, centered on the ground station.\n"
+         "Click the map to append mission waypoints.";
+}
+
+MissionState
+MissionState::fromFields(const Fields& fields)
+{
+  MissionState state;
+  state.droneId = fieldOr(fields, "drone_id", state.droneId);
+  state.missionId = fieldOr(fields, "mission_id", fieldOr(fields, "active_mission_id", state.missionId));
+  state.partId = fieldOr(fields, "part_id", fieldOr(fields, "active_mission_part", state.partId));
+  state.phase = fieldOr(fields, "mission_phase", fieldOr(fields, "mission_status", state.phase));
+  state.detail = fieldOr(fields, "mission_detail", fieldOr(fields, "status", state.detail));
+  state.ack = fieldOr(fields, "mission_ack", state.ack);
+  state.transport = fieldOr(fields, "mission_transport", state.transport);
+  state.waypointsForwarded = fieldOr(fields, "waypoints_forwarded", state.waypointsForwarded);
+  state.waypointAcksAccepted = fieldOr(fields, "waypoint_acks_accepted", state.waypointAcksAccepted);
+  const auto updated = fieldOr(fields, "mission_updated_ms", "");
+  if (!updated.empty()) {
+    try {
+      state.updatedMs = std::stoull(updated);
+    }
+    catch (const std::exception&) {
+      state.updatedMs = 0;
+    }
+  }
+  return state;
+}
+
+Fields
+MissionState::toFields() const
+{
+  return {
+    {"drone_id", droneId},
+    {"mission_id", missionId},
+    {"part_id", partId},
+    {"mission_phase", phase},
+    {"mission_detail", detail},
+    {"mission_ack", ack},
+    {"mission_transport", transport},
+    {"waypoints_forwarded", waypointsForwarded},
+    {"waypoint_acks_accepted", waypointAcksAccepted},
+    {"mission_updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+std::string
+MissionState::statusLine() const
+{
+  return "Mission drone=" + droneId +
+         " mission=" + missionId +
+         " part=" + partId +
+         " phase=" + phase +
+         " detail=" + detail +
+         " ack=" + ack +
+         " waypoints=" + waypointsForwarded +
+         " accepted=" + waypointAcksAccepted;
+}
+
 std::vector<uint8_t>
 encodeVideoPacket(const VideoPacket& packet)
 {

@@ -369,14 +369,27 @@ computer 通过串口 MAVLink 连接 PX4 飞控，可以使用：
 `--mavlink-udp-host` / `--mavlink-udp-port` 指向 router 的本地 endpoint。`mavlink-router`
 这个 backend 名字也可以作为 UDP 路径的 alias。
 
+### GPS 数据来源
+
+DroneAPP 通过 MAVLink telemetry 从飞控获得 GPS 和 EKF readiness。真实无人机部署中，
+GPS unit 连接到 FlightController 上，由 PX4/ArduPilot 负责 GPS 融合、解锁检查、
+起飞 readiness 和飞行控制。companion computer 不再直接扫描 USB 或串口 GPS 设备。
+
 ### 飞控 readiness 和安全策略
 
 `UavDroneApp` 现在会从 UDP 或 serial backend 解析常见 MAVLink 状态消息。Telemetry response
 会在飞控提供时包含 `heartbeat_seen`、`armed`、`flight_controller_ready`、`gps_ready`、
 `battery_ready`、`readiness`、`ready_for_takeoff`、`gps_fix_type`、
-`gps_satellites_visible`、`altitude_m`、`groundspeed_mps` 和 `battery_percent`。
-Ground station 会在 telemetry / mission 视图里显示这些字段，让 operator 能看到当前选中的
-drone 是否真的 ready。
+`gps_satellites_visible`、`gps_fix_name`、`ekf_ready`、`system_status_name`、
+`landed_state_name`、`battery_voltage_v`、`battery_current_a`、`altitude_m`、
+`groundspeed_mps` 和 `battery_percent`。Ground station 会在 telemetry / mission 视图里显示
+这些字段，让 operator 能看到当前选中的 drone 是否真的 ready。
+
+Ground station 会把这些值保存成 typed `TelemetryState` 和 `MissionState` snapshot。
+左侧 vehicle list、地图 marker、inspector panel 和 mission 控件都从同一个状态模型刷新，
+不再靠临时 status 字符串解析，所以多无人机 UI 状态会始终跟当前选中的 drone 对齐。
+Mission upload response 和后续 telemetry 都会更新同一个 `MissionState`；`uploaded`、
+`executing`、`stopping` 这些 phase 会直接决定 Start Mission 和 Stop Patrol 按钮状态。
 
 命令 response 不再只代表“bytes 已转发”。对于标准 MAVLink `COMMAND_ACK`，backend 会返回
 `ack_result`、`ack_command_id` 和 `ack_raw_result`。非 manual command 只有在飞控 ACK 为
@@ -385,6 +398,10 @@ drone 是否真的 ready。
 Manual-control safety 采用保守策略。Drone 只会在很短的新鲜窗口内重放最新 `MANUAL_CONTROL`
 frame。窗口过期后，它会发送一次 neutral manual-control frame，然后停止重放，直到收到新的
 GS command。这样可以避免链路卡住后旧的键盘/手柄输入一直持续生效。
+
+Takeoff 会受 telemetry state 保护：GS 在发送 Targeted takeoff command 前，必须看到
+heartbeat、flight-controller readiness、GPS/EKF readiness、电池 readiness 和 armed 状态。
+UI 也增加了 Emergency Stop 按钮，走同一条 Targeted MAVLink 路径。
 
 任何真机电机测试前：
 
@@ -570,7 +587,10 @@ ground station 会在同一个 `/<drone>/UAV/Camera/Video` 控制服务请求里
 映射成 `ffmpeg` 的 H264 CRF quality 设置，并设置编码缩放宽度。响应里会同时返回 requested
 bitrate、accepted bitrate、requested width、accepted width、FPS、encoder quality 和 packet
 payload 大小。ground station 再用 accepted bitrate 以及每个 packet metadata 里的
-high-watermark 估计 prefetch window，避免盲目请求无边界的 packet sequence number。当前 demo
+high-watermark 估计 prefetch window，避免盲目请求无边界的 packet sequence number。同时 GS 会用
+实测 video RTT 动态调整 live prefetch window、lookahead、decoder reorder window、Interest
+lifetime、probe backoff 和 missing-packet skip timeout。这样低 bitrate / 低 FPS 摄像头不会
+过度预取，高 bitrate stream 也能保持足够的 in-flight Interests，减少卡顿。当前 demo
 默认是 8000 kbps、480 px frame width、30 FPS 的 H264 stream。提高 bitrate 会增加 stream 质量和
 packet 数据量；提高 frame width 才会让 GUI 里显示的视频更大。
 
@@ -987,6 +1007,19 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --start-jmavsim --jmavsim-headless \
   --auto-manual-control-test --no-cli
 ```
+
+如果要回归测试 PX4/jMAVSim 的 live telemetry 字段和状态变化：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --start-jmavsim --jmavsim-headless \
+  --flight-controller-backend udp \
+  --auto-telemetry-test --no-cli
+```
+
+这个测试会在 GS 通过 NDNSF Targeted request 执行 arm/takeoff/land 时，检查
+`gps_fix_name`、`ekf_ready`、`landed_state_name`、`battery_voltage_v`、
+`armed` 和 `lat/lon`。
 
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动
