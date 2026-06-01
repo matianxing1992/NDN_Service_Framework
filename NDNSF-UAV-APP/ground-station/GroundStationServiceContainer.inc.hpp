@@ -1494,6 +1494,7 @@ private:
                   m_receivedChunks = 0;
                   m_frameNacks = 0;
                   m_frameTimeouts = 0;
+                  m_highestReceivedVideoPacketSeq = UINT64_MAX;
                   m_nextChunkSeqToDecode = 0;
                   {
                     std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
@@ -1961,7 +1962,7 @@ private:
     if (!m_streaming.load()) {
       return;
     }
-    requestVideoLane(m_deltaLane, m_deltaWindow);
+    requestVideoLane(m_deltaLane, dynamicVideoWindow());
   }
 
   void
@@ -2011,8 +2012,8 @@ private:
     m_deltaPacketsPerSecond = std::clamp<uint64_t>(
       estimatedPacketsPerSecond + m_keyPacketsPerSecond + 8, 24, 180);
     m_keyWindow = std::clamp<uint64_t>(m_keyPacketsPerSecond, 4, 16);
-    m_deltaWindow = std::clamp<uint64_t>(
-      (m_deltaPacketsPerSecond + 2) / 3, 24, 48);
+    m_videoRttEwmaMs = DEFAULT_VIDEO_RTT_MS;
+    m_deltaWindow = dynamicVideoWindow();
 
     NDN_LOG_INFO("GS_VIDEO_PREFETCH bitrateKbps=" << bitrateKbps
                  << " frameWidth=" << frameWidth
@@ -2021,12 +2022,76 @@ private:
                  << " keyBudget=" << m_keyPacketsPerSecond
                  << " deltaBudget=" << m_deltaPacketsPerSecond
                  << " keyWindow=" << m_keyWindow
-                 << " deltaWindow=" << m_deltaWindow);
+                 << " deltaWindow=" << m_deltaWindow
+                 << " rttMs=" << videoRttMs());
     std::cout << "GS_VIDEO_PREFETCH bitrateKbps=" << bitrateKbps
               << " frameWidth=" << frameWidth
               << " keyBudget=" << m_keyPacketsPerSecond
               << " deltaBudget=" << m_deltaPacketsPerSecond
-              << " deltaWindow=" << m_deltaWindow << std::endl;
+              << " deltaWindow=" << m_deltaWindow
+              << " rttMs=" << videoRttMs() << std::endl;
+  }
+
+  uint64_t
+  videoRttMs() const
+  {
+    return std::clamp<uint64_t>(m_videoRttEwmaMs.load(), 20, 2000);
+  }
+
+  void
+  recordVideoRtt(uint64_t sentMs, uint64_t receivedMs)
+  {
+    if (sentMs == 0 || receivedMs <= sentMs) {
+      return;
+    }
+    const auto sample = std::clamp<uint64_t>(receivedMs - sentMs, 1, 3000);
+    auto previous = m_videoRttEwmaMs.load();
+    if (previous == 0) {
+      previous = sample;
+    }
+    const auto updated = (previous * 7 + sample) / 8;
+    m_videoRttEwmaMs = std::clamp<uint64_t>(updated, 20, 2000);
+  }
+
+  uint64_t
+  packetsForDurationMs(uint64_t durationMs, uint64_t minValue, uint64_t maxValue) const
+  {
+    const auto packets = (m_deltaPacketsPerSecond * durationMs + 999) / 1000;
+    return std::clamp<uint64_t>(packets, minValue, maxValue);
+  }
+
+  uint64_t
+  dynamicVideoWindow() const
+  {
+    const auto rtt = videoRttMs();
+    const auto targetBufferMs = std::clamp<uint64_t>(rtt + 80, 180, 750);
+    return packetsForDurationMs(targetBufferMs, 8, 128);
+  }
+
+  uint64_t
+  dynamicVideoLookahead() const
+  {
+    const auto rtt = videoRttMs();
+    const auto futureMs = std::clamp<uint64_t>(rtt / 3 + 40, 50, 250);
+    return packetsForDurationMs(futureMs, 2, 64);
+  }
+
+  uint64_t
+  dynamicProbeBackoffMs() const
+  {
+    return std::clamp<uint64_t>(videoRttMs() / 2, 60, 500);
+  }
+
+  uint64_t
+  dynamicInterestLifetimeMs() const
+  {
+    return std::clamp<uint64_t>(videoRttMs() * 3 + 200, 600, 3000);
+  }
+
+  uint64_t
+  dynamicDecoderMissingTimeoutMs() const
+  {
+    return std::clamp<uint64_t>(videoRttMs() + videoRttMs() / 2, 180, 1200);
   }
 
   void
@@ -2037,7 +2102,7 @@ private:
       advanceLaneIfStale(lane);
       const auto highWaterLimit = lane.advertisedPackets == 0 ?
         INITIAL_PACKET_PROBE :
-        lane.advertisedPackets + VIDEO_PACKET_LOOKAHEAD;
+        lane.advertisedPackets + dynamicVideoLookahead();
       if (lane.prefetchLimit == 0 &&
           lane.nextSeq >= highWaterLimit) {
         if (lane.inFlight == 0 && lane.advertisedPackets > 0) {
@@ -2049,36 +2114,45 @@ private:
       if (lane.probeNotBeforeMs > 0 &&
           nowMilliseconds() < lane.probeNotBeforeMs &&
           lane.nextSeq >= lane.advertisedPackets) {
-        scheduleVideoPump(PROBE_RETRY_BACKOFF_MS);
+        scheduleVideoPump(dynamicProbeBackoffMs());
         break;
       }
       const auto packetSeq = lane.nextSeq++;
       ++lane.inFlight;
+      const auto sentMs = nowMilliseconds();
+      const auto advertisedAtSend = lane.advertisedPackets;
       ndn::Name packetName = m_streamPrefix;
       packetName.append(std::to_string(packetSeq));
       auto interest = ndn::Interest(packetName);
       interest.setMustBeFresh(false);
-      interest.setInterestLifetime(300_ms);
+      interest.setInterestLifetime(ndn::time::milliseconds(dynamicInterestLifetimeMs()));
 
       m_face.expressInterest(
         interest,
-        [this, &lane, packetSeq](const ndn::Interest&, const ndn::Data& data) {
+        [this, &lane, packetSeq, sentMs, advertisedAtSend](const ndn::Interest&, const ndn::Data& data) {
           if (lane.inFlight > 0) {
             --lane.inFlight;
           }
           lane.probeNotBeforeMs = 0;
           advanceLaneIfStale(lane);
         const auto receivedCount = ++m_receivedChunks;
+        const auto receivedMs = nowMilliseconds();
+        if (advertisedAtSend > packetSeq) {
+          recordVideoRtt(sentMs, receivedMs);
+        }
         if (receivedCount <= 3 || receivedCount % 30 == 0) {
           NDN_LOG_INFO("GS_VIDEO_CHUNK count=" << receivedCount
                          << " packetSeq=" << packetSeq
                        << " name=" << data.getName()
-                       << " bytes=" << data.getContent().value_size());
+                       << " bytes=" << data.getContent().value_size()
+                       << " rttMs=" << videoRttMs()
+                       << " window=" << dynamicVideoWindow());
           std::cout << "GS_VIDEO_CHUNK count=" << receivedCount
                       << " packetSeq=" << packetSeq
-                    << " bytes=" << data.getContent().value_size() << std::endl;
+                    << " bytes=" << data.getContent().value_size()
+                    << " rttMs=" << videoRttMs()
+                    << " window=" << dynamicVideoWindow() << std::endl;
         }
-        const auto receivedMs = nowMilliseconds();
         if (m_firstFrameMs == 0) {
           m_firstFrameMs = receivedMs;
         }
@@ -2086,6 +2160,7 @@ private:
         std::vector<uint8_t> bytes(content.value(), content.value() + content.value_size());
           try {
             const auto packet = decodeVideoPacket(bytes);
+            updateHighestReceivedVideoPacket(packet.packetSeq);
             updateLaneHighWatermark(lane, packet);
             queueStreamChunk(packet, receivedMs);
           }
@@ -2111,20 +2186,27 @@ private:
           if (lane.inFlight > 0) {
             --lane.inFlight;
           }
-        const auto timeoutCount = ++m_frameTimeouts;
-        if (timeoutCount <= 3 || timeoutCount % 30 == 0) {
-            NDN_LOG_INFO("GS_VIDEO_TIMEOUT count=" << timeoutCount
-                         << " packetSeq=" << packetSeq);
-          std::cout << "GS_VIDEO_TIMEOUT count=" << timeoutCount
-                      << " packetSeq=" << packetSeq << std::endl;
-        }
-          if (packetSeq >= lane.advertisedPackets &&
-              lane.nextSeq > packetSeq) {
+          const bool isFutureProbe =
+            packetSeq >= lane.advertisedPackets ||
+            isBeyondHighestReceivedVideoPacket(packetSeq);
+          if (isFutureProbe && lane.nextSeq > packetSeq) {
+            NDN_LOG_DEBUG("GS_VIDEO_FUTURE_PROBE_TIMEOUT packetSeq=" << packetSeq
+                          << " advertisedPackets=" << lane.advertisedPackets
+                          << " highestReceived=" << m_highestReceivedVideoPacketSeq.load());
             lane.nextSeq = packetSeq;
-            lane.probeNotBeforeMs = nowMilliseconds() + PROBE_RETRY_BACKOFF_MS;
+            lane.probeNotBeforeMs = nowMilliseconds() + dynamicProbeBackoffMs();
+          }
+          else {
+            const auto timeoutCount = ++m_frameTimeouts;
+            if (timeoutCount <= 3 || timeoutCount % 30 == 0) {
+              NDN_LOG_INFO("GS_VIDEO_TIMEOUT count=" << timeoutCount
+                           << " packetSeq=" << packetSeq);
+              std::cout << "GS_VIDEO_TIMEOUT count=" << timeoutCount
+                        << " packetSeq=" << packetSeq << std::endl;
+            }
           }
           advanceLaneIfStale(lane);
-          scheduleVideoPump(PROBE_RETRY_BACKOFF_MS);
+          scheduleVideoPump(dynamicProbeBackoffMs());
           requestVideoPackets();
       });
     }
@@ -2159,6 +2241,25 @@ private:
   {
     lane.nextSeq = std::max(lane.nextSeq, packet.packetSeq + 1);
     lane.advertisedPackets = std::max(lane.advertisedPackets, packet.bucketPacketCount);
+  }
+
+  void
+  updateHighestReceivedVideoPacket(uint64_t packetSeq)
+  {
+    if (packetSeq == UINT64_MAX) {
+      return;
+    }
+    auto current = m_highestReceivedVideoPacketSeq.load();
+    while ((current == UINT64_MAX || packetSeq > current) &&
+           !m_highestReceivedVideoPacketSeq.compare_exchange_weak(current, packetSeq)) {
+    }
+  }
+
+  bool
+  isBeyondHighestReceivedVideoPacket(uint64_t packetSeq) const
+  {
+    const auto highest = m_highestReceivedVideoPacketSeq.load();
+    return highest == UINT64_MAX || packetSeq > highest;
   }
 
   void
@@ -2392,7 +2493,7 @@ private:
           !m_pendingChunks.empty()) {
         auto first = m_pendingChunks.begin();
         if (first->first > m_nextChunkSeqToDecode) {
-          NDN_LOG_WARN("GS_VIDEO_SKIP_MISSING_CHUNKS start="
+          NDN_LOG_DEBUG("GS_VIDEO_SKIP_MISSING_CHUNKS start="
                        << m_nextChunkSeqToDecode << " to=" << first->first - 1);
           m_decoderDroppedChunks += (first->first - m_nextChunkSeqToDecode);
           m_nextChunkSeqToDecode = first->first;
@@ -2719,7 +2820,7 @@ private:
       return false;
     }
     const auto nowMs = nowMilliseconds();
-    return nowMs >= m_decoderMissingChunkStartMs + m_decoderMissingTimeoutMs;
+    return nowMs >= m_decoderMissingChunkStartMs + dynamicDecoderMissingTimeoutMs();
   }
 
   void
@@ -2739,10 +2840,10 @@ private:
     }
 
     if (first->first > m_nextChunkSeqToDecode &&
-        now >= m_decoderMissingChunkStartMs + m_decoderMissingTimeoutMs) {
-      NDN_LOG_WARN("GS_VIDEO_SKIP_MISSING_CHUNKS_TIMEOUT start=" << m_decoderMissingChunkSeq
+        now >= m_decoderMissingChunkStartMs + dynamicDecoderMissingTimeoutMs()) {
+      NDN_LOG_DEBUG("GS_VIDEO_SKIP_MISSING_CHUNKS_TIMEOUT start=" << m_decoderMissingChunkSeq
                      << " to=" << first->first - 1
-                     << " timeoutMs=" << m_decoderMissingTimeoutMs
+                     << " timeoutMs=" << dynamicDecoderMissingTimeoutMs()
                      << " nowMs=" << now);
       m_decoderDroppedChunks += (first->first - m_nextChunkSeqToDecode);
       m_nextChunkSeqToDecode = first->first;
@@ -2853,6 +2954,7 @@ private:
   std::atomic<uint64_t> m_videoStartRetries{0};
   std::atomic<uint64_t> m_firstFrameMs{0};
   std::atomic<uint64_t> m_receivedChunks{0};
+  std::atomic<uint64_t> m_highestReceivedVideoPacketSeq{UINT64_MAX};
   std::atomic<uint64_t> m_frameNacks{0};
   std::atomic<uint64_t> m_frameTimeouts{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
@@ -2872,13 +2974,12 @@ private:
   uint64_t m_lastOutputChunkSeq = 0;
   uint64_t m_lastOutputChunkElapsedMs = 0;
   static constexpr uint64_t VIDEO_FPS = 30;
-  static constexpr uint64_t INITIAL_PACKET_PROBE = 8;
-  static constexpr uint64_t VIDEO_PACKET_LOOKAHEAD = 12;
-  static constexpr uint64_t PROBE_RETRY_BACKOFF_MS = 80;
+  static constexpr uint64_t INITIAL_PACKET_PROBE = 4;
+  static constexpr uint64_t DEFAULT_VIDEO_RTT_MS = 120;
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t m_decoderReorderWindow = 12;
-  static constexpr uint64_t m_decoderMissingTimeoutMs = 80;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
+  std::atomic<uint64_t> m_videoRttEwmaMs{DEFAULT_VIDEO_RTT_MS};
   std::atomic<bool> m_done{false};
   std::atomic<bool> m_videoPumpScheduled{false};
   std::mutex m_decoderQueueMutex;
