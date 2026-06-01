@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -25,6 +26,7 @@
 #include <deque>
 #include <fstream>
 #include <fcntl.h>
+#include <linux/videodev2.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <iostream>
@@ -37,6 +39,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <termios.h>
 #include <thread>
@@ -110,6 +113,96 @@ hasFlag(int argc, char** argv, const std::string& option)
     }
   }
   return false;
+}
+
+bool
+hasOption(int argc, char** argv, const std::string& option)
+{
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (argv[i] == option) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
+fileExists(const std::string& path)
+{
+  struct stat st {};
+  return !path.empty() && stat(path.c_str(), &st) == 0;
+}
+
+std::string
+findCaptureDevice()
+{
+  for (int i = 0; i < 16; ++i) {
+    const auto path = "/dev/video" + std::to_string(i);
+    struct stat st {};
+    if (stat(path.c_str(), &st) != 0 || !S_ISCHR(st.st_mode)) {
+      continue;
+    }
+
+    const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+      continue;
+    }
+
+    v4l2_capability cap {};
+    const bool ok = ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0;
+    close(fd);
+    if (!ok) {
+      continue;
+    }
+
+    const auto caps = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) != 0 ?
+      cap.device_caps : cap.capabilities;
+    if ((caps & V4L2_CAP_VIDEO_CAPTURE) != 0 ||
+        (caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE) != 0) {
+      return path;
+    }
+  }
+  return "";
+}
+
+std::string
+resolveVideoSource(int argc, char** argv, const Fields& config)
+{
+  std::string configured;
+  if (hasOption(argc, argv, "--video-source")) {
+    configured = getOption(argc, argv, "--video-source", "");
+  }
+  else {
+    const auto it = config.find("video-source");
+    if (it != config.end()) {
+      configured = it->second;
+    }
+  }
+
+  if (!configured.empty() && configured != "auto") {
+    return configured;
+  }
+
+  if (const auto device = findCaptureDevice(); !device.empty()) {
+    std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=" << device << std::endl;
+    return device;
+  }
+
+  for (const auto& fallback : {
+         std::string("videos/drone.mp4"),
+         std::string("NDNSF-UAV-APP/videos/drone.mp4"),
+         std::string("/home/tianxing/NDN/ndn-service-framework/NDNSF-UAV-APP/videos/drone.mp4")
+       }) {
+    if (fileExists(fallback)) {
+      std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=" << fallback
+                << " reason=no-capture-device" << std::endl;
+      return fallback;
+    }
+  }
+
+  std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=videos/drone.mp4"
+            << " reason=no-capture-device-no-sample-found" << std::endl;
+  return "videos/drone.mp4";
 }
 
 bool
@@ -235,9 +328,7 @@ main(int argc, char** argv)
       argc, argv, appConfig, "--unavailable", "available", true);
     const bool serveCertificates = getConfigBoolInvertedFlag(
       argc, argv, appConfig, "--no-serve-certificates", "serve-certificates", true);
-    const std::string videoPath = getConfigOption(
-      argc, argv, appConfig, "--video-source", "video-source",
-      "NDNSF-UAV-APP/videos/drone.mp4");
+    const std::string videoPath = resolveVideoSource(argc, argv, appConfig);
     const std::string flightControllerBackend =
       getConfigOption(argc, argv, appConfig, "--flight-controller-backend",
                       "flight-controller-backend", "mock");
@@ -275,6 +366,15 @@ main(int argc, char** argv)
     cameraOptions.recordChunkLimit = std::stoull(getConfigOption(
       argc, argv, appConfig, "--camera-record-chunk-limit",
       "camera-record-chunk-limit", "0"));
+    cameraOptions.v4l2InputFormat = getConfigOption(
+      argc, argv, appConfig, "--camera-v4l2-input-format",
+      "camera-v4l2-input-format", cameraOptions.v4l2InputFormat);
+    cameraOptions.v4l2InputSize = getConfigOption(
+      argc, argv, appConfig, "--camera-v4l2-input-size",
+      "camera-v4l2-input-size", cameraOptions.v4l2InputSize);
+    cameraOptions.v4l2InputFps = std::stoull(getConfigOption(
+      argc, argv, appConfig, "--camera-v4l2-input-fps",
+      "camera-v4l2-input-fps", std::to_string(cameraOptions.v4l2InputFps)));
     const bool autoCameraRecordSmoke = getConfigBool(
       argc, argv, appConfig, "--auto-camera-record-smoke",
       "auto-camera-record-smoke", false);

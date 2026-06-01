@@ -42,17 +42,33 @@ certs/                       place deployment certs or safebags here if desired
 videos/                      sample video input; replace with real camera setup later
 ```
 
+Drone configs use `video-source auto` by default. In this mode the drone picks
+the first local V4L2 capture device such as `/dev/video1`; if no capture device
+is available, it falls back to `videos/drone.mp4`. Set `video-source /dev/videoX`
+or a file path in the drone config to force a specific source.
+For USB UVC cameras, the default capture request is adaptive:
+`camera-v4l2-input-format auto`, `camera-v4l2-input-size auto`, and
+`camera-v4l2-input-fps 0`. In this mode the drone queries the camera and chooses
+a conservative format and size, preferring YUYV 640x480 when available. A frame
+rate value of `0` does not force the V4L2 input frame interval and lets the
+encoder downsample later. Change these config keys only after checking the
+camera's supported formats with
+`ffmpeg -f v4l2 -list_formats all -i /dev/videoX`.
+
 Run the apps:
 
 ```bash
 ./bin/ndnsf-uav-controller
-./bin/ndnsf-uav-gs
+./bin/ndnsf-uav-gs --app-config config/ground-station.conf
 ./bin/ndnsf-uav-drone --drone-id A
 ./bin/ndnsf-uav-drone --app-config config/drone-B.conf --drone-id B
 ```
 
-The wrappers use `./config` automatically when launched from the extracted
-release directory. You can point them to another writable config directory:
+The wrappers pass `--runtime-config`, `--app-config`, and `--trust-schema`
+automatically from `./config` when launched from the extracted release
+directory, then switch to that deployment root so relative paths such as
+`videos/drone.mp4` still work. You can point them to another writable config
+directory:
 
 ```bash
 export NDNSF_UAV_CONFIG_DIR=/path/to/config
@@ -96,6 +112,9 @@ and then run:
 ## Notes
 
 - The release bundles NDNSF and the runtime libraries needed by the UAV apps.
+- The release includes `ffmpeg` for USB/V4L2 camera capture when it was
+  available on the build host. Nix closures use `ffmpeg-headless` for the same
+  capture path.
 - NFD, PX4/jMAVSim, camera devices, routes, and certificates remain deployment
   responsibilities.
 - For a real multi-machine deployment, keep the namespace, identities,
