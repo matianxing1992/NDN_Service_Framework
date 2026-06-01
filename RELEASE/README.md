@@ -103,7 +103,26 @@ export NDNSF_UAV_CONFIG_DIR=$PWD/config
 ```
 
 Edit the copied `config/*.conf`, install certificates/key material, start NFD,
-and then run:
+and then run preflight checks before starting each role:
+
+```bash
+"$app/scripts/ndnsf-uav-preflight" --role controller --policy-file config/uav_demo.policies
+"$app/scripts/ndnsf-uav-preflight" --role ground-station --app-config config/ground-station.conf
+"$app/scripts/ndnsf-uav-preflight" --role drone --app-config config/drone-A.conf
+```
+
+For multi-machine deployment, export each node's public certificate and make
+the controller compare it before startup. This catches the common failure where
+the controller still has an old certificate for a drone and encrypts provider
+permissions to the wrong key:
+
+```bash
+ndnsec cert-dump -i /example/uav/drone/A > certs/drone-A.cert
+"$app/scripts/ndnsf-uav-preflight" --role controller \
+  --expected-cert /example/uav/drone/A=certs/drone-A.cert
+```
+
+Then start the apps:
 
 ```bash
 "$app/scripts/check-runtime-deps.sh"

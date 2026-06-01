@@ -46,8 +46,15 @@ lib/       private runtime libraries discovered from ldd
 config/    editable runtime configs, policies, and trust schema
 certs/     empty deployment certificate directory
 videos/    sample camera input video
-scripts/   dependency check helper
+scripts/   dependency and deployment preflight helpers
 ```
+
+Before starting a role on a target machine, run
+`scripts/ndnsf-uav-preflight`. It checks NFD reachability, config paths, trust
+schema, identity certificates, and stale local certificate choices. For
+multi-machine deployments, pass `--expected-cert IDENTITY=FILE` on the
+Controller machine so it verifies that the certificate used for encrypted
+permission delivery matches the certificate installed on the remote node.
 
 Drone configs default to `video-source auto`: the drone selects the first local
 V4L2 capture device and falls back to `videos/drone.mp4` when no usable camera is

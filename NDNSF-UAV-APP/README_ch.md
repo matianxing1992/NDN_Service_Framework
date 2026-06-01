@@ -241,16 +241,31 @@ UDP face，并把 UAV namespace 路由到 PC/controller。
 
 在真实机器上启动 containers 前，先运行 preflight checker。它不会修改系统状态，只检查 NFD
 是否可达、目标 identity certificate 是否已经安装、trust schema 是否存在，以及 ffmpeg、YOLO、
-video source、MAVLink UDP port 等本地 adapter 条件是否合理。
+video source、MAVLink UDP port 等本地 adapter 条件是否合理。它还会检查同一个 identity
+是否存在多套本地 key/certificate；这种情况可能导致 Controller 把 permission response 加密给旧证书。
+
+在 Controller 上：
+
+```bash
+python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
+  --role controller \
+  --runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf \
+  --policy-file NDNSF-UAV-APP/configs/uav_demo.policies \
+  --expected-cert /example/uav/drone/A=/path/to/drone-A.cert
+```
+
+`--expected-cert` 不是必须的，但多机器部署时建议使用。先在远端节点导出公开证书：
+`ndnsec cert-dump -i /example/uav/drone/A > drone-A.cert`，复制到 Controller，然后让
+preflight 对比 Controller keychain 中用于加密权限的证书是否就是这张证书。
 
 在 PC / ground station 上：
 
 ```bash
 python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
   --role ground-station \
-  --identity /example/uav/gs \
-  --trust-schema /absolute/path/to/uav-trust.conf \
-  --yolo-model yolo26n.pt
+  --runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf \
+  --app-config NDNSF-UAV-APP/configs/ground-station.conf \
+  --trust-schema /absolute/path/to/uav-trust.conf
 ```
 
 在 drone A 上：
@@ -258,9 +273,9 @@ python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
 ```bash
 python3 NDNSF-UAV-APP/tools/uav_deployment_check.py \
   --role drone \
-  --identity /example/uav/drone/A \
+  --runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf \
+  --app-config NDNSF-UAV-APP/configs/drone-A.conf \
   --trust-schema /absolute/path/to/uav-trust.conf \
-  --video-source NDNSF-UAV-APP/videos/drone.mp4 \
   --flight-controller-backend udp \
   --mavlink-udp-host 127.0.0.1 \
   --mavlink-udp-port 18570 \
