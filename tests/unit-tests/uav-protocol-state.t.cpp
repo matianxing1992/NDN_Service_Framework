@@ -111,10 +111,28 @@ BOOST_AUTO_TEST_CASE(FlightSafetyGateCombinesReadinessAndSafety)
   airborneTelemetry.gpsReady = "true";
   airborneTelemetry.ekfReady = "true";
   airborneTelemetry.batteryReady = "true";
+  airborneTelemetry.flightControllerBackend = "mock";
+  airborneTelemetry.flightControllerAvailable = "true";
+  airborneTelemetry.flightControllerState = "mock-ready";
+  airborneTelemetry.flightControllerReason = "ok";
+  airborneTelemetry.cameraAvailable = "true";
+  airborneTelemetry.cameraSource = "/dev/video42";
+  airborneTelemetry.cameraReason = "ok";
   airborneTelemetry.armed = "true";
   airborneTelemetry.readiness = "ready";
   airborneTelemetry.landedStateName = "in-air";
   BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("ready_for_takeoff"), "false");
+  BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("flight_controller_backend"), "mock");
+  BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("flight_controller_available"), "true");
+  BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("camera_available"), "true");
+  BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("camera_source"), "/dev/video42");
+  const auto telemetryRoundTrip = TelemetryState::fromFields(airborneTelemetry.toFields());
+  BOOST_CHECK_EQUAL(telemetryRoundTrip.flightControllerBackend, "mock");
+  BOOST_CHECK_EQUAL(telemetryRoundTrip.flightControllerAvailable, "true");
+  BOOST_CHECK_EQUAL(telemetryRoundTrip.cameraAvailable, "true");
+  BOOST_CHECK_EQUAL(telemetryRoundTrip.cameraReason, "ok");
+  BOOST_CHECK_NE(telemetryRoundTrip.statusLine().find("fc_backend=mock"), std::string::npos);
+  BOOST_CHECK_NE(telemetryRoundTrip.statusLine().find("camera_available=true"), std::string::npos);
   airborneTelemetry.landedStateName = "on-ground";
   BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("ready_for_takeoff"), "true");
 
@@ -391,7 +409,10 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   state.timeouts = 2;
   state.nacks = 1;
   state.duplicates = 3;
+  state.publishedFrames = 90;
   state.decodedFrames = 45;
+  state.decodedFrameGap = 45;
+  state.frameGapPressure = 35;
   state.updatedMs = 123456;
 
   const auto decoded = VideoAdaptiveState::fromFields(state.toFields());
@@ -408,6 +429,9 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_EQUAL(decoded.timeoutPressure, 55);
   BOOST_CHECK_EQUAL(decoded.primaryPressure, "timeout");
   BOOST_CHECK_EQUAL(decoded.policyReason, "pressure-timeout");
+  BOOST_CHECK_EQUAL(decoded.publishedFrames, 90);
+  BOOST_CHECK_EQUAL(decoded.decodedFrameGap, 45);
+  BOOST_CHECK_EQUAL(decoded.frameGapPressure, 35);
   BOOST_CHECK(decoded.underPressure());
   BOOST_CHECK_NE(decoded.statusLine().find("VideoAdaptive drone=A"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("suggested_bitrate_kbps=4000"), std::string::npos);
@@ -415,6 +439,9 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_NE(decoded.statusLine().find("primary_pressure=timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("policy_reason=pressure-timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("published_frames=90"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("decoded_frame_gap=45"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("frame_gap_pressure=35"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frames=45"), std::string::npos);
 }
 
@@ -553,6 +580,16 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyIdentifiesPressureProfiles)
   probe.probePressure = 90;
   BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).primaryPressure, "probe");
   BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).policyReason, "pressure-probe");
+
+  auto decodeGap = base;
+  decodeGap.publishedFrames = 120;
+  decodeGap.decodedFrames = 10;
+  const auto decodeGapDecision = computeVideoAdaptivePolicy(decodeGap);
+  BOOST_CHECK_EQUAL(decodeGapDecision.primaryPressure, "decode-gap");
+  BOOST_CHECK_EQUAL(decodeGapDecision.policyReason, "pressure-decode-gap");
+  BOOST_CHECK_EQUAL(decodeGapDecision.bitrateAction, "decrease");
+  BOOST_CHECK_GT(decodeGapDecision.frameGapPressure, 0);
+  BOOST_CHECK_LT(decodeGapDecision.suggestedBitrateKbps, decodeGap.acceptedBitrateKbps);
 }
 
 BOOST_AUTO_TEST_CASE(SelectedDroneSummaryStateUsesSharedModels)
@@ -583,6 +620,8 @@ BOOST_AUTO_TEST_CASE(SelectedDroneSummaryStateUsesSharedModels)
   VideoState video;
   video.droneId = "A";
   video.status = "streaming";
+  video.cameraAvailable = "true";
+  video.cameraReason = "ok";
 
   VideoAdaptiveState adaptive;
   adaptive.droneId = "A";
@@ -632,6 +671,9 @@ BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)
   telemetry.readiness = "ready";
   telemetry.armed = "true";
   telemetry.gpsFixName = "3d-fix";
+  telemetry.flightControllerAvailable = "true";
+  telemetry.flightControllerReady = "true";
+  telemetry.cameraAvailable = "true";
 
   auto readiness = makeReadyState(true);
   auto mission = makeMissionState("executing");
@@ -639,6 +681,8 @@ BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)
   VideoState video;
   video.droneId = "A";
   video.status = "streaming";
+  video.cameraAvailable = "true";
+  video.cameraReason = "ok";
 
   VideoAdaptiveState adaptive;
   adaptive.droneId = "A";
@@ -690,6 +734,8 @@ BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)
   BOOST_CHECK_EQUAL(row.missionProgress, "executing");
   BOOST_CHECK_EQUAL(row.video, "streaming");
   BOOST_CHECK_NE(row.rowText.find("Drone A active"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("fc=true/true"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("cam=true"), std::string::npos);
   BOOST_CHECK_NE(row.rowText.find("progress=executing"), std::string::npos);
   BOOST_CHECK_NE(row.rowText.find("adaptive=rtt=115ms"), std::string::npos);
 

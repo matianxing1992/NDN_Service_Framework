@@ -275,7 +275,13 @@ TelemetryState::fromFields(const Fields& fields)
   state.gpsFixType = fieldOr(fields, "gps_fix_type", state.gpsFixType);
   state.gpsFixName = fieldOr(fields, "gps_fix_name", state.gpsFixName);
   state.gpsSatellitesVisible = fieldOr(fields, "gps_satellites_visible", state.gpsSatellitesVisible);
+  state.flightControllerBackend = fieldOr(fields, "flight_controller_backend",
+                                          state.flightControllerBackend);
+  state.flightControllerAvailable = fieldOr(fields, "flight_controller_available",
+                                            state.flightControllerAvailable);
   state.flightControllerState = fieldOr(fields, "fc_state", state.flightControllerState);
+  state.flightControllerReason = fieldOr(fields, "flight_controller_reason",
+                                         state.flightControllerReason);
   state.systemStatus = fieldOr(fields, "system_status", state.systemStatus);
   state.systemStatusName = fieldOr(fields, "system_status_name", state.systemStatusName);
   state.landedState = fieldOr(fields, "landed_state", state.landedState);
@@ -286,6 +292,9 @@ TelemetryState::fromFields(const Fields& fields)
   state.video = fieldOr(fields, "video", state.video);
   state.capture = fieldOr(fields, "capture", state.capture);
   state.recording = fieldOr(fields, "recording", state.recording);
+  state.cameraAvailable = fieldOr(fields, "camera_available", state.cameraAvailable);
+  state.cameraSource = fieldOr(fields, "camera_source", fieldOr(fields, "source", state.cameraSource));
+  state.cameraReason = fieldOr(fields, "camera_reason", state.cameraReason);
   state.linkState = fieldOr(fields, "link_state", state.linkState);
   state.manualControlState = fieldOr(fields, "manual_control_state", state.manualControlState);
   state.manualReplayActive = fieldOr(fields, "manual_replay_active", state.manualReplayActive);
@@ -362,7 +371,10 @@ TelemetryState::toFields() const
     {"gps_fix_type", gpsFixType},
     {"gps_fix_name", gpsFixName},
     {"gps_satellites_visible", gpsSatellitesVisible},
+    {"flight_controller_backend", flightControllerBackend},
+    {"flight_controller_available", flightControllerAvailable},
     {"fc_state", flightControllerState},
+    {"flight_controller_reason", flightControllerReason},
     {"system_status", systemStatus},
     {"system_status_name", systemStatusName},
     {"landed_state", landedState},
@@ -376,6 +388,9 @@ TelemetryState::toFields() const
     {"video", video},
     {"capture", capture},
     {"recording", recording},
+    {"camera_available", cameraAvailable},
+    {"camera_source", cameraSource},
+    {"camera_reason", cameraReason},
     {"link_state", linkState},
     {"manual_control_state", manualControlState},
     {"manual_replay_active", manualReplayActive},
@@ -400,9 +415,13 @@ TelemetryState::statusLine() const
          " armed=" + armed +
          " gps=" + gpsReady +
          " ekf=" + ekfReady +
+         " fc_backend=" + flightControllerBackend +
+         " fc_available=" + flightControllerAvailable +
+         " fc_state=" + flightControllerState +
          " landed=" + landedStateName +
          " speed=" + groundspeedMps + "m/s" +
          " video=" + video +
+         " camera_available=" + cameraAvailable +
          " link=" + linkState +
          " manual=" + manualControlState;
 }
@@ -418,10 +437,17 @@ TelemetryState::mapSummary(const std::string& selectedDrone) const
          "Readiness: " + readiness + " (" + readinessReason + ")  Armed: " + armed + "\n"
          "GPS: " + gpsReady + " fix=" + gpsFixName + " (" + gpsFixType + ")" +
          " sats=" + gpsSatellitesVisible + " EKF=" + ekfReady + "\n"
-         "Flight controller: " + systemStatusName + " landed=" + landedStateName +
+         "Flight controller: backend=" + flightControllerBackend +
+         " available=" + flightControllerAvailable +
+         " ready=" + flightControllerReady +
+         " state=" + flightControllerState +
+         " reason=" + flightControllerReason +
+         " system=" + systemStatusName + " landed=" + landedStateName +
          " vtol=" + vtolStateName + "\n"
          "Battery: " + batteryPercent + "% " + batteryVoltageV + "V " +
          batteryCurrentA + "A  Speed: " + groundspeedMps + " m/s\n"
+         "Camera: available=" + cameraAvailable + " source=" + cameraSource +
+         " reason=" + cameraReason + "\n"
          "Video: " + video + "  Capture: " + capture + "  Recording: " + recording + "\n\n"
          "Safety: link=" + linkState + " manual=" + manualControlState +
          " neutral=" + manualNeutralSent + " fresh_for=" + manualFreshForMs + "ms\n\n"
@@ -938,7 +964,9 @@ VideoState::fromFields(const Fields& fields)
   state.recording = fieldOr(fields, "recording", state.recording);
   state.streamId = fieldOr(fields, "stream_id", state.streamId);
   state.encoding = fieldOr(fields, "encoding", state.encoding);
-  state.source = fieldOr(fields, "source", state.source);
+  state.source = fieldOr(fields, "source", fieldOr(fields, "camera_source", state.source));
+  state.cameraAvailable = fieldOr(fields, "camera_available", state.cameraAvailable);
+  state.cameraReason = fieldOr(fields, "camera_reason", state.cameraReason);
   state.requestedBitrateKbps = uint64FieldOr(fields, "requested_bitrate_kbps", state.requestedBitrateKbps);
   state.acceptedBitrateKbps = uint64FieldOr(fields, "accepted_bitrate_kbps", state.acceptedBitrateKbps);
   state.requestedFrameWidth = uint64FieldOr(fields, "requested_frame_width", state.requestedFrameWidth);
@@ -972,6 +1000,8 @@ VideoState::toFields() const
     {"stream_id", streamId},
     {"encoding", encoding},
     {"source", source},
+    {"camera_available", cameraAvailable},
+    {"camera_reason", cameraReason},
     {"requested_bitrate_kbps", std::to_string(requestedBitrateKbps)},
     {"accepted_bitrate_kbps", std::to_string(acceptedBitrateKbps)},
     {"requested_frame_width", std::to_string(requestedFrameWidth)},
@@ -1005,6 +1035,8 @@ VideoState::statusLine() const
          " capture=" + capture +
          " recording=" + recording +
          " stream=" + streamId +
+         " camera_available=" + cameraAvailable +
+         " camera_reason=" + cameraReason +
          " bitrate=" + std::to_string(acceptedBitrateKbps) + "kbps" +
          " width=" + std::to_string(acceptedFrameWidth) +
          " packets=" + std::to_string(streamPacketsPublished) +
@@ -1065,7 +1097,10 @@ VideoAdaptiveState::fromFields(const Fields& fields)
   state.timeouts = uint64FieldOr(fields, "timeouts", state.timeouts);
   state.nacks = uint64FieldOr(fields, "nacks", state.nacks);
   state.duplicates = uint64FieldOr(fields, "duplicates", state.duplicates);
+  state.publishedFrames = uint64FieldOr(fields, "published_frames", state.publishedFrames);
   state.decodedFrames = uint64FieldOr(fields, "decoded_frames", state.decodedFrames);
+  state.decodedFrameGap = uint64FieldOr(fields, "decoded_frame_gap", state.decodedFrameGap);
+  state.frameGapPressure = uint64FieldOr(fields, "frame_gap_pressure", state.frameGapPressure);
   state.updatedMs = uint64FieldOr(fields, "updated_ms", state.updatedMs);
   return state;
 }
@@ -1099,7 +1134,10 @@ VideoAdaptiveState::toFields() const
     {"timeouts", std::to_string(timeouts)},
     {"nacks", std::to_string(nacks)},
     {"duplicates", std::to_string(duplicates)},
+    {"published_frames", std::to_string(publishedFrames)},
     {"decoded_frames", std::to_string(decodedFrames)},
+    {"decoded_frame_gap", std::to_string(decodedFrameGap)},
+    {"frame_gap_pressure", std::to_string(frameGapPressure)},
     {"updated_ms", std::to_string(updatedMs)},
   };
 }
@@ -1114,7 +1152,7 @@ uint64_t
 VideoAdaptiveState::maxPressure() const
 {
   return std::max({timeoutPressure, probePressure, duplicatePressure,
-                   lossPressure, backlogPressure});
+                   lossPressure, backlogPressure, frameGapPressure});
 }
 
 std::string
@@ -1158,7 +1196,10 @@ VideoAdaptiveState::statusLine() const
          " timeouts=" + std::to_string(timeouts) +
          " nacks=" + std::to_string(nacks) +
          " duplicates=" + std::to_string(duplicates) +
-         " decoded_frames=" + std::to_string(decodedFrames);
+         " published_frames=" + std::to_string(publishedFrames) +
+         " decoded_frames=" + std::to_string(decodedFrames) +
+         " decoded_frame_gap=" + std::to_string(decodedFrameGap) +
+         " frame_gap_pressure=" + std::to_string(frameGapPressure);
 }
 
 namespace {
@@ -1209,6 +1250,25 @@ policyBacklogPressurePercent(const VideoAdaptivePolicyInput& input)
 }
 
 uint64_t
+policyFrameGapPressurePercent(const VideoAdaptivePolicyInput& input)
+{
+  const auto fps = std::max<uint64_t>(1, input.fps);
+  if (input.publishedFrames < fps * 2 ||
+      input.publishedFrames <= input.decodedFrames) {
+    return 0;
+  }
+  const auto gap = input.publishedFrames - input.decodedFrames;
+  const auto allowedGap = std::max<uint64_t>(3, fps);
+  if (gap <= allowedGap) {
+    return 0;
+  }
+  const auto severeGap = std::max<uint64_t>(allowedGap + 1, fps * 3);
+  return std::clamp<uint64_t>(((gap - allowedGap) * 100) /
+                              std::max<uint64_t>(1, severeGap - allowedGap),
+                              0, 100);
+}
+
+uint64_t
 lowerVideoBitrateStep(uint64_t currentKbps)
 {
   if (currentKbps > 6000) {
@@ -1256,10 +1316,10 @@ higherVideoBitrateStep(uint64_t currentKbps, uint64_t requestedKbps)
 std::string
 primaryVideoPressure(uint64_t lossPressure, uint64_t timeoutPressure,
                      uint64_t duplicatePressure, uint64_t backlogPressure,
-                     uint64_t probePressure)
+                     uint64_t probePressure, uint64_t frameGapPressure)
 {
   const auto primary = std::max({lossPressure, timeoutPressure, duplicatePressure,
-                                 backlogPressure, probePressure});
+                                 backlogPressure, probePressure, frameGapPressure});
   if (primary == 0) {
     return "none";
   }
@@ -1274,6 +1334,9 @@ primaryVideoPressure(uint64_t lossPressure, uint64_t timeoutPressure,
   }
   if (primary == backlogPressure) {
     return "backlog";
+  }
+  if (primary == frameGapPressure) {
+    return "decode-gap";
   }
   return "probe";
 }
@@ -1292,6 +1355,7 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
 
   decision.lossPressure = policyLossPressurePercent(input);
   decision.backlogPressure = policyBacklogPressurePercent(input);
+  decision.frameGapPressure = policyFrameGapPressurePercent(input);
   decision.probePressure = std::max(input.probePressure,
                                     input.duplicatePressure / 2);
   decision.congestionPressure = std::max({
@@ -1303,10 +1367,12 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
                                                   input.timeoutPressure,
                                                   input.duplicatePressure / 2,
                                                   decision.backlogPressure,
-                                                  decision.probePressure);
+                                                  decision.probePressure,
+                                                  decision.frameGapPressure);
 
   const auto windowPressure = std::max(decision.congestionPressure,
-                                       decision.backlogPressure);
+                                       std::max(decision.backlogPressure,
+                                                decision.frameGapPressure));
   const auto windowTimeoutCapMs = std::clamp<uint64_t>(timeoutBudgetMs / 2, 350, 1000);
   const auto targetBufferMs = std::clamp<uint64_t>(rtt * 2 + frameMs * 2,
                                                   180, windowTimeoutCapMs);
@@ -1323,7 +1389,8 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
   const auto lookaheadPressure = std::max({
     decision.congestionPressure,
     decision.probePressure,
-    decision.backlogPressure
+    decision.backlogPressure,
+    decision.frameGapPressure
   });
   const auto lookaheadTimeoutCapMs = std::clamp<uint64_t>(timeoutBudgetMs / 5, 160, 500);
   const auto futureMs = std::clamp<uint64_t>(rtt + frameMs * 2, 100, lookaheadTimeoutCapMs);
@@ -1364,7 +1431,9 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
     300, 1800);
   const auto baseWaitMs = std::clamp<uint64_t>(rtt + frameMs * 3, minWaitMs, maxWaitMs);
   const auto waitPressureReductionMs =
-    std::min<uint64_t>(decision.lossPressure * 3 + decision.backlogPressure * 2,
+    std::min<uint64_t>(decision.lossPressure * 3 +
+                       decision.backlogPressure * 2 +
+                       decision.frameGapPressure * 2,
                        baseWaitMs / 2);
   decision.missingTimeoutMs = std::clamp<uint64_t>(baseWaitMs - waitPressureReductionMs,
                                                   minWaitMs, maxWaitMs);
@@ -1375,7 +1444,8 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
   const auto bitratePressure = std::max({
     decision.congestionPressure,
     decision.backlogPressure,
-    decision.probePressure
+    decision.probePressure,
+    decision.frameGapPressure
   });
   const auto highRttThreshold = std::clamp<uint64_t>(
     timeoutBudgetMs / 3 + frameMs * 4, 350, 900);
@@ -2024,7 +2094,10 @@ DroneListRowState::fromStates(const std::string& droneId,
                      " gps=" + state.gps;
   }
   if (state.hasTelemetry) {
-    state.rowText += " bat=" + state.battery;
+    state.rowText += " bat=" + state.battery +
+                     " fc=" + telemetry->flightControllerAvailable +
+                     "/" + telemetry->flightControllerReady +
+                     " cam=" + telemetry->cameraAvailable;
   }
   if (state.hasMission && state.mission != "idle") {
     state.rowText += " mission=" + state.mission;

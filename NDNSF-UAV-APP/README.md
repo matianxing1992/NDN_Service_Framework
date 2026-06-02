@@ -724,7 +724,7 @@ show RTT, window, lookahead, pressure, missing-packet timeout, pending chunks,
 decoded-frame progress, the dominant pressure source, the policy reason, and
 the current bitrate recommendation without scraping packet logs. The dominant
 source is kept specific enough to distinguish timeout, loss, duplicate,
-backlog, and future-probe pressure instead of hiding them all under one generic
+backlog, future-probe, and decode-gap pressure instead of hiding them all under one generic
 congestion label. The actual
 window, lookahead, timeout, and bitrate recommendation are computed through a
 typed `VideoAdaptivePolicyInput` to
@@ -1486,10 +1486,14 @@ to make it a deployable UAV service-container workload. The planned order is:
    `SelectedActionState`, giving unit tests the same availability/reason model
    used by the GUI. The selected-drone inspector/map summary now derives its
    non-rendering fields from shared `SelectedDroneSummaryState`, while GTK text
-   and map marker rendering stay in the window layer. The telemetry live smoke
-   now emits those shared action/summary/row models for every arm/takeoff/land
-   telemetry sample, so state-model regressions use real NDNSF telemetry requests
-   instead of only synthetic GUI injections. Continue extending this rule to new
+   and map marker rendering stay in the window layer. Drone telemetry now also
+   carries camera availability/source/reason and flight-controller
+   backend/availability/readiness/state, so the GS can show whether a drone-side
+   camera and flight controller are actually usable instead of only showing that
+   a telemetry response arrived. The telemetry live smoke now emits those shared
+   action/summary/row/subsystem models for every arm/takeoff/land telemetry
+   sample, so state-model regressions use real NDNSF telemetry requests instead
+   of only synthetic GUI injections. Continue extending this rule to new
    mission/video/safety UI paths: GUI code should not infer state from ad hoc
    status strings when a typed state model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
@@ -1510,7 +1514,7 @@ to make it a deployable UAV service-container workload. The planned order is:
    decisions as `VideoAdaptiveState`, including advisory bitrate
    decrease/hold/increase decisions plus `primary_pressure` and `policy_reason`
    fields that explain the dominant pressure source. `primary_pressure`
-   distinguishes timeout, loss, duplicate, backlog, and probe pressure so
+   distinguishes timeout, loss, duplicate, backlog, probe, and decode-gap pressure so
    operators can tell why the receiver is shrinking or recovering. The core window,
    lookahead, timeout, and bitrate recommendation calculations now live in a typed
    `VideoAdaptivePolicyInput` to `VideoAdaptivePolicyDecision` helper with unit

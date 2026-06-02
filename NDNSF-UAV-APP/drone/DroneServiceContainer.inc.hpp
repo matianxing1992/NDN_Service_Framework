@@ -1425,6 +1425,9 @@ public:
       {"streaming_model", "h264-low-latency-packet-stream"},
       {"prefetch_hint", "budget-from-bitrate"},
       {"source", m_videoPath},
+      {"camera_available", cameraAvailable() ? "true" : "false"},
+      {"camera_source", cameraSource()},
+      {"camera_reason", cameraReason()},
       {"timestamp_ms", std::to_string(nowMilliseconds())},
     };
   }
@@ -1460,6 +1463,9 @@ public:
       {"stream_packets_published", std::to_string(streamPacketsPublished)},
       {"fec_groups_published", std::to_string(fecGroupsPublished)},
       {"frames_published", std::to_string(fecGroupsPublished)},
+      {"camera_available", cameraAvailable() ? "true" : "false"},
+      {"camera_source", cameraSource()},
+      {"camera_reason", cameraReason()},
       {"timestamp_ms", std::to_string(nowMilliseconds())},
     };
   }
@@ -1480,6 +1486,33 @@ public:
   isRecording() const
   {
     return m_cameraOptions.recordToLocalRepo && m_recordingRepo != nullptr;
+  }
+
+  bool
+  cameraAvailable() const
+  {
+    return !m_videoPath.empty() && access(m_videoPath.c_str(), F_OK) == 0;
+  }
+
+  std::string
+  cameraSource() const
+  {
+    return m_videoPath.empty() ? std::string("none") : m_videoPath;
+  }
+
+  std::string
+  cameraReason() const
+  {
+    if (m_videoPath.empty()) {
+      return "no-source-configured";
+    }
+    if (access(m_videoPath.c_str(), F_OK) != 0) {
+      return "source-unavailable";
+    }
+    if (!isCapturing()) {
+      return "capture-off";
+    }
+    return "ok";
   }
 
   uint64_t
@@ -2538,6 +2571,19 @@ public:
     return m_videoPublisher != nullptr && m_videoPublisher->isRecording();
   }
 
+  Fields
+  cameraStatusFields() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    const bool available = m_videoPublisher != nullptr && m_videoPublisher->cameraAvailable();
+    return {
+      {"camera_available", available ? "true" : "false"},
+      {"camera_source", m_videoPublisher != nullptr ? m_videoPublisher->cameraSource() : m_videoPath},
+      {"camera_reason", m_videoPublisher != nullptr ? m_videoPublisher->cameraReason() :
+        (m_videoPath.empty() ? std::string("no-source-configured") : std::string("publisher-not-ready"))},
+    };
+  }
+
   uint64_t
   streamPacketsPublished() const
   {
@@ -2601,6 +2647,14 @@ public:
     telemetry["video"] = isStreaming() ? "streaming" : "stopped";
     telemetry["capture"] = isCapturing() ? "on" : "off";
     telemetry["recording"] = isRecording() ? "on" : "off";
+    telemetry["flight_controller_backend"] = m_flightControllerBackend;
+    telemetry["flight_controller_available"] = m_backend ? "true" : "false";
+    telemetry["flight_controller_reason"] = m_backend ? "ok" : "backend-not-created";
+    const auto cameraFields = cameraStatusFields();
+    telemetry.insert(cameraFields.begin(), cameraFields.end());
+    telemetry["stream_packets_published"] = std::to_string(streamPacketsPublished());
+    telemetry["fec_groups_published"] = std::to_string(fecGroupsPublished());
+    telemetry["frames_published"] = std::to_string(fecGroupsPublished());
     telemetry["recording_chunks"] = std::to_string(recordingChunks());
     telemetry["recording_bytes"] = std::to_string(recordingBytes());
     telemetry["timestamp_ms"] = std::to_string(nowMilliseconds());
@@ -2810,6 +2864,14 @@ private:
           telemetry["video"] = isStreaming() ? "streaming" : "stopped";
           telemetry["capture"] = isCapturing() ? "on" : "off";
           telemetry["recording"] = isRecording() ? "on" : "off";
+          telemetry["flight_controller_backend"] = m_flightControllerBackend;
+          telemetry["flight_controller_available"] = m_backend ? "true" : "false";
+          telemetry["flight_controller_reason"] = m_backend ? "ok" : "backend-not-created";
+          const auto cameraFields = cameraStatusFields();
+          telemetry.insert(cameraFields.begin(), cameraFields.end());
+          telemetry["stream_packets_published"] = std::to_string(streamPacketsPublished());
+          telemetry["fec_groups_published"] = std::to_string(fecGroupsPublished());
+          telemetry["frames_published"] = std::to_string(fecGroupsPublished());
           telemetry["recording_chunks"] = std::to_string(recordingChunks());
           telemetry["recording_bytes"] = std::to_string(recordingBytes());
           telemetry["timestamp_ms"] = std::to_string(nowMilliseconds());
