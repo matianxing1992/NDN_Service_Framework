@@ -2570,10 +2570,8 @@ private:
         std::lock_guard<std::mutex> guard(*missionMutex);
         mission = *missionState;
       }
-      const bool assigned = mission.phase == "uploading" ||
-                            mission.phase == "uploaded" ||
-                            mission.phase == "executing";
-      const bool busy = missionBusy->load() || assigned;
+      const bool busyForAssignment = mission.isBusyForAssignment();
+      const bool busy = missionBusy->load() || busyForAssignment;
       ndn_service_framework::ServiceProvider::AckDecision decision;
       decision.status = m_available && !busy;
       decision.message = decision.status ? "mission slot available" :

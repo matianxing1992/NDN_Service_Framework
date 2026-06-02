@@ -1426,8 +1426,8 @@ private:
   void
   updateMissionControls()
   {
-    const auto readyDrones = m_runtime.missionReadyDrones();
-    bool hasUploaded = !readyDrones.empty();
+    const auto startableDrones = m_runtime.missionStartableDrones();
+    bool hasUploaded = !startableDrones.empty();
     bool hasExecuting = false;
     bool hasStopping = false;
     for (const auto& droneId : m_droneIds) {
@@ -1435,9 +1435,9 @@ private:
       if (!mission) {
         continue;
       }
-      hasUploaded = hasUploaded || mission->phase == "uploaded";
-      hasExecuting = hasExecuting || mission->phase == "executing";
-      hasStopping = hasStopping || mission->phase == "stopping";
+      hasUploaded = hasUploaded || mission->isStartable();
+      hasExecuting = hasExecuting || mission->isExecuting();
+      hasStopping = hasStopping || mission->isStopping();
     }
     m_startMission.set_sensitive(hasUploaded && !hasExecuting && !hasStopping);
     m_stopPatrol.set_sensitive(hasUploaded || hasExecuting || hasStopping);
@@ -1739,12 +1739,12 @@ private:
   void
   scheduleMissionStartPhase(int phase, size_t droneIndex)
   {
-    const auto readyDrones = m_runtime.missionReadyDrones();
-    if (readyDrones.empty()) {
+    const auto startableDrones = m_runtime.missionStartableDrones();
+    if (startableDrones.empty()) {
       m_status.set_text("No uploaded patrol mission is ready; upload mission before Start Mission");
       return;
     }
-    if (droneIndex >= readyDrones.size()) {
+    if (droneIndex >= startableDrones.size()) {
       if (phase == 0) {
         m_status.set_text("Mission sequence: all patrol drones armed; taking off next");
         Glib::signal_timeout().connect([this] {
@@ -1766,11 +1766,11 @@ private:
       return;
     }
 
-    const auto droneId = readyDrones[droneIndex];
+    const auto droneId = startableDrones[droneIndex];
     if (phase == 0) {
       m_status.set_text("Mission sequence: arming Drone " + droneId +
                         " (" + std::to_string(droneIndex + 1) + "/" +
-                        std::to_string(readyDrones.size()) + ")");
+                        std::to_string(startableDrones.size()) + ")");
       m_runtime.sendMavlinkCommandToDrone(droneId, "arm", {{"arm", "true"}});
       Glib::signal_timeout().connect([this, droneIndex] {
         scheduleMissionStartPhase(0, droneIndex + 1);
@@ -1781,7 +1781,7 @@ private:
     if (phase == 1) {
       m_status.set_text("Mission sequence: takeoff Drone " + droneId +
                         " (" + std::to_string(droneIndex + 1) + "/" +
-                        std::to_string(readyDrones.size()) + ")");
+                        std::to_string(startableDrones.size()) + ")");
       m_runtime.sendMavlinkCommandToDrone(droneId, "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
       Glib::signal_timeout().connect([this, droneIndex] {
         scheduleMissionStartPhase(1, droneIndex + 1);
@@ -1792,7 +1792,7 @@ private:
 
     m_status.set_text("Mission sequence: starting mission on Drone " + droneId +
                       " (" + std::to_string(droneIndex + 1) + "/" +
-                      std::to_string(readyDrones.size()) + ")");
+                      std::to_string(startableDrones.size()) + ")");
     m_runtime.sendMavlinkCommandToDrone(droneId, "start_mission");
     Glib::signal_timeout().connect([this, droneIndex] {
       scheduleMissionStartPhase(2, droneIndex + 1);
