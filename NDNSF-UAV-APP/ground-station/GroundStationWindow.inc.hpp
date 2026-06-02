@@ -14,6 +14,7 @@ public:
                       bool autoFlightControlsTest,
                       bool autoRecordingPlaybackTest,
                       bool autoApplyBitrateTest,
+                      bool autoVideoPressureProfileTest,
                       bool autoRepeatStopTest,
                       std::vector<std::string> droneIds)
     : m_runtime(runtime)
@@ -82,6 +83,7 @@ public:
     , m_padLB("LB")
     , m_padRB("RB")
     , m_autoApplyBitrateTest(autoApplyBitrateTest)
+    , m_autoVideoPressureProfileTest(autoVideoPressureProfileTest)
     , m_autoRepeatStopTest(autoRepeatStopTest)
     , m_droneIds(std::move(droneIds))
   {
@@ -646,6 +648,25 @@ public:
         Glib::signal_idle().connect_once([this] {
           logVideoAdaptiveViewState("auto-video-active");
         });
+        if (m_autoVideoPressureProfileTest) {
+          m_runtime.injectVideoAdaptivePressureForTest("congestion", 95, 0, 0, 0, 400, 80, 0);
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          Glib::signal_idle().connect_once([this] {
+            logVideoAdaptiveViewState("auto-video-pressure-congestion");
+          });
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          m_runtime.injectVideoAdaptivePressureForTest("backlog", 0, 0, 0, 120, 1000, 0, 0);
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          Glib::signal_idle().connect_once([this] {
+            logVideoAdaptiveViewState("auto-video-pressure-backlog");
+          });
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          m_runtime.injectVideoAdaptivePressureForTest("probe", 0, 95, 0, 0, 1000, 0, 0);
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          Glib::signal_idle().connect_once([this] {
+            logVideoAdaptiveViewState("auto-video-pressure-probe");
+          });
+        }
         if (m_autoApplyBitrateTest) {
           bool applied = false;
           for (int i = 0; i < 30 && !applied; ++i) {
@@ -3472,6 +3493,7 @@ private:
   Gtk::Button m_padLB;
   Gtk::Button m_padRB;
   bool m_autoApplyBitrateTest = false;
+  bool m_autoVideoPressureProfileTest = false;
   Gtk::Label m_status;
   Gtk::Label m_linkStatus;
   Gtk::Label m_services;

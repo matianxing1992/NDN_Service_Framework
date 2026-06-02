@@ -1209,6 +1209,11 @@ test must deterministically exercise the automatic Stop-then-Start path. The
 smoke also checks that adaptive logs include `primary_pressure` and
 `policy_reason`, so tuning changes remain explainable rather than only changing
 numeric windows.
+Add `--auto-video-pressure-profile-test` when the smoke should inject controlled
+congestion, backlog, and probe-pressure samples after video starts. The GS then
+logs `auto-video-pressure-congestion`, `auto-video-pressure-backlog`, and
+`auto-video-pressure-probe` view states, proving that the same typed policy can
+explain different pressure sources without relying on random packet loss.
 
 The smoke test exits after checking that the ground station decoded video
 frames and that the drone entered and left streaming mode. In the integrated
@@ -1467,6 +1472,8 @@ to make it a deployable UAV service-container workload. The planned order is:
    tests for pressure, high-RTT, and recovery behavior, so tuning stays generic
    rather than tied to one MiniNDN topology. The `Apply Bitrate` control now turns a
    non-hold recommendation into an explicit Stop-then-Start stream restart.
+   MiniNDN smoke can also inject controlled congestion/backlog/probe pressure
+   profiles and verify that `primary_pressure` switches accordingly.
    The default policy remains manual, while `auto-after-pressure` can be enabled
    for experiments that should apply persistent-pressure recommendations
    automatically.
