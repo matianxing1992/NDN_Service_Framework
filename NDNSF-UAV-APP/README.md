@@ -1470,9 +1470,11 @@ to make it a deployable UAV service-container workload. The planned order is:
    the same control model as the smoke logs. The Arm/Takeoff/Land/Manual/E-stop
    action bar now derives from shared `FlightActionControlState` and
    `SelectedActionState`, giving unit tests the same availability/reason model
-   used by the GUI. Continue extending this rule to new mission/video/safety UI
-   paths: GUI code should not infer state from ad hoc status strings when a typed
-   state model is available.
+   used by the GUI. The selected-drone inspector/map summary now derives its
+   non-rendering fields from shared `SelectedDroneSummaryState`, while GTK text
+   and map marker rendering stay in the window layer. Continue extending this rule
+   to new mission/video/safety UI paths: GUI code should not infer state from ad
+   hoc status strings when a typed state model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
    ODROID-class or real airframe computers without a GUI/X server. In headless
    mode the app should run only NDNSF, MAVLink, camera, repo, telemetry, and

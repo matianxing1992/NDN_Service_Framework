@@ -731,9 +731,10 @@ UAV service-container workload 的应用。计划顺序如下：
    解析内部 packet log。selected-drone 的 Start/Stop video 按钮现在也由共享
    `VideoControlState` 派生，因此 timeout 恢复和目标切换会使用和 smoke log 一致的 control model。
    Arm/Takeoff/Land/Manual/E-stop action bar 现在也由共享的 `FlightActionControlState` 和
-   `SelectedActionState` 派生，让 unit test 覆盖与 GUI 相同的可用性和 reason 模型。后续新增
-   mission/video/safety UI 路径时继续坚持这一点：只要有 typed state model，GUI 就不应该再从
-   临时 status string 推断状态。
+   `SelectedActionState` 派生，让 unit test 覆盖与 GUI 相同的可用性和 reason 模型。selected-drone
+   inspector/map 的非渲染摘要字段现在也由共享 `SelectedDroneSummaryState` 派生，GTK 文本和地图
+   marker 渲染仍然留在窗口层。后续新增 mission/video/safety UI 路径时继续坚持这一点：只要有
+   typed state model，GUI 就不应该再从临时 status string 推断状态。
 2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
    上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、
    telemetry 和 mission services。

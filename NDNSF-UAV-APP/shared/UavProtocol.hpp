@@ -551,6 +551,44 @@ struct MissionPlan
   std::string statusLine() const;
 };
 
+struct SelectedDroneSummaryState
+{
+  std::string selectedDrone = "unknown";
+  bool hasTelemetry = false;
+  std::string readiness = "unknown";
+  std::string missionPhase = "unknown";
+  std::string missionProgressPhase = "unknown";
+  std::string missionPlanTask = "none";
+  std::string missionPartId = "none";
+  uint64_t missionPartWaypoints = 0;
+  std::string videoStatus = "unknown";
+  std::string videoAdaptive = "unknown";
+  std::string linkState = "unknown";
+  bool safetyAttention = false;
+  bool canArm = false;
+  bool canTakeoff = false;
+  bool canLand = false;
+  bool canManualControl = false;
+  bool canControlPanel = false;
+  std::string armReason = "unknown";
+  std::string takeoffReason = "unknown";
+  std::string landReason = "unknown";
+  std::string manualControlReason = "unknown";
+  std::string controlPanelReason = "unknown";
+
+  static SelectedDroneSummaryState fromStates(const std::string& selectedDrone,
+                                              const std::optional<TelemetryState>& telemetry,
+                                              const std::optional<ReadinessState>& readiness,
+                                              const std::optional<MissionState>& mission,
+                                              const std::optional<MissionPlan>& missionPlan,
+                                              const std::optional<MissionPart>& missionPart,
+                                              const std::optional<MissionProgressState>& missionProgress,
+                                              const std::optional<VideoState>& video,
+                                              const std::optional<VideoAdaptiveState>& videoAdaptive,
+                                              const std::optional<SafetyState>& safety);
+  std::string statusLine() const;
+};
+
 MissionPlan
 buildPatrolMissionPlan(const std::string& taskId,
                        double centerLat,

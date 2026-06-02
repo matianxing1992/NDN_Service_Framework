@@ -2127,6 +2127,77 @@ MissionPlan::statusLine() const
          " return_home=" + std::string(returnHomePlanned ? "true" : "false");
 }
 
+SelectedDroneSummaryState
+SelectedDroneSummaryState::fromStates(const std::string& selectedDrone,
+                                      const std::optional<TelemetryState>& telemetry,
+                                      const std::optional<ReadinessState>& readiness,
+                                      const std::optional<MissionState>& mission,
+                                      const std::optional<MissionPlan>& missionPlan,
+                                      const std::optional<MissionPart>& missionPart,
+                                      const std::optional<MissionProgressState>& missionProgress,
+                                      const std::optional<VideoState>& video,
+                                      const std::optional<VideoAdaptiveState>& videoAdaptive,
+                                      const std::optional<SafetyState>& safety)
+{
+  SelectedDroneSummaryState state;
+  state.selectedDrone = selectedDrone.empty() ? "unknown" : selectedDrone;
+  state.hasTelemetry = telemetry.has_value();
+  state.readiness = readiness ? readiness->readiness :
+                    telemetry ? telemetry->readiness : "unknown";
+  state.missionPhase = mission ? mission->phase : "idle";
+  state.missionProgressPhase = missionProgress ? missionProgress->phase : "idle";
+  state.missionPlanTask = missionPlan ? missionPlan->taskId : "none";
+  state.missionPartId = missionPart ? missionPart->id : "none";
+  state.missionPartWaypoints = missionPart ? missionPart->waypoints.size() : 0;
+  state.videoStatus = video ? video->status :
+                      telemetry ? telemetry->video : "unknown";
+  state.videoAdaptive = videoAdaptive ? videoAdaptive->compactSummary() : "unknown";
+  state.linkState = safety ? safety->linkState :
+                    telemetry ? telemetry->linkState : "unknown";
+
+  const auto flight = FlightActionControlState::fromGate(
+    FlightSafetyGateState::fromStates(state.selectedDrone, readiness, safety));
+  state.safetyAttention = flight.operatorAttention;
+  state.canArm = flight.canArm;
+  state.canTakeoff = flight.canTakeoff;
+  state.canLand = flight.canLand;
+  state.canManualControl = flight.canManualControl;
+  state.canControlPanel = flight.canControlPanel;
+  state.armReason = flight.armReason;
+  state.takeoffReason = flight.takeoffReason;
+  state.landReason = flight.landReason;
+  state.manualControlReason = flight.manualControlReason;
+  state.controlPanelReason = flight.controlPanelReason;
+  return state;
+}
+
+std::string
+SelectedDroneSummaryState::statusLine() const
+{
+  return "SelectedDroneSummary selected=" + selectedDrone +
+         " has_telemetry=" + std::string(hasTelemetry ? "true" : "false") +
+         " readiness=" + readiness +
+         " mission=" + missionPhase +
+         " mission_progress=" + missionProgressPhase +
+         " mission_plan=" + missionPlanTask +
+         " mission_part=" + missionPartId +
+         " mission_part_waypoints=" + std::to_string(missionPartWaypoints) +
+         " video=" + videoStatus +
+         " video_adaptive=" + videoAdaptive +
+         " link=" + linkState +
+         " safety_attention=" + std::string(safetyAttention ? "true" : "false") +
+         " can_arm=" + std::string(canArm ? "true" : "false") +
+         " arm_reason=" + armReason +
+         " can_takeoff=" + std::string(canTakeoff ? "true" : "false") +
+         " takeoff_reason=" + takeoffReason +
+         " can_land=" + std::string(canLand ? "true" : "false") +
+         " land_reason=" + landReason +
+         " can_manual=" + std::string(canManualControl ? "true" : "false") +
+         " manual_reason=" + manualControlReason +
+         " can_panel=" + std::string(canControlPanel ? "true" : "false") +
+         " panel_reason=" + controlPanelReason;
+}
+
 namespace {
 
 double

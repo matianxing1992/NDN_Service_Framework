@@ -2217,32 +2217,10 @@ private:
     return marker;
   }
 
-  struct SelectedDroneViewState
+  struct SelectedDroneViewState : SelectedDroneSummaryState
   {
-    std::string selectedDrone;
-    bool hasTelemetry = false;
     std::string inspectorText;
     std::string mapText;
-    std::string readiness = "unknown";
-    std::string missionPhase = "unknown";
-    std::string missionProgressPhase = "unknown";
-    std::string missionPlanTask = "none";
-    std::string missionPartId = "none";
-    uint64_t missionPartWaypoints = 0;
-    std::string videoStatus = "unknown";
-    std::string videoAdaptive = "unknown";
-    std::string linkState = "unknown";
-    bool safetyAttention = false;
-    bool canArm = false;
-    bool canTakeoff = false;
-    bool canLand = false;
-    bool canManualControl = false;
-    bool canControlPanel = false;
-    std::string armReason = "unknown";
-    std::string takeoffReason = "unknown";
-    std::string landReason = "unknown";
-    std::string manualControlReason = "unknown";
-    std::string controlPanelReason = "unknown";
     MapMarker marker;
   };
 
@@ -2250,53 +2228,33 @@ private:
   selectedDroneViewState() const
   {
     SelectedDroneViewState state;
-    state.selectedDrone = m_runtime.targetDroneId();
+    const auto selectedDrone = m_runtime.targetDroneId();
     size_t markerIndex = 0;
-    const auto foundId = std::find(m_droneIds.begin(), m_droneIds.end(), state.selectedDrone);
+    const auto foundId = std::find(m_droneIds.begin(), m_droneIds.end(), selectedDrone);
     if (foundId != m_droneIds.end()) {
       markerIndex = static_cast<size_t>(std::distance(m_droneIds.begin(), foundId));
     }
-    state.marker = markerForDrone(state.selectedDrone, markerIndex);
-    const auto telemetry = m_runtime.telemetryForDrone(state.selectedDrone);
-    const auto mission = m_runtime.missionForDrone(state.selectedDrone);
-    const auto readiness = m_runtime.readinessForDrone(state.selectedDrone);
-    const auto video = m_runtime.videoForDrone(state.selectedDrone);
-    const auto videoAdaptive = m_runtime.videoAdaptiveForDrone(state.selectedDrone);
-    const auto command = m_runtime.commandForDrone(state.selectedDrone);
-    const auto safety = m_runtime.safetyForDrone(state.selectedDrone);
+    state.marker = markerForDrone(selectedDrone, markerIndex);
+    const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
+    const auto mission = m_runtime.missionForDrone(selectedDrone);
+    const auto readiness = m_runtime.readinessForDrone(selectedDrone);
+    const auto video = m_runtime.videoForDrone(selectedDrone);
+    const auto videoAdaptive = m_runtime.videoAdaptiveForDrone(selectedDrone);
+    const auto command = m_runtime.commandForDrone(selectedDrone);
+    const auto safety = m_runtime.safetyForDrone(selectedDrone);
     const auto missionProgress = m_runtime.missionProgressSnapshot();
     auto missionPlan = m_runtime.missionPlanSnapshot();
-    auto missionPart = m_runtime.missionPartForDrone(state.selectedDrone);
+    auto missionPart = m_runtime.missionPartForDrone(selectedDrone);
     if (!missionPlan && m_previewMissionPlan) {
       missionPlan = m_previewMissionPlan;
     }
     if (!missionPart) {
-      missionPart = previewMissionPartForDrone(state.selectedDrone);
+      missionPart = previewMissionPartForDrone(selectedDrone);
     }
-    state.readiness = readiness ? readiness->readiness :
-                      telemetry ? telemetry->readiness : "unknown";
-    state.missionPhase = mission ? mission->phase : "idle";
-    state.missionProgressPhase = missionProgress ? missionProgress->phase : "idle";
-    state.missionPlanTask = missionPlan ? missionPlan->taskId : "none";
-    state.missionPartId = missionPart ? missionPart->id : "none";
-    state.missionPartWaypoints = missionPart ? missionPart->waypoints.size() : 0;
-    state.videoStatus = video ? video->status :
-                        telemetry ? telemetry->video : "unknown";
-    state.videoAdaptive = videoAdaptive ? videoAdaptive->compactSummary() : "unknown";
-    state.linkState = safety ? safety->linkState :
-                      telemetry ? telemetry->linkState : "unknown";
-    const auto flightGate = FlightSafetyGateState::fromStates(state.selectedDrone, readiness, safety);
-    state.safetyAttention = flightGate.operatorAttention;
-    state.canArm = flightGate.canArm;
-    state.canTakeoff = flightGate.canTakeoff;
-    state.canLand = flightGate.canLand;
-    state.canManualControl = flightGate.canManualControl;
-    state.canControlPanel = flightGate.canControlPanel;
-    state.armReason = flightGate.armReason;
-    state.takeoffReason = flightGate.takeoffReason;
-    state.landReason = flightGate.landReason;
-    state.manualControlReason = flightGate.manualControlReason;
-    state.controlPanelReason = flightGate.controlPanelReason;
+    static_cast<SelectedDroneSummaryState&>(state) =
+      SelectedDroneSummaryState::fromStates(selectedDrone, telemetry, readiness, mission,
+                                            missionPlan, missionPart, missionProgress,
+                                            video, videoAdaptive, safety);
     if (telemetry) {
       state.hasTelemetry = true;
       state.inspectorText = telemetry->statusLine() +
