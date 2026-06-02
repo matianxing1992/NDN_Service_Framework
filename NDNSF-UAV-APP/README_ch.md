@@ -1095,6 +1095,17 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 这个测试先获取一次 telemetry，然后停止刷新并等待，确认 GS safety model 会从
 fresh/connected 变成 `stale`，再变成 `lost`。
 
+如果要回归测试视频 Start/Stop 控件是否跟随当前选中的 drone，而不是错误地跟随全局 stream
+flag：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-video-selection-test --no-cli
+```
+
+launcher 会启动 Drone A 和 Drone B，只开启 Drone A 的图传，然后让 GS 切换到 Drone B
+再切回 Drone A，并检查 typed video state 是否正确驱动当前选中无人机的按钮模型。
+
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动
 `px4 -i 0` 和 `px4 -i 1`。Drone A 使用 PX4 MAVLink UDP 端口

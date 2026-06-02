@@ -1238,6 +1238,18 @@ The test fetches one telemetry sample, waits without refreshing it, and checks
 that the GS safety model transitions from fresh/connected to `stale` and then
 `lost`.
 
+To regression-test that video Start/Stop controls follow the selected drone
+instead of a global stream flag:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-video-selection-test --no-cli
+```
+
+The launcher starts Drone A and Drone B, starts video only on Drone A, switches
+the GS selection to Drone B and back, and checks that the typed video state
+drives the button model for the selected drone.
+
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
 `make px4_sitl jmavsim` target twice. Drone A uses PX4 MAVLink UDP port
