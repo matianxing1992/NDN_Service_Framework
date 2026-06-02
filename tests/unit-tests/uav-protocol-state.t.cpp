@@ -21,6 +21,7 @@ using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::TelemetryState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
+using ndnsf::examples::uav::VideoControlState;
 using ndnsf::examples::uav::VideoState;
 using ndnsf::examples::uav::buildPatrolMissionPlan;
 using ndnsf::examples::uav::computeVideoAdaptivePolicy;
@@ -306,6 +307,35 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_NE(decoded.statusLine().find("policy_reason=pressure-timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frames=45"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(VideoControlStateDerivesStartStopActions)
+{
+  const auto idle = VideoControlState::fromStates("A", std::nullopt, false);
+  BOOST_CHECK_EQUAL(idle.selectedDrone, "A");
+  BOOST_CHECK(!idle.remoteStreaming);
+  BOOST_CHECK(!idle.displayActive);
+  BOOST_CHECK(idle.canStart);
+  BOOST_CHECK(!idle.canStop);
+  BOOST_CHECK_NE(idle.statusLine().find("can_start=true"), std::string::npos);
+
+  VideoState streaming;
+  streaming.droneId = "A";
+  streaming.status = "streaming";
+  const auto remoteStreaming = VideoControlState::fromStates("A", streaming, false);
+  BOOST_CHECK(remoteStreaming.remoteStreaming);
+  BOOST_CHECK(!remoteStreaming.displayActive);
+  BOOST_CHECK(!remoteStreaming.canStart);
+  BOOST_CHECK(remoteStreaming.canStop);
+
+  VideoState stopped;
+  stopped.droneId = "A";
+  stopped.status = "stopped";
+  const auto localDisplay = VideoControlState::fromStates("A", stopped, true);
+  BOOST_CHECK(!localDisplay.remoteStreaming);
+  BOOST_CHECK(localDisplay.displayActive);
+  BOOST_CHECK(!localDisplay.canStart);
+  BOOST_CHECK(localDisplay.canStop);
 }
 
 BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyShrinksUnderPressure)

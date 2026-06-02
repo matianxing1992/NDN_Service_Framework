@@ -725,7 +725,9 @@ UAV service-container workload 的应用。计划顺序如下：
    直播链路现在也有 typed `VideoAdaptiveState`，记录 RTT、prefetch window、lookahead、
    timeout pressure、probe pressure、decoder backlog 和 decoded-frame progress；video panel、
    selected-drone view、左侧 drone row 和 MiniNDN smoke logs 都从这个 model 读取状态，而不是
-   解析内部 packet log。后续新增 mission/video/safety UI 路径时继续坚持这一点：只要有 typed
+   解析内部 packet log。selected-drone 的 Start/Stop video 按钮现在也由共享
+   `VideoControlState` 派生，因此 timeout 恢复和目标切换会使用和 smoke log 一致的 control model。
+   后续新增 mission/video/safety UI 路径时继续坚持这一点：只要有 typed
    state model，GUI 就不应该再从临时 status string 推断状态。
 2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
    上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、

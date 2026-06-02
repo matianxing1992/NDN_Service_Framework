@@ -210,6 +210,20 @@ struct VideoState
   std::string statusLine() const;
 };
 
+struct VideoControlState
+{
+  std::string selectedDrone = "unknown";
+  bool remoteStreaming = false;
+  bool displayActive = false;
+  bool canStart = true;
+  bool canStop = false;
+
+  static VideoControlState fromStates(const std::string& selectedDrone,
+                                      const std::optional<VideoState>& video,
+                                      bool displayActive);
+  std::string statusLine() const;
+};
+
 struct VideoAdaptiveState
 {
   std::string droneId = "unknown";

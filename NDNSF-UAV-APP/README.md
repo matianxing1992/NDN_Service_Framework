@@ -1461,7 +1461,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    covering RTT, prefetch window, lookahead, timeout pressure, probe pressure,
    decoder backlog, and decoded-frame progress; the video panel, selected-drone
    view, left drone rows, and MiniNDN smoke logs read that model instead of
-   scraping internal logs. Continue extending this rule to new
+   scraping internal logs. The selected-drone Start/Stop video buttons now derive
+   from shared `VideoControlState`, so timeout recovery and target switching use
+   the same control model as the smoke logs. Continue extending this rule to new
    mission/video/safety UI paths: GUI code should not infer state from ad hoc
    status strings when a typed state model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on

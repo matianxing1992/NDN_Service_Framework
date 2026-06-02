@@ -964,6 +964,30 @@ VideoState::statusLine() const
          " decoded=" + std::to_string(decodedFrames);
 }
 
+VideoControlState
+VideoControlState::fromStates(const std::string& selectedDrone,
+                              const std::optional<VideoState>& video,
+                              bool displayActive)
+{
+  VideoControlState state;
+  state.selectedDrone = selectedDrone.empty() ? "unknown" : selectedDrone;
+  state.remoteStreaming = video && video->isStreaming();
+  state.displayActive = displayActive;
+  state.canStart = !state.remoteStreaming && !state.displayActive;
+  state.canStop = state.remoteStreaming || state.displayActive;
+  return state;
+}
+
+std::string
+VideoControlState::statusLine() const
+{
+  return "VideoControl selected=" + selectedDrone +
+         " can_start=" + std::string(canStart ? "true" : "false") +
+         " can_stop=" + std::string(canStop ? "true" : "false") +
+         " remote_streaming=" + std::string(remoteStreaming ? "true" : "false") +
+         " display_active=" + std::string(displayActive ? "true" : "false");
+}
+
 VideoAdaptiveState
 VideoAdaptiveState::fromFields(const Fields& fields)
 {
