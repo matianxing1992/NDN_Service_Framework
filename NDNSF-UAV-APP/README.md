@@ -1452,6 +1452,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    compensation, completion, and return-home planning, and the ground-station
    mission buttons use that progress model to block duplicate upload/start
    actions while a patrol assignment or compensation step is still active. The
+   mission toolbar now derives Upload/Start/Stop sensitivity and reasons through
+   shared `MissionControlState`, so mission-control smoke logs and GUI buttons
+   use the same model. The
    same progress model also updates left-side drone rows and map marker labels
    so operators can see active compensation or completion without opening the
    inspector. The left vehicle list now uses shared `DroneListRowState`

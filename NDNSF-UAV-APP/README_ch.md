@@ -718,7 +718,9 @@ UAV service-container workload 的应用。计划顺序如下：
    mission fields 覆盖 GS 侧更新的 mission state。Patrol task progress 现在也有
    typed `MissionProgressState`，用于 assignment、compensation、completion 和 return-home
    planning；ground-station mission 按钮也会使用这个 progress model，在 patrol assignment 或
-   compensation 仍然 active 时阻止重复 upload/start。左侧 drone row 和地图 marker 也会使用同一个
+   compensation 仍然 active 时阻止重复 upload/start。mission toolbar 现在通过共享的
+   `MissionControlState` 派生 Upload/Start/Stop 的 sensitivity 和 reason，因此 mission-control
+   smoke log 与 GUI 按钮使用同一个模型。左侧 drone row 和地图 marker 也会使用同一个
    progress model，让操作者不用打开 inspector 就能看到 compensation active 或 completed 状态。
    左侧 vehicle list 现在使用共享的 `DroneListRowState` 派生逻辑，保证 selected/standby、
    readiness、mission progress、video、command 和 safety 摘要与其它状态层显示一致。
