@@ -725,7 +725,8 @@ stream id, and decoder state stay coherent. The default bitrate policy is
 `manual`. For experiments, the GS can be started with
 `--video-bitrate-policy auto-after-pressure`, which applies a non-hold
 recommendation only after pressure persists for
-`--video-bitrate-auto-pressure-ms`.
+`--video-bitrate-auto-pressure-ms`. Set that value to `0` for an aggressive
+or regression-test mode that applies the first pressure-based recommendation.
 The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
 H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
@@ -1183,7 +1184,8 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 Add `--auto-apply-bitrate-test` to the same command when you want the smoke test
 to exercise the explicit `Apply Bitrate` Stop-then-Start path.
 For the policy-driven path, use `--video-bitrate-policy auto-after-pressure`
-with a short `--video-bitrate-auto-pressure-ms` value.
+with a short `--video-bitrate-auto-pressure-ms` value; use `0` when the smoke
+test must deterministically exercise the automatic Stop-then-Start path.
 
 The smoke test exits after checking that the ground station decoded video
 frames and that the drone entered and left streaming mode. In the integrated
