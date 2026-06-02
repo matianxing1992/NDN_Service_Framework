@@ -1585,6 +1585,19 @@ private:
     if (storedMission.droneId == "unknown") {
       storedMission.droneId = droneId;
     }
+    const auto previousMission = m_missionByDrone.find(droneId);
+    const bool emptyIdleTelemetryMission =
+      storedMission.isIdle() &&
+      (storedMission.missionId.empty() || storedMission.missionId == "none" ||
+       storedMission.missionId == "unknown") &&
+      (storedMission.partId.empty() || storedMission.partId == "none" ||
+       storedMission.partId == "unknown") &&
+      storedMission.updatedMs == 0;
+    if (previousMission != m_missionByDrone.end() &&
+        !previousMission->second.isIdle() &&
+        emptyIdleTelemetryMission) {
+      return;
+    }
     m_missionByDrone[droneId] = storedMission;
   }
 

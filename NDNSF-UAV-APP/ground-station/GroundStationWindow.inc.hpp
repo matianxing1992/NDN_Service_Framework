@@ -396,7 +396,7 @@ public:
     });
     m_patrol.signal_clicked().connect([this] {
       m_patrolUploadInFlight = true;
-      m_patrol.set_sensitive(false);
+      updateSelectedActionControls();
       m_status.set_text("Uploading cooperative patrol mission...");
       double centerLat = 35.1186;
       double centerLon = -89.9375;
@@ -422,15 +422,15 @@ public:
       }).detach();
     });
     m_startMission.signal_clicked().connect([this] {
+      m_missionStartInFlight = true;
       m_status.set_text("Starting patrol mission by phase: arm all, take off all, start all...");
-      m_startMission.set_sensitive(false);
-      m_stopPatrol.set_sensitive(true);
+      updateSelectedActionControls();
       scheduleMissionStartPhase(0, 0);
     });
     m_stopPatrol.signal_clicked().connect([this] {
+      m_patrolStopInFlight = true;
       m_status.set_text("Stopping patrol: landing patrol drones...");
-      m_startMission.set_sensitive(false);
-      m_stopPatrol.set_sensitive(false);
+      updateSelectedActionControls();
       schedulePatrolLandSequence(0);
     });
     m_controlToggle.signal_clicked().connect([this] {
@@ -917,6 +917,20 @@ public:
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
+          m_missionStartInFlight = true;
+          updateVehicleRows();
+          logMissionControlState("start-pending");
+          m_missionStartInFlight = false;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
+          m_patrolStopInFlight = true;
+          updateVehicleRows();
+          logMissionControlState("stop-pending");
+          m_patrolStopInFlight = false;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
           MissionProgressState progress;
           progress.taskId = "mission-controls-progress-test";
           progress.phase = "compensating";
@@ -1198,15 +1212,26 @@ private:
   {
     const auto state = flightActionControlStateForSelected();
     m_arm.set_sensitive(state.canArm);
+    m_arm.set_tooltip_text(state.canArm ? "Arm selected drone" :
+                           "Arm blocked: " + state.armReason);
     m_takeoff.set_sensitive(state.canTakeoff);
+    m_takeoff.set_tooltip_text(state.canTakeoff ? "Take off selected drone" :
+                               "Takeoff blocked: " + state.takeoffReason);
     m_land.set_sensitive(state.canLand);
+    m_land.set_tooltip_text(state.canLand ? "Land selected drone" :
+                            "Land blocked: " + state.landReason);
     if (m_controlMode && !state.canControlPanel) {
       setControlMode(false);
       m_status.set_text("Manual control disabled: drone=" + m_runtime.targetDroneId() +
                         " reason=" + state.controlPanelReason);
     }
     m_controlToggle.set_sensitive(state.canControlPanel || m_controlMode || state.canManualControl);
+    m_controlToggle.set_tooltip_text(state.canControlPanel ? "Toggle manual control" :
+                                     "Manual control blocked: " + state.controlPanelReason);
     m_emergencyStop.set_sensitive(!state.selectedDrone.empty());
+    m_emergencyStop.set_tooltip_text(state.selectedDrone.empty() ?
+                                     "Select a drone before emergency stop" :
+                                     "Send emergency stop to Drone " + state.selectedDrone);
   }
 
   bool
@@ -1856,13 +1881,21 @@ private:
   {
     const auto state = missionControlState();
     m_patrol.set_sensitive(state.canUpload);
+    m_patrol.set_tooltip_text(state.canUpload ? "Upload cooperative patrol mission" :
+                              "Upload blocked: " + state.uploadReason);
     m_startMission.set_sensitive(state.canStart);
+    m_startMission.set_tooltip_text(state.canStart ? "Start uploaded patrol mission" :
+                                    "Start blocked: " + state.startReason);
     m_stopPatrol.set_sensitive(state.canStop);
+    m_stopPatrol.set_tooltip_text(state.canStop ? "Stop active patrol mission" :
+                                  "Stop blocked: " + state.stopReason);
   }
 
   struct MissionControlState
   {
     bool uploadPending = false;
+    bool startPending = false;
+    bool stopPending = false;
     bool hasUploaded = false;
     bool hasExecuting = false;
     bool hasStopping = false;
@@ -1921,6 +1954,8 @@ private:
   {
     MissionControlState state;
     state.uploadPending = m_patrolUploadInFlight.load();
+    state.startPending = m_missionStartInFlight.load();
+    state.stopPending = m_patrolStopInFlight.load();
     const auto progress = m_runtime.missionProgressSnapshot();
     if (progress) {
       state.hasProgress = true;
@@ -1971,10 +2006,16 @@ private:
     if (state.startBlocked.empty()) {
       state.startBlocked = "none";
     }
-    state.canUpload = !state.uploadPending && !state.hasExecuting && !state.hasStopping &&
-                      !state.progressActive;
+    state.canUpload = !state.uploadPending && !state.startPending && !state.stopPending &&
+                      !state.hasExecuting && !state.hasStopping && !state.progressActive;
     if (state.uploadPending) {
       state.uploadReason = "upload-pending";
+    }
+    else if (state.startPending) {
+      state.uploadReason = "start-pending";
+    }
+    else if (state.stopPending) {
+      state.uploadReason = "stop-pending";
     }
     else if (state.hasExecuting) {
       state.uploadReason = "mission-executing";
@@ -1992,13 +2033,14 @@ private:
                      state.startableCount > 0 &&
                      state.startEligibleCount == state.startableCount &&
                      state.startBlockedCount == 0 &&
-                     !state.uploadPending &&
+                     !state.uploadPending && !state.startPending && !state.stopPending &&
                      !state.hasExecuting && !state.hasStopping &&
                      !state.progressActive &&
                      !state.progressNeedsCompensation &&
                      !state.progressFailed;
-    state.canStop = state.hasUploaded || state.hasExecuting || state.hasStopping ||
-                    state.progressActive;
+    state.canStop = !state.stopPending &&
+                    (state.startPending || state.hasUploaded || state.hasExecuting ||
+                     state.hasStopping || state.progressActive);
     if (!state.hasUploaded || state.startableCount == 0) {
       state.startReason = "no-uploaded-mission";
     }
@@ -2007,6 +2049,12 @@ private:
     }
     else if (state.uploadPending) {
       state.startReason = "upload-pending";
+    }
+    else if (state.startPending) {
+      state.startReason = "start-pending";
+    }
+    else if (state.stopPending) {
+      state.startReason = "stop-pending";
     }
     else if (state.hasExecuting) {
       state.startReason = "mission-executing";
@@ -2026,7 +2074,12 @@ private:
     else {
       state.startReason = "ok";
     }
-    state.stopReason = state.canStop ? "ok" : "no-active-mission";
+    if (state.stopPending) {
+      state.stopReason = "stop-pending";
+    }
+    else {
+      state.stopReason = state.canStop ? "ok" : "no-active-mission";
+    }
     return state;
   }
 
@@ -2201,6 +2254,8 @@ private:
        << " can_stop=" << (state.canStop ? "true" : "false")
        << " stop_reason=" << state.stopReason
        << " upload_pending=" << (state.uploadPending ? "true" : "false")
+       << " start_pending=" << (state.startPending ? "true" : "false")
+       << " stop_pending=" << (state.stopPending ? "true" : "false")
        << " startable_count=" << state.startableCount
        << " start_eligible_count=" << state.startEligibleCount
        << " start_blocked_count=" << state.startBlockedCount
@@ -2270,11 +2325,23 @@ private:
   {
     const auto state = selectedActionState();
     m_patrol.set_sensitive(state.mission.canUpload);
+    m_patrol.set_tooltip_text(state.mission.canUpload ? "Upload cooperative patrol mission" :
+                              "Upload blocked: " + state.mission.uploadReason);
     m_startMission.set_sensitive(state.mission.canStart);
+    m_startMission.set_tooltip_text(state.mission.canStart ? "Start uploaded patrol mission" :
+                                    "Start blocked: " + state.mission.startReason);
     m_stopPatrol.set_sensitive(state.mission.canStop);
+    m_stopPatrol.set_tooltip_text(state.mission.canStop ? "Stop active patrol mission" :
+                                  "Stop blocked: " + state.mission.stopReason);
     m_arm.set_sensitive(state.flight.canArm);
+    m_arm.set_tooltip_text(state.flight.canArm ? "Arm selected drone" :
+                           "Arm blocked: " + state.flight.armReason);
     m_takeoff.set_sensitive(state.flight.canTakeoff);
+    m_takeoff.set_tooltip_text(state.flight.canTakeoff ? "Take off selected drone" :
+                               "Takeoff blocked: " + state.flight.takeoffReason);
     m_land.set_sensitive(state.flight.canLand);
+    m_land.set_tooltip_text(state.flight.canLand ? "Land selected drone" :
+                            "Land blocked: " + state.flight.landReason);
     if (m_controlMode && !state.flight.canControlPanel) {
       setControlMode(false);
       m_status.set_text("Manual control disabled: drone=" + state.selectedDrone +
@@ -2283,7 +2350,12 @@ private:
     m_controlToggle.set_sensitive(state.flight.canControlPanel ||
                                   state.manualMode ||
                                   state.flight.canManualControl);
+    m_controlToggle.set_tooltip_text(state.flight.canControlPanel ? "Toggle manual control" :
+                                     "Manual control blocked: " + state.flight.controlPanelReason);
     m_emergencyStop.set_sensitive(state.emergencyStopAvailable);
+    m_emergencyStop.set_tooltip_text(state.emergencyStopAvailable ?
+                                     "Send emergency stop to Drone " + state.selectedDrone :
+                                     "Select a drone before emergency stop");
   }
 
   static std::string
@@ -2984,12 +3056,16 @@ private:
     const auto startableDrones = m_runtime.missionStartableDrones();
     const auto eligibleDrones = missionStartEligibleDrones();
     if (startableDrones.empty()) {
+      m_missionStartInFlight = false;
       m_status.set_text("No uploaded patrol mission is ready; upload mission before Start Mission");
+      updateSelectedActionControls();
       return;
     }
     if (eligibleDrones.empty()) {
       const auto state = missionControlState();
+      m_missionStartInFlight = false;
       m_status.set_text("Patrol mission start blocked: " + state.startBlocked);
+      updateSelectedActionControls();
       return;
     }
     if (droneIndex >= eligibleDrones.size()) {
@@ -3010,6 +3086,7 @@ private:
         return;
       }
       m_status.set_text("Mission start sequence sent to patrol drones");
+      m_missionStartInFlight = false;
       updateVehicleRows();
       return;
     }
@@ -3075,6 +3152,7 @@ private:
   {
     if (droneIndex >= m_droneIds.size()) {
       m_status.set_text("Stop Patrol sequence sent to patrol drones");
+      m_patrolStopInFlight = false;
       updateVehicleRows();
       return;
     }
@@ -3450,6 +3528,8 @@ private:
   std::atomic<bool> m_manualControlDone{false};
   std::atomic<bool> m_gamepadDone{false};
   std::atomic<bool> m_patrolUploadInFlight{false};
+  std::atomic<bool> m_missionStartInFlight{false};
+  std::atomic<bool> m_patrolStopInFlight{false};
   std::atomic<bool> m_useGamepad{false};
   std::atomic<bool> m_manualActive{false};
   std::atomic<int> m_manualX{0};
