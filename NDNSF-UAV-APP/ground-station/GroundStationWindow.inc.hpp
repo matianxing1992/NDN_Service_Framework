@@ -1877,6 +1877,9 @@ private:
     std::string phases;
     std::string startEligible;
     std::string startBlocked;
+    std::string uploadReason = "ok";
+    std::string startReason = "no-uploaded-mission";
+    std::string stopReason = "no-active-mission";
   };
 
   std::optional<FlightSafetyGateState>
@@ -1965,6 +1968,21 @@ private:
     }
     state.canUpload = !state.uploadPending && !state.hasExecuting && !state.hasStopping &&
                       !state.progressActive;
+    if (state.uploadPending) {
+      state.uploadReason = "upload-pending";
+    }
+    else if (state.hasExecuting) {
+      state.uploadReason = "mission-executing";
+    }
+    else if (state.hasStopping) {
+      state.uploadReason = "mission-stopping";
+    }
+    else if (state.progressActive) {
+      state.uploadReason = "progress-active";
+    }
+    else {
+      state.uploadReason = "ok";
+    }
     state.canStart = state.hasUploaded &&
                      state.startableCount > 0 &&
                      state.startEligibleCount == state.startableCount &&
@@ -1976,6 +1994,34 @@ private:
                      !state.progressFailed;
     state.canStop = state.hasUploaded || state.hasExecuting || state.hasStopping ||
                     state.progressActive;
+    if (!state.hasUploaded || state.startableCount == 0) {
+      state.startReason = "no-uploaded-mission";
+    }
+    else if (state.startBlockedCount > 0) {
+      state.startReason = "blocked-" + state.startBlocked;
+    }
+    else if (state.uploadPending) {
+      state.startReason = "upload-pending";
+    }
+    else if (state.hasExecuting) {
+      state.startReason = "mission-executing";
+    }
+    else if (state.hasStopping) {
+      state.startReason = "mission-stopping";
+    }
+    else if (state.progressActive) {
+      state.startReason = "progress-active";
+    }
+    else if (state.progressNeedsCompensation) {
+      state.startReason = "progress-needs-compensation";
+    }
+    else if (state.progressFailed) {
+      state.startReason = "progress-failed";
+    }
+    else {
+      state.startReason = "ok";
+    }
+    state.stopReason = state.canStop ? "ok" : "no-active-mission";
     return state;
   }
 
@@ -2145,8 +2191,11 @@ private:
     std::ostringstream os;
     os << "MISSION_CONTROL_STATE phase=" << phase
        << " can_upload=" << (state.canUpload ? "true" : "false")
+       << " upload_reason=" << state.uploadReason
        << " can_start=" << (state.canStart ? "true" : "false")
+       << " start_reason=" << state.startReason
        << " can_stop=" << (state.canStop ? "true" : "false")
+       << " stop_reason=" << state.stopReason
        << " upload_pending=" << (state.uploadPending ? "true" : "false")
        << " startable_count=" << state.startableCount
        << " start_eligible_count=" << state.startEligibleCount
@@ -2202,7 +2251,9 @@ private:
        << " can_manual=" << (state.flight.canManualControl ? "true" : "false")
        << " can_panel=" << (state.flight.canControlPanel ? "true" : "false")
        << " mission_can_start=" << (state.mission.canStart ? "true" : "false")
+       << " mission_start_reason=" << state.mission.startReason
        << " mission_can_stop=" << (state.mission.canStop ? "true" : "false")
+       << " mission_stop_reason=" << state.mission.stopReason
        << " mission_phases=" << state.mission.phases
        << " mission_progress=" << state.mission.progressPhase
        << " manual_mode=" << (state.manualMode ? "true" : "false")
