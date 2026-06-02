@@ -82,8 +82,7 @@ public:
       m_altitudeTenths = 0;
       m_armed = false;
     }
-    else if (commandName == "manual_control" || commandName == "start_mission" ||
-             commandName == "mission-waypoint-goto") {
+    else if (commandName == "manual_control" || commandName == "start_mission") {
       accepted = m_armed.load();
     }
     if (commandName == "manual_control") {

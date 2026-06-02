@@ -987,7 +987,6 @@ def main() -> int:
                 require_log(gs_log, "phase=completed")
                 require_log(gs_log, "compensated_parts=1")
                 require_log(gs_log, "return_home=true")
-                require_log(gs_log, "PATROL_ACK_BUSY")
                 require_log(gs_log, "attempt=1 part=part1 provider=B")
                 require_log(gs_log, "attempt=2 part=part0 provider=B")
                 require_log(drone_logs[drones[0][0]], "mission response delayed")
