@@ -973,6 +973,58 @@ namespace ndn_service_framework
             });
     }
 
+    void ServiceUser::querySelectionStatusForTimeoutDiagnostics(
+        const ndn::Name& requestId,
+        const PendingCall& pendingCall)
+    {
+        if (pendingCall.selectionDigestsByProvider.empty()) {
+            NDN_LOG_INFO("[NDNSF_SELECTION_STATUS_TIMEOUT_DIAG] event=no_selection_query"
+                         << " requestId=" << requestId.toUri()
+                         << " serviceName=" << pendingCall.serviceName.toUri()
+                         << " reason=no_selection_published");
+            return;
+        }
+
+        const int queryTimeoutMs =
+            std::max(1, pendingCall.selectionStatusOptions.queryTimeoutMs);
+        for (const auto& item : pendingCall.selectionDigestsByProvider) {
+            const ndn::Name providerName(item.first);
+            const std::string selectionDigest = item.second;
+            const ndn::Name serviceName = pendingCall.serviceName;
+            NDN_LOG_INFO("[NDNSF_SELECTION_STATUS_TIMEOUT_DIAG] event=query_expressed"
+                         << " requestId=" << requestId.toUri()
+                         << " providerName=" << providerName.toUri()
+                         << " serviceName=" << serviceName.toUri()
+                         << " selectionDigest=" << selectionDigest
+                         << " queryTimeoutMs=" << queryTimeoutMs);
+            QuerySelectionStatus(
+                providerName,
+                serviceName,
+                selectionDigest,
+                [this, requestId] (const SelectionExecutionStatus& status) {
+                    NDN_LOG_INFO("[NDNSF_SELECTION_STATUS_TIMEOUT_DIAG] event=query_result"
+                                 << " requestId=" << requestId.toUri()
+                                 << " providerName=" << status.providerName.toUri()
+                                 << " serviceName=" << status.serviceName.toUri()
+                                 << " selectionDigest=" << status.selectionDigest
+                                 << " state="
+                                 << selectionExecutionStateToString(status.state)
+                                 << " message=\"" << status.message << "\""
+                                 << " responseName=" << status.responseName.toUri());
+                },
+                [this, requestId, providerName, serviceName, selectionDigest](
+                    const ndn::Name&) {
+                    NDN_LOG_INFO("[NDNSF_SELECTION_STATUS_TIMEOUT_DIAG] event=query_no_reply"
+                                 << " requestId=" << requestId.toUri()
+                                 << " providerName=" << providerName.toUri()
+                                 << " serviceName=" << serviceName.toUri()
+                                 << " selectionDigest=" << selectionDigest
+                                 << " reason=status_not_queryable_or_unreachable");
+                },
+                queryTimeoutMs);
+        }
+    }
+
     void ServiceUser::setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options)
     {
         m_adaptiveAdmissionOptions = options;
@@ -1469,6 +1521,7 @@ namespace ndn_service_framework
         }
 
         pendingCall->second.timedOut = true;
+        querySelectionStatusForTimeoutDiagnostics(requestId, pendingCall->second);
         auto timeoutHandler = pendingCall->second.timeoutHandler;
         auto statusTimeoutHandler = pendingCall->second.statusTimeoutHandler;
         std::vector<SelectionExecutionStatus> selectionStatuses;

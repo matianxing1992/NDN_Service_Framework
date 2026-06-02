@@ -823,6 +823,8 @@ namespace ndn_service_framework{
             void scheduleSelectionStatusQuery(const ndn::Name& requestId,
                                               const ndn::Name& providerName,
                                               const std::string& selectionDigest);
+            void querySelectionStatusForTimeoutDiagnostics(const ndn::Name& requestId,
+                                                           const PendingCall& pendingCall);
             static SelectionExecutionStatus parseSelectionExecutionStatusPayload(
                 const ndn::Data& data,
                 const ndn::Name& providerName,
