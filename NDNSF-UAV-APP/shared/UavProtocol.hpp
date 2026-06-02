@@ -140,10 +140,14 @@ struct MissionState
 
   static MissionState fromFields(const Fields& fields);
   Fields toFields() const;
+  bool isIdle() const;
   bool isUploading() const;
   bool isUploaded() const;
   bool isExecuting() const;
   bool isStopping() const;
+  bool isCompleted() const;
+  bool isFailed() const;
+  bool isCancelled() const;
   bool isTerminal() const;
   bool isAssigned() const;
   bool isBusyForAssignment() const;

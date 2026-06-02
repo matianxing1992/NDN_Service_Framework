@@ -648,6 +648,12 @@ MissionState::toFields() const
 }
 
 bool
+MissionState::isIdle() const
+{
+  return phase == "idle" || phase == "none";
+}
+
+bool
 MissionState::isUploading() const
 {
   return phase == "uploading";
@@ -672,9 +678,27 @@ MissionState::isStopping() const
 }
 
 bool
+MissionState::isCompleted() const
+{
+  return phase == "completed";
+}
+
+bool
+MissionState::isFailed() const
+{
+  return phase == "failed";
+}
+
+bool
+MissionState::isCancelled() const
+{
+  return phase == "cancelled";
+}
+
+bool
 MissionState::isTerminal() const
 {
-  return phase == "completed" || phase == "failed" || phase == "cancelled";
+  return isCompleted() || isFailed() || isCancelled();
 }
 
 bool
