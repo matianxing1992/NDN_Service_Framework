@@ -887,6 +887,8 @@ public:
           m_runtime.injectMissionProgressForTest(std::move(progress));
           updateVehicleRows();
           logMissionControlState("progress-active");
+          logSelectedDroneViewState("progress-active");
+          logDroneListRowState("progress-active");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -908,6 +910,8 @@ public:
           m_runtime.injectMissionProgressForTest(std::move(progress));
           updateVehicleRows();
           logMissionControlState("progress-completed");
+          logSelectedDroneViewState("progress-completed");
+          logDroneListRowState("progress-completed");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -1947,16 +1951,42 @@ private:
     bool hasVideo = false;
     bool hasCommand = false;
     bool hasSafety = false;
+    bool hasMissionProgress = false;
     std::string readiness = "unknown";
     std::string armed = "unknown";
     std::string gps = "unknown";
     std::string battery = "unknown";
     std::string mission = "idle";
+    std::string missionProgress = "idle";
     std::string video = "unknown";
     std::string command = "none";
     std::string safety = "unknown";
     std::string rowText;
   };
+
+  static bool
+  commaSeparatedContains(const std::string& list, const std::string& value)
+  {
+    if (value.empty()) {
+      return false;
+    }
+    std::stringstream input(list);
+    std::string token;
+    while (std::getline(input, token, ',')) {
+      if (token == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool
+  missionProgressAppliesToDrone(const MissionProgressState& progress, const std::string& droneId)
+  {
+    return progress.drones == "all" ||
+           progress.drones == droneId ||
+           commaSeparatedContains(progress.drones, droneId);
+  }
 
   DroneListRowState
   droneListRowState(const std::string& droneId, bool selected) const
@@ -1970,6 +2000,7 @@ private:
     const auto video = m_runtime.videoForDrone(droneId);
     const auto command = m_runtime.commandForDrone(droneId);
     const auto safety = m_runtime.safetyForDrone(droneId);
+    const auto progress = m_runtime.missionProgressSnapshot();
 
     state.hasTelemetry = telemetry.has_value();
     state.hasReadiness = readiness.has_value();
@@ -1977,6 +2008,7 @@ private:
     state.hasVideo = video.has_value();
     state.hasCommand = command.has_value() && command->command != "none";
     state.hasSafety = safety.has_value();
+    state.hasMissionProgress = progress && missionProgressAppliesToDrone(*progress, droneId);
 
     state.readiness = readiness ? readiness->readiness :
                       telemetry ? telemetry->readiness : "unknown";
@@ -1986,6 +2018,7 @@ private:
                 telemetry ? telemetry->gpsFixName : "unknown";
     state.battery = telemetry ? telemetry->batteryPercent + "%" : "unknown";
     state.mission = mission ? mission->phase : "idle";
+    state.missionProgress = state.hasMissionProgress ? progress->phase : "idle";
     state.video = video ? video->status :
                   telemetry ? telemetry->video : "unknown";
     state.command = state.hasCommand ? command->command + ":" + command->ackResult : "none";
@@ -2003,6 +2036,9 @@ private:
     }
     if (state.hasMission && state.mission != "idle") {
       state.rowText += " mission=" + state.mission;
+    }
+    if (state.hasMissionProgress && state.missionProgress != "idle") {
+      state.rowText += " progress=" + state.missionProgress;
     }
     if ((state.hasVideo || state.hasTelemetry) && state.video != "unknown") {
       state.rowText += " video=" + state.video;
@@ -2028,6 +2064,7 @@ private:
        << " armed=" << state.armed
        << " gps=" << state.gps
        << " mission=" << state.mission
+       << " mission_progress=" << state.missionProgress
        << " video=" << state.video
        << " safety=" << state.safety
        << " text=" << state.rowText;
@@ -2256,6 +2293,27 @@ private:
         marker.b = 180;
       }
       else if (mission->isFailed() || mission->isCancelled()) {
+        marker.label += " X";
+        marker.r = 220;
+        marker.g = 30;
+        marker.b = 40;
+      }
+    }
+    if (const auto progress = m_runtime.missionProgressSnapshot();
+        progress && missionProgressAppliesToDrone(*progress, droneId)) {
+      if (progress->isActive()) {
+        marker.label += " P";
+        marker.r = 130;
+        marker.g = 70;
+        marker.b = 210;
+      }
+      else if (progress->isComplete()) {
+        marker.label += " C";
+        marker.r = 20;
+        marker.g = 150;
+        marker.b = 180;
+      }
+      else if (progress->isFailed()) {
         marker.label += " X";
         marker.r = 220;
         marker.g = 30;
