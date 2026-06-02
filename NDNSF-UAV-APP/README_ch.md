@@ -741,7 +741,8 @@ UAV service-container workload 的应用。计划顺序如下：
    route clustering、默认 sector 生成、drone assignment 和 return-to-departure waypoint
    插入现在都放进共享 typed mission helper，因此 GUI workflow、service container 和测试使用
    同一套协作模型。GS 也会通过 typed view state 暴露最新 mission plan 和 selected drone 的
-   mission part，而不是只在内部 assignment log 里体现。
+   mission part，而不是只在内部 assignment log 里体现。GUI 现在也会用同一个 helper 根据画出的
+   waypoints 生成 pre-upload mission preview，因此 mission 发送前就能看到 planned parts。
 6. **Repo-backed UAV data products。** 通过 `NDNSF-DistributedRepo` 保存 recording、mission
    image、telemetry log、object-detection event 和 report，使用 publisher-owned name、
    encrypted payload 和 manifest-based discovery。Camera recording manifest 现在会解析成
@@ -1036,6 +1037,9 @@ request 只补这个缺失 part。
 return-home planning 和最终 completed 状态都被状态模型记录。
 Ground-station runtime 还会保存最近的 typed `MissionPlan`；selected drone 的 inspector
 和 map summary 会显示它被分配到的 `MissionPart`、waypoint 数量和 return-home 标记。
+上传前，GUI 也会用同一个 helper 根据已经画出的 waypoints 生成本地 mission preview。
+Preview marker 和 selected-drone inspector 会显示哪架 drone 会收到哪个 part，因此 operator
+可以在发送任何 NDNSF mission request 前先检查计划。
 交互式 GUI 里也有 `Upload Patrol Mission` 按钮，会运行同一套协作巡逻上传流程。可以用
 `+`/`-` 调整缩放，拖动地图查看附近区域，按 `Center GS` 回到 ground station；点击地图可以
 连续追加 `WP1`、`WP2` 和后续 waypoint；`Undo WP` 会删除最后一个点，`Clear WPs` 会清空计划。

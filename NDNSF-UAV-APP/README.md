@@ -1180,6 +1180,10 @@ compensation, return-home planning, and final completion.
 The ground-station runtime also keeps the latest typed `MissionPlan`, and the
 selected-drone inspector/map summary shows the selected drone's assigned
 `MissionPart`, waypoint count, and return-home flag.
+Before upload, the GUI uses the same helper to build a local mission preview
+from the drawn waypoints. The preview markers and selected-drone inspector show
+which drone would receive each part, so operators can inspect the plan before
+sending any NDNSF mission request.
 
 After the script prints `NDNSF_UAV_GUI_MININDN_READY`, use the ground-station
 window to click `Start Video` and `Stop Video`. Logs are written under
@@ -1461,7 +1465,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    insertion now live in a shared typed mission helper, so GUI workflows,
    service containers, and tests use the same collaboration model. The GS also
    exposes the latest mission plan and selected drone's mission part through the
-   typed view state instead of only logging internal assignment strings.
+   typed view state instead of only logging internal assignment strings. The GUI
+   now builds a pre-upload mission preview from drawn waypoints with the same
+   helper, so planned parts are visible before the mission is sent.
 6. **Repo-backed UAV data products.** Store recordings, mission images,
    telemetry logs, object-detection events, and reports through
    `NDNSF-DistributedRepo` using publisher-owned names, encrypted payloads,
