@@ -647,6 +647,60 @@ MissionState::toFields() const
   };
 }
 
+bool
+MissionState::isUploading() const
+{
+  return phase == "uploading";
+}
+
+bool
+MissionState::isUploaded() const
+{
+  return phase == "uploaded";
+}
+
+bool
+MissionState::isExecuting() const
+{
+  return phase == "executing";
+}
+
+bool
+MissionState::isStopping() const
+{
+  return phase == "stopping";
+}
+
+bool
+MissionState::isTerminal() const
+{
+  return phase == "completed" || phase == "failed" || phase == "cancelled";
+}
+
+bool
+MissionState::isAssigned() const
+{
+  return isUploading() || isUploaded() || isExecuting() || isStopping();
+}
+
+bool
+MissionState::isBusyForAssignment() const
+{
+  return isUploading() || isExecuting() || isStopping();
+}
+
+bool
+MissionState::isStartable() const
+{
+  return isUploaded();
+}
+
+bool
+MissionState::isStoppable() const
+{
+  return isUploaded() || isExecuting() || isStopping();
+}
+
 std::string
 MissionState::statusLine() const
 {

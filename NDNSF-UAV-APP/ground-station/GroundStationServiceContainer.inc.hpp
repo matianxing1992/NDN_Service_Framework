@@ -155,6 +155,26 @@ public:
     return m_missionReadyDrones;
   }
 
+  std::vector<std::string>
+  missionStartableDrones() const
+  {
+    std::vector<std::string> candidates;
+    {
+      std::lock_guard<std::mutex> guard(m_missionReadyMutex);
+      candidates = m_missionReadyDrones;
+    }
+
+    std::vector<std::string> out;
+    std::lock_guard<std::mutex> telemetryGuard(m_telemetryMutex);
+    for (const auto& droneId : candidates) {
+      const auto found = m_missionByDrone.find(droneId);
+      if (found != m_missionByDrone.end() && found->second.isStartable()) {
+        out.push_back(droneId);
+      }
+    }
+    return out;
+  }
+
   std::string
   serviceCatalogForDrone(const std::string& droneId) const
   {
@@ -1208,8 +1228,11 @@ public:
           [this, taskId, partId, candidateText, attempt, state, logLedger](
             const ndn_service_framework::ResponseMessage& response) {
             const auto fields = decodeFields(responsePayload(response));
-            const auto mission = MissionState::fromFields(fields);
+            auto mission = MissionState::fromFields(fields);
             const auto responder = mission.droneId == "unknown" ? candidateText : mission.droneId;
+            if (mission.droneId == "unknown") {
+              mission.droneId = responder;
+            }
             bool accepted = false;
             {
               std::lock_guard<std::mutex> guard(state->mutex);
