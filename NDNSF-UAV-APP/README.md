@@ -716,7 +716,9 @@ giving higher-bitrate streams enough in-flight Interests to avoid stalls. The
 current receiver stores these decisions as `VideoAdaptiveState`, so the video
 panel, selected-drone inspector, left-side drone row, and MiniNDN smoke logs can
 show RTT, window, lookahead, pressure, missing-packet timeout, pending chunks,
-and decoded-frame progress without scraping packet logs.
+decoded-frame progress, and the current bitrate recommendation without scraping
+packet logs. The recommendation is advisory for now: the GS does not silently
+restart the stream or change the drone encoder in the middle of a live session.
 The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
 H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
@@ -1394,8 +1396,10 @@ to make it a deployable UAV service-container workload. The planned order is:
    service workload: requested bitrate, accepted bitrate, RTT, backlog,
    timeout pressure, key-frame recovery, and FEC should drive prefetch and
    skip decisions rather than fixed constants. The current GS records these
-   decisions as `VideoAdaptiveState`; the next step is to use that state for
-   explicit bitrate downgrade requests and loss-aware UI warnings.
+   decisions as `VideoAdaptiveState`, including advisory bitrate
+   decrease/hold/increase decisions; the next step is to turn those advisory
+   decisions into explicit operator-controlled or service-controlled bitrate
+   changes.
 5. **Mission collaboration model.** Promote the patrol demo into a reusable
    mission model with `MissionPlan`, `MissionPart`, assignment, progress,
    failure/compensation, and return-to-home semantics.

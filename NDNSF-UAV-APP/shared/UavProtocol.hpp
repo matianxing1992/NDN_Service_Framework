@@ -214,6 +214,11 @@ struct VideoAdaptiveState
   std::string droneId = "unknown";
   std::string state = "idle";
   uint64_t rttMs = 0;
+  uint64_t requestedBitrateKbps = 0;
+  uint64_t acceptedBitrateKbps = 0;
+  uint64_t suggestedBitrateKbps = 0;
+  std::string bitrateAction = "hold";
+  std::string bitrateReason = "unknown";
   uint64_t window = 0;
   uint64_t lookahead = 0;
   uint64_t futureProbeLimit = 0;

@@ -947,6 +947,11 @@ VideoAdaptiveState::fromFields(const Fields& fields)
   state.droneId = fieldOr(fields, "drone_id", state.droneId);
   state.state = fieldOr(fields, "adaptive_state", fieldOr(fields, "state", state.state));
   state.rttMs = uint64FieldOr(fields, "rtt_ms", state.rttMs);
+  state.requestedBitrateKbps = uint64FieldOr(fields, "requested_bitrate_kbps", state.requestedBitrateKbps);
+  state.acceptedBitrateKbps = uint64FieldOr(fields, "accepted_bitrate_kbps", state.acceptedBitrateKbps);
+  state.suggestedBitrateKbps = uint64FieldOr(fields, "suggested_bitrate_kbps", state.suggestedBitrateKbps);
+  state.bitrateAction = fieldOr(fields, "bitrate_action", state.bitrateAction);
+  state.bitrateReason = fieldOr(fields, "bitrate_reason", state.bitrateReason);
   state.window = uint64FieldOr(fields, "window", state.window);
   state.lookahead = uint64FieldOr(fields, "lookahead", state.lookahead);
   state.futureProbeLimit = uint64FieldOr(fields, "future_probe_limit", state.futureProbeLimit);
@@ -974,6 +979,11 @@ VideoAdaptiveState::toFields() const
     {"drone_id", droneId},
     {"adaptive_state", state},
     {"rtt_ms", std::to_string(rttMs)},
+    {"requested_bitrate_kbps", std::to_string(requestedBitrateKbps)},
+    {"accepted_bitrate_kbps", std::to_string(acceptedBitrateKbps)},
+    {"suggested_bitrate_kbps", std::to_string(suggestedBitrateKbps)},
+    {"bitrate_action", bitrateAction},
+    {"bitrate_reason", bitrateReason},
     {"window", std::to_string(window)},
     {"lookahead", std::to_string(lookahead)},
     {"future_probe_limit", std::to_string(futureProbeLimit)},
@@ -1007,6 +1017,11 @@ VideoAdaptiveState::statusLine() const
   return "VideoAdaptive drone=" + droneId +
          " state=" + state +
          " rtt_ms=" + std::to_string(rttMs) +
+         " requested_bitrate_kbps=" + std::to_string(requestedBitrateKbps) +
+         " accepted_bitrate_kbps=" + std::to_string(acceptedBitrateKbps) +
+         " suggested_bitrate_kbps=" + std::to_string(suggestedBitrateKbps) +
+         " bitrate_action=" + bitrateAction +
+         " bitrate_reason=" + bitrateReason +
          " window=" + std::to_string(window) +
          " lookahead=" + std::to_string(lookahead) +
          " future_probe_limit=" + std::to_string(futureProbeLimit) +
