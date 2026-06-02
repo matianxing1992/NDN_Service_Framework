@@ -1249,6 +1249,100 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
   return decision;
 }
 
+RecordingDataProductState
+RecordingDataProductState::fromFields(const Fields& fields,
+                                      const std::string& fallbackDroneId)
+{
+  RecordingDataProductState state;
+  state.droneId = fieldOr(fields, "drone_id", fallbackDroneId.empty() ? state.droneId : fallbackDroneId);
+  state.productType = fieldOr(fields, "product_type",
+                              fieldOr(fields, "type", state.productType));
+  if (state.productType == "camera-recording-manifest") {
+    state.productType = "camera-recording";
+  }
+  state.sessionId = fieldOr(fields, "recording_session_id",
+                            fieldOr(fields, "session_id", state.sessionId));
+  state.objectPrefix = fieldOr(fields, "recording_object_prefix",
+                               fieldOr(fields, "object_prefix", state.objectPrefix));
+  state.encryption = fieldOr(fields, "recording_encryption",
+                             fieldOr(fields, "encryption", state.encryption));
+  state.keyId = fieldOr(fields, "recording_encryption_key_id",
+                        fieldOr(fields, "key_id", state.keyId));
+  state.contentKey = hexDecode(fieldOr(fields, "recording_encryption_content_key_hex",
+                                       fieldOr(fields, "content_key_hex", "")));
+  state.chunks = uint64FieldOr(fields, "recording_chunks",
+                               uint64FieldOr(fields, "chunks", state.chunks));
+  state.bytes = uint64FieldOr(fields, "recording_bytes",
+                              uint64FieldOr(fields, "bytes", state.bytes));
+  state.updatedMs = uint64FieldOr(fields, "updated_ms",
+                                  uint64FieldOr(fields, "timestamp_ms", state.updatedMs));
+  return state;
+}
+
+Fields
+RecordingDataProductState::toFields(bool includeContentKey) const
+{
+  Fields fields{
+    {"type", productType + "-manifest"},
+    {"product_type", productType},
+    {"drone_id", droneId},
+    {"recording_session_id", sessionId},
+    {"recording_object_prefix", objectPrefix},
+    {"recording_encryption", encryption},
+    {"recording_encryption_key_id", keyId},
+    {"recording_chunks", std::to_string(chunks)},
+    {"recording_bytes", std::to_string(bytes)},
+    {"updated_ms", std::to_string(updatedMs)},
+  };
+  if (includeContentKey) {
+    fields["recording_encryption_content_key_hex"] = hexEncode(contentKey);
+  }
+  return fields;
+}
+
+bool
+RecordingDataProductState::isAvailable() const
+{
+  return !sessionId.empty() && !objectPrefix.empty() && chunks > 0;
+}
+
+bool
+RecordingDataProductState::isEncrypted() const
+{
+  return encryption != "none" && !encryption.empty();
+}
+
+bool
+RecordingDataProductState::isPlayable() const
+{
+  return isAvailable() && (!isEncrypted() || (!keyId.empty() && !contentKey.empty()));
+}
+
+std::string
+RecordingDataProductState::chunkObjectName(uint64_t index) const
+{
+  if (objectPrefix.empty() || sessionId.empty()) {
+    return "";
+  }
+  return objectPrefix + "/" + sessionId + "/chunk/" + std::to_string(index);
+}
+
+std::string
+RecordingDataProductState::statusLine() const
+{
+  return "RecordingDataProduct drone=" + droneId +
+         " type=" + productType +
+         " session=" + sessionId +
+         " prefix=" + objectPrefix +
+         " chunks=" + std::to_string(chunks) +
+         " bytes=" + std::to_string(bytes) +
+         " encryption=" + encryption +
+         " key_id=" + keyId +
+         " key_bytes=" + std::to_string(contentKey.size()) +
+         " available=" + std::string(isAvailable() ? "true" : "false") +
+         " playable=" + std::string(isPlayable() ? "true" : "false");
+}
+
 MissionState
 MissionState::fromFields(const Fields& fields)
 {
