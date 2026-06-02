@@ -1082,6 +1082,10 @@ def main() -> int:
             require_log(gs_log, "SELECTED_VIEW_STATE phase=mission-uploaded selected=")
             require_log(gs_log, "readiness=ready mission=uploaded video=stopped")
             require_log(gs_log, "marker=A U")
+            require_log(gs_log, "DRONE_ROW_STATE phase=not-ready selected=A")
+            require_log(gs_log, "readiness=not-ready armed=false gps=false mission=idle video=stopped")
+            require_log(gs_log, "DRONE_ROW_STATE phase=mission-uploaded selected=A")
+            require_log(gs_log, "readiness=ready armed=false gps=true mission=uploaded video=stopped")
             print("NDNSF_UAV_FLIGHT_CONTROLS_MININDN_SMOKE_OK")
         elif (args.auto_mavlink_test or args.auto_keyboard_test or
               args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:

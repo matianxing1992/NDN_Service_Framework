@@ -876,6 +876,7 @@ public:
           logFlightActionControlState("not-ready");
           logSelectedActionState("not-ready");
           logSelectedDroneViewState("not-ready");
+          logDroneListRowState("not-ready");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, false)] {
@@ -884,6 +885,7 @@ public:
           logFlightActionControlState("ready-unarmed");
           logSelectedActionState("ready-unarmed");
           logSelectedDroneViewState("ready-unarmed");
+          logDroneListRowState("ready-unarmed");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, true)] {
@@ -892,6 +894,7 @@ public:
           logFlightActionControlState("armed-ready");
           logSelectedActionState("armed-ready");
           logSelectedDroneViewState("armed-ready");
+          logDroneListRowState("armed-ready");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -899,6 +902,7 @@ public:
           updateVehicleRows();
           logSelectedActionState("manual-enabled");
           logSelectedDroneViewState("manual-enabled");
+          logDroneListRowState("manual-enabled");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -917,6 +921,7 @@ public:
           updateVehicleRows();
           logSelectedActionState("mission-uploaded");
           logSelectedDroneViewState("mission-uploaded");
+          logDroneListRowState("mission-uploaded");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -1755,41 +1760,8 @@ private:
       if (label == nullptr) {
         continue;
       }
-      const bool selected = m_droneIds[i] == selectedDrone;
-      const auto telemetry = m_runtime.telemetryForDrone(m_droneIds[i]);
-      const auto readiness = m_runtime.readinessForDrone(m_droneIds[i]);
-      const auto mission = m_runtime.missionForDrone(m_droneIds[i]);
-      const auto video = m_runtime.videoForDrone(m_droneIds[i]);
-      const auto command = m_runtime.commandForDrone(m_droneIds[i]);
-      const auto safety = m_runtime.safetyForDrone(m_droneIds[i]);
-      std::string rowText = std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
-                            (selected ? " active" : " standby");
-      if (readiness) {
-        rowText += " " + readiness->readiness;
-        rowText += " armed=" + readiness->armed;
-        rowText += " gps=" + readiness->gpsReady;
-      }
-      else if (telemetry) {
-        rowText += " " + telemetry->readiness;
-        rowText += " armed=" + telemetry->armed;
-        rowText += " gps=" + telemetry->gpsFixName;
-      }
-      if (telemetry) {
-        rowText += " bat=" + telemetry->batteryPercent + "%";
-      }
-      if (mission && !mission->isIdle()) {
-        rowText += " mission=" + mission->phase;
-      }
-      if (video && video->status != "unknown") {
-        rowText += " video=" + video->status;
-      }
-      if (command && command->command != "none") {
-        rowText += " cmd=" + command->command + ":" + command->ackResult;
-      }
-      if (safety) {
-        rowText += " safe=" + safety->manualControlState + "/" + safety->linkState;
-      }
-      label->set_text(rowText);
+      const auto rowState = droneListRowState(m_droneIds[i], m_droneIds[i] == selectedDrone);
+      label->set_text(rowState.rowText);
     }
     const auto view = selectedDroneViewState();
     m_mapMission.set_text(view.mapText);
@@ -1850,6 +1822,104 @@ private:
                      !state.hasExecuting && !state.hasStopping;
     state.canStop = state.hasUploaded || state.hasExecuting || state.hasStopping;
     return state;
+  }
+
+  struct DroneListRowState
+  {
+    std::string droneId;
+    bool selected = false;
+    bool hasTelemetry = false;
+    bool hasReadiness = false;
+    bool hasMission = false;
+    bool hasVideo = false;
+    bool hasCommand = false;
+    bool hasSafety = false;
+    std::string readiness = "unknown";
+    std::string armed = "unknown";
+    std::string gps = "unknown";
+    std::string battery = "unknown";
+    std::string mission = "idle";
+    std::string video = "unknown";
+    std::string command = "none";
+    std::string safety = "unknown";
+    std::string rowText;
+  };
+
+  DroneListRowState
+  droneListRowState(const std::string& droneId, bool selected) const
+  {
+    DroneListRowState state;
+    state.droneId = droneId;
+    state.selected = selected;
+    const auto telemetry = m_runtime.telemetryForDrone(droneId);
+    const auto readiness = m_runtime.readinessForDrone(droneId);
+    const auto mission = m_runtime.missionForDrone(droneId);
+    const auto video = m_runtime.videoForDrone(droneId);
+    const auto command = m_runtime.commandForDrone(droneId);
+    const auto safety = m_runtime.safetyForDrone(droneId);
+
+    state.hasTelemetry = telemetry.has_value();
+    state.hasReadiness = readiness.has_value();
+    state.hasMission = mission.has_value();
+    state.hasVideo = video.has_value();
+    state.hasCommand = command.has_value() && command->command != "none";
+    state.hasSafety = safety.has_value();
+
+    state.readiness = readiness ? readiness->readiness :
+                      telemetry ? telemetry->readiness : "unknown";
+    state.armed = readiness ? readiness->armed :
+                  telemetry ? telemetry->armed : "unknown";
+    state.gps = readiness ? readiness->gpsReady :
+                telemetry ? telemetry->gpsFixName : "unknown";
+    state.battery = telemetry ? telemetry->batteryPercent + "%" : "unknown";
+    state.mission = mission ? mission->phase : "idle";
+    state.video = video ? video->status :
+                  telemetry ? telemetry->video : "unknown";
+    state.command = state.hasCommand ? command->command + ":" + command->ackResult : "none";
+    state.safety = safety ? safety->manualControlState + "/" + safety->linkState : "unknown";
+
+    state.rowText = std::string(selected ? "● " : "○ ") + "Drone " + droneId +
+                    (selected ? " active" : " standby");
+    if (state.hasReadiness || state.hasTelemetry) {
+      state.rowText += " " + state.readiness +
+                       " armed=" + state.armed +
+                       " gps=" + state.gps;
+    }
+    if (state.hasTelemetry) {
+      state.rowText += " bat=" + state.battery;
+    }
+    if (state.hasMission && state.mission != "idle") {
+      state.rowText += " mission=" + state.mission;
+    }
+    if ((state.hasVideo || state.hasTelemetry) && state.video != "unknown") {
+      state.rowText += " video=" + state.video;
+    }
+    if (state.hasCommand) {
+      state.rowText += " cmd=" + state.command;
+    }
+    if (state.hasSafety) {
+      state.rowText += " safe=" + state.safety;
+    }
+    return state;
+  }
+
+  void
+  logDroneListRowState(const std::string& phase) const
+  {
+    const auto state = droneListRowState(m_runtime.targetDroneId(), true);
+    std::ostringstream os;
+    os << "DRONE_ROW_STATE phase=" << phase
+       << " selected=" << state.droneId
+       << " has_telemetry=" << (state.hasTelemetry ? "true" : "false")
+       << " readiness=" << state.readiness
+       << " armed=" << state.armed
+       << " gps=" << state.gps
+       << " mission=" << state.mission
+       << " video=" << state.video
+       << " safety=" << state.safety
+       << " text=" << state.rowText;
+    NDN_LOG_INFO(os.str());
+    std::cout << os.str() << std::endl;
   }
 
   void
