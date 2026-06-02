@@ -837,25 +837,33 @@ public:
           logMissionControlState("initial");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        m_patrolUploadInFlight = true;
-        std::thread([this] {
-          const bool ok = m_runtime.runPatrolCompensationTask(
-            std::chrono::seconds(30), 35.1186, -89.9375, 140.0, false, {});
-          Glib::signal_idle().connect_once([this, ok] {
-            m_patrolUploadInFlight = false;
-            m_status.set_text(ok ? "Mission controls test upload complete"
-                                 : "Mission controls test upload failed");
-            updateVehicleRows();
-            logMissionControlState("after-upload");
-          });
-        }).detach();
-        for (int i = 0; i < 160; ++i) {
-          const auto state = missionControlState();
-          if (!state.uploadPending && state.canStart && state.canStop) {
-            break;
+        Glib::signal_idle().connect_once([this] {
+          m_patrolUploadInFlight = true;
+          updateVehicleRows();
+          logMissionControlState("uploading");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
+          for (const auto& droneId : m_droneIds) {
+            MissionState mission;
+            mission.droneId = droneId;
+            mission.missionId = "mission-controls-test";
+            mission.partId = "part-" + droneId;
+            mission.phase = "uploaded";
+            mission.detail = "mission-controls-test";
+            mission.ack = "test";
+            mission.transport = "test";
+            mission.waypointsForwarded = "4";
+            mission.waypointAcksAccepted = "4";
+            mission.updatedMs = nowMilliseconds();
+            m_runtime.injectMissionStateForTest(std::move(mission));
           }
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
+          m_patrolUploadInFlight = false;
+          m_status.set_text("Mission controls test upload complete");
+          updateVehicleRows();
+          logMissionControlState("after-upload");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
           logMissionControlState("final");
           hide();

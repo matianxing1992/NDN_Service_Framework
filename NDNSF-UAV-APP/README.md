@@ -1258,10 +1258,11 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-mission-controls-test --no-cli
 ```
 
-The launcher uploads a cooperative patrol mission in a two-drone mock setup and
-checks that the GS mission control model changes from `can_start=false` /
-`can_stop=false` to `can_start=true` / `can_stop=true` after the mission parts
-are uploaded.
+The launcher uses a two-drone mock setup and injects uploaded `MissionState`
+objects inside the GS smoke path. It verifies that the mission control model
+changes from `can_start=false` / `can_stop=false` to `can_start=true` /
+`can_stop=true` after the mission parts become startable, without depending on
+flight-controller waypoint upload behavior.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance

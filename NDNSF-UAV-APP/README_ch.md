@@ -1114,9 +1114,10 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-mission-controls-test --no-cli
 ```
 
-launcher 会在两架 mock drone 环境中上传一个协作巡逻任务，并检查 GS 的 mission control
-model 是否从 `can_start=false` / `can_stop=false` 变成任务上传后的
-`can_start=true` / `can_stop=true`。
+launcher 会使用两架 mock drone 环境，并在 GS smoke 路径中注入 uploaded
+`MissionState`。它检查 GS 的 mission control model 是否从
+`can_start=false` / `can_stop=false` 变成 mission part 可启动后的
+`can_start=true` / `can_stop=true`，不依赖飞控 waypoint upload 的实际行为。
 
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动
