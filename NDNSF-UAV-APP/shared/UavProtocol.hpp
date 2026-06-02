@@ -96,6 +96,7 @@ struct ReadinessState
   static ReadinessState fromTelemetry(const TelemetryState& telemetry);
   Fields toFields() const;
   bool readyForArm() const;
+  bool landedForTakeoff() const;
   bool readyForTakeoff() const;
   bool readyForLand() const;
   bool readyForManualControl() const;
