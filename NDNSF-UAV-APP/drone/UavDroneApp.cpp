@@ -510,6 +510,7 @@ main(int argc, char** argv)
         const auto telemetry = runtime->latestTelemetryState();
         const auto readiness = runtime->latestReadinessState();
         const auto video = runtime->latestVideoState();
+        const auto safety = SafetyState::fromTelemetry(telemetry);
         std::cout << "DRONE_HEADLESS_STATUS identity=" << runtime->identityUri()
                   << " readiness=" << readiness.readiness
                   << " readiness_reason=" << readiness.readinessReason
@@ -528,6 +529,9 @@ main(int argc, char** argv)
                   << " lat=" << telemetry.lat
                   << " lon=" << telemetry.lon
                   << " alt=" << telemetry.altitudeM
+                  << " link=" << safety.linkState
+                  << " manual=" << safety.manualControlState
+                  << " neutral=" << safety.manualNeutralSent
                   << std::endl;
       }
       std::cout << "DRONE_HEADLESS_EXIT identity=" << runtime->identityUri()

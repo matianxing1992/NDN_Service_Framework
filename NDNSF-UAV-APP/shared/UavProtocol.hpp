@@ -61,6 +61,13 @@ struct TelemetryState
   std::string video = "unknown";
   std::string capture = "unknown";
   std::string recording = "unknown";
+  std::string linkState = "unknown";
+  std::string manualControlState = "idle";
+  std::string manualReplayActive = "false";
+  std::string manualNeutralSent = "true";
+  std::string manualFreshForMs = "0";
+  std::string manualReplayCount = "0";
+  std::string safetyDetail = "idle";
   uint64_t timestampMs = 0;
 
   static TelemetryState fromFields(const Fields& fields);
@@ -113,6 +120,26 @@ struct FlightCommandState
   bool isAccepted() const;
   bool isTimeout() const;
   bool isSafetyCritical() const;
+  std::string statusLine() const;
+};
+
+struct SafetyState
+{
+  std::string droneId = "unknown";
+  std::string linkState = "unknown";
+  std::string manualControlState = "idle";
+  std::string manualReplayActive = "false";
+  std::string manualNeutralSent = "true";
+  uint64_t manualFreshForMs = 0;
+  uint64_t manualReplayCount = 0;
+  std::string detail = "idle";
+  uint64_t updatedMs = 0;
+
+  static SafetyState fromFields(const Fields& fields);
+  static SafetyState fromTelemetry(const TelemetryState& telemetry);
+  Fields toFields() const;
+  bool manualControlFresh() const;
+  bool needsOperatorAttention() const;
   std::string statusLine() const;
 };
 

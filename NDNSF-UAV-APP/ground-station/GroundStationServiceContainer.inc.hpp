@@ -310,6 +310,17 @@ public:
     return found->second;
   }
 
+  std::optional<SafetyState>
+  safetyForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    const auto found = m_safetyByDrone.find(droneId);
+    if (found == m_safetyByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
   std::vector<TelemetryState>
   telemetrySnapshots() const
   {
@@ -1465,6 +1476,9 @@ private:
     auto storedReadiness = ReadinessState::fromTelemetry(storedTelemetry);
     storedReadiness.droneId = droneId;
     m_readinessByDrone[droneId] = storedReadiness;
+    auto storedSafety = SafetyState::fromTelemetry(storedTelemetry);
+    storedSafety.droneId = droneId;
+    m_safetyByDrone[droneId] = storedSafety;
     auto storedVideo = VideoState::fromFields(storedTelemetry.toFields());
     storedVideo.droneId = droneId;
     const auto previousVideo = m_videoByDrone.find(droneId);
@@ -3804,6 +3818,7 @@ private:
   std::map<std::string, MissionState> m_missionByDrone;
   std::map<std::string, VideoState> m_videoByDrone;
   std::map<std::string, FlightCommandState> m_commandByDrone;
+  std::map<std::string, SafetyState> m_safetyByDrone;
   ndn::Name m_streamPrefix;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;

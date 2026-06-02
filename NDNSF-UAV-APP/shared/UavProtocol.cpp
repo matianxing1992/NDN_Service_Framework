@@ -286,6 +286,13 @@ TelemetryState::fromFields(const Fields& fields)
   state.video = fieldOr(fields, "video", state.video);
   state.capture = fieldOr(fields, "capture", state.capture);
   state.recording = fieldOr(fields, "recording", state.recording);
+  state.linkState = fieldOr(fields, "link_state", state.linkState);
+  state.manualControlState = fieldOr(fields, "manual_control_state", state.manualControlState);
+  state.manualReplayActive = fieldOr(fields, "manual_replay_active", state.manualReplayActive);
+  state.manualNeutralSent = fieldOr(fields, "manual_neutral_sent", state.manualNeutralSent);
+  state.manualFreshForMs = fieldOr(fields, "manual_fresh_for_ms", state.manualFreshForMs);
+  state.manualReplayCount = fieldOr(fields, "manual_replay_count", state.manualReplayCount);
+  state.safetyDetail = fieldOr(fields, "safety_detail", state.safetyDetail);
 
   const auto timestamp = fieldOr(fields, "timestamp_ms", "");
   if (!timestamp.empty()) {
@@ -362,6 +369,13 @@ TelemetryState::toFields() const
     {"video", video},
     {"capture", capture},
     {"recording", recording},
+    {"link_state", linkState},
+    {"manual_control_state", manualControlState},
+    {"manual_replay_active", manualReplayActive},
+    {"manual_neutral_sent", manualNeutralSent},
+    {"manual_fresh_for_ms", manualFreshForMs},
+    {"manual_replay_count", manualReplayCount},
+    {"safety_detail", safetyDetail},
     {"timestamp_ms", std::to_string(timestampMs)},
   };
 }
@@ -381,7 +395,9 @@ TelemetryState::statusLine() const
          " ekf=" + ekfReady +
          " landed=" + landedStateName +
          " speed=" + groundspeedMps + "m/s" +
-         " video=" + video;
+         " video=" + video +
+         " link=" + linkState +
+         " manual=" + manualControlState;
 }
 
 std::string
@@ -400,6 +416,8 @@ TelemetryState::mapSummary(const std::string& selectedDrone) const
          "Battery: " + batteryPercent + "% " + batteryVoltageV + "V " +
          batteryCurrentA + "A  Speed: " + groundspeedMps + " m/s\n"
          "Video: " + video + "  Capture: " + capture + "  Recording: " + recording + "\n\n"
+         "Safety: link=" + linkState + " manual=" + manualControlState +
+         " neutral=" + manualNeutralSent + " fresh_for=" + manualFreshForMs + "ms\n\n"
          "Map tile: OpenStreetMap, centered on the ground station.\n"
          "Click the map to append mission waypoints.";
 }
@@ -603,6 +621,75 @@ FlightCommandState::statusLine() const
          " speed=" + groundspeedMps + "m/s" +
          " battery=" + batteryPercent + "%" +
          " bytes=" + forwardedBytes +
+         " detail=" + detail;
+}
+
+SafetyState
+SafetyState::fromFields(const Fields& fields)
+{
+  SafetyState state;
+  state.droneId = fieldOr(fields, "drone_id", state.droneId);
+  state.linkState = fieldOr(fields, "link_state", state.linkState);
+  state.manualControlState = fieldOr(fields, "manual_control_state", state.manualControlState);
+  state.manualReplayActive = fieldOr(fields, "manual_replay_active", state.manualReplayActive);
+  state.manualNeutralSent = fieldOr(fields, "manual_neutral_sent", state.manualNeutralSent);
+  state.manualFreshForMs = uint64FieldOr(fields, "manual_fresh_for_ms", state.manualFreshForMs);
+  state.manualReplayCount = uint64FieldOr(fields, "manual_replay_count", state.manualReplayCount);
+  state.detail = fieldOr(fields, "safety_detail", state.detail);
+  state.updatedMs = uint64FieldOr(fields, "timestamp_ms", uint64FieldOr(fields, "updated_ms", state.updatedMs));
+  return state;
+}
+
+SafetyState
+SafetyState::fromTelemetry(const TelemetryState& telemetry)
+{
+  return fromFields(telemetry.toFields());
+}
+
+Fields
+SafetyState::toFields() const
+{
+  return {
+    {"drone_id", droneId},
+    {"link_state", linkState},
+    {"manual_control_state", manualControlState},
+    {"manual_replay_active", manualReplayActive},
+    {"manual_neutral_sent", manualNeutralSent},
+    {"manual_fresh_for_ms", std::to_string(manualFreshForMs)},
+    {"manual_replay_count", std::to_string(manualReplayCount)},
+    {"safety_detail", detail},
+    {"updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+bool
+SafetyState::manualControlFresh() const
+{
+  return manualReplayActive == "true" &&
+         manualControlState == "fresh" &&
+         manualFreshForMs > 0;
+}
+
+bool
+SafetyState::needsOperatorAttention() const
+{
+  return linkState == "lost" ||
+         linkState == "waiting-heartbeat" ||
+         manualControlState == "stale-waiting-neutral" ||
+         manualControlState == "send-failed";
+}
+
+std::string
+SafetyState::statusLine() const
+{
+  return "Safety drone=" + droneId +
+         " link=" + linkState +
+         " manual=" + manualControlState +
+         " replay_active=" + manualReplayActive +
+         " neutral_sent=" + manualNeutralSent +
+         " fresh_for_ms=" + std::to_string(manualFreshForMs) +
+         " replay_count=" + std::to_string(manualReplayCount) +
+         " attention=" + std::string(needsOperatorAttention() ? "yes" : "no") +
          " detail=" + detail;
 }
 
