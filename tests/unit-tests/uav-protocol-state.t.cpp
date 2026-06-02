@@ -21,6 +21,7 @@ using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::RecordingDataProductState;
 using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::SelectedActionState;
+using ndnsf::examples::uav::SelectedDroneSummaryState;
 using ndnsf::examples::uav::TelemetryState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
@@ -552,6 +553,74 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyIdentifiesPressureProfiles)
   probe.probePressure = 90;
   BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).primaryPressure, "probe");
   BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).policyReason, "pressure-probe");
+}
+
+BOOST_AUTO_TEST_CASE(SelectedDroneSummaryStateUsesSharedModels)
+{
+  TelemetryState telemetry;
+  telemetry.droneId = "A";
+  telemetry.readiness = "ready";
+  telemetry.video = "streaming";
+  telemetry.linkState = "connected";
+
+  auto readiness = makeReadyState(true);
+  auto mission = makeMissionState("uploaded");
+
+  MissionPlan plan;
+  plan.taskId = "patrol-test";
+  plan.assignment = "clustered-waypoints-return-to-start";
+
+  MissionPart part;
+  part.id = "part-A";
+  part.assignedDrone = "A";
+  part.waypoints = {{35.1186, -89.9375}, {35.1187, -89.9374}};
+  plan.parts.push_back(part);
+
+  MissionProgressState progress;
+  progress.phase = "executing";
+  progress.drones = "A,B";
+
+  VideoState video;
+  video.droneId = "A";
+  video.status = "streaming";
+
+  VideoAdaptiveState adaptive;
+  adaptive.droneId = "A";
+  adaptive.rttMs = 105;
+  adaptive.backlogPressure = 42;
+  adaptive.primaryPressure = "backlog";
+
+  const auto summary = SelectedDroneSummaryState::fromStates("A", telemetry, readiness,
+                                                            mission, plan, part, progress,
+                                                            video, adaptive, makeSafeState());
+  BOOST_CHECK(summary.hasTelemetry);
+  BOOST_CHECK_EQUAL(summary.selectedDrone, "A");
+  BOOST_CHECK_EQUAL(summary.readiness, "ready");
+  BOOST_CHECK_EQUAL(summary.missionPhase, "uploaded");
+  BOOST_CHECK_EQUAL(summary.missionProgressPhase, "executing");
+  BOOST_CHECK_EQUAL(summary.missionPlanTask, "patrol-test");
+  BOOST_CHECK_EQUAL(summary.missionPartId, "part-A");
+  BOOST_CHECK_EQUAL(summary.missionPartWaypoints, 2);
+  BOOST_CHECK_EQUAL(summary.videoStatus, "streaming");
+  BOOST_CHECK_EQUAL(summary.linkState, "connected");
+  BOOST_CHECK(!summary.safetyAttention);
+  BOOST_CHECK(!summary.canArm);
+  BOOST_CHECK(summary.canTakeoff);
+  BOOST_CHECK(summary.canManualControl);
+  BOOST_CHECK_NE(summary.statusLine().find("mission_part=part-A"), std::string::npos);
+  BOOST_CHECK_NE(summary.statusLine().find("video_adaptive=rtt=105ms"), std::string::npos);
+
+  const auto empty = SelectedDroneSummaryState::fromStates("B", std::nullopt, std::nullopt,
+                                                          std::nullopt, plan, std::nullopt,
+                                                          std::nullopt, std::nullopt,
+                                                          std::nullopt, std::nullopt);
+  BOOST_CHECK(!empty.hasTelemetry);
+  BOOST_CHECK_EQUAL(empty.readiness, "unknown");
+  BOOST_CHECK_EQUAL(empty.missionPhase, "idle");
+  BOOST_CHECK_EQUAL(empty.missionPlanTask, "patrol-test");
+  BOOST_CHECK_EQUAL(empty.missionPartId, "none");
+  BOOST_CHECK(!empty.canArm);
+  BOOST_CHECK_EQUAL(empty.armReason, "no-telemetry");
 }
 
 BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)
