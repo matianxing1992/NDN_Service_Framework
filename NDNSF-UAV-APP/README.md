@@ -460,6 +460,12 @@ vehicle. If those conditions are missing, manual-control packets are suppressed
 and the operator sees the readiness reason instead of silently flooding the
 link.
 
+The same information is exposed as a typed `SafetyState`. Drone telemetry now
+reports the current link state, manual-control freshness, replay activity,
+neutral fallback, and replay count. The GS vehicle list, map marker, and
+inspector render that model directly, so stale manual input and heartbeat loss
+are visible as state rather than only as backend logs.
+
 Takeoff is guarded by the telemetry state: the GS requires heartbeat,
 flight-controller readiness, GPS/EKF readiness, battery readiness, and an armed
 state before sending the Targeted takeoff command. The UI also exposes an

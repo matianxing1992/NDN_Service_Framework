@@ -506,6 +506,7 @@ public:
             const auto readiness = m_runtime.readinessForDrone(statusDrone);
             const auto video = m_runtime.videoForDrone(statusDrone);
             const auto command = m_runtime.commandForDrone(statusDrone);
+            const auto safety = m_runtime.safetyForDrone(statusDrone);
             if (telemetry) {
               try {
                 m_dronePositions[statusDrone] = {
@@ -520,9 +521,10 @@ public:
                   (readiness ? " " + readiness->statusLine() : "") +
                   (mission ? " " + mission->statusLine() : "") +
                   (video ? " " + video->statusLine() : "") +
-                  (command ? " " + command->statusLine() : "");
+                  (command ? " " + command->statusLine() : "") +
+                  (safety ? " " + safety->statusLine() : "");
                 m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone,
-                                                   readiness, video, command);
+                                                   readiness, video, command, safety);
               }
               m_pendingVehicleRowsRefresh = true;
             }
@@ -536,10 +538,11 @@ public:
             const auto readiness = m_runtime.readinessForDrone(statusDrone);
             const auto video = m_runtime.videoForDrone(statusDrone);
             const auto command = m_runtime.commandForDrone(statusDrone);
+            const auto safety = m_runtime.safetyForDrone(statusDrone);
             m_pendingTelemetry = command ? command->statusLine() : status;
             if (telemetry) {
               m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone,
-                                                 readiness, video, command);
+                                                 readiness, video, command, safety);
             }
             m_pendingVehicleRowsRefresh = true;
           }
@@ -1506,6 +1509,7 @@ private:
       const auto mission = m_runtime.missionForDrone(m_droneIds[i]);
       const auto video = m_runtime.videoForDrone(m_droneIds[i]);
       const auto command = m_runtime.commandForDrone(m_droneIds[i]);
+      const auto safety = m_runtime.safetyForDrone(m_droneIds[i]);
       std::string rowText = std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
                             (selected ? " active" : " standby");
       if (readiness) {
@@ -1530,6 +1534,9 @@ private:
       if (command && command->command != "none") {
         rowText += " cmd=" + command->command + ":" + command->ackResult;
       }
+      if (safety) {
+        rowText += " safe=" + safety->manualControlState + "/" + safety->linkState;
+      }
       label->set_text(rowText);
     }
     const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
@@ -1537,9 +1544,10 @@ private:
     const auto readiness = m_runtime.readinessForDrone(selectedDrone);
     const auto video = m_runtime.videoForDrone(selectedDrone);
     const auto command = m_runtime.commandForDrone(selectedDrone);
+    const auto safety = m_runtime.safetyForDrone(selectedDrone);
     if (telemetry) {
       m_mapMission.set_text(mapTextForTelemetry(*telemetry, mission, selectedDrone,
-                                                readiness, video, command));
+                                                readiness, video, command, safety));
     }
     else {
       m_mapMission.set_text("Map / mission workspace\n\n"
@@ -1595,7 +1603,8 @@ private:
                       const std::string& selectedDrone,
                       const std::optional<ReadinessState>& readiness = std::nullopt,
                       const std::optional<VideoState>& video = std::nullopt,
-                      const std::optional<FlightCommandState>& command = std::nullopt)
+                      const std::optional<FlightCommandState>& command = std::nullopt,
+                      const std::optional<SafetyState>& safety = std::nullopt)
   {
     const auto missionPhase = mission ? mission->phase : "idle";
     const auto missionDetail = mission ? mission->detail : "idle";
@@ -1630,6 +1639,15 @@ private:
               " state=" + command->flightControllerState +
               " safety=" + std::string(command->isSafetyCritical() ? "yes" : "no") +
               " detail=" + command->detail;
+    }
+    if (safety) {
+      text += "\nSafety model: link=" + safety->linkState +
+              " manual=" + safety->manualControlState +
+              " replay=" + safety->manualReplayActive +
+              " neutral=" + safety->manualNeutralSent +
+              " fresh_for=" + std::to_string(safety->manualFreshForMs) + "ms" +
+              " attention=" + std::string(safety->needsOperatorAttention() ? "yes" : "no") +
+              " detail=" + safety->detail;
     }
     return text;
   }
@@ -1860,6 +1878,13 @@ private:
           g = 30;
           b = 40;
         }
+      }
+      if (const auto safety = m_runtime.safetyForDrone(droneId);
+          safety && safety->needsOperatorAttention()) {
+        label += " !";
+        r = 220;
+        g = 30;
+        b = 40;
       }
       markers.push_back({label, lat, lon, r, g, b});
     }

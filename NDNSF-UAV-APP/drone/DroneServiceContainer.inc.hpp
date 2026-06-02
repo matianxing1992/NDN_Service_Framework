@@ -86,6 +86,17 @@ public:
              commandName == "mission-waypoint-goto") {
       accepted = m_armed.load();
     }
+    if (commandName == "manual_control") {
+      if (accepted) {
+        m_lastManualControlMs = nowMilliseconds();
+        m_manualNeutralSent = false;
+        m_manualControlRejected = false;
+        ++m_manualReplayCount;
+      }
+      else {
+        m_manualControlRejected = true;
+      }
+    }
     NDN_LOG_INFO("MOCK_FC_FORWARD drone=" << m_droneId
                  << " bytes=" << frame.size()
                  << " count=" << m_forwardedCount.load()
@@ -114,6 +125,30 @@ public:
   Fields
   latestTelemetry() override
   {
+    const auto now = nowMilliseconds();
+    const auto lastManual = m_lastManualControlMs.load();
+    std::string manualState = "idle";
+    std::string manualActive = "false";
+    std::string manualNeutral = m_manualNeutralSent.load() ? "true" : "false";
+    uint64_t manualFreshForMs = 0;
+    std::string safetyDetail = "no-manual-input";
+    if (m_manualControlRejected.load()) {
+      manualState = "send-failed";
+      safetyDetail = "manual-control-rejected";
+    }
+    else if (lastManual > 0 && now <= lastManual + 1500) {
+      manualState = "fresh";
+      manualActive = "true";
+      manualNeutral = "false";
+      manualFreshForMs = lastManual + 1500 - now;
+      safetyDetail = "manual-control-fresh";
+    }
+    else if (lastManual > 0) {
+      m_manualNeutralSent = true;
+      manualNeutral = "true";
+      manualState = "neutral-sent";
+      safetyDetail = "neutral-after-timeout";
+    }
     return {
       {"fc_state", "mock-ready"},
       {"lat", "35.1186"},
@@ -131,6 +166,13 @@ public:
       {"ready_for_takeoff", m_armed.load() ? "true" : "false"},
       {"readiness", "ready"},
       {"readiness_reason", "ok"},
+      {"link_state", "connected"},
+      {"manual_control_state", manualState},
+      {"manual_replay_active", manualActive},
+      {"manual_neutral_sent", manualNeutral},
+      {"manual_fresh_for_ms", std::to_string(manualFreshForMs)},
+      {"manual_replay_count", std::to_string(m_manualReplayCount.load())},
+      {"safety_detail", safetyDetail},
     };
   }
 
@@ -140,6 +182,10 @@ private:
   std::atomic<bool> m_armed{false};
   std::atomic<bool> m_airborne{false};
   std::atomic<int> m_altitudeTenths{0};
+  std::atomic<uint64_t> m_lastManualControlMs{0};
+  std::atomic<bool> m_manualNeutralSent{true};
+  std::atomic<bool> m_manualControlRejected{false};
+  std::atomic<size_t> m_manualReplayCount{0};
 };
 
 class UdpFlightControllerBackend : public FlightControllerBackend
@@ -930,6 +976,42 @@ private:
     result.emplace("battery_percent", "unknown");
     result.emplace("battery_voltage_v", "unknown");
     result.emplace("battery_current_a", "unknown");
+    result["link_state"] = fieldOr(result, "heartbeat_seen", "false") == "true" ?
+                           "connected" : "waiting-heartbeat";
+    result.emplace("manual_replay_count", std::to_string(m_manualReplayCount.load()));
+    if (m_latestManualFrame.empty()) {
+      result["manual_control_state"] = "idle";
+      result["manual_replay_active"] = "false";
+      result["manual_neutral_sent"] = "true";
+      result["manual_fresh_for_ms"] = "0";
+      result["safety_detail"] = "no-manual-input";
+    }
+    else {
+      const auto now = std::chrono::steady_clock::now();
+      if (now <= m_manualReplayDeadline) {
+        const auto freshForMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          m_manualReplayDeadline - now).count();
+        result["manual_control_state"] = "fresh";
+        result["manual_replay_active"] = "true";
+        result["manual_neutral_sent"] = "false";
+        result["manual_fresh_for_ms"] = std::to_string(std::max<int64_t>(0, freshForMs));
+        result["safety_detail"] = "manual-control-fresh";
+      }
+      else if (m_manualNeutralSent) {
+        result["manual_control_state"] = "neutral-sent";
+        result["manual_replay_active"] = "false";
+        result["manual_neutral_sent"] = "true";
+        result["manual_fresh_for_ms"] = "0";
+        result["safety_detail"] = "neutral-after-timeout";
+      }
+      else {
+        result["manual_control_state"] = "stale-waiting-neutral";
+        result["manual_replay_active"] = "false";
+        result["manual_neutral_sent"] = "false";
+        result["manual_fresh_for_ms"] = "0";
+        result["safety_detail"] = "manual-timeout-neutral-pending";
+      }
+    }
     auto state = TelemetryState::fromFields(result);
     if (state.timestampMs == 0) {
       state.timestampMs = nowMilliseconds();
