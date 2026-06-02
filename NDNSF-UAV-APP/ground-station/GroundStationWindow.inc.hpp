@@ -823,14 +823,14 @@ private:
       m_runtime.sendMavlinkCommand("land");
       return true;
     case GDK_KEY_v:
-      if (!m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
+      if (!isSelectedDroneVideoStreaming()) {
         m_start.set_sensitive(false);
         m_stop.set_sensitive(false);
         m_runtime.startVideo();
       }
       return true;
     case GDK_KEY_x:
-      if (m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
+      if (isSelectedDroneVideoStreaming()) {
         m_stop.set_sensitive(false);
         m_acceptFrames = false;
         m_runtime.stopVideo();
@@ -1156,7 +1156,7 @@ private:
         m_runtime.sendMavlinkCommand("land");
         break;
       case 2: // Xbox X
-        if (m_runtime.isStreamingForDrone(m_runtime.targetDroneId())) {
+        if (isSelectedDroneVideoStreaming()) {
           m_runtime.stopVideo();
         }
         else {
@@ -1280,9 +1280,11 @@ private:
   updateVideoViewForSelectedLocked()
   {
     const auto selectedDrone = m_runtime.targetDroneId();
-    const bool selectedStreaming = m_runtime.isVideoDisplayActiveForDrone(selectedDrone);
-    setPendingButtonStateLocked(!selectedStreaming, selectedStreaming);
-    if (selectedStreaming) {
+    const bool selectedRemoteStreaming = isVideoStateStreamingForDrone(selectedDrone);
+    const bool selectedDisplayActive = m_runtime.isVideoDisplayActiveForDrone(selectedDrone);
+    setPendingButtonStateLocked(!selectedRemoteStreaming && !selectedDisplayActive,
+                                selectedRemoteStreaming || selectedDisplayActive);
+    if (selectedDisplayActive) {
       if (!m_acceptFrames) {
         beginLocalStreamViewLocked();
       }
@@ -1297,6 +1299,21 @@ private:
     m_pendingElapsedMs = 0;
     m_decodedFrames = 0;
     m_pendingClearFrame = true;
+  }
+
+  bool
+  isVideoStateStreamingForDrone(const std::string& droneId) const
+  {
+    const auto video = m_runtime.videoForDrone(droneId);
+    return video && video->isStreaming();
+  }
+
+  bool
+  isSelectedDroneVideoStreaming() const
+  {
+    const auto selectedDrone = m_runtime.targetDroneId();
+    return isVideoStateStreamingForDrone(selectedDrone) ||
+           m_runtime.isStreamingForDrone(selectedDrone);
   }
 
   void
