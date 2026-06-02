@@ -378,6 +378,10 @@ public:
       sendSelectedFlightCommandIfReady("land");
     });
     m_emergencyStop.signal_clicked().connect([this] {
+      if (m_controlMode) {
+        setControlMode(false);
+      }
+      m_status.set_text("Emergency stop requested for Drone " + m_runtime.targetDroneId());
       m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
     });
     m_patrol.signal_clicked().connect([this] {
@@ -648,7 +652,9 @@ public:
         m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
         std::this_thread::sleep_for(std::chrono::seconds(3));
         m_runtime.sendMavlinkCommand("land");
-        std::this_thread::sleep_for(std::chrono::seconds(4));
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
+        std::this_thread::sleep_for(std::chrono::seconds(3));
         Glib::signal_idle().connect_once([this] {
           hide();
         });

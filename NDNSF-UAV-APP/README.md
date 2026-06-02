@@ -463,7 +463,10 @@ link.
 Takeoff is guarded by the telemetry state: the GS requires heartbeat,
 flight-controller readiness, GPS/EKF readiness, battery readiness, and an armed
 state before sending the Targeted takeoff command. The UI also exposes an
-Emergency Stop button that uses the Targeted MAVLink path.
+Emergency Stop button that uses the Targeted MAVLink path. Emergency Stop is
+treated as safety-critical: the GS exits manual-control mode before sending it,
+and the request uses a separate in-flight guard so it is not dropped merely
+because a normal MAVLink command is still waiting for a response.
 
 Before any real motor test:
 
