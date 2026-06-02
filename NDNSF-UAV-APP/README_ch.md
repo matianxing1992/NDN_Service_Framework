@@ -706,8 +706,8 @@ telemetry、camera frame 和 mission assignment。core 现在提供了通用的
 UAV service-container workload 的应用。计划顺序如下：
 
 1. **收束状态模型。** 现在 telemetry、readiness、mission、video、command 和 safety state
-   已经驱动主要飞控按钮、selected-drone action model、inspector/map 文本、地图 marker、左侧
-   drone list 和 MiniNDN smoke markers。Mission Start/Stop 现在也通过 typed mission start gate
+   已经驱动主要飞控按钮、selected-drone action model、selected-drone view-state gate reason、
+   inspector/map 文本、地图 marker、左侧 drone list 和 MiniNDN smoke markers。Mission Start/Stop 现在也通过 typed mission start gate
    把 `MissionState`、flight readiness 和 safety 组合起来判断。Patrol task progress 现在也有
    typed `MissionProgressState`，用于 assignment、compensation、completion 和 return-home
    planning；ground-station mission 按钮也会使用这个 progress model，在 patrol assignment 或
@@ -1168,10 +1168,10 @@ armed-ready 三种 readiness snapshot。它检查 Arm 只在选中无人机 read
 Takeoff/Land/手操只在选中无人机 armed 后启用。这些 UI gate 和实际 MAVLink command-send
 路径共用同一个 typed `FlightSafetyGateState`，把 readiness 和 safety/link state 合在一起判断。
 同一个 smoke 也会记录 selected-drone action model，包括手操模式、Emergency Stop 可用性，以及
-mission Start/Stop readiness。它也会检查 selected drone view model，确认 inspector/map 文本和
-地图 marker 状态由 typed state 派生；例如 mission upload 后用 typed marker suffix 表示，而不是
-解析临时 status string。左侧 drone list 也通过同一套 typed state 路径检查，包括 readiness、
-mission、video 和 safety 摘要。
+mission Start/Stop readiness。它也会检查 selected drone view model，确认 inspector/map 文本、
+地图 marker 状态以及 `can_arm`、`can_takeoff`、`can_manual` 这类 flight gate 字段都由 typed
+state 派生；例如 mission upload 后用 typed marker suffix 表示，而不是解析临时 status string。
+左侧 drone list 也通过同一套 typed state 路径检查，包括 readiness、mission、video 和 safety 摘要。
 
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动

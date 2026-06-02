@@ -1311,10 +1311,11 @@ MAVLink command-send path share the same typed `FlightSafetyGateState`, which
 combines readiness and safety/link state. The same smoke also logs the
 selected-drone action model, including manual-control mode, emergency-stop
 availability, and mission Start/Stop readiness. It also verifies the selected
-drone view model that drives the inspector/map text and marker state, so mission
-upload state is reflected as a typed marker suffix instead of temporary status
-string parsing. The left drone list is checked through the same typed state path,
-including readiness, mission, video, and safety summaries.
+drone view model that drives the inspector/map text, marker state, and flight
+gate fields (`can_arm`, `can_takeoff`, `can_manual`, and their reasons), so
+mission upload state is reflected as a typed marker suffix instead of temporary
+status string parsing. The left drone list is checked through the same typed
+state path, including readiness, mission, video, and safety summaries.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
@@ -1382,8 +1383,9 @@ to make it a deployable UAV service-container workload. The planned order is:
 
 1. **State model consolidation.** Telemetry, readiness, mission, video, command,
    and safety state now drive the main flight buttons, selected-drone action
-   model, inspector/map text, map markers, left drone list, and MiniNDN smoke
-   markers. Mission Start/Stop now also goes through a typed mission start gate
+   model, selected-drone view-state gate reasons, inspector/map text, map
+   markers, left drone list, and MiniNDN smoke markers. Mission Start/Stop now
+   also goes through a typed mission start gate
    that combines `MissionState` with flight readiness and safety. Patrol task
    progress now has a typed `MissionProgressState` for assignment,
    compensation, completion, and return-home planning, and the ground-station
