@@ -621,7 +621,7 @@ public:
                      "  stream elapsed: " + std::to_string(elapsedMs) + " ms";
         const auto adaptive = m_runtime.videoAdaptiveForDrone(m_runtime.targetDroneId());
         if (adaptive) {
-          stats += "  " + compactVideoAdaptiveSummary(*adaptive);
+          stats += "  " + adaptive->compactSummary();
         }
         m_stats.set_text(stats);
       }
@@ -2104,82 +2104,9 @@ private:
     return state;
   }
 
-  struct DroneListRowState
-  {
-    std::string droneId;
-    bool selected = false;
-    bool hasTelemetry = false;
-    bool hasReadiness = false;
-    bool hasMission = false;
-    bool hasVideo = false;
-    bool hasCommand = false;
-    bool hasSafety = false;
-    bool hasMissionProgress = false;
-    bool hasVideoAdaptive = false;
-    std::string readiness = "unknown";
-    std::string armed = "unknown";
-    std::string gps = "unknown";
-    std::string battery = "unknown";
-    std::string mission = "idle";
-    std::string missionProgress = "idle";
-    std::string video = "unknown";
-    std::string videoAdaptive = "unknown";
-    std::string command = "none";
-    std::string safety = "unknown";
-    std::string rowText;
-  };
-
-  static bool
-  commaSeparatedContains(const std::string& list, const std::string& value)
-  {
-    if (value.empty()) {
-      return false;
-    }
-    std::stringstream input(list);
-    std::string token;
-    while (std::getline(input, token, ',')) {
-      if (token == value) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  static bool
-  missionProgressAppliesToDrone(const MissionProgressState& progress, const std::string& droneId)
-  {
-    return progress.drones == "all" ||
-           progress.drones == droneId ||
-           commaSeparatedContains(progress.drones, droneId);
-  }
-
-  static uint64_t
-  maxVideoPressure(const VideoAdaptiveState& adaptive)
-  {
-    return std::max({adaptive.timeoutPressure, adaptive.probePressure,
-                     adaptive.duplicatePressure, adaptive.lossPressure,
-                     adaptive.backlogPressure});
-  }
-
-  static std::string
-  compactVideoAdaptiveSummary(const VideoAdaptiveState& adaptive)
-  {
-    return "rtt=" + std::to_string(adaptive.rttMs) +
-           "ms,win=" + std::to_string(adaptive.window) +
-           ",pressure=" + std::to_string(maxVideoPressure(adaptive)) +
-           "/" + adaptive.primaryPressure +
-           ",bitrate=" + std::to_string(adaptive.acceptedBitrateKbps) +
-           "->" + std::to_string(adaptive.suggestedBitrateKbps) +
-           "kbps/" + adaptive.bitrateAction +
-           ",reason=" + adaptive.policyReason;
-  }
-
   DroneListRowState
   droneListRowState(const std::string& droneId, bool selected) const
   {
-    DroneListRowState state;
-    state.droneId = droneId;
-    state.selected = selected;
     const auto telemetry = m_runtime.telemetryForDrone(droneId);
     const auto readiness = m_runtime.readinessForDrone(droneId);
     const auto mission = m_runtime.missionForDrone(droneId);
@@ -2188,60 +2115,9 @@ private:
     const auto command = m_runtime.commandForDrone(droneId);
     const auto safety = m_runtime.safetyForDrone(droneId);
     const auto progress = m_runtime.missionProgressSnapshot();
-
-    state.hasTelemetry = telemetry.has_value();
-    state.hasReadiness = readiness.has_value();
-    state.hasMission = mission.has_value();
-    state.hasVideo = video.has_value();
-    state.hasCommand = command.has_value() && command->command != "none";
-    state.hasSafety = safety.has_value();
-    state.hasMissionProgress = progress && missionProgressAppliesToDrone(*progress, droneId);
-    state.hasVideoAdaptive = videoAdaptive.has_value();
-
-    state.readiness = readiness ? readiness->readiness :
-                      telemetry ? telemetry->readiness : "unknown";
-    state.armed = readiness ? readiness->armed :
-                  telemetry ? telemetry->armed : "unknown";
-    state.gps = readiness ? readiness->gpsReady :
-                telemetry ? telemetry->gpsFixName : "unknown";
-    state.battery = telemetry ? telemetry->batteryPercent + "%" : "unknown";
-    state.mission = mission ? mission->phase : "idle";
-    state.missionProgress = state.hasMissionProgress ? progress->phase : "idle";
-    state.video = video ? video->status :
-                  telemetry ? telemetry->video : "unknown";
-    state.videoAdaptive = videoAdaptive ? compactVideoAdaptiveSummary(*videoAdaptive) : "unknown";
-    state.command = state.hasCommand ? command->command + ":" + command->ackResult : "none";
-    state.safety = safety ? safety->manualControlState + "/" + safety->linkState : "unknown";
-
-    state.rowText = std::string(selected ? "● " : "○ ") + "Drone " + droneId +
-                    (selected ? " active" : " standby");
-    if (state.hasReadiness || state.hasTelemetry) {
-      state.rowText += " " + state.readiness +
-                       " armed=" + state.armed +
-                       " gps=" + state.gps;
-    }
-    if (state.hasTelemetry) {
-      state.rowText += " bat=" + state.battery;
-    }
-    if (state.hasMission && state.mission != "idle") {
-      state.rowText += " mission=" + state.mission;
-    }
-    if (state.hasMissionProgress && state.missionProgress != "idle") {
-      state.rowText += " progress=" + state.missionProgress;
-    }
-    if ((state.hasVideo || state.hasTelemetry) && state.video != "unknown") {
-      state.rowText += " video=" + state.video;
-    }
-    if (state.hasVideoAdaptive) {
-      state.rowText += " adaptive=" + state.videoAdaptive;
-    }
-    if (state.hasCommand) {
-      state.rowText += " cmd=" + state.command;
-    }
-    if (state.hasSafety) {
-      state.rowText += " safe=" + state.safety;
-    }
-    return state;
+    return DroneListRowState::fromStates(droneId, selected, telemetry, readiness,
+                                         mission, video, videoAdaptive, command,
+                                         safety, progress);
   }
 
   void
@@ -2514,7 +2390,7 @@ private:
       }
     }
     if (const auto progress = m_runtime.missionProgressSnapshot();
-        progress && missionProgressAppliesToDrone(*progress, droneId)) {
+        progress && progress->appliesToDrone(droneId)) {
       if (progress->isActive()) {
         marker.label += " P";
         marker.r = 130;
@@ -2609,7 +2485,7 @@ private:
     state.missionPartWaypoints = missionPart ? missionPart->waypoints.size() : 0;
     state.videoStatus = video ? video->status :
                         telemetry ? telemetry->video : "unknown";
-    state.videoAdaptive = videoAdaptive ? compactVideoAdaptiveSummary(*videoAdaptive) : "unknown";
+    state.videoAdaptive = videoAdaptive ? videoAdaptive->compactSummary() : "unknown";
     state.linkState = safety ? safety->linkState :
                       telemetry ? telemetry->linkState : "unknown";
     const auto flightGate = FlightSafetyGateState::fromStates(state.selectedDrone, readiness, safety);
@@ -2639,7 +2515,7 @@ private:
       state.mapText = mapTextForTelemetry(*telemetry, mission, state.selectedDrone,
                                           readiness, video, command, safety);
       if (videoAdaptive) {
-        state.mapText += "\nVideo adaptive: " + compactVideoAdaptiveSummary(*videoAdaptive) +
+        state.mapText += "\nVideo adaptive: " + videoAdaptive->compactSummary() +
                          " timeout=" + std::to_string(videoAdaptive->missingTimeoutMs) +
                          "ms lookahead=" + std::to_string(videoAdaptive->lookahead);
       }
@@ -2690,7 +2566,7 @@ private:
       }
       if (videoAdaptive) {
         state.inspectorText += " " + videoAdaptive->statusLine();
-        state.mapText += "\nVideo adaptive: " + compactVideoAdaptiveSummary(*videoAdaptive) +
+        state.mapText += "\nVideo adaptive: " + videoAdaptive->compactSummary() +
                          " timeout=" + std::to_string(videoAdaptive->missingTimeoutMs) +
                          "ms lookahead=" + std::to_string(videoAdaptive->lookahead);
       }
@@ -2752,7 +2628,7 @@ private:
          << " future_probe_limit=" << adaptive->futureProbeLimit
          << " interest_lifetime_ms=" << adaptive->interestLifetimeMs
          << " missing_timeout_ms=" << adaptive->missingTimeoutMs
-         << " pressure=" << maxVideoPressure(*adaptive)
+         << " pressure=" << adaptive->maxPressure()
          << " primary_pressure=" << adaptive->primaryPressure
          << " policy_reason=" << adaptive->policyReason
          << " pending_chunks=" << adaptive->pendingChunks

@@ -1011,8 +1011,27 @@ VideoAdaptiveState::toFields() const
 bool
 VideoAdaptiveState::underPressure() const
 {
+  return maxPressure() >= 50;
+}
+
+uint64_t
+VideoAdaptiveState::maxPressure() const
+{
   return std::max({timeoutPressure, probePressure, duplicatePressure,
-                   lossPressure, backlogPressure}) >= 50;
+                   lossPressure, backlogPressure});
+}
+
+std::string
+VideoAdaptiveState::compactSummary() const
+{
+  return "rtt=" + std::to_string(rttMs) +
+         "ms,win=" + std::to_string(window) +
+         ",pressure=" + std::to_string(maxPressure()) +
+         "/" + primaryPressure +
+         ",bitrate=" + std::to_string(acceptedBitrateKbps) +
+         "->" + std::to_string(suggestedBitrateKbps) +
+         "kbps/" + bitrateAction +
+         ",reason=" + policyReason;
 }
 
 std::string
@@ -1598,6 +1617,32 @@ MissionProgressState::isFailed() const
   return phase == "failed";
 }
 
+namespace {
+
+bool
+commaSeparatedContains(const std::string& list, const std::string& value)
+{
+  if (value.empty()) {
+    return false;
+  }
+  std::stringstream input(list);
+  std::string token;
+  while (std::getline(input, token, ',')) {
+    if (token == value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+bool
+MissionProgressState::appliesToDrone(const std::string& droneId) const
+{
+  return drones == "all" || drones == droneId || commaSeparatedContains(drones, droneId);
+}
+
 std::string
 MissionProgressState::statusLine() const
 {
@@ -1615,6 +1660,76 @@ MissionProgressState::statusLine() const
          " missing=" + missingPartIds +
          " compensated=" + compensatedPartIds +
          " pending=" + pendingPartIds;
+}
+
+DroneListRowState
+DroneListRowState::fromStates(const std::string& droneId,
+                              bool selected,
+                              const std::optional<TelemetryState>& telemetry,
+                              const std::optional<ReadinessState>& readiness,
+                              const std::optional<MissionState>& mission,
+                              const std::optional<VideoState>& video,
+                              const std::optional<VideoAdaptiveState>& videoAdaptive,
+                              const std::optional<FlightCommandState>& command,
+                              const std::optional<SafetyState>& safety,
+                              const std::optional<MissionProgressState>& progress)
+{
+  DroneListRowState state;
+  state.droneId = droneId;
+  state.selected = selected;
+  state.hasTelemetry = telemetry.has_value();
+  state.hasReadiness = readiness.has_value();
+  state.hasMission = mission.has_value();
+  state.hasVideo = video.has_value();
+  state.hasCommand = command.has_value() && command->command != "none";
+  state.hasSafety = safety.has_value();
+  state.hasMissionProgress = progress && progress->appliesToDrone(droneId);
+  state.hasVideoAdaptive = videoAdaptive.has_value();
+
+  state.readiness = readiness ? readiness->readiness :
+                    telemetry ? telemetry->readiness : "unknown";
+  state.armed = readiness ? readiness->armed :
+                telemetry ? telemetry->armed : "unknown";
+  state.gps = readiness ? readiness->gpsReady :
+              telemetry ? telemetry->gpsFixName : "unknown";
+  state.battery = telemetry ? telemetry->batteryPercent + "%" : "unknown";
+  state.mission = mission ? mission->phase : "idle";
+  state.missionProgress = state.hasMissionProgress ? progress->phase : "idle";
+  state.video = video ? video->status :
+                telemetry ? telemetry->video : "unknown";
+  state.videoAdaptive = videoAdaptive ? videoAdaptive->compactSummary() : "unknown";
+  state.command = state.hasCommand ? command->command + ":" + command->ackResult : "none";
+  state.safety = safety ? safety->manualControlState + "/" + safety->linkState : "unknown";
+
+  state.rowText = std::string(selected ? "● " : "○ ") + "Drone " + droneId +
+                  (selected ? " active" : " standby");
+  if (state.hasReadiness || state.hasTelemetry) {
+    state.rowText += " " + state.readiness +
+                     " armed=" + state.armed +
+                     " gps=" + state.gps;
+  }
+  if (state.hasTelemetry) {
+    state.rowText += " bat=" + state.battery;
+  }
+  if (state.hasMission && state.mission != "idle") {
+    state.rowText += " mission=" + state.mission;
+  }
+  if (state.hasMissionProgress && state.missionProgress != "idle") {
+    state.rowText += " progress=" + state.missionProgress;
+  }
+  if ((state.hasVideo || state.hasTelemetry) && state.video != "unknown") {
+    state.rowText += " video=" + state.video;
+  }
+  if (state.hasVideoAdaptive) {
+    state.rowText += " adaptive=" + state.videoAdaptive;
+  }
+  if (state.hasCommand) {
+    state.rowText += " cmd=" + state.command;
+  }
+  if (state.hasSafety) {
+    state.rowText += " safe=" + state.safety;
+  }
+  return state;
 }
 
 std::string
