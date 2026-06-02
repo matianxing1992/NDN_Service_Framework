@@ -133,6 +133,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-apply-bitrate-test", action="store_true",
                         help="With --auto-video-test, have the GS explicitly apply "
                              "a suggested adaptive bitrate and restart the stream.")
+    parser.add_argument("--auto-video-pressure-profile-test", action="store_true",
+                        help="With --auto-video-test, inject controlled congestion, "
+                             "backlog, and probe pressure samples and verify the "
+                             "adaptive policy explanation fields.")
     parser.add_argument("--auto-repeat-stop-test", action="store_true",
                         help="With --auto-video-test, delay the first Stop response and "
                              "auto-click Stop again to verify timeout/retry UI behavior.")
@@ -764,6 +768,8 @@ def require_log_any(path: Path, needles: list[str]) -> None:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.auto_video_pressure_profile_test:
+        args.auto_video_test = True
     sys.argv = [sys.argv[0]]
     setLogLevel("info")
     runtime = load_runtime_config(args.runtime_config)
@@ -909,6 +915,8 @@ def main() -> int:
                 ]
             if args.auto_apply_bitrate_test:
                 gs_argv += ["--auto-apply-bitrate-test"]
+            if args.auto_video_pressure_profile_test:
+                gs_argv += ["--auto-video-pressure-profile-test"]
         if args.auto_mavlink_test:
             gs_argv += ["--auto-mavlink-test"]
         if args.auto_telemetry_test:
@@ -1218,6 +1226,16 @@ def main() -> int:
             require_log(gs_log, "bitrate_action=")
             require_log(gs_log, "primary_pressure=")
             require_log(gs_log, "policy_reason=")
+            if args.auto_video_pressure_profile_test:
+                require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=pressure-profile-congestion")
+                require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-pressure-congestion selected=" + args.drone_id)
+                require_log(gs_log, "primary_pressure=congestion policy_reason=pressure-congestion")
+                require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=pressure-profile-backlog")
+                require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-pressure-backlog selected=" + args.drone_id)
+                require_log(gs_log, "primary_pressure=backlog policy_reason=pressure-backlog")
+                require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=pressure-profile-probe")
+                require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-pressure-probe selected=" + args.drone_id)
+                require_log(gs_log, "primary_pressure=probe policy_reason=pressure-probe")
             if args.auto_apply_bitrate_test:
                 require_log(gs_log, "AUTO_VIDEO_APPLY_BITRATE_ATTEMPT applied=true")
                 require_log(gs_log, "GS_VIDEO_BITRATE_CHANGE_APPLY drone=" + args.drone_id)

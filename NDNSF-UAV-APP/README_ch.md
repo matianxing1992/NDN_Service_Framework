@@ -736,7 +736,8 @@ UAV service-container workload 的应用。计划顺序如下：
    lookahead、timeout 和码率建议现在由 typed `VideoAdaptivePolicyInput` 到
    `VideoAdaptivePolicyDecision` helper 计算，并有单元测试覆盖 pressure、high-RTT 和
    recovery 行为，避免只为某个 MiniNDN 拓扑调整隐藏常数。现在 `Apply Bitrate` 会把非 hold
-   建议转换成显式 Stop-then-Start stream restart。默认策略仍然是 manual；
+   建议转换成显式 Stop-then-Start stream restart。MiniNDN smoke 也可以注入受控的
+   congestion/backlog/probe pressure profile，并验证 `primary_pressure` 会按预期切换。默认策略仍然是 manual；
    `auto-after-pressure` 可以用于实验场景，在压力持续一段时间后自动应用建议。
 5. **任务协作模型。** 把当前 patrol demo 提升成可复用 mission model，包括 `MissionPlan`、
    `MissionPart`、assignment、progress、failure/compensation 和 return-to-home 语义。Patrol
@@ -1083,6 +1084,10 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 必须稳定覆盖自动 Stop-then-Start 路径时，可以把 `<ms>` 设成 `0`。
 这个 smoke 也会检查 adaptive log 里有 `primary_pressure` 和 `policy_reason`，避免以后只看到
 数字窗口变化却不知道策略为什么这样判定。
+如果还需要确定性覆盖不同压力来源，可以加 `--auto-video-pressure-profile-test`。它会在视频
+启动后注入 congestion、backlog 和 probe 三类受控样本，并要求 GS 记录
+`auto-video-pressure-congestion`、`auto-video-pressure-backlog` 和
+`auto-video-pressure-probe` view state，避免依赖随机丢包来验证策略解释。
 
 smoke test 会在确认 ground station 解码到视频 frame，且 drone 进入并退出 streaming 状态后退出。
 在集成 runtime 中，ground station 同时提供 `/UAV/GS/ObjectDetection`；直播期间 drone 会周期性

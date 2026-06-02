@@ -385,6 +385,7 @@ main(int argc, char** argv)
     const bool autoFlightControlsTest = getConfigBool(argc, argv, appConfig, "--auto-flight-controls-test", "auto-flight-controls-test", false);
     const bool autoRecordingPlaybackTest = getConfigBool(argc, argv, appConfig, "--auto-recording-playback-test", "auto-recording-playback-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
+    const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
     const bool autoSingleMissionTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-test", "auto-single-mission-test", false);
     const bool autoSingleMissionStartTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-start-test", "auto-single-mission-start-test", false);
@@ -499,6 +500,7 @@ main(int argc, char** argv)
                                autoFlightControlsTest,
                                autoRecordingPlaybackTest,
                                autoApplyBitrateTest,
+                               autoVideoPressureProfileTest,
                                autoRepeatStopTest,
                                patrolDroneIds);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
@@ -515,6 +517,7 @@ main(int argc, char** argv)
               << " auto_flight_controls_test=" << (autoFlightControlsTest ? "true" : "false")
               << " auto_recording_playback_test=" << (autoRecordingPlaybackTest ? "true" : "false")
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
+              << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
               << " video_bitrate_policy=" << videoBitratePolicy
               << std::endl;
     const int rc = app->run(window);

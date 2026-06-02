@@ -348,6 +348,36 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyHandlesHighRttAndRecovery)
   BOOST_CHECK_GT(recovered.suggestedBitrateKbps, recovering.acceptedBitrateKbps);
 }
 
+BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyIdentifiesPressureProfiles)
+{
+  VideoAdaptivePolicyInput base;
+  base.rttMs = 120;
+  base.fps = 30;
+  base.deltaPacketsPerSecond = 180;
+  base.timeoutBudgetMs = 2500;
+  base.dynamicWindowMax = 180;
+  base.dynamicLookaheadMax = 80;
+  base.decoderBacklogLimit = 80;
+  base.receivedChunks = 1000;
+  base.acceptedBitrateKbps = 8000;
+  base.requestedBitrateKbps = 8000;
+
+  auto congestion = base;
+  congestion.timeoutPressure = 90;
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(congestion).primaryPressure, "congestion");
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(congestion).policyReason, "pressure-congestion");
+
+  auto backlog = base;
+  backlog.decoderPendingChunks = 120;
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(backlog).primaryPressure, "backlog");
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(backlog).policyReason, "pressure-backlog");
+
+  auto probe = base;
+  probe.probePressure = 90;
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).primaryPressure, "probe");
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).policyReason, "pressure-probe");
+}
+
 BOOST_AUTO_TEST_CASE(RecordingDataProductTracksEncryptedManifest)
 {
   Fields fields{

@@ -401,6 +401,26 @@ public:
     return found->second;
   }
 
+  void
+  injectVideoAdaptivePressureForTest(const std::string& profile,
+                                     uint64_t timeoutPressure,
+                                     uint64_t probePressure,
+                                     uint64_t duplicatePressure,
+                                     uint64_t decoderPendingChunks,
+                                     uint64_t receivedChunks,
+                                     uint64_t timeouts,
+                                     uint64_t nacks)
+  {
+    m_videoTimeoutPressurePercent = std::clamp<uint64_t>(timeoutPressure, 0, 100);
+    m_videoProbePressurePercent = std::clamp<uint64_t>(probePressure, 0, 100);
+    m_videoDuplicatePressurePercent = std::clamp<uint64_t>(duplicatePressure, 0, 100);
+    m_decoderPendingChunkCount = decoderPendingChunks;
+    m_receivedChunks = receivedChunks;
+    m_frameTimeouts = timeouts;
+    m_frameNacks = nacks;
+    publishVideoAdaptiveState("pressure-profile-" + profile, true);
+  }
+
   std::optional<FlightCommandState>
   commandForDrone(const std::string& droneId) const
   {
