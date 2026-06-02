@@ -602,8 +602,9 @@ packet 数据量；提高 frame width 才会让 GUI 里显示的视频更大。
 点击 `Stop Video` 后，drone 会停止实时 stream，清空 pending Interests 和缓存的 stream packets，
 并忽略已经停止的 stream 上迟到的 frame Interests。这样可以避免 GS 端视频停了，但 drone 还在继续
 服务旧缓存包。GS 即使已经停止本地 decoder，也会继续发送 stop control request；如果 control
-response 超时，会短时间重试，因此关闭 GS 窗口、点击 `Stop Video` 或 auto-stop smoke test
-都不应该留下 drone 继续发布直播流。如果 drone 配置启用了 `camera-capture-on-start` 或
+response 超时，NDNSF 会写出 selection-status timeout diagnostics，GS 会提示操作者在 drone
+仍显示 streaming 时再次点击 `Stop Video`。重复 stop request 是安全的，因为 drone 把 stop
+作为幂等操作处理。如果 drone 配置启用了 `camera-capture-on-start` 或
 `camera-record-to-local-repo`，本地摄像头采集/录像可以在直播停止后继续运行。
 
 后续可以增加每个 stream 独立的小 SVS group 来发布 frame-name announcement，但它应该和主 UAV

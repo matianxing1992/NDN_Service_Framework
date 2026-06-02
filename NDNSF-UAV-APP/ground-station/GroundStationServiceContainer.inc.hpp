@@ -299,7 +299,7 @@ public:
       return;
     }
     const auto activeDrone = activeVideoDroneId();
-    if (!m_streaming.load() || activeDrone != droneId) {
+    if (activeDrone != droneId) {
       publishStatus("No video streaming for selected drone " + droneId);
       return;
     }
@@ -313,7 +313,6 @@ public:
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
     stopDecoder();
-    m_videoStopRetries = 0;
     stopVideoAttempt(droneId);
   }
 
@@ -1809,7 +1808,6 @@ private:
                 encodeFields({{"type", "video-control"}, {"action", "stop"}}),
                 [this, droneId](const std::string& payload) {
                   m_videoStopInFlight = false;
-                  m_videoStopRetries = 0;
                   {
                     std::lock_guard<std::mutex> guard(m_videoStateMutex);
                     if (m_activeVideoDroneId == droneId) {
@@ -1824,20 +1822,14 @@ private:
                                 fieldOr(fields, "fec_groups_published", "0"));
                 },
                 [this, droneId] {
-                  const uint64_t retry = m_videoStopRetries.fetch_add(1);
-                  if (retry < MAX_VIDEO_STOP_RETRIES) {
-                    publishStatus("Video stop retry " + std::to_string(retry + 1));
-                    boost::asio::post(m_face.getIoContext(), [this, droneId] {
-                      stopVideoAttempt(droneId);
-                    });
-                    return true;
-                  }
                   return false;
                 },
                 [this, droneId] {
                   m_videoStopInFlight = false;
-                  m_videoStopRetries = 0;
-                  publishStatus("Video stop timed out for drone " + droneId);
+                  publishStatus("Video stop timed out for drone " + droneId +
+                                "; NDNSF status diagnostics were queried. "
+                                "If the drone still shows video streaming, "
+                                "click Stop Video again.");
                 });
   }
 
@@ -3310,7 +3302,6 @@ private:
   std::atomic<bool> m_videoStopInFlight{false};
   std::atomic<bool> m_recordingPlaybackActive{false};
   std::atomic<uint64_t> m_videoStartRetries{0};
-  std::atomic<uint64_t> m_videoStopRetries{0};
   std::atomic<uint64_t> m_firstFrameMs{0};
   std::atomic<uint64_t> m_receivedChunks{0};
   std::atomic<uint64_t> m_highestReceivedVideoPacketSeq{UINT64_MAX};
@@ -3347,7 +3338,6 @@ private:
   static constexpr uint64_t DEFAULT_VIDEO_RTT_MS = 120;
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
-  static constexpr uint64_t MAX_VIDEO_STOP_RETRIES = 4;
   std::atomic<uint64_t> m_videoRttEwmaMs{DEFAULT_VIDEO_RTT_MS};
   std::atomic<bool> m_done{false};
   std::atomic<bool> m_videoPumpScheduled{false};
