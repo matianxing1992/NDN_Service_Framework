@@ -171,7 +171,10 @@ void ServiceController::start()
 void ServiceController::run()
 {
   start();
-  m_face.processEvents();
+  while (true) {
+    m_face.getIoContext().restart();
+    m_face.processEvents(ndn::time::milliseconds(1000));
+  }
 }
 
 void ServiceController::loadConfigFiles()
