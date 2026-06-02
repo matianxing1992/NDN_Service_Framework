@@ -429,6 +429,7 @@ public:
   sendMavlinkCommandToDrone(const std::string& droneId, const std::string& commandName, Fields params = {})
   {
     const bool isManualControl = commandName == "manual_control";
+    const bool isEmergencyStop = commandName == "emergency_stop";
     if (commandName == "arm") {
       std::string reason;
       if (!validateArmReadiness(droneId, reason)) {
@@ -465,7 +466,7 @@ public:
         return false;
       }
     }
-    auto& inFlight = isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight;
+    auto& inFlight = mavlinkInFlightFlag(isManualControl, isEmergencyStop);
     if (inFlight.exchange(true)) {
       recordBlockedCommand(droneId, commandName, "command-in-flight");
       if (!isManualControl) {
@@ -482,8 +483,8 @@ public:
       droneIdentity(m_config, droneId),
       m_config.serviceMavlinkExecute,
       payload,
-      [this, commandName, isManualControl, droneId](const std::string& responsePayload) {
-        (isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight) = false;
+      [this, commandName, isManualControl, isEmergencyStop, droneId](const std::string& responsePayload) {
+        mavlinkInFlightFlag(isManualControl, isEmergencyStop) = false;
         const auto fields = decodeFields(responsePayload);
         auto commandState = FlightCommandState::fromFields(fields);
         commandState.droneId = droneId;
@@ -510,8 +511,8 @@ public:
                       (speed.empty() ? "" : " speed=" + speed + "m/s") +
                       (battery.empty() ? "" : " battery=" + battery + "%"));
       },
-      [this, commandName, isManualControl, droneId] {
-        (isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight) = false;
+      [this, commandName, isManualControl, isEmergencyStop, droneId] {
+        mavlinkInFlightFlag(isManualControl, isEmergencyStop) = false;
         updateCommandState(FlightCommandState{
           droneId,
           commandName,
@@ -1513,6 +1514,18 @@ private:
       }
       m_videoByDrone[droneId] = video;
     }
+  }
+
+  std::atomic<bool>&
+  mavlinkInFlightFlag(bool isManualControl, bool isEmergencyStop)
+  {
+    if (isManualControl) {
+      return m_manualControlInFlight;
+    }
+    if (isEmergencyStop) {
+      return m_emergencyStopInFlight;
+    }
+    return m_mavlinkCommandInFlight;
   }
 
   void
@@ -3782,6 +3795,7 @@ private:
   std::atomic<uint64_t> m_duplicateVideoPackets{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
   std::atomic<bool> m_manualControlInFlight{false};
+  std::atomic<bool> m_emergencyStopInFlight{false};
   std::atomic<uint64_t> m_lastManualControlBlockedLogMs{0};
   mutable std::mutex m_telemetryMutex;
   std::set<std::string> m_telemetryInFlightDrones;
