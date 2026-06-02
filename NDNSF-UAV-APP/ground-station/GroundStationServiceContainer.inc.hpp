@@ -38,8 +38,8 @@ public:
     m_gsCert = getOrCreateIdentity(m_keyChain, m_config.groundStationIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_config.controllerPrefix);
     m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_config.groundStationIdentity));
-    m_videoRequestedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps);
-    m_videoAcceptedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps);
+    m_videoRequestedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps.load());
+    m_videoAcceptedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps.load());
   }
 
   ~GroundStationServiceContainer()
@@ -435,6 +435,36 @@ public:
     m_videoStartRetries = 0;
     m_videoStopDelayInjected = false;
     startVideoAttempt(droneId);
+  }
+
+  bool
+  applySuggestedVideoBitrate()
+  {
+    const auto droneId = targetDroneId();
+    const auto adaptive = videoAdaptiveForDrone(droneId);
+    if (!adaptive) {
+      publishStatus("No video adaptive state for selected drone " + droneId);
+      return false;
+    }
+    if (!isStreamingForDrone(droneId)) {
+      m_videoBitrateKbps = std::max<uint64_t>(128, adaptive->suggestedBitrateKbps);
+      publishStatus("Next video start bitrate drone=" + droneId +
+                    " requested_kbps=" + std::to_string(m_videoBitrateKbps.load()));
+      return false;
+    }
+    if (adaptive->bitrateAction == "hold" ||
+        adaptive->suggestedBitrateKbps == 0 ||
+        adaptive->suggestedBitrateKbps == adaptive->acceptedBitrateKbps) {
+      publishStatus("Video bitrate hold drone=" + droneId +
+                    " accepted_kbps=" + std::to_string(adaptive->acceptedBitrateKbps) +
+                    " reason=" + adaptive->bitrateReason);
+      return false;
+    }
+    return restartVideoWithBitrate(droneId,
+                                   adaptive->suggestedBitrateKbps,
+                                   adaptive->acceptedBitrateKbps,
+                                   adaptive->bitrateAction,
+                                   adaptive->bitrateReason);
   }
 
   void
@@ -2212,17 +2242,20 @@ private:
   }
 
   void
-  startVideoAttempt(std::string droneId)
+  startVideoAttempt(std::string droneId, uint64_t requestedBitrateKbps = 0)
   {
+    if (requestedBitrateKbps == 0) {
+      requestedBitrateKbps = m_videoBitrateKbps.load();
+    }
     postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
                 encodeFields({
                   {"type", "video-control"},
                   {"action", "start"},
                   {"fps", std::to_string(VIDEO_FPS)},
-                  {"requested_bitrate_kbps", std::to_string(m_videoBitrateKbps)},
+                  {"requested_bitrate_kbps", std::to_string(requestedBitrateKbps)},
                   {"requested_frame_width", std::to_string(m_videoFrameWidth)},
                 }),
-                [this, droneId](const std::string& payload) {
+                [this, droneId, requestedBitrateKbps](const std::string& payload) {
                   const auto fields = decodeFields(payload);
                   const auto prefix = fieldOr(fields, "stream_prefix", "");
                   const auto seqText = fieldOr(fields, "next_seq", "0");
@@ -2232,6 +2265,7 @@ private:
                   }
 
                   updateVideoState(droneId, fields);
+                  m_videoBitrateKbps = requestedBitrateKbps;
                   m_streamPrefix = ndn::Name(prefix);
                   {
                     std::lock_guard<std::mutex> guard(m_videoStateMutex);
@@ -2268,15 +2302,15 @@ private:
                   publishStatus("Video packet stream drone=" + droneId + " from " + prefix);
                   requestVideoPackets();
                 },
-                [this, droneId] {
+                [this, droneId, requestedBitrateKbps] {
                   if (m_seenVideoStart.load()) {
                     return true;
                   }
                   const uint64_t retry = m_videoStartRetries.fetch_add(1);
                   if (retry < MAX_VIDEO_START_RETRIES) {
                     publishStatus("Video start retry " + std::to_string(retry + 1));
-                    boost::asio::post(m_face.getIoContext(), [this, droneId] {
-                      startVideoAttempt(droneId);
+                    boost::asio::post(m_face.getIoContext(), [this, droneId, requestedBitrateKbps] {
+                      startVideoAttempt(droneId, requestedBitrateKbps);
                     });
                     return true;
                   }
@@ -2290,7 +2324,62 @@ private:
   }
 
   void
-  stopVideoAttempt(std::string droneId)
+  restartVideoWithBitrateAfterStop(std::string droneId, uint64_t requestedBitrateKbps)
+  {
+    m_videoStopDelayInjected = false;
+    m_seenVideoStart = false;
+    m_videoStartRetries = 0;
+    startVideoAttempt(std::move(droneId), requestedBitrateKbps);
+  }
+
+  bool
+  restartVideoWithBitrate(const std::string& droneId,
+                          uint64_t requestedBitrateKbps,
+                          uint64_t previousBitrateKbps,
+                          const std::string& action,
+                          const std::string& reason)
+  {
+    requestedBitrateKbps = std::max<uint64_t>(128, requestedBitrateKbps);
+    if (m_videoStopInFlight.exchange(true)) {
+      publishStatus("Video bitrate change already pending");
+      return false;
+    }
+    if (m_videoStartInFlight.exchange(true)) {
+      m_videoStopInFlight = false;
+      publishStatus("Video bitrate change already pending");
+      return false;
+    }
+    m_videoBitrateKbps = requestedBitrateKbps;
+    m_streaming = false;
+    m_videoPumpScheduled = false;
+    boost::system::error_code ec;
+    m_videoPumpTimer.cancel(ec);
+    publishVideoAdaptiveState("bitrate-change-requested", true);
+    stopDecoder();
+    NDN_LOG_INFO("GS_VIDEO_BITRATE_CHANGE_APPLY drone=" << droneId
+                 << " from_kbps=" << previousBitrateKbps
+                 << " to_kbps=" << requestedBitrateKbps
+                 << " action=" << action
+                 << " reason=" << reason);
+    publishStatus("Applying video bitrate drone=" + droneId +
+                  " from=" + std::to_string(previousBitrateKbps) +
+                  "kbps to=" + std::to_string(requestedBitrateKbps) +
+                  "kbps reason=" + reason);
+    stopVideoAttempt(
+      droneId,
+      [this, droneId, requestedBitrateKbps] {
+        restartVideoWithBitrateAfterStop(droneId, requestedBitrateKbps);
+      },
+      [this] {
+        m_videoStartInFlight = false;
+      });
+    return true;
+  }
+
+  void
+  stopVideoAttempt(std::string droneId,
+                   std::function<void()> onStopped = {},
+                   std::function<void()> onStopTimeout = {})
   {
     Fields stopFields{{"type", "video-control"}, {"action", "stop"}};
     if (const auto* delayMs = std::getenv("NDNSF_UAV_SIMULATE_STOP_DELAY_MS")) {
@@ -2300,7 +2389,7 @@ private:
     }
     postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
                 encodeFields(stopFields),
-                [this, droneId](const std::string& payload) {
+                [this, droneId, onStopped = std::move(onStopped)](const std::string& payload) {
                   m_videoStopInFlight = false;
                   const auto fields = decodeFields(payload);
                   updateVideoState(droneId, fields);
@@ -2316,16 +2405,22 @@ private:
                                         fieldOr(fields, "frames_published", "0")) +
                                 ", fec_groups=" +
                                 fieldOr(fields, "fec_groups_published", "0"));
+                  if (onStopped) {
+                    onStopped();
+                  }
                 },
                 [this, droneId] {
                   return false;
                 },
-                [this, droneId] {
+                [this, droneId, onStopTimeout = std::move(onStopTimeout)] {
                   m_videoStopInFlight = false;
                   publishStatus("Video stop timed out for drone " + droneId +
                                 "; NDNSF status diagnostics were queried. "
                                 "If the drone still shows video streaming, "
                                 "click Stop Video again.");
+                  if (onStopTimeout) {
+                    onStopTimeout();
+                  }
                 });
   }
 
@@ -2807,9 +2902,9 @@ private:
   {
     const auto bitrateKbps = std::max<uint64_t>(
       128, fieldAsUint64(fields, "accepted_bitrate_kbps",
-                         fieldAsUint64(fields, "target_bitrate_kbps", m_videoBitrateKbps)));
+                         fieldAsUint64(fields, "target_bitrate_kbps", m_videoBitrateKbps.load())));
     const auto requestedBitrateKbps = std::max<uint64_t>(
-      128, fieldAsUint64(fields, "requested_bitrate_kbps", m_videoBitrateKbps));
+      128, fieldAsUint64(fields, "requested_bitrate_kbps", m_videoBitrateKbps.load()));
     const auto payloadBytes = std::max<uint64_t>(
       512, fieldAsUint64(fields, "max_payload_bytes", 3600));
     const auto fps = std::max<uint64_t>(1, fieldAsUint64(fields, "fps", VIDEO_FPS));
@@ -4163,7 +4258,7 @@ private:
   std::string m_activeVideoDroneId;
   std::string m_recordingPlaybackDroneId;
   std::map<std::string, RecordingManifest> m_recordingManifests;
-  uint64_t m_videoBitrateKbps = 8000;
+  std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;
   std::string m_yoloModel;

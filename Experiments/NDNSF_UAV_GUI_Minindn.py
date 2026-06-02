@@ -125,6 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Reserved for NDNSD service discovery experiments; not enabled by default.")
     parser.add_argument("--auto-video-test", action="store_true",
                         help="Have the GS auto-start and auto-stop video for smoke testing.")
+    parser.add_argument("--auto-apply-bitrate-test", action="store_true",
+                        help="With --auto-video-test, have the GS explicitly apply "
+                             "a suggested adaptive bitrate and restart the stream.")
     parser.add_argument("--auto-repeat-stop-test", action="store_true",
                         help="With --auto-video-test, delay the first Stop response and "
                              "auto-click Stop again to verify timeout/retry UI behavior.")
@@ -894,6 +897,8 @@ def main() -> int:
                     "--auto-repeat-stop-test",
                     "--timeout-ms", "2500",
                 ]
+            if args.auto_apply_bitrate_test:
+                gs_argv += ["--auto-apply-bitrate-test"]
         if args.auto_mavlink_test:
             gs_argv += ["--auto-mavlink-test"]
         if args.auto_telemetry_test:
@@ -1170,6 +1175,10 @@ def main() -> int:
             require_log(gs_log, "missing_timeout_ms=")
             require_log(gs_log, "suggested_bitrate_kbps=")
             require_log(gs_log, "bitrate_action=")
+            if args.auto_apply_bitrate_test:
+                require_log(gs_log, "AUTO_VIDEO_APPLY_BITRATE_ATTEMPT applied=true")
+                require_log(gs_log, "GS_VIDEO_BITRATE_CHANGE_APPLY drone=" + args.drone_id)
+                require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-after-bitrate-apply selected=" + args.drone_id + " has_adaptive=true")
             require_log(gs_log, "GS_DECODED_FRAMES count=30")
             require_log(gs_log, "GS_GUI_EXIT rc=0")
             require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-stopped selected=" + args.drone_id + " has_adaptive=true")
