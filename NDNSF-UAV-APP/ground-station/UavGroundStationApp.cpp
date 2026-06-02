@@ -409,6 +409,12 @@ main(int argc, char** argv)
       std::stoull(getConfigOption(argc, argv, appConfig, "--link-lost-ms", "link-lost-ms", "8000")));
     const std::string lostLinkAction = getConfigOption(
       argc, argv, appConfig, "--lost-link-action", "lost-link-action", "notify");
+    const std::string videoBitratePolicy = getConfigOption(
+      argc, argv, appConfig, "--video-bitrate-policy", "video-bitrate-policy", "manual");
+    const auto videoBitrateAutoPressureMs = static_cast<uint64_t>(
+      std::stoull(getConfigOption(argc, argv, appConfig,
+                                  "--video-bitrate-auto-pressure-ms",
+                                  "video-bitrate-auto-pressure-ms", "2500")));
     UavRuntimeConfig config = loadUavRuntimeConfig(
       getConfigOption(argc, argv, appConfig, "--runtime-config", "runtime-config",
                       "NDNSF-UAV-APP/configs/uav_runtime.conf"));
@@ -453,7 +459,8 @@ main(int argc, char** argv)
     auto runtime = std::make_unique<GroundStationServiceContainer>(
       serveCertificates, ackTimeoutMs, timeoutMs, config, targetDroneId,
       videoBitrateKbps, videoFrameWidth, patrolDroneIds, yoloModel, yoloScript,
-      yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction);
+      yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction,
+      videoBitratePolicy, videoBitrateAutoPressureMs);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
@@ -504,6 +511,7 @@ main(int argc, char** argv)
               << " auto_flight_controls_test=" << (autoFlightControlsTest ? "true" : "false")
               << " auto_recording_playback_test=" << (autoRecordingPlaybackTest ? "true" : "false")
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
+              << " video_bitrate_policy=" << videoBitratePolicy
               << std::endl;
     const int rc = app->run(window);
     runtime->shutdownRuntime();

@@ -14,7 +14,9 @@ public:
                        std::string yoloWorkerScript = "NDNSF-UAV-APP/tools/yolo_detect_worker.py",
                        uint64_t linkStaleMs = 3500,
                        uint64_t linkLostMs = 8000,
-                       std::string lostLinkAction = "notify")
+                       std::string lostLinkAction = "notify",
+                       std::string videoBitratePolicy = "manual",
+                       uint64_t videoBitrateAutoPressureMs = 2500)
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_ackTimeoutMs(ackTimeoutMs)
@@ -29,6 +31,8 @@ public:
     , m_linkStaleMs(linkStaleMs)
     , m_linkLostMs(std::max(linkLostMs, linkStaleMs))
     , m_lostLinkAction(std::move(lostLinkAction))
+    , m_videoBitratePolicy(std::move(videoBitratePolicy))
+    , m_videoBitrateAutoPressureMs(std::max<uint64_t>(500, videoBitrateAutoPressureMs))
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
@@ -465,6 +469,12 @@ public:
                                    adaptive->acceptedBitrateKbps,
                                    adaptive->bitrateAction,
                                    adaptive->bitrateReason);
+  }
+
+  std::string
+  videoBitratePolicy() const
+  {
+    return m_videoBitratePolicy;
   }
 
   void
@@ -2350,6 +2360,8 @@ private:
       return false;
     }
     m_videoBitrateKbps = requestedBitrateKbps;
+    m_videoBitrateAdviceSinceMs = 0;
+    m_lastVideoBitrateApplyMs = nowMilliseconds();
     m_streaming = false;
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
@@ -2374,6 +2386,58 @@ private:
         m_videoStartInFlight = false;
       });
     return true;
+  }
+
+  void
+  maybeApplyVideoBitratePolicy(const VideoAdaptiveState& state, const std::string& reason)
+  {
+    if (m_videoBitratePolicy != "auto-after-pressure") {
+      m_videoBitrateAdviceSinceMs = 0;
+      return;
+    }
+    if (reason == "configured" ||
+        reason == "stop-ack" ||
+        reason == "bitrate-change-requested") {
+      return;
+    }
+    if (!isStreamingForDrone(state.droneId) ||
+        state.bitrateAction != "decrease" ||
+        state.suggestedBitrateKbps == 0 ||
+        state.suggestedBitrateKbps >= state.acceptedBitrateKbps) {
+      m_videoBitrateAdviceSinceMs = 0;
+      return;
+    }
+
+    const auto nowMs = nowMilliseconds();
+    auto sinceMs = m_videoBitrateAdviceSinceMs.load();
+    if (sinceMs == 0) {
+      m_videoBitrateAdviceSinceMs = nowMs;
+      NDN_LOG_INFO("GS_VIDEO_BITRATE_POLICY_ARMED drone=" << state.droneId
+                   << " policy=" << m_videoBitratePolicy
+                   << " suggested_kbps=" << state.suggestedBitrateKbps
+                   << " accepted_kbps=" << state.acceptedBitrateKbps
+                   << " reason=" << state.bitrateReason);
+      return;
+    }
+    if (nowMs < sinceMs + m_videoBitrateAutoPressureMs) {
+      return;
+    }
+    const auto lastApplyMs = m_lastVideoBitrateApplyMs.load();
+    if (lastApplyMs != 0 && nowMs < lastApplyMs + VIDEO_BITRATE_APPLY_COOLDOWN_MS) {
+      return;
+    }
+
+    NDN_LOG_INFO("GS_VIDEO_BITRATE_POLICY_APPLY drone=" << state.droneId
+                 << " policy=" << m_videoBitratePolicy
+                 << " pressure_ms=" << (nowMs - sinceMs)
+                 << " from_kbps=" << state.acceptedBitrateKbps
+                 << " to_kbps=" << state.suggestedBitrateKbps
+                 << " reason=" << state.bitrateReason);
+    restartVideoWithBitrate(state.droneId,
+                            state.suggestedBitrateKbps,
+                            state.acceptedBitrateKbps,
+                            "auto-" + state.bitrateAction,
+                            state.bitrateReason);
   }
 
   void
@@ -3301,6 +3365,7 @@ private:
     }
     NDN_LOG_INFO("GS_VIDEO_ADAPTIVE_STATE reason=" << reason << " " << state.statusLine());
     publishStatus(state.statusLine());
+    maybeApplyVideoBitratePolicy(state, reason);
   }
 
   void
@@ -4267,6 +4332,8 @@ private:
   uint64_t m_linkStaleMs = 3500;
   uint64_t m_linkLostMs = 8000;
   std::string m_lostLinkAction = "notify";
+  std::string m_videoBitratePolicy = "manual";
+  uint64_t m_videoBitrateAutoPressureMs = 2500;
   std::mutex m_yoloMutex;
   std::thread m_yoloPrewarmThread;
   pid_t m_yoloWorkerPid = -1;
@@ -4301,6 +4368,8 @@ private:
   std::atomic<uint64_t> m_duplicateVideoPackets{0};
   std::atomic<uint64_t> m_decodedVideoFrames{0};
   std::atomic<uint64_t> m_lastVideoAdaptiveLogMs{0};
+  std::atomic<uint64_t> m_videoBitrateAdviceSinceMs{0};
+  std::atomic<uint64_t> m_lastVideoBitrateApplyMs{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
   std::atomic<bool> m_manualControlInFlight{false};
   std::atomic<bool> m_emergencyStopInFlight{false};
@@ -4341,6 +4410,7 @@ private:
   static constexpr uint64_t DEFAULT_VIDEO_RTT_MS = 120;
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
+  static constexpr uint64_t VIDEO_BITRATE_APPLY_COOLDOWN_MS = 8000;
   std::atomic<uint64_t> m_videoRttEwmaMs{DEFAULT_VIDEO_RTT_MS};
   std::atomic<uint64_t> m_videoTimeoutPressurePercent{0};
   std::atomic<uint64_t> m_videoProbePressurePercent{0};

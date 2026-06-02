@@ -117,6 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Do not let the Drone app set PX4 SITL demo failsafe parameters.")
     parser.add_argument("--video-bitrate-kbps", type=int, default=8000,
                         help="Requested video bitrate passed to the ground-station control request.")
+    parser.add_argument("--video-bitrate-policy", default="manual",
+                        choices=("manual", "auto-after-pressure"),
+                        help="Ground-station policy for applying adaptive bitrate recommendations.")
+    parser.add_argument("--video-bitrate-auto-pressure-ms", type=int, default=2500,
+                        help="Pressure duration before auto-after-pressure applies a bitrate change.")
     parser.add_argument("--video-width", type=int, default=480,
                         help="Requested encoded frame width passed to the drone video service.")
     parser.add_argument("--output-dir", default=str(REPO / "results/uav_gui_minindn"))
@@ -882,6 +887,8 @@ def main() -> int:
             "--runtime-config", str(Path(args.runtime_config).resolve()),
             "--target-drone", args.drone_id,
             "--video-bitrate-kbps", str(args.video_bitrate_kbps),
+            "--video-bitrate-policy", args.video_bitrate_policy,
+            "--video-bitrate-auto-pressure-ms", str(args.video_bitrate_auto_pressure_ms),
             "--video-width", str(args.video_width),
             "--patrol-drones", ",".join(drone_id for drone_id, _ in drones),
             "--no-cert-dialog",
@@ -1179,6 +1186,9 @@ def main() -> int:
                 require_log(gs_log, "AUTO_VIDEO_APPLY_BITRATE_ATTEMPT applied=true")
                 require_log(gs_log, "GS_VIDEO_BITRATE_CHANGE_APPLY drone=" + args.drone_id)
                 require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-after-bitrate-apply selected=" + args.drone_id + " has_adaptive=true")
+            if args.video_bitrate_policy == "auto-after-pressure":
+                require_log(gs_log, "GS_VIDEO_BITRATE_POLICY_ARMED drone=" + args.drone_id)
+                require_log(gs_log, "GS_VIDEO_BITRATE_POLICY_APPLY drone=" + args.drone_id)
             require_log(gs_log, "GS_DECODED_FRAMES count=30")
             require_log(gs_log, "GS_GUI_EXIT rc=0")
             require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-stopped selected=" + args.drone_id + " has_adaptive=true")
