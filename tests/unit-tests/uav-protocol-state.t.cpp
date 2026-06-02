@@ -389,10 +389,21 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyIdentifiesPressureProfiles)
   base.acceptedBitrateKbps = 8000;
   base.requestedBitrateKbps = 8000;
 
-  auto congestion = base;
-  congestion.timeoutPressure = 90;
-  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(congestion).primaryPressure, "congestion");
-  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(congestion).policyReason, "pressure-congestion");
+  auto timeout = base;
+  timeout.timeoutPressure = 90;
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(timeout).primaryPressure, "timeout");
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(timeout).policyReason, "pressure-timeout");
+
+  auto loss = base;
+  loss.timeouts = 120;
+  loss.nacks = 80;
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(loss).primaryPressure, "loss");
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(loss).policyReason, "pressure-loss");
+
+  auto duplicate = base;
+  duplicate.duplicatePressure = 180;
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(duplicate).primaryPressure, "duplicate");
+  BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(duplicate).policyReason, "pressure-duplicate");
 
   auto backlog = base;
   backlog.decoderPendingChunks = 120;

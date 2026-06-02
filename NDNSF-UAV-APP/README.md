@@ -721,7 +721,10 @@ current receiver stores these decisions as `VideoAdaptiveState`, so the video
 panel, selected-drone inspector, left-side drone row, and MiniNDN smoke logs can
 show RTT, window, lookahead, pressure, missing-packet timeout, pending chunks,
 decoded-frame progress, the dominant pressure source, the policy reason, and
-the current bitrate recommendation without scraping packet logs. The actual
+the current bitrate recommendation without scraping packet logs. The dominant
+source is kept specific enough to distinguish timeout, loss, duplicate,
+backlog, and future-probe pressure instead of hiding them all under one generic
+congestion label. The actual
 window, lookahead, timeout, and bitrate recommendation are computed through a
 typed `VideoAdaptivePolicyInput` to
 `VideoAdaptivePolicyDecision` helper, with unit tests covering pressure,
@@ -1211,8 +1214,8 @@ smoke also checks that adaptive logs include `primary_pressure` and
 `policy_reason`, so tuning changes remain explainable rather than only changing
 numeric windows.
 Add `--auto-video-pressure-profile-test` when the smoke should inject controlled
-congestion, backlog, and probe-pressure samples after video starts. The GS then
-logs `auto-video-pressure-congestion`, `auto-video-pressure-backlog`, and
+timeout, backlog, and probe-pressure samples after video starts. The GS then
+logs `auto-video-pressure-timeout`, `auto-video-pressure-backlog`, and
 `auto-video-pressure-probe` view states, proving that the same typed policy can
 explain different pressure sources without relying on random packet loss.
 
@@ -1470,7 +1473,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    skip decisions rather than fixed constants. The current GS records these
    decisions as `VideoAdaptiveState`, including advisory bitrate
    decrease/hold/increase decisions plus `primary_pressure` and `policy_reason`
-   fields that explain the dominant pressure source. The core window,
+   fields that explain the dominant pressure source. `primary_pressure`
+   distinguishes timeout, loss, duplicate, backlog, and probe pressure so
+   operators can tell why the receiver is shrinking or recovering. The core window,
    lookahead, timeout, and bitrate recommendation calculations now live in a typed
    `VideoAdaptivePolicyInput` to `VideoAdaptivePolicyDecision` helper with unit
    tests for pressure, high-RTT, and recovery behavior, so tuning stays generic

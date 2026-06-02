@@ -649,10 +649,10 @@ public:
           logVideoAdaptiveViewState("auto-video-active");
         });
         if (m_autoVideoPressureProfileTest) {
-          m_runtime.injectVideoAdaptivePressureForTest("congestion", 95, 0, 0, 0, 400, 80, 0);
+          m_runtime.injectVideoAdaptivePressureForTest("timeout", 95, 0, 0, 0, 400, 80, 0);
           std::this_thread::sleep_for(std::chrono::milliseconds(200));
           Glib::signal_idle().connect_once([this] {
-            logVideoAdaptiveViewState("auto-video-pressure-congestion");
+            logVideoAdaptiveViewState("auto-video-pressure-timeout");
           });
           std::this_thread::sleep_for(std::chrono::milliseconds(200));
           m_runtime.injectVideoAdaptivePressureForTest("backlog", 0, 0, 0, 120, 1000, 0, 0);

@@ -1227,9 +1227,9 @@ def main() -> int:
             require_log(gs_log, "primary_pressure=")
             require_log(gs_log, "policy_reason=")
             if args.auto_video_pressure_profile_test:
-                require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=pressure-profile-congestion")
-                require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-pressure-congestion selected=" + args.drone_id)
-                require_log(gs_log, "primary_pressure=congestion policy_reason=pressure-congestion")
+                require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=pressure-profile-timeout")
+                require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-pressure-timeout selected=" + args.drone_id)
+                require_log(gs_log, "primary_pressure=timeout policy_reason=pressure-timeout")
                 require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=pressure-profile-backlog")
                 require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-pressure-backlog selected=" + args.drone_id)
                 require_log(gs_log, "primary_pressure=backlog policy_reason=pressure-backlog")

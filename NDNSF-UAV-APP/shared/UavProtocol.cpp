@@ -1182,15 +1182,23 @@ higherVideoBitrateStep(uint64_t currentKbps, uint64_t requestedKbps)
 }
 
 std::string
-primaryVideoPressure(uint64_t congestionPressure, uint64_t backlogPressure,
+primaryVideoPressure(uint64_t lossPressure, uint64_t timeoutPressure,
+                     uint64_t duplicatePressure, uint64_t backlogPressure,
                      uint64_t probePressure)
 {
-  const auto primary = std::max({congestionPressure, backlogPressure, probePressure});
+  const auto primary = std::max({lossPressure, timeoutPressure, duplicatePressure,
+                                 backlogPressure, probePressure});
   if (primary == 0) {
     return "none";
   }
-  if (primary == congestionPressure) {
-    return "congestion";
+  if (primary == timeoutPressure) {
+    return "timeout";
+  }
+  if (primary == lossPressure) {
+    return "loss";
+  }
+  if (primary == duplicatePressure) {
+    return "duplicate";
   }
   if (primary == backlogPressure) {
     return "backlog";
@@ -1219,7 +1227,9 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
     input.timeoutPressure,
     input.duplicatePressure / 2
   });
-  decision.primaryPressure = primaryVideoPressure(decision.congestionPressure,
+  decision.primaryPressure = primaryVideoPressure(decision.lossPressure,
+                                                  input.timeoutPressure,
+                                                  input.duplicatePressure / 2,
                                                   decision.backlogPressure,
                                                   decision.probePressure);
 
