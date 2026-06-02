@@ -1656,6 +1656,7 @@ PyServiceResponse
       return output;
     }
 
+    std::lock_guard<std::mutex> callLock(m_callMutex);
     submit();
 
     const auto deadline = std::chrono::steady_clock::now() +
@@ -1683,18 +1684,56 @@ PyServiceResponse
   {
     auto data = toBuffer(payload);
     std::vector<uint8_t> plaintext(data.begin(), data.end());
-    auto ctx = m_user->prepareServiceRequest(serviceName);
-    auto result = m_user->publishEncryptedLargeData(
-      ctx,
-      plaintext,
-      objectLabel,
-      ndn::time::milliseconds(freshnessMs));
+    struct PublishState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      nsf::LargeDataPublishResult result;
+    };
+    auto state = std::make_shared<PublishState>();
+    auto submit = [this, serviceName, plaintext = std::move(plaintext),
+                   objectLabel, freshnessMs, state] {
+      auto ctx = m_user->prepareServiceRequest(serviceName);
+      try {
+        state->result = m_user->publishEncryptedLargeData(
+          ctx,
+          plaintext,
+          objectLabel,
+          ndn::time::milliseconds(freshnessMs));
+      }
+      catch (const std::exception& e) {
+        state->result.success = false;
+        state->result.errorMessage = e.what();
+      }
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->done = true;
+      state->cv.notify_one();
+    };
+
+    if (m_running.load()) {
+      boost::asio::post(m_face.getIoContext(), std::move(submit));
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(30000);
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(state->mutex);
+      if (!state->cv.wait_until(lock, deadline, [&state] { return state->done; })) {
+        PyLargeDataPublishResult output;
+        output.success = false;
+        output.error = "local deadline";
+        return output;
+      }
+    }
+    else {
+      std::lock_guard<std::mutex> callLock(m_callMutex);
+      submit();
+    }
 
     PyLargeDataPublishResult output;
-    output.success = result.success;
-    output.encryptedDataName = result.encryptedDataName.toUri();
-    output.objectId = result.objectId;
-    output.error = result.errorMessage;
+    output.success = state->result.success;
+    output.encryptedDataName = state->result.encryptedDataName.toUri();
+    output.objectId = state->result.objectId;
+    output.error = state->result.errorMessage;
     return output;
   }
 
@@ -1841,6 +1880,7 @@ PyServiceResponse
       return output;
     }
 
+    std::lock_guard<std::mutex> callLock(m_callMutex);
     submit();
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(timeoutMs + 3000);
@@ -1956,6 +1996,7 @@ PyServiceResponse
       return output;
     }
 
+    std::lock_guard<std::mutex> callLock(m_callMutex);
     submit();
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(timeoutMs + 3000);
@@ -2026,6 +2067,11 @@ PyServiceResponse
   void
   pump(int milliseconds)
   {
+    if (m_running.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+      return;
+    }
+    std::lock_guard<std::mutex> callLock(m_callMutex);
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(milliseconds);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -2053,6 +2099,7 @@ private:
   std::unique_ptr<nsf::ServiceUser> m_user;
   std::atomic<bool> m_running{false};
   std::thread m_thread;
+  std::mutex m_callMutex;
   std::mutex m_errorMutex;
   std::string m_error;
 };

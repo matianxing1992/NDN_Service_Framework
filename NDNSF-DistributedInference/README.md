@@ -70,21 +70,23 @@ dependencies, and artifacts description.
 `APPClient.from_config("yolo_policy.yaml")` reads that YAML, generates the
 corresponding trust schema, controller policy, and service manifest, and uses
 those generated files to connect the lower-level `DistributedInferenceClient`.
+Service packages should ship a default policy config for their service, as the
+YOLO examples do with `yolo_policy.yaml`. Users only need to pass a custom
+config when they change identities, trust roots, provider pools, artifact
+paths, repo manifests, or the model split itself.
 
 Client side:
 
 ```python
 from ndnsf_distributed_inference import APPClient
 
-def encode_image_for_yolo(image_tensor) -> bytes:
-    # Application-defined encoding that follows client.input_contract(service).
-    return serialize_npz(images=preprocess_for_yolo(image_tensor))
-
 client = APPClient.from_config("yolo_policy.yaml")
 service = "/AI/YOLO/SplitInference"
 print(client.input_contract(service))
 
-client.register_input_encoder(service, encode_image_for_yolo)
+# If the policy says codec=npz and declares one tensor field, NDNSF-DI can
+# encode a numpy tensor automatically. Register a custom encoder only when the
+# service needs model-specific preprocessing.
 result = client.infer_service_object(service, image_tensor)
 
 # Multiple requests can be submitted concurrently. Each request still uses the
@@ -95,8 +97,8 @@ result = future.result(timeout=30)
 
 The recommended client entry point is `infer_service_object(...)`: the caller
 passes the service name and an application object such as `image_tensor`, and
-NDNSF-DI uses the encoder registered for that service to convert the object to
-request bytes. The service name is a constrained application contract, not an
+NDNSF-DI converts the object to request bytes according to the service input
+contract. The service name is a constrained application contract, not an
 arbitrary string:
 `/AI/YOLO/SplitInference` is bound in `yolo_policy.yaml` to one model identity,
 model version, input/output encoding, role set, dependency graph, provider
@@ -104,33 +106,45 @@ identities, and security policy. In other words, the client does not repeat
 the model split, stages, or dependencies on each request; those are looked up
 from the service name.
 
+For the user, this is intentionally the whole request API. Provider selection,
+role assignment, artifact publication, model-shard download, scope-key
+distribution, dependency exchange, and result collection are runtime work
+hidden behind the service call. The default deployment assumption is that
+providers start as homogeneous workers for a service. If the service policy
+contains artifact descriptions, `infer_service(...)` automatically builds a
+dynamic provisioning plan: selected providers fetch the executable/runtime
+bundle and the model shard for the role they are assigned. If the service
+policy has no artifacts, the same call falls back to the pre-deployed-model
+path.
+
 `client.input_contract(service)` returns the input contract recorded in the
 policy, such as the codec, field names, shape, dtype, and recommended encoder
-name. `register_input_encoder(...)` registers the application function that
-converts an object to bytes for that service. That encoder is application
-code: it can come from a model package, SDK, or example library, or the
-application developer can implement it from `input_contract`. The user can then call
-`infer_service_object(...)` with an application object such as `image_tensor`.
-Only callers that already have encoded bytes need to use the lower-level
-`infer_service(service, encoded_payload)` directly.
+name. For common tensor payloads, a built-in NPZ encoder is available: if the
+policy declares `codec: npz`, callers may pass a numpy tensor, a mapping from
+field names to tensors, or a tuple/list matching the declared fields. Use
+`register_input_encoder(...)` only for model-specific preprocessing that the
+generic NPZ encoder cannot know. Only callers that already have encoded bytes
+need to use the lower-level `infer_service(service, encoded_payload)` directly.
 
 `encoded_payload` is the request bytes required by that service contract. It is
-created by application-level encoding logic. The YOLO example in this
-repository calls its helper
-`yolo_split_lib.encode_initial_request(image_tensor)`, but that is only the
-example-specific helper; the generic API only requires registering an
-application-object-to-bytes encoder. NDNSF-DI does not
-interpret the bytes; it securely carries them through the distributed
-execution flow for the selected service. The provider handler and client must
-use the same payload schema for a service. If the input shape, dtype,
-preprocessing, or model split changes incompatibly, publish a new service name
-or model version instead of reusing the old name. This path is for services
-whose model and runtime are already deployed on the providers.
+created by built-in or application-level encoding logic. NDNSF-DI does not
+interpret the bytes after encoding; it securely carries them through the
+distributed execution flow for the selected service. The provider handler and
+client must use the same payload schema for a service. If the input shape,
+dtype, preprocessing, or model split changes incompatibly, publish a new
+service name or model version instead of reusing the old name.
 
-Model/runtime artifacts belong to deployment time. The splitter or deployment
-tool should write artifact paths into the service policy; after startup, each
-provider loads the local artifact for its role from that policy. The client
-request path no longer publishes model shards.
+Model/runtime artifacts belong to the service definition, not to ad-hoc user
+code. The splitter or deployment tool should write artifact paths or repo
+manifests into the service policy. Application callers normally do not build a
+`DistributedInferencePlan` manually; they call `infer_service_object(...)` and
+let the APP layer derive the plan from the service policy. Advanced deployment
+tools can still call `client.service_plan(service, ...)` when they need to
+inspect or reuse the generated plan. The optional `repo_manifests` argument to
+`infer_service(...)` refers to model/runtime artifacts stored in
+NDNSF-DistributedRepo, not to input images or activation tensors. Inputs and
+intermediate tensors use the service payload contract plus NDNSF large-data or
+dependency-object helpers.
 
 Provider side:
 
@@ -138,22 +152,24 @@ Provider side:
 from ndnsf_distributed_inference import APPProvider
 
 provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
-provider.serve(
+provider.serve_service(
     service="/AI/YOLO/SplitInference",
     roles="all",
     handler=handle_assigned_role,
     backends=["onnxruntime"],
     temp_dir="/tmp/ndnsf-yolo-provider-A",
-    has_model=True,
-    can_provision=False,
+    has_model=False,
+    can_provision=True,
 )
 provider.run()
 ```
 
-Providers use artifact paths recorded in the service policy. A provider that
-does not have the local artifact should not advertise `has_model=True`; model
-publication and placement should happen in the splitter/deployment flow before
-providers start.
+Providers use one service-level registration. In the common homogeneous-worker
+case, every provider can advertise `roles="all"` with `can_provision=True`.
+The selected provider for a role downloads the role artifact from the
+assignment and becomes capable of executing that role for the request. A
+deployment that has already installed model shards locally can instead pass
+`has_model=True, can_provision=False`.
 
 Provider-side Python handlers can also use a separate worker pool:
 
@@ -188,7 +204,7 @@ print(deployment.trust_schema)
 print(deployment.policy_file)
 ```
 
-For multi-service deployments, call `provider.serve(...)` once per service and
+For multi-service deployments, call `provider.serve_service(...)` once per service and
 use `client.infer_async(...)` for concurrent requests across one or more
 services. The service name still determines the fixed role set and dependency
 graph used for each request.
@@ -918,8 +934,8 @@ Provider logs then show `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`
 for each role's `model` and `runner` artifacts during the cold command,
 followed by `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT` for the warm command.
 
-To run the local ONNX executor smoke plus both MiniNDN split smokes through one
-entry point:
+To run the APP API smoke, the local ONNX executor smoke, and both MiniNDN split
+smokes through one entry point:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
@@ -960,7 +976,7 @@ A provider can advertise all four roles without understanding NDN internals:
 
 ```python
 provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
-provider.serve(
+provider.serve_service(
     service="/AI/YOLO/2x2Inference",
     roles="all",
     handler=handle_yolo_role,

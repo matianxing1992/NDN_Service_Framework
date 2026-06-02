@@ -7,10 +7,12 @@ artifact provisioning, and collaboration generic enough for non-YOLO models.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from concurrent.futures import Future
+import io
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ndnsf import CollaborationRole
 
@@ -230,6 +232,7 @@ class APPClient:
         self.deployment = deployment
         self._client = client
         self._input_encoders: dict[str, Callable[[Any], bytes]] = {}
+        self._service_runtimes: dict[str, RuntimeSpec] = {}
 
     @classmethod
     def from_config(
@@ -270,13 +273,120 @@ class APPClient:
     def infer_service(self, service: str, payload: bytes, *,
                       ack_timeout_ms: int = 500,
                       timeout_ms: int = 30000,
-                      freshness_ms: int = 60000) -> InferenceResult:
+                      freshness_ms: int = 60000,
+                      dynamic_provisioning: bool | None = None,
+                      runtime: RuntimeSpec | None = None,
+                      repo_manifests: dict | str | Path | None = None) -> InferenceResult:
         """Invoke a deployed service by name.
 
-        Use this path when the service policy already fixes the roles and
-        dependency graph and providers already have the model/runtime locally.
+        The normal application-facing path is service-level: the caller names
+        the service and passes request bytes. The service policy fixes the
+        roles, dependency graph, and default artifacts. If artifacts are
+        present, the client publishes an execution plan so homogeneous
+        providers can be assigned roles and fetch the needed shard at request
+        time. If no artifacts are present, this falls back to the pre-deployed
+        model path.
         """
 
+        service_policy = self.deployment.service_policy(service)
+        if dynamic_provisioning is None:
+            dynamic_provisioning = bool(service_policy.artifacts or repo_manifests)
+        if dynamic_provisioning:
+            return self.infer(
+                self.service_plan(
+                    service,
+                    runtime=runtime,
+                    repo_manifests=repo_manifests,
+                ),
+                payload,
+                ack_timeout_ms=ack_timeout_ms,
+                timeout_ms=timeout_ms,
+                freshness_ms=freshness_ms,
+            )
+        return self._infer_predeployed_service(
+            service,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            freshness_ms=freshness_ms,
+        )
+
+    def service_plan(
+        self,
+        service: str,
+        *,
+        runtime: RuntimeSpec | None = None,
+        repo_manifests: dict | str | Path | None = None,
+    ) -> DistributedInferencePlan:
+        """Build a dynamic provisioning plan from a service policy.
+
+        This is the service-level equivalent of manually constructing a
+        ``DistributedInferencePlan``. It is useful when callers want to inspect
+        or reuse the plan, but most applications can call ``infer_service``
+        directly.
+        """
+
+        service_policy = self.deployment.service_policy(service)
+        if not service_policy.artifacts:
+            raise ValueError(
+                f"service {service} has no artifact descriptions; "
+                "use dynamic_provisioning=False for pre-deployed providers")
+        manifests = self._load_repo_manifests(repo_manifests)
+        runtime = runtime or self._service_runtimes.get(service) or self._default_runtime(service)
+        builder = self.plan_builder(
+            service,
+            runtime=runtime,
+            backend=runtime.backend or self._default_backend(service),
+        )
+        for artifact in service_policy.artifacts:
+            role_manifests = self._repo_manifests_for_role(manifests, artifact.role)
+            role_runtime = runtime
+            if role_manifests and runtime.artifact is not None and "runner" in role_manifests:
+                role_runtime = RuntimeSpec(
+                    name=runtime.name,
+                    backend=runtime.backend,
+                    entrypoint=runtime.entrypoint,
+                    artifact=ArtifactSpec(
+                        name=runtime.artifact.name,
+                        payload=b"",
+                        filename=runtime.artifact.filename,
+                        kind=runtime.artifact.kind,
+                        executable=runtime.artifact.executable,
+                        cache_name=runtime.artifact.cache_name,
+                        repo_manifest=role_manifests["runner"],
+                    ),
+                )
+            builder.add_part(
+                role=artifact.role,
+                model=b"" if role_manifests else artifact.path,
+                artifact_name=artifact.artifact_name,
+                filename=artifact.filename,
+                kind=artifact.kind,
+                backend=artifact.backend or runtime.backend,
+                cache_name=artifact.artifact_name,
+                repo_manifest=(role_manifests.get("model", {})
+                               if role_manifests else {}),
+                runtime=role_runtime,
+                metadata=dict(artifact.metadata or {}),
+                allow_dynamic_provisioning=True,
+            )
+        return builder.build()
+
+    def register_runtime(self, service: str, runtime: RuntimeSpec) -> None:
+        """Register a default runtime artifact for service-level invocation."""
+
+        self.deployment.service_policy(service)
+        self._service_runtimes[service] = runtime
+
+    def _infer_predeployed_service(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+        freshness_ms: int = 60000,
+    ) -> InferenceResult:
         service_policy = self.deployment.service_policy(service)
         role_names = list(service_policy.roles)
         dependencies = list(service_policy.dependencies)
@@ -308,6 +418,41 @@ class APPClient:
             freshness_ms=freshness_ms,
         )
 
+    @staticmethod
+    def _load_repo_manifests(
+        repo_manifests: dict | str | Path | None,
+    ) -> dict:
+        if repo_manifests is None:
+            return {}
+        if isinstance(repo_manifests, dict):
+            return dict(repo_manifests)
+        return json.loads(Path(repo_manifests).read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _repo_manifests_for_role(manifests: dict, role: str) -> dict:
+        if not manifests:
+            return {}
+        roles = manifests.get("roles", manifests)
+        value = roles.get(role, {})
+        if not isinstance(value, dict):
+            raise ValueError(f"repo manifest entry for role {role} must be a mapping")
+        return dict(value)
+
+    def _default_backend(self, service: str) -> str:
+        service_policy = self.deployment.service_policy(service)
+        for artifact in service_policy.artifacts:
+            if artifact.backend:
+                return artifact.backend
+        return "onnxruntime"
+
+    def _default_runtime(self, service: str) -> RuntimeSpec:
+        backend = self._default_backend(service)
+        return RuntimeSpec(
+            name=f"/Runtime/{backend}",
+            backend=backend,
+            entrypoint="runner",
+        )
+
     def input_contract(self, service: str) -> dict[str, Any]:
         """Return the application payload contract recorded for a service."""
 
@@ -333,16 +478,51 @@ class APPClient:
 
         if isinstance(value, bytes):
             return value
+        if isinstance(value, (bytearray, memoryview)):
+            return bytes(value)
+        contract = self.input_contract(service)
         encoder = self._input_encoders.get(service)
         if encoder is None:
-            contract = self.input_contract(service)
-            raise ValueError(
-                f"service {service} has no registered input encoder; "
-                f"contract={contract!r}")
-        payload = encoder(value)
+            payload = self._encode_default_input(value, contract)
+            if payload is None:
+                raise ValueError(
+                    f"service {service} has no registered input encoder and "
+                    f"no built-in encoder matches contract={contract!r}")
+        else:
+            payload = encoder(value)
         if not isinstance(payload, bytes):
             raise TypeError("input encoder must return bytes")
         return payload
+
+    @staticmethod
+    def _encode_default_input(value: Any, contract: dict[str, Any]) -> bytes | None:
+        codec = str(contract.get("codec", "")).lower()
+        if codec != "npz":
+            return None
+        try:
+            import numpy as np  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("built-in NPZ input encoding requires numpy") from exc
+
+        fields = contract.get("fields", {})
+        if isinstance(fields, Mapping):
+            field_names = [str(name) for name in fields.keys()]
+        else:
+            field_names = []
+
+        if isinstance(value, Mapping):
+            values = {str(key): np.asarray(item) for key, item in value.items()}
+        elif isinstance(value, tuple) and len(field_names) == len(value):
+            values = {name: np.asarray(item) for name, item in zip(field_names, value)}
+        elif isinstance(value, list) and len(field_names) == len(value):
+            values = {name: np.asarray(item) for name, item in zip(field_names, value)}
+        else:
+            field_name = field_names[0] if len(field_names) == 1 else "input"
+            values = {field_name: np.asarray(value)}
+
+        buffer = io.BytesIO()
+        np.savez(buffer, **values)
+        return buffer.getvalue()
 
     def publish_large_payload(
         self,
@@ -364,13 +544,19 @@ class APPClient:
     def infer_service_object(self, service: str, value: Any, *,
                              ack_timeout_ms: int = 500,
                              timeout_ms: int = 30000,
-                             freshness_ms: int = 60000) -> InferenceResult:
+                             freshness_ms: int = 60000,
+                             dynamic_provisioning: bool | None = None,
+                             runtime: RuntimeSpec | None = None,
+                             repo_manifests: dict | str | Path | None = None) -> InferenceResult:
         return self.infer_service(
             service,
             self.encode_input(service, value),
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             freshness_ms=freshness_ms,
+            dynamic_provisioning=dynamic_provisioning,
+            runtime=runtime,
+            repo_manifests=repo_manifests,
         )
 
     def infer_service_async(
@@ -381,9 +567,29 @@ class APPClient:
         ack_timeout_ms: int = 500,
         timeout_ms: int = 30000,
         freshness_ms: int = 60000,
+        dynamic_provisioning: bool | None = None,
+        runtime: RuntimeSpec | None = None,
+        repo_manifests: dict | str | Path | None = None,
         on_result: Callable[[InferenceResult], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> Future:
+        service_policy = self.deployment.service_policy(service)
+        if dynamic_provisioning is None:
+            dynamic_provisioning = bool(service_policy.artifacts or repo_manifests)
+        if dynamic_provisioning:
+            return self.infer_async(
+                self.service_plan(
+                    service,
+                    runtime=runtime,
+                    repo_manifests=repo_manifests,
+                ),
+                payload,
+                ack_timeout_ms=ack_timeout_ms,
+                timeout_ms=timeout_ms,
+                freshness_ms=freshness_ms,
+                on_result=on_result,
+                on_error=on_error,
+            )
         service_policy = self.deployment.service_policy(service)
         role_names = list(service_policy.roles)
         dependencies = list(service_policy.dependencies)
@@ -425,6 +631,9 @@ class APPClient:
         ack_timeout_ms: int = 500,
         timeout_ms: int = 30000,
         freshness_ms: int = 60000,
+        dynamic_provisioning: bool | None = None,
+        runtime: RuntimeSpec | None = None,
+        repo_manifests: dict | str | Path | None = None,
         on_result: Callable[[InferenceResult], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> Future:
@@ -434,6 +643,9 @@ class APPClient:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             freshness_ms=freshness_ms,
+            dynamic_provisioning=dynamic_provisioning,
+            runtime=runtime,
+            repo_manifests=repo_manifests,
             on_result=on_result,
             on_error=on_error,
         )
@@ -604,7 +816,7 @@ class APPProvider:
         )
         return cls(deployment, provider)
 
-    def serve(
+    def serve_service(
         self,
         *,
         service: str,
@@ -648,6 +860,31 @@ class APPProvider:
             allow_executables=allow_executables,
             dependency_graph=self.deployment.dependency_graph_for_service(service),
             local_artifacts=local_artifacts,
+        )
+
+    def serve(
+        self,
+        *,
+        service: str,
+        roles: Sequence[str] | str,
+        handler: InferenceHandler,
+        backends: Sequence[str] = (),
+        temp_dir: str | None = None,
+        queue_depth: int = 0,
+        has_model: bool = False,
+        can_provision: bool = True,
+        allow_executables: bool = False,
+    ) -> None:
+        self.serve_service(
+            service=service,
+            roles=roles,
+            handler=handler,
+            backends=backends,
+            temp_dir=temp_dir,
+            queue_depth=queue_depth,
+            has_model=has_model,
+            can_provision=can_provision,
+            allow_executables=allow_executables,
         )
 
     def roles_for_service(self, service: str) -> list[str]:

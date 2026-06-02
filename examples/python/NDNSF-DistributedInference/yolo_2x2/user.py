@@ -10,17 +10,15 @@ from yolo_2x2_lib import (
     DEFAULT_MODEL,
     DEFAULT_INPUT_SIZE,
     SERVICE,
-    build_dynamic_plan,
-    build_repo_plan,
     decode_yolo_output,
     decode_image,
     encode_image_reference,
-    encode_image_for_yolo,
     full_forward,
     make_input,
     optional_local_nfd,
     parse_args_with_common,
     run_local_onnx_pipeline,
+    runtime_spec,
 )
 
 
@@ -30,7 +28,10 @@ def main() -> int:
     parser.add_argument("--timeout-ms", type=int, default=30000)
     parser.add_argument("--permission-wait-ms", type=int, default=2500)
     parser.add_argument("--async-requests", type=int, default=1)
-    parser.add_argument("--dynamic-provisioning", action="store_true")
+    parser.add_argument("--dynamic-provisioning", action="store_true",
+                        help="kept for older commands; service invocation now provisions dynamically by default")
+    parser.add_argument("--deployed-models", action="store_true",
+                        help="use providers that already have local model shards")
     parser.add_argument("--repo-manifest-file", default="")
     parser.add_argument("--sequential-requests", type=int, default=0)
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -51,7 +52,6 @@ def main() -> int:
             async_workers=max(1, args.async_requests),
         )
         image = make_input(args.input_size)
-        client.register_input_encoder(SERVICE, encode_image_for_yolo)
         image_payload = client.encode_input(SERVICE, image)
         image_ref = client.publish_large_payload(
             SERVICE,
@@ -72,22 +72,25 @@ def main() -> int:
             expected = run_local_onnx_pipeline(artifact_paths, inference_image)
         else:
             expected = full_forward(args.model, inference_image)
-        if args.repo_manifest_file:
-            plan = build_repo_plan(client, args.repo_manifest_file)
-        elif args.dynamic_provisioning:
-            plan = build_dynamic_plan(client)
-        else:
-            plan = None
         request_count = args.sequential_requests or args.async_requests
-        if plan is not None:
-            futures = []
-            for _ in range(request_count):
-                futures.append(_ImmediateResult(client.infer(
-                    plan,
+        dynamic_provisioning = None
+        if args.deployed_models:
+            dynamic_provisioning = False
+        elif args.dynamic_provisioning or args.repo_manifest_file:
+            dynamic_provisioning = True
+        if args.sequential_requests:
+            futures = [
+                _ImmediateResult(client.infer_service(
+                    SERVICE,
                     payload,
                     ack_timeout_ms=args.ack_timeout_ms,
                     timeout_ms=args.timeout_ms,
-                )))
+                    dynamic_provisioning=dynamic_provisioning,
+                    runtime=runtime_spec(),
+                    repo_manifests=args.repo_manifest_file or None,
+                ))
+                for _ in range(request_count)
+            ]
         else:
             futures = [
                 client.infer_service_async(
@@ -95,8 +98,11 @@ def main() -> int:
                     payload,
                     ack_timeout_ms=args.ack_timeout_ms,
                     timeout_ms=args.timeout_ms,
+                    dynamic_provisioning=dynamic_provisioning,
+                    runtime=runtime_spec(),
+                    repo_manifests=args.repo_manifest_file or None,
                 )
-                for _ in range(args.async_requests)
+                for _ in range(request_count)
             ]
         ok = True
         for index, future in enumerate(futures):

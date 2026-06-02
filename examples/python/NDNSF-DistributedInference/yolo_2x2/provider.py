@@ -114,7 +114,10 @@ def main() -> int:
     parser.add_argument("--provider-id", default="")
     parser.add_argument("--temp-dir", default="")
     parser.add_argument("--handler-workers", type=int, default=2)
-    parser.add_argument("--dynamic-provisioning", action="store_true")
+    parser.add_argument("--dynamic-provisioning", action="store_true",
+                        help="kept for older commands; providers can provision dynamically by default")
+    parser.add_argument("--deployed-models", action="store_true",
+                        help="load role artifacts from local paths in the service policy")
     args = parser.parse_args()
     if args.dry_run:
         print("Run YOLO 2x2 provider", args.provider_id, args.role or args.roles)
@@ -127,15 +130,20 @@ def main() -> int:
             group=args.group,
             handler_workers=args.handler_workers,
         )
-        provider.serve(
+        service_has_artifacts = bool(provider.deployment.service_policy(SERVICE).artifacts)
+        dynamic_provisioning = (
+            args.dynamic_provisioning or
+            (service_has_artifacts and not args.deployed_models)
+        )
+        provider.serve_service(
             service=SERVICE,
             roles=[args.role] if args.role else args.roles,
             handler=handle_role,
-            backends=["numpy"],
+            backends=["onnxruntime"],
             temp_dir=args.temp_dir or None,
-            has_model=not args.dynamic_provisioning,
-            can_provision=args.dynamic_provisioning,
-            allow_executables=args.dynamic_provisioning,
+            has_model=not dynamic_provisioning,
+            can_provision=dynamic_provisioning,
+            allow_executables=dynamic_provisioning,
         )
         provider.run()
     return 0
