@@ -499,16 +499,9 @@ public:
                  status.rfind("No video streaming for selected drone ", 0) == 0 ||
                  status.rfind("Video already streaming drone=", 0) == 0) {
           updateVideoViewForSelectedLocked();
-          const auto selectedDrone = m_runtime.targetDroneId();
-          const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
-          const auto mission = m_runtime.missionForDrone(selectedDrone);
-          const auto readiness = m_runtime.readinessForDrone(selectedDrone);
-          const auto video = m_runtime.videoForDrone(selectedDrone);
-          const auto command = m_runtime.commandForDrone(selectedDrone);
-          const auto safety = m_runtime.safetyForDrone(selectedDrone);
-          if (telemetry) {
-            m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone,
-                                               readiness, video, command, safety);
+          const auto view = selectedDroneViewState();
+          if (view.hasTelemetry) {
+            m_pendingMap = view.mapText;
           }
           m_pendingVehicleRowsRefresh = true;
         }
@@ -518,11 +511,6 @@ public:
           const auto selectedDrone = m_runtime.targetDroneId();
           if (status.rfind("Telemetry ", 0) == 0) {
             const auto telemetry = m_runtime.telemetryForDrone(statusDrone);
-            const auto mission = m_runtime.missionForDrone(statusDrone);
-            const auto readiness = m_runtime.readinessForDrone(statusDrone);
-            const auto video = m_runtime.videoForDrone(statusDrone);
-            const auto command = m_runtime.commandForDrone(statusDrone);
-            const auto safety = m_runtime.safetyForDrone(statusDrone);
             if (telemetry) {
               try {
                 m_dronePositions[statusDrone] = {
@@ -533,14 +521,9 @@ public:
               catch (const std::exception&) {
               }
               if (statusDrone == selectedDrone) {
-                m_pendingTelemetry = telemetry->statusLine() +
-                  (readiness ? " " + readiness->statusLine() : "") +
-                  (mission ? " " + mission->statusLine() : "") +
-                  (video ? " " + video->statusLine() : "") +
-                  (command ? " " + command->statusLine() : "") +
-                  (safety ? " " + safety->statusLine() : "");
-                m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone,
-                                                   readiness, video, command, safety);
+                const auto view = selectedDroneViewState();
+                m_pendingTelemetry = view.inspectorText;
+                m_pendingMap = view.mapText;
               }
               m_pendingVehicleRowsRefresh = true;
             }
@@ -549,16 +532,12 @@ public:
             }
           }
           else if (statusDrone == selectedDrone) {
-            const auto telemetry = m_runtime.telemetryForDrone(statusDrone);
-            const auto mission = m_runtime.missionForDrone(statusDrone);
-            const auto readiness = m_runtime.readinessForDrone(statusDrone);
-            const auto video = m_runtime.videoForDrone(statusDrone);
             const auto command = m_runtime.commandForDrone(statusDrone);
-            const auto safety = m_runtime.safetyForDrone(statusDrone);
-            m_pendingTelemetry = command ? command->statusLine() : status;
-            if (telemetry) {
-              m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone,
-                                                 readiness, video, command, safety);
+            const auto view = selectedDroneViewState();
+            m_pendingTelemetry = view.hasTelemetry ? view.inspectorText :
+                                 command ? command->statusLine() : status;
+            if (view.hasTelemetry) {
+              m_pendingMap = view.mapText;
             }
             m_pendingVehicleRowsRefresh = true;
           }
@@ -896,6 +875,7 @@ public:
           updateVehicleRows();
           logFlightActionControlState("not-ready");
           logSelectedActionState("not-ready");
+          logSelectedDroneViewState("not-ready");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, false)] {
@@ -903,6 +883,7 @@ public:
           updateVehicleRows();
           logFlightActionControlState("ready-unarmed");
           logSelectedActionState("ready-unarmed");
+          logSelectedDroneViewState("ready-unarmed");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, true)] {
@@ -910,12 +891,14 @@ public:
           updateVehicleRows();
           logFlightActionControlState("armed-ready");
           logSelectedActionState("armed-ready");
+          logSelectedDroneViewState("armed-ready");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
           setControlMode(true);
           updateVehicleRows();
           logSelectedActionState("manual-enabled");
+          logSelectedDroneViewState("manual-enabled");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -933,6 +916,7 @@ public:
           m_runtime.injectMissionStateForTest(std::move(mission));
           updateVehicleRows();
           logSelectedActionState("mission-uploaded");
+          logSelectedDroneViewState("mission-uploaded");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -1807,23 +1791,8 @@ private:
       }
       label->set_text(rowText);
     }
-    const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
-    const auto mission = m_runtime.missionForDrone(selectedDrone);
-    const auto readiness = m_runtime.readinessForDrone(selectedDrone);
-    const auto video = m_runtime.videoForDrone(selectedDrone);
-    const auto command = m_runtime.commandForDrone(selectedDrone);
-    const auto safety = m_runtime.safetyForDrone(selectedDrone);
-    if (telemetry) {
-      m_mapMission.set_text(mapTextForTelemetry(*telemetry, mission, selectedDrone,
-                                                readiness, video, command, safety));
-    }
-    else {
-      m_mapMission.set_text("Map / mission workspace\n\n"
-                            "GS center: University of Memphis\n"
-                            "Selected drone: " + selectedDrone + "\n"
-                            "Map markers show GS, drones, and mission waypoints.\n"
-                            "Click map to append waypoints, then upload/start the mission.");
-    }
+    const auto view = selectedDroneViewState();
+    m_mapMission.set_text(view.mapText);
     m_services.set_text(m_runtime.serviceCatalogForDrone(selectedDrone));
     updateSelectedActionControls();
     refreshMapTile();
@@ -2118,6 +2087,7 @@ private:
     std::string mapText;
     std::string readiness = "unknown";
     std::string missionPhase = "unknown";
+    std::string videoStatus = "unknown";
     std::string linkState = "unknown";
     MapMarker marker;
   };
@@ -2142,6 +2112,8 @@ private:
     state.readiness = readiness ? readiness->readiness :
                       telemetry ? telemetry->readiness : "unknown";
     state.missionPhase = mission ? mission->phase : "idle";
+    state.videoStatus = video ? video->status :
+                        telemetry ? telemetry->video : "unknown";
     state.linkState = safety ? safety->linkState :
                       telemetry ? telemetry->linkState : "unknown";
     if (telemetry) {
@@ -2176,6 +2148,7 @@ private:
        << " has_telemetry=" << (state.hasTelemetry ? "true" : "false")
        << " readiness=" << state.readiness
        << " mission=" << state.missionPhase
+       << " video=" << state.videoStatus
        << " link=" << state.linkState
        << " marker=" << state.marker.label;
     NDN_LOG_INFO(os.str());

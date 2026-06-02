@@ -1277,7 +1277,10 @@ snapshots in the GS smoke path. It verifies that Arm is enabled only when the
 selected drone is ready and not armed, and that Takeoff/Land/manual control are
 enabled only after the selected drone is armed. The same smoke also logs the
 selected-drone action model, including manual-control mode, emergency-stop
-availability, and mission Start/Stop readiness.
+availability, and mission Start/Stop readiness. It also verifies the selected
+drone view model that drives the inspector/map text and marker state, so mission
+upload state is reflected as a typed marker suffix instead of temporary status
+string parsing.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
