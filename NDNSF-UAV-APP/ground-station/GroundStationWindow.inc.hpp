@@ -895,18 +895,44 @@ public:
           m_runtime.injectReadinessStateForTest(readiness);
           updateVehicleRows();
           logFlightActionControlState("not-ready");
+          logSelectedActionState("not-ready");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, false)] {
           m_runtime.injectReadinessStateForTest(readiness);
           updateVehicleRows();
           logFlightActionControlState("ready-unarmed");
+          logSelectedActionState("ready-unarmed");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, true)] {
           m_runtime.injectReadinessStateForTest(readiness);
           updateVehicleRows();
           logFlightActionControlState("armed-ready");
+          logSelectedActionState("armed-ready");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
+          setControlMode(true);
+          updateVehicleRows();
+          logSelectedActionState("manual-enabled");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
+          MissionState mission;
+          mission.droneId = m_runtime.targetDroneId();
+          mission.missionId = "selected-action-test";
+          mission.partId = "part-selected";
+          mission.phase = "uploaded";
+          mission.detail = "selected-action-test";
+          mission.ack = "test";
+          mission.transport = "test";
+          mission.waypointsForwarded = "4";
+          mission.waypointAcksAccepted = "4";
+          mission.updatedMs = nowMilliseconds();
+          m_runtime.injectMissionStateForTest(std::move(mission));
+          updateVehicleRows();
+          logSelectedActionState("mission-uploaded");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -1007,11 +1033,11 @@ private:
       return true;
     }
     if (action == "control_panel") {
-      if (readiness->readyForArm() || readiness->readyForManualControl() || readiness->readyForLand()) {
+      if (readiness->readyForManualControl()) {
         reason = "ok";
         return true;
       }
-      reason = readiness->readinessReason;
+      reason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
       return false;
     }
     reason = "ok";
@@ -1108,6 +1134,7 @@ private:
                         " reason=" + state.controlPanelReason);
     }
     m_controlToggle.set_sensitive(state.canControlPanel || m_controlMode || state.canManualControl);
+    m_emergencyStop.set_sensitive(!state.selectedDrone.empty());
   }
 
   bool
@@ -1798,8 +1825,7 @@ private:
                             "Click map to append waypoints, then upload/start the mission.");
     }
     m_services.set_text(m_runtime.serviceCatalogForDrone(selectedDrone));
-    updateMissionControls();
-    updateFlightControlControls();
+    updateSelectedActionControls();
     refreshMapTile();
   }
 
@@ -1874,6 +1900,72 @@ private:
        << " phases=" << state.phases;
     NDN_LOG_INFO(os.str());
     std::cout << os.str() << std::endl;
+  }
+
+  struct SelectedActionState
+  {
+    std::string selectedDrone;
+    FlightActionControlState flight;
+    MissionControlState mission;
+    bool manualMode = false;
+    bool manualInputActive = false;
+    bool emergencyStopAvailable = false;
+  };
+
+  SelectedActionState
+  selectedActionState() const
+  {
+    SelectedActionState state;
+    state.selectedDrone = m_runtime.targetDroneId();
+    state.flight = flightActionControlStateForSelected();
+    state.mission = missionControlState();
+    state.manualMode = m_controlMode;
+    state.manualInputActive = m_manualActive.load();
+    state.emergencyStopAvailable = !state.selectedDrone.empty();
+    return state;
+  }
+
+  void
+  logSelectedActionState(const std::string& phase) const
+  {
+    const auto state = selectedActionState();
+    std::ostringstream os;
+    os << "SELECTED_ACTION_STATE phase=" << phase
+       << " selected=" << state.selectedDrone
+       << " can_arm=" << (state.flight.canArm ? "true" : "false")
+       << " can_takeoff=" << (state.flight.canTakeoff ? "true" : "false")
+       << " can_land=" << (state.flight.canLand ? "true" : "false")
+       << " can_manual=" << (state.flight.canManualControl ? "true" : "false")
+       << " can_panel=" << (state.flight.canControlPanel ? "true" : "false")
+       << " mission_can_start=" << (state.mission.canStart ? "true" : "false")
+       << " mission_can_stop=" << (state.mission.canStop ? "true" : "false")
+       << " mission_phases=" << state.mission.phases
+       << " manual_mode=" << (state.manualMode ? "true" : "false")
+       << " manual_active=" << (state.manualInputActive ? "true" : "false")
+       << " emergency_stop=" << (state.emergencyStopAvailable ? "true" : "false");
+    NDN_LOG_INFO(os.str());
+    std::cout << os.str() << std::endl;
+  }
+
+  void
+  updateSelectedActionControls()
+  {
+    const auto state = selectedActionState();
+    m_patrol.set_sensitive(state.mission.canUpload);
+    m_startMission.set_sensitive(state.mission.canStart);
+    m_stopPatrol.set_sensitive(state.mission.canStop);
+    m_arm.set_sensitive(state.flight.canArm);
+    m_takeoff.set_sensitive(state.flight.canTakeoff);
+    m_land.set_sensitive(state.flight.canLand);
+    if (m_controlMode && !state.flight.canControlPanel) {
+      setControlMode(false);
+      m_status.set_text("Manual control disabled: drone=" + state.selectedDrone +
+                        " reason=" + state.flight.controlPanelReason);
+    }
+    m_controlToggle.set_sensitive(state.flight.canControlPanel ||
+                                  state.manualMode ||
+                                  state.flight.canManualControl);
+    m_emergencyStop.set_sensitive(state.emergencyStopAvailable);
   }
 
   static std::string

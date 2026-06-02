@@ -1275,7 +1275,9 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 The launcher injects not-ready, ready-but-not-armed, and armed-ready readiness
 snapshots in the GS smoke path. It verifies that Arm is enabled only when the
 selected drone is ready and not armed, and that Takeoff/Land/manual control are
-enabled only after the selected drone is armed.
+enabled only after the selected drone is armed. The same smoke also logs the
+selected-drone action model, including manual-control mode, emergency-stop
+availability, and mission Start/Stop readiness.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
