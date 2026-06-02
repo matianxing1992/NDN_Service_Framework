@@ -870,7 +870,29 @@ public:
       if (telemetry.droneId == "unknown") {
         telemetry.droneId = droneId;
       }
-      updateDroneState(telemetry, MissionState::fromFields(fields));
+      const auto mission = MissionState::fromFields(fields);
+      updateDroneState(telemetry, mission);
+      const auto readiness = readinessForDrone(droneId);
+      const auto safety = safetyForDrone(droneId);
+      const auto video = videoForDrone(droneId);
+      const auto videoAdaptive = videoAdaptiveForDrone(droneId);
+      const auto progress = missionProgressSnapshot();
+      const auto flight = FlightActionControlState::fromGate(
+        FlightSafetyGateState::fromStates(droneId, readiness, safety));
+      const auto missionControl = MissionControlState::fromStates({}, progress,
+                                                                  false, false, false);
+      const auto selectedAction = SelectedActionState::fromStates(droneId, flight,
+                                                                  missionControl,
+                                                                  false, false);
+      const auto summary = SelectedDroneSummaryState::fromStates(droneId, telemetry,
+                                                                 readiness, mission,
+                                                                 std::nullopt, std::nullopt,
+                                                                 progress, video,
+                                                                 videoAdaptive, safety);
+      const auto row = DroneListRowState::fromStates(droneId, true, telemetry,
+                                                     readiness, mission, video,
+                                                     videoAdaptive, std::nullopt,
+                                                     safety, progress);
       const auto known = [](const std::string& value) {
         return !value.empty() && value != "unknown";
       };
@@ -900,6 +922,12 @@ public:
                    << " lon=" << telemetry.lon
                    << " readiness=" << telemetry.readiness
                    << " reason=" << telemetry.readinessReason);
+      NDN_LOG_INFO("TELEMETRY_STATE_MODEL sample=" << index
+                   << " phase=" << phase
+                   << " " << flight.statusLine()
+                   << " " << selectedAction.statusLine()
+                   << " " << summary.statusLine()
+                   << " row=" << row.rowText);
     };
 
     int sampleIndex = 0;

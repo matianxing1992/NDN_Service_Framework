@@ -1059,6 +1059,13 @@ def main() -> int:
             require_log(gs_log, "armed=true")
             require_log(gs_log, "lat=")
             require_log(gs_log, "lon=")
+            require_log(gs_log, "TELEMETRY_STATE_MODEL sample=0 phase=initial")
+            require_log(gs_log, "TELEMETRY_STATE_MODEL sample=1 phase=armed")
+            require_log(gs_log, "TELEMETRY_STATE_MODEL sample=2 phase=takeoff")
+            require_log(gs_log, "FlightAction selected=")
+            require_log(gs_log, "SelectedAction selected=")
+            require_log(gs_log, "SelectedDroneSummary selected=")
+            require_log(gs_log, "row=● Drone " + args.drone_id + " active")
             print("NDNSF_UAV_TELEMETRY_MININDN_SMOKE_OK")
         elif args.auto_link_state_test and args.no_cli:
             try:
