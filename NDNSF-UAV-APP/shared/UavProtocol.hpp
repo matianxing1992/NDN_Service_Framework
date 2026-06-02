@@ -240,6 +240,24 @@ struct MissionState
   std::string statusLine() const;
 };
 
+struct MissionStartGateState
+{
+  std::string droneId = "unknown";
+  bool hasMission = false;
+  bool hasFlightGate = false;
+  bool missionUploaded = false;
+  bool canStart = false;
+  bool canStop = false;
+  std::string missionPhase = "idle";
+  std::string startReason = "no-mission";
+  std::string stopReason = "no-mission";
+
+  static MissionStartGateState fromStates(const std::string& droneId,
+                                          const std::optional<MissionState>& mission,
+                                          const std::optional<FlightSafetyGateState>& flightGate);
+  std::string statusLine() const;
+};
+
 uint64_t
 nowMilliseconds();
 

@@ -1073,6 +1073,60 @@ MissionState::statusLine() const
          " accepted=" + waypointAcksAccepted;
 }
 
+MissionStartGateState
+MissionStartGateState::fromStates(const std::string& droneId,
+                                  const std::optional<MissionState>& mission,
+                                  const std::optional<FlightSafetyGateState>& flightGate)
+{
+  MissionStartGateState state;
+  state.droneId = droneId.empty() ? "unknown" : droneId;
+  state.hasMission = mission.has_value();
+  state.hasFlightGate = flightGate.has_value();
+  if (!mission) {
+    return state;
+  }
+
+  state.missionPhase = mission->phase;
+  state.missionUploaded = mission->isStartable();
+  state.canStop = mission->isStoppable();
+  state.stopReason = state.canStop ? "ok" : "mission-" + mission->phase;
+  if (!mission->isStartable()) {
+    state.startReason = "mission-" + mission->phase;
+    return state;
+  }
+  if (!flightGate) {
+    state.startReason = "no-flight-gate";
+    return state;
+  }
+  if (flightGate->operatorAttention) {
+    state.startReason = !flightGate->takeoffReason.empty() ? flightGate->takeoffReason :
+                        !flightGate->armReason.empty() ? flightGate->armReason : "safety-attention";
+    return state;
+  }
+  if (flightGate->canArm || flightGate->canTakeoff) {
+    state.canStart = true;
+    state.startReason = "ok";
+    return state;
+  }
+  state.startReason = !flightGate->takeoffReason.empty() ? flightGate->takeoffReason :
+                      !flightGate->armReason.empty() ? flightGate->armReason : "not-ready";
+  return state;
+}
+
+std::string
+MissionStartGateState::statusLine() const
+{
+  return "MissionStartGate drone=" + droneId +
+         " has_mission=" + std::string(hasMission ? "true" : "false") +
+         " has_flight_gate=" + std::string(hasFlightGate ? "true" : "false") +
+         " mission_uploaded=" + std::string(missionUploaded ? "true" : "false") +
+         " phase=" + missionPhase +
+         " can_start=" + std::string(canStart ? "true" : "false") +
+         " start_reason=" + startReason +
+         " can_stop=" + std::string(canStop ? "true" : "false") +
+         " stop_reason=" + stopReason;
+}
+
 std::vector<uint8_t>
 encodeVideoPacket(const VideoPacket& packet)
 {

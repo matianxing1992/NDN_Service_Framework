@@ -811,6 +811,23 @@ public:
     }
     if (autoMissionControlsTest) {
       std::thread([this] {
+        auto makeReadiness = [] (std::string droneId, bool ready) {
+          ReadinessState readiness;
+          readiness.droneId = std::move(droneId);
+          readiness.heartbeatSeen = ready ? "true" : "false";
+          readiness.flightControllerReady = ready ? "true" : "false";
+          readiness.gpsReady = ready ? "true" : "false";
+          readiness.ekfReady = ready ? "true" : "false";
+          readiness.batteryReady = ready ? "true" : "false";
+          readiness.armed = "false";
+          readiness.mode = "STANDBY";
+          readiness.landedStateName = "on-ground";
+          readiness.readiness = ready ? "ready" : "not-ready";
+          readiness.readinessReason = ready ? "ok" : "waiting-heartbeat";
+          readiness.timestampMs = nowMilliseconds();
+          return readiness;
+        };
+
         std::this_thread::sleep_for(std::chrono::seconds(3));
         Glib::signal_idle().connect_once([this] {
           updateVehicleRows();
@@ -823,8 +840,9 @@ public:
           logMissionControlState("uploading");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        Glib::signal_idle().connect_once([this] {
+        Glib::signal_idle().connect_once([this, makeReadiness] {
           for (const auto& droneId : m_droneIds) {
+            m_runtime.injectReadinessStateForTest(makeReadiness(droneId, false));
             MissionState mission;
             mission.droneId = droneId;
             mission.missionId = "mission-controls-test";
@@ -842,6 +860,14 @@ public:
           m_status.set_text("Mission controls test upload complete");
           updateVehicleRows();
           logMissionControlState("after-upload");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this, makeReadiness] {
+          for (const auto& droneId : m_droneIds) {
+            m_runtime.injectReadinessStateForTest(makeReadiness(droneId, true));
+          }
+          updateVehicleRows();
+          logMissionControlState("after-ready");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -1758,16 +1784,47 @@ private:
     bool canStart = false;
     bool canStop = false;
     size_t startableCount = 0;
+    size_t startEligibleCount = 0;
+    size_t startBlockedCount = 0;
     std::string phases;
+    std::string startEligible;
+    std::string startBlocked;
   };
+
+  std::optional<FlightSafetyGateState>
+  flightSafetyGateForDrone(const std::string& droneId) const
+  {
+    const auto readiness = m_runtime.readinessForDrone(droneId);
+    if (!readiness) {
+      return std::nullopt;
+    }
+    return FlightSafetyGateState::fromStates(droneId, readiness, m_runtime.safetyForDrone(droneId));
+  }
+
+  MissionStartGateState
+  missionStartGateForDrone(const std::string& droneId) const
+  {
+    return MissionStartGateState::fromStates(droneId, m_runtime.missionForDrone(droneId),
+                                             flightSafetyGateForDrone(droneId));
+  }
+
+  std::vector<std::string>
+  missionStartEligibleDrones() const
+  {
+    std::vector<std::string> out;
+    for (const auto& droneId : m_droneIds) {
+      if (missionStartGateForDrone(droneId).canStart) {
+        out.push_back(droneId);
+      }
+    }
+    return out;
+  }
 
   MissionControlState
   missionControlState() const
   {
     MissionControlState state;
     state.uploadPending = m_patrolUploadInFlight.load();
-    state.startableCount = m_runtime.missionStartableDrones().size();
-    state.hasUploaded = state.startableCount > 0;
     for (const auto& droneId : m_droneIds) {
       const auto mission = m_runtime.missionForDrone(droneId);
       if (!mission) {
@@ -1781,12 +1838,40 @@ private:
       state.hasExecuting = state.hasExecuting || mission->isExecuting();
       state.hasStopping = state.hasStopping || mission->isStopping();
       state.hasTerminal = state.hasTerminal || mission->isTerminal();
+      const auto startGate = missionStartGateForDrone(droneId);
+      if (mission->isStartable()) {
+        ++state.startableCount;
+        if (startGate.canStart) {
+          if (!state.startEligible.empty()) {
+            state.startEligible += ",";
+          }
+          state.startEligible += droneId;
+          ++state.startEligibleCount;
+        }
+        else {
+          if (!state.startBlocked.empty()) {
+            state.startBlocked += ",";
+          }
+          state.startBlocked += droneId + ":" + startGate.startReason;
+          ++state.startBlockedCount;
+        }
+      }
     }
     if (state.phases.empty()) {
       state.phases = "none";
     }
+    if (state.startEligible.empty()) {
+      state.startEligible = "none";
+    }
+    if (state.startBlocked.empty()) {
+      state.startBlocked = "none";
+    }
     state.canUpload = !state.uploadPending && !state.hasExecuting && !state.hasStopping;
-    state.canStart = state.hasUploaded && !state.uploadPending &&
+    state.canStart = state.hasUploaded &&
+                     state.startableCount > 0 &&
+                     state.startEligibleCount == state.startableCount &&
+                     state.startBlockedCount == 0 &&
+                     !state.uploadPending &&
                      !state.hasExecuting && !state.hasStopping;
     state.canStop = state.hasUploaded || state.hasExecuting || state.hasStopping;
     return state;
@@ -1901,9 +1986,13 @@ private:
        << " can_stop=" << (state.canStop ? "true" : "false")
        << " upload_pending=" << (state.uploadPending ? "true" : "false")
        << " startable_count=" << state.startableCount
+       << " start_eligible_count=" << state.startEligibleCount
+       << " start_blocked_count=" << state.startBlockedCount
        << " has_uploaded=" << (state.hasUploaded ? "true" : "false")
        << " has_executing=" << (state.hasExecuting ? "true" : "false")
        << " has_stopping=" << (state.hasStopping ? "true" : "false")
+       << " start_eligible=" << state.startEligible
+       << " start_blocked=" << state.startBlocked
        << " phases=" << state.phases;
     NDN_LOG_INFO(os.str());
     std::cout << os.str() << std::endl;
@@ -2429,11 +2518,17 @@ private:
   scheduleMissionStartPhase(int phase, size_t droneIndex)
   {
     const auto startableDrones = m_runtime.missionStartableDrones();
+    const auto eligibleDrones = missionStartEligibleDrones();
     if (startableDrones.empty()) {
       m_status.set_text("No uploaded patrol mission is ready; upload mission before Start Mission");
       return;
     }
-    if (droneIndex >= startableDrones.size()) {
+    if (eligibleDrones.empty()) {
+      const auto state = missionControlState();
+      m_status.set_text("Patrol mission start blocked: " + state.startBlocked);
+      return;
+    }
+    if (droneIndex >= eligibleDrones.size()) {
       if (phase == 0) {
         m_status.set_text("Mission sequence: all patrol drones armed; taking off next");
         Glib::signal_timeout().connect([this] {
@@ -2455,11 +2550,22 @@ private:
       return;
     }
 
-    const auto droneId = startableDrones[droneIndex];
+    const auto droneId = eligibleDrones[droneIndex];
     if (phase == 0) {
+      const auto flightGate = flightSafetyGateForDrone(droneId);
+      if (!flightGate || !flightGate->canArm) {
+        m_status.set_text("Mission sequence: Drone " + droneId +
+                          " arm skipped (" +
+                          (flightGate ? flightGate->armReason : std::string("no-flight-gate")) + ")");
+        Glib::signal_timeout().connect([this, droneIndex] {
+          scheduleMissionStartPhase(0, droneIndex + 1);
+          return false;
+        }, 250);
+        return;
+      }
       m_status.set_text("Mission sequence: arming Drone " + droneId +
                         " (" + std::to_string(droneIndex + 1) + "/" +
-                        std::to_string(startableDrones.size()) + ")");
+                        std::to_string(eligibleDrones.size()) + ")");
       m_runtime.sendMavlinkCommandToDrone(droneId, "arm", {{"arm", "true"}});
       Glib::signal_timeout().connect([this, droneIndex] {
         scheduleMissionStartPhase(0, droneIndex + 1);
@@ -2468,9 +2574,20 @@ private:
       return;
     }
     if (phase == 1) {
+      const auto flightGate = flightSafetyGateForDrone(droneId);
+      if (!flightGate || !flightGate->canTakeoff) {
+        m_status.set_text("Mission sequence: Drone " + droneId +
+                          " takeoff blocked (" +
+                          (flightGate ? flightGate->takeoffReason : std::string("no-flight-gate")) + ")");
+        Glib::signal_timeout().connect([this, droneIndex] {
+          scheduleMissionStartPhase(1, droneIndex + 1);
+          return false;
+        }, 250);
+        return;
+      }
       m_status.set_text("Mission sequence: takeoff Drone " + droneId +
                         " (" + std::to_string(droneIndex + 1) + "/" +
-                        std::to_string(startableDrones.size()) + ")");
+                        std::to_string(eligibleDrones.size()) + ")");
       m_runtime.sendMavlinkCommandToDrone(droneId, "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
       Glib::signal_timeout().connect([this, droneIndex] {
         scheduleMissionStartPhase(1, droneIndex + 1);
@@ -2481,7 +2598,7 @@ private:
 
     m_status.set_text("Mission sequence: starting mission on Drone " + droneId +
                       " (" + std::to_string(droneIndex + 1) + "/" +
-                      std::to_string(startableDrones.size()) + ")");
+                      std::to_string(eligibleDrones.size()) + ")");
     m_runtime.sendMavlinkCommandToDrone(droneId, "start_mission");
     Glib::signal_timeout().connect([this, droneIndex] {
       scheduleMissionStartPhase(2, droneIndex + 1);
