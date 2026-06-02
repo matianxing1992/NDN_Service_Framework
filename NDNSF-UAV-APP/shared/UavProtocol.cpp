@@ -635,6 +635,8 @@ SafetyState::fromFields(const Fields& fields)
   state.manualNeutralSent = fieldOr(fields, "manual_neutral_sent", state.manualNeutralSent);
   state.manualFreshForMs = uint64FieldOr(fields, "manual_fresh_for_ms", state.manualFreshForMs);
   state.manualReplayCount = uint64FieldOr(fields, "manual_replay_count", state.manualReplayCount);
+  state.linkAgeMs = uint64FieldOr(fields, "link_age_ms", state.linkAgeMs);
+  state.lostLinkAction = fieldOr(fields, "lost_link_action", state.lostLinkAction);
   state.detail = fieldOr(fields, "safety_detail", state.detail);
   state.updatedMs = uint64FieldOr(fields, "timestamp_ms", uint64FieldOr(fields, "updated_ms", state.updatedMs));
   return state;
@@ -657,6 +659,8 @@ SafetyState::toFields() const
     {"manual_neutral_sent", manualNeutralSent},
     {"manual_fresh_for_ms", std::to_string(manualFreshForMs)},
     {"manual_replay_count", std::to_string(manualReplayCount)},
+    {"link_age_ms", std::to_string(linkAgeMs)},
+    {"lost_link_action", lostLinkAction},
     {"safety_detail", detail},
     {"updated_ms", std::to_string(updatedMs)},
   };
@@ -674,6 +678,7 @@ bool
 SafetyState::needsOperatorAttention() const
 {
   return linkState == "lost" ||
+         linkState == "stale" ||
          linkState == "waiting-heartbeat" ||
          manualControlState == "stale-waiting-neutral" ||
          manualControlState == "send-failed";
@@ -689,6 +694,8 @@ SafetyState::statusLine() const
          " neutral_sent=" + manualNeutralSent +
          " fresh_for_ms=" + std::to_string(manualFreshForMs) +
          " replay_count=" + std::to_string(manualReplayCount) +
+         " link_age_ms=" + std::to_string(linkAgeMs) +
+         " lost_link_action=" + lostLinkAction +
          " attention=" + std::string(needsOperatorAttention() ? "yes" : "no") +
          " detail=" + detail;
 }

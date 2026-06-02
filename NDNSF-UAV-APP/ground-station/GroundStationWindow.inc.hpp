@@ -495,6 +495,18 @@ public:
                  status.rfind("No video streaming for selected drone ", 0) == 0 ||
                  status.rfind("Video already streaming drone=", 0) == 0) {
           updateVideoViewForSelectedLocked();
+          const auto selectedDrone = m_runtime.targetDroneId();
+          const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
+          const auto mission = m_runtime.missionForDrone(selectedDrone);
+          const auto readiness = m_runtime.readinessForDrone(selectedDrone);
+          const auto video = m_runtime.videoForDrone(selectedDrone);
+          const auto command = m_runtime.commandForDrone(selectedDrone);
+          const auto safety = m_runtime.safetyForDrone(selectedDrone);
+          if (telemetry) {
+            m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone,
+                                               readiness, video, command, safety);
+          }
+          m_pendingVehicleRowsRefresh = true;
         }
         if (status.rfind("MAVLink ", 0) == 0 ||
             status.rfind("Telemetry ", 0) == 0) {
@@ -1646,6 +1658,8 @@ private:
               " replay=" + safety->manualReplayActive +
               " neutral=" + safety->manualNeutralSent +
               " fresh_for=" + std::to_string(safety->manualFreshForMs) + "ms" +
+              " link_age=" + std::to_string(safety->linkAgeMs) + "ms" +
+              " lost_action=" + safety->lostLinkAction +
               " attention=" + std::string(safety->needsOperatorAttention() ? "yes" : "no") +
               " detail=" + safety->detail;
     }

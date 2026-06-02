@@ -11,7 +11,10 @@ public:
                        std::vector<std::string> patrolDroneIds = {},
                        std::string yoloModel = "yolo26n.pt",
                        std::string yoloScript = "NDNSF-UAV-APP/tools/yolo_detect_once.py",
-                       std::string yoloWorkerScript = "NDNSF-UAV-APP/tools/yolo_detect_worker.py")
+                       std::string yoloWorkerScript = "NDNSF-UAV-APP/tools/yolo_detect_worker.py",
+                       uint64_t linkStaleMs = 3500,
+                       uint64_t linkLostMs = 8000,
+                       std::string lostLinkAction = "notify")
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_ackTimeoutMs(ackTimeoutMs)
@@ -23,6 +26,9 @@ public:
     , m_yoloModel(std::move(yoloModel))
     , m_yoloScript(std::move(yoloScript))
     , m_yoloWorkerScript(std::move(yoloWorkerScript))
+    , m_linkStaleMs(linkStaleMs)
+    , m_linkLostMs(std::max(linkLostMs, linkStaleMs))
+    , m_lostLinkAction(std::move(lostLinkAction))
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
@@ -314,11 +320,23 @@ public:
   safetyForDrone(const std::string& droneId) const
   {
     std::lock_guard<std::mutex> guard(m_telemetryMutex);
-    const auto found = m_safetyByDrone.find(droneId);
-    if (found == m_safetyByDrone.end()) {
+    auto found = m_safetyByDrone.find(droneId);
+    SafetyState state;
+    if (found != m_safetyByDrone.end()) {
+      state = found->second;
+    }
+    else {
+      const auto telemetry = m_telemetryByDrone.find(droneId);
+      if (telemetry == m_telemetryByDrone.end()) {
+        return std::nullopt;
+      }
+      state = SafetyState::fromTelemetry(telemetry->second);
+      state.droneId = droneId;
+    }
+    if (!ageSafetyStateLocked(droneId, state)) {
       return std::nullopt;
     }
-    return found->second;
+    return state;
   }
 
   std::vector<TelemetryState>
@@ -770,6 +788,67 @@ public:
               << " battery_voltage=" << (check.batteryVoltage ? "true" : "false")
               << " armed_true=" << (check.armedTrue ? "true" : "false")
               << " lat_lon=" << (check.latLon ? "true" : "false")
+              << std::endl;
+    return ok;
+  }
+
+  bool
+  runLinkStateAgingTest(std::chrono::seconds timeout)
+  {
+    const auto droneId = targetDroneId();
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto fields = requestTelemetryStatusForDroneSync(
+      droneId, std::chrono::milliseconds(std::min(m_timeoutMs, 3000)));
+    if (fields.empty()) {
+      std::cout << "LINK_STATE_AGING_RESULT ok=false reason=no-initial-telemetry"
+                << std::endl;
+      return false;
+    }
+
+    auto logSample = [this, &droneId](const std::string& phase) {
+      const auto safety = safetyForDrone(droneId);
+      if (!safety) {
+        std::cout << "LINK_STATE_AGING sample=" << phase
+                  << " drone=" << droneId
+                  << " state=missing" << std::endl;
+        return SafetyState{};
+      }
+      std::cout << "LINK_STATE_AGING sample=" << phase
+                << " drone=" << droneId
+                << " state=" << safety->linkState
+                << " age_ms=" << safety->linkAgeMs
+                << " action=" << safety->lostLinkAction
+                << " attention=" << (safety->needsOperatorAttention() ? "true" : "false")
+                << " detail=" << safety->detail
+                << std::endl;
+      return *safety;
+    };
+
+    const auto initial = logSample("initial");
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(m_linkStaleMs + 150));
+    const auto stale = logSample("stale");
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+
+    if (m_linkLostMs > stale.linkAgeMs) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(m_linkLostMs - stale.linkAgeMs + 150));
+    }
+    const auto lost = logSample("lost");
+
+    const bool ok = !initial.droneId.empty() &&
+                    stale.linkState == "stale" &&
+                    lost.linkState == "lost" &&
+                    lost.lostLinkAction == m_lostLinkAction;
+    std::cout << "LINK_STATE_AGING_RESULT ok=" << (ok ? "true" : "false")
+              << " initial=" << initial.linkState
+              << " stale=" << stale.linkState
+              << " lost=" << lost.linkState
+              << " lost_link_action=" << lost.lostLinkAction
               << std::endl;
     return ok;
   }
@@ -1478,6 +1557,8 @@ private:
     m_readinessByDrone[droneId] = storedReadiness;
     auto storedSafety = SafetyState::fromTelemetry(storedTelemetry);
     storedSafety.droneId = droneId;
+    storedSafety.linkAgeMs = 0;
+    storedSafety.lostLinkAction = m_lostLinkAction;
     m_safetyByDrone[droneId] = storedSafety;
     auto storedVideo = VideoState::fromFields(storedTelemetry.toFields());
     storedVideo.droneId = droneId;
@@ -1497,6 +1578,42 @@ private:
       storedMission.droneId = droneId;
     }
     m_missionByDrone[droneId] = storedMission;
+  }
+
+  bool
+  ageSafetyStateLocked(const std::string& droneId, SafetyState& state) const
+  {
+    const auto telemetry = m_telemetryByDrone.find(droneId);
+    if (telemetry == m_telemetryByDrone.end()) {
+      return false;
+    }
+    state.droneId = droneId;
+    state.lostLinkAction = m_lostLinkAction;
+    if (telemetry->second.timestampMs == 0) {
+      return true;
+    }
+
+    const auto now = nowMilliseconds();
+    state.linkAgeMs = now > telemetry->second.timestampMs ?
+      now - telemetry->second.timestampMs : 0;
+    if (state.linkAgeMs >= m_linkLostMs) {
+      state.linkState = "lost";
+      state.detail = "telemetry-lost";
+      return true;
+    }
+    if (state.linkAgeMs >= m_linkStaleMs) {
+      state.linkState = "stale";
+      state.detail = "telemetry-stale";
+      return true;
+    }
+    if (state.linkState == "unknown" || state.linkState == "lost" ||
+        state.linkState == "stale") {
+      state.linkState = "connected";
+    }
+    if (state.detail == "telemetry-lost" || state.detail == "telemetry-stale") {
+      state.detail = "telemetry-fresh";
+    }
+    return true;
   }
 
   void
@@ -3775,6 +3892,9 @@ private:
   std::string m_yoloModel;
   std::string m_yoloScript;
   std::string m_yoloWorkerScript;
+  uint64_t m_linkStaleMs = 3500;
+  uint64_t m_linkLostMs = 8000;
+  std::string m_lostLinkAction = "notify";
   std::mutex m_yoloMutex;
   std::thread m_yoloPrewarmThread;
   pid_t m_yoloWorkerPid = -1;
