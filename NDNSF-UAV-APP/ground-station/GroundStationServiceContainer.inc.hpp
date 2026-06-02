@@ -1774,6 +1774,7 @@ private:
                     std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
                     m_chunkQueue.clear();
                     m_pendingChunks.clear();
+                    m_decoderPendingChunkCount = 0;
                     m_decoderOutBuffer.clear();
                   }
                   stopDecoder();
@@ -2326,10 +2327,16 @@ private:
     m_deltaPacketsPerSecond = std::clamp<uint64_t>(
       estimatedPacketsPerSecond + m_keyPacketsPerSecond + fps / 2, 24, 512);
     m_keyWindow = std::clamp<uint64_t>(m_keyPacketsPerSecond, 4, 16);
-    m_dynamicWindowMax = packetsForDurationMs(900, 32, 384);
-    m_dynamicLookaheadMax = packetsForDurationMs(350, 8, 160);
-    m_decoderReorderWindow = packetsForDurationMs(120, 6, 96);
-    m_decoderBacklogLimit = std::clamp<uint64_t>(m_decoderReorderWindow * 4, 24, 384);
+    m_videoTimeoutBudgetMs = std::clamp<uint64_t>(
+      static_cast<uint64_t>(std::max(m_timeoutMs, 1)), 800, 6000);
+    const auto frameMs = frameDurationMs();
+    m_dynamicWindowMax = packetsForDurationMs(
+      std::clamp<uint64_t>(m_videoTimeoutBudgetMs / 3 + 300, 650, 1400), 32, 640);
+    m_dynamicLookaheadMax = packetsForDurationMs(
+      std::clamp<uint64_t>(m_videoTimeoutBudgetMs / 8 + frameMs * 4, 180, 600), 8, 256);
+    m_decoderReorderWindow = packetsForDurationMs(
+      std::clamp<uint64_t>(frameMs * 4 + DEFAULT_VIDEO_RTT_MS / 2, 100, 280), 6, 160);
+    m_decoderBacklogLimit = std::clamp<uint64_t>(m_decoderReorderWindow * 4, 32, 512);
     m_videoRttEwmaMs = DEFAULT_VIDEO_RTT_MS;
     m_deltaWindow = dynamicVideoWindow();
 
@@ -2343,6 +2350,9 @@ private:
                  << " deltaWindow=" << m_deltaWindow
                  << " lookaheadMax=" << m_dynamicLookaheadMax
                  << " reorderWindow=" << m_decoderReorderWindow
+                 << " backlogLimit=" << m_decoderBacklogLimit
+                 << " interestLifetimeMs=" << dynamicInterestLifetimeMs()
+                 << " timeoutBudgetMs=" << m_videoTimeoutBudgetMs
                  << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
                  << " rttMs=" << videoRttMs());
     std::cout << "GS_VIDEO_PREFETCH bitrateKbps=" << bitrateKbps
@@ -2354,6 +2364,9 @@ private:
               << " deltaWindow=" << m_deltaWindow
               << " lookaheadMax=" << m_dynamicLookaheadMax
               << " reorderWindow=" << m_decoderReorderWindow
+              << " backlogLimit=" << m_decoderBacklogLimit
+              << " interestLifetimeMs=" << dynamicInterestLifetimeMs()
+              << " timeoutBudgetMs=" << m_videoTimeoutBudgetMs
               << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
               << " rttMs=" << videoRttMs() << std::endl;
   }
@@ -2387,16 +2400,27 @@ private:
   }
 
   uint64_t
+  frameDurationMs() const
+  {
+    return std::max<uint64_t>(1, 1000 / std::max<uint64_t>(1, m_videoFps));
+  }
+
+  uint64_t
   dynamicVideoWindow() const
   {
     const auto rtt = videoRttMs();
     const auto lossPressure = videoLossPressurePercent();
-    const auto targetBufferMs = std::clamp<uint64_t>(rtt + 80, 180, 750);
+    const auto frameMs = frameDurationMs();
+    const auto timeoutCapMs = std::clamp<uint64_t>(m_videoTimeoutBudgetMs / 2, 350, 1000);
+    const auto targetBufferMs = std::clamp<uint64_t>(rtt * 2 + frameMs * 2,
+                                                    180, timeoutCapMs);
     const auto pressureCap = lossPressure > 0 ?
       std::max<uint64_t>(16, m_dynamicWindowMax *
                              (100 - std::min<uint64_t>(lossPressure, 70)) / 100) :
       m_dynamicWindowMax;
-    return packetsForDurationMs(targetBufferMs, 8, pressureCap);
+    const auto minWindow = packetsForDurationMs(
+      std::clamp<uint64_t>(rtt / 2 + frameMs, 80, 300), 8, 128);
+    return packetsForDurationMs(targetBufferMs, std::min(minWindow, pressureCap), pressureCap);
   }
 
   uint64_t
@@ -2404,7 +2428,9 @@ private:
   {
     const auto rtt = videoRttMs();
     const auto lossPressure = videoLossPressurePercent();
-    const auto futureMs = std::clamp<uint64_t>(rtt / 3 + 40, 50, 250);
+    const auto frameMs = frameDurationMs();
+    const auto timeoutCapMs = std::clamp<uint64_t>(m_videoTimeoutBudgetMs / 5, 160, 500);
+    const auto futureMs = std::clamp<uint64_t>(rtt + frameMs * 2, 100, timeoutCapMs);
     const auto pressureCap = lossPressure > 0 ?
       std::max<uint64_t>(4, m_dynamicLookaheadMax *
                             (100 - std::min<uint64_t>(lossPressure, 60)) / 100) :
@@ -2421,20 +2447,39 @@ private:
   uint64_t
   dynamicInterestLifetimeMs() const
   {
-    return std::clamp<uint64_t>(videoRttMs() * 3 + 200, 600, 3000);
+    const auto rtt = videoRttMs();
+    const auto frameMs = frameDurationMs();
+    const auto lower = std::clamp<uint64_t>(rtt + frameMs * 2, 350, 1000);
+    const auto upper = std::clamp<uint64_t>(m_videoTimeoutBudgetMs - 100, lower, 3500);
+    const auto lossSlackMs = std::min<uint64_t>(videoLossPressurePercent() * 8, 500);
+    return std::clamp<uint64_t>(rtt * 2 + frameMs * 4 + 200 + lossSlackMs, lower, upper);
   }
 
   uint64_t
   dynamicDecoderMissingTimeoutMs() const
   {
-    const auto frameMs = std::max<uint64_t>(1, 1000 / std::max<uint64_t>(1, m_videoFps));
+    const auto frameMs = frameDurationMs();
     const auto lossPressure = videoLossPressurePercent();
+    const auto backlogPressure = decoderBacklogPressurePercent();
     const auto minWaitMs = std::clamp<uint64_t>(std::max<uint64_t>(frameMs * 2, videoRttMs() / 2),
                                                100, 350);
-    const auto maxWaitMs = std::clamp<uint64_t>(videoRttMs() * 2 + frameMs * 3, 300, 1800);
+    const auto maxWaitMs = std::clamp<uint64_t>(
+      std::min<uint64_t>(m_videoTimeoutBudgetMs / 2, videoRttMs() * 2 + frameMs * 4),
+      300, 1800);
     const auto baseWaitMs = std::clamp<uint64_t>(videoRttMs() + frameMs * 3, minWaitMs, maxWaitMs);
-    const auto pressureReductionMs = std::min<uint64_t>(lossPressure * 4, baseWaitMs / 2);
+    const auto pressureReductionMs =
+      std::min<uint64_t>(lossPressure * 3 + backlogPressure * 2, baseWaitMs / 2);
     return std::clamp<uint64_t>(baseWaitMs - pressureReductionMs, minWaitMs, maxWaitMs);
+  }
+
+  uint64_t
+  decoderBacklogPressurePercent() const
+  {
+    if (m_decoderBacklogLimit == 0) {
+      return 0;
+    }
+    const auto pending = m_decoderPendingChunkCount.load();
+    return std::clamp<uint64_t>((pending * 100) / m_decoderBacklogLimit, 0, 100);
   }
 
   uint64_t
@@ -2502,12 +2547,18 @@ private:
                        << " bytes=" << data.getContent().value_size()
                        << " rttMs=" << videoRttMs()
                        << " lossPressure=" << videoLossPressurePercent()
+                       << " backlogPressure=" << decoderBacklogPressurePercent()
+                       << " interestLifetimeMs=" << dynamicInterestLifetimeMs()
+                       << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
                        << " window=" << dynamicVideoWindow());
           std::cout << "GS_VIDEO_CHUNK count=" << receivedCount
                       << " packetSeq=" << packetSeq
                     << " bytes=" << data.getContent().value_size()
                     << " rttMs=" << videoRttMs()
                     << " lossPressure=" << videoLossPressurePercent()
+                    << " backlogPressure=" << decoderBacklogPressurePercent()
+                    << " interestLifetimeMs=" << dynamicInterestLifetimeMs()
+                    << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
                     << " window=" << dynamicVideoWindow() << std::endl;
         }
         if (m_firstFrameMs == 0) {
@@ -2865,6 +2916,7 @@ private:
         m_decoderMissingChunkSeq = m_nextChunkSeqToDecode;
         m_decoderMissingChunkStartMs = nowMilliseconds();
       }
+      m_decoderPendingChunkCount = m_pendingChunks.size();
     }
 
     if (notifyWriter) {
@@ -2899,6 +2951,7 @@ private:
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
       m_chunkQueue.clear();
       m_pendingChunks.clear();
+      m_decoderPendingChunkCount = 0;
       m_nextChunkSeqToDecode = 0;
     }
 
@@ -3036,6 +3089,7 @@ private:
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
       m_chunkQueue.clear();
       m_pendingChunks.clear();
+      m_decoderPendingChunkCount = 0;
       m_decoderOutBuffer.clear();
       m_decoderMissingChunkSeq = UINT64_MAX;
       m_decoderMissingChunkStartMs = 0;
@@ -3223,6 +3277,7 @@ private:
         m_decoderMissingChunkSeq = UINT64_MAX;
         m_decoderMissingChunkStartMs = 0;
       }
+      m_decoderPendingChunkCount = m_pendingChunks.size();
       m_decoderQueueCv.notify_one();
     }
   }
@@ -3331,6 +3386,7 @@ private:
   uint64_t m_deltaWindow = 108;
   uint64_t m_videoPayloadBytes = 3600;
   uint64_t m_videoFps = 30;
+  uint64_t m_videoTimeoutBudgetMs = 2500;
   uint64_t m_dynamicWindowMax = 128;
   uint64_t m_dynamicLookaheadMax = 64;
   uint64_t m_decoderReorderWindow = 12;
@@ -3347,6 +3403,7 @@ private:
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
   std::atomic<uint64_t> m_videoRttEwmaMs{DEFAULT_VIDEO_RTT_MS};
+  std::atomic<uint64_t> m_decoderPendingChunkCount{0};
   std::atomic<bool> m_done{false};
   std::atomic<bool> m_videoPumpScheduled{false};
   std::mutex m_decoderQueueMutex;
