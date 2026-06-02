@@ -12,6 +12,8 @@ using ndnsf::examples::uav::MissionState;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::VideoAdaptiveState;
+using ndnsf::examples::uav::VideoAdaptivePolicyInput;
+using ndnsf::examples::uav::computeVideoAdaptivePolicy;
 
 ReadinessState
 makeReadyState(bool armed)
@@ -213,6 +215,69 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_NE(decoded.statusLine().find("bitrate_action=decrease"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frames=45"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyShrinksUnderPressure)
+{
+  VideoAdaptivePolicyInput base;
+  base.rttMs = 120;
+  base.fps = 30;
+  base.deltaPacketsPerSecond = 180;
+  base.timeoutBudgetMs = 2500;
+  base.dynamicWindowMax = 180;
+  base.dynamicLookaheadMax = 80;
+  base.decoderBacklogLimit = 80;
+  base.receivedChunks = 1000;
+  base.acceptedBitrateKbps = 8000;
+  base.requestedBitrateKbps = 8000;
+
+  auto pressured = base;
+  pressured.timeoutPressure = 95;
+  pressured.probePressure = 80;
+  pressured.decoderPendingChunks = 120;
+  pressured.timeouts = 120;
+  pressured.nacks = 20;
+  pressured.receivedChunks = 200;
+
+  const auto relaxed = computeVideoAdaptivePolicy(base);
+  const auto stressed = computeVideoAdaptivePolicy(pressured);
+
+  BOOST_CHECK_LT(stressed.window, relaxed.window);
+  BOOST_CHECK_LT(stressed.lookahead, relaxed.lookahead);
+  BOOST_CHECK_LE(stressed.missingTimeoutMs, relaxed.missingTimeoutMs);
+  BOOST_CHECK_EQUAL(stressed.bitrateAction, "decrease");
+  BOOST_CHECK_EQUAL(stressed.bitrateReason, "pressure");
+  BOOST_CHECK_LT(stressed.suggestedBitrateKbps, pressured.acceptedBitrateKbps);
+}
+
+BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyHandlesHighRttAndRecovery)
+{
+  VideoAdaptivePolicyInput highRtt;
+  highRtt.rttMs = 950;
+  highRtt.fps = 30;
+  highRtt.deltaPacketsPerSecond = 180;
+  highRtt.timeoutBudgetMs = 2500;
+  highRtt.dynamicWindowMax = 180;
+  highRtt.dynamicLookaheadMax = 80;
+  highRtt.decoderBacklogLimit = 80;
+  highRtt.receivedChunks = 1000;
+  highRtt.acceptedBitrateKbps = 6000;
+  highRtt.requestedBitrateKbps = 8000;
+
+  const auto slowLink = computeVideoAdaptivePolicy(highRtt);
+  BOOST_CHECK_EQUAL(slowLink.bitrateAction, "decrease");
+  BOOST_CHECK_EQUAL(slowLink.bitrateReason, "high-rtt");
+  BOOST_CHECK_LT(slowLink.suggestedBitrateKbps, highRtt.acceptedBitrateKbps);
+
+  auto recovering = highRtt;
+  recovering.rttMs = 120;
+  recovering.acceptedBitrateKbps = 2500;
+  recovering.requestedBitrateKbps = 8000;
+
+  const auto recovered = computeVideoAdaptivePolicy(recovering);
+  BOOST_CHECK_EQUAL(recovered.bitrateAction, "increase");
+  BOOST_CHECK_EQUAL(recovered.bitrateReason, "recovery");
+  BOOST_CHECK_GT(recovered.suggestedBitrateKbps, recovering.acceptedBitrateKbps);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

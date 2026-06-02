@@ -3097,169 +3097,55 @@ private:
   uint64_t
   dynamicVideoWindow() const
   {
-    const auto rtt = videoRttMs();
-    const auto lossPressure = videoCongestionPressurePercent();
-    const auto backlogPressure = decoderBacklogPressurePercent();
-    const auto pressure = std::max(lossPressure, backlogPressure);
-    const auto frameMs = frameDurationMs();
-    const auto timeoutCapMs = std::clamp<uint64_t>(m_videoTimeoutBudgetMs / 2, 350, 1000);
-    const auto targetBufferMs = std::clamp<uint64_t>(rtt * 2 + frameMs * 2,
-                                                    180, timeoutCapMs);
-    const auto pressureCap = pressure > 0 ?
-      std::max<uint64_t>(16, m_dynamicWindowMax *
-                             (100 - std::min<uint64_t>(pressure, 75)) / 100) :
-      m_dynamicWindowMax;
-    const auto minWindow = packetsForDurationMs(
-      std::clamp<uint64_t>(rtt / 2 + frameMs, 80, 300), 8, 128);
-    return packetsForDurationMs(targetBufferMs, std::min(minWindow, pressureCap), pressureCap);
+    return currentVideoAdaptivePolicyDecision().window;
   }
 
   uint64_t
   dynamicVideoLookahead() const
   {
-    const auto rtt = videoRttMs();
-    const auto pressure = std::max({
-      videoCongestionPressurePercent(),
-      videoProbePressurePercent(),
-      decoderBacklogPressurePercent()
-    });
-    const auto frameMs = frameDurationMs();
-    const auto timeoutCapMs = std::clamp<uint64_t>(m_videoTimeoutBudgetMs / 5, 160, 500);
-    const auto futureMs = std::clamp<uint64_t>(rtt + frameMs * 2, 100, timeoutCapMs);
-    const auto pressureCap = pressure > 0 ?
-      std::max<uint64_t>(4, m_dynamicLookaheadMax *
-                            (100 - std::min<uint64_t>(pressure, 85)) / 100) :
-      m_dynamicLookaheadMax;
-    return packetsForDurationMs(futureMs, 2, pressureCap);
+    return currentVideoAdaptivePolicyDecision().lookahead;
   }
 
   uint64_t
   dynamicFutureProbeInFlightLimit() const
   {
-    const auto frameMs = frameDurationMs();
-    const auto rttProbeMs = std::clamp<uint64_t>(videoRttMs() / 3 + frameMs,
-                                                frameMs, 180);
-    auto limit = packetsForDurationMs(rttProbeMs, 1, 24);
-    const auto pressure = std::max(videoProbePressurePercent(),
-                                   videoCongestionPressurePercent());
-    if (pressure > 0) {
-      limit = std::max<uint64_t>(1, limit *
-                                    (100 - std::min<uint64_t>(pressure, 90)) / 100);
-    }
-    return std::clamp<uint64_t>(limit, 1, 24);
+    return currentVideoAdaptivePolicyDecision().futureProbeLimit;
   }
 
   uint64_t
   dynamicProbeBackoffMs() const
   {
-    const auto pressureDelay =
-      videoProbePressurePercent() * 8 + videoCongestionPressurePercent() * 4;
-    return std::clamp<uint64_t>(videoRttMs() / 2 + pressureDelay, 60, 1200);
+    return currentVideoAdaptivePolicyDecision().probeBackoffMs;
   }
 
   uint64_t
   dynamicInterestLifetimeMs() const
   {
-    const auto rtt = videoRttMs();
-    const auto frameMs = frameDurationMs();
-    const auto lower = std::clamp<uint64_t>(rtt + frameMs * 2, 350, 1000);
-    const auto upper = std::clamp<uint64_t>(m_videoTimeoutBudgetMs - 100, lower, 3500);
-    const auto lossSlackMs = std::min<uint64_t>(videoCongestionPressurePercent() * 8, 600);
-    return std::clamp<uint64_t>(rtt * 2 + frameMs * 4 + 200 + lossSlackMs, lower, upper);
+    return currentVideoAdaptivePolicyDecision().interestLifetimeMs;
   }
 
   uint64_t
   dynamicDecoderMissingTimeoutMs() const
   {
-    const auto frameMs = frameDurationMs();
-    const auto lossPressure = videoLossPressurePercent();
-    const auto backlogPressure = decoderBacklogPressurePercent();
-    const auto minWaitMs = std::clamp<uint64_t>(std::max<uint64_t>(frameMs * 2, videoRttMs() / 2),
-                                               100, 350);
-    const auto maxWaitMs = std::clamp<uint64_t>(
-      std::min<uint64_t>(m_videoTimeoutBudgetMs / 2, videoRttMs() * 2 + frameMs * 4),
-      300, 1800);
-    const auto baseWaitMs = std::clamp<uint64_t>(videoRttMs() + frameMs * 3, minWaitMs, maxWaitMs);
-    const auto pressureReductionMs =
-      std::min<uint64_t>(lossPressure * 3 + backlogPressure * 2, baseWaitMs / 2);
-    return std::clamp<uint64_t>(baseWaitMs - pressureReductionMs, minWaitMs, maxWaitMs);
+    return currentVideoAdaptivePolicyDecision().missingTimeoutMs;
   }
 
   uint64_t
   decoderBacklogPressurePercent() const
   {
-    if (m_decoderBacklogLimit == 0) {
-      return 0;
-    }
-    const auto pending = m_decoderPendingChunkCount.load();
-    return std::clamp<uint64_t>((pending * 100) / m_decoderBacklogLimit, 0, 100);
+    return currentVideoAdaptivePolicyDecision().backlogPressure;
   }
 
   uint64_t
   videoLossPressurePercent() const
   {
-    const auto received = m_receivedChunks.load();
-    const auto losses = m_frameNacks.load() + m_frameTimeouts.load();
-    if (received + losses < 20) {
-      return 0;
-    }
-    return std::clamp<uint64_t>((losses * 100) / std::max<uint64_t>(1, received + losses),
-                                0, 80);
+    return currentVideoAdaptivePolicyDecision().lossPressure;
   }
 
   uint64_t
   videoCongestionPressurePercent() const
   {
-    return std::max({
-      videoLossPressurePercent(),
-      m_videoTimeoutPressurePercent.load(),
-      m_videoDuplicatePressurePercent.load() / 2
-    });
-  }
-
-  static uint64_t
-  lowerVideoBitrateStep(uint64_t currentKbps)
-  {
-    if (currentKbps > 6000) {
-      return 6000;
-    }
-    if (currentKbps > 4000) {
-      return 4000;
-    }
-    if (currentKbps > 2500) {
-      return 2500;
-    }
-    if (currentKbps > 1500) {
-      return 1500;
-    }
-    if (currentKbps > 800) {
-      return 800;
-    }
-    return currentKbps;
-  }
-
-  static uint64_t
-  higherVideoBitrateStep(uint64_t currentKbps, uint64_t requestedKbps)
-  {
-    if (currentKbps < 800) {
-      return std::min<uint64_t>(800, requestedKbps);
-    }
-    if (currentKbps < 1500) {
-      return std::min<uint64_t>(1500, requestedKbps);
-    }
-    if (currentKbps < 2500) {
-      return std::min<uint64_t>(2500, requestedKbps);
-    }
-    if (currentKbps < 4000) {
-      return std::min<uint64_t>(4000, requestedKbps);
-    }
-    if (currentKbps < 6000) {
-      return std::min<uint64_t>(6000, requestedKbps);
-    }
-    if (currentKbps < 8000) {
-      return std::min<uint64_t>(8000, requestedKbps);
-    }
-    return std::min(currentKbps, requestedKbps);
+    return currentVideoAdaptivePolicyDecision().congestionPressure;
   }
 
   VideoBitrateAdvice
@@ -3268,40 +3154,46 @@ private:
     VideoBitrateAdvice advice;
     advice.requestedKbps = std::max<uint64_t>(128, m_videoRequestedBitrateKbps.load());
     advice.acceptedKbps = std::max<uint64_t>(128, m_videoAcceptedBitrateKbps.load());
-    advice.suggestedKbps = advice.acceptedKbps;
-
-    const auto rtt = videoRttMs();
-    const auto congestionPressure = videoCongestionPressurePercent();
-    const auto backlogPressure = decoderBacklogPressurePercent();
-    const auto probePressure = videoProbePressurePercent();
-    const auto pressure = std::max({congestionPressure, backlogPressure, probePressure});
-    const auto highRttThreshold = std::clamp<uint64_t>(
-      m_videoTimeoutBudgetMs / 3 + frameDurationMs() * 4, 350, 900);
-
-    if ((pressure >= 65 || rtt >= highRttThreshold) && advice.acceptedKbps > 800) {
-      advice.suggestedKbps = lowerVideoBitrateStep(advice.acceptedKbps);
-      advice.action = advice.suggestedKbps < advice.acceptedKbps ? "decrease" : "hold";
-      advice.reason = pressure >= 65 ? "pressure" : "high-rtt";
-    }
-    else if (pressure <= 15 && rtt < highRttThreshold / 2 &&
-             advice.acceptedKbps < advice.requestedKbps) {
-      advice.suggestedKbps = higherVideoBitrateStep(advice.acceptedKbps,
-                                                    advice.requestedKbps);
-      advice.action = advice.suggestedKbps > advice.acceptedKbps ? "increase" : "hold";
-      advice.reason = "recovery";
-    }
-    else {
-      advice.reason = "stable";
-    }
-
+    const auto decision = currentVideoAdaptivePolicyDecision();
+    advice.suggestedKbps = decision.suggestedBitrateKbps;
+    advice.action = decision.bitrateAction;
+    advice.reason = decision.bitrateReason;
     return advice;
   }
 
   uint64_t
   videoProbePressurePercent() const
   {
-    return std::max(m_videoProbePressurePercent.load(),
-                    m_videoDuplicatePressurePercent.load() / 2);
+    return currentVideoAdaptivePolicyDecision().probePressure;
+  }
+
+  VideoAdaptivePolicyInput
+  currentVideoAdaptivePolicyInput() const
+  {
+    VideoAdaptivePolicyInput input;
+    input.rttMs = videoRttMs();
+    input.fps = m_videoFps;
+    input.deltaPacketsPerSecond = m_deltaPacketsPerSecond;
+    input.timeoutBudgetMs = m_videoTimeoutBudgetMs;
+    input.dynamicWindowMax = m_dynamicWindowMax;
+    input.dynamicLookaheadMax = m_dynamicLookaheadMax;
+    input.decoderBacklogLimit = m_decoderBacklogLimit;
+    input.decoderPendingChunks = m_decoderPendingChunkCount.load();
+    input.receivedChunks = m_receivedChunks.load();
+    input.timeouts = m_frameTimeouts.load();
+    input.nacks = m_frameNacks.load();
+    input.timeoutPressure = m_videoTimeoutPressurePercent.load();
+    input.probePressure = m_videoProbePressurePercent.load();
+    input.duplicatePressure = m_videoDuplicatePressurePercent.load();
+    input.requestedBitrateKbps = m_videoRequestedBitrateKbps.load();
+    input.acceptedBitrateKbps = m_videoAcceptedBitrateKbps.load();
+    return input;
+  }
+
+  VideoAdaptivePolicyDecision
+  currentVideoAdaptivePolicyDecision() const
+  {
+    return computeVideoAdaptivePolicy(currentVideoAdaptivePolicyInput());
   }
 
   VideoAdaptiveState

@@ -243,6 +243,46 @@ struct VideoAdaptiveState
   std::string statusLine() const;
 };
 
+struct VideoAdaptivePolicyInput
+{
+  uint64_t rttMs = 120;
+  uint64_t fps = 30;
+  uint64_t deltaPacketsPerSecond = 160;
+  uint64_t timeoutBudgetMs = 2500;
+  uint64_t dynamicWindowMax = 128;
+  uint64_t dynamicLookaheadMax = 64;
+  uint64_t decoderBacklogLimit = 48;
+  uint64_t decoderPendingChunks = 0;
+  uint64_t receivedChunks = 0;
+  uint64_t timeouts = 0;
+  uint64_t nacks = 0;
+  uint64_t timeoutPressure = 0;
+  uint64_t probePressure = 0;
+  uint64_t duplicatePressure = 0;
+  uint64_t requestedBitrateKbps = 8000;
+  uint64_t acceptedBitrateKbps = 8000;
+};
+
+struct VideoAdaptivePolicyDecision
+{
+  uint64_t window = 0;
+  uint64_t lookahead = 0;
+  uint64_t futureProbeLimit = 0;
+  uint64_t probeBackoffMs = 0;
+  uint64_t interestLifetimeMs = 0;
+  uint64_t missingTimeoutMs = 0;
+  uint64_t lossPressure = 0;
+  uint64_t congestionPressure = 0;
+  uint64_t probePressure = 0;
+  uint64_t backlogPressure = 0;
+  uint64_t suggestedBitrateKbps = 0;
+  std::string bitrateAction = "hold";
+  std::string bitrateReason = "stable";
+};
+
+VideoAdaptivePolicyDecision
+computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input);
+
 struct MissionState
 {
   std::string droneId = "unknown";

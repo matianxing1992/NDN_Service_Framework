@@ -730,8 +730,11 @@ UAV service-container workload 的应用。计划顺序如下：
 4. **自适应视频服务质量。** 继续把 video 当作 NDNSF service workload：requested bitrate、
    accepted bitrate、RTT、backlog、timeout pressure、key-frame recovery 和 FEC 应该驱动
    prefetch 与 skip 决策，而不是依赖固定常数。当前 GS 已把这些决策记录为
-   `VideoAdaptiveState`，包括 advisory 的 decrease/hold/increase 码率建议。现在 `Apply Bitrate`
-   会把非 hold 建议转换成显式 Stop-then-Start stream restart。默认策略仍然是 manual；
+   `VideoAdaptiveState`，包括 advisory 的 decrease/hold/increase 码率建议。核心窗口、
+   lookahead、timeout 和码率建议现在由 typed `VideoAdaptivePolicyInput` 到
+   `VideoAdaptivePolicyDecision` helper 计算，并有单元测试覆盖 pressure、high-RTT 和
+   recovery 行为，避免只为某个 MiniNDN 拓扑调整隐藏常数。现在 `Apply Bitrate` 会把非 hold
+   建议转换成显式 Stop-then-Start stream restart。默认策略仍然是 manual；
    `auto-after-pressure` 可以用于实验场景，在压力持续一段时间后自动应用建议。
 5. **任务协作模型。** 把当前 patrol demo 提升成可复用 mission model，包括 `MissionPlan`、
    `MissionPart`、assignment、progress、failure/compensation 和 return-to-home 语义。

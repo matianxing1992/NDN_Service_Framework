@@ -720,7 +720,12 @@ current receiver stores these decisions as `VideoAdaptiveState`, so the video
 panel, selected-drone inspector, left-side drone row, and MiniNDN smoke logs can
 show RTT, window, lookahead, pressure, missing-packet timeout, pending chunks,
 decoded-frame progress, and the current bitrate recommendation without scraping
-packet logs. The recommendation is explicit-control only: the GS does not
+packet logs. The actual window, lookahead, timeout, and bitrate recommendation
+are computed through a typed `VideoAdaptivePolicyInput` to
+`VideoAdaptivePolicyDecision` helper, with unit tests covering pressure,
+high-RTT, and recovery behavior. This keeps the policy generic and testable
+instead of tuning hidden constants for one MiniNDN topology. The recommendation
+is explicit-control only: the GS does not
 silently change the drone encoder, but the operator can click `Apply Bitrate`.
 That path stops the current live stream, waits for the drone's Stop response,
 and then starts a new stream with the suggested bitrate so packet sequence,
@@ -1433,7 +1438,11 @@ to make it a deployable UAV service-container workload. The planned order is:
    timeout pressure, key-frame recovery, and FEC should drive prefetch and
    skip decisions rather than fixed constants. The current GS records these
    decisions as `VideoAdaptiveState`, including advisory bitrate
-   decrease/hold/increase decisions. The `Apply Bitrate` control now turns a
+   decrease/hold/increase decisions. The core window, lookahead, timeout, and
+   bitrate recommendation calculations now live in a typed
+   `VideoAdaptivePolicyInput` to `VideoAdaptivePolicyDecision` helper with unit
+   tests for pressure, high-RTT, and recovery behavior, so tuning stays generic
+   rather than tied to one MiniNDN topology. The `Apply Bitrate` control now turns a
    non-hold recommendation into an explicit Stop-then-Start stream restart.
    The default policy remains manual, while `auto-after-pressure` can be enabled
    for experiments that should apply persistent-pressure recommendations
