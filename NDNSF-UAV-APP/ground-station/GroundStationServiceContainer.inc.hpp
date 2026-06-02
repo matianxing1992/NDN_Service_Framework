@@ -2711,7 +2711,6 @@ private:
   publishStatus(const std::string& value)
   {
     NDN_LOG_INFO("GS_STATUS " << value);
-    std::cout << "GS_STATUS " << value << std::endl;
     if (m_statusCallback) {
       m_statusCallback(value);
     }

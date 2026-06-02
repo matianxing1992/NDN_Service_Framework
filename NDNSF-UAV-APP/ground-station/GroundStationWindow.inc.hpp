@@ -1183,7 +1183,6 @@ private:
        << " can_panel=" << (state.canControlPanel ? "true" : "false")
        << " panel_reason=" << state.controlPanelReason;
     NDN_LOG_INFO(os.str());
-    std::cout << os.str() << std::endl;
   }
 
   void
@@ -1759,7 +1758,6 @@ private:
        << " remote_streaming=" << (state.remoteStreaming ? "true" : "false")
        << " display_active=" << (state.displayActive ? "true" : "false");
     NDN_LOG_INFO(os.str());
-    std::cout << os.str() << std::endl;
   }
 
   bool
@@ -1811,14 +1809,13 @@ private:
           }
           ++m_decodedFrames;
           if (m_decodedFrames.load() <= 3 || m_decodedFrames.load() % 30 == 0) {
-            std::cout << "GS_DECODED_FRAMES count=" << m_decodedFrames.load() << std::endl;
+            NDN_LOG_INFO("GS_DECODED_FRAMES count=" << m_decodedFrames.load());
           }
           m_frameDispatcher.emit();
         }
       }
       catch (const Glib::Error& e) {
         NDN_LOG_WARN("GS_DECODER_ERROR " << e.what());
-        std::cout << "GS_DECODER_ERROR " << e.what() << std::endl;
       }
     });
   }
@@ -2181,7 +2178,6 @@ private:
        << " safety=" << state.safety
        << " text=" << state.rowText;
     NDN_LOG_INFO(os.str());
-    std::cout << os.str() << std::endl;
   }
 
   void
@@ -2212,7 +2208,6 @@ private:
        << " start_blocked=" << state.startBlocked
        << " phases=" << state.phases;
     NDN_LOG_INFO(os.str());
-    std::cout << os.str() << std::endl;
   }
 
   struct SelectedActionState
@@ -2260,7 +2255,6 @@ private:
        << " manual_active=" << (state.manualInputActive ? "true" : "false")
        << " emergency_stop=" << (state.emergencyStopAvailable ? "true" : "false");
     NDN_LOG_INFO(os.str());
-    std::cout << os.str() << std::endl;
   }
 
   void
@@ -2594,7 +2588,6 @@ private:
        << " panel_reason=" << state.controlPanelReason
        << " marker=" << state.marker.label;
     NDN_LOG_INFO(os.str());
-    std::cout << os.str() << std::endl;
   }
 
   void
