@@ -1065,6 +1065,10 @@ def main() -> int:
             require_log(gs_log, "start_blocked=A:waiting-heartbeat,B:waiting-heartbeat")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=after-ready can_upload=true can_start=true can_stop=true")
             require_log(gs_log, "start_eligible_count=2")
+            require_log(gs_log, "MISSION_CONTROL_STATE phase=progress-active can_upload=false can_start=false can_stop=true")
+            require_log(gs_log, "progress_phase=compensating progress_active=true")
+            require_log(gs_log, "MISSION_CONTROL_STATE phase=progress-completed can_upload=true can_start=true can_stop=true")
+            require_log(gs_log, "progress_phase=completed progress_active=false")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=final can_upload=true can_start=true can_stop=true")
             print("NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK")
         elif args.auto_flight_controls_test and args.no_cli:

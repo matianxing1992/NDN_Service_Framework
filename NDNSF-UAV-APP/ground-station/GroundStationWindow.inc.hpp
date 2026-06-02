@@ -871,6 +871,46 @@ public:
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
+          MissionProgressState progress;
+          progress.taskId = "mission-controls-progress-test";
+          progress.phase = "compensating";
+          progress.assignment = "clustered-waypoints-return-to-start";
+          progress.drones = "A,B";
+          progress.attempts = 2;
+          progress.totalParts = 2;
+          progress.completedParts = 1;
+          progress.missingParts = 1;
+          progress.returnHomePlanned = true;
+          progress.completedPartIds = "part1";
+          progress.missingPartIds = "part0";
+          progress.pendingPartIds = "none";
+          m_runtime.injectMissionProgressForTest(std::move(progress));
+          updateVehicleRows();
+          logMissionControlState("progress-active");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
+          MissionProgressState progress;
+          progress.taskId = "mission-controls-progress-test";
+          progress.phase = "completed";
+          progress.assignment = "clustered-waypoints-return-to-start";
+          progress.drones = "A,B";
+          progress.attempts = 2;
+          progress.totalParts = 2;
+          progress.completedParts = 2;
+          progress.missingParts = 0;
+          progress.compensatedParts = 1;
+          progress.returnHomePlanned = true;
+          progress.completedPartIds = "part0,part1";
+          progress.missingPartIds = "none";
+          progress.compensatedPartIds = "part0";
+          progress.pendingPartIds = "none";
+          m_runtime.injectMissionProgressForTest(std::move(progress));
+          updateVehicleRows();
+          logMissionControlState("progress-completed");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
           logMissionControlState("final");
           hide();
         });
@@ -1780,12 +1820,18 @@ private:
     bool hasExecuting = false;
     bool hasStopping = false;
     bool hasTerminal = false;
+    bool hasProgress = false;
+    bool progressActive = false;
+    bool progressNeedsCompensation = false;
+    bool progressComplete = false;
+    bool progressFailed = false;
     bool canUpload = true;
     bool canStart = false;
     bool canStop = false;
     size_t startableCount = 0;
     size_t startEligibleCount = 0;
     size_t startBlockedCount = 0;
+    std::string progressPhase = "idle";
     std::string phases;
     std::string startEligible;
     std::string startBlocked;
@@ -1825,6 +1871,15 @@ private:
   {
     MissionControlState state;
     state.uploadPending = m_patrolUploadInFlight.load();
+    const auto progress = m_runtime.missionProgressSnapshot();
+    if (progress) {
+      state.hasProgress = true;
+      state.progressPhase = progress->phase;
+      state.progressActive = progress->isActive();
+      state.progressNeedsCompensation = progress->needsCompensation();
+      state.progressComplete = progress->isComplete();
+      state.progressFailed = progress->isFailed();
+    }
     for (const auto& droneId : m_droneIds) {
       const auto mission = m_runtime.missionForDrone(droneId);
       if (!mission) {
@@ -1866,14 +1921,19 @@ private:
     if (state.startBlocked.empty()) {
       state.startBlocked = "none";
     }
-    state.canUpload = !state.uploadPending && !state.hasExecuting && !state.hasStopping;
+    state.canUpload = !state.uploadPending && !state.hasExecuting && !state.hasStopping &&
+                      !state.progressActive;
     state.canStart = state.hasUploaded &&
                      state.startableCount > 0 &&
                      state.startEligibleCount == state.startableCount &&
                      state.startBlockedCount == 0 &&
                      !state.uploadPending &&
-                     !state.hasExecuting && !state.hasStopping;
-    state.canStop = state.hasUploaded || state.hasExecuting || state.hasStopping;
+                     !state.hasExecuting && !state.hasStopping &&
+                     !state.progressActive &&
+                     !state.progressNeedsCompensation &&
+                     !state.progressFailed;
+    state.canStop = state.hasUploaded || state.hasExecuting || state.hasStopping ||
+                    state.progressActive;
     return state;
   }
 
@@ -1991,6 +2051,11 @@ private:
        << " has_uploaded=" << (state.hasUploaded ? "true" : "false")
        << " has_executing=" << (state.hasExecuting ? "true" : "false")
        << " has_stopping=" << (state.hasStopping ? "true" : "false")
+       << " progress_phase=" << state.progressPhase
+       << " progress_active=" << (state.progressActive ? "true" : "false")
+       << " progress_needs_compensation=" << (state.progressNeedsCompensation ? "true" : "false")
+       << " progress_complete=" << (state.progressComplete ? "true" : "false")
+       << " progress_failed=" << (state.progressFailed ? "true" : "false")
        << " start_eligible=" << state.startEligible
        << " start_blocked=" << state.startBlocked
        << " phases=" << state.phases;
@@ -2036,6 +2101,7 @@ private:
        << " mission_can_start=" << (state.mission.canStart ? "true" : "false")
        << " mission_can_stop=" << (state.mission.canStop ? "true" : "false")
        << " mission_phases=" << state.mission.phases
+       << " mission_progress=" << state.mission.progressPhase
        << " manual_mode=" << (state.manualMode ? "true" : "false")
        << " manual_active=" << (state.manualInputActive ? "true" : "false")
        << " emergency_stop=" << (state.emergencyStopAvailable ? "true" : "false");

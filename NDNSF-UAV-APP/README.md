@@ -1366,8 +1366,10 @@ to make it a deployable UAV service-container workload. The planned order is:
    markers. Mission Start/Stop now also goes through a typed mission start gate
    that combines `MissionState` with flight readiness and safety. Patrol task
    progress now has a typed `MissionProgressState` for assignment,
-   compensation, completion, and return-home planning. Continue extending this
-   rule to new mission/video/safety UI paths:
+   compensation, completion, and return-home planning, and the ground-station
+   mission buttons use that progress model to block duplicate upload/start
+   actions while a patrol assignment or compensation step is still active.
+   Continue extending this rule to new mission/video/safety UI paths:
    GUI code should not infer state from ad hoc status strings when a typed state
    model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
