@@ -428,10 +428,11 @@ backend. Telemetry responses include `heartbeat_seen`, `armed`,
 shows these fields in the telemetry/mission view so the operator can see
 whether the selected drone is actually ready.
 
-The ground station keeps these values as typed `TelemetryState` and
-`MissionState` snapshots. The vehicle list, map markers, inspector panel, and
-mission controls refresh from the same state model instead of parsing temporary
-status strings, so multi-drone UI state remains tied to the selected drone.
+The ground station keeps these values as typed `TelemetryState`, `MissionState`,
+and safety-gate snapshots. The vehicle list, map markers, inspector panel,
+flight action bar, and mission controls refresh from the same state model instead
+of parsing temporary status strings, so multi-drone UI state remains tied to the
+selected drone.
 Mission upload responses and later telemetry both update the same
 `MissionState`; `uploaded`, `executing`, and `stopping` phases now drive the
 Start Mission and Stop Patrol buttons. Start Mission additionally combines the
@@ -1466,9 +1467,12 @@ to make it a deployable UAV service-container workload. The planned order is:
    view, left drone rows, and MiniNDN smoke logs read that model instead of
    scraping internal logs. The selected-drone Start/Stop video buttons now derive
    from shared `VideoControlState`, so timeout recovery and target switching use
-   the same control model as the smoke logs. Continue extending this rule to new
-   mission/video/safety UI paths: GUI code should not infer state from ad hoc
-   status strings when a typed state model is available.
+   the same control model as the smoke logs. The Arm/Takeoff/Land/Manual/E-stop
+   action bar now derives from shared `FlightActionControlState` and
+   `SelectedActionState`, giving unit tests the same availability/reason model
+   used by the GUI. Continue extending this rule to new mission/video/safety UI
+   paths: GUI code should not infer state from ad hoc status strings when a typed
+   state model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
    ODROID-class or real airframe computers without a GUI/X server. In headless
    mode the app should run only NDNSF, MAVLink, camera, repo, telemetry, and

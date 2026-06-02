@@ -178,6 +178,31 @@ struct FlightSafetyGateState
   std::string statusLine() const;
 };
 
+struct FlightActionControlState
+{
+  std::string selectedDrone = "unknown";
+  bool hasReadiness = false;
+  bool hasSafety = false;
+  bool operatorAttention = false;
+  bool canArm = false;
+  bool canTakeoff = false;
+  bool canLand = false;
+  bool canManualControl = false;
+  bool canControlPanel = false;
+  bool canEmergencyStop = false;
+  std::string armReason = "unknown";
+  std::string takeoffReason = "unknown";
+  std::string landReason = "unknown";
+  std::string manualControlReason = "unknown";
+  std::string controlPanelReason = "unknown";
+  std::string emergencyStopReason = "unknown";
+  std::string linkState = "unknown";
+  std::string manualControlState = "unknown";
+
+  static FlightActionControlState fromGate(const FlightSafetyGateState& gate);
+  std::string statusLine() const;
+};
+
 struct VideoState
 {
   std::string droneId = "unknown";
@@ -434,6 +459,23 @@ struct MissionControlState
                                         bool uploadPending,
                                         bool startPending,
                                         bool stopPending);
+  std::string statusLine() const;
+};
+
+struct SelectedActionState
+{
+  std::string selectedDrone = "unknown";
+  FlightActionControlState flight;
+  MissionControlState mission;
+  bool manualMode = false;
+  bool manualInputActive = false;
+  bool emergencyStopAvailable = false;
+
+  static SelectedActionState fromStates(const std::string& selectedDrone,
+                                        const FlightActionControlState& flight,
+                                        const MissionControlState& mission,
+                                        bool manualMode,
+                                        bool manualInputActive);
   std::string statusLine() const;
 };
 

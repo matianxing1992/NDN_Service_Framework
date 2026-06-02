@@ -880,6 +880,54 @@ FlightSafetyGateState::statusLine() const
          " can_emergency_stop=" + std::string(canEmergencyStop ? "true" : "false");
 }
 
+FlightActionControlState
+FlightActionControlState::fromGate(const FlightSafetyGateState& gate)
+{
+  FlightActionControlState state;
+  state.selectedDrone = gate.droneId;
+  state.hasReadiness = gate.hasReadiness;
+  state.hasSafety = gate.hasSafety;
+  state.operatorAttention = gate.operatorAttention;
+  state.canArm = gate.canArm;
+  state.canTakeoff = gate.canTakeoff;
+  state.canLand = gate.canLand;
+  state.canManualControl = gate.canManualControl;
+  state.canControlPanel = gate.canControlPanel;
+  state.canEmergencyStop = gate.canEmergencyStop;
+  state.armReason = gate.armReason;
+  state.takeoffReason = gate.takeoffReason;
+  state.landReason = gate.landReason;
+  state.manualControlReason = gate.manualControlReason;
+  state.controlPanelReason = gate.controlPanelReason;
+  state.emergencyStopReason = gate.emergencyStopReason;
+  state.linkState = gate.linkState;
+  state.manualControlState = gate.manualControlState;
+  return state;
+}
+
+std::string
+FlightActionControlState::statusLine() const
+{
+  return "FlightAction selected=" + selectedDrone +
+         " has_readiness=" + std::string(hasReadiness ? "true" : "false") +
+         " has_safety=" + std::string(hasSafety ? "true" : "false") +
+         " safety_attention=" + std::string(operatorAttention ? "true" : "false") +
+         " link=" + linkState +
+         " manual_state=" + manualControlState +
+         " can_arm=" + std::string(canArm ? "true" : "false") +
+         " arm_reason=" + armReason +
+         " can_takeoff=" + std::string(canTakeoff ? "true" : "false") +
+         " takeoff_reason=" + takeoffReason +
+         " can_land=" + std::string(canLand ? "true" : "false") +
+         " land_reason=" + landReason +
+         " can_manual=" + std::string(canManualControl ? "true" : "false") +
+         " manual_reason=" + manualControlReason +
+         " can_panel=" + std::string(canControlPanel ? "true" : "false") +
+         " panel_reason=" + controlPanelReason +
+         " emergency_stop=" + std::string(canEmergencyStop ? "true" : "false") +
+         " emergency_reason=" + emergencyStopReason;
+}
+
 VideoState
 VideoState::fromFields(const Fields& fields)
 {
@@ -1890,6 +1938,43 @@ MissionControlState::statusLine() const
          " start_blocked_count=" + std::to_string(startBlockedCount) +
          " phases=" + phases +
          " progress_phase=" + progressPhase;
+}
+
+SelectedActionState
+SelectedActionState::fromStates(const std::string& selectedDrone,
+                                const FlightActionControlState& flight,
+                                const MissionControlState& mission,
+                                bool manualMode,
+                                bool manualInputActive)
+{
+  SelectedActionState state;
+  state.selectedDrone = selectedDrone.empty() ? flight.selectedDrone : selectedDrone;
+  state.flight = flight;
+  state.mission = mission;
+  state.manualMode = manualMode;
+  state.manualInputActive = manualInputActive;
+  state.emergencyStopAvailable = flight.canEmergencyStop;
+  return state;
+}
+
+std::string
+SelectedActionState::statusLine() const
+{
+  return "SelectedAction selected=" + selectedDrone +
+         " can_arm=" + std::string(flight.canArm ? "true" : "false") +
+         " can_takeoff=" + std::string(flight.canTakeoff ? "true" : "false") +
+         " can_land=" + std::string(flight.canLand ? "true" : "false") +
+         " can_manual=" + std::string(flight.canManualControl ? "true" : "false") +
+         " can_panel=" + std::string(flight.canControlPanel ? "true" : "false") +
+         " mission_can_start=" + std::string(mission.canStart ? "true" : "false") +
+         " mission_start_reason=" + mission.startReason +
+         " mission_can_stop=" + std::string(mission.canStop ? "true" : "false") +
+         " mission_stop_reason=" + mission.stopReason +
+         " mission_phases=" + mission.phases +
+         " mission_progress=" + mission.progressPhase +
+         " manual_mode=" + std::string(manualMode ? "true" : "false") +
+         " manual_active=" + std::string(manualInputActive ? "true" : "false") +
+         " emergency_stop=" + std::string(emergencyStopAvailable ? "true" : "false");
 }
 
 DroneListRowState
