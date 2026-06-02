@@ -360,6 +360,28 @@ runtime carries the dependency graph recorded in the service config and
 converts the plan into generic NDNSF collaboration calls and artifact
 provisioning.
 
+For users who are not familiar with NDN, the intended API boundary is:
+
+```text
+Application code:
+  APPClient / APPProvider / APPController
+  SplitterOutput or yolo_policy.yaml
+  execute_onnx_dependency_chunk(...) for ONNX role handlers
+
+Framework/internal code:
+  NDNSF request/ACK/selection/response names
+  segmented large-data fetch/publish
+  repo segment names and placement details
+  NAC-ABE attributes and permission Interests
+```
+
+In other words, an AI application developer should describe the model layout,
+roles, artifacts, dependencies, and input/output codecs. They should not need
+to manually build NDN names or fetch individual Data segments in normal use.
+If a handler has to call `ctx.ndnsf.wait_one(...)` or `ctx.ndnsf.fetch_large(...)`
+directly, that is a sign that the APP/runtime helper is still too low-level for
+that workload.
+
 ## Dependency Graph Generation Roadmap
 
 There are three different graphs in a distributed inference deployment:
@@ -778,6 +800,13 @@ The same smoke test is also available through the unified DI regression entry:
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case auto-split
 ```
 
+The unified entry also includes a fast local ONNX executor check that does not
+start MiniNDN:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case onnx-executor
+```
+
 ## YOLO 2x2 Split API Example
 
 The `yolo_2x2` example shows how the same APP API expresses a more general
@@ -828,6 +857,20 @@ first image input and encodes the final prediction response. This keeps the
 runtime path suitable for future fan-in/fan-out ONNX DAGs instead of hardcoding
 one pipeline chain in the provider.
 
+The executor also has a small non-MiniNDN smoke test that builds a toy ONNX DAG
+with one fan-out edge and one fan-in join:
+
+```bash
+PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
+  python3 Experiments/NDNSF_DI_OnnxExecutor_Smoke.py
+```
+
+The smoke succeeds only when it prints:
+
+```text
+ONNX_EXECUTOR_FANIN_FANOUT_OK
+```
+
 ```bash
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --model yolo26n.pt \
@@ -875,7 +918,7 @@ Provider logs then show `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`
 for each role's `model` and `runner` artifacts during the cold command,
 followed by `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT` for the warm command.
 
-To run both the 2-stage auto-split smoke and the YOLO 2x2 smoke through one
+To run the local ONNX executor smoke plus both MiniNDN split smokes through one
 entry point:
 
 ```bash

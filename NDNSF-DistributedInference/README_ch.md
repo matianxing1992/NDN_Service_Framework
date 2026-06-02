@@ -289,6 +289,27 @@ controller.run()
 
 APP、model publisher 或 model-splitting tool 拥有 semantic service definition：模型如何切割、有哪些 roles、每个 role 发布或等待什么、需要什么 runtime/backend。NDNSF-DistributedInference 不要求所有模型都用同一种 dependency generation 机制。它可以接受手写 splitter、PyTorch-specific splitter、ONNX analyzer、container-bundle planner 或未来 optimizer 生成的 dependency graph。运行时承载 service config 中记录的 dependency graph，并把 plan 转换为通用 NDNSF collaboration calls 和 artifact provisioning。
 
+对于不熟悉 NDN 的用户，推荐的 API 边界是：
+
+```text
+Application code:
+  APPClient / APPProvider / APPController
+  SplitterOutput 或 yolo_policy.yaml
+  ONNX role handler 使用 execute_onnx_dependency_chunk(...)
+
+Framework/internal code:
+  NDNSF request/ACK/selection/response names
+  segmented large-data fetch/publish
+  repo segment names 和 placement details
+  NAC-ABE attributes 和 permission Interests
+```
+
+也就是说，AI application developer 应该描述 model layout、roles、artifacts、
+dependencies 和 input/output codecs。正常情况下，他们不需要手写 NDN names，
+也不需要自己 fetch 单个 Data segments。如果某个 handler 仍然必须直接调用
+`ctx.ndnsf.wait_one(...)` 或 `ctx.ndnsf.fetch_large(...)`，这通常说明当前
+APP/runtime helper 对这个 workload 还暴露得太底层。
+
 ## Dependency Graph Generation Roadmap
 
 分布式推理部署中需要区分三种图：
@@ -658,6 +679,12 @@ YOLO_SPLIT_MININDN_OK ...
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case auto-split
 ```
 
+统一入口里还包含一个快速的本地 ONNX executor 检查；它不会启动 MiniNDN：
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case onnx-executor
+```
+
 ## YOLO 2x2 Split API Example
 
 `yolo_2x2` 示例展示同一套 APP API 如何表达更通用的 layout：两个 pipeline stages，每个 stage 内有两个顺序 shards。它现在包含真正的分布式推理路径，而不只是 repository smoke test：
@@ -696,6 +723,20 @@ chunk，然后为每条声明的 output edge 发布一个 tensor bundle。YOLO 2
 现在已经使用这个 dependency-driven executor：YOLO-specific 代码只负责准备第一块的
 image input，以及编码最后的 prediction response。这样 runtime path 就不再把一条
 pipeline chain 写死在 provider 中，而是更适合未来 fan-in/fan-out ONNX DAG。
+
+executor 还有一个不依赖 MiniNDN 的小型 smoke test。它会构造一个 toy ONNX DAG，
+包含一条 fan-out edge 和一个 fan-in join：
+
+```bash
+PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
+  python3 Experiments/NDNSF_DI_OnnxExecutor_Smoke.py
+```
+
+只有看到下面输出才表示通过：
+
+```text
+ONNX_EXECUTOR_FANIN_FANOUT_OK
+```
 
 ```bash
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
@@ -743,7 +784,7 @@ MiniNDN 脚本会在第一个 command 前清空 provider artifact cache。它在
 `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`，并在 warm command 中
 打印 `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT`。
 
-如果要用一个入口同时运行 2-stage auto-split smoke 和 YOLO 2x2 smoke：
+如果要用一个入口运行本地 ONNX executor smoke，以及两个 MiniNDN split smokes：
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
