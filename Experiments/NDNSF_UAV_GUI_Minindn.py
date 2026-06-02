@@ -1164,8 +1164,13 @@ def main() -> int:
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
             require_log(gs_log, "GS_STATUS Video packet stream")
+            require_log(gs_log, "GS_VIDEO_ADAPTIVE_STATE reason=configured VideoAdaptive drone=" + args.drone_id)
+            require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-active selected=" + args.drone_id + " has_adaptive=true")
+            require_log(gs_log, "window=")
+            require_log(gs_log, "missing_timeout_ms=")
             require_log(gs_log, "GS_DECODED_FRAMES count=30")
             require_log(gs_log, "GS_GUI_EXIT rc=0")
+            require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-stopped selected=" + args.drone_id + " has_adaptive=true")
             require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video streaming")
             require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video stopped")
             if args.drone_headless:
