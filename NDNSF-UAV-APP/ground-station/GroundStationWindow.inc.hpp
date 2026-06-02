@@ -667,6 +667,12 @@ public:
           Glib::signal_idle().connect_once([this] {
             logVideoAdaptiveViewState("auto-video-pressure-probe");
           });
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          m_runtime.injectVideoAdaptivePressureForTest("frame-gap", 0, 0, 0, 0, 1200, 0, 0);
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          Glib::signal_idle().connect_once([this] {
+            logVideoAdaptiveViewState("auto-video-pressure-frame-gap");
+          });
         }
         if (m_autoApplyBitrateTest) {
           bool applied = false;
@@ -2128,6 +2134,9 @@ private:
       text += "\nVideo model: " + video->status +
               " capture=" + video->capture +
               " recording=" + video->recording +
+              " camera=" + video->cameraAvailable +
+              " camera_reason=" + video->cameraReason +
+              " source=" + video->source +
               " stream=" + video->streamId +
               " packets=" + std::to_string(video->streamPacketsPublished) +
               " decoded=" + std::to_string(video->decodedFrames);

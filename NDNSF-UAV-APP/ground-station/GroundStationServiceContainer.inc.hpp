@@ -286,6 +286,15 @@ public:
         const auto readiness = ReadinessState::fromTelemetry(telemetry);
         const auto video = VideoState::fromFields(fields);
         updateDroneState(telemetry, mission);
+        NDN_LOG_INFO("GS_SUBSYSTEM_STATE drone=" << telemetry.droneId
+                     << " camera_available=" << telemetry.cameraAvailable
+                     << " camera_source=" << telemetry.cameraSource
+                     << " camera_reason=" << telemetry.cameraReason
+                     << " fc_backend=" << telemetry.flightControllerBackend
+                     << " fc_available=" << telemetry.flightControllerAvailable
+                     << " fc_ready=" << telemetry.flightControllerReady
+                     << " fc_state=" << telemetry.flightControllerState
+                     << " fc_reason=" << telemetry.flightControllerReason);
         publishStatus(telemetry.statusLine() +
                       " " + readiness.statusLine() +
                       " mission=" + mission.phase +
@@ -418,6 +427,11 @@ public:
     m_receivedChunks = receivedChunks;
     m_frameTimeouts = timeouts;
     m_frameNacks = nacks;
+    if (profile == "frame-gap" || profile == "decode-gap") {
+      const auto fps = std::max<uint64_t>(1, m_videoFps);
+      m_videoFramesPublished = std::max<uint64_t>(fps * 4, 120);
+      m_decodedVideoFrames = fps / 2;
+    }
     publishVideoAdaptiveState("pressure-profile-" + profile, true);
   }
 
@@ -913,6 +927,13 @@ public:
       NDN_LOG_INFO("TELEMETRY_LIVE sample=" << index
                    << " phase=" << phase
                    << " drone=" << telemetry.droneId
+                   << " camera_available=" << telemetry.cameraAvailable
+                   << " camera_source=" << telemetry.cameraSource
+                   << " camera_reason=" << telemetry.cameraReason
+                   << " fc_backend=" << telemetry.flightControllerBackend
+                   << " fc_available=" << telemetry.flightControllerAvailable
+                   << " fc_ready=" << telemetry.flightControllerReady
+                   << " fc_state=" << telemetry.flightControllerState
                    << " gps_fix_name=" << telemetry.gpsFixName
                    << " ekf_ready=" << telemetry.ekfReady
                    << " landed_state_name=" << telemetry.landedStateName
@@ -1732,6 +1753,9 @@ private:
       }
       m_videoByDrone[droneId] = video;
     }
+    if (droneId == activeVideoDroneId() && video.isStreaming()) {
+      m_videoFramesPublished = video.framesPublished;
+    }
   }
 
   std::atomic<bool>&
@@ -2193,6 +2217,7 @@ private:
                   m_frameTimeouts = 0;
                   m_duplicateVideoPackets = 0;
                   m_decodedVideoFrames = 0;
+                  m_videoFramesPublished = 0;
                   m_lastVideoAdaptiveLogMs = 0;
                   resetVideoAdaptiveState();
                   m_highestReceivedVideoPacketSeq = UINT64_MAX;
@@ -3092,6 +3117,8 @@ private:
     input.timeoutPressure = m_videoTimeoutPressurePercent.load();
     input.probePressure = m_videoProbePressurePercent.load();
     input.duplicatePressure = m_videoDuplicatePressurePercent.load();
+    input.publishedFrames = m_videoFramesPublished.load();
+    input.decodedFrames = m_decodedVideoFrames.load();
     input.requestedBitrateKbps = m_videoRequestedBitrateKbps.load();
     input.acceptedBitrateKbps = m_videoAcceptedBitrateKbps.load();
     return input;
@@ -3133,7 +3160,11 @@ private:
     state.timeouts = m_frameTimeouts.load();
     state.nacks = m_frameNacks.load();
     state.duplicates = m_duplicateVideoPackets.load();
+    state.publishedFrames = m_videoFramesPublished.load();
     state.decodedFrames = m_decodedVideoFrames.load();
+    state.decodedFrameGap = state.publishedFrames > state.decodedFrames ?
+      state.publishedFrames - state.decodedFrames : 0;
+    state.frameGapPressure = decision.frameGapPressure;
     state.updatedMs = nowMilliseconds();
     return state;
   }
@@ -4163,6 +4194,7 @@ private:
   std::atomic<uint64_t> m_frameNacks{0};
   std::atomic<uint64_t> m_frameTimeouts{0};
   std::atomic<uint64_t> m_duplicateVideoPackets{0};
+  std::atomic<uint64_t> m_videoFramesPublished{0};
   std::atomic<uint64_t> m_decodedVideoFrames{0};
   std::atomic<uint64_t> m_lastVideoAdaptiveLogMs{0};
   std::atomic<uint64_t> m_videoBitrateAdviceSinceMs{0};

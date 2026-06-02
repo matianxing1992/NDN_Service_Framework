@@ -49,7 +49,10 @@ struct TelemetryState
   std::string gpsFixType = "unknown";
   std::string gpsFixName = "unknown";
   std::string gpsSatellitesVisible = "unknown";
+  std::string flightControllerBackend = "unknown";
+  std::string flightControllerAvailable = "unknown";
   std::string flightControllerState = "unknown";
+  std::string flightControllerReason = "unknown";
   std::string systemStatus = "unknown";
   std::string systemStatusName = "unknown";
   std::string landedState = "unknown";
@@ -62,6 +65,9 @@ struct TelemetryState
   std::string video = "unknown";
   std::string capture = "unknown";
   std::string recording = "unknown";
+  std::string cameraAvailable = "unknown";
+  std::string cameraSource = "unknown";
+  std::string cameraReason = "unknown";
   std::string linkState = "unknown";
   std::string manualControlState = "idle";
   std::string manualReplayActive = "false";
@@ -212,6 +218,8 @@ struct VideoState
   std::string streamId = "unknown";
   std::string encoding = "unknown";
   std::string source = "unknown";
+  std::string cameraAvailable = "unknown";
+  std::string cameraReason = "unknown";
   uint64_t requestedBitrateKbps = 0;
   uint64_t acceptedBitrateKbps = 0;
   uint64_t requestedFrameWidth = 0;
@@ -276,7 +284,10 @@ struct VideoAdaptiveState
   uint64_t timeouts = 0;
   uint64_t nacks = 0;
   uint64_t duplicates = 0;
+  uint64_t publishedFrames = 0;
   uint64_t decodedFrames = 0;
+  uint64_t decodedFrameGap = 0;
+  uint64_t frameGapPressure = 0;
   uint64_t updatedMs = 0;
 
   static VideoAdaptiveState fromFields(const Fields& fields);
@@ -303,6 +314,8 @@ struct VideoAdaptivePolicyInput
   uint64_t timeoutPressure = 0;
   uint64_t probePressure = 0;
   uint64_t duplicatePressure = 0;
+  uint64_t publishedFrames = 0;
+  uint64_t decodedFrames = 0;
   uint64_t requestedBitrateKbps = 8000;
   uint64_t acceptedBitrateKbps = 8000;
 };
@@ -319,6 +332,7 @@ struct VideoAdaptivePolicyDecision
   uint64_t congestionPressure = 0;
   uint64_t probePressure = 0;
   uint64_t backlogPressure = 0;
+  uint64_t frameGapPressure = 0;
   std::string primaryPressure = "none";
   std::string policyReason = "stable";
   uint64_t suggestedBitrateKbps = 0;
