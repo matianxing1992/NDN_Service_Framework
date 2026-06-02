@@ -379,6 +379,51 @@ struct MissionProgressState
   std::string statusLine() const;
 };
 
+struct MissionWaypoint
+{
+  double lat = 0.0;
+  double lon = 0.0;
+
+  std::string str() const;
+};
+
+struct MissionPart
+{
+  std::string id;
+  std::string role;
+  std::string assignedDrone;
+  std::string completedBy;
+  std::vector<MissionWaypoint> waypoints;
+  int attempt = 0;
+  bool done = false;
+  bool returnHomePlanned = false;
+
+  MissionWaypoint firstWaypointOr(MissionWaypoint fallback) const;
+  std::vector<std::string> waypointStrings() const;
+  std::string waypointText() const;
+  std::string statusLine() const;
+};
+
+struct MissionPlan
+{
+  std::string taskId;
+  std::string assignment = "clustered-waypoints-return-to-start";
+  std::vector<MissionPart> parts;
+  bool returnHomePlanned = false;
+
+  std::string droneList() const;
+  std::string statusLine() const;
+};
+
+MissionPlan
+buildPatrolMissionPlan(const std::string& taskId,
+                       double centerLat,
+                       double centerLon,
+                       double sideMeters,
+                       const std::vector<std::string>& droneIds,
+                       const std::vector<MissionWaypoint>& routeWaypoints = {},
+                       const std::map<std::string, MissionWaypoint>& departurePoints = {});
+
 uint64_t
 nowMilliseconds();
 

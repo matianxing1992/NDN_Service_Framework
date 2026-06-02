@@ -1453,7 +1453,10 @@ to make it a deployable UAV service-container workload. The planned order is:
    automatically.
 5. **Mission collaboration model.** Promote the patrol demo into a reusable
    mission model with `MissionPlan`, `MissionPart`, assignment, progress,
-   failure/compensation, and return-to-home semantics.
+   failure/compensation, and return-to-home semantics. Patrol route clustering,
+   default sector generation, drone assignment, and return-to-departure waypoint
+   insertion now live in a shared typed mission helper, so GUI workflows,
+   service containers, and tests use the same collaboration model.
 6. **Repo-backed UAV data products.** Store recordings, mission images,
    telemetry logs, object-detection events, and reports through
    `NDNSF-DistributedRepo` using publisher-owned names, encrypted payloads,

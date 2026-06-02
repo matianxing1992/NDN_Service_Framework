@@ -8,13 +8,17 @@ namespace {
 using ndnsf::examples::uav::FlightSafetyGateState;
 using ndnsf::examples::uav::Fields;
 using ndnsf::examples::uav::MissionStartGateState;
+using ndnsf::examples::uav::MissionPart;
+using ndnsf::examples::uav::MissionPlan;
 using ndnsf::examples::uav::MissionProgressState;
 using ndnsf::examples::uav::MissionState;
+using ndnsf::examples::uav::MissionWaypoint;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::RecordingDataProductState;
 using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
+using ndnsf::examples::uav::buildPatrolMissionPlan;
 using ndnsf::examples::uav::computeVideoAdaptivePolicy;
 
 ReadinessState
@@ -168,6 +172,58 @@ BOOST_AUTO_TEST_CASE(MissionProgressTracksCompensationAndCompletion)
   BOOST_CHECK(progress.isComplete());
   BOOST_CHECK(!progress.isFailed());
   BOOST_CHECK_NE(progress.statusLine().find("compensated_parts=1"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(MissionPlanClustersWaypointsAndReturnsHome)
+{
+  const std::vector<std::string> drones{"A", "B"};
+  const std::vector<MissionWaypoint> route{
+    {35.118600, -89.937500},
+    {35.118700, -89.937400},
+    {35.121000, -89.934000},
+    {35.121100, -89.933900},
+  };
+  const std::map<std::string, MissionWaypoint> departures{
+    {"A", {35.117000, -89.938000}},
+    {"B", {35.122000, -89.933000}},
+  };
+
+  const auto plan = buildPatrolMissionPlan("patrol-test", 35.1186, -89.9375,
+                                           140.0, drones, route, departures);
+  BOOST_CHECK_EQUAL(plan.taskId, "patrol-test");
+  BOOST_CHECK_EQUAL(plan.assignment, "clustered-waypoints-return-to-start");
+  BOOST_CHECK_EQUAL(plan.parts.size(), 2);
+  BOOST_CHECK(plan.returnHomePlanned);
+  BOOST_CHECK_EQUAL(plan.droneList(), "A,B");
+  BOOST_CHECK_NE(plan.statusLine().find("parts=2"), std::string::npos);
+
+  BOOST_CHECK_EQUAL(plan.parts[0].assignedDrone, "A");
+  BOOST_CHECK_EQUAL(plan.parts[1].assignedDrone, "B");
+  for (const auto& part : plan.parts) {
+    BOOST_CHECK(part.returnHomePlanned);
+    BOOST_CHECK_GE(part.waypoints.size(), 3);
+    BOOST_CHECK_NE(part.waypointText().find(part.role + ":"), std::string::npos);
+    const auto departure = departures.at(part.assignedDrone);
+    BOOST_CHECK_CLOSE(part.waypoints.back().lat, departure.lat, 0.0001);
+    BOOST_CHECK_CLOSE(part.waypoints.back().lon, departure.lon, 0.0001);
+    BOOST_CHECK_NE(part.statusLine().find("return_home=true"), std::string::npos);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(MissionPlanBuildsDefaultSectorsWithoutRoute)
+{
+  const std::vector<std::string> drones{"A", "B", "C"};
+  const auto plan = buildPatrolMissionPlan("patrol-auto", 35.1186, -89.9375,
+                                           140.0, drones);
+  BOOST_CHECK_EQUAL(plan.parts.size(), 3);
+  BOOST_CHECK_EQUAL(plan.droneList(), "A,B,C");
+  for (size_t i = 0; i < plan.parts.size(); ++i) {
+    const auto& part = plan.parts[i];
+    BOOST_CHECK_EQUAL(part.id, "part" + std::to_string(i));
+    BOOST_CHECK_EQUAL(part.assignedDrone, drones[i]);
+    BOOST_CHECK_EQUAL(part.waypoints.size(), 5);
+    BOOST_CHECK_EQUAL(part.waypoints.back().str(), part.waypoints.front().str());
+  }
 }
 
 BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
