@@ -717,8 +717,11 @@ current receiver stores these decisions as `VideoAdaptiveState`, so the video
 panel, selected-drone inspector, left-side drone row, and MiniNDN smoke logs can
 show RTT, window, lookahead, pressure, missing-packet timeout, pending chunks,
 decoded-frame progress, and the current bitrate recommendation without scraping
-packet logs. The recommendation is advisory for now: the GS does not silently
-restart the stream or change the drone encoder in the middle of a live session.
+packet logs. The recommendation is explicit-control only: the GS does not
+silently change the drone encoder, but the operator can click `Apply Bitrate`.
+That path stops the current live stream, waits for the drone's Stop response,
+and then starts a new stream with the suggested bitrate so packet sequence,
+stream id, and decoder state stay coherent.
 The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
 H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
@@ -1173,6 +1176,9 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --auto-video-test --auto-stop-seconds 8 --no-cli --no-xhost
 ```
 
+Add `--auto-apply-bitrate-test` to the same command when you want the smoke test
+to exercise the explicit `Apply Bitrate` Stop-then-Start path.
+
 The smoke test exits after checking that the ground station decoded video
 frames and that the drone entered and left streaming mode. In the integrated
 runtime, the ground station also serves `/UAV/GS/ObjectDetection`; during live
@@ -1397,9 +1403,10 @@ to make it a deployable UAV service-container workload. The planned order is:
    timeout pressure, key-frame recovery, and FEC should drive prefetch and
    skip decisions rather than fixed constants. The current GS records these
    decisions as `VideoAdaptiveState`, including advisory bitrate
-   decrease/hold/increase decisions; the next step is to turn those advisory
-   decisions into explicit operator-controlled or service-controlled bitrate
-   changes.
+   decrease/hold/increase decisions. The `Apply Bitrate` control now turns a
+   non-hold recommendation into an explicit Stop-then-Start stream restart;
+   the next step is to add a richer operator policy for when to apply or ignore
+   those recommendations.
 5. **Mission collaboration model.** Promote the patrol demo into a reusable
    mission model with `MissionPlan`, `MissionPart`, assignment, progress,
    failure/compensation, and return-to-home semantics.

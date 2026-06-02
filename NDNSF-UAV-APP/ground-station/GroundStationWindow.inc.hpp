@@ -13,6 +13,7 @@ public:
                       bool autoMissionControlsTest,
                       bool autoFlightControlsTest,
                       bool autoRecordingPlaybackTest,
+                      bool autoApplyBitrateTest,
                       bool autoRepeatStopTest,
                       std::vector<std::string> droneIds)
     : m_runtime(runtime)
@@ -34,6 +35,7 @@ public:
     , m_statusPanel(Gtk::ORIENTATION_VERTICAL, 6)
     , m_start("Start Video")
     , m_stop("Stop Video")
+    , m_applyBitrate("Apply Bitrate")
     , m_arm("Arm")
     , m_takeoff("Takeoff")
     , m_land("Land")
@@ -79,6 +81,7 @@ public:
     , m_padY("Y  Takeoff")
     , m_padLB("LB")
     , m_padRB("RB")
+    , m_autoApplyBitrateTest(autoApplyBitrateTest)
     , m_autoRepeatStopTest(autoRepeatStopTest)
     , m_droneIds(std::move(droneIds))
   {
@@ -107,6 +110,7 @@ public:
 
     m_buttons.pack_start(m_start, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_stop, Gtk::PACK_SHRINK);
+    m_buttons.pack_start(m_applyBitrate, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_arm, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_takeoff, Gtk::PACK_SHRINK);
     m_buttons.pack_start(m_land, Gtk::PACK_SHRINK);
@@ -370,6 +374,9 @@ public:
       m_stop.set_sensitive(false);
       m_acceptFrames = false;
       m_runtime.stopVideo();
+    });
+    m_applyBitrate.signal_clicked().connect([this] {
+      m_runtime.applySuggestedVideoBitrate();
     });
     m_arm.signal_clicked().connect([this] {
       sendSelectedFlightCommandIfReady("arm", {{"arm", "true"}});
@@ -639,6 +646,26 @@ public:
         Glib::signal_idle().connect_once([this] {
           logVideoAdaptiveViewState("auto-video-active");
         });
+        if (m_autoApplyBitrateTest) {
+          bool applied = false;
+          for (int i = 0; i < 30 && !applied; ++i) {
+            applied = m_runtime.applySuggestedVideoBitrate();
+            if (!applied) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+          }
+          NDN_LOG_INFO("AUTO_VIDEO_APPLY_BITRATE_ATTEMPT applied="
+                       << (applied ? "true" : "false"));
+          if (applied) {
+            for (int i = 0; i < 80 && !m_runtime.isStreaming(); ++i) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            Glib::signal_idle().connect_once([this] {
+              logVideoAdaptiveViewState("auto-video-after-bitrate-apply");
+            });
+          }
+        }
         std::this_thread::sleep_for(std::chrono::seconds(autoStopSeconds));
         m_runtime.stopVideo();
         if (m_autoRepeatStopTest) {
@@ -3099,6 +3126,7 @@ private:
   Gtk::Box m_statusPanel;
   Gtk::Button m_start;
   Gtk::Button m_stop;
+  Gtk::Button m_applyBitrate;
   Gtk::Button m_arm;
   Gtk::Button m_takeoff;
   Gtk::Button m_land;
@@ -3156,6 +3184,7 @@ private:
   Gtk::Button m_padY;
   Gtk::Button m_padLB;
   Gtk::Button m_padRB;
+  bool m_autoApplyBitrateTest = false;
   Gtk::Label m_status;
   Gtk::Label m_linkStatus;
   Gtk::Label m_services;

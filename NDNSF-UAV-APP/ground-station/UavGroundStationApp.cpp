@@ -381,6 +381,7 @@ main(int argc, char** argv)
     const bool autoMissionControlsTest = getConfigBool(argc, argv, appConfig, "--auto-mission-controls-test", "auto-mission-controls-test", false);
     const bool autoFlightControlsTest = getConfigBool(argc, argv, appConfig, "--auto-flight-controls-test", "auto-flight-controls-test", false);
     const bool autoRecordingPlaybackTest = getConfigBool(argc, argv, appConfig, "--auto-recording-playback-test", "auto-recording-playback-test", false);
+    const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
     const bool autoSingleMissionTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-test", "auto-single-mission-test", false);
     const bool autoSingleMissionStartTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-start-test", "auto-single-mission-start-test", false);
@@ -442,6 +443,7 @@ main(int argc, char** argv)
                                   autoMissionControlsTest ||
                                   autoFlightControlsTest ||
                                   autoRecordingPlaybackTest ||
+                                  autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest);
     if (interactiveGui && !hasFlag(argc, argv, "--no-cert-dialog") &&
         !hasOption(argc, argv, "--ground-station-identity")) {
@@ -485,6 +487,7 @@ main(int argc, char** argv)
                                autoMissionControlsTest,
                                autoFlightControlsTest,
                                autoRecordingPlaybackTest,
+                               autoApplyBitrateTest,
                                autoRepeatStopTest,
                                patrolDroneIds);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
@@ -500,6 +503,7 @@ main(int argc, char** argv)
               << " auto_mission_controls_test=" << (autoMissionControlsTest ? "true" : "false")
               << " auto_flight_controls_test=" << (autoFlightControlsTest ? "true" : "false")
               << " auto_recording_playback_test=" << (autoRecordingPlaybackTest ? "true" : "false")
+              << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << std::endl;
     const int rc = app->run(window);
     runtime->shutdownRuntime();
