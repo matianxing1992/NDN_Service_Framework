@@ -10,6 +10,7 @@ public:
                       bool autoManualControlTest,
                       bool autoTwoDroneSwitchTest,
                       bool autoVideoSelectionTest,
+                      bool autoMissionControlsTest,
                       bool autoRecordingPlaybackTest,
                       bool autoRepeatStopTest,
                       std::vector<std::string> droneIds)
@@ -386,6 +387,7 @@ public:
       m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
     });
     m_patrol.signal_clicked().connect([this] {
+      m_patrolUploadInFlight = true;
       m_patrol.set_sensitive(false);
       m_status.set_text("Uploading cooperative patrol mission...");
       double centerLat = 35.1186;
@@ -404,9 +406,9 @@ public:
         const bool ok = m_runtime.runPatrolCompensationTask(
           std::chrono::seconds(30), centerLat, centerLon, sideMeters, false, routeWaypoints);
         Glib::signal_idle().connect_once([this, ok] {
+          m_patrolUploadInFlight = false;
           m_status.set_text(ok ? "Patrol mission uploaded; arm/takeoff and start mission mode to fly it"
                                : "Patrol mission upload failed");
-          m_patrol.set_sensitive(true);
           updateVehicleRows();
         });
       }).detach();
@@ -823,6 +825,39 @@ public:
         }
         Glib::signal_idle().connect_once([this] {
           logVideoControlState("after-stop");
+          hide();
+        });
+      }).detach();
+    }
+    if (autoMissionControlsTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        Glib::signal_idle().connect_once([this] {
+          updateVehicleRows();
+          logMissionControlState("initial");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_patrolUploadInFlight = true;
+        std::thread([this] {
+          const bool ok = m_runtime.runPatrolCompensationTask(
+            std::chrono::seconds(30), 35.1186, -89.9375, 140.0, false, {});
+          Glib::signal_idle().connect_once([this, ok] {
+            m_patrolUploadInFlight = false;
+            m_status.set_text(ok ? "Mission controls test upload complete"
+                                 : "Mission controls test upload failed");
+            updateVehicleRows();
+            logMissionControlState("after-upload");
+          });
+        }).detach();
+        for (int i = 0; i < 160; ++i) {
+          const auto state = missionControlState();
+          if (!state.uploadPending && state.canStart && state.canStop) {
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        Glib::signal_idle().connect_once([this] {
+          logMissionControlState("final");
           hide();
         });
       }).detach();
@@ -1663,21 +1698,74 @@ private:
   void
   updateMissionControls()
   {
-    const auto startableDrones = m_runtime.missionStartableDrones();
-    bool hasUploaded = !startableDrones.empty();
+    const auto state = missionControlState();
+    m_patrol.set_sensitive(state.canUpload);
+    m_startMission.set_sensitive(state.canStart);
+    m_stopPatrol.set_sensitive(state.canStop);
+  }
+
+  struct MissionControlState
+  {
+    bool uploadPending = false;
+    bool hasUploaded = false;
     bool hasExecuting = false;
     bool hasStopping = false;
+    bool hasTerminal = false;
+    bool canUpload = true;
+    bool canStart = false;
+    bool canStop = false;
+    size_t startableCount = 0;
+    std::string phases;
+  };
+
+  MissionControlState
+  missionControlState() const
+  {
+    MissionControlState state;
+    state.uploadPending = m_patrolUploadInFlight.load();
+    state.startableCount = m_runtime.missionStartableDrones().size();
+    state.hasUploaded = state.startableCount > 0;
     for (const auto& droneId : m_droneIds) {
       const auto mission = m_runtime.missionForDrone(droneId);
       if (!mission) {
         continue;
       }
-      hasUploaded = hasUploaded || mission->isStartable();
-      hasExecuting = hasExecuting || mission->isExecuting();
-      hasStopping = hasStopping || mission->isStopping();
+      if (!state.phases.empty()) {
+        state.phases += ",";
+      }
+      state.phases += droneId + ":" + mission->phase;
+      state.hasUploaded = state.hasUploaded || mission->isStartable();
+      state.hasExecuting = state.hasExecuting || mission->isExecuting();
+      state.hasStopping = state.hasStopping || mission->isStopping();
+      state.hasTerminal = state.hasTerminal || mission->isTerminal();
     }
-    m_startMission.set_sensitive(hasUploaded && !hasExecuting && !hasStopping);
-    m_stopPatrol.set_sensitive(hasUploaded || hasExecuting || hasStopping);
+    if (state.phases.empty()) {
+      state.phases = "none";
+    }
+    state.canUpload = !state.uploadPending && !state.hasExecuting && !state.hasStopping;
+    state.canStart = state.hasUploaded && !state.uploadPending &&
+                     !state.hasExecuting && !state.hasStopping;
+    state.canStop = state.hasUploaded || state.hasExecuting || state.hasStopping;
+    return state;
+  }
+
+  void
+  logMissionControlState(const std::string& phase) const
+  {
+    const auto state = missionControlState();
+    std::ostringstream os;
+    os << "MISSION_CONTROL_STATE phase=" << phase
+       << " can_upload=" << (state.canUpload ? "true" : "false")
+       << " can_start=" << (state.canStart ? "true" : "false")
+       << " can_stop=" << (state.canStop ? "true" : "false")
+       << " upload_pending=" << (state.uploadPending ? "true" : "false")
+       << " startable_count=" << state.startableCount
+       << " has_uploaded=" << (state.hasUploaded ? "true" : "false")
+       << " has_executing=" << (state.hasExecuting ? "true" : "false")
+       << " has_stopping=" << (state.hasStopping ? "true" : "false")
+       << " phases=" << state.phases;
+    NDN_LOG_INFO(os.str());
+    std::cout << os.str() << std::endl;
   }
 
   static std::string
@@ -2488,6 +2576,7 @@ private:
   std::thread m_gamepadThread;
   std::atomic<bool> m_manualControlDone{false};
   std::atomic<bool> m_gamepadDone{false};
+  std::atomic<bool> m_patrolUploadInFlight{false};
   std::atomic<bool> m_useGamepad{false};
   std::atomic<bool> m_manualActive{false};
   std::atomic<int> m_manualX{0};

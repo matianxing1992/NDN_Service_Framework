@@ -1250,6 +1250,19 @@ The launcher starts Drone A and Drone B, starts video only on Drone A, switches
 the GS selection to Drone B and back, and checks that the typed video state
 drives the button model for the selected drone.
 
+To regression-test that mission Upload/Start/Stop buttons follow typed
+`MissionState` rather than temporary status strings:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-mission-controls-test --no-cli
+```
+
+The launcher uploads a cooperative patrol mission in a two-drone mock setup and
+checks that the GS mission control model changes from `can_start=false` /
+`can_stop=false` to `can_start=true` / `can_stop=true` after the mission parts
+are uploaded.
+
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
 `make px4_sitl jmavsim` target twice. Drone A uses PX4 MAVLink UDP port
