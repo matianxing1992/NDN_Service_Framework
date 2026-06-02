@@ -140,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS hold manual-control keys and send MAVLink MANUAL_CONTROL.")
     parser.add_argument("--auto-two-drone-switch-test", action="store_true",
                         help="Have the GS switch between two drones and send Targeted MANUAL_CONTROL to each.")
+    parser.add_argument("--auto-video-selection-test", action="store_true",
+                        help="Have the GS verify video Start/Stop controls follow the selected drone.")
     parser.add_argument("--auto-recording-playback-test", action="store_true",
                         help="Have the drone record to its local repo and the GS discover/replay the recording.")
     parser.add_argument("--auto-patrol-test", action="store_true",
@@ -223,6 +225,7 @@ def app_config_path(args: argparse.Namespace, filename: str) -> str:
 def active_drones(args: argparse.Namespace) -> list[tuple[str, str]]:
     interactive_default = not args.no_cli
     if not (args.auto_patrol_test or args.auto_two_drone_switch_test or
+            args.auto_video_selection_test or
             args.multi_drone_gui or interactive_default):
         return [(args.drone_id, args.drone_node)]
     ids = csv_values(args.patrol_drone_ids)
@@ -902,6 +905,11 @@ def main() -> int:
             gs_argv += ["--auto-manual-control-test"]
         if args.auto_two_drone_switch_test:
             gs_argv += ["--auto-two-drone-switch-test"]
+        if args.auto_video_selection_test:
+            gs_argv += [
+                "--auto-video-selection-test",
+                "--auto-start-delay-ms", str(args.auto_start_delay_ms),
+            ]
         if args.auto_recording_playback_test:
             gs_argv += [
                 "--auto-recording-playback-test",
@@ -1009,6 +1017,21 @@ def main() -> int:
             require_log(gs_log, "LINK_STATE_AGING_RESULT ok=true")
             require_log(gs_log, "GS_LINK_STATE_EXIT ok=true")
             print("NDNSF_UAV_LINK_STATE_MININDN_SMOKE_OK")
+        elif args.auto_video_selection_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=75)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station video selection smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            drone_ids = [drone_id for drone_id, _ in drones]
+            require_log(gs_log, "VIDEO_SELECTION_STATE phase=initial-first selected=" + drone_ids[0])
+            require_log(gs_log, "VIDEO_SELECTION_STATE phase=second-after-first-streaming selected=" + drone_ids[1] + " can_start=true can_stop=false")
+            require_log(gs_log, "VIDEO_SELECTION_STATE phase=first-streaming selected=" + drone_ids[0] + " can_start=false can_stop=true")
+            require_log(gs_log, "VIDEO_SELECTION_STATE phase=after-stop selected=" + drone_ids[0] + " can_start=true can_stop=false")
+            require_log(drone_logs[drone_ids[0]], "DRONE_STATUS drone=" + drone_ids[0] + " video streaming")
+            require_log(drone_logs[drone_ids[0]], "DRONE_STATUS drone=" + drone_ids[0] + " video stopped")
+            print("NDNSF_UAV_VIDEO_SELECTION_MININDN_SMOKE_OK")
         elif (args.auto_mavlink_test or args.auto_keyboard_test or
               args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:
             try:

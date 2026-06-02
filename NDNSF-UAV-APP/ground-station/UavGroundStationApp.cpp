@@ -377,6 +377,7 @@ main(int argc, char** argv)
     const bool autoManualControlTest = getConfigBool(argc, argv, appConfig, "--auto-manual-control-test", "auto-manual-control-test", false);
     const bool autoTwoDroneSwitchTest = getConfigBool(argc, argv, appConfig, "--auto-two-drone-switch-test", "auto-two-drone-switch-test", false);
     const bool autoLinkStateTest = getConfigBool(argc, argv, appConfig, "--auto-link-state-test", "auto-link-state-test", false);
+    const bool autoVideoSelectionTest = getConfigBool(argc, argv, appConfig, "--auto-video-selection-test", "auto-video-selection-test", false);
     const bool autoRecordingPlaybackTest = getConfigBool(argc, argv, appConfig, "--auto-recording-playback-test", "auto-recording-playback-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
     const bool autoSingleMissionTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-test", "auto-single-mission-test", false);
@@ -435,7 +436,7 @@ main(int argc, char** argv)
 
     const bool interactiveGui = !(autoStart || autoMavlinkTest || autoTelemetryTest || autoKeyboardTest ||
                                   autoManualControlTest || autoTwoDroneSwitchTest ||
-                                  autoLinkStateTest ||
+                                  autoLinkStateTest || autoVideoSelectionTest ||
                                   autoRecordingPlaybackTest ||
                                   autoPatrolTest || autoSingleMissionTest);
     if (interactiveGui && !hasFlag(argc, argv, "--no-cert-dialog") &&
@@ -476,6 +477,7 @@ main(int argc, char** argv)
                                autoStartDelayMs, autoMavlinkTest,
                                autoKeyboardTest, autoManualControlTest,
                                autoTwoDroneSwitchTest,
+                               autoVideoSelectionTest,
                                autoRecordingPlaybackTest,
                                autoRepeatStopTest,
                                patrolDroneIds);
@@ -488,6 +490,7 @@ main(int argc, char** argv)
               << " auto_keyboard_test=" << (autoKeyboardTest ? "true" : "false")
               << " auto_manual_control_test=" << (autoManualControlTest ? "true" : "false")
               << " auto_two_drone_switch_test=" << (autoTwoDroneSwitchTest ? "true" : "false")
+              << " auto_video_selection_test=" << (autoVideoSelectionTest ? "true" : "false")
               << " auto_recording_playback_test=" << (autoRecordingPlaybackTest ? "true" : "false")
               << std::endl;
     const int rc = app->run(window);

@@ -9,6 +9,7 @@ public:
                       bool autoMavlinkTest, bool autoKeyboardTest,
                       bool autoManualControlTest,
                       bool autoTwoDroneSwitchTest,
+                      bool autoVideoSelectionTest,
                       bool autoRecordingPlaybackTest,
                       bool autoRepeatStopTest,
                       std::vector<std::string> droneIds)
@@ -774,6 +775,58 @@ public:
         });
       }).detach();
     }
+    if (autoVideoSelectionTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        if (m_droneIds.size() < 2) {
+          Glib::signal_idle().connect_once([this] {
+            m_status.set_text("Video selection test needs at least two drones");
+            hide();
+          });
+          return;
+        }
+        const auto first = m_droneIds[0];
+        const auto second = m_droneIds[1];
+        Glib::signal_idle().connect_once([this, first] {
+          m_runtime.setTargetDroneId(first);
+          updateVehicleRows();
+          updateVideoViewForSelected();
+          logVideoControlState("initial-first");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        m_runtime.startVideo();
+        for (int i = 0; i < 120 && !m_runtime.isStreamingForDrone(first); ++i) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        Glib::signal_idle().connect_once([this, second] {
+          m_runtime.setTargetDroneId(second);
+          updateVehicleRows();
+          updateVideoViewForSelected();
+          logVideoControlState("second-after-first-streaming");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+        Glib::signal_idle().connect_once([this, first] {
+          m_runtime.setTargetDroneId(first);
+          updateVehicleRows();
+          updateVideoViewForSelected();
+          logVideoControlState("first-streaming");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+        m_runtime.stopVideo();
+        for (int i = 0; i < 120; ++i) {
+          const auto video = m_runtime.videoForDrone(first);
+          if (!m_runtime.isStreamingForDrone(first) &&
+              video && !video->isStreaming()) {
+            break;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        Glib::signal_idle().connect_once([this] {
+          logVideoControlState("after-stop");
+          hide();
+        });
+      }).detach();
+    }
     if (autoRecordingPlaybackTest) {
       std::thread([this] {
         std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -1419,12 +1472,9 @@ private:
   void
   updateVideoViewForSelectedLocked()
   {
-    const auto selectedDrone = m_runtime.targetDroneId();
-    const bool selectedRemoteStreaming = isVideoStateStreamingForDrone(selectedDrone);
-    const bool selectedDisplayActive = m_runtime.isVideoDisplayActiveForDrone(selectedDrone);
-    setPendingButtonStateLocked(!selectedRemoteStreaming && !selectedDisplayActive,
-                                selectedRemoteStreaming || selectedDisplayActive);
-    if (selectedDisplayActive) {
+    const auto control = videoControlStateForSelected();
+    setPendingButtonStateLocked(control.canStart, control.canStop);
+    if (control.displayActive) {
       if (!m_acceptFrames) {
         beginLocalStreamViewLocked();
       }
@@ -1439,6 +1489,42 @@ private:
     m_pendingElapsedMs = 0;
     m_decodedFrames = 0;
     m_pendingClearFrame = true;
+  }
+
+  struct VideoControlState
+  {
+    std::string selectedDrone;
+    bool remoteStreaming = false;
+    bool displayActive = false;
+    bool canStart = true;
+    bool canStop = false;
+  };
+
+  VideoControlState
+  videoControlStateForSelected() const
+  {
+    VideoControlState state;
+    state.selectedDrone = m_runtime.targetDroneId();
+    state.remoteStreaming = isVideoStateStreamingForDrone(state.selectedDrone);
+    state.displayActive = m_runtime.isVideoDisplayActiveForDrone(state.selectedDrone);
+    state.canStart = !state.remoteStreaming && !state.displayActive;
+    state.canStop = state.remoteStreaming || state.displayActive;
+    return state;
+  }
+
+  void
+  logVideoControlState(const std::string& phase)
+  {
+    const auto state = videoControlStateForSelected();
+    std::ostringstream os;
+    os << "VIDEO_SELECTION_STATE phase=" << phase
+       << " selected=" << state.selectedDrone
+       << " can_start=" << (state.canStart ? "true" : "false")
+       << " can_stop=" << (state.canStop ? "true" : "false")
+       << " remote_streaming=" << (state.remoteStreaming ? "true" : "false")
+       << " display_active=" << (state.displayActive ? "true" : "false");
+    NDN_LOG_INFO(os.str());
+    std::cout << os.str() << std::endl;
   }
 
   bool
