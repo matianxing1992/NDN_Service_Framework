@@ -11,6 +11,7 @@ using ndnsf::examples::uav::MissionProgressState;
 using ndnsf::examples::uav::MissionState;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::SafetyState;
+using ndnsf::examples::uav::VideoAdaptiveState;
 
 ReadinessState
 makeReadyState(bool armed)
@@ -163,6 +164,43 @@ BOOST_AUTO_TEST_CASE(MissionProgressTracksCompensationAndCompletion)
   BOOST_CHECK(progress.isComplete());
   BOOST_CHECK(!progress.isFailed());
   BOOST_CHECK_NE(progress.statusLine().find("compensated_parts=1"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
+{
+  VideoAdaptiveState state;
+  state.droneId = "A";
+  state.state = "streaming";
+  state.rttMs = 142;
+  state.window = 64;
+  state.lookahead = 18;
+  state.futureProbeLimit = 3;
+  state.interestLifetimeMs = 620;
+  state.missingTimeoutMs = 240;
+  state.timeoutPressure = 55;
+  state.probePressure = 20;
+  state.duplicatePressure = 10;
+  state.lossPressure = 8;
+  state.backlogPressure = 30;
+  state.pendingChunks = 12;
+  state.receivedChunks = 100;
+  state.timeouts = 2;
+  state.nacks = 1;
+  state.duplicates = 3;
+  state.decodedFrames = 45;
+  state.updatedMs = 123456;
+
+  const auto decoded = VideoAdaptiveState::fromFields(state.toFields());
+  BOOST_CHECK_EQUAL(decoded.droneId, "A");
+  BOOST_CHECK_EQUAL(decoded.state, "streaming");
+  BOOST_CHECK_EQUAL(decoded.rttMs, 142);
+  BOOST_CHECK_EQUAL(decoded.window, 64);
+  BOOST_CHECK_EQUAL(decoded.missingTimeoutMs, 240);
+  BOOST_CHECK_EQUAL(decoded.timeoutPressure, 55);
+  BOOST_CHECK(decoded.underPressure());
+  BOOST_CHECK_NE(decoded.statusLine().find("VideoAdaptive drone=A"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("decoded_frames=45"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

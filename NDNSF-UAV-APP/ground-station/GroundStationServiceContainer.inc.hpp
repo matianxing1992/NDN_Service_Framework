@@ -358,6 +358,17 @@ public:
     return found->second;
   }
 
+  std::optional<VideoAdaptiveState>
+  videoAdaptiveForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    const auto found = m_videoAdaptiveByDrone.find(droneId);
+    if (found == m_videoAdaptiveByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
   std::optional<FlightCommandState>
   commandForDrone(const std::string& droneId) const
   {
@@ -452,6 +463,7 @@ public:
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
+    publishVideoAdaptiveState("stop-requested", true);
     stopDecoder();
     stopVideoAttempt(droneId);
   }
@@ -2235,6 +2247,8 @@ private:
                   m_frameNacks = 0;
                   m_frameTimeouts = 0;
                   m_duplicateVideoPackets = 0;
+                  m_decodedVideoFrames = 0;
+                  m_lastVideoAdaptiveLogMs = 0;
                   resetVideoAdaptiveState();
                   m_highestReceivedVideoPacketSeq = UINT64_MAX;
                   m_nextChunkSeqToDecode = 0;
@@ -2248,6 +2262,7 @@ private:
                   }
                   stopDecoder();
                   startDecoder();
+                  publishVideoAdaptiveState("configured", true);
                   publishStatus("Video packet stream drone=" + droneId + " from " + prefix);
                   requestVideoPackets();
                 },
@@ -2287,6 +2302,7 @@ private:
                   m_videoStopInFlight = false;
                   const auto fields = decodeFields(payload);
                   updateVideoState(droneId, fields);
+                  publishVideoAdaptiveState("stop-ack", true);
                   {
                     std::lock_guard<std::mutex> guard(m_videoStateMutex);
                     if (m_activeVideoDroneId == droneId) {
@@ -3039,6 +3055,58 @@ private:
                     m_videoDuplicatePressurePercent.load() / 2);
   }
 
+  VideoAdaptiveState
+  currentVideoAdaptiveState(const std::string& droneId) const
+  {
+    VideoAdaptiveState state;
+    state.droneId = droneId.empty() ? "unknown" : droneId;
+    state.state = m_streaming.load() ? "streaming" : "stopped";
+    state.rttMs = videoRttMs();
+    state.window = dynamicVideoWindow();
+    state.lookahead = dynamicVideoLookahead();
+    state.futureProbeLimit = dynamicFutureProbeInFlightLimit();
+    state.interestLifetimeMs = dynamicInterestLifetimeMs();
+    state.missingTimeoutMs = dynamicDecoderMissingTimeoutMs();
+    state.timeoutPressure = m_videoTimeoutPressurePercent.load();
+    state.probePressure = videoProbePressurePercent();
+    state.duplicatePressure = m_videoDuplicatePressurePercent.load();
+    state.lossPressure = videoLossPressurePercent();
+    state.backlogPressure = decoderBacklogPressurePercent();
+    state.pendingChunks = m_decoderPendingChunkCount.load();
+    state.receivedChunks = m_receivedChunks.load();
+    state.timeouts = m_frameTimeouts.load();
+    state.nacks = m_frameNacks.load();
+    state.duplicates = m_duplicateVideoPackets.load();
+    state.decodedFrames = m_decodedVideoFrames.load();
+    state.updatedMs = nowMilliseconds();
+    return state;
+  }
+
+  void
+  publishVideoAdaptiveState(const std::string& reason, bool force = false)
+  {
+    const auto droneId = activeVideoDroneId();
+    if (droneId.empty()) {
+      return;
+    }
+    const auto nowMs = nowMilliseconds();
+    const auto lastLogMs = m_lastVideoAdaptiveLogMs.load();
+    if (!force && lastLogMs != 0 && nowMs < lastLogMs + 500) {
+      const auto state = currentVideoAdaptiveState(droneId);
+      std::lock_guard<std::mutex> guard(m_telemetryMutex);
+      m_videoAdaptiveByDrone[droneId] = state;
+      return;
+    }
+    m_lastVideoAdaptiveLogMs = nowMs;
+    const auto state = currentVideoAdaptiveState(droneId);
+    {
+      std::lock_guard<std::mutex> guard(m_telemetryMutex);
+      m_videoAdaptiveByDrone[droneId] = state;
+    }
+    NDN_LOG_INFO("GS_VIDEO_ADAPTIVE_STATE reason=" << reason << " " << state.statusLine());
+    publishStatus(state.statusLine());
+  }
+
   void
   requestVideoLane(PacketLane& lane, uint64_t window)
   {
@@ -3141,6 +3209,7 @@ private:
                            << " missingTimeoutMs=" << dynamicDecoderMissingTimeoutMs()
                            << " window=" << dynamicVideoWindow());
             }
+            publishVideoAdaptiveState("chunk");
             updateHighestReceivedVideoPacket(packet.packetSeq);
             updateLaneHighWatermark(lane, packet);
             queueStreamChunk(packet, receivedMs);
@@ -3158,14 +3227,15 @@ private:
             --lane.futureInFlight;
           }
           releaseVideoPacketFetch(packetSeq);
-        recordVideoFetchTimeout();
-        const auto nackCount = ++m_frameNacks;
-        if (nackCount <= 3 || nackCount % 30 == 0) {
+          recordVideoFetchTimeout();
+          const auto nackCount = ++m_frameNacks;
+          if (nackCount <= 3 || nackCount % 30 == 0) {
             NDN_LOG_INFO("GS_VIDEO_NACK count=" << nackCount
                          << " packetSeq=" << packetSeq
                          << " congestionPressure=" << videoCongestionPressurePercent()
                          << " probePressure=" << videoProbePressurePercent());
-        }
+          }
+          publishVideoAdaptiveState("nack");
           advanceLaneIfStale(lane);
           requestVideoPackets();
       },
@@ -3191,6 +3261,7 @@ private:
                           << " backoffMs=" << dynamicProbeBackoffMs());
             lane.nextSeq = packetSeq;
             lane.probeNotBeforeMs = nowMilliseconds() + dynamicProbeBackoffMs();
+            publishVideoAdaptiveState("future-probe-timeout");
           }
           else {
             recordVideoFetchTimeout();
@@ -3201,6 +3272,7 @@ private:
                            << " congestionPressure=" << videoCongestionPressurePercent()
                            << " probePressure=" << videoProbePressurePercent());
             }
+            publishVideoAdaptiveState("timeout");
           }
           advanceLaneIfStale(lane);
           scheduleVideoPump(dynamicProbeBackoffMs());
@@ -3869,6 +3941,10 @@ private:
         std::lock_guard<std::mutex> guard(m_latestDecodedFrameMutex);
         m_latestDecodedFrame = frame;
       }
+      const auto decoded = ++m_decodedVideoFrames;
+      if (decoded <= 3 || decoded % 30 == 0) {
+        publishVideoAdaptiveState("decoded");
+      }
       if (m_frameCallback) {
         m_frameCallback(std::move(frame), m_lastOutputChunkSeq, m_lastOutputChunkElapsedMs);
       }
@@ -4027,6 +4103,8 @@ private:
   std::atomic<uint64_t> m_frameNacks{0};
   std::atomic<uint64_t> m_frameTimeouts{0};
   std::atomic<uint64_t> m_duplicateVideoPackets{0};
+  std::atomic<uint64_t> m_decodedVideoFrames{0};
+  std::atomic<uint64_t> m_lastVideoAdaptiveLogMs{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
   std::atomic<bool> m_manualControlInFlight{false};
   std::atomic<bool> m_emergencyStopInFlight{false};
@@ -4037,6 +4115,7 @@ private:
   std::map<std::string, ReadinessState> m_readinessByDrone;
   std::map<std::string, MissionState> m_missionByDrone;
   std::map<std::string, VideoState> m_videoByDrone;
+  std::map<std::string, VideoAdaptiveState> m_videoAdaptiveByDrone;
   std::map<std::string, FlightCommandState> m_commandByDrone;
   std::map<std::string, SafetyState> m_safetyByDrone;
   ndn::Name m_streamPrefix;

@@ -712,7 +712,11 @@ missing-packet skip timeout. Timeout and Nack pressure are folded into the same
 policy: when the link starts dropping or delaying chunks, the GS reduces
 lookahead/prefetch pressure and shortens the decoder's wait for missing delta
 chunks. This keeps low-bitrate/low-FPS camera streams from overfetching while
-giving higher-bitrate streams enough in-flight Interests to avoid stalls.
+giving higher-bitrate streams enough in-flight Interests to avoid stalls. The
+current receiver stores these decisions as `VideoAdaptiveState`, so the video
+panel, selected-drone inspector, left-side drone row, and MiniNDN smoke logs can
+show RTT, window, lookahead, pressure, missing-packet timeout, pending chunks,
+and decoded-frame progress without scraping packet logs.
 The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
 H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
@@ -1371,9 +1375,13 @@ to make it a deployable UAV service-container workload. The planned order is:
    actions while a patrol assignment or compensation step is still active. The
    same progress model also updates left-side drone rows and map marker labels
    so operators can see active compensation or completion without opening the
-   inspector. Continue extending this rule to new mission/video/safety UI paths:
-   GUI code should not infer state from ad hoc status strings when a typed state
-   model is available.
+   inspector. The live downlink also exposes a typed `VideoAdaptiveState`
+   covering RTT, prefetch window, lookahead, timeout pressure, probe pressure,
+   decoder backlog, and decoded-frame progress; the video panel, selected-drone
+   view, left drone rows, and MiniNDN smoke logs read that model instead of
+   scraping internal logs. Continue extending this rule to new
+   mission/video/safety UI paths: GUI code should not infer state from ad hoc
+   status strings when a typed state model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
    ODROID-class or real airframe computers without a GUI/X server. In headless
    mode the app should run only NDNSF, MAVLink, camera, repo, telemetry, and
@@ -1385,7 +1393,9 @@ to make it a deployable UAV service-container workload. The planned order is:
 4. **Adaptive video service quality.** Continue treating video as an NDNSF
    service workload: requested bitrate, accepted bitrate, RTT, backlog,
    timeout pressure, key-frame recovery, and FEC should drive prefetch and
-   skip decisions rather than fixed constants.
+   skip decisions rather than fixed constants. The current GS records these
+   decisions as `VideoAdaptiveState`; the next step is to use that state for
+   explicit bitrate downgrade requests and loss-aware UI warnings.
 5. **Mission collaboration model.** Promote the patrol demo into a reusable
    mission model with `MissionPlan`, `MissionPart`, assignment, progress,
    failure/compensation, and return-to-home semantics.

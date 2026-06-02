@@ -617,7 +617,11 @@ high-watermark 估计 prefetch window，避免盲目请求无边界的 packet se
 lifetime、probe backoff 和 missing-packet skip timeout。timeout 和 Nack 压力也会进入同一套策略：
 当链路开始丢包或 chunk 延迟变高时，GS 会降低 lookahead/prefetch 压力，并缩短 decoder
 等待缺失 delta chunk 的时间。这样低 bitrate / 低 FPS 摄像头不会
-过度预取，高 bitrate stream 也能保持足够的 in-flight Interests，减少卡顿。当前 demo
+过度预取，高 bitrate stream 也能保持足够的 in-flight Interests，减少卡顿。当前接收端会把
+这些决策保存成 `VideoAdaptiveState`，因此 video panel、selected-drone inspector、左侧
+drone row 和 MiniNDN smoke logs 都能直接显示 RTT、window、lookahead、pressure、
+missing-packet timeout、pending chunks 和 decoded-frame progress，而不用解析 packet log。
+当前 demo
 默认是 8000 kbps、480 px frame width、30 FPS 的 H264 stream。提高 bitrate 会增加 stream 质量和
 packet 数据量；提高 frame width 才会让 GUI 里显示的视频更大。
 
@@ -703,8 +707,11 @@ UAV service-container workload 的应用。计划顺序如下：
    planning；ground-station mission 按钮也会使用这个 progress model，在 patrol assignment 或
    compensation 仍然 active 时阻止重复 upload/start。左侧 drone row 和地图 marker 也会使用同一个
    progress model，让操作者不用打开 inspector 就能看到 compensation active 或 completed 状态。
-   后续新增 mission/video/safety UI 路径时继续坚持这一点：
-   只要有 typed state model，GUI 就不应该再从临时 status string 推断状态。
+   直播链路现在也有 typed `VideoAdaptiveState`，记录 RTT、prefetch window、lookahead、
+   timeout pressure、probe pressure、decoder backlog 和 decoded-frame progress；video panel、
+   selected-drone view、左侧 drone row 和 MiniNDN smoke logs 都从这个 model 读取状态，而不是
+   解析内部 packet log。后续新增 mission/video/safety UI 路径时继续坚持这一点：只要有 typed
+   state model，GUI 就不应该再从临时 status string 推断状态。
 2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
    上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、
    telemetry 和 mission services。
@@ -713,7 +720,8 @@ UAV service-container workload 的应用。计划顺序如下：
    Manual control 必须超时回到 neutral，emergency stop 和 lost-link 行为必须明确。
 4. **自适应视频服务质量。** 继续把 video 当作 NDNSF service workload：requested bitrate、
    accepted bitrate、RTT、backlog、timeout pressure、key-frame recovery 和 FEC 应该驱动
-   prefetch 与 skip 决策，而不是依赖固定常数。
+   prefetch 与 skip 决策，而不是依赖固定常数。当前 GS 已把这些决策记录为
+   `VideoAdaptiveState`；下一步可以基于这个状态做显式码率降级请求和丢包压力 UI 警告。
 5. **任务协作模型。** 把当前 patrol demo 提升成可复用 mission model，包括 `MissionPlan`、
    `MissionPart`、assignment、progress、failure/compensation 和 return-to-home 语义。
 6. **Repo-backed UAV data products。** 通过 `NDNSF-DistributedRepo` 保存 recording、mission

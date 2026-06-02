@@ -506,7 +506,8 @@ public:
           m_pendingVehicleRowsRefresh = true;
         }
         if (status.rfind("MAVLink ", 0) == 0 ||
-            status.rfind("Telemetry ", 0) == 0) {
+            status.rfind("Telemetry ", 0) == 0 ||
+            status.rfind("VideoAdaptive ", 0) == 0) {
           const auto statusDrone = statusField(status, "drone", m_runtime.targetDroneId());
           const auto selectedDrone = m_runtime.targetDroneId();
           if (status.rfind("Telemetry ", 0) == 0) {
@@ -535,7 +536,7 @@ public:
             const auto command = m_runtime.commandForDrone(statusDrone);
             const auto view = selectedDroneViewState();
             m_pendingTelemetry = view.hasTelemetry ? view.inspectorText :
-                                 command ? command->statusLine() : status;
+                                 command ? command->statusLine() : view.inspectorText;
             if (view.hasTelemetry) {
               m_pendingMap = view.mapText;
             }
@@ -606,9 +607,14 @@ public:
       }
       if (pixbuf) {
         m_image.set(pixbuf);
-        m_stats.set_text("Decoded frames: " + std::to_string(m_decodedFrames.load()) +
-                         "  latest chunk: " + std::to_string(seq) +
-                         "  stream elapsed: " + std::to_string(elapsedMs) + " ms");
+        auto stats = "Decoded frames: " + std::to_string(m_decodedFrames.load()) +
+                     "  latest chunk: " + std::to_string(seq) +
+                     "  stream elapsed: " + std::to_string(elapsedMs) + " ms";
+        const auto adaptive = m_runtime.videoAdaptiveForDrone(m_runtime.targetDroneId());
+        if (adaptive) {
+          stats += "  " + compactVideoAdaptiveSummary(*adaptive);
+        }
+        m_stats.set_text(stats);
       }
     });
     Glib::signal_timeout().connect([this] {
@@ -629,6 +635,10 @@ public:
         for (int i = 0; i < 100 && !m_runtime.isStreaming(); ++i) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        Glib::signal_idle().connect_once([this] {
+          logVideoAdaptiveViewState("auto-video-active");
+        });
         std::this_thread::sleep_for(std::chrono::seconds(autoStopSeconds));
         m_runtime.stopVideo();
         if (m_autoRepeatStopTest) {
@@ -637,6 +647,7 @@ public:
         }
         std::this_thread::sleep_for(std::chrono::seconds(5));
         Glib::signal_idle().connect_once([this] {
+          logVideoAdaptiveViewState("auto-video-stopped");
           hide();
         });
       }).detach();
@@ -1952,6 +1963,7 @@ private:
     bool hasCommand = false;
     bool hasSafety = false;
     bool hasMissionProgress = false;
+    bool hasVideoAdaptive = false;
     std::string readiness = "unknown";
     std::string armed = "unknown";
     std::string gps = "unknown";
@@ -1959,6 +1971,7 @@ private:
     std::string mission = "idle";
     std::string missionProgress = "idle";
     std::string video = "unknown";
+    std::string videoAdaptive = "unknown";
     std::string command = "none";
     std::string safety = "unknown";
     std::string rowText;
@@ -1988,6 +2001,22 @@ private:
            commaSeparatedContains(progress.drones, droneId);
   }
 
+  static uint64_t
+  maxVideoPressure(const VideoAdaptiveState& adaptive)
+  {
+    return std::max({adaptive.timeoutPressure, adaptive.probePressure,
+                     adaptive.duplicatePressure, adaptive.lossPressure,
+                     adaptive.backlogPressure});
+  }
+
+  static std::string
+  compactVideoAdaptiveSummary(const VideoAdaptiveState& adaptive)
+  {
+    return "rtt=" + std::to_string(adaptive.rttMs) +
+           "ms,win=" + std::to_string(adaptive.window) +
+           ",pressure=" + std::to_string(maxVideoPressure(adaptive));
+  }
+
   DroneListRowState
   droneListRowState(const std::string& droneId, bool selected) const
   {
@@ -1998,6 +2027,7 @@ private:
     const auto readiness = m_runtime.readinessForDrone(droneId);
     const auto mission = m_runtime.missionForDrone(droneId);
     const auto video = m_runtime.videoForDrone(droneId);
+    const auto videoAdaptive = m_runtime.videoAdaptiveForDrone(droneId);
     const auto command = m_runtime.commandForDrone(droneId);
     const auto safety = m_runtime.safetyForDrone(droneId);
     const auto progress = m_runtime.missionProgressSnapshot();
@@ -2009,6 +2039,7 @@ private:
     state.hasCommand = command.has_value() && command->command != "none";
     state.hasSafety = safety.has_value();
     state.hasMissionProgress = progress && missionProgressAppliesToDrone(*progress, droneId);
+    state.hasVideoAdaptive = videoAdaptive.has_value();
 
     state.readiness = readiness ? readiness->readiness :
                       telemetry ? telemetry->readiness : "unknown";
@@ -2021,6 +2052,7 @@ private:
     state.missionProgress = state.hasMissionProgress ? progress->phase : "idle";
     state.video = video ? video->status :
                   telemetry ? telemetry->video : "unknown";
+    state.videoAdaptive = videoAdaptive ? compactVideoAdaptiveSummary(*videoAdaptive) : "unknown";
     state.command = state.hasCommand ? command->command + ":" + command->ackResult : "none";
     state.safety = safety ? safety->manualControlState + "/" + safety->linkState : "unknown";
 
@@ -2042,6 +2074,9 @@ private:
     }
     if ((state.hasVideo || state.hasTelemetry) && state.video != "unknown") {
       state.rowText += " video=" + state.video;
+    }
+    if (state.hasVideoAdaptive) {
+      state.rowText += " adaptive=" + state.videoAdaptive;
     }
     if (state.hasCommand) {
       state.rowText += " cmd=" + state.command;
@@ -2066,6 +2101,7 @@ private:
        << " mission=" << state.mission
        << " mission_progress=" << state.missionProgress
        << " video=" << state.video
+       << " video_adaptive=" << state.videoAdaptive
        << " safety=" << state.safety
        << " text=" << state.rowText;
     NDN_LOG_INFO(os.str());
@@ -2340,6 +2376,7 @@ private:
     std::string missionPhase = "unknown";
     std::string missionProgressPhase = "unknown";
     std::string videoStatus = "unknown";
+    std::string videoAdaptive = "unknown";
     std::string linkState = "unknown";
     MapMarker marker;
   };
@@ -2359,6 +2396,7 @@ private:
     const auto mission = m_runtime.missionForDrone(state.selectedDrone);
     const auto readiness = m_runtime.readinessForDrone(state.selectedDrone);
     const auto video = m_runtime.videoForDrone(state.selectedDrone);
+    const auto videoAdaptive = m_runtime.videoAdaptiveForDrone(state.selectedDrone);
     const auto command = m_runtime.commandForDrone(state.selectedDrone);
     const auto safety = m_runtime.safetyForDrone(state.selectedDrone);
     const auto missionProgress = m_runtime.missionProgressSnapshot();
@@ -2368,6 +2406,7 @@ private:
     state.missionProgressPhase = missionProgress ? missionProgress->phase : "idle";
     state.videoStatus = video ? video->status :
                         telemetry ? telemetry->video : "unknown";
+    state.videoAdaptive = videoAdaptive ? compactVideoAdaptiveSummary(*videoAdaptive) : "unknown";
     state.linkState = safety ? safety->linkState :
                       telemetry ? telemetry->linkState : "unknown";
     if (telemetry) {
@@ -2377,10 +2416,16 @@ private:
         (mission ? " " + mission->statusLine() : "") +
         (missionProgress ? " " + missionProgress->statusLine() : "") +
         (video ? " " + video->statusLine() : "") +
+        (videoAdaptive ? " " + videoAdaptive->statusLine() : "") +
         (command ? " " + command->statusLine() : "") +
         (safety ? " " + safety->statusLine() : "");
       state.mapText = mapTextForTelemetry(*telemetry, mission, state.selectedDrone,
                                           readiness, video, command, safety);
+      if (videoAdaptive) {
+        state.mapText += "\nVideo adaptive: " + compactVideoAdaptiveSummary(*videoAdaptive) +
+                         " timeout=" + std::to_string(videoAdaptive->missingTimeoutMs) +
+                         "ms lookahead=" + std::to_string(videoAdaptive->lookahead);
+      }
       if (missionProgress) {
         state.mapText += "\nMission progress: " + missionProgress->phase +
                          " parts=" + std::to_string(missionProgress->completedParts) +
@@ -2408,6 +2453,12 @@ private:
                          " return_home=" +
                          std::string(missionProgress->returnHomePlanned ? "yes" : "no");
       }
+      if (videoAdaptive) {
+        state.inspectorText += " " + videoAdaptive->statusLine();
+        state.mapText += "\nVideo adaptive: " + compactVideoAdaptiveSummary(*videoAdaptive) +
+                         " timeout=" + std::to_string(videoAdaptive->missingTimeoutMs) +
+                         "ms lookahead=" + std::to_string(videoAdaptive->lookahead);
+      }
     }
     return state;
   }
@@ -2424,10 +2475,36 @@ private:
        << " mission=" << state.missionPhase
        << " mission_progress=" << state.missionProgressPhase
        << " video=" << state.videoStatus
+       << " video_adaptive=" << state.videoAdaptive
        << " link=" << state.linkState
        << " marker=" << state.marker.label;
     NDN_LOG_INFO(os.str());
     std::cout << os.str() << std::endl;
+  }
+
+  void
+  logVideoAdaptiveViewState(const std::string& phase) const
+  {
+    const auto droneId = m_runtime.targetDroneId();
+    const auto adaptive = m_runtime.videoAdaptiveForDrone(droneId);
+    std::ostringstream os;
+    os << "VIDEO_ADAPTIVE_VIEW_STATE phase=" << phase
+       << " selected=" << droneId
+       << " has_adaptive=" << (adaptive ? "true" : "false");
+    if (adaptive) {
+      os << " state=" << adaptive->state
+         << " rtt_ms=" << adaptive->rttMs
+         << " window=" << adaptive->window
+         << " lookahead=" << adaptive->lookahead
+         << " future_probe_limit=" << adaptive->futureProbeLimit
+         << " interest_lifetime_ms=" << adaptive->interestLifetimeMs
+         << " missing_timeout_ms=" << adaptive->missingTimeoutMs
+         << " pressure=" << maxVideoPressure(*adaptive)
+         << " pending_chunks=" << adaptive->pendingChunks
+         << " received_chunks=" << adaptive->receivedChunks
+         << " decoded_frames=" << adaptive->decodedFrames;
+    }
+    NDN_LOG_INFO(os.str());
   }
 
   static std::pair<double, double>

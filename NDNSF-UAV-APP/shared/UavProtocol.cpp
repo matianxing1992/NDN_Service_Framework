@@ -940,6 +940,91 @@ VideoState::statusLine() const
          " decoded=" + std::to_string(decodedFrames);
 }
 
+VideoAdaptiveState
+VideoAdaptiveState::fromFields(const Fields& fields)
+{
+  VideoAdaptiveState state;
+  state.droneId = fieldOr(fields, "drone_id", state.droneId);
+  state.state = fieldOr(fields, "adaptive_state", fieldOr(fields, "state", state.state));
+  state.rttMs = uint64FieldOr(fields, "rtt_ms", state.rttMs);
+  state.window = uint64FieldOr(fields, "window", state.window);
+  state.lookahead = uint64FieldOr(fields, "lookahead", state.lookahead);
+  state.futureProbeLimit = uint64FieldOr(fields, "future_probe_limit", state.futureProbeLimit);
+  state.interestLifetimeMs = uint64FieldOr(fields, "interest_lifetime_ms", state.interestLifetimeMs);
+  state.missingTimeoutMs = uint64FieldOr(fields, "missing_timeout_ms", state.missingTimeoutMs);
+  state.timeoutPressure = uint64FieldOr(fields, "timeout_pressure", state.timeoutPressure);
+  state.probePressure = uint64FieldOr(fields, "probe_pressure", state.probePressure);
+  state.duplicatePressure = uint64FieldOr(fields, "duplicate_pressure", state.duplicatePressure);
+  state.lossPressure = uint64FieldOr(fields, "loss_pressure", state.lossPressure);
+  state.backlogPressure = uint64FieldOr(fields, "backlog_pressure", state.backlogPressure);
+  state.pendingChunks = uint64FieldOr(fields, "pending_chunks", state.pendingChunks);
+  state.receivedChunks = uint64FieldOr(fields, "received_chunks", state.receivedChunks);
+  state.timeouts = uint64FieldOr(fields, "timeouts", state.timeouts);
+  state.nacks = uint64FieldOr(fields, "nacks", state.nacks);
+  state.duplicates = uint64FieldOr(fields, "duplicates", state.duplicates);
+  state.decodedFrames = uint64FieldOr(fields, "decoded_frames", state.decodedFrames);
+  state.updatedMs = uint64FieldOr(fields, "updated_ms", state.updatedMs);
+  return state;
+}
+
+Fields
+VideoAdaptiveState::toFields() const
+{
+  return {
+    {"drone_id", droneId},
+    {"adaptive_state", state},
+    {"rtt_ms", std::to_string(rttMs)},
+    {"window", std::to_string(window)},
+    {"lookahead", std::to_string(lookahead)},
+    {"future_probe_limit", std::to_string(futureProbeLimit)},
+    {"interest_lifetime_ms", std::to_string(interestLifetimeMs)},
+    {"missing_timeout_ms", std::to_string(missingTimeoutMs)},
+    {"timeout_pressure", std::to_string(timeoutPressure)},
+    {"probe_pressure", std::to_string(probePressure)},
+    {"duplicate_pressure", std::to_string(duplicatePressure)},
+    {"loss_pressure", std::to_string(lossPressure)},
+    {"backlog_pressure", std::to_string(backlogPressure)},
+    {"pending_chunks", std::to_string(pendingChunks)},
+    {"received_chunks", std::to_string(receivedChunks)},
+    {"timeouts", std::to_string(timeouts)},
+    {"nacks", std::to_string(nacks)},
+    {"duplicates", std::to_string(duplicates)},
+    {"decoded_frames", std::to_string(decodedFrames)},
+    {"updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+bool
+VideoAdaptiveState::underPressure() const
+{
+  return std::max({timeoutPressure, probePressure, duplicatePressure,
+                   lossPressure, backlogPressure}) >= 50;
+}
+
+std::string
+VideoAdaptiveState::statusLine() const
+{
+  return "VideoAdaptive drone=" + droneId +
+         " state=" + state +
+         " rtt_ms=" + std::to_string(rttMs) +
+         " window=" + std::to_string(window) +
+         " lookahead=" + std::to_string(lookahead) +
+         " future_probe_limit=" + std::to_string(futureProbeLimit) +
+         " interest_lifetime_ms=" + std::to_string(interestLifetimeMs) +
+         " missing_timeout_ms=" + std::to_string(missingTimeoutMs) +
+         " timeout_pressure=" + std::to_string(timeoutPressure) +
+         " probe_pressure=" + std::to_string(probePressure) +
+         " duplicate_pressure=" + std::to_string(duplicatePressure) +
+         " loss_pressure=" + std::to_string(lossPressure) +
+         " backlog_pressure=" + std::to_string(backlogPressure) +
+         " pending_chunks=" + std::to_string(pendingChunks) +
+         " received_chunks=" + std::to_string(receivedChunks) +
+         " timeouts=" + std::to_string(timeouts) +
+         " nacks=" + std::to_string(nacks) +
+         " duplicates=" + std::to_string(duplicates) +
+         " decoded_frames=" + std::to_string(decodedFrames);
+}
+
 MissionState
 MissionState::fromFields(const Fields& fields)
 {

@@ -209,6 +209,35 @@ struct VideoState
   std::string statusLine() const;
 };
 
+struct VideoAdaptiveState
+{
+  std::string droneId = "unknown";
+  std::string state = "idle";
+  uint64_t rttMs = 0;
+  uint64_t window = 0;
+  uint64_t lookahead = 0;
+  uint64_t futureProbeLimit = 0;
+  uint64_t interestLifetimeMs = 0;
+  uint64_t missingTimeoutMs = 0;
+  uint64_t timeoutPressure = 0;
+  uint64_t probePressure = 0;
+  uint64_t duplicatePressure = 0;
+  uint64_t lossPressure = 0;
+  uint64_t backlogPressure = 0;
+  uint64_t pendingChunks = 0;
+  uint64_t receivedChunks = 0;
+  uint64_t timeouts = 0;
+  uint64_t nacks = 0;
+  uint64_t duplicates = 0;
+  uint64_t decodedFrames = 0;
+  uint64_t updatedMs = 0;
+
+  static VideoAdaptiveState fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool underPressure() const;
+  std::string statusLine() const;
+};
+
 struct MissionState
 {
   std::string droneId = "unknown";
