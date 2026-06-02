@@ -84,6 +84,16 @@ manifest = repo.store(
 payload = repo.fetch(manifest.object_name)
 ```
 
+If you already have a manifest, use the manifest-aware object helper instead:
+
+```python
+payload = repo.fetch_object(manifest)
+```
+
+This verifies size and SHA-256 from the manifest and keeps the application
+independent from whether the repo stored the object as one payload or as
+object-level chunks.
+
 For large objects or APP-signed `Data` segments, higher-level packages such as
 NDNSF-DistributedInference may still use the lower-level segmented Data APIs
 from `ndnsf` and keep `py-repoclient` for manifest/protocol and repo service

@@ -225,6 +225,22 @@ class RepoClient:
     def get(self, object_name: str) -> bytes:
         return self.fetch(object_name)
 
+    def fetch_object(self, manifest: RepoObjectManifest) -> bytes:
+        """Fetch one logical object described by a repo manifest.
+
+        The current remote repo service returns object payloads by object name.
+        This helper gives callers the same object-level shape as the C++ API and
+        verifies manifest size/hash after the fetch. If a future remote service
+        exposes manifest-driven segmented fetch directly, this method remains
+        the stable high-level entry point.
+        """
+        payload = self.fetch(manifest.object_name)
+        _verify_manifest_payload(manifest, payload)
+        return payload
+
+    def get_object(self, manifest: RepoObjectManifest) -> bytes:
+        return self.fetch_object(manifest)
+
     def manifest(self, object_name: str) -> RepoObjectManifest:
         response = self.user.request_service(
             self.repo_service_name,
@@ -327,6 +343,17 @@ def _unb64(payload: str) -> bytes:
     import base64
 
     return base64.b64decode(payload.encode())
+
+
+def _verify_manifest_payload(manifest: RepoObjectManifest, payload: bytes) -> None:
+    if len(payload) != manifest.size:
+        raise ValueError(
+            f"repo object size mismatch for {manifest.object_name}: "
+            f"expected {manifest.size}, got {len(payload)}"
+        )
+    digest = sha256_hex(bytes(payload))
+    if manifest.sha256 and digest != manifest.sha256:
+        raise ValueError(f"repo object sha256 mismatch for {manifest.object_name}")
 
 
 __all__ = [

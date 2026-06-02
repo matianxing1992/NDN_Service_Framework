@@ -200,10 +200,13 @@ The repository currently includes three Python example families under
 
 ```text
 yolo_split/
-  Two-stage YOLO-style split inference over ONNX Runtime.
+  Two-stage real Ultralytics YOLO split inference over ONNX Runtime.
 
 yolo_2x2/
-  Four-provider YOLO-style 2x2 split inference with a separate repo node.
+  Four-provider real Ultralytics YOLO 2x2 split inference with a separate repo node.
+  The splitter exports four real ONNX chunks: two sequential shards inside
+  Stage 0 and two sequential shards inside Stage 1. Shards in the same stage
+  exchange activation references before the next shard continues computation.
   A controller-side deployer stores model/runtime artifacts in the repo before
   inference. The user only assigns roles with repo manifest references;
   providers fetch their assigned artifacts on the first command and reuse the
@@ -254,17 +257,28 @@ manifest = repo.put(
     policy=PlacementPolicy(replication_factor=2),
     policy_epoch="/Policy/yolo-2x2/v1",
 )
+
+payload = repo.fetch_object(manifest.object_name, manifest)
 ```
 
 The manifest records the object hash, size, replication factor, selected repo
-nodes, and the signed Data names that hold the object segments. Object and Data
-names are publisher-scoped: controller-published artifacts live under the
-controller identity, user-published inputs/intermediates live under the user
-identity, and provider-published outputs live under the provider identity. In
-the current networked path, a controller-side deployer stores model/runtime
-artifacts in a repo node before inference. The user request carries only
-execution specs and repo manifest references; selected providers fetch their
-own assigned artifacts from the repo and cache them locally.
+nodes, and the signed Data names that hold the object segments. Object names
+remain publisher-scoped: controller-published artifacts are named under the
+controller object namespace, user-published inputs/intermediates are named
+under the user namespace, and provider-published outputs are named under the
+provider namespace. The Data names that actually serve stored segments may be
+repo-owned, e.g. `/repo-node/NDNSF-DISTRIBUTED-REPO/DATA/<object-hash>`, so
+fetchers can route directly to the selected repo node. In the current
+networked path, a controller-side deployer stores model/runtime artifacts in a
+repo node before inference. The user request carries only execution specs and
+repo manifest references; selected providers fetch their own assigned
+artifacts from the repo and cache them locally.
+DI code should prefer the manifest-aware object API (`fetch_object()` /
+`get_object()`) when reading model artifacts, runtime bundles, images, or
+activation objects. That API returns one verified logical object and hides
+whether the repo stored it as one Data packet, many segmented Data packets, or
+a replicated object. The planner and dependency graph should therefore talk in
+terms of object references and manifests, not repo segment names.
 
 ## Lower-Level API Sketch
 
@@ -339,9 +353,173 @@ controller.run()
 The APP, model publisher, or model-splitting tool owns the semantic service
 definition: how the model is split, which roles exist, what each role publishes
 or waits for, and what runtime/backend is required. NDNSF-DistributedInference
-does not infer model dependencies. It carries the dependency graph recorded in
-the service config and converts the plan into generic NDNSF collaboration calls
-and artifact provisioning.
+does not require every model to use the same dependency-generation mechanism.
+It accepts dependency graphs emitted by handwritten splitters, PyTorch-specific
+splitters, ONNX analyzers, container-bundle planners, or future optimizers. The
+runtime carries the dependency graph recorded in the service config and
+converts the plan into generic NDNSF collaboration calls and artifact
+provisioning.
+
+## Dependency Graph Generation Roadmap
+
+There are three different graphs in a distributed inference deployment:
+
+```text
+Model dependency graph
+  Operator/tensor DAG inside the original model, such as an ONNX graph.
+
+Chunk collaboration graph
+  Provider-role graph after the model is partitioned. Each edge records which
+  activation tensors cross from one chunk to another.
+
+Deployment plan
+  Mapping from roles to providers, runtime artifacts, repo manifests, security
+  policy, and NDNSF service names.
+```
+
+The current policy format keeps the chunk collaboration graph in
+`services[].dependencies`. For non-ONNX models, this can still be supplied by a
+model-specific splitter or application planner. For ONNX models, NDNSF-DI now
+provides an optional `onnx_graph` helper module:
+
+```text
+ONNX graph
+  -> tensor/operator dependency DAG
+  -> candidate split points and boundary tensor costs
+  -> exported ONNX chunks
+  -> chunk-level dependencies with tensor names
+  -> NDNSF-DI collaboration plan
+```
+
+This helper is deliberately optional. It does not replace `SplitterOutput`, and
+it does not make NDNSF-DI an ONNX-only framework. Instead, it gives ONNX
+deployments a common starting point for automatic planning while preserving the
+same policy format for PyTorch eager, model-specific, and containerized
+workloads.
+
+The YOLO 2x2 splitter now writes an ONNX graph summary JSON beside its exported
+chunks. The file has three top-level sections:
+
+```text
+fullModel
+  The original exported ONNX graph: inputs, outputs, initializers, nodes,
+  tensor producers, tensor consumers, and static tensor shape/size metadata.
+
+splitCandidates
+  Candidate sequential cuts ranked by unknown boundary tensors, known boundary
+  bytes, number of boundary tensors, and cut position. These candidates are
+  planning hints; the current YOLO splitter still chooses and exports its
+  model-specific chunks.
+
+plannerRecommendations
+  Candidate/provider assignments ranked with provider compute score, estimated
+  RTT/bandwidth, activation size, and compute-balance cost. This turns graph
+  analysis into a planning input without changing `SplitterOutput`.
+
+chunkGraph
+  The actually exported chunks and the tensor names that cross each selected
+  chunk boundary.
+```
+
+For the current YOLO 2x2 example, the default planner intentionally assumes
+homogeneous providers. This keeps the focus on distributed inference mechanics:
+real graph analysis, activation boundaries, artifact provisioning, and
+multi-role execution. Runtime provider profiling is a later extension.
+
+For experiments, the splitter can also accept an optional coarse provider
+profile JSON:
+
+```json
+{
+  "providers": [
+    {
+      "name": "/example/hello/provider/A",
+      "compute_score": 1.0,
+      "uplink_mbps": 200,
+      "downlink_mbps": 200,
+      "rtt_ms": 20
+    },
+    {
+      "name": "/example/hello/provider/B",
+      "compute_score": 1.0,
+      "uplink_mbps": 200,
+      "downlink_mbps": 200,
+      "rtt_ms": 20
+    }
+  ]
+}
+```
+
+This is intentionally an estimate, not a hard performance guarantee. Later
+profiling can replace these coarse values with measured provider throughput,
+model-layer latency, memory pressure, and link quality.
+
+### Remaining Work Toward Real Distributed Computing
+
+The current NDNSF-DI prototype already performs real network-level distributed
+inference: a model can be split into ONNX stages/chunks, providers exchange
+named activation objects, and MiniNDN regressions validate end-to-end results.
+The next work should not be more unrelated demos. It should focus on three
+framework-level steps:
+
+1. Generate a more faithful dependency graph from the ONNX tensor DAG. The
+   analyzer should preserve branch, skip-connection, concat, multi-input, and
+   multi-output tensor dependencies so the chunk collaboration graph reflects
+   the real model graph rather than a hand-written pipeline approximation.
+   The current `build_chunk_dependencies(...)` helper already builds chunk
+   edges by matching every exported chunk's ONNX outputs against every other
+   chunk's ONNX inputs, so fan-out/fan-in dependencies are represented directly
+   when boundary tensor names are preserved.
+
+2. Use the planner to generate 2-stage and 2x2 policies automatically. The
+   hand-tuned YOLO policies should become examples or fallbacks; the main path
+   should be:
+
+   ```text
+   ONNX tensor DAG -> candidate split points -> chunk graph -> NDNSF-DI policy
+   ```
+
+3. Run comparative experiments. The important comparisons are single-node
+   inference, 2-stage split inference, 2x2 split inference, different activation
+   sizes, different RTT/bandwidth settings, and different provider counts.
+   The comparison harness starts with a local full-ONNX baseline and can
+   optionally invoke MiniNDN split regressions:
+
+   ```bash
+   python3 Experiments/NDNSF_DI_Compare_Yolo_Plans.py \
+     --iterations 5 \
+     --output results/yolo_di_comparison/result.json
+
+   sudo -E python3 Experiments/NDNSF_DI_Compare_Yolo_Plans.py \
+     --include-minindn-auto-split \
+     --output results/yolo_di_comparison/result-with-minindn.json
+   ```
+
+Provider scheduling is intentionally not the immediate research bottleneck.
+The planner exposes `ProviderProfile` and `homogeneous_provider_profiles(...)`
+as a compatibility interface. By default, providers are treated as homogeneous,
+which keeps current experiments focused on distributed inference mechanics.
+Future runtime profiling can replace these defaults with measured compute,
+memory, latency, bandwidth, and RTT values without changing the policy format.
+
+In generated policies, a dependency may include a `tensors` field:
+
+```yaml
+dependencies:
+  - producers: [/Stage/0/Shard/1]
+    consumers: [/Stage/1/Shard/0]
+    key_scope: stage0-to-stage1
+    topic_prefix: /activation
+    tensors: [x, saved_4]
+```
+
+This means the role-level edge carries a large activation object that contains
+the listed tensors. The request itself should carry only small references.
+Images, activations, model shards, and runtime bundles are transported as
+segmented NDN Data, either through the NDNSF encrypted large-data helper or
+through NDNSF-DistributedRepo manifests. Compression or precision reduction may
+be used by an application as a model-quality tradeoff, but it is not the
+transport mechanism for large objects.
 
 ## Splitter Output Contract
 
@@ -394,10 +572,11 @@ split = SplitterOutput(
 split.write_policy_config("yolo_policy.yaml")
 ```
 
-The generated YAML is therefore deployment policy derived from the split,
-not handwritten dependency logic. The same service name should always map to
-the same model layout and dependency graph. If a model is split differently,
-publish it as a different service name.
+The generated YAML is therefore deployment policy derived from the split. The
+split may be generated from an ONNX tensor DAG, from a PyTorch/model-specific
+splitter, or from a handwritten application planner. The same service name
+should always map to the same model layout and dependency graph. If a model is
+split differently, publish it as a different service name.
 
 Provider handlers receive a role-local dependency view as `ctx.dependencies`,
 so handler code can ask what the current role should publish or wait for
@@ -545,9 +724,16 @@ Generate ONNX shards and a policy from the YOLO splitter:
 ```bash
 python3 examples/python/NDNSF-DistributedInference/yolo_split/split_model.py \
   --model yolo26n.pt \
+  --auto-split \
   --out-dir /tmp/ndnsf-yolo-split \
   --policy /tmp/ndnsf-yolo-split/yolo_policy.yaml
 ```
+
+With `--auto-split`, the splitter first exports a full ONNX model, runs the
+optional graph analyzer and homogeneous-provider planner, maps the recommended
+ONNX cut back to a YOLO module boundary, and then exports the two ONNX stages.
+Without `--auto-split`, the example keeps the fixed YOLO-specific split for
+repeatability. Both paths still emit the same `SplitterOutput` policy format.
 
 After installation, application code can import the distributed inference layer
 from any working directory:
@@ -571,15 +757,72 @@ python3 examples/python/NDNSF-DistributedInference/yolo_split/user.py \
   --config /tmp/ndnsf-yolo-split/yolo_policy.yaml
 ```
 
+For an end-to-end MiniNDN regression that generates the auto-split policy and
+then runs the controller, Stage 0 provider, Stage 1 provider, and user on
+separate MiniNDN nodes:
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
+```
+
+The smoke test succeeds only when the user log contains:
+
+```text
+YOLO_SPLIT_RESULT ... ok=true
+YOLO_SPLIT_MININDN_OK ...
+```
+
+The same smoke test is also available through the unified DI regression entry:
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case auto-split
+```
+
 ## YOLO 2x2 Split API Example
 
 The `yolo_2x2` example shows how the same APP API expresses a more general
-layout with two pipeline stages and two tensor-parallel shards per stage. It
-now contains a real distributed inference path, not just a repository smoke
-test:
+layout with two pipeline stages and two sequential shards inside each stage.
+It uses the real Ultralytics YOLO nano model: `split_model.py` exports four
+ONNX chunks. Within Stage 0, `/Stage/0/Shard/0` publishes an internal activation and
+`/Stage/0/Shard/1` fetches it before continuing computation. At the stage
+boundary, `/Stage/0/Shard/1` publishes the activation consumed by
+`/Stage/1/Shard/0`. Within Stage 1, `/Stage/1/Shard/0` publishes an internal
+activation and `/Stage/1/Shard/1` fetches it before producing the final
+prediction response.
+
+The dependency edges in `yolo_policy.yaml` are generated from the exported ONNX
+chunk IO, not from hardcoded topic names alone. For the current small YOLO
+split, the cross-role tensor sets are:
+
+```text
+/Stage/0/Shard/0 -> /Stage/0/Shard/1: x
+/Stage/0/Shard/1 -> /Stage/1/Shard/0: x, saved_4
+/Stage/1/Shard/0 -> /Stage/1/Shard/1: x, saved_4, saved_10, saved_13
+```
+
+Each edge publishes one activation large object containing the listed tensors,
+and the consumer fetches that object before continuing its ONNX chunk. This is
+a chunk-level collaboration graph derived from real model tensor boundaries;
+the internal YOLO operator graph still runs locally inside each chunk.
+The generated `*-2x2-onnx-graph-summary.json` also records full-model candidate
+split points, so later planners can compare different cut positions without
+changing the NDNSF-DI policy interface.
+
+Because a compiled distributed-inference plan makes dependency scopes, topic
+prefixes, producer roles, and consumer roles predictable, providers can also
+prefetch planned inputs. `ProviderRuntimeContext.prefetch_input_large(...)`
+starts a background wait/fetch for a role-local dependency reference, and
+`wait_prefetched_input_large(...)` returns the fetched activation object when
+the handler needs it. This optimization is generic: it depends only on the
+declared dependency edge and topic suffix, not on YOLO. It should be used only
+when the plan gives deterministic dependency names; otherwise handlers can keep
+using explicit `wait_one(...)` and `fetch_large(...)`.
 
 ```bash
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --model yolo26n.pt \
+  --input-size 32 \
+  --auto-split \
   --out-dir /tmp/ndnsf-yolo-2x2 \
   --policy /tmp/ndnsf-yolo-2x2/yolo_policy.yaml
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
@@ -596,6 +839,11 @@ python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/user.py \
   --config /tmp/ndnsf-yolo-2x2/yolo_policy.yaml
 ```
+
+With `--auto-split`, the 2x2 splitter uses the ONNX planner recommendation to
+choose the pipeline stage boundary, then splits each stage into two sequential
+chunks. Without it, the example keeps the previous YOLO-specific split as a
+stable fallback.
 
 For MiniNDN, run:
 
@@ -617,6 +865,13 @@ Provider logs then show `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`
 for each role's `model` and `runner` artifacts during the cold command,
 followed by `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT` for the warm command.
 
+To run both the 2-stage auto-split smoke and the YOLO 2x2 smoke through one
+entry point:
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
+```
+
 The policy/repo inspection helper is still available:
 
 ```bash
@@ -632,22 +887,21 @@ It builds four assignable roles:
 /Stage/1/Shard/1
 ```
 
-and two dependency scopes:
+and three dependency scopes:
 
 ```text
+stage0-internal   activation transfer inside stage 0
 stage0-to-stage1  activation transfer between pipeline stages
-stage1-internal   final-output shard exchange inside stage 1
+stage1-internal   activation transfer inside stage 1
 ```
 
-`split_model.py` writes deterministic per-role numpy artifacts into the
-generated deployment policy. In the MiniNDN repo-backed mode, the controller
-deployment flow stores those artifacts in the repo and writes a repo manifest
-file. The user publishes an execution spec for each role that references the
-manifest, not the model bytes. During inference, stage-0 providers fetch their
-assigned shards, publish hidden shards, stage-1 providers wait for those
-shards, and one stage-1 provider publishes the final response. The user
-compares that response with a local full-model reference and prints `ok=true`
-only when the values match.
+`split_model.py` writes per-role ONNX artifacts into the generated deployment
+policy. Each role has its own ONNX chunk. The sharding is therefore an
+execution plan over real YOLO layers, not a synthetic NumPy model: each provider
+fetches the previous shard's activation reference, continues the ONNX
+computation, and publishes the next activation reference. The final Stage1
+shard publishes the response. The user compares that response with a local full
+YOLO forward pass and prints `ok=true` only when the values match.
 
 A provider can advertise all four roles without understanding NDN internals:
 
@@ -657,7 +911,7 @@ provider.serve(
     service="/AI/YOLO/2x2Inference",
     roles="all",
     handler=handle_yolo_role,
-    backends=["numpy"],
+    backends=["onnxruntime"],
     temp_dir="/tmp/provider-A",
     has_model=False,
     can_provision=True,

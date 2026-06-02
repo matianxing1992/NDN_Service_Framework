@@ -1,8 +1,8 @@
-"""Standard output objects for model-specific splitters.
+"""Standard output objects for model splitters and deployment planners.
 
-NDNSF-DistributedInference intentionally does not try to infer model
-dependencies. A model-specific splitter should produce these objects after it
-has split the model into deployable parts.
+NDNSF-DistributedInference accepts this output regardless of whether it came
+from an ONNX analyzer, a PyTorch/model-specific splitter, a handwritten
+application planner, or a future optimizer.
 """
 
 from __future__ import annotations
@@ -66,6 +66,7 @@ class SplitServiceSpec:
                     "key_scope": dep.key_scope,
                     "topic_prefix": dep.topic_prefix,
                     "required": dep.required,
+                    **({"tensors": list(dep.tensors)} if dep.tensors else {}),
                 }
                 for dep in self.dependencies
             ],

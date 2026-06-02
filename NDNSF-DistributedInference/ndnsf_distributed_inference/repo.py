@@ -38,6 +38,13 @@ from ndnsf import (
 )
 
 
+def _pull_fetch_timeout_ms(segment_count: int) -> int:
+    """Return a conservative timeout for repo-side pull of segmented objects."""
+    if segment_count <= 0:
+        return 60000
+    return max(60000, min(600000, segment_count * 150))
+
+
 @dataclass(frozen=True)
 class RepoObjectManifest:
     object_name: str
@@ -216,6 +223,28 @@ class LocalDistributedRepo:
     def get(self, object_name: str) -> bytes:
         return self.fetch(object_name)
 
+    def fetch_object(
+        self,
+        object_name: str,
+        manifest: RepoObjectManifest | None = None,
+    ) -> bytes:
+        """Fetch one logical object and verify it against its manifest."""
+
+        manifest = manifest or self.manifest(object_name)
+        payload = self.fetch(manifest.object_name)
+        if len(payload) != manifest.size:
+            raise ValueError(f"repo object size mismatch: {manifest.object_name}")
+        if hashlib.sha256(payload).hexdigest() != manifest.sha256:
+            raise ValueError(f"repo object hash mismatch: {manifest.object_name}")
+        return payload
+
+    def get_object(
+        self,
+        object_name: str,
+        manifest: RepoObjectManifest | None = None,
+    ) -> bytes:
+        return self.fetch_object(object_name, manifest)
+
     def put_manifest(self, manifest: RepoObjectManifest) -> None:
         replicas = manifest.replica_nodes or tuple(self._nodes)
         for repo_node in replicas:
@@ -293,6 +322,9 @@ class RepoNodeApp:
         preallocate_bytes: int = 0,
         advertise_stored_prefixes: bool = False,
         advertise_command: str = "nlsrc",
+        handler_threads: int = 4,
+        ack_threads: int = 2,
+        serve_certificates: bool = True,
     ) -> None:
         self.repo_node = repo_node
         self.service_name = service_name
@@ -312,8 +344,9 @@ class RepoNodeApp:
             controller=controller,
             provider_prefix=provider_prefix,
             trust_schema=trust_schema,
-            handler_threads=4,
-            ack_threads=2,
+            handler_threads=handler_threads,
+            ack_threads=ack_threads,
+            serve_certificates=serve_certificates,
         )
         self._store = LocalDistributedRepo([self.capability])
         self.storage_dir = Path(storage_dir) if storage_dir else None
@@ -1103,8 +1136,8 @@ class RepoNodeApp:
                 packet_manifest_name = str(request["packetManifestName"])
                 packet_manifest_bytes = fetch_segmented_object(
                     packet_manifest_name,
-                    timeout_ms=60000,
-                    interest_lifetime_ms=1000,
+                    timeout_ms=_pull_fetch_timeout_ms(max(1, manifest.segment_count // 32)),
+                    interest_lifetime_ms=2000,
                     init_cwnd=8.0,
                 )
                 expected_manifest_hash = str(request.get("packetManifestSha256", ""))
@@ -1123,8 +1156,8 @@ class RepoNodeApp:
                 source_name = str(request["sourceName"])
                 packets = fetch_segmented_data_packets(
                     source_name,
-                    timeout_ms=60000,
-                    interest_lifetime_ms=1000,
+                    timeout_ms=_pull_fetch_timeout_ms(manifest.segment_count),
+                    interest_lifetime_ms=2000,
                 )
                 if len(packets) != manifest.segment_count:
                     raise ValueError(
@@ -1380,12 +1413,12 @@ class NetworkDistributedRepoClient:
         object_hash = hashlib.sha256(object_name.encode()).hexdigest()
         return f"{self.upload_prefix}/PACKET-MANIFEST/{object_hash}/{repo_hash}"
 
-    def capability(self) -> dict:
+    def capability(self, *, timeout_ms: int | None = None) -> dict:
         response = self.user.request_service(
             self.service_name,
             encode_repo_request("CAPABILITY"),
             ack_timeout_ms=self.ack_timeout_ms,
-            timeout_ms=self.timeout_ms,
+            timeout_ms=timeout_ms if timeout_ms is not None else self.timeout_ms,
             strategy="first-responding",
         )
         if not response.status:
@@ -1805,8 +1838,10 @@ class NetworkDistributedRepoClient:
                         f"need {replication_factor}")
                 selected = selected[:replication_factor]
                 use_pull_store = len(payload) >= self.pull_store_threshold_bytes
-                shared_data_name = self._shared_upload_data_name(object_name)
-                data_names = tuple(shared_data_name for _ in selected)
+                data_names = tuple(
+                    self.data_name(repo_node, object_name)
+                    for repo_node in selected
+                )
                 segment_locations: list[dict] = []
                 packet_user = ServiceUser(
                     group=self.user.group,
@@ -1829,47 +1864,14 @@ class NetworkDistributedRepoClient:
                 )
                 segment_count = 0
                 producers: list[object] = []
-                shared_packets: list[DataPacket] | None = None
-                shared_packet_manifest: bytes | None = None
-                if use_pull_store:
-                    shared_packets = make_segmented_data_packets(
-                        data_names[0],
+                for repo_node, data_name in zip(selected, data_names):
+                    packets = make_segmented_data_packets(
+                        data_name,
                         payload,
                         signing_identity=self.user.user,
                         max_segment_size=4000,
                         freshness_ms=60000,
                     )
-                    segment_count = len(shared_packets)
-                    shared_packet_manifest = json.dumps({
-                        "objectName": object_name,
-                        "dataName": data_names[0],
-                        "packets": [
-                            {
-                                "name": packet.name,
-                                "segment": packet.segment,
-                                "wireSha256": hashlib.sha256(packet.wire).hexdigest(),
-                            }
-                            for packet in shared_packets
-                        ],
-                    }, sort_keys=True).encode()
-                    data_producer = StoredDataProducer(
-                        data_names[0],
-                        [packet.wire for packet in shared_packets],
-                        signing_identity=self.user.user,
-                    ).start()
-                    producers.append(data_producer)
-                for repo_node, data_name in zip(selected, data_names):
-                    if use_pull_store:
-                        assert shared_packets is not None
-                        packets = shared_packets
-                    else:
-                        packets = make_segmented_data_packets(
-                            data_name,
-                            payload,
-                            signing_identity=self.user.user,
-                            max_segment_size=4000,
-                            freshness_ms=60000,
-                        )
                     segment_count = max(segment_count, len(packets))
                     self._log(
                         f"repo store target={repo_node} "
@@ -1886,22 +1888,36 @@ class NetworkDistributedRepoClient:
                         replica_data_names=(data_name,),
                         policy_epoch=policy_epoch,
                     )
-                    if not use_pull_store:
-                        location_hints = [] if data_name.startswith(
-                            repo_node.rstrip("/") + "/"
-                        ) else [repo_node]
-                        segment_locations.append({
-                            "start": 0,
-                            "end": len(packets) - 1,
-                            "dataName": data_name,
-                            "repoNode": repo_node,
-                            "hints": location_hints,
-                            "routeStrategy": "direct-first" if location_hints else "hint-first",
-                        })
-
+                    location_hints = [] if data_name.startswith(
+                        repo_node.rstrip("/") + "/"
+                    ) else [repo_node]
+                    segment_locations.append({
+                        "start": 0,
+                        "end": len(packets) - 1,
+                        "dataName": data_name,
+                        "repoNode": repo_node,
+                        "hints": location_hints,
+                        "routeStrategy": "hint-first",
+                    })
                     if use_pull_store:
-                        assert shared_packet_manifest is not None
-                        packet_manifest = shared_packet_manifest
+                        packet_manifest = json.dumps({
+                            "objectName": object_name,
+                            "dataName": data_name,
+                            "packets": [
+                                {
+                                    "name": packet.name,
+                                    "segment": packet.segment,
+                                    "wireSha256": hashlib.sha256(packet.wire).hexdigest(),
+                                }
+                                for packet in packets
+                            ],
+                        }, sort_keys=True).encode()
+                        data_producer = StoredDataProducer(
+                            data_name,
+                            [packet.wire for packet in packets],
+                            signing_identity=self.user.user,
+                        ).start()
+                        producers.append(data_producer)
                         packet_manifest_name = self._packet_manifest_name(
                             repo_node,
                             object_name,
@@ -1927,7 +1943,10 @@ class NetworkDistributedRepoClient:
                                 ).hexdigest(),
                             ),
                             ack_timeout_ms=self.ack_timeout_ms,
-                            timeout_ms=max(self.timeout_ms, 60000),
+                            timeout_ms=max(
+                                self.timeout_ms,
+                                _pull_fetch_timeout_ms(target_manifest.segment_count) + 30000,
+                            ),
                             strategy="first-responding",
                         )
                         if not response.status:
@@ -1956,15 +1975,6 @@ class NetworkDistributedRepoClient:
                             f"repo stored packet target={repo_node} "
                             f"segment={packet.segment}",
                         )
-                if use_pull_store and segment_count > 0:
-                    segment_locations.append({
-                        "start": 0,
-                        "end": segment_count - 1,
-                        "dataName": data_names[0],
-                        "repoNodes": selected,
-                        "hints": selected,
-                        "routeStrategy": "direct-first",
-                    })
                 for producer in producers:
                     try:
                         producer.stop()
@@ -2280,14 +2290,15 @@ class NetworkDistributedRepoClient:
             raise RuntimeError(f"repo object hash mismatch: {object_name}")
         return payload
 
-    def wait_until_ready(self, timeout_s: float = 10.0) -> dict:
+    def wait_until_ready(self, timeout_s: float = 10.0, *, probe_timeout_ms: int = 3000) -> dict:
         deadline = time.time() + timeout_s
         last_error = None
         while time.time() < deadline:
             try:
-                return self.capability()
+                return self.capability(timeout_ms=min(self.timeout_ms, probe_timeout_ms))
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
+                self._log(f"repo readiness probe failed: {exc}")
                 time.sleep(0.2)
         raise RuntimeError(f"repo cluster not ready: {last_error}")
 

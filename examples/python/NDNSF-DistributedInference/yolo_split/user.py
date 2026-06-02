@@ -19,6 +19,7 @@ from yolo_split_lib import (
     decode_onnx_output,
     encode_initial_request,
     full_forward,
+    full_forward_from_policy_onnx,
     load_yolo_model,
     make_input,
     optional_local_nfd,
@@ -57,11 +58,16 @@ def main() -> int:
             permission_wait_ms=args.permission_wait_ms,
             adaptive_admission=False,
         )
-        model_name, model = load_yolo_model(args.model)
         x = make_input(args.input_size)
         client.register_input_encoder(SERVICE, encode_initial_request)
         request_payload = client.encode_input(SERVICE, x)
-        expected = full_forward(model, decode_initial_request(request_payload))
+        expected_np = full_forward_from_policy_onnx(args.config, decode_initial_request(request_payload))
+        if expected_np is None:
+            model_name, model = load_yolo_model(args.model)
+            expected_np = full_forward(model, decode_initial_request(request_payload)).numpy()
+            expected_source = model_name
+        else:
+            expected_source = "policy-full-onnx"
 
         result = client.infer_service(
             SERVICE,
@@ -75,14 +81,13 @@ def main() -> int:
             return 2
 
         actual_np = decode_onnx_output(result.payload)
-        expected_np = expected.numpy()
         diff = abs(expected_np - actual_np)
         max_diff = float(diff.max())
         mean_diff = float(diff.mean())
         ok = max_diff < 1e-3
         print(
             "YOLO_SPLIT_RESULT "
-            f"status=true backend=onnxruntime model={model_name} "
+            f"status=true backend=onnxruntime expected={expected_source} "
             f"input={args.input_size}x{args.input_size} "
             f"shape={tuple(actual_np.shape)} max_abs_diff={max_diff:.8f} "
             f"mean_abs_diff={mean_diff:.8f} ok={str(ok).lower()}"

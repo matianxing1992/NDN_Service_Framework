@@ -215,6 +215,7 @@ def _parse_dependencies(raw: Any) -> tuple[InferenceDependency, ...]:
             key_scope=str(item["key_scope"]),
             topic_prefix=str(item["topic_prefix"]),
             required=bool(item.get("required", True)),
+            tensors=list(_as_tuple(item.get("tensors"))),
         ))
     return tuple(dependencies)
 
@@ -526,6 +527,7 @@ def service_manifest(services: tuple[ServicePolicy, ...]) -> dict[str, Any]:
                         "key_scope": dep.key_scope,
                         "topic_prefix": dep.topic_prefix,
                         "required": dep.required,
+                        "tensors": list(dep.tensors),
                     }
                     for dep in service.dependencies
                 ],

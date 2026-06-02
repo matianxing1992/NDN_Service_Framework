@@ -32,6 +32,16 @@ from .repo import (
     StorageCapability,
     select_replicas,
 )
+from .onnx_graph import (
+    OnnxChunkSpec,
+    OnnxGraphSummary,
+    OnnxSplitCandidate,
+    analyze_onnx_graph,
+    build_chunk_dependencies,
+    build_sequential_chunk_dependencies,
+    estimate_split_candidates,
+    write_onnx_graph_summary,
+)
 from .policy import (
     ArtifactSecurityPolicy,
     DistributedInferenceDeployment,
@@ -39,6 +49,14 @@ from .policy import (
     load_config,
     load_or_generate_deployment,
     write_policy_bundle,
+)
+from .split_planner import (
+    ProviderProfile,
+    SequentialSplitCandidate,
+    SplitPlanRecommendation,
+    SplitPlannerWeights,
+    homogeneous_provider_profiles,
+    recommend_sequential_splits,
 )
 from .splitter import SplitArtifact, SplitServiceSpec, SplitterOutput
 try:
@@ -70,19 +88,33 @@ __all__ = [
     "ProviderRuntimeContext",
     "LocalDistributedRepo",
     "NetworkDistributedRepoClient",
+    "OnnxChunkSpec",
+    "OnnxGraphSummary",
+    "OnnxSplitCandidate",
     "PlacementPolicy",
+    "ProviderProfile",
     "RepoObjectManifest",
     "RepoNodeApp",
     "RepoPlacement",
     "RoleDependencyView",
     "RuntimeSpec",
     "SandboxPolicy",
+    "SequentialSplitCandidate",
     "SplitArtifact",
     "SplitServiceSpec",
+    "SplitPlanRecommendation",
+    "SplitPlannerWeights",
     "SplitterOutput",
     "StorageCapability",
+    "analyze_onnx_graph",
+    "build_chunk_dependencies",
+    "build_sequential_chunk_dependencies",
+    "estimate_split_candidates",
+    "homogeneous_provider_profiles",
     "load_config",
     "load_or_generate_deployment",
+    "recommend_sequential_splits",
     "select_replicas",
+    "write_onnx_graph_summary",
     "write_policy_bundle",
 ]

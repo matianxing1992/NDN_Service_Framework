@@ -24,9 +24,11 @@ localRequest(ndn_service_framework::LocalServiceRegistry& registry,
              const std::string& operation,
              const std::vector<uint8_t>& payload)
 {
+  auto request = RepoClient::makeRequest(payload);
   auto response = registry.localInvokeRaw(
     makeRepoServiceName(repoServicePrefix, operation),
-    RepoClient::makeRequest(payload));
+    request);
+  request.Clear();
   if (!response.getStatus()) {
     throw std::runtime_error("local repo " + operation + " failed: " +
                              response.getErrorInfo());
@@ -159,6 +161,12 @@ RepoClient::getSegmented(const RepoNode& node, const RepoObjectManifest& manifes
   return payload;
 }
 
+std::vector<uint8_t>
+RepoClient::getObject(const RepoNode& node, const RepoObjectManifest& manifest)
+{
+  return getSegmented(node, manifest);
+}
+
 RepoObjectManifest
 RepoClient::localPut(ndn_service_framework::LocalServiceRegistry& registry,
                      const ndn::Name& repoServicePrefix,
@@ -262,6 +270,14 @@ RepoClient::localGetSegmented(ndn_service_framework::LocalServiceRegistry& regis
   }
   verifySegmentedPayload(manifest, payload);
   return payload;
+}
+
+std::vector<uint8_t>
+RepoClient::localGetObject(ndn_service_framework::LocalServiceRegistry& registry,
+                           const ndn::Name& repoServicePrefix,
+                           const RepoObjectManifest& manifest)
+{
+  return localGetSegmented(registry, repoServicePrefix, manifest);
 }
 
 RepoObjectManifest

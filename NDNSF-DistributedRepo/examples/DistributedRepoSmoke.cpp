@@ -105,6 +105,7 @@ main()
     8);
   if (segmentedManifest.segmentCount <= 1 ||
       RepoClient::getSegmented(node, segmentedManifest) != largePayload ||
+      RepoClient::getObject(node, segmentedManifest) != largePayload ||
       node.getManifest(segmentedManifest.objectName).segmentCount !=
         segmentedManifest.segmentCount) {
     std::cerr << "direct segmented repo object mismatch\n";
@@ -196,6 +197,10 @@ main()
     7);
   if (localSegmentedManifest.segmentCount <= 1 ||
       RepoClient::localGetSegmented(
+        localRegistry,
+        ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+        localSegmentedManifest) != largePayload ||
+      RepoClient::localGetObject(
         localRegistry,
         ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
         localSegmentedManifest) != largePayload) {

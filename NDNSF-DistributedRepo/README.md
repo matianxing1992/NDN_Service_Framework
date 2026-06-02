@@ -159,6 +159,17 @@ manifest = repo.store(
 payload = repo.fetch(manifest.object_name)
 ```
 
+If the caller already has a manifest and wants one logical object, prefer the
+manifest-aware helper:
+
+```python
+payload = repo.fetch_object(manifest)
+```
+
+It verifies the returned payload against the manifest size and hash. This keeps
+application code independent from the repo's internal single-payload versus
+segmented-object layout.
+
 The recommended C++ object API is similarly object-oriented:
 
 ```cpp
@@ -179,11 +190,13 @@ auto objects = RepoClient::list(node);
 RepoClient::remove(node, manifest.objectName);
 ```
 
-For larger payloads, use the segmented C++ helper. It stores each chunk as a
-separate repo object named `<object>/seg/<N>` and stores a manifest-only parent
-object. The repo stores opaque bytes and does not perform APP trust, signature,
-or hash validation while storing; applications verify the manifest/hash after
-fetching.
+For larger payloads, store with the segmented C++ helper. It stores each chunk
+as a separate repo object named `<object>/seg/<N>` and stores a manifest-only
+parent object. Callers should still fetch through the object-level
+manifest-aware helper; it automatically reassembles segmented objects and
+verifies size/hash metadata. The repo stores opaque bytes and does not perform
+APP trust, signature, or hash validation while storing; applications verify the
+manifest/hash after fetching.
 
 ```cpp
 auto manifest = RepoClient::putSegmented(
@@ -192,8 +205,11 @@ auto manifest = RepoClient::putSegmented(
   payload,
   options,
   6000);
-auto verifiedPayload = RepoClient::getSegmented(node, manifest);
+auto verifiedPayload = RepoClient::getObject(node, manifest);
 ```
+
+`RepoClient::getSegmented(...)` remains available for tests and low-level code
+that explicitly needs to exercise the segmented-object path.
 
 ## C++ Standalone Repo Node
 

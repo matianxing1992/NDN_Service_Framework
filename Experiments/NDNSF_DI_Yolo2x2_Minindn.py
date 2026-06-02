@@ -90,6 +90,7 @@ def main() -> None:
     subprocess.run([
         "python3",
         str(PY_DIR / "split_model.py"),
+        "--auto-split",
         "--out-dir",
         str(OUT / "model"),
         "--policy",
@@ -117,7 +118,7 @@ def main() -> None:
         svs_parallel_sync_processing=False,
         svs_parallel_workers=4,
         svs_parallel_queue=256,
-        svs_sync_publish=False,
+        svs_sync_publish=True,
         svs_disable_parallel_production=False,
         svs_parallel_production_workers=None,
         svs_disable_parallel_production_signing=False,
@@ -126,7 +127,8 @@ def main() -> None:
         svs_parallel_production_extra_block=False,
         svs_sync_batching=False,
         svs_sync_batch_ms=0,
-        ack_threads=-1,
+        ack_threads=1,
+        performance_mode=False,
     )
     try:
         ndn.start()
@@ -161,6 +163,13 @@ def main() -> None:
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
+        env["NDNSF_HANDLER_THREADS"] = "1"
+        env["NDNSF_ACK_THREADS"] = "1"
+        env["NDNSF_SVS_ASYNC_PUBLISH"] = "0"
+        env["NDNSF_SVS_PARALLEL_SYNC"] = "0"
+        env["NDNSF_SVS_PARALLEL_PRODUCTION"] = "0"
+        env["NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING"] = "0"
+        env["NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK"] = "0"
         env["PYTHONPATH"] = ":".join([
             str(REPO / "NDNSF-DistributedInference"),
             str(REPO / "pythonWrapper"),
@@ -177,7 +186,7 @@ def main() -> None:
         if not wait_log(controller_log, "ServiceController listening", 20):
             raise RuntimeError(f"controller did not become ready; see {controller_log}")
         time.sleep(4)
-        start(
+        _, repo_log = start(
             ndn.net["neu"],
             "repo",
             python_cmd("repo_node.py", common + [
@@ -185,10 +194,14 @@ def main() -> None:
                 "--repo-node", "/example/hello/provider/D",
                 "--failure-domain", "repo-rack",
                 "--storage-dir", "/tmp/yolo-2x2-repo-store",
+                "--handler-threads", "1",
+                "--ack-threads", "1",
             ]),
             env,
             procs,
         )
+        if not wait_log(repo_log, "Installed provider permission", 60):
+            raise RuntimeError(f"repo did not install permissions; see {repo_log}")
         deployer_proc, deployer_log = start(ndn.net["csu"], "controller-deployer",
                                             python_cmd("controller.py", common + [
                                                 "--deploy-only",
@@ -197,10 +210,13 @@ def main() -> None:
                                                 "--replication-factor",
                                                 "1",
                                             ]), env, procs)
-        if not wait_log(deployer_log, "YOLO_2X2_CONTROLLER_REPO_DEPLOYED", 120,
+        if not wait_log(deployer_log, "YOLO_2X2_CONTROLLER_REPO_DEPLOYED", 360,
                         proc=deployer_proc):
+            deployer_rc = deployer_proc.poll()
+            deployer_tail = deployer_log.read_text(errors="replace")[-2000:] if deployer_log.exists() else ""
             raise RuntimeError(
-                f"controller did not deploy repo artifacts; see {deployer_log}")
+                "controller did not deploy repo artifacts; "
+                f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
 
         providers = [
             ("ucla", "provider-s00", ["--role", "/Stage/0/Shard/0"]),

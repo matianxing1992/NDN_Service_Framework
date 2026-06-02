@@ -15,6 +15,7 @@ from ndnsf_distributed_inference import (
     APPDeployment,
     LocalDistributedRepo,
     PlacementPolicy,
+    RepoObjectManifest,
     StorageCapability,
 )
 
@@ -91,11 +92,11 @@ def inspect_yolo_2x2_policy():
 
 def validate_repo_artifacts(manifests, repo: LocalDistributedRepo) -> None:
     for manifest_dict in manifests.values():
-        object_name = manifest_dict["objectName"]
-        payload = repo.fetch(object_name)
+        manifest = RepoObjectManifest.from_dict(manifest_dict)
+        payload = repo.fetch_object(manifest.object_name, manifest)
         digest = hashlib.sha256(payload).hexdigest()
-        if digest != manifest_dict["sha256"]:
-            raise RuntimeError(f"repo artifact hash mismatch for {object_name}")
+        if digest != manifest.sha256:
+            raise RuntimeError(f"repo artifact hash mismatch for {manifest.object_name}")
 
 
 def validate_repo_intermediate_data(repo: LocalDistributedRepo) -> None:
@@ -110,7 +111,7 @@ def validate_repo_intermediate_data(repo: LocalDistributedRepo) -> None:
         policy=PlacementPolicy(replication_factor=1),
         policy_epoch="/Policy/yolo-2x2/v1",
     )
-    fetched = repo.fetch(manifest.object_name)
+    fetched = repo.fetch_object(manifest.object_name, manifest)
     if fetched != payload:
         raise RuntimeError("repo intermediate activation fetch mismatch")
 

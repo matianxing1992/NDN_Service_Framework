@@ -113,6 +113,16 @@ manifest = repo.store(
 payload = repo.fetch(manifest.object_name)
 ```
 
+如果调用方已经拿到 manifest，并且想获取一个逻辑 object，推荐使用
+manifest-aware helper：
+
+```python
+payload = repo.fetch_object(manifest)
+```
+
+它会根据 manifest 的 size/hash 校验返回 payload。这样 application code
+不需要知道 repo 内部到底是单 payload 存储，还是 object-level segmented 存储。
+
 推荐的 C++ object API 也是 object-oriented：
 
 ```cpp
@@ -131,10 +141,12 @@ auto manifest = RepoClient::put(
 auto fetched = RepoClient::get(node, manifest.objectName);
 ```
 
-对于更大的 payload，使用 C++ segmented helper。它把每个 chunk 作为独立
+对于更大的 payload，使用 C++ segmented helper 存储。它把每个 chunk 作为独立
 repo object 存到 `<object>/seg/<N>`，并额外保存一个 manifest-only parent
-object。Repo 只存 opaque bytes；存储时不做 APP trust、signature 或 hash
-验证。APP 在 fetch 后根据 manifest/hash 自己验证。
+object。调用方仍应通过 manifest-aware object helper 获取；它会自动重组
+segmented object，并验证 size/hash metadata。Repo 只存 opaque bytes；存储时
+不做 APP trust、signature 或 hash 验证。APP 在 fetch 后根据 manifest/hash
+自己验证。
 
 ```cpp
 auto manifest = RepoClient::putSegmented(
@@ -143,8 +155,11 @@ auto manifest = RepoClient::putSegmented(
   payload,
   options,
   6000);
-auto verifiedPayload = RepoClient::getSegmented(node, manifest);
+auto verifiedPayload = RepoClient::getObject(node, manifest);
 ```
+
+`RepoClient::getSegmented(...)` 仍保留给测试和明确需要验证 segmented-object
+路径的低层代码使用。
 
 ## C++ 独立 Repo Node
 

@@ -344,6 +344,23 @@ class APPClient:
             raise TypeError("input encoder must return bytes")
         return payload
 
+    def publish_large_payload(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        object_label: str = "input",
+        freshness_ms: int = 60000,
+    ):
+        """Publish a large application payload and return its NDNSF Data reference."""
+
+        return self._client.user.publish_encrypted_large_data(
+            service,
+            bytes(payload),
+            object_label=object_label,
+            freshness_ms=freshness_ms,
+        )
+
     def infer_service_object(self, service: str, value: Any, *,
                              ack_timeout_ms: int = 500,
                              timeout_ms: int = 30000,

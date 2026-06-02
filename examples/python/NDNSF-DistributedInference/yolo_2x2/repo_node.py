@@ -29,6 +29,9 @@ def main() -> int:
                         help="Provider-local repo storage directory")
     parser.add_argument("--advertise-stored-prefixes", action="store_true",
                         help="Advertise stored Data prefixes through NLSR")
+    parser.add_argument("--handler-threads", type=int, default=4)
+    parser.add_argument("--ack-threads", type=int, default=2)
+    parser.add_argument("--no-serve-certificates", action="store_true")
     args = parser.parse_args()
 
     deployment = APPDeployment.from_config(
@@ -49,6 +52,9 @@ def main() -> int:
         memory_cache_bytes=args.memory_cache_bytes,
         preallocate_bytes=args.preallocate_bytes,
         advertise_stored_prefixes=args.advertise_stored_prefixes,
+        handler_threads=args.handler_threads,
+        ack_threads=args.ack_threads,
+        serve_certificates=not args.no_serve_certificates,
     )
     return app.run()
 

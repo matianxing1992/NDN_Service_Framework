@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provider for the YOLO-style 2x2 distributed inference example."""
+"""Provider for the real YOLO 2x2 distributed inference example."""
 
 from __future__ import annotations
 
@@ -13,15 +13,18 @@ from yolo_2x2_lib import (
     ROLE_S1_0,
     ROLE_S1_1,
     SERVICE,
-    concat_by_offset,
-    decode_hidden,
+    decode_binary_payload,
     decode_image,
-    decode_yolo_output,
-    encode_hidden,
+    decode_image_reference,
+    encode_binary_payload,
     encode_yolo_output,
-    load_part,
     optional_local_nfd,
     parse_args_with_common,
+    run_final_chunk,
+    run_intermediate_chunk,
+    select_tensor_payload,
+    verify_tensor_payload,
+    verify_referenced_payload,
 )
 
 
@@ -37,61 +40,112 @@ def _publish_ref(ctx: ProviderRuntimeContext, edge, payload: bytes,
 
 def handle_role(ctx: ProviderRuntimeContext) -> None:
     model_path = ctx.execution.path("model")
+    input_prefetch = None
+    if ctx.role == ROLE_S0_1:
+        input_prefetch = ctx.prefetch_input_large(
+            key_scope="stage0-internal",
+            topic_suffix="ref/" + _role_index(ROLE_S0_0),
+            ref_timeout_ms=10000,
+            fetch_timeout_ms=10000,
+        )
+    elif ctx.role == ROLE_S1_0:
+        input_prefetch = ctx.prefetch_input_large(
+            key_scope="stage0-to-stage1",
+            topic_suffix="ref/" + _role_index(ROLE_S0_1),
+            ref_timeout_ms=10000,
+            fetch_timeout_ms=10000,
+        )
+    elif ctx.role == ROLE_S1_1:
+        input_prefetch = ctx.prefetch_input_large(
+            key_scope="stage1-internal",
+            topic_suffix="ref/" + _role_index(ROLE_S1_0),
+            ref_timeout_ms=10000,
+            fetch_timeout_ms=10000,
+        )
     _probe_downloaded_runner(ctx, model_path)
-    part = load_part(model_path)
 
-    if ctx.role in (ROLE_S0_0, ROLE_S0_1):
-        image = decode_image(ctx.request)
-        x = image.reshape(1, -1)
-        hidden = x @ part["w0"].T + part["b0"]
-        hidden = (hidden * (hidden > 0)).astype("float32")
-        payload = encode_hidden(int(part["hidden_offset"]), hidden)
-        edge = ctx.dependencies.output("stage0-to-stage1")
+    if ctx.role == ROLE_S0_0:
+        try:
+            image_ref = decode_image_reference(ctx.request)
+            image_payload = ctx.ndnsf.fetch_encrypted_large_data(
+                str(image_ref["data_name"]),
+                SERVICE,
+            )
+            if image_payload is None:
+                ctx.ndnsf.fail("failed to fetch input image reference")
+                return
+            verify_referenced_payload(image_ref, image_payload)
+        except Exception as exc:
+            ctx.ndnsf.fail(f"failed to load input image reference: {exc}")
+            return
+        images = decode_image(image_payload)
+        activation = run_intermediate_chunk(model_path, images, image_input=True)
+        edge = ctx.dependencies.output("stage0-internal")
+        payload = encode_binary_payload(
+            0,
+            select_tensor_payload(activation, edge.tensors),
+        )
         _publish_ref(ctx, edge, payload, _role_index(ctx.role))
-        print(f"YOLO_2X2_STAGE0 role={ctx.role} hidden={hidden.shape}", flush=True)
+        print(f"YOLO_2X2_STAGE0_INTERNAL role={ctx.role} "
+              f"activation_bytes={len(activation)} tensors={','.join(edge.tensors)}",
+              flush=True)
         return
 
-    if ctx.role in (ROLE_S1_0, ROLE_S1_1):
+    if ctx.role == ROLE_S0_1:
+        input_edge = ctx.dependencies.input("stage0-internal")
+        try:
+            payload = ctx.wait_prefetched_input_large(input_prefetch, timeout_ms=10000)
+        except Exception as exc:
+            ctx.ndnsf.fail(f"failed to prefetch stage0 internal activation: {exc}")
+            return
+        _, activation = decode_binary_payload(payload)
+        verify_tensor_payload(activation, input_edge.tensors)
+        next_activation = run_intermediate_chunk(model_path, activation)
+        output_edge = ctx.dependencies.output("stage0-to-stage1")
+        out_payload = encode_binary_payload(
+            0,
+            select_tensor_payload(next_activation, output_edge.tensors),
+        )
+        _publish_ref(ctx, output_edge, out_payload, _role_index(ctx.role))
+        print(f"YOLO_2X2_STAGE0_BOUNDARY role={ctx.role} "
+              f"activation_bytes={len(next_activation)} tensors={','.join(output_edge.tensors)}",
+              flush=True)
+        return
+
+    if ctx.role == ROLE_S1_0:
         input_edge = ctx.dependencies.input("stage0-to-stage1")
-        refs = ctx.ndnsf.wait_for(input_edge.key_scope, input_edge.topic("ref"), 2, 10000)
-        if len(refs) < 2:
-            ctx.ndnsf.fail("timed out waiting for stage0 activation shards")
+        try:
+            payload = ctx.wait_prefetched_input_large(input_prefetch, timeout_ms=10000)
+        except Exception as exc:
+            ctx.ndnsf.fail(f"failed to prefetch stage0-to-stage1 activation: {exc}")
             return
-        hidden_parts = []
-        for ref in refs:
-            payload = ctx.ndnsf.fetch_large(ref.payload.decode(), input_edge.key_scope, 10000)
-            if payload is None:
-                ctx.ndnsf.fail("failed to fetch stage0 activation shard")
-                return
-            hidden_parts.append(decode_hidden(payload))
-        hidden = concat_by_offset(hidden_parts)
-        output = hidden @ part["w1"].T + part["b1"]
-        out_payload = encode_yolo_output(int(part["output_offset"]), output)
-        internal_edge = ctx.dependencies.internal_scope("stage1-internal")
+        _, activation = decode_binary_payload(payload)
+        verify_tensor_payload(activation, input_edge.tensors)
+        next_activation = run_intermediate_chunk(model_path, activation)
+        internal_edge = ctx.dependencies.output("stage1-internal")
+        out_payload = encode_binary_payload(
+            0,
+            select_tensor_payload(next_activation, internal_edge.tensors),
+        )
+        _publish_ref(ctx, internal_edge, out_payload, _role_index(ctx.role))
+        print(f"YOLO_2X2_STAGE1_INTERNAL role={ctx.role} "
+              f"activation_bytes={len(next_activation)} tensors={','.join(internal_edge.tensors)}",
+              flush=True)
+        return
 
-        if ctx.role == ROLE_S1_1:
-            _publish_ref(ctx, internal_edge, out_payload, _role_index(ctx.role))
-            print(f"YOLO_2X2_STAGE1 role={ctx.role} output={output.shape}", flush=True)
+    if ctx.role == ROLE_S1_1:
+        internal_edge = ctx.dependencies.input("stage1-internal")
+        try:
+            peer_payload = ctx.wait_prefetched_input_large(input_prefetch,
+                                                           timeout_ms=10000)
+        except Exception as exc:
+            ctx.ndnsf.fail(f"failed to prefetch stage1 internal activation: {exc}")
             return
-
-        ref = ctx.ndnsf.wait_one(internal_edge.key_scope,
-                                 internal_edge.topic("ref/Stage-1-Shard-1"),
-                                 10000)
-        if ref is None:
-            ctx.ndnsf.fail("timed out waiting for stage1 shard1 output")
-            return
-        peer_payload = ctx.ndnsf.fetch_large(ref.payload.decode(),
-                                             internal_edge.key_scope,
-                                             10000)
-        if peer_payload is None:
-            ctx.ndnsf.fail("failed to fetch stage1 shard1 output")
-            return
-        final = concat_by_offset([
-            decode_yolo_output(out_payload),
-            decode_yolo_output(peer_payload),
-        ])
-        ctx.ndnsf.publish_final_response(encode_yolo_output(0, final))
-        print(f"YOLO_2X2_STAGE1_FINAL output={final.shape}", flush=True)
+        _, activation = decode_binary_payload(peer_payload)
+        verify_tensor_payload(activation, internal_edge.tensors)
+        output = run_final_chunk(model_path, activation)
+        ctx.ndnsf.publish_final_response(encode_yolo_output(0, output))
+        print(f"YOLO_2X2_STAGE1_FINAL role={ctx.role} output={output.shape}", flush=True)
         return
 
     ctx.ndnsf.fail(f"unsupported role {ctx.role}")

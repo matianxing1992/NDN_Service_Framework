@@ -67,6 +67,7 @@ def main() -> int:
 
 def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
                               manifest_path: str, replication_factor: int) -> None:
+    print("YOLO_2X2_CONTROLLER_REPO_DEPLOY_BEGIN", manifest_path, flush=True)
     deployment = APPDeployment.from_config(
         config,
         generated_policy_dir=generated_policy_dir,
@@ -77,6 +78,8 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
         user=deployment.controller,
         trust_schema=deployment.trust_schema,
         permission_wait_ms=6000,
+        handler_threads=1,
+        ack_threads=1,
         adaptive_admission=False,
     )
     repo = NetworkDistributedRepoClient(
@@ -87,7 +90,9 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
         timeout_ms=60000,
         verbose=True,
     )
+    print("YOLO_2X2_CONTROLLER_REPO_WAIT_READY", flush=True)
     repo.wait_until_ready(60.0)
+    print("YOLO_2X2_CONTROLLER_REPO_READY", flush=True)
     service = deployment.service_policy(SERVICE)
     artifacts = {artifact.role: artifact for artifact in service.artifacts}
     runner_payload = build_runner_script()

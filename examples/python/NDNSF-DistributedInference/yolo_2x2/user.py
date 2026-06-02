@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""User for the YOLO-style 2x2 distributed inference example."""
+"""User for the real YOLO 2x2 distributed inference example."""
 
 from __future__ import annotations
 
 from ndnsf_distributed_inference import APPClient
+from pathlib import Path
 
 from yolo_2x2_lib import (
+    DEFAULT_MODEL,
+    DEFAULT_INPUT_SIZE,
     SERVICE,
     build_dynamic_plan,
     build_repo_plan,
     decode_yolo_output,
+    decode_image,
+    encode_image_reference,
     encode_image_for_yolo,
     full_forward,
-    make_full_model,
     make_input,
     optional_local_nfd,
     parse_args_with_common,
+    run_local_onnx_pipeline,
 )
 
 
@@ -28,6 +33,8 @@ def main() -> int:
     parser.add_argument("--dynamic-provisioning", action="store_true")
     parser.add_argument("--repo-manifest-file", default="")
     parser.add_argument("--sequential-requests", type=int, default=0)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE)
     args = parser.parse_args()
     if args.dry_run:
         print("Run YOLO 2x2 user")
@@ -43,10 +50,28 @@ def main() -> int:
             adaptive_admission=False,
             async_workers=max(1, args.async_requests),
         )
-        image = make_input()
-        expected = full_forward(make_full_model(), image)
+        image = make_input(args.input_size)
         client.register_input_encoder(SERVICE, encode_image_for_yolo)
-        payload = client.encode_input(SERVICE, image)
+        image_payload = client.encode_input(SERVICE, image)
+        image_ref = client.publish_large_payload(
+            SERVICE,
+            image_payload,
+            object_label="inference-input-image",
+            freshness_ms=120000,
+        )
+        if not image_ref.success:
+            raise RuntimeError(f"input image publish failed: {image_ref.error}")
+        payload = encode_image_reference(image_ref.encrypted_data_name, image_payload)
+        inference_image = decode_image(image_payload)
+        artifact_paths = {
+            artifact.role: artifact.path
+            for artifact in client.deployment.service_policy(SERVICE).artifacts
+            if getattr(artifact, "path", "")
+        }
+        if artifact_paths and all(Path(path).exists() for path in artifact_paths.values()):
+            expected = run_local_onnx_pipeline(artifact_paths, inference_image)
+        else:
+            expected = full_forward(args.model, inference_image)
         if args.repo_manifest_file:
             plan = build_repo_plan(client, args.repo_manifest_file)
         elif args.dynamic_provisioning:
