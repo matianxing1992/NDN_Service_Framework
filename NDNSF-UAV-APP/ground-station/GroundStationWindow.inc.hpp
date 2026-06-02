@@ -1395,7 +1395,7 @@ private:
       if (telemetry) {
         rowText += " bat=" + telemetry->batteryPercent + "%";
       }
-      if (mission && mission->phase != "idle") {
+      if (mission && !mission->isIdle()) {
         rowText += " mission=" + mission->phase;
       }
       if (video && video->status != "unknown") {
@@ -1469,6 +1469,12 @@ private:
     const auto missionDetail = mission ? mission->detail : "idle";
     std::string text = telemetry.mapSummary(selectedDrone) + "\n"
       "Mission: " + missionPhase + " (" + missionDetail + ")";
+    if (mission) {
+      text += "\nMission model: start=" + std::string(mission->isStartable() ? "ready" : "blocked") +
+              " stop=" + std::string(mission->isStoppable() ? "ready" : "blocked") +
+              " busy=" + std::string(mission->isBusyForAssignment() ? "yes" : "no") +
+              " terminal=" + std::string(mission->isTerminal() ? "yes" : "no");
+    }
     if (readiness) {
       text += "\nReadiness model: " + readiness->readiness +
               " reason=" + readiness->readinessReason +
@@ -1561,14 +1567,22 @@ private:
       switch (ch) {
       case 'A': return {"01110", "10001", "10001", "11111", "10001", "10001", "10001"};
       case 'B': return {"11110", "10001", "10001", "11110", "10001", "10001", "11110"};
+      case 'C': return {"01110", "10001", "10000", "10000", "10000", "10001", "01110"};
       case 'D': return {"11110", "10001", "10001", "10001", "10001", "10001", "11110"};
+      case 'E': return {"11111", "10000", "10000", "11110", "10000", "10000", "11111"};
+      case 'F': return {"11111", "10000", "10000", "11110", "10000", "10000", "10000"};
       case 'G': return {"01110", "10001", "10000", "10111", "10001", "10001", "01110"};
+      case 'I': return {"01110", "00100", "00100", "00100", "00100", "00100", "01110"};
+      case 'L': return {"10000", "10000", "10000", "10000", "10000", "10000", "11111"};
       case 'N': return {"10001", "11001", "10101", "10011", "10001", "10001", "10001"};
       case 'O': return {"01110", "10001", "10001", "10001", "10001", "10001", "01110"};
       case 'P': return {"11110", "10001", "10001", "11110", "10000", "10000", "10000"};
       case 'R': return {"11110", "10001", "10001", "11110", "10100", "10010", "10001"};
       case 'S': return {"01111", "10000", "10000", "01110", "00001", "00001", "11110"};
+      case 'T': return {"11111", "00100", "00100", "00100", "00100", "00100", "00100"};
+      case 'U': return {"10001", "10001", "10001", "10001", "10001", "10001", "01110"};
       case 'W': return {"10001", "10001", "10001", "10101", "10101", "11011", "10001"};
+      case 'X': return {"10001", "10001", "01010", "00100", "01010", "10001", "10001"};
       case '0': return {"01110", "10001", "10011", "10101", "11001", "10001", "01110"};
       case '1': return {"00100", "01100", "00100", "00100", "00100", "00100", "01110"};
       case '2': return {"01110", "10001", "00001", "00010", "00100", "01000", "11111"};
@@ -1670,10 +1684,43 @@ private:
           std::abs(lon - m_groundStationLon) < 0.00001) {
         lon += (static_cast<double>(i) + 1.0) * 0.00055;
       }
-      markers.push_back({droneId, lat, lon,
-                         static_cast<uint8_t>(i == 0 ? 220 : 20),
-                         static_cast<uint8_t>(i == 0 ? 40 : 160),
-                         static_cast<uint8_t>(i == 0 ? 40 : 70)});
+      std::string label = droneId;
+      auto r = static_cast<uint8_t>(i == 0 ? 220 : 20);
+      auto g = static_cast<uint8_t>(i == 0 ? 40 : 160);
+      auto b = static_cast<uint8_t>(i == 0 ? 40 : 70);
+      if (const auto mission = m_runtime.missionForDrone(droneId)) {
+        if (mission->isUploading() || mission->isUploaded()) {
+          label += " U";
+          r = 245;
+          g = 160;
+          b = 20;
+        }
+        else if (mission->isExecuting()) {
+          label += " R";
+          r = 30;
+          g = 160;
+          b = 80;
+        }
+        else if (mission->isStopping()) {
+          label += " S";
+          r = 70;
+          g = 110;
+          b = 220;
+        }
+        else if (mission->isCompleted()) {
+          label += " C";
+          r = 20;
+          g = 150;
+          b = 180;
+        }
+        else if (mission->isFailed() || mission->isCancelled()) {
+          label += " X";
+          r = 220;
+          g = 30;
+          b = 40;
+        }
+      }
+      markers.push_back({label, lat, lon, r, g, b});
     }
     if (!m_planWaypoints.empty()) {
       for (size_t i = 0; i < m_planWaypoints.size(); ++i) {
