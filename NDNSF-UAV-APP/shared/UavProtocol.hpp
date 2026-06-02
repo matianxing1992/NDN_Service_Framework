@@ -283,6 +283,29 @@ struct VideoAdaptivePolicyDecision
 VideoAdaptivePolicyDecision
 computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input);
 
+struct RecordingDataProductState
+{
+  std::string droneId = "unknown";
+  std::string productType = "camera-recording";
+  std::string sessionId;
+  std::string objectPrefix;
+  std::string encryption = "none";
+  std::string keyId;
+  std::vector<uint8_t> contentKey;
+  uint64_t chunks = 0;
+  uint64_t bytes = 0;
+  uint64_t updatedMs = 0;
+
+  static RecordingDataProductState fromFields(const Fields& fields,
+                                              const std::string& fallbackDroneId = "unknown");
+  Fields toFields(bool includeContentKey = true) const;
+  bool isAvailable() const;
+  bool isEncrypted() const;
+  bool isPlayable() const;
+  std::string chunkObjectName(uint64_t index) const;
+  std::string statusLine() const;
+};
+
 struct MissionState
 {
   std::string droneId = "unknown";

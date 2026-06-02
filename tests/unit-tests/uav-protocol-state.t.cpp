@@ -6,10 +6,12 @@ namespace ndn_service_framework::test {
 namespace {
 
 using ndnsf::examples::uav::FlightSafetyGateState;
+using ndnsf::examples::uav::Fields;
 using ndnsf::examples::uav::MissionStartGateState;
 using ndnsf::examples::uav::MissionProgressState;
 using ndnsf::examples::uav::MissionState;
 using ndnsf::examples::uav::ReadinessState;
+using ndnsf::examples::uav::RecordingDataProductState;
 using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
@@ -278,6 +280,57 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyHandlesHighRttAndRecovery)
   BOOST_CHECK_EQUAL(recovered.bitrateAction, "increase");
   BOOST_CHECK_EQUAL(recovered.bitrateReason, "recovery");
   BOOST_CHECK_GT(recovered.suggestedBitrateKbps, recovering.acceptedBitrateKbps);
+}
+
+BOOST_AUTO_TEST_CASE(RecordingDataProductTracksEncryptedManifest)
+{
+  Fields fields{
+    {"type", "camera-recording-manifest"},
+    {"drone_id", "A"},
+    {"recording_session_id", "record-123"},
+    {"recording_object_prefix", "/example/uav/drone/A/repo/camera/recording"},
+    {"recording_encryption", "hybrid-aes-256-gcm-at-rest"},
+    {"recording_encryption_key_id", "/example/uav/drone/A/repo/key"},
+    {"recording_encryption_content_key_hex", "00112233445566778899aabbccddeeff"},
+    {"recording_chunks", "42"},
+    {"recording_bytes", "123456"},
+  };
+
+  const auto product = RecordingDataProductState::fromFields(fields);
+  BOOST_CHECK_EQUAL(product.droneId, "A");
+  BOOST_CHECK_EQUAL(product.productType, "camera-recording");
+  BOOST_CHECK_EQUAL(product.sessionId, "record-123");
+  BOOST_CHECK_EQUAL(product.chunks, 42);
+  BOOST_CHECK_EQUAL(product.bytes, 123456);
+  BOOST_CHECK(product.isAvailable());
+  BOOST_CHECK(product.isEncrypted());
+  BOOST_CHECK(product.isPlayable());
+  BOOST_CHECK_EQUAL(product.chunkObjectName(7),
+                    "/example/uav/drone/A/repo/camera/recording/record-123/chunk/7");
+
+  const auto roundTrip = RecordingDataProductState::fromFields(product.toFields());
+  BOOST_CHECK_EQUAL(roundTrip.keyId, product.keyId);
+  BOOST_CHECK_EQUAL(roundTrip.contentKey.size(), product.contentKey.size());
+  BOOST_CHECK_NE(roundTrip.statusLine().find("RecordingDataProduct drone=A"), std::string::npos);
+  BOOST_CHECK_NE(roundTrip.statusLine().find("playable=true"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(RecordingDataProductRejectsEncryptedManifestWithoutKey)
+{
+  Fields fields{
+    {"drone_id", "A"},
+    {"recording_session_id", "record-123"},
+    {"recording_object_prefix", "/example/uav/drone/A/repo/camera/recording"},
+    {"recording_encryption", "hybrid-aes-256-gcm-at-rest"},
+    {"recording_chunks", "2"},
+    {"recording_bytes", "100"},
+  };
+
+  const auto product = RecordingDataProductState::fromFields(fields);
+  BOOST_CHECK(product.isAvailable());
+  BOOST_CHECK(product.isEncrypted());
+  BOOST_CHECK(!product.isPlayable());
+  BOOST_CHECK(product.toFields(false).count("recording_encryption_content_key_hex") == 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

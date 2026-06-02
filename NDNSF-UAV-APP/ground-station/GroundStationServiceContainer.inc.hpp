@@ -2484,18 +2484,6 @@ private:
                 });
   }
 
-  struct RecordingManifest
-  {
-    std::string droneId;
-    std::string sessionId;
-    std::string objectPrefix;
-    std::string encryption;
-    std::string keyId;
-    std::vector<uint8_t> contentKey;
-    uint64_t chunks = 0;
-    uint64_t bytes = 0;
-  };
-
   void
   requestRecordingManifestForDrone(const std::string& droneId, bool playAfterRefresh)
   {
@@ -2505,24 +2493,18 @@ private:
       encodeFields({{"type", "camera-recording-manifest-request"}}),
       [this, droneId, playAfterRefresh](const std::string& payload) {
         const auto fields = decodeFields(payload);
-        RecordingManifest manifest;
-        manifest.droneId = fieldOr(fields, "drone_id", droneId);
-        manifest.sessionId = fieldOr(fields, "recording_session_id", "");
-        manifest.objectPrefix = fieldOr(fields, "recording_object_prefix", "");
-        manifest.encryption = fieldOr(fields, "recording_encryption", "none");
-        manifest.keyId = fieldOr(fields, "recording_encryption_key_id", "");
-        manifest.contentKey = hexDecode(fieldOr(fields, "recording_encryption_content_key_hex", ""));
-        manifest.chunks = fieldAsUint64(fields, "recording_chunks", 0);
-        manifest.bytes = fieldAsUint64(fields, "recording_bytes", 0);
+        auto manifest = RecordingDataProductState::fromFields(fields, droneId);
         {
           std::lock_guard<std::mutex> guard(m_recordingManifestMutex);
           m_recordingManifests[droneId] = manifest;
         }
+        publishStatus(manifest.statusLine());
         publishStatus("Recording manifest drone=" + droneId +
                       " chunks=" + std::to_string(manifest.chunks) +
                       " bytes=" + std::to_string(manifest.bytes) +
                       " session=" + manifest.sessionId +
-                      " encryption=" + manifest.encryption);
+                      " encryption=" + manifest.encryption +
+                      " playable=" + std::string(manifest.isPlayable() ? "true" : "false"));
         if (playAfterRefresh) {
           startRecordingPlayback(manifest);
         }
@@ -2530,10 +2512,16 @@ private:
   }
 
   void
-  startRecordingPlayback(const RecordingManifest& manifest)
+  startRecordingPlayback(const RecordingDataProductState& manifest)
   {
-    if (manifest.objectPrefix.empty() || manifest.sessionId.empty() || manifest.chunks == 0) {
+    if (!manifest.isAvailable()) {
       publishStatus("No recorded video chunks for drone " + manifest.droneId);
+      return;
+    }
+    if (!manifest.isPlayable()) {
+      publishStatus("Recording data product is not playable drone=" + manifest.droneId +
+                    " encryption=" + manifest.encryption +
+                    " key_bytes=" + std::to_string(manifest.contentKey.size()));
       return;
     }
 
@@ -2569,7 +2557,7 @@ private:
   }
 
   void
-  fetchRecordingChunk(RecordingManifest manifest, uint64_t index, uint64_t stride)
+  fetchRecordingChunk(RecordingDataProductState manifest, uint64_t index, uint64_t stride)
   {
     if (!m_recordingPlaybackActive.load() ||
         activeRecordingPlaybackDroneId() != manifest.droneId ||
@@ -2581,8 +2569,7 @@ private:
       return;
     }
 
-    const auto objectName = manifest.objectPrefix + "/" + manifest.sessionId +
-      "/chunk/" + std::to_string(index);
+    const auto objectName = manifest.chunkObjectName(index);
     if (index < 3 || index + 1 == manifest.chunks) {
       publishStatus("Recording chunk request drone=" + manifest.droneId +
                     " index=" + std::to_string(index));
@@ -2622,7 +2609,7 @@ private:
   }
 
   void
-  fetchRecordingChunkData(const RecordingManifest& manifest,
+  fetchRecordingChunkData(const RecordingDataProductState& manifest,
                           const std::string& objectName,
                           std::function<void(std::vector<uint8_t>)> onData,
                           std::function<void()> onTimeout)
@@ -2653,7 +2640,7 @@ private:
   }
 
   std::vector<uint8_t>
-  decryptRecordingChunkData(const RecordingManifest& manifest,
+  decryptRecordingChunkData(const RecordingDataProductState& manifest,
                             const std::string& objectName,
                             const std::vector<uint8_t>& encryptedPayload) const
   {
@@ -3832,7 +3819,7 @@ private:
   }
 
   void
-  decodeRecordingFromFetchedChunksAsync(RecordingManifest manifest)
+  decodeRecordingFromFetchedChunksAsync(RecordingDataProductState manifest)
   {
     std::map<uint64_t, std::vector<uint8_t>> chunks;
     {
@@ -4209,7 +4196,7 @@ private:
   MissionProgressState m_latestMissionProgress;
   std::string m_activeVideoDroneId;
   std::string m_recordingPlaybackDroneId;
-  std::map<std::string, RecordingManifest> m_recordingManifests;
+  std::map<std::string, RecordingDataProductState> m_recordingManifests;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;

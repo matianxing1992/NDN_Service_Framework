@@ -1185,6 +1185,9 @@ def main() -> int:
                 raise RuntimeError(f"ground station recording playback smoke did not finish; see {gs_log}") from e
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "RecordingDataProduct drone=" + args.drone_id)
+            require_log(gs_log, "available=true")
+            require_log(gs_log, "playable=true")
             require_log(gs_log, "Recording manifest drone=" + args.drone_id)
             require_log(gs_log, "Recording playback drone=" + args.drone_id)
             require_log(gs_log, "Recording playback fetched drone=" + args.drone_id)

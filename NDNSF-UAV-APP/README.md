@@ -900,7 +900,11 @@ the drone's local SQLite file path.
 The ground station has `Find Recordings` and `Play Recording` buttons for the
 selected drone. `Find Recordings` calls the manifest service above. `Play
 Recording` then uses a recording helper to fetch the encrypted repo Data named
-by that manifest. The chunk path is intentionally not an NDNSF service:
+by that manifest. The GS stores the manifest as a typed
+`RecordingDataProductState` with availability, encryption, playable-state, and
+predictable chunk-name helpers; this is the first concrete repo-backed UAV data
+product model and will be reused for mission images, telemetry logs, detection
+events, and reports. The chunk path is intentionally not an NDNSF service:
 
 ```text
 /<drone>/repo/camera/recording/<session-id>/chunk/<index>
@@ -1453,7 +1457,9 @@ to make it a deployable UAV service-container workload. The planned order is:
 6. **Repo-backed UAV data products.** Store recordings, mission images,
    telemetry logs, object-detection events, and reports through
    `NDNSF-DistributedRepo` using publisher-owned names, encrypted payloads,
-   and manifest-based discovery.
+   and manifest-based discovery. Camera recording manifests are now parsed into
+   typed `RecordingDataProductState` instances so GS playback and smoke tests
+   reason about product availability/playability instead of ad hoc strings.
 7. **Distributed inference integration.** Connect selected image and
    object-detection workflows to `NDNSF-DistributedInference` when model
    execution is split across ground stations, drones, and edge machines.
