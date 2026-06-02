@@ -678,8 +678,8 @@ public:
       std::string reason;
       if (!validateArmReadiness(droneId, reason)) {
         recordBlockedCommand(droneId, commandName, reason);
-        std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
-                  << " ok=false ack=arm-blocked reason=" << reason << std::endl;
+        NDN_LOG_INFO("SINGLE_MISSION_COMMAND command=" << commandName
+                     << " ok=false ack=arm-blocked reason=" << reason);
         return false;
       }
     }
@@ -687,8 +687,8 @@ public:
       std::string reason;
       if (!validateTakeoffReadiness(droneId, reason)) {
         recordBlockedCommand(droneId, commandName, reason);
-        std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
-                  << " ok=false ack=takeoff-blocked reason=" << reason << std::endl;
+        NDN_LOG_INFO("SINGLE_MISSION_COMMAND command=" << commandName
+                     << " ok=false ack=takeoff-blocked reason=" << reason);
         return false;
       }
     }
@@ -696,8 +696,8 @@ public:
       std::string reason;
       if (!validateLandReadiness(droneId, reason)) {
         recordBlockedCommand(droneId, commandName, reason);
-        std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
-                  << " ok=false ack=land-blocked reason=" << reason << std::endl;
+        NDN_LOG_INFO("SINGLE_MISSION_COMMAND command=" << commandName
+                     << " ok=false ack=land-blocked reason=" << reason);
         return false;
       }
     }
@@ -757,9 +757,9 @@ public:
       });
     std::unique_lock<std::mutex> lock(mutex);
     cv.wait_for(lock, timeout, [&] { return done; });
-    std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
-              << " ok=" << (done && ok ? "true" : "false")
-              << " ack=" << ackResult << std::endl;
+    NDN_LOG_INFO("SINGLE_MISSION_COMMAND command=" << commandName
+                 << " ok=" << (done && ok ? "true" : "false")
+                 << " ack=" << ackResult);
     return done && ok;
   }
 
@@ -843,19 +843,18 @@ public:
           check.landedChanged = true;
         }
       }
-      std::cout << "TELEMETRY_LIVE sample=" << index
-                << " phase=" << phase
-                << " drone=" << telemetry.droneId
-                << " gps_fix_name=" << telemetry.gpsFixName
-                << " ekf_ready=" << telemetry.ekfReady
-                << " landed_state_name=" << telemetry.landedStateName
-                << " battery_voltage_v=" << telemetry.batteryVoltageV
-                << " armed=" << telemetry.armed
-                << " lat=" << telemetry.lat
-                << " lon=" << telemetry.lon
-                << " readiness=" << telemetry.readiness
-                << " reason=" << telemetry.readinessReason
-                << std::endl;
+      NDN_LOG_INFO("TELEMETRY_LIVE sample=" << index
+                   << " phase=" << phase
+                   << " drone=" << telemetry.droneId
+                   << " gps_fix_name=" << telemetry.gpsFixName
+                   << " ekf_ready=" << telemetry.ekfReady
+                   << " landed_state_name=" << telemetry.landedStateName
+                   << " battery_voltage_v=" << telemetry.batteryVoltageV
+                   << " armed=" << telemetry.armed
+                   << " lat=" << telemetry.lat
+                   << " lon=" << telemetry.lon
+                   << " readiness=" << telemetry.readiness
+                   << " reason=" << telemetry.readinessReason);
     };
 
     int sampleIndex = 0;
@@ -885,18 +884,17 @@ public:
                     check.gpsFix && check.ekfReady && check.landedKnown &&
                     check.landedChanged && check.batteryVoltage &&
                     check.armedTrue && check.latLon;
-    std::cout << "TELEMETRY_LIVE_RESULT ok=" << (ok ? "true" : "false")
-              << " arm_ok=" << (armOk ? "true" : "false")
-              << " takeoff_ok=" << (takeoffOk ? "true" : "false")
-              << " land_ok=" << (landOk ? "true" : "false")
-              << " gps_fix=" << (check.gpsFix ? "true" : "false")
-              << " ekf_ready=" << (check.ekfReady ? "true" : "false")
-              << " landed_known=" << (check.landedKnown ? "true" : "false")
-              << " landed_changed=" << (check.landedChanged ? "true" : "false")
-              << " battery_voltage=" << (check.batteryVoltage ? "true" : "false")
-              << " armed_true=" << (check.armedTrue ? "true" : "false")
-              << " lat_lon=" << (check.latLon ? "true" : "false")
-              << std::endl;
+    NDN_LOG_INFO("TELEMETRY_LIVE_RESULT ok=" << (ok ? "true" : "false")
+                 << " arm_ok=" << (armOk ? "true" : "false")
+                 << " takeoff_ok=" << (takeoffOk ? "true" : "false")
+                 << " land_ok=" << (landOk ? "true" : "false")
+                 << " gps_fix=" << (check.gpsFix ? "true" : "false")
+                 << " ekf_ready=" << (check.ekfReady ? "true" : "false")
+                 << " landed_known=" << (check.landedKnown ? "true" : "false")
+                 << " landed_changed=" << (check.landedChanged ? "true" : "false")
+                 << " battery_voltage=" << (check.batteryVoltage ? "true" : "false")
+                 << " armed_true=" << (check.armedTrue ? "true" : "false")
+                 << " lat_lon=" << (check.latLon ? "true" : "false"));
     return ok;
   }
 
@@ -908,27 +906,25 @@ public:
     const auto fields = requestTelemetryStatusForDroneSync(
       droneId, std::chrono::milliseconds(std::min(m_timeoutMs, 3000)));
     if (fields.empty()) {
-      std::cout << "LINK_STATE_AGING_RESULT ok=false reason=no-initial-telemetry"
-                << std::endl;
+      NDN_LOG_INFO("LINK_STATE_AGING_RESULT ok=false reason=no-initial-telemetry");
       return false;
     }
 
     auto logSample = [this, &droneId](const std::string& phase) {
       const auto safety = safetyForDrone(droneId);
       if (!safety) {
-        std::cout << "LINK_STATE_AGING sample=" << phase
-                  << " drone=" << droneId
-                  << " state=missing" << std::endl;
+        NDN_LOG_INFO("LINK_STATE_AGING sample=" << phase
+                     << " drone=" << droneId
+                     << " state=missing");
         return SafetyState{};
       }
-      std::cout << "LINK_STATE_AGING sample=" << phase
-                << " drone=" << droneId
-                << " state=" << safety->linkState
-                << " age_ms=" << safety->linkAgeMs
-                << " action=" << safety->lostLinkAction
-                << " attention=" << (safety->needsOperatorAttention() ? "true" : "false")
-                << " detail=" << safety->detail
-                << std::endl;
+      NDN_LOG_INFO("LINK_STATE_AGING sample=" << phase
+                   << " drone=" << droneId
+                   << " state=" << safety->linkState
+                   << " age_ms=" << safety->linkAgeMs
+                   << " action=" << safety->lostLinkAction
+                   << " attention=" << (safety->needsOperatorAttention() ? "true" : "false")
+                   << " detail=" << safety->detail);
       return *safety;
     };
 
@@ -952,12 +948,11 @@ public:
                     stale.linkState == "stale" &&
                     lost.linkState == "lost" &&
                     lost.lostLinkAction == m_lostLinkAction;
-    std::cout << "LINK_STATE_AGING_RESULT ok=" << (ok ? "true" : "false")
-              << " initial=" << initial.linkState
-              << " stale=" << stale.linkState
-              << " lost=" << lost.linkState
-              << " lost_link_action=" << lost.lostLinkAction
-              << std::endl;
+    NDN_LOG_INFO("LINK_STATE_AGING_RESULT ok=" << (ok ? "true" : "false")
+                 << " initial=" << initial.linkState
+                 << " stale=" << stale.linkState
+                 << " lost=" << lost.linkState
+                 << " lost_link_action=" << lost.lostLinkAction);
     return ok;
   }
 
@@ -993,8 +988,8 @@ public:
       {"altitude_m", "12"},
       {"capture_required", "true"},
     });
-    std::cout << "SINGLE_MISSION_START task=" << taskId
-              << " provider=" << droneId << std::endl;
+    NDN_LOG_INFO("SINGLE_MISSION_START task=" << taskId
+                 << " provider=" << droneId);
 
     auto requestMessage = makeRequest(payload);
     std::vector<ndn::Name> providerNames{droneIdentity(m_config, droneId)};
@@ -1033,7 +1028,7 @@ public:
         std::move(selectIdleCandidate),
         m_timeoutMs,
         [&mutex, &cv, &done, &ok, taskId](const ndn::Name&) {
-          std::cout << "SINGLE_MISSION_TIMEOUT task=" << taskId << std::endl;
+          NDN_LOG_INFO("SINGLE_MISSION_TIMEOUT task=" << taskId);
           std::lock_guard<std::mutex> guard(mutex);
           done = true;
           ok = false;
@@ -1044,15 +1039,14 @@ public:
           const auto mission = MissionState::fromFields(fields);
           const bool responseOk = response.getStatus() && fieldOr(fields, "accepted", "false") == "true";
           updateMissionState(mission);
-          std::cout << "SINGLE_MISSION_DONE task=" << taskId
-                    << " ok=" << (responseOk ? "true" : "false")
-                    << " provider=" << mission.droneId
-                    << " phase=" << mission.phase
-                    << " detail=" << mission.detail
-                    << " mission_transport=" << mission.transport
-                    << " mission_ack=" << mission.ack
-                    << " waypoints_forwarded=" << mission.waypointsForwarded
-                    << std::endl;
+          NDN_LOG_INFO("SINGLE_MISSION_DONE task=" << taskId
+                       << " ok=" << (responseOk ? "true" : "false")
+                       << " provider=" << mission.droneId
+                       << " phase=" << mission.phase
+                       << " detail=" << mission.detail
+                       << " mission_transport=" << mission.transport
+                       << " mission_ack=" << mission.ack
+                       << " waypoints_forwarded=" << mission.waypointsForwarded);
           std::lock_guard<std::mutex> guard(mutex);
           ok = responseOk;
           done = true;
@@ -1085,15 +1079,14 @@ public:
       std::this_thread::sleep_for(std::chrono::milliseconds(1500));
       const auto telemetry = requestTelemetryStatusForDroneSync(
         droneId, std::chrono::milliseconds(m_timeoutMs));
-      std::cout << "SINGLE_MISSION_TELEMETRY sample=" << i
-                << " drone=" << fieldOr(telemetry, "drone_id", droneId)
-                << " lat=" << fieldOr(telemetry, "lat", "unknown")
-                << " lon=" << fieldOr(telemetry, "lon", "unknown")
-                << " local_north_m=" << fieldOr(telemetry, "local_north_m", "unknown")
-                << " local_east_m=" << fieldOr(telemetry, "local_east_m", "unknown")
-                << " alt=" << fieldOr(telemetry, "altitude_m", "unknown")
-                << " speed=" << fieldOr(telemetry, "groundspeed_mps", "unknown")
-                << std::endl;
+      NDN_LOG_INFO("SINGLE_MISSION_TELEMETRY sample=" << i
+                   << " drone=" << fieldOr(telemetry, "drone_id", droneId)
+                   << " lat=" << fieldOr(telemetry, "lat", "unknown")
+                   << " lon=" << fieldOr(telemetry, "lon", "unknown")
+                   << " local_north_m=" << fieldOr(telemetry, "local_north_m", "unknown")
+                   << " local_east_m=" << fieldOr(telemetry, "local_east_m", "unknown")
+                   << " alt=" << fieldOr(telemetry, "altitude_m", "unknown")
+                   << " speed=" << fieldOr(telemetry, "groundspeed_mps", "unknown"));
     }
     return true;
   }
@@ -1366,7 +1359,6 @@ public:
 
     auto logLedger = [] (const std::string& line) {
       NDN_LOG_INFO(line);
-      std::cout << line << std::endl;
     };
 
     auto joinDroneIds = [] (const std::vector<std::string>& droneIds) {
