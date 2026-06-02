@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -142,6 +143,37 @@ struct SafetyState
   Fields toFields() const;
   bool manualControlFresh() const;
   bool needsOperatorAttention() const;
+  std::string statusLine() const;
+};
+
+struct FlightSafetyGateState
+{
+  std::string droneId = "unknown";
+  bool hasReadiness = false;
+  bool hasSafety = false;
+  bool operatorAttention = false;
+  std::string readiness = "unknown";
+  std::string readinessReason = "no-telemetry";
+  std::string armed = "unknown";
+  std::string linkState = "unknown";
+  std::string manualControlState = "unknown";
+  bool canArm = false;
+  bool canTakeoff = false;
+  bool canLand = false;
+  bool canManualControl = false;
+  bool canControlPanel = false;
+  bool canEmergencyStop = false;
+  std::string armReason = "no-telemetry";
+  std::string takeoffReason = "no-telemetry";
+  std::string landReason = "no-telemetry";
+  std::string manualControlReason = "no-telemetry";
+  std::string controlPanelReason = "no-telemetry";
+  std::string emergencyStopReason = "ok";
+
+  static FlightSafetyGateState fromStates(const std::string& droneId,
+                                          const std::optional<ReadinessState>& readiness,
+                                          const std::optional<SafetyState>& safety);
+  bool actionAllowed(const std::string& action, std::string& reason) const;
   std::string statusLine() const;
 };
 

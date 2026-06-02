@@ -1275,13 +1275,15 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 The launcher injects not-ready, ready-but-not-armed, and armed-ready readiness
 snapshots in the GS smoke path. It verifies that Arm is enabled only when the
 selected drone is ready and not armed, and that Takeoff/Land/manual control are
-enabled only after the selected drone is armed. The same smoke also logs the
+enabled only after the selected drone is armed. These UI gates and the actual
+MAVLink command-send path share the same typed `FlightSafetyGateState`, which
+combines readiness and safety/link state. The same smoke also logs the
 selected-drone action model, including manual-control mode, emergency-stop
 availability, and mission Start/Stop readiness. It also verifies the selected
 drone view model that drives the inspector/map text and marker state, so mission
 upload state is reflected as a typed marker suffix instead of temporary status
-string parsing. The left drone list is checked through the same typed state
-path, including readiness, mission, video, and safety summaries.
+string parsing. The left drone list is checked through the same typed state path,
+including readiness, mission, video, and safety summaries.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance

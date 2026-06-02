@@ -700,6 +700,162 @@ SafetyState::statusLine() const
          " detail=" + detail;
 }
 
+namespace {
+
+std::string
+safetyBlockReason(const SafetyState& safety)
+{
+  if (safety.linkState == "lost" ||
+      safety.linkState == "stale" ||
+      safety.linkState == "waiting-heartbeat") {
+    return "link-" + safety.linkState;
+  }
+  if (safety.manualControlState == "stale-waiting-neutral" ||
+      safety.manualControlState == "send-failed") {
+    return "manual-" + safety.manualControlState;
+  }
+  return "safety-attention";
+}
+
+void
+setNoReadinessReasons(FlightSafetyGateState& state)
+{
+  state.armReason = "no-telemetry";
+  state.takeoffReason = "no-telemetry";
+  state.landReason = "no-telemetry";
+  state.manualControlReason = "no-telemetry";
+  state.controlPanelReason = "no-telemetry";
+}
+
+} // namespace
+
+FlightSafetyGateState
+FlightSafetyGateState::fromStates(const std::string& droneId,
+                                  const std::optional<ReadinessState>& readiness,
+                                  const std::optional<SafetyState>& safety)
+{
+  FlightSafetyGateState state;
+  state.droneId = droneId.empty() ? "unknown" : droneId;
+  state.hasReadiness = readiness.has_value();
+  state.hasSafety = safety.has_value();
+  state.canEmergencyStop = !droneId.empty();
+  state.emergencyStopReason = state.canEmergencyStop ? "ok" : "no-drone";
+  if (safety) {
+    state.operatorAttention = safety->needsOperatorAttention();
+    state.linkState = safety->linkState;
+    state.manualControlState = safety->manualControlState;
+  }
+  if (!readiness) {
+    setNoReadinessReasons(state);
+    return state;
+  }
+
+  state.readiness = readiness->readiness;
+  state.readinessReason = readiness->readinessReason;
+  state.armed = readiness->armed;
+
+  const auto safetyReason = safety && state.operatorAttention ?
+                            safetyBlockReason(*safety) : std::string();
+  auto blockIfAttention = [&safetyReason] (bool allowed, std::string& reason) {
+    if (!allowed) {
+      return false;
+    }
+    if (!safetyReason.empty()) {
+      reason = safetyReason;
+      return false;
+    }
+    reason = "ok";
+    return true;
+  };
+
+  if (readiness->armed == "true") {
+    state.armReason = "already-armed";
+  }
+  else if (!readiness->readyForArm()) {
+    state.armReason = readiness->readinessReason;
+  }
+  else {
+    state.canArm = blockIfAttention(true, state.armReason);
+  }
+
+  if (!readiness->readyForTakeoff()) {
+    state.takeoffReason = readiness->readyForArm() ? "not-armed" : readiness->readinessReason;
+  }
+  else {
+    state.canTakeoff = blockIfAttention(true, state.takeoffReason);
+  }
+
+  if (!readiness->readyForLand()) {
+    state.landReason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
+  }
+  else {
+    state.canLand = true;
+    state.landReason = "ok";
+  }
+
+  if (!readiness->readyForManualControl()) {
+    state.manualControlReason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
+    state.controlPanelReason = state.manualControlReason;
+  }
+  else {
+    state.canManualControl = blockIfAttention(true, state.manualControlReason);
+    state.canControlPanel = blockIfAttention(true, state.controlPanelReason);
+  }
+
+  return state;
+}
+
+bool
+FlightSafetyGateState::actionAllowed(const std::string& action, std::string& reason) const
+{
+  if (action == "arm") {
+    reason = armReason;
+    return canArm;
+  }
+  if (action == "takeoff") {
+    reason = takeoffReason;
+    return canTakeoff;
+  }
+  if (action == "land") {
+    reason = landReason;
+    return canLand;
+  }
+  if (action == "manual_control") {
+    reason = manualControlReason;
+    return canManualControl;
+  }
+  if (action == "control_panel") {
+    reason = controlPanelReason;
+    return canControlPanel;
+  }
+  if (action == "emergency_stop") {
+    reason = emergencyStopReason;
+    return canEmergencyStop;
+  }
+  reason = "ok";
+  return true;
+}
+
+std::string
+FlightSafetyGateState::statusLine() const
+{
+  return "FlightSafetyGate drone=" + droneId +
+         " has_readiness=" + std::string(hasReadiness ? "true" : "false") +
+         " has_safety=" + std::string(hasSafety ? "true" : "false") +
+         " readiness=" + readiness +
+         " reason=" + readinessReason +
+         " armed=" + armed +
+         " link=" + linkState +
+         " manual=" + manualControlState +
+         " attention=" + std::string(operatorAttention ? "true" : "false") +
+         " can_arm=" + std::string(canArm ? "true" : "false") +
+         " can_takeoff=" + std::string(canTakeoff ? "true" : "false") +
+         " can_land=" + std::string(canLand ? "true" : "false") +
+         " can_manual=" + std::string(canManualControl ? "true" : "false") +
+         " can_panel=" + std::string(canControlPanel ? "true" : "false") +
+         " can_emergency_stop=" + std::string(canEmergencyStop ? "true" : "false");
+}
+
 VideoState
 VideoState::fromFields(const Fields& fields)
 {

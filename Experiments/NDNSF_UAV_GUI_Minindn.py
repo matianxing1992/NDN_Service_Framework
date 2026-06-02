@@ -1066,6 +1066,7 @@ def main() -> int:
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
             require_log(gs_log, "FLIGHT_ACTION_STATE phase=not-ready selected=")
+            require_log(gs_log, "has_safety=true safety_attention=false link=connected manual_state=idle")
             require_log(gs_log, "can_arm=false arm_reason=waiting-heartbeat can_takeoff=false takeoff_reason=waiting-heartbeat")
             require_log(gs_log, "FLIGHT_ACTION_STATE phase=ready-unarmed selected=")
             require_log(gs_log, "can_arm=true arm_reason=ok can_takeoff=false takeoff_reason=not-armed")
