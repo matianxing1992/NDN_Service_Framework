@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import secrets
-import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Iterable
@@ -33,11 +32,11 @@ class DistributedInferenceClient:
 
     def __init__(self, user: ServiceUser, *, async_workers: int = 4):
         self.user = user
+        self.user.start()
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, int(async_workers)),
             thread_name_prefix="ndnsf-di-client",
         )
-        self._user_lock = threading.Lock()
 
     @classmethod
     def connect(
@@ -155,35 +154,28 @@ class DistributedInferenceClient:
         timeout_ms: int = 30000,
         freshness_ms: int = 60000,
     ) -> InferenceResult:
-        # The native ServiceUser owns one Face/SVS/NAC-ABE runtime. Some of its
-        # publication and crypto paths are intentionally single-runtime state,
-        # so concurrent Python requests must not enter them simultaneously.
-        # Async callers still get Futures and queueing, while the native user
-        # path remains serialized until NDNSF Core exposes a fully reentrant
-        # multi-request publishing API.
-        with self._user_lock:
-            artifact_data_names = self.publish_plan_artifacts(
-                plan,
-                object_label_prefix="inference-artifact",
-                freshness_ms=freshness_ms,
-            )
-            scope_key_data_names = self.publish_scope_keys(
-                plan,
-                object_label_prefix="inference-scope-key",
-                freshness_ms=freshness_ms,
-            )
-            response: ServiceResponse = self.user.request_collaboration(
-                plan.service,
-                payload,
-                roles=plan.ndnsf_roles(),
-                key_scopes=plan.key_scopes(),
-                dependencies=plan.ndnsf_dependencies(),
-                artifact_data_names=artifact_data_names,
-                scope_key_data_names=scope_key_data_names,
-                role_scopes=plan.role_scopes(),
-                ack_timeout_ms=ack_timeout_ms,
-                timeout_ms=timeout_ms,
-            )
+        artifact_data_names = self.publish_plan_artifacts(
+            plan,
+            object_label_prefix="inference-artifact",
+            freshness_ms=freshness_ms,
+        )
+        scope_key_data_names = self.publish_scope_keys(
+            plan,
+            object_label_prefix="inference-scope-key",
+            freshness_ms=freshness_ms,
+        )
+        response: ServiceResponse = self.user.request_collaboration(
+            plan.service,
+            payload,
+            roles=plan.ndnsf_roles(),
+            key_scopes=plan.key_scopes(),
+            dependencies=plan.ndnsf_dependencies(),
+            artifact_data_names=artifact_data_names,
+            scope_key_data_names=scope_key_data_names,
+            role_scopes=plan.role_scopes(),
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
         return InferenceResult(
             status=response.status,
             payload=response.payload,
@@ -205,28 +197,27 @@ class DistributedInferenceClient:
     ) -> InferenceResult:
         """Request a service whose model layout/artifacts are already deployed."""
 
-        with self._user_lock:
-            scope_key_data_names = self.publish_scope_keys_for_scopes(
-                service,
-                key_scopes,
-                object_label_prefix="inference-scope-key",
-                freshness_ms=freshness_ms,
-            )
-            response: ServiceResponse = self.user.request_collaboration(
-                service,
-                payload,
-                roles=roles,
-                key_scopes=key_scopes,
-                dependencies=[
-                    _to_collaboration_dependency(dep)
-                    for dep in dependencies
-                ],
-                artifact_data_names={},
-                scope_key_data_names=scope_key_data_names,
-                role_scopes=role_scopes,
-                ack_timeout_ms=ack_timeout_ms,
-                timeout_ms=timeout_ms,
-            )
+        scope_key_data_names = self.publish_scope_keys_for_scopes(
+            service,
+            key_scopes,
+            object_label_prefix="inference-scope-key",
+            freshness_ms=freshness_ms,
+        )
+        response: ServiceResponse = self.user.request_collaboration(
+            service,
+            payload,
+            roles=roles,
+            key_scopes=key_scopes,
+            dependencies=[
+                _to_collaboration_dependency(dep)
+                for dep in dependencies
+            ],
+            artifact_data_names={},
+            scope_key_data_names=scope_key_data_names,
+            role_scopes=role_scopes,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
         return InferenceResult(
             status=response.status,
             payload=response.payload,

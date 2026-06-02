@@ -24,6 +24,13 @@ class RegressionCase:
 
 
 CASES = {
+    "app-api": RegressionCase(
+        name="app-api",
+        script=REPO / "Experiments/NDNSF_DI_AppApi_Smoke.py",
+        success_marker="APP_API_SERVICE_PLAN_OK",
+        description="APP service-level API dynamic provisioning plan smoke",
+        use_sudo=False,
+    ),
     "onnx-executor": RegressionCase(
         name="onnx-executor",
         script=REPO / "Experiments/NDNSF_DI_OnnxExecutor_Smoke.py",
@@ -48,7 +55,12 @@ CASES = {
 
 def selected_cases(selection: str) -> list[RegressionCase]:
     if selection == "all":
-        return [CASES["onnx-executor"], CASES["auto-split"], CASES["yolo-2x2"]]
+        return [
+            CASES["app-api"],
+            CASES["onnx-executor"],
+            CASES["auto-split"],
+            CASES["yolo-2x2"],
+        ]
     return [CASES[selection]]
 
 
@@ -84,7 +96,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--case",
-        choices=["onnx-executor", "auto-split", "yolo-2x2", "all"],
+        choices=["app-api", "onnx-executor", "auto-split", "yolo-2x2", "all"],
         default="auto-split",
         help="Regression case to run. Default keeps the smoke test short.",
     )

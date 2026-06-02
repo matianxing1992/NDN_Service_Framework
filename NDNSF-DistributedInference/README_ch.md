@@ -45,21 +45,22 @@ Distributed-inference 层会把这些描述映射到 NDNSF service invocation、
 `yolo_policy.yaml` 是 deployment policy。它可以由 model splitter 生成，也可以由应用部署工具生成。这里的 model splitter 指部署前运行的模型切分工具：它读取原始模型或模型描述，决定模型要被拆成哪些 stage/shard、每个 role 需要哪个 artifact、role 之间按什么 dependency graph 交换中间结果，然后输出 NDNSF-DI 能读的 policy YAML。YOLO 示例提供了这样的 splitter 脚本；如果是新的模型家族，应用或框架开发者可以写自己的 splitter，只要输出标准的 service、roles、dependencies 和 artifacts 描述即可。
 
 `APPClient.from_config("yolo_policy.yaml")` 会读取这个 YAML，生成对应的 trust schema、controller policy 和 service manifest，然后用这些生成物连接到底层 `DistributedInferenceClient`。
+Service package 应该随服务自带默认 policy config，就像 YOLO 示例自带
+`yolo_policy.yaml`。用户只有在修改身份、trust root、provider pool、
+artifact path、repo manifest 或模型切分方式时，才需要传入自定义 config。
 
 Client 侧：
 
 ```python
 from ndnsf_distributed_inference import APPClient
 
-def encode_image_for_yolo(image_tensor) -> bytes:
-    # Application-defined encoding that follows client.input_contract(service).
-    return serialize_npz(images=preprocess_for_yolo(image_tensor))
-
 client = APPClient.from_config("yolo_policy.yaml")
 service = "/AI/YOLO/SplitInference"
 print(client.input_contract(service))
 
-client.register_input_encoder(service, encode_image_for_yolo)
+# 如果 policy 声明 codec=npz 并且只有一个 tensor field，NDNSF-DI 可以
+# 自动把 numpy tensor 编码成请求 bytes。只有需要模型专用预处理时，才注册
+# 自定义 encoder。
 result = client.infer_service_object(service, image_tensor)
 
 # 可以同时提交多个请求。每个请求仍然使用 NDNSF runtime 完成
@@ -69,35 +70,45 @@ result = future.result(timeout=30)
 ```
 
 推荐的用户侧入口是 `infer_service_object(...)`：调用者给出 service name
-和应用对象，例如 `image_tensor`，NDNSF-DI 通过注册到该 service 的 encoder
+和应用对象，例如 `image_tensor`，NDNSF-DI 根据 service input contract
 把它转换为请求 bytes。service name 是一个有约束的应用契约，而不是随便起的字符串：
 `/AI/YOLO/SplitInference` 在 `yolo_policy.yaml` 中绑定到一个确定的模型
 identity、模型版本、输入/输出编码、role set、dependency graph、provider
 identity 和 security policy。换句话说，client 不需要在每次请求里重新
 说明模型怎么切、有哪些 stage、谁依赖谁；这些都由 service name 查到。
 
+对用户来说，这应该就是完整的请求 API。Provider 选择、role 分配、
+artifact 发布、model shard 下载、scope key 分发、dependency 交换和
+结果收集都由运行时隐藏在 service call 之后。默认部署假设是：Provider
+一开始是同质化的 service worker。如果 service policy 中记录了 artifacts，
+`infer_service(...)` 会自动构造动态 provisioning plan：被选中的 provider
+根据自己被分配到的 role 获取 executable/runtime bundle 和 model shard。
+如果 service policy 没有 artifact 描述，同一个调用会退回到预部署模型路径。
+
 `client.input_contract(service)` 返回 policy 中记录的输入契约，例如 codec、
-字段名、shape、dtype 和推荐 encoder 名称。`register_input_encoder(...)`
-把应用对象到 bytes 的转换函数注册到这个 service 上。这个 encoder 是
-应用代码的一部分，可以由 model package、SDK 或示例库提供，也可以由
-应用开发者按 `input_contract` 自己实现；之后用户可以调用
-`infer_service_object(...)`，直接传 `image_tensor` 这样的应用对象。如果
-调用者已经有编码好的 bytes，才需要直接使用较低层的
-`infer_service(service, encoded_payload)`。
+字段名、shape、dtype 和推荐 encoder 名称。对于常见 tensor payload，
+现在有内置 NPZ encoder：如果 policy 声明 `codec: npz`，调用者可以直接传
+numpy tensor、字段名到 tensor 的 mapping，或者和字段列表对应的 tuple/list。
+只有 generic NPZ encoder 不知道的模型专用预处理，才需要
+`register_input_encoder(...)`。如果调用者已经有编码好的 bytes，才需要直接
+使用较低层的 `infer_service(service, encoded_payload)`。
 
 `encoded_payload` 本质上是这个 service 契约要求的请求 bytes。它由应用层
-编码函数生成。仓库里的 YOLO 示例实现叫
-`yolo_split_lib.encode_initial_request(image_tensor)`，但这只是示例的
-具体 helper；通用 API 只要求注册一个“应用对象 -> bytes”的 encoder。
-NDNSF-DI 不解释这些 bytes 的语义，只负责把它们安全送到对应 service
-的分布式执行流程。Provider handler 和 client 必须对同一个 service 使用
-同一套 payload schema；如果输入 shape、dtype、预处理方式或模型切分发生
-不兼容变化，应发布为新的 service name 或新的模型版本，而不是复用旧名字。
-这个路径适合模型和 runtime 已经部署在 provider 上的服务。
+或内置编码函数生成。NDNSF-DI 编码之后不解释这些 bytes 的语义，只负责把
+它们安全送到对应 service 的分布式执行流程。Provider handler 和 client
+必须对同一个 service 使用同一套 payload schema；如果输入 shape、dtype、
+预处理方式或模型切分发生不兼容变化，应发布为新的 service name 或新的
+模型版本，而不是复用旧名字。
 
-Model/runtime artifacts 属于部署阶段。Splitter 或 deployment tool 应先把
-artifact paths 写入 service policy；provider 启动后按自己的 role 从
-policy 找到本地 artifact。Client 请求阶段不再发布模型 shard。
+Model/runtime artifacts 属于 service definition，而不是用户临时手写代码。
+Splitter 或 deployment tool 应把 artifact paths 或 repo manifests 写入
+service policy。普通应用调用者不需要手工构造 `DistributedInferencePlan`；
+他们调用 `infer_service_object(...)`，APP 层会从 service policy 推导 plan。
+高级部署工具如果需要检查或复用生成的 plan，可以调用
+`client.service_plan(service, ...)`。`infer_service(...)` 的可选
+`repo_manifests` 参数指的是保存在 NDNSF-DistributedRepo 中的 model/runtime
+artifacts，而不是输入图片或 activation tensors。输入和中间 tensor 使用
+service payload contract，以及 NDNSF large-data 或 dependency-object helper。
 
 Provider 侧：
 
@@ -105,21 +116,23 @@ Provider 侧：
 from ndnsf_distributed_inference import APPProvider
 
 provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
-provider.serve(
+provider.serve_service(
     service="/AI/YOLO/SplitInference",
     roles="all",
     handler=handle_assigned_role,
     backends=["onnxruntime"],
     temp_dir="/tmp/ndnsf-yolo-provider-A",
-    has_model=True,
-    can_provision=False,
+    has_model=False,
+    can_provision=True,
 )
 provider.run()
 ```
 
-Provider 使用 service policy 中记录的 artifact paths。没有本地 artifact
-的 provider 不应声明 `has_model=True`；模型发布和放置应在 provider 启动前
-由 splitter/deployment 流程完成。
+Provider 使用一个 service-level 注册。在常见的同质 worker 场景中，每个
+provider 都可以用 `roles="all"` 和 `can_provision=True` 发布能力。被选中
+承担某个 role 的 provider 会从 assignment 中获取该 role 的 artifact，
+然后执行该 role。已经在本机安装好 model shards 的部署可以改用
+`has_model=True, can_provision=False`。
 
 Provider-side Python handler 也可以使用单独 worker pool：
 
@@ -152,7 +165,7 @@ print(deployment.trust_schema)
 print(deployment.policy_file)
 ```
 
-多服务部署中，对每个 service 调用一次 `provider.serve(...)`，并使用 `client.infer_async(...)` 并发请求一个或多个 service。service name 仍然决定每个 request 使用的固定 role set 和 dependency graph。
+多服务部署中，对每个 service 调用一次 `provider.serve_service(...)`，并使用 `client.infer_async(...)` 并发请求一个或多个 service。service name 仍然决定每个 request 使用的固定 role set 和 dependency graph。
 
 ## Example Families
 
@@ -784,7 +797,8 @@ MiniNDN 脚本会在第一个 command 前清空 provider artifact cache。它在
 `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`，并在 warm command 中
 打印 `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT`。
 
-如果要用一个入口运行本地 ONNX executor smoke，以及两个 MiniNDN split smokes：
+如果要用一个入口运行 APP API smoke、本地 ONNX executor smoke，以及两个
+MiniNDN split smokes：
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
@@ -824,7 +838,7 @@ Provider 可以在不理解 NDN internals 的情况下 advertise 四个 roles：
 
 ```python
 provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
-provider.serve(
+provider.serve_service(
     service="/AI/YOLO/2x2Inference",
     roles="all",
     handler=handle_yolo_role,
