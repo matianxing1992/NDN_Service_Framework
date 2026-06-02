@@ -418,6 +418,13 @@ public:
   sendMavlinkCommandToDrone(const std::string& droneId, const std::string& commandName, Fields params = {})
   {
     const bool isManualControl = commandName == "manual_control";
+    if (commandName == "arm") {
+      std::string reason;
+      if (!validateArmReadiness(droneId, reason)) {
+        publishStatus("Arm blocked drone=" + droneId + " reason=" + reason);
+        return false;
+      }
+    }
     if (isManualControl) {
       std::string reason;
       if (!validateManualControlReadiness(droneId, reason)) {
@@ -426,6 +433,13 @@ public:
           m_lastManualControlBlockedLogMs = now;
           publishStatus("Manual control blocked drone=" + droneId + " reason=" + reason);
         }
+        return false;
+      }
+    }
+    if (commandName == "land") {
+      std::string reason;
+      if (!validateLandReadiness(droneId, reason)) {
+        publishStatus("Land blocked drone=" + droneId + " reason=" + reason);
         return false;
       }
     }
@@ -483,11 +497,27 @@ public:
   sendMavlinkCommandToDroneSync(const std::string& droneId, const std::string& commandName,
                                 Fields params, std::chrono::milliseconds timeout)
   {
+    if (commandName == "arm") {
+      std::string reason;
+      if (!validateArmReadiness(droneId, reason)) {
+        std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
+                  << " ok=false ack=arm-blocked reason=" << reason << std::endl;
+        return false;
+      }
+    }
     if (commandName == "takeoff") {
       std::string reason;
       if (!validateTakeoffReadiness(droneId, reason)) {
         std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
                   << " ok=false ack=takeoff-blocked reason=" << reason << std::endl;
+        return false;
+      }
+    }
+    if (commandName == "land") {
+      std::string reason;
+      if (!validateLandReadiness(droneId, reason)) {
+        std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
+                  << " ok=false ack=land-blocked reason=" << reason << std::endl;
         return false;
       }
     }
@@ -1423,6 +1453,28 @@ private:
   }
 
   bool
+  validateArmReadiness(const std::string& droneId, std::string& reason)
+  {
+    auto telemetry = freshTelemetryForSafetyCheck(droneId, 2500);
+
+    if (!telemetry) {
+      reason = "no-telemetry";
+      return false;
+    }
+    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
+    if (readiness.armed == "true") {
+      reason = "already-armed";
+      return false;
+    }
+    if (!readiness.readyForArm()) {
+      reason = readiness.readinessReason;
+      return false;
+    }
+    reason = "ok";
+    return true;
+  }
+
+  bool
   validateTakeoffReadiness(const std::string& droneId, std::string& reason)
   {
     auto telemetry = freshTelemetryForSafetyCheck(droneId, 2500);
@@ -1434,6 +1486,24 @@ private:
     const auto readiness = ReadinessState::fromTelemetry(*telemetry);
     if (!readiness.readyForTakeoff()) {
       reason = readiness.readyForArm() ? "not-armed" : readiness.readinessReason;
+      return false;
+    }
+    reason = "ok";
+    return true;
+  }
+
+  bool
+  validateLandReadiness(const std::string& droneId, std::string& reason)
+  {
+    auto telemetry = freshTelemetryForSafetyCheck(droneId, 2500);
+
+    if (!telemetry) {
+      reason = "no-telemetry";
+      return false;
+    }
+    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
+    if (!readiness.readyForLand()) {
+      reason = readiness.armed == "true" ? readiness.readinessReason : "not-armed";
       return false;
     }
     reason = "ok";

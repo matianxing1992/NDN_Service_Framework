@@ -477,6 +477,7 @@ ReadinessState::toFields() const
     {"readiness_reason", readinessReason},
     {"ready_for_arm", readyForArm() ? "true" : "false"},
     {"ready_for_takeoff", readyForTakeoff() ? "true" : "false"},
+    {"ready_for_land", readyForLand() ? "true" : "false"},
     {"ready_for_manual_control", readyForManualControl() ? "true" : "false"},
     {"timestamp_ms", std::to_string(timestampMs)},
   };
@@ -496,6 +497,14 @@ bool
 ReadinessState::readyForTakeoff() const
 {
   return readyForArm() && armed == "true";
+}
+
+bool
+ReadinessState::readyForLand() const
+{
+  return heartbeatSeen == "true" &&
+         flightControllerReady == "true" &&
+         armed == "true";
 }
 
 bool
