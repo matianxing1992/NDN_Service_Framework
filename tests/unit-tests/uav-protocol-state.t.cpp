@@ -90,6 +90,29 @@ BOOST_AUTO_TEST_CASE(FlightSafetyGateCombinesReadinessAndSafety)
   BOOST_CHECK(gate.actionAllowed("land", reason));
   BOOST_CHECK_EQUAL(reason, "ok");
 
+  auto airborne = makeReadyState(true);
+  airborne.landedStateName = "in-air";
+  gate = FlightSafetyGateState::fromStates("A", airborne, makeSafeState());
+  BOOST_CHECK(!gate.actionAllowed("takeoff", reason));
+  BOOST_CHECK_EQUAL(reason, "not-on-ground");
+  BOOST_CHECK(gate.actionAllowed("land", reason));
+  BOOST_CHECK_EQUAL(reason, "ok");
+  BOOST_CHECK(gate.actionAllowed("manual_control", reason));
+  BOOST_CHECK_EQUAL(reason, "ok");
+
+  TelemetryState airborneTelemetry;
+  airborneTelemetry.heartbeatSeen = "true";
+  airborneTelemetry.flightControllerReady = "true";
+  airborneTelemetry.gpsReady = "true";
+  airborneTelemetry.ekfReady = "true";
+  airborneTelemetry.batteryReady = "true";
+  airborneTelemetry.armed = "true";
+  airborneTelemetry.readiness = "ready";
+  airborneTelemetry.landedStateName = "in-air";
+  BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("ready_for_takeoff"), "false");
+  airborneTelemetry.landedStateName = "on-ground";
+  BOOST_CHECK_EQUAL(airborneTelemetry.toFields().at("ready_for_takeoff"), "true");
+
   auto safety = makeSafeState();
   safety.linkState = "lost";
   gate = FlightSafetyGateState::fromStates("A", makeReadyState(true), safety);

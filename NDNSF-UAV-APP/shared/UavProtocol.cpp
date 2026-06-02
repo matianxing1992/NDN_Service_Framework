@@ -339,6 +339,13 @@ TelemetryState::fromFields(const Fields& fields)
 Fields
 TelemetryState::toFields() const
 {
+  const bool readyForTakeoff = heartbeatSeen == "true" &&
+                               flightControllerReady == "true" &&
+                               gpsReady == "true" &&
+                               ekfReady == "true" &&
+                               batteryReady == "true" &&
+                               armed == "true" &&
+                               landedStateName == "on-ground";
   return {
     {"drone_id", droneId},
     {"lat", lat},
@@ -365,7 +372,7 @@ TelemetryState::toFields() const
     {"battery_current_a", batteryCurrentA},
     {"readiness", readiness},
     {"readiness_reason", readinessReason},
-    {"ready_for_takeoff", readiness == "ready" ? "true" : "false"},
+    {"ready_for_takeoff", readyForTakeoff ? "true" : "false"},
     {"video", video},
     {"capture", capture},
     {"recording", recording},
@@ -512,9 +519,15 @@ ReadinessState::readyForArm() const
 }
 
 bool
+ReadinessState::landedForTakeoff() const
+{
+  return landedStateName == "on-ground";
+}
+
+bool
 ReadinessState::readyForTakeoff() const
 {
-  return readyForArm() && armed == "true";
+  return readyForArm() && armed == "true" && landedForTakeoff();
 }
 
 bool
@@ -779,7 +792,18 @@ FlightSafetyGateState::fromStates(const std::string& droneId,
   }
 
   if (!readiness->readyForTakeoff()) {
-    state.takeoffReason = readiness->readyForArm() ? "not-armed" : readiness->readinessReason;
+    if (!readiness->readyForArm()) {
+      state.takeoffReason = readiness->readinessReason;
+    }
+    else if (readiness->armed != "true") {
+      state.takeoffReason = "not-armed";
+    }
+    else if (!readiness->landedForTakeoff()) {
+      state.takeoffReason = "not-on-ground";
+    }
+    else {
+      state.takeoffReason = "not-ready";
+    }
   }
   else {
     state.canTakeoff = blockIfAttention(true, state.takeoffReason);

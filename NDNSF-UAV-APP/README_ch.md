@@ -422,7 +422,8 @@ drone 显示为 `stale` 或 `lost`；这只是 operator 诊断状态，不改变
 protocol。
 
 Takeoff 会受 telemetry state 保护：GS 在发送 Targeted takeoff command 前，必须看到
-heartbeat、flight-controller readiness、GPS/EKF readiness、电池 readiness 和 armed 状态。
+heartbeat、flight-controller readiness、GPS/EKF readiness、电池 readiness、armed 状态，
+并且 `landed_state_name` 必须明确是 `on-ground`。
 UI 也增加了 Emergency Stop 按钮，走同一条 Targeted MAVLink 路径。Emergency Stop
 被当作 safety-critical command：GS 发送前会先退出手操模式，并使用独立的 in-flight guard，
 不会仅仅因为普通 MAVLink command 仍在等待 response 就被丢弃。

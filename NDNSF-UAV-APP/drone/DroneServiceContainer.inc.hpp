@@ -148,6 +148,8 @@ public:
       manualState = "neutral-sent";
       safetyDetail = "neutral-after-timeout";
     }
+    const bool armed = m_armed.load();
+    const bool airborne = m_airborne.load();
     return {
       {"fc_state", "mock-ready"},
       {"lat", "35.1186"},
@@ -160,9 +162,9 @@ public:
       {"gps_ready", "true"},
       {"ekf_ready", "true"},
       {"battery_ready", "true"},
-      {"armed", m_armed.load() ? "true" : "false"},
-      {"landed_state_name", m_airborne.load() ? "in-air" : "on-ground"},
-      {"ready_for_takeoff", m_armed.load() ? "true" : "false"},
+      {"armed", armed ? "true" : "false"},
+      {"landed_state_name", airborne ? "in-air" : "on-ground"},
+      {"ready_for_takeoff", armed && !airborne ? "true" : "false"},
       {"readiness", "ready"},
       {"readiness_reason", "ok"},
       {"link_state", "connected"},
