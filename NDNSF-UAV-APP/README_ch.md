@@ -390,6 +390,9 @@ Ground station 会把这些值保存成 typed `TelemetryState` 和 `MissionState
 不再靠临时 status 字符串解析，所以多无人机 UI 状态会始终跟当前选中的 drone 对齐。
 Mission upload response 和后续 telemetry 都会更新同一个 `MissionState`；`uploaded`、
 `executing`、`stopping` 这些 phase 会直接决定 Start Mission 和 Stop Patrol 按钮状态。
+Start Mission 还会把 mission phase 和 typed `FlightSafetyGateState` 组合起来判断，因此 mission
+上传完成后，如果对应 patrol drone 还没有可用 readiness/link/safety state，GUI 会显示为 blocked。
+Stop Patrol 对 uploaded 或 active mission 仍然保持可用，避免异常状态下反而无法让无人机降落。
 
 Ground station 还会为每架 drone 保存最近一条飞控命令的 typed `FlightCommandState`。
 Targeted MAVLink response、command timeout、readiness gate 拦截，以及 command-in-flight
@@ -691,7 +694,9 @@ UAV service-container workload 的应用。计划顺序如下：
 
 1. **收束状态模型。** 现在 telemetry、readiness、mission、video、command 和 safety state
    已经驱动主要飞控按钮、selected-drone action model、inspector/map 文本、地图 marker、左侧
-   drone list 和 MiniNDN smoke markers。后续新增 mission/video/safety UI 路径时继续坚持这一点：
+   drone list 和 MiniNDN smoke markers。Mission Start/Stop 现在也通过 typed mission start gate
+   把 `MissionState`、flight readiness 和 safety 组合起来判断。后续新增 mission/video/safety UI
+   路径时继续坚持这一点：
    只要有 typed state model，GUI 就不应该再从临时 status string 推断状态。
 2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
    上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、
@@ -1116,8 +1121,8 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 ```
 
 launcher 会使用两架 mock drone 环境，并在 GS smoke 路径中注入 uploaded
-`MissionState`。它检查 GS 的 mission control model 是否从
-`can_start=false` / `can_stop=false` 变成 mission part 可启动后的
+`MissionState`。它会先确认 not-ready flight safety gate 会阻止 uploaded mission start；
+然后注入 ready/unarmed `ReadinessState`，再检查 GS 的 mission control model 是否变成
 `can_start=true` / `can_stop=true`，不依赖飞控 waypoint upload 的实际行为。
 
 如果要回归测试 Arm/Takeoff/Land/手操按钮是否由 typed `ReadinessState` 驱动：

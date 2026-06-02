@@ -1055,7 +1055,11 @@ def main() -> int:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=initial can_upload=true can_start=false can_stop=false")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=uploading can_upload=false can_start=false can_stop=false upload_pending=true")
-            require_log(gs_log, "MISSION_CONTROL_STATE phase=after-upload can_upload=true can_start=true can_stop=true")
+            require_log(gs_log, "MISSION_CONTROL_STATE phase=after-upload can_upload=true can_start=false can_stop=true")
+            require_log(gs_log, "start_blocked_count=2")
+            require_log(gs_log, "start_blocked=A:waiting-heartbeat,B:waiting-heartbeat")
+            require_log(gs_log, "MISSION_CONTROL_STATE phase=after-ready can_upload=true can_start=true can_stop=true")
+            require_log(gs_log, "start_eligible_count=2")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=final can_upload=true can_start=true can_stop=true")
             print("NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK")
         elif args.auto_flight_controls_test and args.no_cli:

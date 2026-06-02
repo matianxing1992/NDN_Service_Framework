@@ -434,7 +434,11 @@ mission controls refresh from the same state model instead of parsing temporary
 status strings, so multi-drone UI state remains tied to the selected drone.
 Mission upload responses and later telemetry both update the same
 `MissionState`; `uploaded`, `executing`, and `stopping` phases now drive the
-Start Mission and Stop Patrol buttons.
+Start Mission and Stop Patrol buttons. Start Mission additionally combines the
+mission phase with a typed `FlightSafetyGateState`, so an uploaded mission is
+shown as blocked until the selected patrol drones have usable readiness and
+link/safety state. Stop Patrol remains available for uploaded or active missions
+so the operator can still land drones during abnormal states.
 
 The ground station also keeps a typed `FlightCommandState` for the latest
 flight-control command per drone. Targeted MAVLink responses, command timeouts,
@@ -1259,10 +1263,11 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 ```
 
 The launcher uses a two-drone mock setup and injects uploaded `MissionState`
-objects inside the GS smoke path. It verifies that the mission control model
-changes from `can_start=false` / `can_stop=false` to `can_start=true` /
-`can_stop=true` after the mission parts become startable, without depending on
-flight-controller waypoint upload behavior.
+objects inside the GS smoke path. It first verifies that uploaded mission parts
+are still blocked by a not-ready flight safety gate, then injects ready/unarmed
+`ReadinessState` snapshots and verifies that the mission control model changes
+to `can_start=true` / `can_stop=true`, without depending on flight-controller
+waypoint upload behavior.
 
 To regression-test that Arm/Takeoff/Land/manual-control buttons follow typed
 `ReadinessState`:
@@ -1352,7 +1357,9 @@ to make it a deployable UAV service-container workload. The planned order is:
 1. **State model consolidation.** Telemetry, readiness, mission, video, command,
    and safety state now drive the main flight buttons, selected-drone action
    model, inspector/map text, map markers, left drone list, and MiniNDN smoke
-   markers. Continue extending this rule to new mission/video/safety UI paths:
+   markers. Mission Start/Stop now also goes through a typed mission start gate
+   that combines `MissionState` with flight readiness and safety. Continue
+   extending this rule to new mission/video/safety UI paths:
    GUI code should not infer state from ad hoc status strings when a typed state
    model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
