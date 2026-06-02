@@ -181,6 +181,27 @@ public:
     return out;
   }
 
+  void
+  injectMissionStateForTest(MissionState mission)
+  {
+    if (mission.updatedMs == 0) {
+      mission.updatedMs = nowMilliseconds();
+    }
+    updateMissionState(mission);
+
+    std::lock_guard<std::mutex> readyGuard(m_missionReadyMutex);
+    auto found = std::find(m_missionReadyDrones.begin(), m_missionReadyDrones.end(),
+                           mission.droneId);
+    if (mission.isStartable()) {
+      if (found == m_missionReadyDrones.end()) {
+        m_missionReadyDrones.push_back(mission.droneId);
+      }
+    }
+    else if (found != m_missionReadyDrones.end()) {
+      m_missionReadyDrones.erase(found);
+    }
+  }
+
   std::string
   serviceCatalogForDrone(const std::string& droneId) const
   {

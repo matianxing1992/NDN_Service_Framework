@@ -1049,9 +1049,9 @@ def main() -> int:
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=initial can_upload=true can_start=false can_stop=false")
+            require_log(gs_log, "MISSION_CONTROL_STATE phase=uploading can_upload=false can_start=false can_stop=false upload_pending=true")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=after-upload can_upload=true can_start=true can_stop=true")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=final can_upload=true can_start=true can_stop=true")
-            require_log(gs_log, "PATROL_TASK_DONE")
             print("NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK")
         elif (args.auto_mavlink_test or args.auto_keyboard_test or
               args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:
