@@ -733,8 +733,10 @@ UAV service-container workload 的应用。计划顺序如下：
    Arm/Takeoff/Land/Manual/E-stop action bar 现在也由共享的 `FlightActionControlState` 和
    `SelectedActionState` 派生，让 unit test 覆盖与 GUI 相同的可用性和 reason 模型。selected-drone
    inspector/map 的非渲染摘要字段现在也由共享 `SelectedDroneSummaryState` 派生，GTK 文本和地图
-   marker 渲染仍然留在窗口层。后续新增 mission/video/safety UI 路径时继续坚持这一点：只要有
-   typed state model，GUI 就不应该再从临时 status string 推断状态。
+   marker 渲染仍然留在窗口层。telemetry live smoke 现在会为每个 arm/takeoff/land telemetry
+   sample 输出这些共享 action/summary/row model，因此状态模型回归不只依赖 synthetic GUI injection，
+   也会经过真实 NDNSF telemetry request 路径。后续新增 mission/video/safety UI 路径时继续坚持这一点：
+   只要有 typed state model，GUI 就不应该再从临时 status string 推断状态。
 2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
    上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、
    telemetry 和 mission services。
@@ -1165,7 +1167,10 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 这个测试会在 GS 通过 NDNSF Targeted request 执行 arm/takeoff/land 时，检查
 `gps_fix_name`、`ekf_ready`、`landed_state_name`、`battery_voltage_v`、
-`armed` 和 `lat/lon`。
+`armed` 和 `lat/lon`。每个 telemetry sample 还会记录由 live telemetry snapshot
+派生出的共享 `FlightActionControlState`、`SelectedActionState`、
+`SelectedDroneSummaryState` 和 `DroneListRowState`，因此这个回归测试会覆盖 GUI
+实际使用的同一套状态模型。
 
 如果只想做不启动 PX4/jMAVSim 的 MiniNDN 回归测试：
 
@@ -1177,9 +1182,9 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 这种情况下脚本会自动启用 mock-field telemetry 模式。它仍然验证
 NDNSF telemetry 请求路径、类型化状态更新、arm/takeoff/land 命令状态变化、
-landed-state 变化、`ekf_ready`、`armed` 和 `lat/lon`，但不会因为没有真实
-GPS fix 或 battery voltage 字段而失败。上面的 PX4/jMAVSim 命令仍然是真实
-飞控传感器字段的严格检查。
+landed-state 变化、`ekf_ready`、`armed`、`lat/lon` 和 telemetry 派生的共享状态模型，
+但不会因为没有真实 GPS fix 或 battery voltage 字段而失败。上面的 PX4/jMAVSim
+命令仍然是真实飞控传感器字段的严格检查。
 
 如果要在没有真机硬件的情况下回归测试 GS 本地 stale/lost link 模型：
 

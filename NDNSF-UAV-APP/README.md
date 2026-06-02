@@ -1292,7 +1292,11 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 This checks `gps_fix_name`, `ekf_ready`, `landed_state_name`,
 `battery_voltage_v`, `armed`, and `lat/lon` while the GS runs
-arm/takeoff/land over NDNSF Targeted requests.
+arm/takeoff/land over NDNSF Targeted requests. Each telemetry sample also logs
+the shared `FlightActionControlState`, `SelectedActionState`,
+`SelectedDroneSummaryState`, and `DroneListRowState` derived from the live
+telemetry snapshot, so the regression verifies the same state models used by the
+GUI.
 
 For a MiniNDN-only regression that does not start PX4/jMAVSim:
 
@@ -1305,9 +1309,10 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 The script automatically enables the mock-field telemetry mode in this case.
 It still verifies the NDNSF telemetry request path, typed state updates,
 arm/takeoff/land command transitions, landed-state changes, `ekf_ready`,
-`armed`, and `lat/lon`, but it does not treat missing real GPS fix or battery
-voltage fields as a failure. The full PX4/jMAVSim command above remains the
-strict check for real flight-controller sensor fields.
+`armed`, `lat/lon`, and the telemetry-derived shared state models, but it does
+not treat missing real GPS fix or battery voltage fields as a failure. The full
+PX4/jMAVSim command above remains the strict check for real flight-controller
+sensor fields.
 
 To regression-test the GS local stale/lost link model without real hardware:
 
@@ -1472,9 +1477,12 @@ to make it a deployable UAV service-container workload. The planned order is:
    `SelectedActionState`, giving unit tests the same availability/reason model
    used by the GUI. The selected-drone inspector/map summary now derives its
    non-rendering fields from shared `SelectedDroneSummaryState`, while GTK text
-   and map marker rendering stay in the window layer. Continue extending this rule
-   to new mission/video/safety UI paths: GUI code should not infer state from ad
-   hoc status strings when a typed state model is available.
+   and map marker rendering stay in the window layer. The telemetry live smoke
+   now emits those shared action/summary/row models for every arm/takeoff/land
+   telemetry sample, so state-model regressions use real NDNSF telemetry requests
+   instead of only synthetic GUI injections. Continue extending this rule to new
+   mission/video/safety UI paths: GUI code should not infer state from ad hoc
+   status strings when a typed state model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
    ODROID-class or real airframe computers without a GUI/X server. In headless
    mode the app should run only NDNSF, MAVLink, camera, repo, telemetry, and
