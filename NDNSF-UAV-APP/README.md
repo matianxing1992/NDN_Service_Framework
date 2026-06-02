@@ -1264,6 +1264,19 @@ changes from `can_start=false` / `can_stop=false` to `can_start=true` /
 `can_stop=true` after the mission parts become startable, without depending on
 flight-controller waypoint upload behavior.
 
+To regression-test that Arm/Takeoff/Land/manual-control buttons follow typed
+`ReadinessState`:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-flight-controls-test --no-cli
+```
+
+The launcher injects not-ready, ready-but-not-armed, and armed-ready readiness
+snapshots in the GS smoke path. It verifies that Arm is enabled only when the
+selected drone is ready and not armed, and that Takeoff/Land/manual control are
+enabled only after the selected drone is armed.
+
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
 `make px4_sitl jmavsim` target twice. Drone A uses PX4 MAVLink UDP port
