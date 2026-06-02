@@ -1324,7 +1324,9 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 The test fetches one telemetry sample, waits without refreshing it, and checks
 that the GS safety model transitions from fresh/connected to `stale` and then
-`lost`.
+`lost`. It also logs the same `FlightActionControlState` used by the flight
+buttons, verifying that stale/lost links block normal commands while emergency
+stop remains available for the selected drone.
 
 To regression-test that video Start/Stop controls follow the selected drone
 instead of a global stream flag:

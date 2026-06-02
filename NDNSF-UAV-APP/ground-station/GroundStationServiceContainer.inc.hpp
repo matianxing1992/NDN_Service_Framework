@@ -1001,6 +1001,10 @@ public:
                    << " action=" << safety->lostLinkAction
                    << " attention=" << (safety->needsOperatorAttention() ? "true" : "false")
                    << " detail=" << safety->detail);
+      const auto flight = FlightActionControlState::fromGate(
+        FlightSafetyGateState::fromStates(droneId, readinessForDrone(droneId), safety));
+      NDN_LOG_INFO("LINK_STATE_GATE sample=" << phase
+                   << " " << flight.statusLine());
       return *safety;
     };
 

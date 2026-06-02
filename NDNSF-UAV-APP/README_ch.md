@@ -1195,7 +1195,9 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 ```
 
 这个测试先获取一次 telemetry，然后停止刷新并等待，确认 GS safety model 会从
-fresh/connected 变成 `stale`，再变成 `lost`。
+fresh/connected 变成 `stale`，再变成 `lost`。它还会记录飞行按钮使用的同一个
+`FlightActionControlState`，验证 stale/lost link 会阻断普通命令，而 Emergency Stop
+仍然对选中的无人机可用。
 
 如果要回归测试视频 Start/Stop 控件是否跟随当前选中的 drone，而不是错误地跟随全局 stream
 flag：
