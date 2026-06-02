@@ -1253,6 +1253,8 @@ def main() -> int:
                 require_log(drone_logs[args.drone_id], "video=stopped")
             if args.auto_repeat_stop_test:
                 require_log(gs_log, "Video stop timed out for drone " + args.drone_id)
+                require_log(gs_log, "VIDEO_SELECTION_STATE phase=auto-video-stop-timeout selected=" + args.drone_id)
+                require_log(gs_log, "stop_button_sensitive=true")
                 require_log(gs_log, "Video stopped drone=" + args.drone_id)
                 require_log(drone_logs[args.drone_id],
                             "DRONE_VIDEO_STOP_SIMULATED_DELAY_MS drone=" + args.drone_id)

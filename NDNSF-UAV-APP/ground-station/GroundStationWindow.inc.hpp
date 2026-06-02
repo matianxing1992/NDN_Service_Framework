@@ -503,6 +503,7 @@ public:
           status += ", decoded=" + std::to_string(m_decodedFrames.load());
         }
         else if (status.rfind("Timeout waiting for ", 0) == 0 ||
+                 status.rfind("Video stop timed out", 0) == 0 ||
                  status.rfind("Video control response missing", 0) == 0 ||
                  status.rfind("NDNSF runtime not ready", 0) == 0 ||
                  status.rfind("No video streaming for selected drone ", 0) == 0 ||
@@ -691,6 +692,10 @@ public:
         m_runtime.stopVideo();
         if (m_autoRepeatStopTest) {
           std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+          Glib::signal_idle().connect_once([this] {
+            logVideoControlState("auto-video-stop-timeout");
+          });
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
           m_runtime.stopVideo();
         }
         std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -1809,6 +1814,8 @@ private:
        << " selected=" << state.selectedDrone
        << " can_start=" << (state.canStart ? "true" : "false")
        << " can_stop=" << (state.canStop ? "true" : "false")
+       << " start_button_sensitive=" << (m_start.get_sensitive() ? "true" : "false")
+       << " stop_button_sensitive=" << (m_stop.get_sensitive() ? "true" : "false")
        << " remote_streaming=" << (state.remoteStreaming ? "true" : "false")
        << " display_active=" << (state.displayActive ? "true" : "false");
     NDN_LOG_INFO(os.str());
