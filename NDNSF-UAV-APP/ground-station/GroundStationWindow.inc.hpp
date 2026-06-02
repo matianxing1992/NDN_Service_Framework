@@ -2050,6 +2050,138 @@ private:
     uint8_t b = 40;
   };
 
+  MapMarker
+  markerForDrone(const std::string& droneId, size_t index) const
+  {
+    const auto found = m_dronePositions.find(droneId);
+    double lat = m_groundStationLat;
+    double lon = m_groundStationLon + (static_cast<double>(index) + 1.0) * 0.0007;
+    if (found != m_dronePositions.end()) {
+      lat = found->second.first;
+      lon = found->second.second;
+    }
+    if (std::abs(lat - m_groundStationLat) < 0.00001 &&
+        std::abs(lon - m_groundStationLon) < 0.00001) {
+      lon += (static_cast<double>(index) + 1.0) * 0.00055;
+    }
+    MapMarker marker{droneId, lat, lon,
+                     static_cast<uint8_t>(index == 0 ? 220 : 20),
+                     static_cast<uint8_t>(index == 0 ? 40 : 160),
+                     static_cast<uint8_t>(index == 0 ? 40 : 70)};
+    if (const auto mission = m_runtime.missionForDrone(droneId)) {
+      if (mission->isUploading() || mission->isUploaded()) {
+        marker.label += " U";
+        marker.r = 245;
+        marker.g = 160;
+        marker.b = 20;
+      }
+      else if (mission->isExecuting()) {
+        marker.label += " R";
+        marker.r = 30;
+        marker.g = 160;
+        marker.b = 80;
+      }
+      else if (mission->isStopping()) {
+        marker.label += " S";
+        marker.r = 70;
+        marker.g = 110;
+        marker.b = 220;
+      }
+      else if (mission->isCompleted()) {
+        marker.label += " C";
+        marker.r = 20;
+        marker.g = 150;
+        marker.b = 180;
+      }
+      else if (mission->isFailed() || mission->isCancelled()) {
+        marker.label += " X";
+        marker.r = 220;
+        marker.g = 30;
+        marker.b = 40;
+      }
+    }
+    if (const auto safety = m_runtime.safetyForDrone(droneId);
+        safety && safety->needsOperatorAttention()) {
+      marker.label += " !";
+      marker.r = 220;
+      marker.g = 30;
+      marker.b = 40;
+    }
+    return marker;
+  }
+
+  struct SelectedDroneViewState
+  {
+    std::string selectedDrone;
+    bool hasTelemetry = false;
+    std::string inspectorText;
+    std::string mapText;
+    std::string readiness = "unknown";
+    std::string missionPhase = "unknown";
+    std::string linkState = "unknown";
+    MapMarker marker;
+  };
+
+  SelectedDroneViewState
+  selectedDroneViewState() const
+  {
+    SelectedDroneViewState state;
+    state.selectedDrone = m_runtime.targetDroneId();
+    size_t markerIndex = 0;
+    const auto foundId = std::find(m_droneIds.begin(), m_droneIds.end(), state.selectedDrone);
+    if (foundId != m_droneIds.end()) {
+      markerIndex = static_cast<size_t>(std::distance(m_droneIds.begin(), foundId));
+    }
+    state.marker = markerForDrone(state.selectedDrone, markerIndex);
+    const auto telemetry = m_runtime.telemetryForDrone(state.selectedDrone);
+    const auto mission = m_runtime.missionForDrone(state.selectedDrone);
+    const auto readiness = m_runtime.readinessForDrone(state.selectedDrone);
+    const auto video = m_runtime.videoForDrone(state.selectedDrone);
+    const auto command = m_runtime.commandForDrone(state.selectedDrone);
+    const auto safety = m_runtime.safetyForDrone(state.selectedDrone);
+    state.readiness = readiness ? readiness->readiness :
+                      telemetry ? telemetry->readiness : "unknown";
+    state.missionPhase = mission ? mission->phase : "idle";
+    state.linkState = safety ? safety->linkState :
+                      telemetry ? telemetry->linkState : "unknown";
+    if (telemetry) {
+      state.hasTelemetry = true;
+      state.inspectorText = telemetry->statusLine() +
+        (readiness ? " " + readiness->statusLine() : "") +
+        (mission ? " " + mission->statusLine() : "") +
+        (video ? " " + video->statusLine() : "") +
+        (command ? " " + command->statusLine() : "") +
+        (safety ? " " + safety->statusLine() : "");
+      state.mapText = mapTextForTelemetry(*telemetry, mission, state.selectedDrone,
+                                          readiness, video, command, safety);
+    }
+    else {
+      state.inspectorText = "No telemetry for selected drone " + state.selectedDrone;
+      state.mapText = "Map / mission workspace\n\n"
+                      "GS center: University of Memphis\n"
+                      "Selected drone: " + state.selectedDrone + "\n"
+                      "Map markers show GS, drones, and mission waypoints.\n"
+                      "Click map to append waypoints, then upload/start the mission.";
+    }
+    return state;
+  }
+
+  void
+  logSelectedDroneViewState(const std::string& phase) const
+  {
+    const auto state = selectedDroneViewState();
+    std::ostringstream os;
+    os << "SELECTED_VIEW_STATE phase=" << phase
+       << " selected=" << state.selectedDrone
+       << " has_telemetry=" << (state.hasTelemetry ? "true" : "false")
+       << " readiness=" << state.readiness
+       << " mission=" << state.missionPhase
+       << " link=" << state.linkState
+       << " marker=" << state.marker.label;
+    NDN_LOG_INFO(os.str());
+    std::cout << os.str() << std::endl;
+  }
+
   static std::pair<double, double>
   tileFloatForLatLon(double lat, double lon, int zoom)
   {
@@ -2219,62 +2351,7 @@ private:
     std::vector<MapMarker> markers;
     markers.push_back({"GS", m_groundStationLat, m_groundStationLon, 20, 80, 220});
     for (size_t i = 0; i < m_droneIds.size(); ++i) {
-      const auto& droneId = m_droneIds[i];
-      const auto found = m_dronePositions.find(droneId);
-      double lat = m_groundStationLat;
-      double lon = m_groundStationLon + (static_cast<double>(i) + 1.0) * 0.0007;
-      if (found != m_dronePositions.end()) {
-        lat = found->second.first;
-        lon = found->second.second;
-      }
-      if (std::abs(lat - m_groundStationLat) < 0.00001 &&
-          std::abs(lon - m_groundStationLon) < 0.00001) {
-        lon += (static_cast<double>(i) + 1.0) * 0.00055;
-      }
-      std::string label = droneId;
-      auto r = static_cast<uint8_t>(i == 0 ? 220 : 20);
-      auto g = static_cast<uint8_t>(i == 0 ? 40 : 160);
-      auto b = static_cast<uint8_t>(i == 0 ? 40 : 70);
-      if (const auto mission = m_runtime.missionForDrone(droneId)) {
-        if (mission->isUploading() || mission->isUploaded()) {
-          label += " U";
-          r = 245;
-          g = 160;
-          b = 20;
-        }
-        else if (mission->isExecuting()) {
-          label += " R";
-          r = 30;
-          g = 160;
-          b = 80;
-        }
-        else if (mission->isStopping()) {
-          label += " S";
-          r = 70;
-          g = 110;
-          b = 220;
-        }
-        else if (mission->isCompleted()) {
-          label += " C";
-          r = 20;
-          g = 150;
-          b = 180;
-        }
-        else if (mission->isFailed() || mission->isCancelled()) {
-          label += " X";
-          r = 220;
-          g = 30;
-          b = 40;
-        }
-      }
-      if (const auto safety = m_runtime.safetyForDrone(droneId);
-          safety && safety->needsOperatorAttention()) {
-        label += " !";
-        r = 220;
-        g = 30;
-        b = 40;
-      }
-      markers.push_back({label, lat, lon, r, g, b});
+      markers.push_back(markerForDrone(m_droneIds[i], i));
     }
     if (!m_planWaypoints.empty()) {
       for (size_t i = 0; i < m_planWaypoints.size(); ++i) {
