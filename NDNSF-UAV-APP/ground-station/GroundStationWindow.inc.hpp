@@ -2014,7 +2014,10 @@ private:
   {
     return "rtt=" + std::to_string(adaptive.rttMs) +
            "ms,win=" + std::to_string(adaptive.window) +
-           ",pressure=" + std::to_string(maxVideoPressure(adaptive));
+           ",pressure=" + std::to_string(maxVideoPressure(adaptive)) +
+           ",bitrate=" + std::to_string(adaptive.acceptedBitrateKbps) +
+           "->" + std::to_string(adaptive.suggestedBitrateKbps) +
+           "kbps/" + adaptive.bitrateAction;
   }
 
   DroneListRowState
@@ -2494,6 +2497,11 @@ private:
     if (adaptive) {
       os << " state=" << adaptive->state
          << " rtt_ms=" << adaptive->rttMs
+         << " requested_bitrate_kbps=" << adaptive->requestedBitrateKbps
+         << " accepted_bitrate_kbps=" << adaptive->acceptedBitrateKbps
+         << " suggested_bitrate_kbps=" << adaptive->suggestedBitrateKbps
+         << " bitrate_action=" << adaptive->bitrateAction
+         << " bitrate_reason=" << adaptive->bitrateReason
          << " window=" << adaptive->window
          << " lookahead=" << adaptive->lookahead
          << " future_probe_limit=" << adaptive->futureProbeLimit

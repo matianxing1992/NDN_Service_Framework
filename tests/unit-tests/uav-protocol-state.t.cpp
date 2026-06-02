@@ -172,6 +172,11 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   state.droneId = "A";
   state.state = "streaming";
   state.rttMs = 142;
+  state.requestedBitrateKbps = 8000;
+  state.acceptedBitrateKbps = 6000;
+  state.suggestedBitrateKbps = 4000;
+  state.bitrateAction = "decrease";
+  state.bitrateReason = "pressure";
   state.window = 64;
   state.lookahead = 18;
   state.futureProbeLimit = 3;
@@ -194,11 +199,18 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_EQUAL(decoded.droneId, "A");
   BOOST_CHECK_EQUAL(decoded.state, "streaming");
   BOOST_CHECK_EQUAL(decoded.rttMs, 142);
+  BOOST_CHECK_EQUAL(decoded.requestedBitrateKbps, 8000);
+  BOOST_CHECK_EQUAL(decoded.acceptedBitrateKbps, 6000);
+  BOOST_CHECK_EQUAL(decoded.suggestedBitrateKbps, 4000);
+  BOOST_CHECK_EQUAL(decoded.bitrateAction, "decrease");
+  BOOST_CHECK_EQUAL(decoded.bitrateReason, "pressure");
   BOOST_CHECK_EQUAL(decoded.window, 64);
   BOOST_CHECK_EQUAL(decoded.missingTimeoutMs, 240);
   BOOST_CHECK_EQUAL(decoded.timeoutPressure, 55);
   BOOST_CHECK(decoded.underPressure());
   BOOST_CHECK_NE(decoded.statusLine().find("VideoAdaptive drone=A"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("suggested_bitrate_kbps=4000"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("bitrate_action=decrease"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frames=45"), std::string::npos);
 }

@@ -38,6 +38,8 @@ public:
     m_gsCert = getOrCreateIdentity(m_keyChain, m_config.groundStationIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_config.controllerPrefix);
     m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_config.groundStationIdentity));
+    m_videoRequestedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps);
+    m_videoAcceptedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps);
   }
 
   ~GroundStationServiceContainer()
@@ -2756,6 +2758,15 @@ private:
     bool complete = false;
   };
 
+  struct VideoBitrateAdvice
+  {
+    uint64_t requestedKbps = 0;
+    uint64_t acceptedKbps = 0;
+    uint64_t suggestedKbps = 0;
+    std::string action = "hold";
+    std::string reason = "stable";
+  };
+
   void
   requestVideoPackets()
   {
@@ -2797,6 +2808,8 @@ private:
     const auto bitrateKbps = std::max<uint64_t>(
       128, fieldAsUint64(fields, "accepted_bitrate_kbps",
                          fieldAsUint64(fields, "target_bitrate_kbps", m_videoBitrateKbps)));
+    const auto requestedBitrateKbps = std::max<uint64_t>(
+      128, fieldAsUint64(fields, "requested_bitrate_kbps", m_videoBitrateKbps));
     const auto payloadBytes = std::max<uint64_t>(
       512, fieldAsUint64(fields, "max_payload_bytes", 3600));
     const auto fps = std::max<uint64_t>(1, fieldAsUint64(fields, "fps", VIDEO_FPS));
@@ -2809,6 +2822,8 @@ private:
 
     m_videoPayloadBytes = payloadBytes;
     m_videoFps = fps;
+    m_videoRequestedBitrateKbps = requestedBitrateKbps;
+    m_videoAcceptedBitrateKbps = bitrateKbps;
     m_keyPacketsPerSecond = std::clamp<uint64_t>(
       (estimatedPacketsPerSecond + 7) / 8, 4, 16);
     m_deltaPacketsPerSecond = std::clamp<uint64_t>(
@@ -3048,6 +3063,86 @@ private:
     });
   }
 
+  static uint64_t
+  lowerVideoBitrateStep(uint64_t currentKbps)
+  {
+    if (currentKbps > 6000) {
+      return 6000;
+    }
+    if (currentKbps > 4000) {
+      return 4000;
+    }
+    if (currentKbps > 2500) {
+      return 2500;
+    }
+    if (currentKbps > 1500) {
+      return 1500;
+    }
+    if (currentKbps > 800) {
+      return 800;
+    }
+    return currentKbps;
+  }
+
+  static uint64_t
+  higherVideoBitrateStep(uint64_t currentKbps, uint64_t requestedKbps)
+  {
+    if (currentKbps < 800) {
+      return std::min<uint64_t>(800, requestedKbps);
+    }
+    if (currentKbps < 1500) {
+      return std::min<uint64_t>(1500, requestedKbps);
+    }
+    if (currentKbps < 2500) {
+      return std::min<uint64_t>(2500, requestedKbps);
+    }
+    if (currentKbps < 4000) {
+      return std::min<uint64_t>(4000, requestedKbps);
+    }
+    if (currentKbps < 6000) {
+      return std::min<uint64_t>(6000, requestedKbps);
+    }
+    if (currentKbps < 8000) {
+      return std::min<uint64_t>(8000, requestedKbps);
+    }
+    return std::min(currentKbps, requestedKbps);
+  }
+
+  VideoBitrateAdvice
+  videoBitrateAdvice() const
+  {
+    VideoBitrateAdvice advice;
+    advice.requestedKbps = std::max<uint64_t>(128, m_videoRequestedBitrateKbps.load());
+    advice.acceptedKbps = std::max<uint64_t>(128, m_videoAcceptedBitrateKbps.load());
+    advice.suggestedKbps = advice.acceptedKbps;
+
+    const auto rtt = videoRttMs();
+    const auto congestionPressure = videoCongestionPressurePercent();
+    const auto backlogPressure = decoderBacklogPressurePercent();
+    const auto probePressure = videoProbePressurePercent();
+    const auto pressure = std::max({congestionPressure, backlogPressure, probePressure});
+    const auto highRttThreshold = std::clamp<uint64_t>(
+      m_videoTimeoutBudgetMs / 3 + frameDurationMs() * 4, 350, 900);
+
+    if ((pressure >= 65 || rtt >= highRttThreshold) && advice.acceptedKbps > 800) {
+      advice.suggestedKbps = lowerVideoBitrateStep(advice.acceptedKbps);
+      advice.action = advice.suggestedKbps < advice.acceptedKbps ? "decrease" : "hold";
+      advice.reason = pressure >= 65 ? "pressure" : "high-rtt";
+    }
+    else if (pressure <= 15 && rtt < highRttThreshold / 2 &&
+             advice.acceptedKbps < advice.requestedKbps) {
+      advice.suggestedKbps = higherVideoBitrateStep(advice.acceptedKbps,
+                                                    advice.requestedKbps);
+      advice.action = advice.suggestedKbps > advice.acceptedKbps ? "increase" : "hold";
+      advice.reason = "recovery";
+    }
+    else {
+      advice.reason = "stable";
+    }
+
+    return advice;
+  }
+
   uint64_t
   videoProbePressurePercent() const
   {
@@ -3062,6 +3157,12 @@ private:
     state.droneId = droneId.empty() ? "unknown" : droneId;
     state.state = m_streaming.load() ? "streaming" : "stopped";
     state.rttMs = videoRttMs();
+    const auto bitrate = videoBitrateAdvice();
+    state.requestedBitrateKbps = bitrate.requestedKbps;
+    state.acceptedBitrateKbps = bitrate.acceptedKbps;
+    state.suggestedBitrateKbps = bitrate.suggestedKbps;
+    state.bitrateAction = bitrate.action;
+    state.bitrateReason = bitrate.reason;
     state.window = dynamicVideoWindow();
     state.lookahead = dynamicVideoLookahead();
     state.futureProbeLimit = dynamicFutureProbeInFlightLimit();
@@ -4127,6 +4228,8 @@ private:
   uint64_t m_deltaWindow = 108;
   uint64_t m_videoPayloadBytes = 3600;
   uint64_t m_videoFps = 30;
+  std::atomic<uint64_t> m_videoRequestedBitrateKbps{8000};
+  std::atomic<uint64_t> m_videoAcceptedBitrateKbps{8000};
   uint64_t m_videoTimeoutBudgetMs = 2500;
   uint64_t m_dynamicWindowMax = 128;
   uint64_t m_dynamicLookaheadMax = 64;

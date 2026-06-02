@@ -1168,6 +1168,8 @@ def main() -> int:
             require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-active selected=" + args.drone_id + " has_adaptive=true")
             require_log(gs_log, "window=")
             require_log(gs_log, "missing_timeout_ms=")
+            require_log(gs_log, "suggested_bitrate_kbps=")
+            require_log(gs_log, "bitrate_action=")
             require_log(gs_log, "GS_DECODED_FRAMES count=30")
             require_log(gs_log, "GS_GUI_EXIT rc=0")
             require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-stopped selected=" + args.drone_id + " has_adaptive=true")
