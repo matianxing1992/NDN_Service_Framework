@@ -304,6 +304,16 @@ public:
     return found->second;
   }
 
+  std::optional<MissionProgressState>
+  missionProgressSnapshot() const
+  {
+    std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    if (m_latestMissionProgress.taskId == "none") {
+      return std::nullopt;
+    }
+    return m_latestMissionProgress;
+  }
+
   std::optional<ReadinessState>
   readinessForDrone(const std::string& droneId) const
   {
@@ -1290,18 +1300,9 @@ public:
       state->parts.emplace(plannedParts[i].id, plannedParts[i]);
     }
 
-    auto logLedger = [&] (const std::string& line) {
+    auto logLedger = [] (const std::string& line) {
       NDN_LOG_INFO(line);
       std::cout << line << std::endl;
-    };
-
-    auto allDone = [state] {
-      for (const auto& item : state->parts) {
-        if (!item.second.done) {
-          return false;
-        }
-      }
-      return true;
     };
 
     auto joinDroneIds = [] (const std::vector<std::string>& droneIds) {
@@ -1314,6 +1315,8 @@ public:
       }
       return out;
     };
+    const std::string assignmentMode = "clustered-waypoints-return-to-start";
+    const std::string patrolDroneText = joinDroneIds(m_patrolDroneIds);
 
     auto joinPartIds = [state] {
       std::string out;
@@ -1324,6 +1327,66 @@ public:
         out += item.first;
       }
       return out;
+    };
+
+    auto emitProgress = [this, state, taskId, assignmentMode, patrolDroneText, logLedger](
+                          std::string phase, uint64_t attempts) {
+      auto appendId = [] (std::string& list, const std::string& id) {
+        if (!list.empty() && list != "none") {
+          list += ",";
+        }
+        if (list == "none") {
+          list.clear();
+        }
+        list += id;
+      };
+
+      MissionProgressState progress;
+      progress.taskId = taskId;
+      progress.phase = std::move(phase);
+      progress.assignment = assignmentMode;
+      progress.drones = patrolDroneText;
+      progress.attempts = attempts;
+      progress.returnHomePlanned = true;
+      progress.completedPartIds = "none";
+      progress.missingPartIds = "none";
+      progress.compensatedPartIds = "none";
+      progress.pendingPartIds = "none";
+
+      {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        progress.totalParts = state->parts.size();
+        for (const auto& item : state->parts) {
+          const auto& part = item.second;
+          if (part.done) {
+            ++progress.completedParts;
+            appendId(progress.completedPartIds, item.first);
+          }
+          else if (state->timedOut.find(item.first) != state->timedOut.end()) {
+            ++progress.missingParts;
+            appendId(progress.missingPartIds, item.first);
+          }
+          else {
+            appendId(progress.pendingPartIds, item.first);
+          }
+          if (part.attempt > 1) {
+            ++progress.compensatedParts;
+            appendId(progress.compensatedPartIds, item.first);
+          }
+        }
+      }
+
+      updateMissionProgress(progress);
+      logLedger("PATROL_PROGRESS " + progress.statusLine());
+    };
+
+    auto allDone = [state] {
+      for (const auto& item : state->parts) {
+        if (!item.second.done) {
+          return false;
+        }
+      }
+      return true;
     };
 
     auto dispatchPart = [&] (const std::string& partId, std::vector<std::string> droneIds,
@@ -1372,13 +1435,16 @@ public:
                                   providerNames = std::move(providerNames),
                                   taskId, partId, candidateText,
                                   attempt, state,
-                                  logLedger] () mutable {
+                                  logLedger, emitProgress] () mutable {
         if (!m_containerReady.load() || !m_user) {
           logLedger("PATROL_RUNTIME_NOT_READY task=" + taskId +
                     " part=" + partId);
-          std::lock_guard<std::mutex> guard(state->mutex);
-          state->timedOut.insert(partId);
+          {
+            std::lock_guard<std::mutex> guard(state->mutex);
+            state->timedOut.insert(partId);
+          }
           state->cv.notify_all();
+          emitProgress("waiting-compensation", attempt);
           return;
         }
         auto selectIdleCandidate =
@@ -1430,7 +1496,7 @@ public:
           m_ackTimeoutMs,
           std::move(selectIdleCandidate),
           m_timeoutMs,
-          [taskId, partId, candidateText, attempt, state, logLedger](const ndn::Name&) {
+          [taskId, partId, candidateText, attempt, state, logLedger, emitProgress](const ndn::Name&) {
             logLedger("PATROL_PART_MISSING task=" + taskId +
                       " attempt=" + std::to_string(attempt) +
                       " part=" + partId +
@@ -1442,8 +1508,9 @@ public:
               }
             }
             state->cv.notify_all();
+            emitProgress("waiting-compensation", attempt);
           },
-          [this, taskId, partId, candidateText, attempt, state, logLedger](
+          [this, taskId, partId, candidateText, attempt, state, logLedger, emitProgress](
             const ndn_service_framework::ResponseMessage& response) {
             const auto fields = decodeFields(responsePayload(response));
             auto mission = MissionState::fromFields(fields);
@@ -1481,6 +1548,7 @@ public:
                         " waypoints_forwarded=" + mission.waypointsForwarded +
                         " waypoint_acks_accepted=" + mission.waypointAcksAccepted +
                         " mission_ack=" + mission.ack);
+              emitProgress(attempt > 1 ? "compensating" : "assigning", attempt);
             }
             else {
               logLedger("PATROL_LATE_RESPONSE_IGNORED task=" + taskId +
@@ -1497,12 +1565,13 @@ public:
     const auto allPartIds = joinPartIds();
     logLedger("PATROL_TASK_START task=" + taskId +
               " parts=" + allPartIds +
-              " drones=" + joinDroneIds(m_patrolDroneIds) +
-              " assignment=clustered-waypoints-return-to-start" +
+              " drones=" + patrolDroneText +
+              " assignment=" + assignmentMode +
               " center_lat=" + std::to_string(centerLat) +
               " center_lon=" + std::to_string(centerLon) +
               " side_m=" + std::to_string(sideMeters));
     logLedger("PATROL_ATTEMPT task=" + taskId + " attempt=1 parts=" + allPartIds);
+    emitProgress("assigning", 1);
     size_t dispatchIndex = 0;
     for (const auto& item : state->parts) {
       const auto droneId = m_patrolDroneIds[dispatchIndex % m_patrolDroneIds.size()];
@@ -1516,6 +1585,7 @@ public:
     state->cv.notify_all();
 
     std::vector<std::string> missingParts;
+    bool completedInFirstAttempt = false;
     {
       std::unique_lock<std::mutex> lock(state->mutex);
       state->cv.wait_until(lock, deadline, [&] {
@@ -1530,39 +1600,53 @@ public:
         return false;
       });
       if (allDone()) {
-        logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=1");
-        return true;
+        completedInFirstAttempt = true;
       }
-      for (const auto& item : state->parts) {
-        if (!item.second.done &&
-            state->timedOut.find(item.first) != state->timedOut.end()) {
-          missingParts.push_back(item.first);
-        }
-      }
-      if (missingParts.empty()) {
+      else {
         for (const auto& item : state->parts) {
-          if (!item.second.done) {
+          if (!item.second.done &&
+              state->timedOut.find(item.first) != state->timedOut.end()) {
             missingParts.push_back(item.first);
+          }
+        }
+        if (missingParts.empty()) {
+          for (const auto& item : state->parts) {
+            if (!item.second.done) {
+              missingParts.push_back(item.first);
+            }
           }
         }
       }
     }
+    if (completedInFirstAttempt) {
+      emitProgress("completed", 1);
+      logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=1");
+      return true;
+    }
+    emitProgress("waiting-compensation", 1);
 
     for (const auto& partId : missingParts) {
       logLedger("PATROL_COMPENSATION task=" + taskId +
                 " attempt=2 parts=" + partId +
-                " candidates=" + joinDroneIds(m_patrolDroneIds));
+                " candidates=" + patrolDroneText);
+      emitProgress("compensating", 2);
       dispatchPart(partId, m_patrolDroneIds, 2, false);
     }
 
+    bool failed = false;
     {
       std::unique_lock<std::mutex> lock(state->mutex);
       state->cv.wait_until(lock, deadline, allDone);
       if (!allDone()) {
-        logLedger("PATROL_TASK_FAILED task=" + taskId);
-        return false;
+        failed = true;
       }
     }
+    if (failed) {
+      emitProgress("failed", 2);
+      logLedger("PATROL_TASK_FAILED task=" + taskId);
+      return false;
+    }
+    emitProgress("completed", 2);
     logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=2");
     return true;
   }
@@ -1658,6 +1742,13 @@ private:
     }
     std::lock_guard<std::mutex> guard(m_telemetryMutex);
     m_missionByDrone[mission.droneId] = mission;
+  }
+
+  void
+  updateMissionProgress(MissionProgressState progress)
+  {
+    std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    m_latestMissionProgress = std::move(progress);
   }
 
   void
@@ -3878,9 +3969,11 @@ private:
   std::string m_targetDroneId;
   mutable std::mutex m_targetMutex;
   mutable std::mutex m_missionReadyMutex;
+  mutable std::mutex m_missionProgressMutex;
   mutable std::mutex m_videoStateMutex;
   mutable std::mutex m_recordingManifestMutex;
   std::vector<std::string> m_missionReadyDrones;
+  MissionProgressState m_latestMissionProgress;
   std::string m_activeVideoDroneId;
   std::string m_recordingPlaybackDroneId;
   std::map<std::string, RecordingManifest> m_recordingManifests;

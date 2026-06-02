@@ -1127,6 +1127,53 @@ MissionStartGateState::statusLine() const
          " stop_reason=" + stopReason;
 }
 
+bool
+MissionProgressState::isActive() const
+{
+  return phase == "assigning" ||
+         phase == "waiting-compensation" ||
+         phase == "compensating" ||
+         phase == "executing";
+}
+
+bool
+MissionProgressState::needsCompensation() const
+{
+  return missingParts > 0 && !isComplete() && !isFailed();
+}
+
+bool
+MissionProgressState::isComplete() const
+{
+  return phase == "completed" ||
+         (totalParts > 0 && completedParts >= totalParts && missingParts == 0);
+}
+
+bool
+MissionProgressState::isFailed() const
+{
+  return phase == "failed";
+}
+
+std::string
+MissionProgressState::statusLine() const
+{
+  return "MissionProgress task=" + taskId +
+         " phase=" + phase +
+         " assignment=" + assignment +
+         " drones=" + drones +
+         " attempts=" + std::to_string(attempts) +
+         " total_parts=" + std::to_string(totalParts) +
+         " completed_parts=" + std::to_string(completedParts) +
+         " missing_parts=" + std::to_string(missingParts) +
+         " compensated_parts=" + std::to_string(compensatedParts) +
+         " return_home=" + std::string(returnHomePlanned ? "true" : "false") +
+         " completed=" + completedPartIds +
+         " missing=" + missingPartIds +
+         " compensated=" + compensatedPartIds +
+         " pending=" + pendingPartIds;
+}
+
 std::vector<uint8_t>
 encodeVideoPacket(const VideoPacket& packet)
 {

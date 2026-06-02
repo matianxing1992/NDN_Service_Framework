@@ -2214,6 +2214,7 @@ private:
     std::string mapText;
     std::string readiness = "unknown";
     std::string missionPhase = "unknown";
+    std::string missionProgressPhase = "unknown";
     std::string videoStatus = "unknown";
     std::string linkState = "unknown";
     MapMarker marker;
@@ -2236,9 +2237,11 @@ private:
     const auto video = m_runtime.videoForDrone(state.selectedDrone);
     const auto command = m_runtime.commandForDrone(state.selectedDrone);
     const auto safety = m_runtime.safetyForDrone(state.selectedDrone);
+    const auto missionProgress = m_runtime.missionProgressSnapshot();
     state.readiness = readiness ? readiness->readiness :
                       telemetry ? telemetry->readiness : "unknown";
     state.missionPhase = mission ? mission->phase : "idle";
+    state.missionProgressPhase = missionProgress ? missionProgress->phase : "idle";
     state.videoStatus = video ? video->status :
                         telemetry ? telemetry->video : "unknown";
     state.linkState = safety ? safety->linkState :
@@ -2248,11 +2251,21 @@ private:
       state.inspectorText = telemetry->statusLine() +
         (readiness ? " " + readiness->statusLine() : "") +
         (mission ? " " + mission->statusLine() : "") +
+        (missionProgress ? " " + missionProgress->statusLine() : "") +
         (video ? " " + video->statusLine() : "") +
         (command ? " " + command->statusLine() : "") +
         (safety ? " " + safety->statusLine() : "");
       state.mapText = mapTextForTelemetry(*telemetry, mission, state.selectedDrone,
                                           readiness, video, command, safety);
+      if (missionProgress) {
+        state.mapText += "\nMission progress: " + missionProgress->phase +
+                         " parts=" + std::to_string(missionProgress->completedParts) +
+                         "/" + std::to_string(missionProgress->totalParts) +
+                         " missing=" + std::to_string(missionProgress->missingParts) +
+                         " compensated=" + std::to_string(missionProgress->compensatedParts) +
+                         " return_home=" +
+                         std::string(missionProgress->returnHomePlanned ? "yes" : "no");
+      }
     }
     else {
       state.inspectorText = "No telemetry for selected drone " + state.selectedDrone;
@@ -2261,6 +2274,16 @@ private:
                       "Selected drone: " + state.selectedDrone + "\n"
                       "Map markers show GS, drones, and mission waypoints.\n"
                       "Click map to append waypoints, then upload/start the mission.";
+      if (missionProgress) {
+        state.inspectorText += " " + missionProgress->statusLine();
+        state.mapText += "\nMission progress: " + missionProgress->phase +
+                         " parts=" + std::to_string(missionProgress->completedParts) +
+                         "/" + std::to_string(missionProgress->totalParts) +
+                         " missing=" + std::to_string(missionProgress->missingParts) +
+                         " compensated=" + std::to_string(missionProgress->compensatedParts) +
+                         " return_home=" +
+                         std::string(missionProgress->returnHomePlanned ? "yes" : "no");
+      }
     }
     return state;
   }
@@ -2275,6 +2298,7 @@ private:
        << " has_telemetry=" << (state.hasTelemetry ? "true" : "false")
        << " readiness=" << state.readiness
        << " mission=" << state.missionPhase
+       << " mission_progress=" << state.missionProgressPhase
        << " video=" << state.videoStatus
        << " link=" << state.linkState
        << " marker=" << state.marker.label;

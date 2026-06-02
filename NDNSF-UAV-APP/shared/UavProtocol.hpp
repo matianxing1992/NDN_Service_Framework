@@ -258,6 +258,30 @@ struct MissionStartGateState
   std::string statusLine() const;
 };
 
+struct MissionProgressState
+{
+  std::string taskId = "none";
+  std::string phase = "idle";
+  std::string assignment = "unknown";
+  std::string drones = "none";
+  uint64_t attempts = 0;
+  uint64_t totalParts = 0;
+  uint64_t completedParts = 0;
+  uint64_t missingParts = 0;
+  uint64_t compensatedParts = 0;
+  bool returnHomePlanned = false;
+  std::string completedPartIds = "none";
+  std::string missingPartIds = "none";
+  std::string compensatedPartIds = "none";
+  std::string pendingPartIds = "none";
+
+  bool isActive() const;
+  bool needsCompensation() const;
+  bool isComplete() const;
+  bool isFailed() const;
+  std::string statusLine() const;
+};
+
 uint64_t
 nowMilliseconds();
 
