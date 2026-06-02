@@ -32,7 +32,8 @@ public:
     , m_linkLostMs(std::max(linkLostMs, linkStaleMs))
     , m_lostLinkAction(std::move(lostLinkAction))
     , m_videoBitratePolicy(std::move(videoBitratePolicy))
-    , m_videoBitrateAutoPressureMs(std::max<uint64_t>(500, videoBitrateAutoPressureMs))
+    , m_videoBitrateAutoPressureMs(videoBitrateAutoPressureMs == 0 ?
+                                   0 : std::max<uint64_t>(500, videoBitrateAutoPressureMs))
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
@@ -2417,7 +2418,7 @@ private:
                    << " suggested_kbps=" << state.suggestedBitrateKbps
                    << " accepted_kbps=" << state.acceptedBitrateKbps
                    << " reason=" << state.bitrateReason);
-      return;
+      sinceMs = nowMs;
     }
     if (nowMs < sinceMs + m_videoBitrateAutoPressureMs) {
       return;
