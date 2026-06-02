@@ -1195,6 +1195,10 @@ def main() -> int:
                 require_log(gs_log, "MAVLink land drone=" + args.drone_id + " accepted=true")
             if args.auto_manual_control_test:
                 require_log(gs_log, "MAVLink manual_control drone=" + args.drone_id + " accepted=true")
+                require_log(gs_log, "MANUAL_SAFETY_STATE phase=fresh drone=" + args.drone_id)
+                require_log(gs_log, "manual=fresh replay_active=true neutral_sent=false")
+                require_log(gs_log, "MANUAL_SAFETY_STATE phase=neutral-timeout drone=" + args.drone_id)
+                require_log(gs_log, "manual=neutral-sent replay_active=false neutral_sent=true")
             if args.auto_two_drone_switch_test:
                 drone_ids = [drone_id for drone_id, _ in drones]
                 require_log(gs_log, "Selected drone " + drone_ids[1])

@@ -742,7 +742,10 @@ UAV service-container workload 的应用。计划顺序如下：
    telemetry 和 mission services。
 3. **飞控 readiness 和安全 gate。** 在 arm、takeoff 和 mission execution 前，清楚显示并检查
    heartbeat、GPS fix、EKF readiness、battery、arming state、mode 和 landed state。
-   Manual control 必须超时回到 neutral，emergency stop 和 lost-link 行为必须明确。
+   Manual control 必须超时回到 neutral，emergency stop 和 lost-link 行为必须明确。MiniNDN
+   smoke 现在会验证 GS 停止发送手操更新后，manual-control telemetry 会从 fresh replay
+   进入 neutral-sent；也会验证 stale/lost link 会阻断普通飞行 gate，但 Emergency Stop
+   仍保持可用。
 4. **自适应视频服务质量。** 继续把 video 当作 NDNSF service workload：requested bitrate、
    accepted bitrate、RTT、backlog、timeout pressure、key-frame recovery 和 FEC 应该驱动
    prefetch 与 skip 决策，而不是依赖固定常数。当前 GS 已把这些决策记录为
@@ -1132,6 +1135,10 @@ drone 是否把 opaque MAVLink bytes 转发给 mock flight-controller backend。
 sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --auto-manual-control-test --no-cli
 ```
+
+这个 smoke 现在会同时验证 Targeted `MANUAL_CONTROL` response 被接受，以及
+GS 停止发送手操更新后 telemetry 派生出的 safety state 从 `manual=fresh`
+变为 `manual=neutral-sent`。
 
 如果要显式把 PX4 SITL + jMAVSim 运行在和 DroneAPP 相同的 MiniNDN 节点，并把 MAVLink
 command 转发到 PX4 的 GCS MAVLink UDP 端口：

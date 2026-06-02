@@ -1256,6 +1256,10 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --auto-manual-control-test --no-cli
 ```
 
+This smoke now verifies both the accepted Targeted `MANUAL_CONTROL` response
+and the telemetry-derived safety transition from `manual=fresh` to
+`manual=neutral-sent` after GS stops sending manual updates.
+
 To explicitly run PX4 SITL with jMAVSim on the same MiniNDN node as the drone
 and forward commands to PX4's GCS MAVLink UDP port:
 
@@ -1492,7 +1496,10 @@ to make it a deployable UAV service-container workload. The planned order is:
 3. **Flight-controller readiness and safety gates.** Before arm/takeoff/mission
    execution, surface heartbeat, GPS fix, EKF readiness, battery, arming state,
    mode, and landed state. Manual control must time out to neutral, and
-   emergency stop / lost-link behavior must be explicit.
+   emergency stop / lost-link behavior must be explicit. MiniNDN smoke now
+   verifies that manual-control telemetry moves from fresh replay to
+   neutral-sent after GS stops sending manual updates, and that stale/lost links
+   block normal flight gates while leaving Emergency Stop available.
 4. **Adaptive video service quality.** Continue treating video as an NDNSF
    service workload: requested bitrate, accepted bitrate, RTT, backlog,
    timeout pressure, key-frame recovery, and FEC should drive prefetch and
