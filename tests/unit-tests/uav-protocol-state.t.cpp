@@ -7,6 +7,7 @@ namespace {
 
 using ndnsf::examples::uav::FlightSafetyGateState;
 using ndnsf::examples::uav::MissionStartGateState;
+using ndnsf::examples::uav::MissionProgressState;
 using ndnsf::examples::uav::MissionState;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::SafetyState;
@@ -122,6 +123,46 @@ BOOST_AUTO_TEST_CASE(MissionStartGateCombinesMissionAndFlightReadiness)
   BOOST_CHECK_EQUAL(gate.startReason, "link-lost");
   BOOST_CHECK(gate.canStop);
   BOOST_CHECK_EQUAL(gate.stopReason, "ok");
+}
+
+BOOST_AUTO_TEST_CASE(MissionProgressTracksCompensationAndCompletion)
+{
+  MissionProgressState progress;
+  progress.taskId = "patrol-test";
+  progress.phase = "waiting-compensation";
+  progress.assignment = "clustered-waypoints-return-to-start";
+  progress.drones = "A,B";
+  progress.attempts = 1;
+  progress.totalParts = 2;
+  progress.completedParts = 1;
+  progress.missingParts = 1;
+  progress.compensatedParts = 0;
+  progress.returnHomePlanned = true;
+  progress.completedPartIds = "part1";
+  progress.missingPartIds = "part0";
+  progress.pendingPartIds = "none";
+
+  BOOST_CHECK(progress.isActive());
+  BOOST_CHECK(progress.needsCompensation());
+  BOOST_CHECK(!progress.isComplete());
+  BOOST_CHECK(!progress.isFailed());
+  BOOST_CHECK_NE(progress.statusLine().find("return_home=true"), std::string::npos);
+  BOOST_CHECK_NE(progress.statusLine().find("missing=part0"), std::string::npos);
+
+  progress.phase = "completed";
+  progress.attempts = 2;
+  progress.completedParts = 2;
+  progress.missingParts = 0;
+  progress.compensatedParts = 1;
+  progress.completedPartIds = "part0,part1";
+  progress.missingPartIds = "none";
+  progress.compensatedPartIds = "part0";
+
+  BOOST_CHECK(!progress.isActive());
+  BOOST_CHECK(!progress.needsCompensation());
+  BOOST_CHECK(progress.isComplete());
+  BOOST_CHECK(!progress.isFailed());
+  BOOST_CHECK_NE(progress.statusLine().find("compensated_parts=1"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

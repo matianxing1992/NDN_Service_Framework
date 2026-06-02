@@ -600,7 +600,11 @@ Task:
 This keeps NDNSF generic. The framework handles secure request, ACK,
 selection, response, provider tokens, replay protection, and timeout behavior.
 The UAV application owns patrol-specific semantics such as part status,
-deadlines, compensation, and final task completion.
+deadlines, compensation, and final task completion. The ground station records
+those semantics in a typed `MissionProgressState` and logs `PATROL_PROGRESS`
+markers, so the GUI and smoke tests can follow assigning, waiting-compensation,
+compensating, completed, and failed phases without parsing the older ledger
+strings.
 
 ## Video Streaming Design
 
@@ -1145,6 +1149,8 @@ smoke path still reports command-long waypoint forwarding. Drone responses
 report `mission_transport`, `mission_ack`, `waypoints_forwarded`,
 `waypoint_acks_accepted`, and `last_waypoint_ack`, so field tests can tell
 whether the simulator/flight controller accepted the mission.
+The same smoke also checks typed `PATROL_PROGRESS` markers for missing parts,
+compensation, return-home planning, and final completion.
 
 After the script prints `NDNSF_UAV_GUI_MININDN_READY`, use the ground-station
 window to click `Start Video` and `Stop Video`. Logs are written under
@@ -1358,8 +1364,10 @@ to make it a deployable UAV service-container workload. The planned order is:
    and safety state now drive the main flight buttons, selected-drone action
    model, inspector/map text, map markers, left drone list, and MiniNDN smoke
    markers. Mission Start/Stop now also goes through a typed mission start gate
-   that combines `MissionState` with flight readiness and safety. Continue
-   extending this rule to new mission/video/safety UI paths:
+   that combines `MissionState` with flight readiness and safety. Patrol task
+   progress now has a typed `MissionProgressState` for assignment,
+   compensation, completion, and return-home planning. Continue extending this
+   rule to new mission/video/safety UI paths:
    GUI code should not infer state from ad hoc status strings when a typed state
    model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
