@@ -18,6 +18,7 @@ def build(bld):
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
+                            'NDNSF-UAV-APP/shared/UavProtocol.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
                 use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',

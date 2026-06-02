@@ -976,75 +976,26 @@ public:
   }
 
 private:
-  bool
-  readinessAllowsAction(const std::optional<ReadinessState>& readiness,
-                        const std::string& action,
-                        std::string& reason) const
+  FlightSafetyGateState
+  selectedFlightSafetyGateState() const
   {
-    if (!readiness) {
-      reason = "no-telemetry";
-      return false;
-    }
-    if (action == "arm") {
-      if (readiness->armed == "true") {
-        reason = "already-armed";
-        return false;
-      }
-      if (!readiness->readyForArm()) {
-        reason = readiness->readinessReason;
-        return false;
-      }
-      reason = "ok";
-      return true;
-    }
-    if (action == "takeoff") {
-      if (!readiness->readyForTakeoff()) {
-        reason = readiness->readyForArm() ? "not-armed" : readiness->readinessReason;
-        return false;
-      }
-      reason = "ok";
-      return true;
-    }
-    if (action == "land") {
-      if (!readiness->readyForLand()) {
-        reason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
-        return false;
-      }
-      reason = "ok";
-      return true;
-    }
-    if (action == "manual_control") {
-      if (!readiness->readyForManualControl()) {
-        reason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
-        return false;
-      }
-      reason = "ok";
-      return true;
-    }
-    if (action == "control_panel") {
-      if (readiness->readyForManualControl()) {
-        reason = "ok";
-        return true;
-      }
-      reason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
-      return false;
-    }
-    reason = "ok";
-    return true;
+    const auto droneId = m_runtime.targetDroneId();
+    return FlightSafetyGateState::fromStates(droneId,
+                                             m_runtime.readinessForDrone(droneId),
+                                             m_runtime.safetyForDrone(droneId));
   }
 
   bool
-  selectedReadinessAllows(const std::string& action, std::string& reason) const
+  selectedFlightSafetyAllows(const std::string& action, std::string& reason) const
   {
-    return readinessAllowsAction(m_runtime.readinessForDrone(m_runtime.targetDroneId()),
-                                 action, reason);
+    return selectedFlightSafetyGateState().actionAllowed(action, reason);
   }
 
   bool
   sendSelectedFlightCommandIfReady(const std::string& commandName, Fields params = {})
   {
     std::string reason;
-    if (!selectedReadinessAllows(commandName, reason)) {
+    if (!selectedFlightSafetyAllows(commandName, reason)) {
       m_status.set_text("Flight command blocked: " + commandName +
                         " drone=" + m_runtime.targetDroneId() +
                         " reason=" + reason);
@@ -1061,6 +1012,8 @@ private:
   {
     std::string selectedDrone;
     bool hasReadiness = false;
+    bool hasSafety = false;
+    bool operatorAttention = false;
     bool canArm = false;
     bool canTakeoff = false;
     bool canLand = false;
@@ -1071,20 +1024,31 @@ private:
     std::string landReason;
     std::string manualControlReason;
     std::string controlPanelReason;
+    std::string linkState;
+    std::string manualControlState;
   };
 
   FlightActionControlState
   flightActionControlStateForSelected() const
   {
     FlightActionControlState state;
-    state.selectedDrone = m_runtime.targetDroneId();
-    const auto readiness = m_runtime.readinessForDrone(state.selectedDrone);
-    state.hasReadiness = readiness.has_value();
-    state.canArm = readinessAllowsAction(readiness, "arm", state.armReason);
-    state.canTakeoff = readinessAllowsAction(readiness, "takeoff", state.takeoffReason);
-    state.canLand = readinessAllowsAction(readiness, "land", state.landReason);
-    state.canManualControl = readinessAllowsAction(readiness, "manual_control", state.manualControlReason);
-    state.canControlPanel = readinessAllowsAction(readiness, "control_panel", state.controlPanelReason);
+    const auto gate = selectedFlightSafetyGateState();
+    state.selectedDrone = gate.droneId;
+    state.hasReadiness = gate.hasReadiness;
+    state.hasSafety = gate.hasSafety;
+    state.operatorAttention = gate.operatorAttention;
+    state.canArm = gate.canArm;
+    state.canTakeoff = gate.canTakeoff;
+    state.canLand = gate.canLand;
+    state.canManualControl = gate.canManualControl;
+    state.canControlPanel = gate.canControlPanel;
+    state.armReason = gate.armReason;
+    state.takeoffReason = gate.takeoffReason;
+    state.landReason = gate.landReason;
+    state.manualControlReason = gate.manualControlReason;
+    state.controlPanelReason = gate.controlPanelReason;
+    state.linkState = gate.linkState;
+    state.manualControlState = gate.manualControlState;
     return state;
   }
 
@@ -1096,6 +1060,10 @@ private:
     os << "FLIGHT_ACTION_STATE phase=" << phase
        << " selected=" << state.selectedDrone
        << " has_readiness=" << (state.hasReadiness ? "true" : "false")
+       << " has_safety=" << (state.hasSafety ? "true" : "false")
+       << " safety_attention=" << (state.operatorAttention ? "true" : "false")
+       << " link=" << state.linkState
+       << " manual_state=" << state.manualControlState
        << " can_arm=" << (state.canArm ? "true" : "false")
        << " arm_reason=" << state.armReason
        << " can_takeoff=" << (state.canTakeoff ? "true" : "false")
@@ -1249,7 +1217,7 @@ private:
   {
     if (enabled) {
       std::string reason;
-      if (!selectedReadinessAllows("control_panel", reason)) {
+      if (!selectedFlightSafetyAllows("control_panel", reason)) {
         m_status.set_text("Manual control blocked: drone=" + m_runtime.targetDroneId() +
                           " reason=" + reason);
         updateFlightControlControls();
@@ -1580,7 +1548,7 @@ private:
   sendManualControlOnce()
   {
     std::string reason;
-    if (!selectedReadinessAllows("manual_control", reason)) {
+    if (!selectedFlightSafetyAllows("manual_control", reason)) {
       return;
     }
     m_runtime.sendMavlinkCommand("manual_control", {

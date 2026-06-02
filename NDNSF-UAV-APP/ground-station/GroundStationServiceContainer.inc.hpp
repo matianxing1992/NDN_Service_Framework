@@ -1724,78 +1724,42 @@ private:
   }
 
   bool
-  validateArmReadiness(const std::string& droneId, std::string& reason)
+  validateFlightSafetyGate(const std::string& droneId, const std::string& action,
+                           uint64_t maxAgeMs, std::string& reason)
   {
-    auto telemetry = freshTelemetryForSafetyCheck(droneId, 2500);
-
+    const auto telemetry = freshTelemetryForSafetyCheck(droneId, maxAgeMs);
     if (!telemetry) {
       reason = "no-telemetry";
       return false;
     }
     const auto readiness = ReadinessState::fromTelemetry(*telemetry);
-    if (readiness.armed == "true") {
-      reason = "already-armed";
-      return false;
-    }
-    if (!readiness.readyForArm()) {
-      reason = readiness.readinessReason;
-      return false;
-    }
-    reason = "ok";
-    return true;
+    const auto safety = SafetyState::fromTelemetry(*telemetry);
+    return FlightSafetyGateState::fromStates(droneId, readiness, safety)
+      .actionAllowed(action, reason);
+  }
+
+  bool
+  validateArmReadiness(const std::string& droneId, std::string& reason)
+  {
+    return validateFlightSafetyGate(droneId, "arm", 2500, reason);
   }
 
   bool
   validateTakeoffReadiness(const std::string& droneId, std::string& reason)
   {
-    auto telemetry = freshTelemetryForSafetyCheck(droneId, 2500);
-
-    if (!telemetry) {
-      reason = "no-telemetry";
-      return false;
-    }
-    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
-    if (!readiness.readyForTakeoff()) {
-      reason = readiness.readyForArm() ? "not-armed" : readiness.readinessReason;
-      return false;
-    }
-    reason = "ok";
-    return true;
+    return validateFlightSafetyGate(droneId, "takeoff", 2500, reason);
   }
 
   bool
   validateLandReadiness(const std::string& droneId, std::string& reason)
   {
-    auto telemetry = freshTelemetryForSafetyCheck(droneId, 2500);
-
-    if (!telemetry) {
-      reason = "no-telemetry";
-      return false;
-    }
-    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
-    if (!readiness.readyForLand()) {
-      reason = readiness.armed == "true" ? readiness.readinessReason : "not-armed";
-      return false;
-    }
-    reason = "ok";
-    return true;
+    return validateFlightSafetyGate(droneId, "land", 2500, reason);
   }
 
   bool
   validateManualControlReadiness(const std::string& droneId, std::string& reason)
   {
-    const auto telemetry = freshTelemetryForSafetyCheck(droneId, 1200);
-    if (!telemetry) {
-      reason = "no-telemetry";
-      return false;
-    }
-    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
-    if (!readiness.readyForManualControl()) {
-      reason = readiness.armed == "true" ? readiness.readinessReason : "not-armed";
-      return false;
-    }
-    reason = "ok";
-    return true;
+    return validateFlightSafetyGate(droneId, "manual_control", 1200, reason);
   }
 
   std::optional<TelemetryState>
