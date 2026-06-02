@@ -140,6 +140,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS send Arm/Takeoff/Land over Targeted NDNSF for smoke testing.")
     parser.add_argument("--auto-telemetry-test", action="store_true",
                         help="Have the GS verify PX4/jMAVSim telemetry fields and state changes.")
+    parser.add_argument("--auto-telemetry-allow-mock-fields", action="store_true",
+                        help="With --auto-telemetry-test, allow mock flight-controller runs "
+                             "to omit real GPS and battery sensor fields.")
     parser.add_argument("--auto-link-state-test", action="store_true",
                         help="Have the GS verify local telemetry stale/lost link state aging.")
     parser.add_argument("--auto-keyboard-test", action="store_true",
@@ -910,6 +913,9 @@ def main() -> int:
             gs_argv += ["--auto-mavlink-test"]
         if args.auto_telemetry_test:
             gs_argv += ["--auto-telemetry-test", "--timeout-ms", "30000"]
+            if (args.auto_telemetry_allow_mock_fields or
+                    (not should_start_jmavsim(args) and args.flight_controller_backend == "mock")):
+                gs_argv += ["--auto-telemetry-allow-mock-fields"]
         if args.auto_link_state_test:
             gs_argv += [
                 "--auto-link-state-test",
@@ -1025,10 +1031,21 @@ def main() -> int:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
             require_log(gs_log, "TELEMETRY_LIVE_RESULT ok=true")
             require_log(gs_log, "GS_TELEMETRY_EXIT ok=true")
-            require_log(gs_log, "gps_fix_name=")
+            mock_telemetry = (args.auto_telemetry_allow_mock_fields or
+                              (not should_start_jmavsim(args) and
+                               args.flight_controller_backend == "mock"))
+            require_log(gs_log, f"require_sensor_details={'false' if mock_telemetry else 'true'}")
+            if mock_telemetry:
+                require_log(gs_log, "gps_fix=false")
+                require_log(gs_log, "battery_voltage=false")
+            else:
+                require_log(gs_log, "gps_fix_name=")
+                require_log(gs_log, "battery_voltage_v=")
+                require_log(gs_log, "gps_fix=true")
+                require_log(gs_log, "battery_voltage=true")
             require_log(gs_log, "ekf_ready=true")
             require_log(gs_log, "landed_state_name=")
-            require_log(gs_log, "battery_voltage_v=")
+            require_log(gs_log, "landed_changed=true")
             require_log(gs_log, "armed=true")
             require_log(gs_log, "lat=")
             require_log(gs_log, "lon=")
