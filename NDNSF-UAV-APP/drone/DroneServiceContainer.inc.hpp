@@ -2577,6 +2577,21 @@ private:
             return makeResponse(true, encodeFields(responseFields));
           }
           if (action == "stop") {
+            const auto delayText = fieldOr(fields, "simulate_delay_ms", "0");
+            if (delayText != "0") {
+              try {
+                const auto delayMs = std::min<uint64_t>(std::stoull(delayText), 10000);
+                if (delayMs > 0) {
+                  NDN_LOG_INFO("DRONE_VIDEO_STOP_SIMULATED_DELAY_MS drone=" << m_droneId
+                               << " delay_ms=" << delayMs);
+                  std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+                }
+              }
+              catch (const std::exception& e) {
+                NDN_LOG_WARN("DRONE_VIDEO_STOP_SIMULATED_DELAY_INVALID drone=" << m_droneId
+                             << " value=" << delayText << " error=" << e.what());
+              }
+            }
             std::lock_guard<std::mutex> guard(m_containerMutex);
             const auto responseFields = m_videoPublisher->stop();
             stopObjectDetectionLoop();
