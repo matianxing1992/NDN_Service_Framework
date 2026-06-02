@@ -20,9 +20,17 @@ class RegressionCase:
     script: Path
     success_marker: str
     description: str
+    use_sudo: bool = True
 
 
 CASES = {
+    "onnx-executor": RegressionCase(
+        name="onnx-executor",
+        script=REPO / "Experiments/NDNSF_DI_OnnxExecutor_Smoke.py",
+        success_marker="ONNX_EXECUTOR_FANIN_FANOUT_OK",
+        description="local ONNX executor fan-in/fan-out tensor-bundle smoke",
+        use_sudo=False,
+    ),
     "auto-split": RegressionCase(
         name="auto-split",
         script=REPO / "Experiments/NDNSF_DI_YoloSplit_Minindn.py",
@@ -40,15 +48,18 @@ CASES = {
 
 def selected_cases(selection: str) -> list[RegressionCase]:
     if selection == "all":
-        return [CASES["auto-split"], CASES["yolo-2x2"]]
+        return [CASES["onnx-executor"], CASES["auto-split"], CASES["yolo-2x2"]]
     return [CASES[selection]]
 
 
 def run_case(case: RegressionCase) -> None:
     start = time.time()
     print(f"NDNSF_DI_REGRESSION_START case={case.name} script={case.script}")
+    command = ["python3", str(case.script)]
+    if case.use_sudo:
+        command = ["sudo", "-E", *command]
     proc = subprocess.run(
-        ["sudo", "-E", "python3", str(case.script)],
+        command,
         cwd=str(REPO),
         text=True,
         stdout=subprocess.PIPE,
@@ -73,7 +84,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--case",
-        choices=["auto-split", "yolo-2x2", "all"],
+        choices=["onnx-executor", "auto-split", "yolo-2x2", "all"],
         default="auto-split",
         help="Regression case to run. Default keeps the smoke test short.",
     )
