@@ -6,6 +6,7 @@ namespace ndn_service_framework::test {
 namespace {
 
 using ndnsf::examples::uav::FlightSafetyGateState;
+using ndnsf::examples::uav::FlightActionControlState;
 using ndnsf::examples::uav::FlightCommandState;
 using ndnsf::examples::uav::DroneListRowState;
 using ndnsf::examples::uav::Fields;
@@ -19,6 +20,7 @@ using ndnsf::examples::uav::MissionWaypoint;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::RecordingDataProductState;
 using ndnsf::examples::uav::SafetyState;
+using ndnsf::examples::uav::SelectedActionState;
 using ndnsf::examples::uav::TelemetryState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
@@ -130,6 +132,33 @@ BOOST_AUTO_TEST_CASE(FlightSafetyGateCombinesReadinessAndSafety)
   BOOST_CHECK_EQUAL(reason, "ok");
 }
 
+BOOST_AUTO_TEST_CASE(FlightActionControlStateMirrorsSafetyGate)
+{
+  const auto readyGate = FlightSafetyGateState::fromStates("A", makeReadyState(true), makeSafeState());
+  auto action = FlightActionControlState::fromGate(readyGate);
+  BOOST_CHECK_EQUAL(action.selectedDrone, "A");
+  BOOST_CHECK(action.hasReadiness);
+  BOOST_CHECK(action.hasSafety);
+  BOOST_CHECK(action.canTakeoff);
+  BOOST_CHECK(action.canLand);
+  BOOST_CHECK(action.canManualControl);
+  BOOST_CHECK(action.canControlPanel);
+  BOOST_CHECK(action.canEmergencyStop);
+  BOOST_CHECK_EQUAL(action.takeoffReason, "ok");
+  BOOST_CHECK_NE(action.statusLine().find("can_takeoff=true"), std::string::npos);
+  BOOST_CHECK_NE(action.statusLine().find("emergency_stop=true"), std::string::npos);
+
+  auto safety = makeSafeState();
+  safety.linkState = "lost";
+  action = FlightActionControlState::fromGate(
+    FlightSafetyGateState::fromStates("A", makeReadyState(true), safety));
+  BOOST_CHECK(!action.canTakeoff);
+  BOOST_CHECK(!action.canManualControl);
+  BOOST_CHECK(action.canEmergencyStop);
+  BOOST_CHECK_EQUAL(action.takeoffReason, "link-lost");
+  BOOST_CHECK_EQUAL(action.manualControlReason, "link-lost");
+}
+
 BOOST_AUTO_TEST_CASE(MissionStartGateCombinesMissionAndFlightReadiness)
 {
   auto mission = makeMissionState("idle");
@@ -208,6 +237,37 @@ BOOST_AUTO_TEST_CASE(MissionControlStateCombinesGatesAndProgress)
   BOOST_CHECK(control.progressActive);
   BOOST_CHECK_EQUAL(control.uploadReason, "progress-active");
   BOOST_CHECK_EQUAL(control.startReason, "progress-active");
+}
+
+BOOST_AUTO_TEST_CASE(SelectedActionStateCombinesFlightMissionAndManualMode)
+{
+  MissionStartGateState missionGate;
+  missionGate.droneId = "A";
+  missionGate.hasMission = true;
+  missionGate.hasFlightGate = true;
+  missionGate.missionUploaded = true;
+  missionGate.missionPhase = "uploaded";
+  missionGate.canStart = true;
+  missionGate.startReason = "ok";
+  missionGate.canStop = true;
+  missionGate.stopReason = "ok";
+
+  const auto mission = MissionControlState::fromStates({missionGate}, std::nullopt,
+                                                       false, false, false);
+  const auto flight = FlightActionControlState::fromGate(
+    FlightSafetyGateState::fromStates("A", makeReadyState(true), makeSafeState()));
+  const auto action = SelectedActionState::fromStates("A", flight, mission, true, true);
+
+  BOOST_CHECK_EQUAL(action.selectedDrone, "A");
+  BOOST_CHECK(action.flight.canTakeoff);
+  BOOST_CHECK(action.flight.canManualControl);
+  BOOST_CHECK(action.mission.canStart);
+  BOOST_CHECK(action.mission.canStop);
+  BOOST_CHECK(action.manualMode);
+  BOOST_CHECK(action.manualInputActive);
+  BOOST_CHECK(action.emergencyStopAvailable);
+  BOOST_CHECK_NE(action.statusLine().find("mission_can_start=true"), std::string::npos);
+  BOOST_CHECK_NE(action.statusLine().find("manual_mode=true"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(MissionProgressTracksCompensationAndCompletion)

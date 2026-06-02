@@ -385,9 +385,10 @@ GPS unit 连接到 FlightController 上，由 PX4/ArduPilot 负责 GPS 融合、
 `groundspeed_mps` 和 `battery_percent`。Ground station 会在 telemetry / mission 视图里显示
 这些字段，让 operator 能看到当前选中的 drone 是否真的 ready。
 
-Ground station 会把这些值保存成 typed `TelemetryState` 和 `MissionState` snapshot。
-左侧 vehicle list、地图 marker、inspector panel 和 mission 控件都从同一个状态模型刷新，
-不再靠临时 status 字符串解析，所以多无人机 UI 状态会始终跟当前选中的 drone 对齐。
+Ground station 会把这些值保存成 typed `TelemetryState`、`MissionState` 和 safety-gate
+snapshot。左侧 vehicle list、地图 marker、inspector panel、flight action bar 和 mission
+控件都从同一个状态模型刷新，不再靠临时 status 字符串解析，所以多无人机 UI 状态会始终跟
+当前选中的 drone 对齐。
 Mission upload response 和后续 telemetry 都会更新同一个 `MissionState`；`uploaded`、
 `executing`、`stopping` 这些 phase 会直接决定 Start Mission 和 Stop Patrol 按钮状态。
 Start Mission 还会把 mission phase 和 typed `FlightSafetyGateState` 组合起来判断，因此 mission
@@ -729,8 +730,10 @@ UAV service-container workload 的应用。计划顺序如下：
    selected-drone view、左侧 drone row 和 MiniNDN smoke logs 都从这个 model 读取状态，而不是
    解析内部 packet log。selected-drone 的 Start/Stop video 按钮现在也由共享
    `VideoControlState` 派生，因此 timeout 恢复和目标切换会使用和 smoke log 一致的 control model。
-   后续新增 mission/video/safety UI 路径时继续坚持这一点：只要有 typed
-   state model，GUI 就不应该再从临时 status string 推断状态。
+   Arm/Takeoff/Land/Manual/E-stop action bar 现在也由共享的 `FlightActionControlState` 和
+   `SelectedActionState` 派生，让 unit test 覆盖与 GUI 相同的可用性和 reason 模型。后续新增
+   mission/video/safety UI 路径时继续坚持这一点：只要有 typed state model，GUI 就不应该再从
+   临时 status string 推断状态。
 2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
    上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、
    telemetry 和 mission services。

@@ -1164,48 +1164,10 @@ private:
     return m_runtime.sendMavlinkCommand(commandName, std::move(params));
   }
 
-  struct FlightActionControlState
-  {
-    std::string selectedDrone;
-    bool hasReadiness = false;
-    bool hasSafety = false;
-    bool operatorAttention = false;
-    bool canArm = false;
-    bool canTakeoff = false;
-    bool canLand = false;
-    bool canManualControl = false;
-    bool canControlPanel = false;
-    std::string armReason;
-    std::string takeoffReason;
-    std::string landReason;
-    std::string manualControlReason;
-    std::string controlPanelReason;
-    std::string linkState;
-    std::string manualControlState;
-  };
-
   FlightActionControlState
   flightActionControlStateForSelected() const
   {
-    FlightActionControlState state;
-    const auto gate = selectedFlightSafetyGateState();
-    state.selectedDrone = gate.droneId;
-    state.hasReadiness = gate.hasReadiness;
-    state.hasSafety = gate.hasSafety;
-    state.operatorAttention = gate.operatorAttention;
-    state.canArm = gate.canArm;
-    state.canTakeoff = gate.canTakeoff;
-    state.canLand = gate.canLand;
-    state.canManualControl = gate.canManualControl;
-    state.canControlPanel = gate.canControlPanel;
-    state.armReason = gate.armReason;
-    state.takeoffReason = gate.takeoffReason;
-    state.landReason = gate.landReason;
-    state.manualControlReason = gate.manualControlReason;
-    state.controlPanelReason = gate.controlPanelReason;
-    state.linkState = gate.linkState;
-    state.manualControlState = gate.manualControlState;
-    return state;
+    return FlightActionControlState::fromGate(selectedFlightSafetyGateState());
   }
 
   void
@@ -2020,27 +1982,14 @@ private:
     NDN_LOG_INFO(os.str());
   }
 
-  struct SelectedActionState
-  {
-    std::string selectedDrone;
-    FlightActionControlState flight;
-    MissionControlState mission;
-    bool manualMode = false;
-    bool manualInputActive = false;
-    bool emergencyStopAvailable = false;
-  };
-
   SelectedActionState
   selectedActionState() const
   {
-    SelectedActionState state;
-    state.selectedDrone = m_runtime.targetDroneId();
-    state.flight = flightActionControlStateForSelected();
-    state.mission = missionControlState();
-    state.manualMode = m_controlMode;
-    state.manualInputActive = m_manualActive.load();
-    state.emergencyStopAvailable = !state.selectedDrone.empty();
-    return state;
+    return SelectedActionState::fromStates(m_runtime.targetDroneId(),
+                                           flightActionControlStateForSelected(),
+                                           missionControlState(),
+                                           m_controlMode,
+                                           m_manualActive.load());
   }
 
   void
