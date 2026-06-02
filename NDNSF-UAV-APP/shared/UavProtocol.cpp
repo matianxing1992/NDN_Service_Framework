@@ -1040,6 +1040,215 @@ VideoAdaptiveState::statusLine() const
          " decoded_frames=" + std::to_string(decodedFrames);
 }
 
+namespace {
+
+uint64_t
+policyRttMs(const VideoAdaptivePolicyInput& input)
+{
+  return std::clamp<uint64_t>(input.rttMs, 20, 2000);
+}
+
+uint64_t
+policyFrameDurationMs(const VideoAdaptivePolicyInput& input)
+{
+  return std::max<uint64_t>(1, 1000 / std::max<uint64_t>(1, input.fps));
+}
+
+uint64_t
+policyPacketsForDurationMs(const VideoAdaptivePolicyInput& input,
+                           uint64_t durationMs, uint64_t minValue,
+                           uint64_t maxValue)
+{
+  const auto packets = (std::max<uint64_t>(1, input.deltaPacketsPerSecond) *
+                        durationMs + 999) / 1000;
+  return std::clamp<uint64_t>(packets, minValue, maxValue);
+}
+
+uint64_t
+policyLossPressurePercent(const VideoAdaptivePolicyInput& input)
+{
+  const auto received = input.receivedChunks;
+  const auto losses = input.nacks + input.timeouts;
+  if (received + losses < 20) {
+    return 0;
+  }
+  return std::clamp<uint64_t>((losses * 100) /
+                              std::max<uint64_t>(1, received + losses),
+                              0, 80);
+}
+
+uint64_t
+policyBacklogPressurePercent(const VideoAdaptivePolicyInput& input)
+{
+  if (input.decoderBacklogLimit == 0) {
+    return 0;
+  }
+  return std::clamp<uint64_t>((input.decoderPendingChunks * 100) /
+                              input.decoderBacklogLimit, 0, 100);
+}
+
+uint64_t
+lowerVideoBitrateStep(uint64_t currentKbps)
+{
+  if (currentKbps > 6000) {
+    return 6000;
+  }
+  if (currentKbps > 4000) {
+    return 4000;
+  }
+  if (currentKbps > 2500) {
+    return 2500;
+  }
+  if (currentKbps > 1500) {
+    return 1500;
+  }
+  if (currentKbps > 800) {
+    return 800;
+  }
+  return currentKbps;
+}
+
+uint64_t
+higherVideoBitrateStep(uint64_t currentKbps, uint64_t requestedKbps)
+{
+  if (currentKbps < 800) {
+    return std::min<uint64_t>(800, requestedKbps);
+  }
+  if (currentKbps < 1500) {
+    return std::min<uint64_t>(1500, requestedKbps);
+  }
+  if (currentKbps < 2500) {
+    return std::min<uint64_t>(2500, requestedKbps);
+  }
+  if (currentKbps < 4000) {
+    return std::min<uint64_t>(4000, requestedKbps);
+  }
+  if (currentKbps < 6000) {
+    return std::min<uint64_t>(6000, requestedKbps);
+  }
+  if (currentKbps < 8000) {
+    return std::min<uint64_t>(8000, requestedKbps);
+  }
+  return std::min(currentKbps, requestedKbps);
+}
+
+} // namespace
+
+VideoAdaptivePolicyDecision
+computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
+{
+  VideoAdaptivePolicyDecision decision;
+  const auto rtt = policyRttMs(input);
+  const auto frameMs = policyFrameDurationMs(input);
+  const auto timeoutBudgetMs = std::clamp<uint64_t>(input.timeoutBudgetMs, 800, 6000);
+  const auto dynamicWindowMax = std::max<uint64_t>(1, input.dynamicWindowMax);
+  const auto dynamicLookaheadMax = std::max<uint64_t>(1, input.dynamicLookaheadMax);
+
+  decision.lossPressure = policyLossPressurePercent(input);
+  decision.backlogPressure = policyBacklogPressurePercent(input);
+  decision.probePressure = std::max(input.probePressure,
+                                    input.duplicatePressure / 2);
+  decision.congestionPressure = std::max({
+    decision.lossPressure,
+    input.timeoutPressure,
+    input.duplicatePressure / 2
+  });
+
+  const auto windowPressure = std::max(decision.congestionPressure,
+                                       decision.backlogPressure);
+  const auto windowTimeoutCapMs = std::clamp<uint64_t>(timeoutBudgetMs / 2, 350, 1000);
+  const auto targetBufferMs = std::clamp<uint64_t>(rtt * 2 + frameMs * 2,
+                                                  180, windowTimeoutCapMs);
+  const auto windowPressureCap = windowPressure > 0 ?
+    std::max<uint64_t>(16, dynamicWindowMax *
+                           (100 - std::min<uint64_t>(windowPressure, 75)) / 100) :
+    dynamicWindowMax;
+  const auto minWindow = policyPacketsForDurationMs(
+    input, std::clamp<uint64_t>(rtt / 2 + frameMs, 80, 300), 8, 128);
+  decision.window = policyPacketsForDurationMs(input, targetBufferMs,
+                                               std::min(minWindow, windowPressureCap),
+                                               windowPressureCap);
+
+  const auto lookaheadPressure = std::max({
+    decision.congestionPressure,
+    decision.probePressure,
+    decision.backlogPressure
+  });
+  const auto lookaheadTimeoutCapMs = std::clamp<uint64_t>(timeoutBudgetMs / 5, 160, 500);
+  const auto futureMs = std::clamp<uint64_t>(rtt + frameMs * 2, 100, lookaheadTimeoutCapMs);
+  const auto lookaheadPressureCap = lookaheadPressure > 0 ?
+    std::max<uint64_t>(4, dynamicLookaheadMax *
+                          (100 - std::min<uint64_t>(lookaheadPressure, 85)) / 100) :
+    dynamicLookaheadMax;
+  decision.lookahead = policyPacketsForDurationMs(input, futureMs, 2,
+                                                  lookaheadPressureCap);
+
+  const auto rttProbeMs = std::clamp<uint64_t>(rtt / 3 + frameMs,
+                                              frameMs, 180);
+  auto probeLimit = policyPacketsForDurationMs(input, rttProbeMs, 1, 24);
+  const auto probeLimitPressure = std::max(decision.probePressure,
+                                           decision.congestionPressure);
+  if (probeLimitPressure > 0) {
+    probeLimit = std::max<uint64_t>(1, probeLimit *
+                                      (100 - std::min<uint64_t>(probeLimitPressure, 90)) / 100);
+  }
+  decision.futureProbeLimit = std::clamp<uint64_t>(probeLimit, 1, 24);
+
+  const auto pressureDelay =
+    decision.probePressure * 8 + decision.congestionPressure * 4;
+  decision.probeBackoffMs = std::clamp<uint64_t>(rtt / 2 + pressureDelay, 60, 1200);
+
+  const auto interestLower = std::clamp<uint64_t>(rtt + frameMs * 2, 350, 1000);
+  const auto interestUpper = std::clamp<uint64_t>(timeoutBudgetMs - 100,
+                                                 interestLower, 3500);
+  const auto lossSlackMs = std::min<uint64_t>(decision.congestionPressure * 8, 600);
+  decision.interestLifetimeMs = std::clamp<uint64_t>(rtt * 2 + frameMs * 4 + 200 +
+                                                    lossSlackMs,
+                                                    interestLower, interestUpper);
+
+  const auto minWaitMs = std::clamp<uint64_t>(std::max<uint64_t>(frameMs * 2, rtt / 2),
+                                             100, 350);
+  const auto maxWaitMs = std::clamp<uint64_t>(
+    std::min<uint64_t>(timeoutBudgetMs / 2, rtt * 2 + frameMs * 4),
+    300, 1800);
+  const auto baseWaitMs = std::clamp<uint64_t>(rtt + frameMs * 3, minWaitMs, maxWaitMs);
+  const auto waitPressureReductionMs =
+    std::min<uint64_t>(decision.lossPressure * 3 + decision.backlogPressure * 2,
+                       baseWaitMs / 2);
+  decision.missingTimeoutMs = std::clamp<uint64_t>(baseWaitMs - waitPressureReductionMs,
+                                                  minWaitMs, maxWaitMs);
+
+  const auto requestedKbps = std::max<uint64_t>(128, input.requestedBitrateKbps);
+  const auto acceptedKbps = std::max<uint64_t>(128, input.acceptedBitrateKbps);
+  decision.suggestedBitrateKbps = acceptedKbps;
+  const auto bitratePressure = std::max({
+    decision.congestionPressure,
+    decision.backlogPressure,
+    decision.probePressure
+  });
+  const auto highRttThreshold = std::clamp<uint64_t>(
+    timeoutBudgetMs / 3 + frameMs * 4, 350, 900);
+  if ((bitratePressure >= 65 || rtt >= highRttThreshold) && acceptedKbps > 800) {
+    decision.suggestedBitrateKbps = lowerVideoBitrateStep(acceptedKbps);
+    decision.bitrateAction =
+      decision.suggestedBitrateKbps < acceptedKbps ? "decrease" : "hold";
+    decision.bitrateReason = bitratePressure >= 65 ? "pressure" : "high-rtt";
+  }
+  else if (bitratePressure <= 15 && rtt < highRttThreshold / 2 &&
+           acceptedKbps < requestedKbps) {
+    decision.suggestedBitrateKbps = higherVideoBitrateStep(acceptedKbps,
+                                                           requestedKbps);
+    decision.bitrateAction =
+      decision.suggestedBitrateKbps > acceptedKbps ? "increase" : "hold";
+    decision.bitrateReason = "recovery";
+  }
+  else {
+    decision.bitrateReason = "stable";
+  }
+
+  return decision;
+}
+
 MissionState
 MissionState::fromFields(const Fields& fields)
 {
