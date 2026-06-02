@@ -391,6 +391,11 @@ Ground station 会把这些值保存成 typed `TelemetryState` 和 `MissionState
 Mission upload response 和后续 telemetry 都会更新同一个 `MissionState`；`uploaded`、
 `executing`、`stopping` 这些 phase 会直接决定 Start Mission 和 Stop Patrol 按钮状态。
 
+Ground station 还会为每架 drone 保存最近一条飞控命令的 typed `FlightCommandState`。
+Targeted MAVLink response、command timeout、readiness gate 拦截，以及 command-in-flight
+丢弃都会更新这个模型。因此 vehicle list 和 inspector 可以直接显示最近命令、ACK result、
+flight-controller state，以及 timeout/block reason，而不需要再解析临时日志字符串。
+
 命令 response 不再只代表“bytes 已转发”。对于标准 MAVLink `COMMAND_ACK`，backend 会返回
 `ack_result`、`ack_command_id` 和 `ack_raw_result`。非 manual command 只有在飞控 ACK 为
 `accepted` 或 `in-progress` 时才算成功；否则 NDNSF response 会是失败。

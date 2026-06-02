@@ -436,6 +436,13 @@ Mission upload responses and later telemetry both update the same
 `MissionState`; `uploaded`, `executing`, and `stopping` phases now drive the
 Start Mission and Stop Patrol buttons.
 
+The ground station also keeps a typed `FlightCommandState` for the latest
+flight-control command per drone. Targeted MAVLink responses, command timeouts,
+blocked readiness gates, and command-in-flight drops all update this model.
+The vehicle list and inspector can therefore show the most recent command,
+ACK result, flight-controller state, and timeout/block reason without parsing
+ad hoc log strings.
+
 Command responses no longer mean only "bytes were forwarded": for standard
 MAVLink `COMMAND_ACK` messages the backend reports `ack_result`,
 `ack_command_id`, and `ack_raw_result`. Non-manual commands are considered

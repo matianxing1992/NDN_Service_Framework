@@ -299,6 +299,17 @@ public:
     return found->second;
   }
 
+  std::optional<FlightCommandState>
+  commandForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    const auto found = m_commandByDrone.find(droneId);
+    if (found == m_commandByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
   std::vector<TelemetryState>
   telemetrySnapshots() const
   {
@@ -421,6 +432,7 @@ public:
     if (commandName == "arm") {
       std::string reason;
       if (!validateArmReadiness(droneId, reason)) {
+        recordBlockedCommand(droneId, commandName, reason);
         publishStatus("Arm blocked drone=" + droneId + " reason=" + reason);
         return false;
       }
@@ -428,6 +440,7 @@ public:
     if (isManualControl) {
       std::string reason;
       if (!validateManualControlReadiness(droneId, reason)) {
+        recordBlockedCommand(droneId, commandName, reason);
         const auto now = nowMilliseconds();
         if (now > m_lastManualControlBlockedLogMs.load() + 1000) {
           m_lastManualControlBlockedLogMs = now;
@@ -439,6 +452,7 @@ public:
     if (commandName == "land") {
       std::string reason;
       if (!validateLandReadiness(droneId, reason)) {
+        recordBlockedCommand(droneId, commandName, reason);
         publishStatus("Land blocked drone=" + droneId + " reason=" + reason);
         return false;
       }
@@ -446,12 +460,14 @@ public:
     if (commandName == "takeoff") {
       std::string reason;
       if (!validateTakeoffReadiness(droneId, reason)) {
+        recordBlockedCommand(droneId, commandName, reason);
         publishStatus("Takeoff blocked drone=" + droneId + " reason=" + reason);
         return false;
       }
     }
     auto& inFlight = isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight;
     if (inFlight.exchange(true)) {
+      recordBlockedCommand(droneId, commandName, "command-in-flight");
       if (!isManualControl) {
         publishStatus("MAVLink command busy; dropped " + commandName);
       }
@@ -469,6 +485,14 @@ public:
       [this, commandName, isManualControl, droneId](const std::string& responsePayload) {
         (isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight) = false;
         const auto fields = decodeFields(responsePayload);
+        auto commandState = FlightCommandState::fromFields(fields);
+        commandState.droneId = droneId;
+        commandState.command = commandName;
+        commandState.updatedMs = nowMilliseconds();
+        if (commandState.detail == "idle") {
+          commandState.detail = commandState.isAccepted() ? "response-accepted" : "response-rejected";
+        }
+        updateCommandState(commandState);
         const auto accepted = fieldOr(fields, "accepted", "false");
         const auto bytes = fieldOr(fields, "forwarded_bytes", "0");
         const auto ackResult = fieldOr(fields, "ack_result", "unknown");
@@ -486,9 +510,24 @@ public:
                       (speed.empty() ? "" : " speed=" + speed + "m/s") +
                       (battery.empty() ? "" : " battery=" + battery + "%"));
       },
-      [this, commandName, isManualControl] {
+      [this, commandName, isManualControl, droneId] {
         (isManualControl ? m_manualControlInFlight : m_mavlinkCommandInFlight) = false;
-        publishStatus("Timeout waiting for targeted MAVLink " + commandName);
+        updateCommandState(FlightCommandState{
+          droneId,
+          commandName,
+          "false",
+          "timeout",
+          "unknown",
+          "unknown",
+          "unknown",
+          "unknown",
+          "0",
+          "targeted-request-timeout",
+          nowMilliseconds(),
+        });
+        publishStatus("MAVLink " + commandName +
+                      " drone=" + droneId +
+                      " accepted=false ack=timeout forwarded_bytes=0 detail=targeted-request-timeout");
       });
     return true;
   }
@@ -500,6 +539,7 @@ public:
     if (commandName == "arm") {
       std::string reason;
       if (!validateArmReadiness(droneId, reason)) {
+        recordBlockedCommand(droneId, commandName, reason);
         std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
                   << " ok=false ack=arm-blocked reason=" << reason << std::endl;
         return false;
@@ -508,6 +548,7 @@ public:
     if (commandName == "takeoff") {
       std::string reason;
       if (!validateTakeoffReadiness(droneId, reason)) {
+        recordBlockedCommand(droneId, commandName, reason);
         std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
                   << " ok=false ack=takeoff-blocked reason=" << reason << std::endl;
         return false;
@@ -516,6 +557,7 @@ public:
     if (commandName == "land") {
       std::string reason;
       if (!validateLandReadiness(droneId, reason)) {
+        recordBlockedCommand(droneId, commandName, reason);
         std::cout << "SINGLE_MISSION_COMMAND command=" << commandName
                   << " ok=false ack=land-blocked reason=" << reason << std::endl;
         return false;
@@ -539,6 +581,14 @@ public:
         const auto fields = decodeFields(responsePayload);
         ackResult = fieldOr(fields, "ack_result", "unknown");
         const auto accepted = fieldOr(fields, "accepted", "false");
+        auto commandState = FlightCommandState::fromFields(fields);
+        commandState.droneId = droneId;
+        commandState.command = commandName;
+        commandState.updatedMs = nowMilliseconds();
+        if (commandState.detail == "idle") {
+          commandState.detail = accepted == "true" ? "sync-response-accepted" : "sync-response-rejected";
+        }
+        updateCommandState(commandState);
         {
           std::lock_guard<std::mutex> guard(mutex);
           ok = accepted == "true" &&
@@ -548,6 +598,19 @@ public:
         cv.notify_all();
       },
       [&] {
+        updateCommandState(FlightCommandState{
+          droneId,
+          commandName,
+          "false",
+          "timeout",
+          "unknown",
+          "unknown",
+          "unknown",
+          "unknown",
+          "0",
+          "sync-targeted-request-timeout",
+          nowMilliseconds(),
+        });
         std::lock_guard<std::mutex> guard(mutex);
         ackResult = "timeout";
         done = true;
@@ -1450,6 +1513,36 @@ private:
       }
       m_videoByDrone[droneId] = video;
     }
+  }
+
+  void
+  updateCommandState(const FlightCommandState& command)
+  {
+    if (command.droneId.empty() || command.droneId == "unknown") {
+      return;
+    }
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    m_commandByDrone[command.droneId] = command;
+    NDN_LOG_INFO("GS_COMMAND_STATE " << command.statusLine());
+  }
+
+  void
+  recordBlockedCommand(const std::string& droneId, const std::string& commandName,
+                       const std::string& reason)
+  {
+    updateCommandState(FlightCommandState{
+      droneId,
+      commandName,
+      "false",
+      "blocked",
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "0",
+      reason,
+      nowMilliseconds(),
+    });
   }
 
   bool
@@ -3696,6 +3789,7 @@ private:
   std::map<std::string, ReadinessState> m_readinessByDrone;
   std::map<std::string, MissionState> m_missionByDrone;
   std::map<std::string, VideoState> m_videoByDrone;
+  std::map<std::string, FlightCommandState> m_commandByDrone;
   ndn::Name m_streamPrefix;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;

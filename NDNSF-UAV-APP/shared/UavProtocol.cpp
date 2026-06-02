@@ -530,6 +530,82 @@ ReadinessState::statusLine() const
          " landed=" + landedStateName;
 }
 
+FlightCommandState
+FlightCommandState::fromFields(const Fields& fields)
+{
+  FlightCommandState state;
+  state.droneId = fieldOr(fields, "drone_id", state.droneId);
+  state.command = fieldOr(fields, "command", state.command);
+  state.accepted = fieldOr(fields, "accepted", state.accepted);
+  state.ackResult = fieldOr(fields, "ack_result", fieldOr(fields, "ack", state.ackResult));
+  state.flightControllerState = fieldOr(fields, "fc_state", state.flightControllerState);
+  state.altitudeM = fieldOr(fields, "altitude_m", state.altitudeM);
+  state.groundspeedMps = fieldOr(fields, "groundspeed_mps", state.groundspeedMps);
+  state.batteryPercent = fieldOr(fields, "battery_percent", state.batteryPercent);
+  state.forwardedBytes = fieldOr(fields, "forwarded_bytes", state.forwardedBytes);
+  state.detail = fieldOr(fields, "detail", fieldOr(fields, "reason", state.detail));
+  state.updatedMs = uint64FieldOr(fields, "updated_ms", state.updatedMs);
+  if (state.updatedMs == 0) {
+    state.updatedMs = uint64FieldOr(fields, "timestamp_ms", state.updatedMs);
+  }
+  return state;
+}
+
+Fields
+FlightCommandState::toFields() const
+{
+  return {
+    {"drone_id", droneId},
+    {"command", command},
+    {"accepted", accepted},
+    {"ack_result", ackResult},
+    {"fc_state", flightControllerState},
+    {"altitude_m", altitudeM},
+    {"groundspeed_mps", groundspeedMps},
+    {"battery_percent", batteryPercent},
+    {"forwarded_bytes", forwardedBytes},
+    {"detail", detail},
+    {"updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+bool
+FlightCommandState::isAccepted() const
+{
+  return accepted == "true";
+}
+
+bool
+FlightCommandState::isTimeout() const
+{
+  return ackResult == "timeout";
+}
+
+bool
+FlightCommandState::isSafetyCritical() const
+{
+  return command == "arm" ||
+         command == "takeoff" ||
+         command == "land" ||
+         command == "emergency_stop" ||
+         command == "manual_control";
+}
+
+std::string
+FlightCommandState::statusLine() const
+{
+  return "Command drone=" + droneId +
+         " command=" + command +
+         " accepted=" + accepted +
+         " ack=" + ackResult +
+         " state=" + flightControllerState +
+         " alt=" + altitudeM + "m" +
+         " speed=" + groundspeedMps + "m/s" +
+         " battery=" + batteryPercent + "%" +
+         " bytes=" + forwardedBytes +
+         " detail=" + detail;
+}
+
 VideoState
 VideoState::fromFields(const Fields& fields)
 {

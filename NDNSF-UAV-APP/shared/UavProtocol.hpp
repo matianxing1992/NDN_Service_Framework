@@ -94,6 +94,28 @@ struct ReadinessState
   std::string statusLine() const;
 };
 
+struct FlightCommandState
+{
+  std::string droneId = "unknown";
+  std::string command = "none";
+  std::string accepted = "unknown";
+  std::string ackResult = "unknown";
+  std::string flightControllerState = "unknown";
+  std::string altitudeM = "unknown";
+  std::string groundspeedMps = "unknown";
+  std::string batteryPercent = "unknown";
+  std::string forwardedBytes = "0";
+  std::string detail = "idle";
+  uint64_t updatedMs = 0;
+
+  static FlightCommandState fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool isAccepted() const;
+  bool isTimeout() const;
+  bool isSafetyCritical() const;
+  std::string statusLine() const;
+};
+
 struct VideoState
 {
   std::string droneId = "unknown";
