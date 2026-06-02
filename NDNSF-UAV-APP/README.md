@@ -1254,22 +1254,34 @@ To simulate an unavailable drone:
 That drone suppresses successful ACKs, so NDNSF provider selection can choose
 another drone that provides the same service.
 
-## Future Versions
+## Development Roadmap
 
-1. Replace the current OpenStreetMap tile image plus marker overlay with a
-   full map widget, cached/offline tiles, click-to-add waypoints, and richer
-   multi-drone marker layers.
-2. Extend the current waypoint-sector patrol demo into a complete mission
-   editor: polygon drawing, automatic partitioning, compensation requests for
-   missing parts, battery-aware reassignment, and coverage reports.
-3. Harden the MAVLink UDP mission upload path against PX4/ArduPilot edge cases:
-   clear/replace existing missions, mission-current behavior, retry windows,
-   mission progress telemetry, and operator-visible failure reasons.
-4. Tune H264/H265 GOP, bitrate, chunk sizing, FEC, and keyframe recovery for
-   lossy wireless links while keeping immediate playback semantics.
-6. Store mission images, telemetry logs, and reports through
-   `NDNSF-DistributedRepo`, using publisher-owned data names and signed
-   segments.
-7. Connect selected image/object-detection workflows to
-   `NDNSF-DistributedInference` when model execution is split across ground
-   stations and drones.
+The app is now useful as a MiniNDN and SITL demonstrator, but the next work is
+to make it a deployable UAV service-container workload. The planned order is:
+
+1. **State model consolidation.** Treat telemetry, readiness, mission, and
+   video state as the single source of truth for the drone list, map markers,
+   inspector text, command buttons, and smoke-test markers. GUI code should not
+   infer state from ad hoc status strings when a typed state model is available.
+2. **Drone headless deployment mode.** Keep the Drone container usable on
+   ODROID-class or real airframe computers without a GUI/X server. In headless
+   mode the app should run only NDNSF, MAVLink, camera, repo, telemetry, and
+   mission services.
+3. **Flight-controller readiness and safety gates.** Before arm/takeoff/mission
+   execution, surface heartbeat, GPS fix, EKF readiness, battery, arming state,
+   mode, and landed state. Manual control must time out to neutral, and
+   emergency stop / lost-link behavior must be explicit.
+4. **Adaptive video service quality.** Continue treating video as an NDNSF
+   service workload: requested bitrate, accepted bitrate, RTT, backlog,
+   timeout pressure, key-frame recovery, and FEC should drive prefetch and
+   skip decisions rather than fixed constants.
+5. **Mission collaboration model.** Promote the patrol demo into a reusable
+   mission model with `MissionPlan`, `MissionPart`, assignment, progress,
+   failure/compensation, and return-to-home semantics.
+6. **Repo-backed UAV data products.** Store recordings, mission images,
+   telemetry logs, object-detection events, and reports through
+   `NDNSF-DistributedRepo` using publisher-owned names, encrypted payloads,
+   and manifest-based discovery.
+7. **Distributed inference integration.** Connect selected image and
+   object-detection workflows to `NDNSF-DistributedInference` when model
+   execution is split across ground stations, drones, and edge machines.

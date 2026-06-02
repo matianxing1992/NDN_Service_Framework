@@ -498,6 +498,8 @@ public:
           if (status.rfind("Telemetry ", 0) == 0) {
             const auto telemetry = m_runtime.telemetryForDrone(statusDrone);
             const auto mission = m_runtime.missionForDrone(statusDrone);
+            const auto readiness = m_runtime.readinessForDrone(statusDrone);
+            const auto video = m_runtime.videoForDrone(statusDrone);
             if (telemetry) {
               try {
                 m_dronePositions[statusDrone] = {
@@ -509,8 +511,11 @@ public:
               }
               if (statusDrone == selectedDrone) {
                 m_pendingTelemetry = telemetry->statusLine() +
-                  (mission ? " " + mission->statusLine() : "");
-                m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone);
+                  (readiness ? " " + readiness->statusLine() : "") +
+                  (mission ? " " + mission->statusLine() : "") +
+                  (video ? " " + video->statusLine() : "");
+                m_pendingMap = mapTextForTelemetry(*telemetry, mission, selectedDrone,
+                                                   readiness, video);
               }
               m_pendingVehicleRowsRefresh = true;
             }
@@ -1355,24 +1360,39 @@ private:
       }
       const bool selected = m_droneIds[i] == selectedDrone;
       const auto telemetry = m_runtime.telemetryForDrone(m_droneIds[i]);
+      const auto readiness = m_runtime.readinessForDrone(m_droneIds[i]);
       const auto mission = m_runtime.missionForDrone(m_droneIds[i]);
+      const auto video = m_runtime.videoForDrone(m_droneIds[i]);
       std::string rowText = std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
                             (selected ? " active" : " standby");
-      if (telemetry) {
+      if (readiness) {
+        rowText += " " + readiness->readiness;
+        rowText += " armed=" + readiness->armed;
+        rowText += " gps=" + readiness->gpsReady;
+      }
+      else if (telemetry) {
         rowText += " " + telemetry->readiness;
         rowText += " armed=" + telemetry->armed;
         rowText += " gps=" + telemetry->gpsFixName;
+      }
+      if (telemetry) {
         rowText += " bat=" + telemetry->batteryPercent + "%";
       }
       if (mission && mission->phase != "idle") {
         rowText += " mission=" + mission->phase;
       }
+      if (video && video->status != "unknown") {
+        rowText += " video=" + video->status;
+      }
       label->set_text(rowText);
     }
     const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
     const auto mission = m_runtime.missionForDrone(selectedDrone);
+    const auto readiness = m_runtime.readinessForDrone(selectedDrone);
+    const auto video = m_runtime.videoForDrone(selectedDrone);
     if (telemetry) {
-      m_mapMission.set_text(mapTextForTelemetry(*telemetry, mission, selectedDrone));
+      m_mapMission.set_text(mapTextForTelemetry(*telemetry, mission, selectedDrone,
+                                                readiness, video));
     }
     else {
       m_mapMission.set_text("Map / mission workspace\n\n"
@@ -1424,12 +1444,30 @@ private:
   static std::string
   mapTextForTelemetry(const TelemetryState& telemetry,
                       const std::optional<MissionState>& mission,
-                      const std::string& selectedDrone)
+                      const std::string& selectedDrone,
+                      const std::optional<ReadinessState>& readiness = std::nullopt,
+                      const std::optional<VideoState>& video = std::nullopt)
   {
     const auto missionPhase = mission ? mission->phase : "idle";
     const auto missionDetail = mission ? mission->detail : "idle";
-    return telemetry.mapSummary(selectedDrone) + "\n"
-           "Mission: " + missionPhase + " (" + missionDetail + ")";
+    std::string text = telemetry.mapSummary(selectedDrone) + "\n"
+      "Mission: " + missionPhase + " (" + missionDetail + ")";
+    if (readiness) {
+      text += "\nReadiness model: " + readiness->readiness +
+              " reason=" + readiness->readinessReason +
+              " arm=" + (readiness->readyForArm() ? "ready" : "blocked") +
+              " takeoff=" + (readiness->readyForTakeoff() ? "ready" : "blocked") +
+              " manual=" + (readiness->readyForManualControl() ? "ready" : "blocked");
+    }
+    if (video) {
+      text += "\nVideo model: " + video->status +
+              " capture=" + video->capture +
+              " recording=" + video->recording +
+              " stream=" + video->streamId +
+              " packets=" + std::to_string(video->streamPacketsPublished) +
+              " decoded=" + std::to_string(video->decodedFrames);
+    }
+    return text;
   }
 
   struct MapMarker

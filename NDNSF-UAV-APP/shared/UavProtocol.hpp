@@ -69,6 +69,62 @@ struct TelemetryState
   std::string mapSummary(const std::string& selectedDrone) const;
 };
 
+struct ReadinessState
+{
+  std::string droneId = "unknown";
+  std::string heartbeatSeen = "false";
+  std::string flightControllerReady = "unknown";
+  std::string gpsReady = "unknown";
+  std::string ekfReady = "unknown";
+  std::string batteryReady = "unknown";
+  std::string armed = "unknown";
+  std::string mode = "unknown";
+  std::string landedStateName = "unknown";
+  std::string readiness = "not-ready";
+  std::string readinessReason = "waiting-heartbeat";
+  uint64_t timestampMs = 0;
+
+  static ReadinessState fromFields(const Fields& fields);
+  static ReadinessState fromTelemetry(const TelemetryState& telemetry);
+  Fields toFields() const;
+  bool readyForArm() const;
+  bool readyForTakeoff() const;
+  bool readyForManualControl() const;
+  std::string statusLine() const;
+};
+
+struct VideoState
+{
+  std::string droneId = "unknown";
+  std::string status = "unknown";
+  std::string capture = "unknown";
+  std::string recording = "unknown";
+  std::string streamId = "unknown";
+  std::string encoding = "unknown";
+  std::string source = "unknown";
+  uint64_t requestedBitrateKbps = 0;
+  uint64_t acceptedBitrateKbps = 0;
+  uint64_t requestedFrameWidth = 0;
+  uint64_t acceptedFrameWidth = 0;
+  uint64_t fps = 0;
+  uint64_t streamPacketsPublished = 0;
+  uint64_t framesPublished = 0;
+  uint64_t fecGroupsPublished = 0;
+  uint64_t recordingChunks = 0;
+  uint64_t recordingBytes = 0;
+  uint64_t rttMs = 0;
+  uint64_t timeoutPressure = 0;
+  uint64_t probePressure = 0;
+  uint64_t backlogPressure = 0;
+  uint64_t decodedFrames = 0;
+  uint64_t updatedMs = 0;
+
+  static VideoState fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool isStreaming() const;
+  std::string statusLine() const;
+};
+
 struct MissionState
 {
   std::string droneId = "unknown";

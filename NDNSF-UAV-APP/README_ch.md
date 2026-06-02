@@ -668,6 +668,31 @@ telemetry、camera frame 和 mission assignment。core 现在提供了通用的
 `NDNSF_DISABLE_NDNSD=1`，因为旧 NDNSD runtime 路径需要单独做兼容性修复后才适合放进 GUI demo。
 性能和低延迟测试应保持默认禁用。
 
+## 开发路线
+
+当前应用已经可以作为 MiniNDN 和 SITL 演示系统使用。下一步目标是把它推进成可以部署到真实
+UAV service-container workload 的应用。计划顺序如下：
+
+1. **收束状态模型。** 把 telemetry、readiness、mission 和 video state 作为 drone list、
+   map marker、inspector、command buttons 和 smoke-test markers 的唯一状态来源。只要有
+   typed state model，GUI 就不应该再从临时 status string 推断状态。
+2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
+   上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、
+   telemetry 和 mission services。
+3. **飞控 readiness 和安全 gate。** 在 arm、takeoff 和 mission execution 前，清楚显示并检查
+   heartbeat、GPS fix、EKF readiness、battery、arming state、mode 和 landed state。
+   Manual control 必须超时回到 neutral，emergency stop 和 lost-link 行为必须明确。
+4. **自适应视频服务质量。** 继续把 video 当作 NDNSF service workload：requested bitrate、
+   accepted bitrate、RTT、backlog、timeout pressure、key-frame recovery 和 FEC 应该驱动
+   prefetch 与 skip 决策，而不是依赖固定常数。
+5. **任务协作模型。** 把当前 patrol demo 提升成可复用 mission model，包括 `MissionPlan`、
+   `MissionPart`、assignment、progress、failure/compensation 和 return-to-home 语义。
+6. **Repo-backed UAV data products。** 通过 `NDNSF-DistributedRepo` 保存 recording、mission
+   image、telemetry log、object-detection event 和 report，使用 publisher-owned name、
+   encrypted payload 和 manifest-based discovery。
+7. **Distributed inference 集成。** 当 object detection 或 image workflow 需要在 ground station、
+   drone 和 edge machine 之间拆分执行时，把相关流程接入 `NDNSF-DistributedInference`。
+
 ## 构建
 
 从仓库根目录执行：

@@ -2472,6 +2472,35 @@ public:
                                        : std::vector<uint8_t>{};
   }
 
+  TelemetryState
+  latestTelemetryState() const
+  {
+    Fields telemetry;
+    if (m_backend) {
+      telemetry = m_backend->latestTelemetry();
+    }
+    telemetry["drone_id"] = m_droneId;
+    telemetry["video"] = isStreaming() ? "streaming" : "stopped";
+    telemetry["capture"] = isCapturing() ? "on" : "off";
+    telemetry["recording"] = isRecording() ? "on" : "off";
+    telemetry["recording_chunks"] = std::to_string(recordingChunks());
+    telemetry["recording_bytes"] = std::to_string(recordingBytes());
+    telemetry["timestamp_ms"] = std::to_string(nowMilliseconds());
+    return TelemetryState::fromFields(telemetry);
+  }
+
+  ReadinessState
+  latestReadinessState() const
+  {
+    return ReadinessState::fromTelemetry(latestTelemetryState());
+  }
+
+  VideoState
+  latestVideoState() const
+  {
+    return VideoState::fromFields(latestTelemetryState().toFields());
+  }
+
   std::string
   identityUri() const
   {
@@ -2511,6 +2540,7 @@ private:
     else {
       backend = std::make_shared<MockFlightControllerBackend>(m_droneId);
     }
+    m_backend = backend;
     auto missionState = std::make_shared<MissionState>();
     missionState->droneId = m_droneId;
     auto missionMutex = std::make_shared<std::mutex>();
@@ -2920,6 +2950,7 @@ private:
   std::unique_ptr<ndn_service_framework::ServiceProvider> m_provider;
   std::unique_ptr<ndn_service_framework::ServiceUser> m_user;
   std::unique_ptr<VideoPublisher> m_videoPublisher;
+  std::shared_ptr<FlightControllerBackend> m_backend;
   mutable std::mutex m_containerMutex;
   std::thread m_faceThread;
   std::thread m_objectDetectionThread;
