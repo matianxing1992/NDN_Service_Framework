@@ -71,8 +71,10 @@ encoder downsample later. Override these only after checking the target camera w
 `ffmpeg -f v4l2 -list_formats all -i /dev/videoX`.
 
 If `ffmpeg` is available on the build host, it is copied into `bin/` and the
-wrappers put the release `bin/` directory first in `PATH`. This is required for
-USB/V4L2 camera capture because the drone video pipeline invokes `ffmpeg`.
+wrappers put the release `bin/` directory first in `PATH`. Its dynamic
+dependencies are bundled as runtime dependencies of that optional binary. This
+is required for USB/V4L2 camera capture because the drone video pipeline invokes
+`ffmpeg`.
 
 If `patchelf` is installed, the ELF RUNPATH is set to:
 

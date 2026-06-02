@@ -22,6 +22,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -54,6 +55,14 @@ NDN_LOG_INIT(ndn_service_framework.examples.UavDroneApp);
 
 using namespace ndnsf::examples::uav;
 using namespace std::chrono_literals;
+
+volatile std::sig_atomic_t g_stopHeadless = 0;
+
+void
+handleStopSignal(int)
+{
+  g_stopHeadless = 1;
+}
 
 class KeyChainInitLock
 {
@@ -380,6 +389,8 @@ main(int argc, char** argv)
     const bool autoCameraRecordSmoke = getConfigBool(
       argc, argv, appConfig, "--auto-camera-record-smoke",
       "auto-camera-record-smoke", false);
+    const bool headless = getConfigBool(
+      argc, argv, appConfig, "--headless", "headless", false);
     const auto autoCameraRecordExpectedChunks = std::stoull(getConfigOption(
       argc, argv, appConfig, "--auto-camera-record-expected-chunks",
       "auto-camera-record-expected-chunks", "3"));
@@ -477,6 +488,36 @@ main(int argc, char** argv)
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("drone NDNSF runtime did not become ready");
+    }
+    if (headless) {
+      std::signal(SIGINT, handleStopSignal);
+      std::signal(SIGTERM, handleStopSignal);
+      NDN_LOG_INFO("UavDroneApp headless ready identity=" << runtime->identityUri()
+                   << " available=" << available
+                   << " video_source=" << videoPath
+                   << " flight_controller_backend=" << flightControllerBackend
+                   << " camera_capture=" << (runtime->isCapturing() ? "on" : "off")
+                   << " camera_recording=" << (runtime->isRecording() ? "on" : "off"));
+      std::cout << "DRONE_HEADLESS_READY identity=" << runtime->identityUri()
+                << " video_source=" << videoPath
+                << " flight_controller_backend=" << flightControllerBackend
+                << " camera_capture=" << (runtime->isCapturing() ? "on" : "off")
+                << " camera_recording=" << (runtime->isRecording() ? "on" : "off")
+                << std::endl;
+      while (g_stopHeadless == 0) {
+        std::this_thread::sleep_for(500ms);
+        std::cout << "DRONE_HEADLESS_STATUS identity=" << runtime->identityUri()
+                  << " streaming=" << (runtime->isStreaming() ? "on" : "off")
+                  << " capture=" << (runtime->isCapturing() ? "on" : "off")
+                  << " recording=" << (runtime->isRecording() ? "on" : "off")
+                  << " stream_packets=" << runtime->streamPacketsPublished()
+                  << " fec_groups=" << runtime->fecGroupsPublished()
+                  << " recorded_chunks=" << runtime->recordingChunks()
+                  << std::endl;
+      }
+      std::cout << "DRONE_HEADLESS_EXIT identity=" << runtime->identityUri()
+                << std::endl;
+      return 0;
     }
     auto app = Gtk::Application::create("org.ndnsf.uav.drone", Gio::APPLICATION_NON_UNIQUE);
     DroneWindow window(*runtime, flightControllerStatusFile);

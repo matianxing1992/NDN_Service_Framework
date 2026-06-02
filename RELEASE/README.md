@@ -152,8 +152,9 @@ Then start the apps:
 
 - The release bundles NDNSF and the runtime libraries needed by the UAV apps.
 - The release includes `ffmpeg` for USB/V4L2 camera capture when it was
-  available on the build host. Nix closures use `ffmpeg-headless` for the same
-  capture path.
+  available on the build host; use the wrapper commands so the bundled
+  `bin/ffmpeg` and libraries are found. Nix closures use `ffmpeg-headless` for
+  the same capture path.
 - NFD, PX4/jMAVSim, camera devices, routes, and certificates remain deployment
   responsibilities.
 - For a real multi-machine deployment, keep the namespace, identities,
