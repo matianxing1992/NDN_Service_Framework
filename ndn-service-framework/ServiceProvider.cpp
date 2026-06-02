@@ -14,6 +14,7 @@
 #include <sstream>
 
 #include <ndn-cxx/security/validation-error.hpp>
+#include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <fcntl.h>
@@ -790,6 +791,21 @@ namespace ndn_service_framework
                      << " invocation-mode=" << modeText);
     }
 
+    void ServiceProvider::setSelectionStatusQueryable(const ndn::Name& serviceName,
+                                                      bool enabled)
+    {
+        auto& service = m_services[serviceName];
+        service.selectionStatusQueryable = enabled;
+        const auto serviceUri = serviceName.toUri();
+        if (std::find(m_serviceNames.begin(), m_serviceNames.end(), serviceUri) ==
+            m_serviceNames.end()) {
+            m_serviceNames.push_back(serviceUri);
+        }
+        NDN_LOG_WARN("Selection status query "
+                     << (enabled ? "enabled" : "disabled")
+                     << " for service " << serviceUri);
+    }
+
     void ServiceProvider::publishServiceInfo(
         const ndn::Name& serviceName,
         int serviceLifetimeSeconds,
@@ -1391,6 +1407,137 @@ namespace ndn_service_framework
         return statuses;
     }
 
+    std::string ServiceProvider::encodeSelectionExecutionStatus(
+        const SelectionExecutionStatus& status)
+    {
+        std::ostringstream os;
+        os << "state=" << selectionExecutionStateToString(status.state) << "\n"
+           << "provider=" << status.providerName.toUri() << "\n"
+           << "service=" << status.serviceName.toUri() << "\n"
+           << "request_id=" << status.requestId.toUri() << "\n"
+           << "selection_digest=" << status.selectionDigest << "\n"
+           << "message=" << status.message << "\n"
+           << "response_name=" << status.responseName.toUri() << "\n"
+           << "received_at_us=" << status.receivedAtUs << "\n"
+           << "queued_at_us=" << status.queuedAtUs << "\n"
+           << "running_at_us=" << status.runningAtUs << "\n"
+           << "completed_at_us=" << status.completedAtUs << "\n"
+           << "updated_at_us=" << status.updatedAtUs << "\n";
+        return os.str();
+    }
+
+    SelectionExecutionStatus
+    ServiceProvider::makeUnknownSelectionExecutionStatus(
+        const ndn::Name& providerName,
+        const std::string& selectionDigest)
+    {
+        SelectionExecutionStatus status;
+        status.providerName = providerName;
+        status.selectionDigest = selectionDigest;
+        status.state = SelectionExecutionState::Unknown;
+        status.message = "selection status not found";
+        status.updatedAtUs = nowMicroseconds();
+        return status;
+    }
+
+    std::optional<SelectionExecutionStatus>
+    ServiceProvider::getSelectionExecutionStatus(
+        const std::string& selectionDigest) const
+    {
+        auto it = m_selectionExecutionStatuses.find(selectionDigest);
+        if (it == m_selectionExecutionStatuses.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    void ServiceProvider::updateSelectionExecutionStatus(
+        const std::string& selectionDigest,
+        SelectionExecutionState state,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        const std::string& message,
+        const ndn::Name& responseName)
+    {
+        if (selectionDigest.empty()) {
+            return;
+        }
+        auto& status = m_selectionExecutionStatuses[selectionDigest];
+        status.providerName = providerName;
+        status.serviceName = serviceName;
+        status.requestId = requestId;
+        status.selectionDigest = selectionDigest;
+        status.state = state;
+        if (!message.empty()) {
+            status.message = message;
+        }
+        if (!responseName.empty()) {
+            status.responseName = responseName;
+        }
+        const auto nowUs = nowMicroseconds();
+        status.updatedAtUs = nowUs;
+        switch (state) {
+        case SelectionExecutionState::Received:
+            if (status.receivedAtUs == 0) {
+                status.receivedAtUs = nowUs;
+            }
+            break;
+        case SelectionExecutionState::Queued:
+            if (status.queuedAtUs == 0) {
+                status.queuedAtUs = nowUs;
+            }
+            break;
+        case SelectionExecutionState::Running:
+            if (status.runningAtUs == 0) {
+                status.runningAtUs = nowUs;
+            }
+            break;
+        case SelectionExecutionState::Completed:
+        case SelectionExecutionState::Failed:
+        case SelectionExecutionState::Rejected:
+        case SelectionExecutionState::Expired:
+        case SelectionExecutionState::Cancelled:
+            if (status.completedAtUs == 0) {
+                status.completedAtUs = nowUs;
+            }
+            break;
+        case SelectionExecutionState::Unknown:
+            break;
+        }
+    }
+
+    bool ServiceProvider::replySelectionExecutionStatus(const ndn::Interest& interest)
+    {
+        const auto parsed = parseSelectionStatusQueryName(interest.getName());
+        if (!parsed || !parsed->providerName.equals(identity)) {
+            return false;
+        }
+        auto service = m_services.find(parsed->serviceName);
+        if (service == m_services.end() ||
+            !service->second.selectionStatusQueryable) {
+            return false;
+        }
+
+        auto status = getSelectionExecutionStatus(parsed->selectionDigest);
+        const SelectionExecutionStatus reply =
+            status ? *status :
+                     makeUnknownSelectionExecutionStatus(identity,
+                                                         parsed->selectionDigest);
+        const auto payload = encodeSelectionExecutionStatus(reply);
+        auto data = std::make_shared<ndn::Data>(interest.getName());
+        data->setFreshnessPeriod(ndn::time::milliseconds(1000));
+        data->setContent(payload);
+        if (m_svsps == nullptr) {
+            m_keyChain.sign(*data, ndn::security::signingWithSha256());
+        }
+        else {
+            m_keyChain.sign(*data, m_signingInfo);
+        }
+        m_face.put(*data);
+        return true;
+    }
+
     std::map<std::string, uint64_t>
     ServiceProvider::getProviderAdmissionCounters() const
     {
@@ -1796,7 +1943,8 @@ namespace ndn_service_framework
         const ndn::Name& providerName,
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
-        RequestMessage requestMessage)
+        RequestMessage requestMessage,
+        std::string selectionDigest)
     {
         if (m_handlerPool.getThreadCount() == 0) {
             return false;
@@ -1824,7 +1972,14 @@ namespace ndn_service_framework
              serviceName,
              requestId,
              requestMessage,
-             requestHandler = std::move(requestHandler)]() mutable {
+             requestHandler = std::move(requestHandler),
+             selectionDigest]() mutable {
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Running,
+                                               providerName,
+                                               serviceName,
+                                               requestId,
+                                               "handler running");
                 ResponseMessage response;
                 try {
                     response = requestHandler(requesterName,
@@ -1848,13 +2003,15 @@ namespace ndn_service_framework
                      serviceName,
                      requestId,
                      requestMessage,
+                     selectionDigest,
                      response = std::move(response)]() mutable {
                         finishRequestExecutionOnEventLoop(requesterName,
                                                           providerName,
                                                           serviceName,
                                                           requestId,
                                                           requestMessage,
-                                                          std::move(response));
+                                                          std::move(response),
+                                                          std::move(selectionDigest));
                     });
             });
 
@@ -1864,7 +2021,8 @@ namespace ndn_service_framework
                                                serviceName,
                                                requestId,
                                                requestMessage,
-                                               "Request handler queue full");
+                                               "Request handler queue full",
+                                               std::move(selectionDigest));
         }
         return true;
     }
@@ -1875,7 +2033,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         RequestMessage requestMessage,
-        CollaborationAssignment assignment)
+        CollaborationAssignment assignment,
+        std::string selectionDigest)
     {
         auto service = m_collaborationServices.find(serviceName);
         if (service == m_collaborationServices.end() || !service->second.handler) {
@@ -1898,7 +2057,8 @@ namespace ndn_service_framework
                 serviceName,
                 requestId,
                 requestMessage,
-                "Provider is not authorized for collaboration role " + assignment.role);
+                "Provider is not authorized for collaboration role " + assignment.role,
+                selectionDigest);
             return true;
         }
         if (!service->second.allowedRoles.empty() &&
@@ -1916,7 +2076,8 @@ namespace ndn_service_framework
                 requestId,
                 requestMessage,
                 "Provider lacks controller-authorized collaboration role " +
-                    assignment.role);
+                    assignment.role,
+                selectionDigest);
             return true;
         }
         auto assignmentForPreparation = assignment;
@@ -1930,6 +2091,7 @@ namespace ndn_service_framework
              serviceName,
              requestId,
              requestMessage,
+             selectionDigest,
              assignment = std::move(assignmentForHandler),
              handler](bool ready, std::string error) mutable {
                 if (!ready) {
@@ -1939,7 +2101,8 @@ namespace ndn_service_framework
                         serviceName,
                         requestId,
                         requestMessage,
-                        "Collaboration assignment preparation failed: " + error);
+                        "Collaboration assignment preparation failed: " + error,
+                        selectionDigest);
                     return;
                 }
 
@@ -1949,8 +2112,15 @@ namespace ndn_service_framework
                      serviceName,
                      requestId,
                      requestMessage,
+                     selectionDigest,
                      assignment = std::move(assignment),
                      handler]() mutable {
+                        updateSelectionExecutionStatus(selectionDigest,
+                                                       SelectionExecutionState::Running,
+                                                       identity,
+                                                       serviceName,
+                                                       requestId,
+                                                       "collaboration handler running");
                         try {
                             CollaborationContext ctx(*this,
                                                      requesterName,
@@ -1988,7 +2158,8 @@ namespace ndn_service_framework
                         serviceName,
                         requestId,
                         requestMessage,
-                        "Collaboration handler queue full");
+                        "Collaboration handler queue full",
+                        selectionDigest);
                 }
             });
         return true;
@@ -2000,7 +2171,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         const RequestMessage& requestMessage,
-        ResponseMessage response)
+        ResponseMessage response,
+        std::string selectionDigest)
     {
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PROVIDER_EXECUTE_DONE timestamp_us="
                   << nowMicroseconds()
@@ -2059,6 +2231,17 @@ namespace ndn_service_framework
             updateProviderRequestLifecycleState(
                 requestId, serviceName,
                 ProviderRequestLifecycleState::RESPONSE_PUBLISHED);
+            updateSelectionExecutionStatus(selectionDigest,
+                                           response.getStatus() ?
+                                               SelectionExecutionState::Completed :
+                                               SelectionExecutionState::Failed,
+                                           providerName,
+                                           serviceName,
+                                           requestId,
+                                           response.getStatus() ?
+                                               "response published" :
+                                               response.getErrorInfo(),
+                                           responseName);
             size_t selectedOutstanding =
                 m_selectedOutstandingRequests.load(std::memory_order_relaxed);
             while (selectedOutstanding > 0 &&
@@ -2085,6 +2268,13 @@ namespace ndn_service_framework
                        std::memory_order_relaxed,
                        std::memory_order_relaxed)) {
             }
+            updateSelectionExecutionStatus(selectionDigest,
+                                           SelectionExecutionState::Failed,
+                                           providerName,
+                                           serviceName,
+                                           requestId,
+                                           std::string("response publish failed: ") + e.what(),
+                                           responseName);
             throw;
         }
     }
@@ -2095,7 +2285,8 @@ namespace ndn_service_framework
         const ndn::Name& serviceName,
         const ndn::Name& requestId,
         const RequestMessage& requestMessage,
-        const std::string& error)
+        const std::string& error,
+        std::string selectionDigest)
     {
         ResponseMessage response = makeErrorResponse(error);
         finishRequestExecutionOnEventLoop(requesterName,
@@ -2103,7 +2294,8 @@ namespace ndn_service_framework
                                           serviceName,
                                           requestId,
                                           requestMessage,
-                                          std::move(response));
+                                          std::move(response),
+                                          std::move(selectionDigest));
     }
 
     void ServiceProvider::publishCollaborationData(
@@ -4916,6 +5108,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         // log interest
         NDN_LOG_DEBUG("Received Interest: " << interest.getName().toUri());
+        if (replySelectionExecutionStatus(interest)) {
+            return;
+        }
         replyFromIMS(interest);
 
     }
@@ -5537,11 +5732,24 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
 
         ServiceSelectionMessage message;
         message.WireDecode(block);
+        const std::string selectionDigest = computeSelectionDigest(message);
+        updateSelectionExecutionStatus(selectionDigest,
+                                       SelectionExecutionState::Received,
+                                       providerName,
+                                       serviceName,
+                                       msgId,
+                                       "selection received");
         if (!isAcceptablePolicyEpoch(message.getPolicyEpoch())) {
             NDN_LOG_ERROR("Reject V2 selection with stale policy epoch for "
                           << msgId.toUri()
                           << " receivedEpoch=" << message.getPolicyEpoch()
                           << " currentEpoch=" << m_currentPolicyEpoch);
+            updateSelectionExecutionStatus(selectionDigest,
+                                           SelectionExecutionState::Rejected,
+                                           providerName,
+                                           serviceName,
+                                           msgId,
+                                           "stale policy epoch");
             clearSelectionDecryptInFlight();
             return;
         }
@@ -5562,6 +5770,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                      m_consumedProviderTokenHashes.find(providerTokenHash) !=
                          m_consumedProviderTokenHashes.end())) {
                 NDN_LOG_DEBUG("Ignore replayed V2 selection for " << key.toUri());
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName,
+                                               serviceName,
+                                               msgId,
+                                               "replayed selection or provider token");
                 m_selectionDecryptsInFlight.erase(key);
                 return;
             }
@@ -5575,6 +5789,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << " providerName=" << providerName.toUri()
                           << " pendingKey=" << key.toUri());
                 NDN_LOG_INFO("No pending V2 request for " << key.toUri());
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Unknown,
+                                               providerName,
+                                               serviceName,
+                                               msgId,
+                                               "no pending request for selection");
                 m_selectionDecryptsInFlight.erase(key);
                 return;
             }
@@ -5596,6 +5816,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << !message.getProviderToken().empty());
                 NDN_LOG_ERROR("Reject V2 selection with mismatched ProviderToken for "
                               << key.toUri());
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName,
+                                               serviceName,
+                                               msgId,
+                                               "provider token mismatch");
                 m_selectionDecryptsInFlight.erase(key);
                 return;
             }
@@ -5631,6 +5857,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             if (!hasService(serviceName) &&
                 collabService == m_collaborationServices.end()) {
                 NDN_LOG_INFO("No V2 dynamic handler for " << serviceName.toUri());
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName,
+                                               serviceName,
+                                               requestId,
+                                               "service handler not found");
                 continue;
             }
 
@@ -5649,6 +5881,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             updateProviderRequestLifecycleState(
                 requestId, serviceName,
                 ProviderRequestLifecycleState::EXECUTION_STARTED);
+            updateSelectionExecutionStatus(selectionDigest,
+                                           SelectionExecutionState::Queued,
+                                           providerName,
+                                           serviceName,
+                                           requestId,
+                                           "handler queued");
             m_selectedOutstandingRequests.fetch_add(1, std::memory_order_relaxed);
             RequestMessage requestCopy = selectedRequest;
             if (collabService != m_collaborationServices.end()) {
@@ -5660,7 +5898,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                         serviceName,
                                                         requestId,
                                                         requestCopy,
-                                                        std::move(assignment))) {
+                                                        std::move(assignment),
+                                                        selectionDigest)) {
                     continue;
                 }
             }
@@ -5668,10 +5907,17 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                               providerName,
                                               serviceName,
                                               requestId,
-                                              requestCopy)) {
+                                              requestCopy,
+                                              selectionDigest)) {
                 continue;
             }
 
+            updateSelectionExecutionStatus(selectionDigest,
+                                           SelectionExecutionState::Running,
+                                           providerName,
+                                           serviceName,
+                                           requestId,
+                                           "handler running inline");
             auto response = dispatchRequest(requesterName,
                                             providerName,
                                             serviceName,
@@ -5682,7 +5928,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                               serviceName,
                                               requestId,
                                               requestCopy,
-                                              std::move(response));
+                                              std::move(response),
+                                              selectionDigest);
         }
     }
 

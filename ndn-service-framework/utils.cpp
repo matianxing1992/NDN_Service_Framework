@@ -482,6 +482,43 @@ namespace ndn_service_framework
             getSubNameByComponentCount(serviceSelectionName, serviceSelectionName.size() - 1, 1)};
     }
 
+    ndn::Name
+    makeSelectionStatusQueryName(const ndn::Name& providerName,
+                                 const ndn::Name& serviceName,
+                                 const std::string& selectionDigest)
+    {
+        ndn::Name name(providerName);
+        name.append(ndn::Name("/NDNSF/SELECTION-STATUS"));
+        name.append(serviceName);
+        name.append(selectionDigest);
+        return name;
+    }
+
+    std::optional<SelectionStatusQueryName>
+    parseSelectionStatusQueryName(const ndn::Name& statusQueryName)
+    {
+        auto marker = findNdnsfMessageMarker(statusQueryName, "SELECTION-STATUS");
+        if (!marker || *marker + 4 > statusQueryName.size()) {
+            return std::nullopt;
+        }
+        const size_t serviceIndex = *marker + 2;
+        const size_t serviceComponentCount = statusQueryName.size() - serviceIndex - 1;
+        return SelectionStatusQueryName{
+            getSubNameByComponentCount(statusQueryName, 0, *marker),
+            getSubNameByComponentCount(statusQueryName, serviceIndex, serviceComponentCount),
+            statusQueryName.get(statusQueryName.size() - 1).toUri()};
+    }
+
+    std::string
+    computeSelectionDigest(const ServiceSelectionMessage& message)
+    {
+        const auto block = message.WireEncode();
+        ndn::util::Sha256 digest;
+        digest << std::string(reinterpret_cast<const char*>(block.data()),
+                              block.size());
+        return digest.toString();
+    }
+
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
                                         const ndn::Name& requesterName,
                                         const ndn::Name& requestId,

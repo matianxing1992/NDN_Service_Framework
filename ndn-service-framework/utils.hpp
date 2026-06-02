@@ -80,6 +80,13 @@ namespace ndn_service_framework
         ndn::Name requestId;
     };
 
+    struct SelectionStatusQueryName
+    {
+        ndn::Name providerName;
+        ndn::Name serviceName;
+        std::string selectionDigest;
+    };
+
     struct CollaborationDataName
     {
         ndn::Name producerName;
@@ -135,6 +142,13 @@ namespace ndn_service_framework
                                                          const ndn::Name& requestId);
     std::optional<ServiceSelectionNameV2>
     parseServiceSelectionNameV2(const ndn::Name& serviceSelectionName);
+
+    ndn::Name makeSelectionStatusQueryName(const ndn::Name& providerName,
+                                           const ndn::Name& serviceName,
+                                           const std::string& selectionDigest);
+    std::optional<SelectionStatusQueryName>
+    parseSelectionStatusQueryName(const ndn::Name& statusQueryName);
+    std::string computeSelectionDigest(const ServiceSelectionMessage& message);
 
     ndn::Name makeCollaborationDataName(const ndn::Name& producerName,
                                         const ndn::Name& requesterName,
