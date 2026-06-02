@@ -999,6 +999,8 @@ def main() -> int:
             else:
                 require_log(gs_log, "PATROL_PART_MISSING")
                 require_log(gs_log, "PATROL_COMPENSATION")
+                require_log(gs_log, "PATROL_PLAN MissionPlan")
+                require_log(gs_log, "PATROL_PART MissionPart")
                 require_log(gs_log, "PATROL_PROGRESS MissionProgress")
                 require_log(gs_log, "phase=waiting-compensation")
                 require_log(gs_log, "phase=compensating")
