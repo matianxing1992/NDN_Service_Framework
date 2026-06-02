@@ -962,6 +962,8 @@ VideoAdaptiveState::fromFields(const Fields& fields)
   state.duplicatePressure = uint64FieldOr(fields, "duplicate_pressure", state.duplicatePressure);
   state.lossPressure = uint64FieldOr(fields, "loss_pressure", state.lossPressure);
   state.backlogPressure = uint64FieldOr(fields, "backlog_pressure", state.backlogPressure);
+  state.primaryPressure = fieldOr(fields, "primary_pressure", state.primaryPressure);
+  state.policyReason = fieldOr(fields, "policy_reason", state.policyReason);
   state.pendingChunks = uint64FieldOr(fields, "pending_chunks", state.pendingChunks);
   state.receivedChunks = uint64FieldOr(fields, "received_chunks", state.receivedChunks);
   state.timeouts = uint64FieldOr(fields, "timeouts", state.timeouts);
@@ -994,6 +996,8 @@ VideoAdaptiveState::toFields() const
     {"duplicate_pressure", std::to_string(duplicatePressure)},
     {"loss_pressure", std::to_string(lossPressure)},
     {"backlog_pressure", std::to_string(backlogPressure)},
+    {"primary_pressure", primaryPressure},
+    {"policy_reason", policyReason},
     {"pending_chunks", std::to_string(pendingChunks)},
     {"received_chunks", std::to_string(receivedChunks)},
     {"timeouts", std::to_string(timeouts)},
@@ -1032,6 +1036,8 @@ VideoAdaptiveState::statusLine() const
          " duplicate_pressure=" + std::to_string(duplicatePressure) +
          " loss_pressure=" + std::to_string(lossPressure) +
          " backlog_pressure=" + std::to_string(backlogPressure) +
+         " primary_pressure=" + primaryPressure +
+         " policy_reason=" + policyReason +
          " pending_chunks=" + std::to_string(pendingChunks) +
          " received_chunks=" + std::to_string(receivedChunks) +
          " timeouts=" + std::to_string(timeouts) +
@@ -1132,6 +1138,23 @@ higherVideoBitrateStep(uint64_t currentKbps, uint64_t requestedKbps)
   return std::min(currentKbps, requestedKbps);
 }
 
+std::string
+primaryVideoPressure(uint64_t congestionPressure, uint64_t backlogPressure,
+                     uint64_t probePressure)
+{
+  const auto primary = std::max({congestionPressure, backlogPressure, probePressure});
+  if (primary == 0) {
+    return "none";
+  }
+  if (primary == congestionPressure) {
+    return "congestion";
+  }
+  if (primary == backlogPressure) {
+    return "backlog";
+  }
+  return "probe";
+}
+
 } // namespace
 
 VideoAdaptivePolicyDecision
@@ -1153,6 +1176,9 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
     input.timeoutPressure,
     input.duplicatePressure / 2
   });
+  decision.primaryPressure = primaryVideoPressure(decision.congestionPressure,
+                                                  decision.backlogPressure,
+                                                  decision.probePressure);
 
   const auto windowPressure = std::max(decision.congestionPressure,
                                        decision.backlogPressure);
@@ -1244,6 +1270,20 @@ computeVideoAdaptivePolicy(const VideoAdaptivePolicyInput& input)
   }
   else {
     decision.bitrateReason = "stable";
+  }
+
+  if (decision.bitrateReason == "pressure") {
+    decision.policyReason = "pressure-" + decision.primaryPressure;
+  }
+  else if (decision.bitrateReason == "high-rtt" ||
+           decision.bitrateReason == "recovery") {
+    decision.policyReason = decision.bitrateReason;
+  }
+  else if (bitratePressure > 0) {
+    decision.policyReason = "pressure-" + decision.primaryPressure;
+  }
+  else {
+    decision.policyReason = "stable";
   }
 
   return decision;

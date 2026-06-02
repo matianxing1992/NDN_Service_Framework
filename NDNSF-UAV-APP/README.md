@@ -719,9 +719,10 @@ giving higher-bitrate streams enough in-flight Interests to avoid stalls. The
 current receiver stores these decisions as `VideoAdaptiveState`, so the video
 panel, selected-drone inspector, left-side drone row, and MiniNDN smoke logs can
 show RTT, window, lookahead, pressure, missing-packet timeout, pending chunks,
-decoded-frame progress, and the current bitrate recommendation without scraping
-packet logs. The actual window, lookahead, timeout, and bitrate recommendation
-are computed through a typed `VideoAdaptivePolicyInput` to
+decoded-frame progress, the dominant pressure source, the policy reason, and
+the current bitrate recommendation without scraping packet logs. The actual
+window, lookahead, timeout, and bitrate recommendation are computed through a
+typed `VideoAdaptivePolicyInput` to
 `VideoAdaptivePolicyDecision` helper, with unit tests covering pressure,
 high-RTT, and recovery behavior. This keeps the policy generic and testable
 instead of tuning hidden constants for one MiniNDN topology. The recommendation
@@ -1204,7 +1205,10 @@ Add `--auto-apply-bitrate-test` to the same command when you want the smoke test
 to exercise the explicit `Apply Bitrate` Stop-then-Start path.
 For the policy-driven path, use `--video-bitrate-policy auto-after-pressure`
 with a short `--video-bitrate-auto-pressure-ms` value; use `0` when the smoke
-test must deterministically exercise the automatic Stop-then-Start path.
+test must deterministically exercise the automatic Stop-then-Start path. The
+smoke also checks that adaptive logs include `primary_pressure` and
+`policy_reason`, so tuning changes remain explainable rather than only changing
+numeric windows.
 
 The smoke test exits after checking that the ground station decoded video
 frames and that the drone entered and left streaming mode. In the integrated
@@ -1456,8 +1460,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    timeout pressure, key-frame recovery, and FEC should drive prefetch and
    skip decisions rather than fixed constants. The current GS records these
    decisions as `VideoAdaptiveState`, including advisory bitrate
-   decrease/hold/increase decisions. The core window, lookahead, timeout, and
-   bitrate recommendation calculations now live in a typed
+   decrease/hold/increase decisions plus `primary_pressure` and `policy_reason`
+   fields that explain the dominant pressure source. The core window,
+   lookahead, timeout, and bitrate recommendation calculations now live in a typed
    `VideoAdaptivePolicyInput` to `VideoAdaptivePolicyDecision` helper with unit
    tests for pressure, high-RTT, and recovery behavior, so tuning stays generic
    rather than tied to one MiniNDN topology. The `Apply Bitrate` control now turns a
