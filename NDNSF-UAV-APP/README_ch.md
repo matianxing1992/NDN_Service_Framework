@@ -701,7 +701,9 @@ UAV service-container workload 的应用。计划顺序如下：
    把 `MissionState`、flight readiness 和 safety 组合起来判断。Patrol task progress 现在也有
    typed `MissionProgressState`，用于 assignment、compensation、completion 和 return-home
    planning；ground-station mission 按钮也会使用这个 progress model，在 patrol assignment 或
-   compensation 仍然 active 时阻止重复 upload/start。后续新增 mission/video/safety UI 路径时继续坚持这一点：
+   compensation 仍然 active 时阻止重复 upload/start。左侧 drone row 和地图 marker 也会使用同一个
+   progress model，让操作者不用打开 inspector 就能看到 compensation active 或 completed 状态。
+   后续新增 mission/video/safety UI 路径时继续坚持这一点：
    只要有 typed state model，GUI 就不应该再从临时 status string 推断状态。
 2. **Drone headless 部署模式。** 保持 Drone container 可以在 ODROID 这类板子或真实机载计算机
    上运行，而不依赖 GUI/X server。headless 模式只运行 NDNSF、MAVLink、camera、repo、

@@ -1368,8 +1368,10 @@ to make it a deployable UAV service-container workload. The planned order is:
    progress now has a typed `MissionProgressState` for assignment,
    compensation, completion, and return-home planning, and the ground-station
    mission buttons use that progress model to block duplicate upload/start
-   actions while a patrol assignment or compensation step is still active.
-   Continue extending this rule to new mission/video/safety UI paths:
+   actions while a patrol assignment or compensation step is still active. The
+   same progress model also updates left-side drone rows and map marker labels
+   so operators can see active compensation or completion without opening the
+   inspector. Continue extending this rule to new mission/video/safety UI paths:
    GUI code should not infer state from ad hoc status strings when a typed state
    model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
