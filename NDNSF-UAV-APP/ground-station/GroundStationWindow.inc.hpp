@@ -369,13 +369,13 @@ public:
       m_runtime.stopVideo();
     });
     m_arm.signal_clicked().connect([this] {
-      m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+      sendSelectedFlightCommandIfReady("arm", {{"arm", "true"}});
     });
     m_takeoff.signal_clicked().connect([this] {
-      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+      sendSelectedFlightCommandIfReady("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
     });
     m_land.signal_clicked().connect([this] {
-      m_runtime.sendMavlinkCommand("land");
+      sendSelectedFlightCommandIfReady("land");
     });
     m_emergencyStop.signal_clicked().connect([this] {
       m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
@@ -420,6 +420,7 @@ public:
     });
     m_controlToggle.signal_clicked().connect([this] {
       setControlMode(!m_controlMode);
+      updateFlightControlControls();
     });
     m_refreshRecording.signal_clicked().connect([this] {
       m_runtime.requestRecordingManifest();
@@ -788,6 +789,99 @@ public:
 
 private:
   bool
+  selectedReadinessAllows(const std::string& action, std::string& reason) const
+  {
+    const auto readiness = m_runtime.readinessForDrone(m_runtime.targetDroneId());
+    if (!readiness) {
+      reason = "no-telemetry";
+      return false;
+    }
+    if (action == "arm") {
+      if (readiness->armed == "true") {
+        reason = "already-armed";
+        return false;
+      }
+      if (!readiness->readyForArm()) {
+        reason = readiness->readinessReason;
+        return false;
+      }
+      reason = "ok";
+      return true;
+    }
+    if (action == "takeoff") {
+      if (!readiness->readyForTakeoff()) {
+        reason = readiness->readyForArm() ? "not-armed" : readiness->readinessReason;
+        return false;
+      }
+      reason = "ok";
+      return true;
+    }
+    if (action == "land") {
+      if (!readiness->readyForLand()) {
+        reason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
+        return false;
+      }
+      reason = "ok";
+      return true;
+    }
+    if (action == "manual_control") {
+      if (!readiness->readyForManualControl()) {
+        reason = readiness->armed == "true" ? readiness->readinessReason : "not-armed";
+        return false;
+      }
+      reason = "ok";
+      return true;
+    }
+    if (action == "control_panel") {
+      if (readiness->readyForArm() || readiness->readyForManualControl() || readiness->readyForLand()) {
+        reason = "ok";
+        return true;
+      }
+      reason = readiness->readinessReason;
+      return false;
+    }
+    reason = "ok";
+    return true;
+  }
+
+  bool
+  sendSelectedFlightCommandIfReady(const std::string& commandName, Fields params = {})
+  {
+    std::string reason;
+    if (!selectedReadinessAllows(commandName, reason)) {
+      m_status.set_text("Flight command blocked: " + commandName +
+                        " drone=" + m_runtime.targetDroneId() +
+                        " reason=" + reason);
+      updateFlightControlControls();
+      return false;
+    }
+    if (commandName == "land" && m_controlMode) {
+      setControlMode(false);
+    }
+    return m_runtime.sendMavlinkCommand(commandName, std::move(params));
+  }
+
+  void
+  updateFlightControlControls()
+  {
+    std::string reason;
+    const bool armOk = selectedReadinessAllows("arm", reason);
+    const bool takeoffOk = selectedReadinessAllows("takeoff", reason);
+    const bool landOk = selectedReadinessAllows("land", reason);
+    const bool manualOk = selectedReadinessAllows("manual_control", reason);
+    const bool panelOk = selectedReadinessAllows("control_panel", reason);
+    m_arm.set_sensitive(armOk);
+    m_takeoff.set_sensitive(takeoffOk);
+    m_land.set_sensitive(landOk);
+    if (m_controlMode && !panelOk) {
+      setControlMode(false);
+      m_status.set_text("Manual control disabled: drone=" + m_runtime.targetDroneId() +
+                        " reason=" + reason);
+    }
+    m_controlToggle.set_sensitive(panelOk || m_controlMode || manualOk);
+  }
+
+  bool
   handleShortcutKeyPress(guint keyval)
   {
     if (!m_controlMode || m_useGamepad.load()) {
@@ -814,13 +908,13 @@ private:
       updateManualAxisState();
       return true;
     case GDK_KEY_i:
-      m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+      sendSelectedFlightCommandIfReady("arm", {{"arm", "true"}});
       return true;
     case GDK_KEY_t:
-      m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+      sendSelectedFlightCommandIfReady("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
       return true;
     case GDK_KEY_l:
-      m_runtime.sendMavlinkCommand("land");
+      sendSelectedFlightCommandIfReady("land");
       return true;
     case GDK_KEY_v:
       if (!isSelectedDroneVideoStreaming()) {
@@ -908,6 +1002,15 @@ private:
   void
   setControlMode(bool enabled)
   {
+    if (enabled) {
+      std::string reason;
+      if (!selectedReadinessAllows("control_panel", reason)) {
+        m_status.set_text("Manual control blocked: drone=" + m_runtime.targetDroneId() +
+                          " reason=" + reason);
+        updateFlightControlControls();
+        return;
+      }
+    }
     m_controlMode = enabled;
     m_controlToggle.set_label(enabled ? "Stop Control" : "Start Control");
     if (enabled) {
@@ -1150,10 +1253,10 @@ private:
       }
       switch (button) {
       case 0: // Xbox A
-        m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+        sendSelectedFlightCommandIfReady("arm", {{"arm", "true"}});
         break;
       case 1: // Xbox B
-        m_runtime.sendMavlinkCommand("land");
+        sendSelectedFlightCommandIfReady("land");
         break;
       case 2: // Xbox X
         if (isSelectedDroneVideoStreaming()) {
@@ -1164,7 +1267,7 @@ private:
         }
         break;
       case 3: // Xbox Y
-        m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+        sendSelectedFlightCommandIfReady("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
         break;
       default:
         break;
@@ -1231,6 +1334,10 @@ private:
   void
   sendManualControlOnce()
   {
+    std::string reason;
+    if (!selectedReadinessAllows("manual_control", reason)) {
+      return;
+    }
     m_runtime.sendMavlinkCommand("manual_control", {
       {"x", std::to_string(m_manualX.load())},
       {"y", std::to_string(m_manualY.load())},
@@ -1420,6 +1527,7 @@ private:
     }
     m_services.set_text(m_runtime.serviceCatalogForDrone(selectedDrone));
     updateMissionControls();
+    updateFlightControlControls();
     refreshMapTile();
   }
 
@@ -1480,6 +1588,7 @@ private:
               " reason=" + readiness->readinessReason +
               " arm=" + (readiness->readyForArm() ? "ready" : "blocked") +
               " takeoff=" + (readiness->readyForTakeoff() ? "ready" : "blocked") +
+              " land=" + (readiness->readyForLand() ? "ready" : "blocked") +
               " manual=" + (readiness->readyForManualControl() ? "ready" : "blocked");
     }
     if (video) {

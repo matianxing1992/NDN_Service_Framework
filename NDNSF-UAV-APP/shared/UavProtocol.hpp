@@ -89,6 +89,7 @@ struct ReadinessState
   Fields toFields() const;
   bool readyForArm() const;
   bool readyForTakeoff() const;
+  bool readyForLand() const;
   bool readyForManualControl() const;
   std::string statusLine() const;
 };

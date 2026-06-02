@@ -59,18 +59,48 @@ public:
               const std::string& commandName) override
   {
     ++m_forwardedCount;
+    bool accepted = true;
+    if (commandName == "arm") {
+      m_armed = true;
+      m_airborne = false;
+      m_altitudeTenths = 0;
+    }
+    else if (commandName == "disarm" || commandName == "emergency_stop") {
+      m_armed = false;
+      m_airborne = false;
+      m_altitudeTenths = 0;
+    }
+    else if (commandName == "takeoff") {
+      accepted = m_armed.load();
+      if (accepted) {
+        m_airborne = true;
+        m_altitudeTenths = 150;
+      }
+    }
+    else if (commandName == "land") {
+      m_airborne = false;
+      m_altitudeTenths = 0;
+      m_armed = false;
+    }
+    else if (commandName == "manual_control" || commandName == "start_mission" ||
+             commandName == "mission-waypoint-goto") {
+      accepted = m_armed.load();
+    }
     NDN_LOG_INFO("MOCK_FC_FORWARD drone=" << m_droneId
                  << " bytes=" << frame.size()
-                 << " count=" << m_forwardedCount.load());
+                 << " count=" << m_forwardedCount.load()
+                 << " accepted=" << accepted);
     return {
-      {"accepted", "true"},
+      {"accepted", accepted ? "true" : "false"},
       {"ack_source", "mock"},
-      {"ack_result", "mock-accepted"},
+      {"ack_result", accepted ? "mock-accepted" : "mock-rejected"},
       {"command", commandName},
-      {"fc_state", "mock-ready"},
-      {"altitude_m", "42.0"},
+      {"fc_state", m_armed.load() ? "mock-armed" : "mock-disarmed"},
+      {"altitude_m", std::to_string(m_altitudeTenths.load() / 10.0)},
       {"groundspeed_mps", "0.0"},
       {"battery_percent", "87.5"},
+      {"armed", m_armed.load() ? "true" : "false"},
+      {"landed_state_name", m_airborne.load() ? "in-air" : "on-ground"},
       {"forwarded_bytes", std::to_string(frame.size())},
     };
   }
@@ -94,9 +124,11 @@ public:
       {"heartbeat_seen", "true"},
       {"flight_controller_ready", "true"},
       {"gps_ready", "true"},
+      {"ekf_ready", "true"},
       {"battery_ready", "true"},
-      {"armed", "false"},
-      {"ready_for_takeoff", "true"},
+      {"armed", m_armed.load() ? "true" : "false"},
+      {"landed_state_name", m_airborne.load() ? "in-air" : "on-ground"},
+      {"ready_for_takeoff", m_armed.load() ? "true" : "false"},
       {"readiness", "ready"},
       {"readiness_reason", "ok"},
     };
@@ -105,6 +137,9 @@ public:
 private:
   std::string m_droneId;
   std::atomic<size_t> m_forwardedCount{0};
+  std::atomic<bool> m_armed{false};
+  std::atomic<bool> m_airborne{false};
+  std::atomic<int> m_altitudeTenths{0};
 };
 
 class UdpFlightControllerBackend : public FlightControllerBackend
