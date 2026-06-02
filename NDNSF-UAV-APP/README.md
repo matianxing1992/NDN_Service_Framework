@@ -993,6 +993,16 @@ separate MiniNDN nodes while forwarding the windows to the host X11 session:
 sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py
 ```
 
+For board-style smoke tests where the drone side should not create a GTK
+window, add `--drone-headless`. The controller and ground station still run as
+usual, while the drone process prints `DRONE_HEADLESS_READY` and periodic
+readiness/video status lines into its MiniNDN log:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-video-test --auto-stop-seconds 10 --no-cli
+```
+
 Use `--video-bitrate-kbps <kbps>` to change the requested stream bitrate, and
 `--video-width <pixels>` to change the requested encoded frame width. The ground
 station forwards those values through NDNSF, the drone adjusts its encoder
