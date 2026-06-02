@@ -623,7 +623,9 @@ drone row 和 MiniNDN smoke logs 都能直接显示 RTT、window、lookahead、p
 missing-packet timeout、pending chunks、decoded-frame progress 和当前码率建议，而不用解析
 packet log。这个码率建议只走显式控制：GS 不会在后台静默改变 drone encoder；操作者可以点击
 `Apply Bitrate`，这会先停止当前直播，等待 drone 的 Stop response，再用建议码率启动新的
-stream，让 packet sequence、stream id 和 decoder state 保持清楚。
+stream，让 packet sequence、stream id 和 decoder state 保持清楚。默认码率策略是 `manual`。
+实验时也可以用 `--video-bitrate-policy auto-after-pressure` 启动 GS；这种策略只会在压力持续
+超过 `--video-bitrate-auto-pressure-ms` 后才应用非 hold 建议。
 当前 demo
 默认是 8000 kbps、480 px frame width、30 FPS 的 H264 stream。提高 bitrate 会增加 stream 质量和
 packet 数据量；提高 frame width 才会让 GUI 里显示的视频更大。
@@ -725,8 +727,8 @@ UAV service-container workload 的应用。计划顺序如下：
    accepted bitrate、RTT、backlog、timeout pressure、key-frame recovery 和 FEC 应该驱动
    prefetch 与 skip 决策，而不是依赖固定常数。当前 GS 已把这些决策记录为
    `VideoAdaptiveState`，包括 advisory 的 decrease/hold/increase 码率建议。现在 `Apply Bitrate`
-   会把非 hold 建议转换成显式 Stop-then-Start stream restart；下一步可以继续增加更丰富的
-   operator policy，用来决定何时应用或忽略这些建议。
+   会把非 hold 建议转换成显式 Stop-then-Start stream restart。默认策略仍然是 manual；
+   `auto-after-pressure` 可以用于实验场景，在压力持续一段时间后自动应用建议。
 5. **任务协作模型。** 把当前 patrol demo 提升成可复用 mission model，包括 `MissionPlan`、
    `MissionPart`、assignment、progress、failure/compensation 和 return-to-home 语义。
 6. **Repo-backed UAV data products。** 通过 `NDNSF-DistributedRepo` 保存 recording、mission
@@ -1052,6 +1054,8 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 如果需要让 smoke test 覆盖显式 `Apply Bitrate` Stop-then-Start 路径，在同一命令后加
 `--auto-apply-bitrate-test`。
+如果需要覆盖 policy-driven 路径，可以加
+`--video-bitrate-policy auto-after-pressure --video-bitrate-auto-pressure-ms <ms>`。
 
 smoke test 会在确认 ground station 解码到视频 frame，且 drone 进入并退出 streaming 状态后退出。
 在集成 runtime 中，ground station 同时提供 `/UAV/GS/ObjectDetection`；直播期间 drone 会周期性
