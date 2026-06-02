@@ -1177,6 +1177,9 @@ report `mission_transport`, `mission_ack`, `waypoints_forwarded`,
 whether the simulator/flight controller accepted the mission.
 The same smoke also checks typed `PATROL_PROGRESS` markers for missing parts,
 compensation, return-home planning, and final completion.
+The ground-station runtime also keeps the latest typed `MissionPlan`, and the
+selected-drone inspector/map summary shows the selected drone's assigned
+`MissionPart`, waypoint count, and return-home flag.
 
 After the script prints `NDNSF_UAV_GUI_MININDN_READY`, use the ground-station
 window to click `Start Video` and `Stop Video`. Logs are written under
@@ -1456,7 +1459,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    failure/compensation, and return-to-home semantics. Patrol route clustering,
    default sector generation, drone assignment, and return-to-departure waypoint
    insertion now live in a shared typed mission helper, so GUI workflows,
-   service containers, and tests use the same collaboration model.
+   service containers, and tests use the same collaboration model. The GS also
+   exposes the latest mission plan and selected drone's mission part through the
+   typed view state instead of only logging internal assignment strings.
 6. **Repo-backed UAV data products.** Store recordings, mission images,
    telemetry logs, object-detection events, and reports through
    `NDNSF-DistributedRepo` using publisher-owned names, encrypted payloads,

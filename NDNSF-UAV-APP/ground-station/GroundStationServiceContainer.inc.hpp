@@ -330,6 +330,31 @@ public:
     return m_latestMissionProgress;
   }
 
+  std::optional<MissionPlan>
+  missionPlanSnapshot() const
+  {
+    std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    if (m_latestMissionPlan.taskId.empty()) {
+      return std::nullopt;
+    }
+    return m_latestMissionPlan;
+  }
+
+  std::optional<MissionPart>
+  missionPartForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    if (m_latestMissionPlan.taskId.empty()) {
+      return std::nullopt;
+    }
+    for (const auto& part : m_latestMissionPlan.parts) {
+      if (part.assignedDrone == droneId) {
+        return part;
+      }
+    }
+    return std::nullopt;
+  }
+
   std::optional<ReadinessState>
   readinessForDrone(const std::string& droneId) const
   {
@@ -1157,6 +1182,7 @@ public:
     const auto plan = buildPatrolMissionPlan(taskId, centerLat, centerLon, sideMeters,
                                              m_patrolDroneIds, missionRouteWaypoints,
                                              departurePoints);
+    updateMissionPlan(plan);
     for (const auto& part : plan.parts) {
       state->parts.emplace(part.id, part);
     }
@@ -1613,6 +1639,13 @@ private:
   {
     std::lock_guard<std::mutex> guard(m_missionProgressMutex);
     m_latestMissionProgress = std::move(progress);
+  }
+
+  void
+  updateMissionPlan(MissionPlan plan)
+  {
+    std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    m_latestMissionPlan = std::move(plan);
   }
 
   void
@@ -3998,6 +4031,7 @@ private:
   mutable std::mutex m_videoStateMutex;
   mutable std::mutex m_recordingManifestMutex;
   std::vector<std::string> m_missionReadyDrones;
+  MissionPlan m_latestMissionPlan;
   MissionProgressState m_latestMissionProgress;
   std::string m_activeVideoDroneId;
   std::string m_recordingPlaybackDroneId;

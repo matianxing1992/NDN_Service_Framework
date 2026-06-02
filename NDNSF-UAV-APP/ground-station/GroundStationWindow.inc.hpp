@@ -2450,6 +2450,9 @@ private:
     std::string readiness = "unknown";
     std::string missionPhase = "unknown";
     std::string missionProgressPhase = "unknown";
+    std::string missionPlanTask = "none";
+    std::string missionPartId = "none";
+    uint64_t missionPartWaypoints = 0;
     std::string videoStatus = "unknown";
     std::string videoAdaptive = "unknown";
     std::string linkState = "unknown";
@@ -2486,10 +2489,15 @@ private:
     const auto command = m_runtime.commandForDrone(state.selectedDrone);
     const auto safety = m_runtime.safetyForDrone(state.selectedDrone);
     const auto missionProgress = m_runtime.missionProgressSnapshot();
+    const auto missionPlan = m_runtime.missionPlanSnapshot();
+    const auto missionPart = m_runtime.missionPartForDrone(state.selectedDrone);
     state.readiness = readiness ? readiness->readiness :
                       telemetry ? telemetry->readiness : "unknown";
     state.missionPhase = mission ? mission->phase : "idle";
     state.missionProgressPhase = missionProgress ? missionProgress->phase : "idle";
+    state.missionPlanTask = missionPlan ? missionPlan->taskId : "none";
+    state.missionPartId = missionPart ? missionPart->id : "none";
+    state.missionPartWaypoints = missionPart ? missionPart->waypoints.size() : 0;
     state.videoStatus = video ? video->status :
                         telemetry ? telemetry->video : "unknown";
     state.videoAdaptive = videoAdaptive ? compactVideoAdaptiveSummary(*videoAdaptive) : "unknown";
@@ -2512,6 +2520,8 @@ private:
       state.inspectorText = telemetry->statusLine() +
         (readiness ? " " + readiness->statusLine() : "") +
         (mission ? " " + mission->statusLine() : "") +
+        (missionPlan ? " " + missionPlan->statusLine() : "") +
+        (missionPart ? " " + missionPart->statusLine() : "") +
         (missionProgress ? " " + missionProgress->statusLine() : "") +
         (video ? " " + video->statusLine() : "") +
         (videoAdaptive ? " " + videoAdaptive->statusLine() : "") +
@@ -2533,6 +2543,13 @@ private:
                          " return_home=" +
                          std::string(missionProgress->returnHomePlanned ? "yes" : "no");
       }
+      if (missionPart) {
+        state.mapText += "\nMission part: " + missionPart->id +
+                         " role=" + missionPart->role +
+                         " waypoints=" + std::to_string(missionPart->waypoints.size()) +
+                         " return_home=" +
+                         std::string(missionPart->returnHomePlanned ? "yes" : "no");
+      }
     }
     else {
       state.inspectorText = "No telemetry for selected drone " + state.selectedDrone;
@@ -2550,6 +2567,17 @@ private:
                          " compensated=" + std::to_string(missionProgress->compensatedParts) +
                          " return_home=" +
                          std::string(missionProgress->returnHomePlanned ? "yes" : "no");
+      }
+      if (missionPlan) {
+        state.inspectorText += " " + missionPlan->statusLine();
+      }
+      if (missionPart) {
+        state.inspectorText += " " + missionPart->statusLine();
+        state.mapText += "\nMission part: " + missionPart->id +
+                         " role=" + missionPart->role +
+                         " waypoints=" + std::to_string(missionPart->waypoints.size()) +
+                         " return_home=" +
+                         std::string(missionPart->returnHomePlanned ? "yes" : "no");
       }
       if (videoAdaptive) {
         state.inspectorText += " " + videoAdaptive->statusLine();
@@ -2572,6 +2600,9 @@ private:
        << " readiness=" << state.readiness
        << " mission=" << state.missionPhase
        << " mission_progress=" << state.missionProgressPhase
+       << " mission_plan=" << state.missionPlanTask
+       << " mission_part=" << state.missionPartId
+       << " mission_part_waypoints=" << state.missionPartWaypoints
        << " video=" << state.videoStatus
        << " video_adaptive=" << state.videoAdaptive
        << " link=" << state.linkState
