@@ -68,6 +68,21 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   }
 }
 
+uint64_t
+uint64FieldOr(const Fields& fields, const std::string& key, uint64_t fallback)
+{
+  const auto it = fields.find(key);
+  if (it == fields.end() || it->second.empty()) {
+    return fallback;
+  }
+  try {
+    return std::stoull(it->second);
+  }
+  catch (const std::exception&) {
+    return fallback;
+  }
+}
+
 } // namespace
 
 Fields
@@ -387,6 +402,207 @@ TelemetryState::mapSummary(const std::string& selectedDrone) const
          "Video: " + video + "  Capture: " + capture + "  Recording: " + recording + "\n\n"
          "Map tile: OpenStreetMap, centered on the ground station.\n"
          "Click the map to append mission waypoints.";
+}
+
+ReadinessState
+ReadinessState::fromFields(const Fields& fields)
+{
+  ReadinessState state;
+  state.droneId = fieldOr(fields, "drone_id", state.droneId);
+  state.heartbeatSeen = fieldOr(fields, "heartbeat_seen", state.heartbeatSeen);
+  state.flightControllerReady = fieldOr(fields, "flight_controller_ready", state.flightControllerReady);
+  state.gpsReady = fieldOr(fields, "gps_ready", state.gpsReady);
+  state.ekfReady = fieldOr(fields, "ekf_ready", state.ekfReady);
+  state.batteryReady = fieldOr(fields, "battery_ready", state.batteryReady);
+  state.armed = fieldOr(fields, "armed", state.armed);
+  state.mode = fieldOr(fields, "mode", fieldOr(fields, "system_status_name", state.mode));
+  state.landedStateName = fieldOr(fields, "landed_state_name", state.landedStateName);
+  state.readiness = fieldOr(fields, "readiness", state.readiness);
+  auto readinessReason = fieldOr(fields, "readiness_reason", "");
+  state.timestampMs = uint64FieldOr(fields, "timestamp_ms", state.timestampMs);
+
+  if (readinessReason.empty() || readinessReason == "unknown") {
+    if (state.heartbeatSeen != "true") {
+      readinessReason = "waiting-heartbeat";
+    }
+    else if (state.flightControllerReady == "false") {
+      readinessReason = "flight-controller-not-ready";
+    }
+    else if (state.gpsReady == "false") {
+      readinessReason = "gps-not-ready";
+    }
+    else if (state.ekfReady == "false") {
+      readinessReason = "ekf-not-ready";
+    }
+    else if (state.batteryReady == "false") {
+      readinessReason = "battery-not-ready";
+    }
+    else if (state.flightControllerReady == "true" &&
+             state.gpsReady == "true" &&
+             state.ekfReady == "true" &&
+             state.batteryReady == "true") {
+      readinessReason = "ok";
+    }
+    else {
+      readinessReason = "readiness-unknown";
+    }
+  }
+  state.readinessReason = readinessReason;
+  if (fieldOr(fields, "readiness", "").empty()) {
+    state.readiness = state.readinessReason == "ok" ? "ready" : "not-ready";
+  }
+  return state;
+}
+
+ReadinessState
+ReadinessState::fromTelemetry(const TelemetryState& telemetry)
+{
+  return fromFields(telemetry.toFields());
+}
+
+Fields
+ReadinessState::toFields() const
+{
+  return {
+    {"drone_id", droneId},
+    {"heartbeat_seen", heartbeatSeen},
+    {"flight_controller_ready", flightControllerReady},
+    {"gps_ready", gpsReady},
+    {"ekf_ready", ekfReady},
+    {"battery_ready", batteryReady},
+    {"armed", armed},
+    {"mode", mode},
+    {"landed_state_name", landedStateName},
+    {"readiness", readiness},
+    {"readiness_reason", readinessReason},
+    {"ready_for_arm", readyForArm() ? "true" : "false"},
+    {"ready_for_takeoff", readyForTakeoff() ? "true" : "false"},
+    {"ready_for_manual_control", readyForManualControl() ? "true" : "false"},
+    {"timestamp_ms", std::to_string(timestampMs)},
+  };
+}
+
+bool
+ReadinessState::readyForArm() const
+{
+  return heartbeatSeen == "true" &&
+         flightControllerReady == "true" &&
+         gpsReady == "true" &&
+         ekfReady == "true" &&
+         batteryReady == "true";
+}
+
+bool
+ReadinessState::readyForTakeoff() const
+{
+  return readyForArm() && armed == "true";
+}
+
+bool
+ReadinessState::readyForManualControl() const
+{
+  return heartbeatSeen == "true" &&
+         flightControllerReady == "true" &&
+         armed == "true";
+}
+
+std::string
+ReadinessState::statusLine() const
+{
+  return "Readiness drone=" + droneId +
+         " state=" + readiness +
+         " reason=" + readinessReason +
+         " heartbeat=" + heartbeatSeen +
+         " fc=" + flightControllerReady +
+         " gps=" + gpsReady +
+         " ekf=" + ekfReady +
+         " battery=" + batteryReady +
+         " armed=" + armed +
+         " landed=" + landedStateName;
+}
+
+VideoState
+VideoState::fromFields(const Fields& fields)
+{
+  VideoState state;
+  state.droneId = fieldOr(fields, "drone_id", state.droneId);
+  state.status = fieldOr(fields, "video", fieldOr(fields, "status", state.status));
+  state.capture = fieldOr(fields, "capture", state.capture);
+  state.recording = fieldOr(fields, "recording", state.recording);
+  state.streamId = fieldOr(fields, "stream_id", state.streamId);
+  state.encoding = fieldOr(fields, "encoding", state.encoding);
+  state.source = fieldOr(fields, "source", state.source);
+  state.requestedBitrateKbps = uint64FieldOr(fields, "requested_bitrate_kbps", state.requestedBitrateKbps);
+  state.acceptedBitrateKbps = uint64FieldOr(fields, "accepted_bitrate_kbps", state.acceptedBitrateKbps);
+  state.requestedFrameWidth = uint64FieldOr(fields, "requested_frame_width", state.requestedFrameWidth);
+  state.acceptedFrameWidth = uint64FieldOr(fields, "accepted_frame_width",
+                                           uint64FieldOr(fields, "frame_width", state.acceptedFrameWidth));
+  state.fps = uint64FieldOr(fields, "fps", state.fps);
+  state.streamPacketsPublished = uint64FieldOr(fields, "stream_packets_published",
+                                               uint64FieldOr(fields, "packets", state.streamPacketsPublished));
+  state.framesPublished = uint64FieldOr(fields, "frames_published", state.framesPublished);
+  state.fecGroupsPublished = uint64FieldOr(fields, "fec_groups_published", state.fecGroupsPublished);
+  state.recordingChunks = uint64FieldOr(fields, "recording_chunks", state.recordingChunks);
+  state.recordingBytes = uint64FieldOr(fields, "recording_bytes", state.recordingBytes);
+  state.rttMs = uint64FieldOr(fields, "rtt_ms", state.rttMs);
+  state.timeoutPressure = uint64FieldOr(fields, "timeout_pressure", state.timeoutPressure);
+  state.probePressure = uint64FieldOr(fields, "probe_pressure", state.probePressure);
+  state.backlogPressure = uint64FieldOr(fields, "backlog_pressure", state.backlogPressure);
+  state.decodedFrames = uint64FieldOr(fields, "decoded_frames", state.decodedFrames);
+  state.updatedMs = uint64FieldOr(fields, "timestamp_ms",
+                                  uint64FieldOr(fields, "video_updated_ms", state.updatedMs));
+  return state;
+}
+
+Fields
+VideoState::toFields() const
+{
+  return {
+    {"drone_id", droneId},
+    {"video", status},
+    {"capture", capture},
+    {"recording", recording},
+    {"stream_id", streamId},
+    {"encoding", encoding},
+    {"source", source},
+    {"requested_bitrate_kbps", std::to_string(requestedBitrateKbps)},
+    {"accepted_bitrate_kbps", std::to_string(acceptedBitrateKbps)},
+    {"requested_frame_width", std::to_string(requestedFrameWidth)},
+    {"accepted_frame_width", std::to_string(acceptedFrameWidth)},
+    {"fps", std::to_string(fps)},
+    {"stream_packets_published", std::to_string(streamPacketsPublished)},
+    {"frames_published", std::to_string(framesPublished)},
+    {"fec_groups_published", std::to_string(fecGroupsPublished)},
+    {"recording_chunks", std::to_string(recordingChunks)},
+    {"recording_bytes", std::to_string(recordingBytes)},
+    {"rtt_ms", std::to_string(rttMs)},
+    {"timeout_pressure", std::to_string(timeoutPressure)},
+    {"probe_pressure", std::to_string(probePressure)},
+    {"backlog_pressure", std::to_string(backlogPressure)},
+    {"decoded_frames", std::to_string(decodedFrames)},
+    {"video_updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+bool
+VideoState::isStreaming() const
+{
+  return status == "streaming";
+}
+
+std::string
+VideoState::statusLine() const
+{
+  return "Video drone=" + droneId +
+         " state=" + status +
+         " capture=" + capture +
+         " recording=" + recording +
+         " stream=" + streamId +
+         " bitrate=" + std::to_string(acceptedBitrateKbps) + "kbps" +
+         " width=" + std::to_string(acceptedFrameWidth) +
+         " packets=" + std::to_string(streamPacketsPublished) +
+         " fec_groups=" + std::to_string(fecGroupsPublished) +
+         " decoded=" + std::to_string(decodedFrames);
 }
 
 MissionState

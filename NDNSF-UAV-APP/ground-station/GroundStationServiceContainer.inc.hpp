@@ -220,10 +220,14 @@ public:
           telemetry.droneId = droneId;
         }
         const auto mission = MissionState::fromFields(fields);
+        const auto readiness = ReadinessState::fromTelemetry(telemetry);
+        const auto video = VideoState::fromFields(fields);
         updateDroneState(telemetry, mission);
         publishStatus(telemetry.statusLine() +
+                      " " + readiness.statusLine() +
                       " mission=" + mission.phase +
-                      " mission_detail=" + mission.detail);
+                      " mission_detail=" + mission.detail +
+                      " " + video.statusLine());
       },
       [this, droneId] {
         clearTelemetryInFlight(droneId);
@@ -248,6 +252,28 @@ public:
     std::lock_guard<std::mutex> guard(m_telemetryMutex);
     const auto found = m_missionByDrone.find(droneId);
     if (found == m_missionByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
+  std::optional<ReadinessState>
+  readinessForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    const auto found = m_readinessByDrone.find(droneId);
+    if (found == m_readinessByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
+  std::optional<VideoState>
+  videoForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    const auto found = m_videoByDrone.find(droneId);
+    if (found == m_videoByDrone.end()) {
       return std::nullopt;
     }
     return found->second;
@@ -1319,6 +1345,22 @@ private:
     auto storedTelemetry = telemetry;
     storedTelemetry.droneId = droneId;
     m_telemetryByDrone[droneId] = storedTelemetry;
+    auto storedReadiness = ReadinessState::fromTelemetry(storedTelemetry);
+    storedReadiness.droneId = droneId;
+    m_readinessByDrone[droneId] = storedReadiness;
+    auto storedVideo = VideoState::fromFields(storedTelemetry.toFields());
+    storedVideo.droneId = droneId;
+    const auto previousVideo = m_videoByDrone.find(droneId);
+    if (storedVideo.status == "unknown" && previousVideo != m_videoByDrone.end()) {
+      storedVideo.status = previousVideo->second.status;
+    }
+    if (storedVideo.streamId == "unknown" && previousVideo != m_videoByDrone.end()) {
+      storedVideo.streamId = previousVideo->second.streamId;
+    }
+    if (storedVideo.updatedMs == 0) {
+      storedVideo.updatedMs = storedTelemetry.timestampMs;
+    }
+    m_videoByDrone[droneId] = storedVideo;
     auto storedMission = mission;
     if (storedMission.droneId == "unknown") {
       storedMission.droneId = droneId;
@@ -1336,6 +1378,27 @@ private:
     m_missionByDrone[mission.droneId] = mission;
   }
 
+  void
+  updateVideoState(const std::string& droneId, const Fields& fields)
+  {
+    if (droneId.empty() || droneId == "unknown") {
+      return;
+    }
+    auto video = VideoState::fromFields(fields);
+    video.droneId = droneId;
+    if (video.updatedMs == 0) {
+      video.updatedMs = nowMilliseconds();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_telemetryMutex);
+      const auto previous = m_videoByDrone.find(droneId);
+      if (video.streamId == "unknown" && previous != m_videoByDrone.end()) {
+        video.streamId = previous->second.streamId;
+      }
+      m_videoByDrone[droneId] = video;
+    }
+  }
+
   bool
   validateTakeoffReadiness(const std::string& droneId, std::string& reason)
   {
@@ -1345,28 +1408,9 @@ private:
       reason = "no-telemetry";
       return false;
     }
-    if (telemetry->heartbeatSeen != "true") {
-      reason = "waiting-heartbeat";
-      return false;
-    }
-    if (telemetry->flightControllerReady != "true") {
-      reason = "flight-controller-not-ready";
-      return false;
-    }
-    if (telemetry->gpsReady != "true") {
-      reason = "gps-not-ready";
-      return false;
-    }
-    if (telemetry->ekfReady != "true") {
-      reason = "ekf-not-ready";
-      return false;
-    }
-    if (telemetry->batteryReady != "true") {
-      reason = "battery-not-ready";
-      return false;
-    }
-    if (telemetry->armed != "true") {
-      reason = "not-armed";
+    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
+    if (!readiness.readyForTakeoff()) {
+      reason = readiness.readyForArm() ? "not-armed" : readiness.readinessReason;
       return false;
     }
     reason = "ok";
@@ -1381,16 +1425,9 @@ private:
       reason = "no-telemetry";
       return false;
     }
-    if (telemetry->heartbeatSeen != "true") {
-      reason = "waiting-heartbeat";
-      return false;
-    }
-    if (telemetry->flightControllerReady != "true") {
-      reason = "flight-controller-not-ready";
-      return false;
-    }
-    if (telemetry->armed != "true") {
-      reason = "not-armed";
+    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
+    if (!readiness.readyForManualControl()) {
+      reason = readiness.armed == "true" ? readiness.readinessReason : "not-armed";
       return false;
     }
     reason = "ok";
@@ -1752,6 +1789,7 @@ private:
                     return;
                   }
 
+                  updateVideoState(droneId, fields);
                   m_streamPrefix = ndn::Name(prefix);
                   {
                     std::lock_guard<std::mutex> guard(m_videoStateMutex);
@@ -1819,13 +1857,14 @@ private:
                 encodeFields(stopFields),
                 [this, droneId](const std::string& payload) {
                   m_videoStopInFlight = false;
+                  const auto fields = decodeFields(payload);
+                  updateVideoState(droneId, fields);
                   {
                     std::lock_guard<std::mutex> guard(m_videoStateMutex);
                     if (m_activeVideoDroneId == droneId) {
                       m_activeVideoDroneId.clear();
                     }
                   }
-                  const auto fields = decodeFields(payload);
                   publishStatus("Video stopped drone=" + droneId + ", packets=" +
                                 fieldOr(fields, "stream_packets_published",
                                         fieldOr(fields, "frames_published", "0")) +
@@ -3561,7 +3600,9 @@ private:
   mutable std::mutex m_telemetryMutex;
   std::set<std::string> m_telemetryInFlightDrones;
   std::map<std::string, TelemetryState> m_telemetryByDrone;
+  std::map<std::string, ReadinessState> m_readinessByDrone;
   std::map<std::string, MissionState> m_missionByDrone;
+  std::map<std::string, VideoState> m_videoByDrone;
   ndn::Name m_streamPrefix;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;

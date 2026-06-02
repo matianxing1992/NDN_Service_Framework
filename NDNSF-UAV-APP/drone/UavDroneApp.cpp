@@ -507,13 +507,27 @@ main(int argc, char** argv)
                 << std::endl;
       while (g_stopHeadless == 0) {
         std::this_thread::sleep_for(500ms);
+        const auto telemetry = runtime->latestTelemetryState();
+        const auto readiness = runtime->latestReadinessState();
+        const auto video = runtime->latestVideoState();
         std::cout << "DRONE_HEADLESS_STATUS identity=" << runtime->identityUri()
-                  << " streaming=" << (runtime->isStreaming() ? "on" : "off")
-                  << " capture=" << (runtime->isCapturing() ? "on" : "off")
-                  << " recording=" << (runtime->isRecording() ? "on" : "off")
+                  << " readiness=" << readiness.readiness
+                  << " readiness_reason=" << readiness.readinessReason
+                  << " heartbeat=" << readiness.heartbeatSeen
+                  << " fc_ready=" << readiness.flightControllerReady
+                  << " gps_ready=" << readiness.gpsReady
+                  << " ekf_ready=" << readiness.ekfReady
+                  << " armed=" << readiness.armed
+                  << " landed=" << readiness.landedStateName
+                  << " video=" << video.status
+                  << " capture=" << video.capture
+                  << " recording=" << video.recording
                   << " stream_packets=" << runtime->streamPacketsPublished()
                   << " fec_groups=" << runtime->fecGroupsPublished()
                   << " recorded_chunks=" << runtime->recordingChunks()
+                  << " lat=" << telemetry.lat
+                  << " lon=" << telemetry.lon
+                  << " alt=" << telemetry.altitudeM
                   << std::endl;
       }
       std::cout << "DRONE_HEADLESS_EXIT identity=" << runtime->identityUri()
