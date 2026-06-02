@@ -1347,10 +1347,12 @@ another drone that provides the same service.
 The app is now useful as a MiniNDN and SITL demonstrator, but the next work is
 to make it a deployable UAV service-container workload. The planned order is:
 
-1. **State model consolidation.** Treat telemetry, readiness, mission, and
-   video state as the single source of truth for the drone list, map markers,
-   inspector text, command buttons, and smoke-test markers. GUI code should not
-   infer state from ad hoc status strings when a typed state model is available.
+1. **State model consolidation.** Telemetry, readiness, mission, video, command,
+   and safety state now drive the main flight buttons, selected-drone action
+   model, inspector/map text, map markers, left drone list, and MiniNDN smoke
+   markers. Continue extending this rule to new mission/video/safety UI paths:
+   GUI code should not infer state from ad hoc status strings when a typed state
+   model is available.
 2. **Drone headless deployment mode.** Keep the Drone container usable on
    ODROID-class or real airframe computers without a GUI/X server. In headless
    mode the app should run only NDNSF, MAVLink, camera, repo, telemetry, and
