@@ -437,8 +437,11 @@ Mission upload responses and later telemetry both update the same
 Start Mission and Stop Patrol buttons. Start Mission additionally combines the
 mission phase with a typed `FlightSafetyGateState`, so an uploaded mission is
 shown as blocked until the selected patrol drones have usable readiness and
-link/safety state. Stop Patrol remains available for uploaded or active missions
-so the operator can still land drones during abnormal states.
+link/safety state. The mission-control model also records typed upload/start/stop
+reasons such as `waiting-heartbeat`, `progress-active`, and `ok`, so the UI and
+smoke tests do not have to infer why a mission button is disabled. Stop Patrol
+remains available for uploaded or active missions so the operator can still land
+drones during abnormal states.
 
 The ground station also keeps a typed `FlightCommandState` for the latest
 flight-control command per drone. Targeted MAVLink responses, command timeouts,
@@ -1292,8 +1295,9 @@ The launcher uses a two-drone mock setup and injects uploaded `MissionState`
 objects inside the GS smoke path. It first verifies that uploaded mission parts
 are still blocked by a not-ready flight safety gate, then injects ready/unarmed
 `ReadinessState` snapshots and verifies that the mission control model changes
-to `can_start=true` / `can_stop=true`, without depending on flight-controller
-waypoint upload behavior.
+from explicit `start_reason=blocked-...waiting-heartbeat` to
+`can_start=true` / `start_reason=ok` / `can_stop=true`, without depending on
+flight-controller waypoint upload behavior.
 
 To regression-test that Arm/Takeoff/Land/manual-control buttons follow typed
 `ReadinessState`:
@@ -1386,7 +1390,8 @@ to make it a deployable UAV service-container workload. The planned order is:
    model, selected-drone view-state gate reasons, inspector/map text, map
    markers, left drone list, and MiniNDN smoke markers. Mission Start/Stop now
    also goes through a typed mission start gate
-   that combines `MissionState` with flight readiness and safety. Patrol task
+   that combines `MissionState` with flight readiness and safety, and exposes
+   upload/start/stop reasons for the UI and smoke tests. Patrol task
    progress now has a typed `MissionProgressState` for assignment,
    compensation, completion, and return-home planning, and the ground-station
    mission buttons use that progress model to block duplicate upload/start
