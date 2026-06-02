@@ -401,6 +401,42 @@ struct MissionProgressState
   std::string statusLine() const;
 };
 
+struct MissionControlState
+{
+  bool uploadPending = false;
+  bool startPending = false;
+  bool stopPending = false;
+  bool hasUploaded = false;
+  bool hasExecuting = false;
+  bool hasStopping = false;
+  bool hasTerminal = false;
+  bool hasProgress = false;
+  bool progressActive = false;
+  bool progressNeedsCompensation = false;
+  bool progressComplete = false;
+  bool progressFailed = false;
+  bool canUpload = true;
+  bool canStart = false;
+  bool canStop = false;
+  size_t startableCount = 0;
+  size_t startEligibleCount = 0;
+  size_t startBlockedCount = 0;
+  std::string progressPhase = "idle";
+  std::string phases = "none";
+  std::string startEligible = "none";
+  std::string startBlocked = "none";
+  std::string uploadReason = "ok";
+  std::string startReason = "no-uploaded-mission";
+  std::string stopReason = "no-active-mission";
+
+  static MissionControlState fromStates(const std::vector<MissionStartGateState>& missionGates,
+                                        const std::optional<MissionProgressState>& progress,
+                                        bool uploadPending,
+                                        bool startPending,
+                                        bool stopPending);
+  std::string statusLine() const;
+};
+
 struct DroneListRowState
 {
   std::string droneId;

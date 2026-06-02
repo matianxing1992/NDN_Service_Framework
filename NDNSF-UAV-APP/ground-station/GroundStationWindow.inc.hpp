@@ -1908,35 +1908,6 @@ private:
                                   "Stop blocked: " + state.stopReason);
   }
 
-  struct MissionControlState
-  {
-    bool uploadPending = false;
-    bool startPending = false;
-    bool stopPending = false;
-    bool hasUploaded = false;
-    bool hasExecuting = false;
-    bool hasStopping = false;
-    bool hasTerminal = false;
-    bool hasProgress = false;
-    bool progressActive = false;
-    bool progressNeedsCompensation = false;
-    bool progressComplete = false;
-    bool progressFailed = false;
-    bool canUpload = true;
-    bool canStart = false;
-    bool canStop = false;
-    size_t startableCount = 0;
-    size_t startEligibleCount = 0;
-    size_t startBlockedCount = 0;
-    std::string progressPhase = "idle";
-    std::string phases;
-    std::string startEligible;
-    std::string startBlocked;
-    std::string uploadReason = "ok";
-    std::string startReason = "no-uploaded-mission";
-    std::string stopReason = "no-active-mission";
-  };
-
   std::optional<FlightSafetyGateState>
   flightSafetyGateForDrone(const std::string& droneId) const
   {
@@ -1969,135 +1940,16 @@ private:
   MissionControlState
   missionControlState() const
   {
-    MissionControlState state;
-    state.uploadPending = m_patrolUploadInFlight.load();
-    state.startPending = m_missionStartInFlight.load();
-    state.stopPending = m_patrolStopInFlight.load();
-    const auto progress = m_runtime.missionProgressSnapshot();
-    if (progress) {
-      state.hasProgress = true;
-      state.progressPhase = progress->phase;
-      state.progressActive = progress->isActive();
-      state.progressNeedsCompensation = progress->needsCompensation();
-      state.progressComplete = progress->isComplete();
-      state.progressFailed = progress->isFailed();
-    }
+    std::vector<MissionStartGateState> gates;
+    gates.reserve(m_droneIds.size());
     for (const auto& droneId : m_droneIds) {
-      const auto mission = m_runtime.missionForDrone(droneId);
-      if (!mission) {
-        continue;
-      }
-      if (!state.phases.empty()) {
-        state.phases += ",";
-      }
-      state.phases += droneId + ":" + mission->phase;
-      state.hasUploaded = state.hasUploaded || mission->isStartable();
-      state.hasExecuting = state.hasExecuting || mission->isExecuting();
-      state.hasStopping = state.hasStopping || mission->isStopping();
-      state.hasTerminal = state.hasTerminal || mission->isTerminal();
-      const auto startGate = missionStartGateForDrone(droneId);
-      if (mission->isStartable()) {
-        ++state.startableCount;
-        if (startGate.canStart) {
-          if (!state.startEligible.empty()) {
-            state.startEligible += ",";
-          }
-          state.startEligible += droneId;
-          ++state.startEligibleCount;
-        }
-        else {
-          if (!state.startBlocked.empty()) {
-            state.startBlocked += ",";
-          }
-          state.startBlocked += droneId + ":" + startGate.startReason;
-          ++state.startBlockedCount;
-        }
-      }
+      gates.push_back(missionStartGateForDrone(droneId));
     }
-    if (state.phases.empty()) {
-      state.phases = "none";
-    }
-    if (state.startEligible.empty()) {
-      state.startEligible = "none";
-    }
-    if (state.startBlocked.empty()) {
-      state.startBlocked = "none";
-    }
-    state.canUpload = !state.uploadPending && !state.startPending && !state.stopPending &&
-                      !state.hasExecuting && !state.hasStopping && !state.progressActive;
-    if (state.uploadPending) {
-      state.uploadReason = "upload-pending";
-    }
-    else if (state.startPending) {
-      state.uploadReason = "start-pending";
-    }
-    else if (state.stopPending) {
-      state.uploadReason = "stop-pending";
-    }
-    else if (state.hasExecuting) {
-      state.uploadReason = "mission-executing";
-    }
-    else if (state.hasStopping) {
-      state.uploadReason = "mission-stopping";
-    }
-    else if (state.progressActive) {
-      state.uploadReason = "progress-active";
-    }
-    else {
-      state.uploadReason = "ok";
-    }
-    state.canStart = state.hasUploaded &&
-                     state.startableCount > 0 &&
-                     state.startEligibleCount == state.startableCount &&
-                     state.startBlockedCount == 0 &&
-                     !state.uploadPending && !state.startPending && !state.stopPending &&
-                     !state.hasExecuting && !state.hasStopping &&
-                     !state.progressActive &&
-                     !state.progressNeedsCompensation &&
-                     !state.progressFailed;
-    state.canStop = !state.stopPending &&
-                    (state.startPending || state.hasUploaded || state.hasExecuting ||
-                     state.hasStopping || state.progressActive);
-    if (!state.hasUploaded || state.startableCount == 0) {
-      state.startReason = "no-uploaded-mission";
-    }
-    else if (state.startBlockedCount > 0) {
-      state.startReason = "blocked-" + state.startBlocked;
-    }
-    else if (state.uploadPending) {
-      state.startReason = "upload-pending";
-    }
-    else if (state.startPending) {
-      state.startReason = "start-pending";
-    }
-    else if (state.stopPending) {
-      state.startReason = "stop-pending";
-    }
-    else if (state.hasExecuting) {
-      state.startReason = "mission-executing";
-    }
-    else if (state.hasStopping) {
-      state.startReason = "mission-stopping";
-    }
-    else if (state.progressActive) {
-      state.startReason = "progress-active";
-    }
-    else if (state.progressNeedsCompensation) {
-      state.startReason = "progress-needs-compensation";
-    }
-    else if (state.progressFailed) {
-      state.startReason = "progress-failed";
-    }
-    else {
-      state.startReason = "ok";
-    }
-    if (state.stopPending) {
-      state.stopReason = "stop-pending";
-    }
-    else {
-      state.stopReason = state.canStop ? "ok" : "no-active-mission";
-    }
-    return state;
+    return MissionControlState::fromStates(gates,
+                                           m_runtime.missionProgressSnapshot(),
+                                           m_patrolUploadInFlight.load(),
+                                           m_missionStartInFlight.load(),
+                                           m_patrolStopInFlight.load());
   }
 
   DroneListRowState

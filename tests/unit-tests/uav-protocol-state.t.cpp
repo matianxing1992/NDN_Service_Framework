@@ -9,6 +9,7 @@ using ndnsf::examples::uav::FlightSafetyGateState;
 using ndnsf::examples::uav::FlightCommandState;
 using ndnsf::examples::uav::DroneListRowState;
 using ndnsf::examples::uav::Fields;
+using ndnsf::examples::uav::MissionControlState;
 using ndnsf::examples::uav::MissionStartGateState;
 using ndnsf::examples::uav::MissionPart;
 using ndnsf::examples::uav::MissionPlan;
@@ -160,6 +161,53 @@ BOOST_AUTO_TEST_CASE(MissionStartGateCombinesMissionAndFlightReadiness)
   BOOST_CHECK_EQUAL(gate.startReason, "link-lost");
   BOOST_CHECK(gate.canStop);
   BOOST_CHECK_EQUAL(gate.stopReason, "ok");
+}
+
+BOOST_AUTO_TEST_CASE(MissionControlStateCombinesGatesAndProgress)
+{
+  MissionStartGateState readyA;
+  readyA.droneId = "A";
+  readyA.hasMission = true;
+  readyA.hasFlightGate = true;
+  readyA.missionUploaded = true;
+  readyA.missionPhase = "uploaded";
+  readyA.canStart = true;
+  readyA.startReason = "ok";
+  readyA.canStop = true;
+  readyA.stopReason = "ok";
+
+  auto control = MissionControlState::fromStates({readyA}, std::nullopt, false, false, false);
+  BOOST_CHECK(control.canUpload);
+  BOOST_CHECK(control.canStart);
+  BOOST_CHECK(control.canStop);
+  BOOST_CHECK_EQUAL(control.startableCount, 1);
+  BOOST_CHECK_EQUAL(control.startEligible, "A");
+  BOOST_CHECK_EQUAL(control.startReason, "ok");
+  BOOST_CHECK_NE(control.statusLine().find("can_start=true"), std::string::npos);
+
+  auto blockedB = readyA;
+  blockedB.droneId = "B";
+  blockedB.canStart = false;
+  blockedB.startReason = "link-lost";
+  control = MissionControlState::fromStates({readyA, blockedB}, std::nullopt, false, false, false);
+  BOOST_CHECK(!control.canStart);
+  BOOST_CHECK_EQUAL(control.startableCount, 2);
+  BOOST_CHECK_EQUAL(control.startEligibleCount, 1);
+  BOOST_CHECK_EQUAL(control.startBlockedCount, 1);
+  BOOST_CHECK_EQUAL(control.startBlocked, "B:link-lost");
+  BOOST_CHECK_EQUAL(control.startReason, "blocked-B:link-lost");
+
+  MissionProgressState progress;
+  progress.phase = "executing";
+  progress.totalParts = 2;
+  progress.completedParts = 1;
+  control = MissionControlState::fromStates({readyA}, progress, false, false, false);
+  BOOST_CHECK(!control.canUpload);
+  BOOST_CHECK(!control.canStart);
+  BOOST_CHECK(control.canStop);
+  BOOST_CHECK(control.progressActive);
+  BOOST_CHECK_EQUAL(control.uploadReason, "progress-active");
+  BOOST_CHECK_EQUAL(control.startReason, "progress-active");
 }
 
 BOOST_AUTO_TEST_CASE(MissionProgressTracksCompensationAndCompletion)
