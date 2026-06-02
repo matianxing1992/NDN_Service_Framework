@@ -885,6 +885,15 @@ MiniNDN launcher 会把 controller、drone GUI、ground-station GUI 分别放到
 sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py
 ```
 
+如果要模拟板端/真机部署，让 drone 侧不创建 GTK 窗口，可以加 `--drone-headless`。
+controller 和 ground station 仍然照常启动；drone 进程会把 `DRONE_HEADLESS_READY`
+和周期性的 readiness/video 状态行写入它的 MiniNDN log：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-video-test --auto-stop-seconds 10 --no-cli
+```
+
 可以用 `--video-bitrate-kbps <kbps>` 修改请求的图传 bitrate，用 `--video-width <pixels>` 修改
 请求的编码 frame width。ground station 会把这些值通过 NDNSF 控制服务发给 drone；drone 调整
 encoder quality 和缩放宽度；ground station 再用接受的 bitrate 计算预取预算。

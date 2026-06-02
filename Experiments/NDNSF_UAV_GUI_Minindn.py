@@ -109,6 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="PX4/jMAVSim home altitude AMSL in meters.")
     parser.add_argument("--jmavsim-headless", action="store_true",
                         help="Run jMAVSim without its GUI.")
+    parser.add_argument("--drone-headless", action="store_true",
+                        help="Run Drone apps without local GTK windows; useful for board/airframe smoke tests.")
     parser.add_argument("--jmavsim-ready-timeout-seconds", type=int, default=90,
                         help="How long to wait for PX4/jMAVSim readiness before starting the Drone app.")
     parser.add_argument("--no-configure-px4-sitl-demo-params", action="store_true",
@@ -828,13 +830,17 @@ def main() -> int:
                 drone_cmd += " --fc-status-file " + shell_quote(simulator_status_files[drone_id])
                 if not args.no_configure_px4_sitl_demo_params:
                     drone_cmd += " --configure-px4-sitl-demo-params"
+            if args.drone_headless:
+                drone_cmd += " --headless"
             label = "drone" if len(drones) == 1 else f"drone-{drone_id}"
             drone_proc, drone_log = start(ndn.net[node_name], label,
                                           drone_cmd, drone_envs[drone_id],
                                           output_dir, processes)
             drone_logs[drone_id] = drone_log
-            if not wait_log(drone_log, "DRONE_GUI_READY", 30, drone_proc):
-                raise RuntimeError(f"drone {drone_id} GUI did not start; see {drone_log}")
+            drone_ready_markers = ["DRONE_HEADLESS_READY"] if args.drone_headless else ["DRONE_GUI_READY"]
+            if not wait_log_any(drone_log, drone_ready_markers, 30, proc=drone_proc):
+                mode = "headless runtime" if args.drone_headless else "GUI"
+                raise RuntimeError(f"drone {drone_id} {mode} did not start; see {drone_log}")
 
             if (start_simulator and
                 (args.auto_mavlink_test or args.auto_keyboard_test or
@@ -1029,6 +1035,9 @@ def main() -> int:
             require_log(gs_log, "GS_GUI_EXIT rc=0")
             require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video streaming")
             require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video stopped")
+            if args.drone_headless:
+                require_log(drone_logs[args.drone_id], "DRONE_HEADLESS_STATUS")
+                require_log(drone_logs[args.drone_id], "video=stopped")
             if args.auto_repeat_stop_test:
                 require_log(gs_log, "Video stop timed out for drone " + args.drone_id)
                 require_log(gs_log, "Video stopped drone=" + args.drone_id)
