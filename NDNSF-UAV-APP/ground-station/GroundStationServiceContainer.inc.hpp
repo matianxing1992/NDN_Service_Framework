@@ -801,7 +801,7 @@ public:
   }
 
   bool
-  runTelemetryLiveTest(std::chrono::seconds timeout)
+  runTelemetryLiveTest(std::chrono::seconds timeout, bool requireSensorDetails)
   {
     const auto droneId = targetDroneId();
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -880,11 +880,14 @@ public:
       sample("land", sampleIndex++);
     }
 
+    const bool sensorDetailsOk = !requireSensorDetails ||
+                                 (check.gpsFix && check.batteryVoltage);
     const bool ok = armOk && takeoffOk && landOk &&
-                    check.gpsFix && check.ekfReady && check.landedKnown &&
-                    check.landedChanged && check.batteryVoltage &&
+                    sensorDetailsOk && check.ekfReady && check.landedKnown &&
+                    check.landedChanged &&
                     check.armedTrue && check.latLon;
     NDN_LOG_INFO("TELEMETRY_LIVE_RESULT ok=" << (ok ? "true" : "false")
+                 << " require_sensor_details=" << (requireSensorDetails ? "true" : "false")
                  << " arm_ok=" << (armOk ? "true" : "false")
                  << " takeoff_ok=" << (takeoffOk ? "true" : "false")
                  << " land_ok=" << (landOk ? "true" : "false")

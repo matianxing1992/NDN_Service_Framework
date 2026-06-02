@@ -1259,6 +1259,21 @@ This checks `gps_fix_name`, `ekf_ready`, `landed_state_name`,
 `battery_voltage_v`, `armed`, and `lat/lon` while the GS runs
 arm/takeoff/land over NDNSF Targeted requests.
 
+For a MiniNDN-only regression that does not start PX4/jMAVSim:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-telemetry-test --no-start-jmavsim \
+  --no-cli --no-xhost
+```
+
+The script automatically enables the mock-field telemetry mode in this case.
+It still verifies the NDNSF telemetry request path, typed state updates,
+arm/takeoff/land command transitions, landed-state changes, `ekf_ready`,
+`armed`, and `lat/lon`, but it does not treat missing real GPS fix or battery
+voltage fields as a failure. The full PX4/jMAVSim command above remains the
+strict check for real flight-controller sensor fields.
+
 To regression-test the GS local stale/lost link model without real hardware:
 
 ```bash

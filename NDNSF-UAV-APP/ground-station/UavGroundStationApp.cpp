@@ -373,6 +373,9 @@ main(int argc, char** argv)
     const bool autoStart = getConfigBool(argc, argv, appConfig, "--auto-video-test", "auto-video-test", false);
     const bool autoMavlinkTest = getConfigBool(argc, argv, appConfig, "--auto-mavlink-test", "auto-mavlink-test", false);
     const bool autoTelemetryTest = getConfigBool(argc, argv, appConfig, "--auto-telemetry-test", "auto-telemetry-test", false);
+    const bool autoTelemetryAllowMockFields = getConfigBool(argc, argv, appConfig,
+                                                            "--auto-telemetry-allow-mock-fields",
+                                                            "auto-telemetry-allow-mock-fields", false);
     const bool autoKeyboardTest = getConfigBool(argc, argv, appConfig, "--auto-keyboard-test", "auto-keyboard-test", false);
     const bool autoManualControlTest = getConfigBool(argc, argv, appConfig, "--auto-manual-control-test", "auto-manual-control-test", false);
     const bool autoTwoDroneSwitchTest = getConfigBool(argc, argv, appConfig, "--auto-two-drone-switch-test", "auto-two-drone-switch-test", false);
@@ -477,7 +480,8 @@ main(int argc, char** argv)
       return ok ? 0 : 2;
     }
     if (autoTelemetryTest) {
-      const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45));
+      const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45),
+                                                    !autoTelemetryAllowMockFields);
       std::cout << "GS_TELEMETRY_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }

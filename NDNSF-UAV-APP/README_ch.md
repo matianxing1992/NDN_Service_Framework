@@ -1124,6 +1124,20 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 `gps_fix_name`、`ekf_ready`、`landed_state_name`、`battery_voltage_v`、
 `armed` 和 `lat/lon`。
 
+如果只想做不启动 PX4/jMAVSim 的 MiniNDN 回归测试：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-telemetry-test --no-start-jmavsim \
+  --no-cli --no-xhost
+```
+
+这种情况下脚本会自动启用 mock-field telemetry 模式。它仍然验证
+NDNSF telemetry 请求路径、类型化状态更新、arm/takeoff/land 命令状态变化、
+landed-state 变化、`ekf_ready`、`armed` 和 `lat/lon`，但不会因为没有真实
+GPS fix 或 battery voltage 字段而失败。上面的 PX4/jMAVSim 命令仍然是真实
+飞控传感器字段的严格检查。
+
 如果要在没有真机硬件的情况下回归测试 GS 本地 stale/lost link 模型：
 
 ```bash
