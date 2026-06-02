@@ -689,6 +689,14 @@ activation object。这个优化是泛化的：它只依赖声明好的 dependen
 suffix，不依赖 YOLO。只有当 plan 能给出确定的 dependency name 时才应该使用；
 否则 handler 仍然可以继续显式调用 `wait_one(...)` 和 `fetch_large(...)`。
 
+对于 ONNX chunks，推荐的 provider-side 路径是
+`execute_onnx_dependency_chunk(...)`。它会使用当前 role 的 dependency view
+自动收集所有 input-edge tensor bundles，按 tensor name 合并，运行被分配的 ONNX
+chunk，然后为每条声明的 output edge 发布一个 tensor bundle。YOLO 2x2 provider
+现在已经使用这个 dependency-driven executor：YOLO-specific 代码只负责准备第一块的
+image input，以及编码最后的 prediction response。这样 runtime path 就不再把一条
+pipeline chain 写死在 provider 中，而是更适合未来 fan-in/fan-out ONNX DAG。
+
 ```bash
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --model yolo26n.pt \

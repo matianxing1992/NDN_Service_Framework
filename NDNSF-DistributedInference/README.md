@@ -818,6 +818,16 @@ declared dependency edge and topic suffix, not on YOLO. It should be used only
 when the plan gives deterministic dependency names; otherwise handlers can keep
 using explicit `wait_one(...)` and `fetch_large(...)`.
 
+For ONNX chunks, the helper
+`execute_onnx_dependency_chunk(...)` is the preferred provider-side path. It
+uses the current role's dependency view to collect all input-edge tensor
+bundles, merge them by tensor name, run the assigned ONNX chunk, and publish
+one tensor bundle for each declared output edge. The YOLO 2x2 provider now uses
+this dependency-driven executor: the YOLO-specific code only prepares the
+first image input and encodes the final prediction response. This keeps the
+runtime path suitable for future fan-in/fan-out ONNX DAGs instead of hardcoding
+one pipeline chain in the provider.
+
 ```bash
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --model yolo26n.pt \
