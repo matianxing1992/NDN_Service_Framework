@@ -202,6 +202,15 @@ public:
     }
   }
 
+  void
+  injectMissionProgressForTest(MissionProgressState progress)
+  {
+    if (progress.taskId.empty() || progress.taskId == "none") {
+      progress.taskId = "mission-progress-test";
+    }
+    updateMissionProgress(std::move(progress));
+  }
+
   std::string
   serviceCatalogForDrone(const std::string& droneId) const
   {
