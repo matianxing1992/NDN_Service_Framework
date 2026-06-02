@@ -132,6 +132,64 @@ BOOST_AUTO_TEST_CASE(FirstRespondingSelectsFirstAckAfterNominalAckTimeout)
   BOOST_CHECK(!timeoutCalled);
 }
 
+BOOST_AUTO_TEST_CASE(RequestTimeoutExpressesSelectionStatusDiagnosticQuery)
+{
+  ndn::security::KeyChain keyChain("pib-memory:timeout-status-diag",
+                                   "tpm-memory:timeout-status-diag");
+  ndn::DummyClientFace::Options faceOptions;
+  ndn::DummyClientFace face(keyChain, faceOptions);
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name providerName("/test/provider/slow");
+  const ndn::Name serviceName("/TextToImage/Generate");
+
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-timeout-status-diag"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  user.setPendingCallTimeoutGrace(ndn::time::milliseconds(0));
+
+  user.setRequestPublisher(
+    [&] (const ndn::Name& requestId,
+         const ndn::Name&,
+         const std::vector<ndn::Name>&,
+         const ndn::Name&,
+         const RequestMessage& requestMessage,
+         size_t) {
+      auto ack = makeSuccessAckForRequest(requestMessage,
+                                          "provider-token-timeout-status-diag");
+      BOOST_CHECK(user.handleRequestAckByName(
+        makeRequestAckNameV2(providerName, requesterName, serviceName, requestId),
+        ack));
+      BOOST_CHECK_EQUAL(user.getSelectedProvider(requestId), providerName);
+    });
+
+  bool timeoutCalled = false;
+  const auto requestId = user.RequestService(
+    {providerName}, serviceName, RequestMessage(), 5,
+    ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
+    30,
+    ServiceUser::TimeoutHandler([&] (const ndn::Name&) { timeoutCalled = true; }),
+    ServiceUser::ResponseHandler([] (const ResponseMessage&) {
+      BOOST_FAIL("timeout diagnostic test should not receive a response");
+    }));
+
+  pumpFace(face, ndn::time::milliseconds(80));
+  BOOST_CHECK(timeoutCalled);
+  BOOST_CHECK(!user.hasPendingCall(requestId));
+
+  bool sawStatusQuery = false;
+  for (const auto& interest : face.sentInterests) {
+    auto parsed = parseSelectionStatusQueryName(interest.getName());
+    if (parsed &&
+        parsed->providerName.equals(providerName) &&
+        parsed->serviceName.equals(serviceName) &&
+        !parsed->selectionDigest.empty()) {
+      sawStatusQuery = true;
+      break;
+    }
+  }
+  BOOST_CHECK(sawStatusQuery);
+}
+
 BOOST_AUTO_TEST_CASE(FirstRespondingIgnoresAckTimeoutCompletely)
 {
   ndn::security::KeyChain keyChain("pib-memory:first-responding-ignores-ack-timeout",
