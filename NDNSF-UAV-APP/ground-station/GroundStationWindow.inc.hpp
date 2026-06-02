@@ -868,8 +868,16 @@ public:
 
         std::this_thread::sleep_for(std::chrono::seconds(3));
         Glib::signal_idle().connect_once([this] {
+          m_planWaypoints = {
+            {35.118600, -89.937500},
+            {35.118950, -89.937200},
+            {35.119250, -89.936850},
+          };
+          updatePatrolInputsFromWaypoints();
+          refreshMissionPlanPreview("auto-mission-controls");
           updateVehicleRows();
           logMissionControlState("initial");
+          logSelectedDroneViewState("preview");
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
@@ -2489,8 +2497,14 @@ private:
     const auto command = m_runtime.commandForDrone(state.selectedDrone);
     const auto safety = m_runtime.safetyForDrone(state.selectedDrone);
     const auto missionProgress = m_runtime.missionProgressSnapshot();
-    const auto missionPlan = m_runtime.missionPlanSnapshot();
-    const auto missionPart = m_runtime.missionPartForDrone(state.selectedDrone);
+    auto missionPlan = m_runtime.missionPlanSnapshot();
+    auto missionPart = m_runtime.missionPartForDrone(state.selectedDrone);
+    if (!missionPlan && m_previewMissionPlan) {
+      missionPlan = m_previewMissionPlan;
+    }
+    if (!missionPart) {
+      missionPart = previewMissionPartForDrone(state.selectedDrone);
+    }
     state.readiness = readiness ? readiness->readiness :
                       telemetry ? telemetry->readiness : "unknown";
     state.missionPhase = mission ? mission->phase : "idle";
@@ -2832,7 +2846,86 @@ private:
     else if (m_hasPatrolCenter) {
       markers.push_back({"WP", m_patrolCenterLat, m_patrolCenterLon, 245, 160, 20});
     }
+    if (m_previewMissionPlan) {
+      for (size_t partIndex = 0; partIndex < m_previewMissionPlan->parts.size(); ++partIndex) {
+        const auto& part = m_previewMissionPlan->parts[partIndex];
+        const uint8_t r = static_cast<uint8_t>(partIndex == 0 ? 120 : 35);
+        const uint8_t g = static_cast<uint8_t>(partIndex == 0 ? 80 : 150);
+        const uint8_t b = static_cast<uint8_t>(partIndex == 0 ? 230 : 95);
+        const auto prefix = part.assignedDrone.empty() ? ("P" + std::to_string(partIndex + 1)) :
+                            part.assignedDrone;
+        for (size_t waypointIndex = 0; waypointIndex < part.waypoints.size(); ++waypointIndex) {
+          const auto& waypoint = part.waypoints[waypointIndex];
+          const auto isReturnHome = part.returnHomePlanned &&
+                                    waypointIndex + 1 == part.waypoints.size();
+          markers.push_back({prefix + (isReturnHome ? "R" : std::to_string(waypointIndex + 1)),
+                             waypoint.lat, waypoint.lon, r, g, b});
+        }
+      }
+    }
     return markers;
+  }
+
+  std::optional<MissionPart>
+  previewMissionPartForDrone(const std::string& droneId) const
+  {
+    if (!m_previewMissionPlan) {
+      return std::nullopt;
+    }
+    for (const auto& part : m_previewMissionPlan->parts) {
+      if (part.assignedDrone == droneId) {
+        return part;
+      }
+    }
+    return std::nullopt;
+  }
+
+  double
+  patrolSideMeters() const
+  {
+    try {
+      return std::stod(m_patrolSizeMeters.get_text());
+    }
+    catch (const std::exception&) {
+      return 140.0;
+    }
+  }
+
+  MissionPlan
+  buildMissionPlanPreview() const
+  {
+    std::vector<MissionWaypoint> route;
+    route.reserve(m_planWaypoints.size());
+    for (const auto& point : m_planWaypoints) {
+      route.push_back({point.first, point.second});
+    }
+
+    std::map<std::string, MissionWaypoint> departures;
+    for (const auto& droneId : m_droneIds) {
+      const auto found = m_dronePositions.find(droneId);
+      if (found != m_dronePositions.end()) {
+        departures.emplace(droneId, MissionWaypoint{found->second.first, found->second.second});
+      }
+    }
+
+    return buildPatrolMissionPlan("preview-current", m_patrolCenterLat, m_patrolCenterLon,
+                                  patrolSideMeters(), m_droneIds, route, departures);
+  }
+
+  void
+  refreshMissionPlanPreview(const std::string& phase)
+  {
+    if (m_planWaypoints.empty()) {
+      m_previewMissionPlan.reset();
+      NDN_LOG_INFO("MISSION_PREVIEW phase=" << phase << " cleared=true");
+      return;
+    }
+    m_previewMissionPlan = buildMissionPlanPreview();
+    NDN_LOG_INFO("MISSION_PREVIEW phase=" << phase << " " << m_previewMissionPlan->statusLine());
+    for (const auto& part : m_previewMissionPlan->parts) {
+      NDN_LOG_INFO("MISSION_PREVIEW_PART phase=" << phase << " " << part.statusLine() <<
+                   " waypoints=" << part.waypointText());
+    }
   }
 
   void
@@ -2867,6 +2960,7 @@ private:
     }
     m_planWaypoints.pop_back();
     updatePatrolInputsFromWaypoints();
+    refreshMissionPlanPreview("undo-waypoint");
     m_mapMission.set_text("Map / mission workspace\n\n"
                           "Removed last waypoint. Current mission waypoint count: " +
                           std::to_string(m_planWaypoints.size()) + ".");
@@ -2878,6 +2972,7 @@ private:
   {
     m_planWaypoints.clear();
     updatePatrolInputsFromWaypoints();
+    refreshMissionPlanPreview("clear-waypoints");
     m_mapMission.set_text("Map / mission workspace\n\n"
                           "Mission waypoints cleared. Click the map to append WP1/WP2/...");
     refreshMapTile();
@@ -3083,6 +3178,7 @@ private:
       m_mapZoom);
     m_planWaypoints.push_back(latLon);
     updatePatrolInputsFromWaypoints();
+    refreshMissionPlanPreview("waypoint-added");
     std::ostringstream pointText;
     pointText << std::fixed << std::setprecision(6)
               << latLon.first << "," << latLon.second;
@@ -3334,6 +3430,7 @@ private:
   double m_patrolCenterLat = 35.1186;
   double m_patrolCenterLon = -89.9375;
   std::vector<std::pair<double, double>> m_planWaypoints;
+  std::optional<MissionPlan> m_previewMissionPlan;
   std::map<std::string, std::pair<double, double>> m_dronePositions;
   size_t m_telemetryPollIndex = 0;
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;

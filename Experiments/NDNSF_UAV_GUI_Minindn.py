@@ -1089,6 +1089,10 @@ def main() -> int:
                 raise RuntimeError(f"ground station mission controls smoke did not finish; see {gs_log}") from e
             if gs_proc.returncode != 0:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "MISSION_PREVIEW phase=auto-mission-controls MissionPlan")
+            require_log(gs_log, "MISSION_PREVIEW_PART phase=auto-mission-controls MissionPart")
+            require_log(gs_log, "SELECTED_VIEW_STATE phase=preview selected=A")
+            require_log(gs_log, "mission_plan=preview-current mission_part=part0")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=initial can_upload=true upload_reason=ok can_start=false start_reason=no-uploaded-mission can_stop=false stop_reason=no-active-mission")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=uploading can_upload=false upload_reason=upload-pending can_start=false start_reason=no-uploaded-mission can_stop=false stop_reason=no-active-mission upload_pending=true")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=after-upload can_upload=true upload_reason=ok can_start=false")
