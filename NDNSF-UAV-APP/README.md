@@ -735,8 +735,10 @@ is explicit-control only: the GS does not
 silently change the drone encoder, but the operator can click `Apply Bitrate`.
 That path stops the current live stream, waits for the drone's Stop response,
 and then starts a new stream with the suggested bitrate so packet sequence,
-stream id, and decoder state stay coherent. The default bitrate policy is
-`manual`. For experiments, the GS can be started with
+stream id, and decoder state stay coherent. The GS logs the completed
+Stop-then-Start loop with the requested and accepted bitrate, so smoke tests can
+verify that the restarted stream is actually using the drone-confirmed setting.
+The default bitrate policy is `manual`. For experiments, the GS can be started with
 `--video-bitrate-policy auto-after-pressure`, which applies a non-hold
 recommendation only after pressure persists for
 `--video-bitrate-auto-pressure-ms`. Set that value to `0` for an aggressive
@@ -1209,7 +1211,8 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 ```
 
 Add `--auto-apply-bitrate-test` to the same command when you want the smoke test
-to exercise the explicit `Apply Bitrate` Stop-then-Start path.
+to exercise the explicit `Apply Bitrate` Stop-then-Start path and verify the
+drone-confirmed accepted bitrate after restart.
 Add `--auto-repeat-stop-test` when you want the smoke test to delay the first
 stop response, check that the GS re-enables the Stop button after timeout, and
 then send a second idempotent stop request.
@@ -1513,7 +1516,8 @@ to make it a deployable UAV service-container workload. The planned order is:
    `VideoAdaptivePolicyInput` to `VideoAdaptivePolicyDecision` helper with unit
    tests for pressure, high-RTT, and recovery behavior, so tuning stays generic
    rather than tied to one MiniNDN topology. The `Apply Bitrate` control now turns a
-   non-hold recommendation into an explicit Stop-then-Start stream restart.
+   non-hold recommendation into an explicit Stop-then-Start stream restart and logs
+   the completed restart with the accepted bitrate returned by the drone.
    MiniNDN smoke can also inject controlled congestion/backlog/probe pressure
    profiles and verify that `primary_pressure` switches accordingly.
    The default policy remains manual, while `auto-after-pressure` can be enabled

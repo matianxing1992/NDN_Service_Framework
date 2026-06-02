@@ -2208,6 +2208,18 @@ private:
                   stopDecoder();
                   startDecoder();
                   publishVideoAdaptiveState("configured", true);
+                  if (m_videoBitrateChangePending.exchange(false)) {
+                    const auto acceptedBitrateKbps = m_videoAcceptedBitrateKbps.load();
+                    const auto expectedBitrateKbps = m_videoBitrateChangeToKbps.load();
+                    NDN_LOG_INFO("GS_VIDEO_BITRATE_CHANGE_COMPLETE drone=" << droneId
+                                 << " from_kbps=" << m_videoBitrateChangeFromKbps.load()
+                                 << " requested_kbps=" << requestedBitrateKbps
+                                 << " expected_kbps=" << expectedBitrateKbps
+                                 << " accepted_kbps=" << acceptedBitrateKbps
+                                 << " matched="
+                                 << (acceptedBitrateKbps == expectedBitrateKbps ? "true" : "false")
+                                 << " stream_prefix=" << prefix);
+                  }
                   publishStatus("Video packet stream drone=" + droneId + " from " + prefix);
                   requestVideoPackets();
                 },
@@ -2228,6 +2240,7 @@ private:
                 [this] {
                   if (!m_seenVideoStart.load()) {
                     m_videoStartInFlight = false;
+                    m_videoBitrateChangePending = false;
                   }
                 });
   }
@@ -2261,6 +2274,9 @@ private:
     m_videoBitrateKbps = requestedBitrateKbps;
     m_videoBitrateAdviceSinceMs = 0;
     m_lastVideoBitrateApplyMs = nowMilliseconds();
+    m_videoBitrateChangeFromKbps = previousBitrateKbps;
+    m_videoBitrateChangeToKbps = requestedBitrateKbps;
+    m_videoBitrateChangePending = true;
     m_streaming = false;
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
@@ -2283,6 +2299,7 @@ private:
       },
       [this] {
         m_videoStartInFlight = false;
+        m_videoBitrateChangePending = false;
       });
     return true;
   }
@@ -4150,6 +4167,9 @@ private:
   std::atomic<uint64_t> m_lastVideoAdaptiveLogMs{0};
   std::atomic<uint64_t> m_videoBitrateAdviceSinceMs{0};
   std::atomic<uint64_t> m_lastVideoBitrateApplyMs{0};
+  std::atomic<bool> m_videoBitrateChangePending{false};
+  std::atomic<uint64_t> m_videoBitrateChangeFromKbps{0};
+  std::atomic<uint64_t> m_videoBitrateChangeToKbps{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
   std::atomic<bool> m_manualControlInFlight{false};
   std::atomic<bool> m_emergencyStopInFlight{false};

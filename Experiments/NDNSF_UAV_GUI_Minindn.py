@@ -1261,6 +1261,9 @@ def main() -> int:
             if args.auto_apply_bitrate_test:
                 require_log(gs_log, "AUTO_VIDEO_APPLY_BITRATE_ATTEMPT applied=true")
                 require_log(gs_log, "GS_VIDEO_BITRATE_CHANGE_APPLY drone=" + args.drone_id)
+                require_log(gs_log, "GS_VIDEO_BITRATE_CHANGE_COMPLETE drone=" + args.drone_id)
+                require_log(gs_log, "GS_VIDEO_BITRATE_CHANGE_COMPLETE drone=" + args.drone_id + " from_kbps=")
+                require_log(gs_log, "matched=true")
                 require_log(gs_log, "VIDEO_ADAPTIVE_VIEW_STATE phase=auto-video-after-bitrate-apply selected=" + args.drone_id + " has_adaptive=true")
             if args.video_bitrate_policy == "auto-after-pressure":
                 require_log(gs_log, "GS_VIDEO_BITRATE_POLICY_ARMED drone=" + args.drone_id)
