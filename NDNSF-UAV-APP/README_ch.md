@@ -1130,6 +1130,9 @@ launcher 会在 GS smoke 路径中注入 not-ready、ready-but-not-armed 和
 armed-ready 三种 readiness snapshot。它检查 Arm 只在选中无人机 ready 且未 armed 时启用，
 Takeoff/Land/手操只在选中无人机 armed 后启用。同一个 smoke 也会记录 selected-drone
 action model，包括手操模式、Emergency Stop 可用性，以及 mission Start/Stop readiness。
+它也会检查 selected drone view model，确认 inspector/map 文本和地图 marker 状态由
+typed state 派生；例如 mission upload 后用 typed marker suffix 表示，而不是解析临时
+status string。
 
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动
