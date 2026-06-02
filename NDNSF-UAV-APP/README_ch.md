@@ -1237,7 +1237,7 @@ armed-ready 三种 readiness snapshot。它检查 Arm 只在选中无人机 read
 Takeoff/Land/手操只在选中无人机 armed 后启用。这些 UI gate 和实际 MAVLink command-send
 路径共用同一个 typed `FlightSafetyGateState`，把 readiness 和 safety/link state 合在一起判断。
 同一个 smoke 也会记录 selected-drone action model，包括手操模式、Emergency Stop 可用性，以及
-mission Start/Stop readiness。它也会检查 selected drone view model，确认 inspector/map 文本、
+对应 reason，以及 mission Start/Stop readiness。它也会检查 selected drone view model，确认 inspector/map 文本、
 地图 marker 状态以及 `can_arm`、`can_takeoff`、`can_manual` 这类 flight gate 字段都由 typed
 state 派生；例如 mission upload 后用 typed marker suffix 表示，而不是解析临时 status string。
 左侧 drone list 也通过同一套 typed state 路径检查，包括 readiness、mission、video 和 safety 摘要。

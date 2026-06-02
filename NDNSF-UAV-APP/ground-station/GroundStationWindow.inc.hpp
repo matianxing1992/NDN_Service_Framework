@@ -1191,7 +1191,9 @@ private:
        << " can_manual=" << (state.canManualControl ? "true" : "false")
        << " manual_reason=" << state.manualControlReason
        << " can_panel=" << (state.canControlPanel ? "true" : "false")
-       << " panel_reason=" << state.controlPanelReason;
+       << " panel_reason=" << state.controlPanelReason
+       << " emergency_stop=" << (state.canEmergencyStop ? "true" : "false")
+       << " emergency_reason=" << state.emergencyStopReason;
     NDN_LOG_INFO(os.str());
   }
 
@@ -1216,10 +1218,10 @@ private:
     m_controlToggle.set_sensitive(state.canControlPanel || m_controlMode || state.canManualControl);
     m_controlToggle.set_tooltip_text(state.canControlPanel ? "Toggle manual control" :
                                      "Manual control blocked: " + state.controlPanelReason);
-    m_emergencyStop.set_sensitive(!state.selectedDrone.empty());
-    m_emergencyStop.set_tooltip_text(state.selectedDrone.empty() ?
-                                     "Select a drone before emergency stop" :
-                                     "Send emergency stop to Drone " + state.selectedDrone);
+    m_emergencyStop.set_sensitive(state.canEmergencyStop);
+    m_emergencyStop.set_tooltip_text(state.canEmergencyStop ?
+                                     "Send emergency stop to Drone " + state.selectedDrone :
+                                     "Emergency stop blocked: " + state.emergencyStopReason);
   }
 
   bool

@@ -1374,7 +1374,7 @@ enabled only after the selected drone is armed. These UI gates and the actual
 MAVLink command-send path share the same typed `FlightSafetyGateState`, which
 combines readiness and safety/link state. The same smoke also logs the
 selected-drone action model, including manual-control mode, emergency-stop
-availability, and mission Start/Stop readiness. It also verifies the selected
+availability/reason, and mission Start/Stop readiness. It also verifies the selected
 drone view model that drives the inspector/map text, marker state, and flight
 gate fields (`can_arm`, `can_takeoff`, `can_manual`, and their reasons), so
 mission upload state is reflected as a typed marker suffix instead of temporary
