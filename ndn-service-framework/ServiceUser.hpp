@@ -172,6 +172,29 @@ namespace ndn_service_framework{
             using TimeoutHandler =
                 std::function<void(const ndn::Name&)>;
 
+            struct SelectionStatusOptions
+            {
+                explicit SelectionStatusOptions(bool enabled = true,
+                                                int queryIntervalMs = 1000,
+                                                int queryTimeoutMs = 500)
+                  : enabled(enabled),
+                    queryIntervalMs(queryIntervalMs),
+                    queryTimeoutMs(queryTimeoutMs)
+                {
+                }
+
+                bool enabled;
+                int queryIntervalMs;
+                int queryTimeoutMs;
+            };
+
+            using SelectionStatusHandler =
+                std::function<void(const SelectionExecutionStatus&)>;
+
+            using SelectionStatusTimeoutHandler =
+                std::function<void(const ndn::Name& requestId,
+                                   const std::vector<SelectionExecutionStatus>& statuses)>;
+
             enum class RequestLifecycleState
             {
                 QUEUED_LOCAL,
@@ -378,6 +401,23 @@ namespace ndn_service_framework{
                                  TimeoutHandler onTimeout,
                                  ResponseHandler onResponseHandler,
                                  size_t strategy = ndn_service_framework::tlv::FirstResponding);
+
+            ndn::Name RequestServiceTracked(
+                                 const std::vector<ndn::Name>& providers,
+                                 const ndn::Name& serviceName,
+                                 ndn_service_framework::RequestMessage requestMessage,
+                                 int timeoutMs,
+                                 SelectionStatusTimeoutHandler onTimeout,
+                                 ResponseHandler onResponseHandler,
+                                 size_t strategy = ndn_service_framework::tlv::FirstResponding,
+                                 SelectionStatusOptions statusOptions = SelectionStatusOptions());
+
+            void QuerySelectionStatus(const ndn::Name& providerName,
+                                      const ndn::Name& serviceName,
+                                      const std::string& selectionDigest,
+                                      SelectionStatusHandler onStatus,
+                                      TimeoutHandler onTimeout,
+                                      int timeoutMs = 500);
 
             ndn::Name RequestServiceTargeted(const ndn::Name& provider,
                                  const ndn::Name& serviceName,
@@ -732,6 +772,11 @@ namespace ndn_service_framework{
                 bool isCollaboration = false;
                 CollaborationPlan collaborationPlan;
                 std::map<std::string, ndn::Buffer> collaborationAssignments;
+                bool trackSelectionStatus = false;
+                SelectionStatusOptions selectionStatusOptions;
+                SelectionStatusTimeoutHandler statusTimeoutHandler;
+                std::map<std::string, std::string> selectionDigestsByProvider;
+                std::map<std::string, SelectionExecutionStatus> selectionStatusesByProvider;
             };
 
             struct TargetedTokenPair
@@ -775,6 +820,13 @@ namespace ndn_service_framework{
                                              uint64_t nowUs);
             void scheduleRequestTimeout(const ndn::Name& requestId, int timeoutMs);
             void finalizeTimedOutPendingCall(const ndn::Name& requestId);
+            void scheduleSelectionStatusQuery(const ndn::Name& requestId,
+                                              const ndn::Name& providerName,
+                                              const std::string& selectionDigest);
+            static SelectionExecutionStatus parseSelectionExecutionStatusPayload(
+                const ndn::Data& data,
+                const ndn::Name& providerName,
+                const std::string& selectionDigest);
             void admitOrQueuePendingCall(const ndn::Name& requestId,
                                          bool scheduleAckTimeout,
                                          bool scheduleImmediateAckTimeout);
@@ -835,7 +887,10 @@ namespace ndn_service_framework{
                                                   int timeoutMs,
                                                   TimeoutHandler onTimeout,
                                                   ResponseHandler onResponseHandler,
-                                                  size_t strategy);
+                                                  size_t strategy,
+                                                  bool trackSelectionStatus = false,
+                                                  SelectionStatusTimeoutHandler statusTimeoutHandler = {},
+                                                  SelectionStatusOptions statusOptions = SelectionStatusOptions());
 
             void cleanupPendingCallState(const ndn::Name& requestId);
             void logRequestPendingCreated(const ndn::Name& requestId,

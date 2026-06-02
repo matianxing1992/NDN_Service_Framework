@@ -493,6 +493,93 @@ BOOST_AUTO_TEST_CASE(ProviderHandlerExecutionCanRunOffEventLoopAndInParallel)
   }
 }
 
+BOOST_AUTO_TEST_CASE(SelectionStatusQueryIsOptInPerService)
+{
+  ndn::security::KeyChain keyChain("pib-memory:selection-status-query",
+                                   "tpm-memory:selection-status-query");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/status");
+  const ndn::Name providerName("/test/provider/status");
+  const ndn::Name serviceName("/TextToImage/Generate");
+  const ndn::Name requestId("/request-selection-status");
+  const std::string providerToken = "provider-token-selection-status";
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-selection-status"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  provider.setHandlerThreads(0);
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName));
+
+  provider.addHandler<DynamicRequest, DynamicResponse>(
+    serviceName,
+    std::function<void(const ndn::Name&, const DynamicRequest&, DynamicResponse&)>(
+      [] (const ndn::Name&, const DynamicRequest&, DynamicResponse& response) {
+        response.setClassification(42);
+      }));
+
+  RequestMessage request = makeRequestMessageWithUserToken("prompt",
+                                                           "user-token-selection-status");
+  provider.addPendingRequestForTokenTest(requesterName,
+                                         serviceName,
+                                         requestId,
+                                         request,
+                                         providerToken);
+
+  ServiceSelectionMessage selection;
+  selection.setRequestIDs({requestId.toUri()});
+  selection.setProviderToken(providerToken);
+  const auto selectionDigest = computeSelectionDigest(selection);
+  auto selectionBlock = selection.WireEncode();
+  ndn::Buffer selectionBuffer(selectionBlock.data(), selectionBlock.size());
+
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(requesterName,
+                                                                  providerName,
+                                                                  serviceName,
+                                                                  requestId,
+                                                                  selectionBuffer);
+
+  auto executionStatus = provider.getSelectionExecutionStatus(selectionDigest);
+  BOOST_REQUIRE(executionStatus.has_value());
+  BOOST_CHECK(executionStatus->state == SelectionExecutionState::Completed);
+
+  const ndn::Interest query(makeSelectionStatusQueryName(providerName,
+                                                        serviceName,
+                                                        selectionDigest));
+  BOOST_CHECK(!provider.replySelectionStatusForTest(query));
+
+  bool receivedStatus = false;
+  std::string payload;
+  face.expressInterest(
+    query,
+    [&] (const ndn::Interest&, const ndn::Data& data) {
+      receivedStatus = true;
+      const auto& content = data.getContent();
+      payload.assign(reinterpret_cast<const char*>(content.value()),
+                     content.value_size());
+    },
+    [] (const ndn::Interest&, const ndn::lp::Nack&) {
+      BOOST_FAIL("selection status query should not receive a Nack");
+    },
+    [] (const ndn::Interest&) {
+      BOOST_FAIL("selection status query should not time out");
+    });
+  provider.setSelectionStatusQueryable(serviceName, true);
+  BOOST_CHECK(provider.replySelectionStatusForTest(query));
+  pumpFace(face, ndn::time::milliseconds(1));
+  BOOST_REQUIRE(receivedStatus);
+
+  BOOST_CHECK(payload.find("state=Completed") != std::string::npos);
+  BOOST_CHECK(payload.find("service=" + serviceName.toUri()) != std::string::npos);
+  BOOST_CHECK(payload.find("selection_digest=" + selectionDigest) != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(UserResponseCallbackCanRunOffEventLoopAfterStateUpdate)
 {
   ndn::security::KeyChain keyChain("pib-memory:user-callback-parallel",

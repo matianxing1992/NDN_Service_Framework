@@ -61,6 +61,41 @@
 
 namespace ndn_service_framework{
 
+    enum class SelectionExecutionState
+    {
+        Unknown,
+        Received,
+        Queued,
+        Running,
+        Completed,
+        Failed,
+        Rejected,
+        Expired,
+        Cancelled,
+    };
+
+    struct SelectionExecutionStatus
+    {
+        ndn::Name providerName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+        std::string selectionDigest;
+        SelectionExecutionState state = SelectionExecutionState::Unknown;
+        std::string message;
+        ndn::Name responseName;
+        uint64_t receivedAtUs = 0;
+        uint64_t queuedAtUs = 0;
+        uint64_t runningAtUs = 0;
+        uint64_t completedAtUs = 0;
+        uint64_t updatedAtUs = 0;
+    };
+
+    const char*
+    selectionExecutionStateToString(SelectionExecutionState state);
+
+    SelectionExecutionState
+    selectionExecutionStateFromString(const std::string& state);
+
     struct HybridCryptoCounters
     {
         std::atomic<uint64_t> hybrid_key_epoch_created{0};

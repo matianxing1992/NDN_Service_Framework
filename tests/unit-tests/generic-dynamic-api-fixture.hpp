@@ -360,6 +360,12 @@ public:
     return pendingProviderTokens.find(key) != pendingProviderTokens.end();
   }
 
+  bool
+  replySelectionStatusForTest(const ndn::Interest& interest)
+  {
+    return replySelectionExecutionStatus(interest);
+  }
+
   void
   addTargetedProviderTokenForTest(const ndn::Name& requesterName,
                                   const ndn::Name& serviceName,

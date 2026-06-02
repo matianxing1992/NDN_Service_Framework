@@ -265,6 +265,8 @@ namespace ndn_service_framework{
             getProviderRequestStatus(const ndn::Name& requestId) const;
             std::vector<ProviderRequestLifecycleStatus>
             getActiveProviderRequestStatuses() const;
+            std::optional<SelectionExecutionStatus>
+            getSelectionExecutionStatus(const std::string& selectionDigest) const;
             std::map<std::string, uint64_t> getProviderAdmissionCounters() const;
             static const char* providerRequestLifecycleStateToString(
                 ProviderRequestLifecycleState state);
@@ -355,6 +357,9 @@ namespace ndn_service_framework{
 
             void setLegacyAckStrategyHandler(const ndn::Name& serviceName,
                                              LegacyAckStrategyHandler ackHandler);
+
+            void setSelectionStatusQueryable(const ndn::Name& serviceName,
+                                             bool enabled = true);
 
             template<typename RequestT, typename ResponseT>
             void addHandler(const ndn::Name& serviceName,
@@ -501,6 +506,7 @@ namespace ndn_service_framework{
                 RequestHandler requestHandler;
                 RequestHandler targetedRequestHandler;
                 ServiceMode mode = ServiceMode::Normal;
+                bool selectionStatusQueryable = false;
             };
 
             struct RegisteredCollaborationService
@@ -571,6 +577,20 @@ namespace ndn_service_framework{
                 ProviderRequestLifecycleState state,
                 const std::string& suppressionReason = "",
                 const std::string& finalStatus = "");
+            void updateSelectionExecutionStatus(
+                const std::string& selectionDigest,
+                SelectionExecutionState state,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const std::string& message = "",
+                const ndn::Name& responseName = ndn::Name());
+            bool replySelectionExecutionStatus(const ndn::Interest& interest);
+            static std::string encodeSelectionExecutionStatus(
+                const SelectionExecutionStatus& status);
+            static SelectionExecutionStatus makeUnknownSelectionExecutionStatus(
+                const ndn::Name& providerName,
+                const std::string& selectionDigest);
             bool dispatchAckDecisionAsync(
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
@@ -606,14 +626,16 @@ namespace ndn_service_framework{
                 const ndn::Name& providerName,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
-                RequestMessage requestMessage);
+                RequestMessage requestMessage,
+                std::string selectionDigest = "");
             bool dispatchCollaborationExecutionAsync(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
-                CollaborationAssignment assignment);
+                CollaborationAssignment assignment,
+                std::string selectionDigest = "");
             void prepareCollaborationAssignmentAsync(
                 const ndn::Name& requestId,
                 CollaborationAssignment assignment,
@@ -624,14 +646,16 @@ namespace ndn_service_framework{
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
-                ResponseMessage response);
+                ResponseMessage response,
+                std::string selectionDigest = "");
             void publishExecutionFailureOnEventLoop(
                 const ndn::Name& requesterName,
                 const ndn::Name& providerName,
                 const ndn::Name& serviceName,
                 const ndn::Name& requestId,
                 const RequestMessage& requestMessage,
-                const std::string& error);
+                const std::string& error,
+                std::string selectionDigest = "");
             void publishCollaborationData(const ndn::Name& requesterName,
                                           const ndn::Name& requestId,
                                           const std::string& producerRole,
@@ -765,6 +789,8 @@ namespace ndn_service_framework{
             ndn::time::milliseconds m_providerAckMaxSelectionLag{0};
             std::map<ndn::Name, ProviderRequestLifecycleStatus>
                 m_providerRequestLifecycleStatuses;
+            std::map<std::string, SelectionExecutionStatus>
+                m_selectionExecutionStatuses;
             ProviderRequestLifecycleCallback m_providerRequestLifecycleCallback;
             std::map<std::string, uint64_t> m_providerAdmissionCounters;
 

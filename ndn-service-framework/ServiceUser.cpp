@@ -808,6 +808,171 @@ namespace ndn_service_framework
         return diagnostics;
     }
 
+    SelectionExecutionStatus
+    ServiceUser::parseSelectionExecutionStatusPayload(
+        const ndn::Data& data,
+        const ndn::Name& providerName,
+        const std::string& selectionDigest)
+    {
+        SelectionExecutionStatus status;
+        status.providerName = providerName;
+        status.selectionDigest = selectionDigest;
+
+        const auto content = data.getContent();
+        const std::string text(reinterpret_cast<const char*>(content.value()),
+                               content.value_size());
+        std::istringstream input(text);
+        std::string line;
+        while (std::getline(input, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) {
+                continue;
+            }
+            const auto key = line.substr(0, eq);
+            const auto value = line.substr(eq + 1);
+            try {
+                if (key == "state") {
+                    status.state = selectionExecutionStateFromString(value);
+                }
+                else if (key == "provider" && !value.empty()) {
+                    status.providerName = ndn::Name(value);
+                }
+                else if (key == "service" && !value.empty()) {
+                    status.serviceName = ndn::Name(value);
+                }
+                else if (key == "request_id" && !value.empty()) {
+                    status.requestId = ndn::Name(value);
+                }
+                else if (key == "selection_digest") {
+                    status.selectionDigest = value;
+                }
+                else if (key == "message") {
+                    status.message = value;
+                }
+                else if (key == "response_name" && !value.empty()) {
+                    status.responseName = ndn::Name(value);
+                }
+                else if (key == "received_at_us") {
+                    status.receivedAtUs = std::stoull(value);
+                }
+                else if (key == "queued_at_us") {
+                    status.queuedAtUs = std::stoull(value);
+                }
+                else if (key == "running_at_us") {
+                    status.runningAtUs = std::stoull(value);
+                }
+                else if (key == "completed_at_us") {
+                    status.completedAtUs = std::stoull(value);
+                }
+                else if (key == "updated_at_us") {
+                    status.updatedAtUs = std::stoull(value);
+                }
+            }
+            catch (const std::exception&) {
+            }
+        }
+        return status;
+    }
+
+    void ServiceUser::QuerySelectionStatus(
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const std::string& selectionDigest,
+        SelectionStatusHandler onStatus,
+        TimeoutHandler onTimeout,
+        int timeoutMs)
+    {
+        ndn::Interest interest(makeSelectionStatusQueryName(providerName,
+                                                            serviceName,
+                                                            selectionDigest));
+        interest.setCanBePrefix(false);
+        interest.setMustBeFresh(true);
+        interest.setInterestLifetime(ndn::time::milliseconds(
+            std::max(1, timeoutMs)));
+
+        const auto timeoutHandler = std::move(onTimeout);
+        m_face.expressInterest(
+            interest,
+            [providerName, selectionDigest, onStatus = std::move(onStatus)](
+                const ndn::Interest&, const ndn::Data& data) {
+                if (onStatus) {
+                    onStatus(parseSelectionExecutionStatusPayload(data,
+                                                                  providerName,
+                                                                  selectionDigest));
+                }
+            },
+            [timeoutHandler](
+                const ndn::Interest& interest, const ndn::lp::Nack&) {
+                if (timeoutHandler) {
+                    timeoutHandler(interest.getName());
+                }
+            },
+            [timeoutHandler](const ndn::Interest& interest) {
+                if (timeoutHandler) {
+                    timeoutHandler(interest.getName());
+                }
+            });
+    }
+
+    void ServiceUser::scheduleSelectionStatusQuery(
+        const ndn::Name& requestId,
+        const ndn::Name& providerName,
+        const std::string& selectionDigest)
+    {
+        auto pending = m_pendingCalls.find(requestId);
+        if (pending == m_pendingCalls.end() ||
+            !pending->second.trackSelectionStatus ||
+            !pending->second.selectionStatusOptions.enabled ||
+            pending->second.hasResponse ||
+            pending->second.timedOut) {
+            return;
+        }
+
+        const ndn::Name serviceName = pending->second.serviceName;
+        const auto options = pending->second.selectionStatusOptions;
+        const std::string providerUri = providerName.toUri();
+
+        QuerySelectionStatus(
+            providerName,
+            serviceName,
+            selectionDigest,
+            [this, requestId, providerUri](
+                const SelectionExecutionStatus& status) {
+                auto call = m_pendingCalls.find(requestId);
+                if (call == m_pendingCalls.end()) {
+                    return;
+                }
+                call->second.selectionStatusesByProvider[providerUri] = status;
+            },
+            [this, requestId, providerName, serviceName, providerUri, selectionDigest](
+                const ndn::Name&) {
+                auto call = m_pendingCalls.find(requestId);
+                if (call == m_pendingCalls.end()) {
+                    return;
+                }
+                auto& status =
+                    call->second.selectionStatusesByProvider[providerUri];
+                if (status.state == SelectionExecutionState::Unknown ||
+                    status.selectionDigest.empty()) {
+                    status.providerName = providerName;
+                    status.serviceName = serviceName;
+                    status.requestId = requestId;
+                    status.selectionDigest = selectionDigest;
+                    status.state = SelectionExecutionState::Unknown;
+                }
+                status.message = "selection status query timed out";
+                status.updatedAtUs = nowMicroseconds();
+            },
+            options.queryTimeoutMs);
+
+        m_scheduler.schedule(ndn::time::milliseconds(options.queryIntervalMs),
+            [this, requestId, providerName, selectionDigest] {
+                scheduleSelectionStatusQuery(requestId,
+                                             providerName,
+                                             selectionDigest);
+            });
+    }
+
     void ServiceUser::setAdaptiveAdmissionControl(const AdaptiveAdmissionOptions& options)
     {
         m_adaptiveAdmissionOptions = options;
@@ -1305,9 +1470,37 @@ namespace ndn_service_framework
 
         pendingCall->second.timedOut = true;
         auto timeoutHandler = pendingCall->second.timeoutHandler;
+        auto statusTimeoutHandler = pendingCall->second.statusTimeoutHandler;
+        std::vector<SelectionExecutionStatus> selectionStatuses;
+        if (pendingCall->second.trackSelectionStatus) {
+            for (const auto& item : pendingCall->second.selectionStatusesByProvider) {
+                selectionStatuses.push_back(item.second);
+            }
+            for (const auto& item : pendingCall->second.selectionDigestsByProvider) {
+                const auto& providerUri = item.first;
+                const bool alreadyKnown =
+                    pendingCall->second.selectionStatusesByProvider.find(providerUri) !=
+                    pendingCall->second.selectionStatusesByProvider.end();
+                if (alreadyKnown) {
+                    continue;
+                }
+                SelectionExecutionStatus unknown;
+                unknown.providerName = ndn::Name(providerUri);
+                unknown.serviceName = pendingCall->second.serviceName;
+                unknown.requestId = requestId;
+                unknown.selectionDigest = item.second;
+                unknown.state = SelectionExecutionState::Unknown;
+                unknown.message = "no status response received before timeout";
+                unknown.updatedAtUs = nowMicroseconds();
+                selectionStatuses.push_back(std::move(unknown));
+            }
+        }
         erasePendingCallWithTrace(requestId, pendingCall, "timeout");
 
-        if (timeoutHandler) {
+        if (statusTimeoutHandler) {
+            statusTimeoutHandler(requestId, selectionStatuses);
+        }
+        else if (timeoutHandler) {
             timeoutHandler(requestId);
         }
     }
@@ -2579,7 +2772,10 @@ namespace ndn_service_framework
         int timeoutMs,
         TimeoutHandler onTimeout,
         ResponseHandler onResponseHandler,
-        size_t strategy)
+        size_t strategy,
+        bool trackSelectionStatus,
+        SelectionStatusTimeoutHandler statusTimeoutHandler,
+        SelectionStatusOptions statusOptions)
     {
         PendingCall pendingCall;
         pendingCall.providers = providers;
@@ -2590,6 +2786,13 @@ namespace ndn_service_framework
         pendingCall.createdAtUs = nowMicroseconds();
         pendingCall.timeoutHandler = std::move(onTimeout);
         pendingCall.responseHandler = std::move(onResponseHandler);
+        pendingCall.trackSelectionStatus = trackSelectionStatus;
+        pendingCall.statusTimeoutHandler = std::move(statusTimeoutHandler);
+        pendingCall.selectionStatusOptions = statusOptions;
+        pendingCall.selectionStatusOptions.queryIntervalMs =
+            std::max(1, pendingCall.selectionStatusOptions.queryIntervalMs);
+        pendingCall.selectionStatusOptions.queryTimeoutMs =
+            std::max(1, pendingCall.selectionStatusOptions.queryTimeoutMs);
         m_pendingCalls[requestId] = std::move(pendingCall);
         updateRequestLifecycleState(requestId, RequestLifecycleState::QUEUED_LOCAL);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=REQUEST_CREATED timestamp_us="
@@ -2732,6 +2935,31 @@ namespace ndn_service_framework
                                            std::move(onTimeout),
                                            std::move(onResponseHandler),
                                            strategy);
+    }
+
+    ndn::Name ServiceUser::RequestServiceTracked(
+                                      const std::vector<ndn::Name>& providers,
+                                      const ndn::Name& serviceName,
+                                      ndn_service_framework::RequestMessage requestMessage,
+                                      int timeoutMs,
+                                      SelectionStatusTimeoutHandler onTimeout,
+                                      ResponseHandler onResponseHandler,
+                                      size_t strategy,
+                                      SelectionStatusOptions statusOptions)
+    {
+        auto requestId = makeRequestId();
+        return startRequestServiceWithRequestId(
+            requestId,
+            providers,
+            serviceName,
+            std::move(requestMessage),
+            timeoutMs,
+            TimeoutHandler{},
+            std::move(onResponseHandler),
+            strategy,
+            true,
+            std::move(onTimeout),
+            statusOptions);
     }
 
     ndn::Name ServiceUser::RequestServiceTargeted(const ndn::Name& provider,
@@ -5331,6 +5559,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
             makeServiceSelectionNameV2(identity, providerName, serviceName, requestId);
         ndn::Name serviceSelectionNameWithoutPrefix =
             makeServiceSelectionNameWithoutPrefixV2(providerName, serviceName, requestId);
+        const std::string selectionDigest = computeSelectionDigest(selectionMessage);
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
                   << nowMicroseconds()
@@ -5356,6 +5585,22 @@ void ServiceUser::finishRequestAckOnEventLoop(
         if (pendingIt != m_pendingCalls.end()) {
             pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
             addUniqueName(pendingIt->second.selectionPublishedProviders, providerName);
+            pendingIt->second.selectionDigestsByProvider[providerName.toUri()] =
+                selectionDigest;
+            SelectionExecutionStatus status;
+            status.providerName = providerName;
+            status.serviceName = serviceName;
+            status.requestId = requestId;
+            status.selectionDigest = selectionDigest;
+            status.state = SelectionExecutionState::Unknown;
+            status.message = "selection published; awaiting provider status";
+            status.updatedAtUs = nowMicroseconds();
+            pendingIt->second.selectionStatusesByProvider[providerName.toUri()] =
+                status;
+            if (pendingIt->second.trackSelectionStatus &&
+                pendingIt->second.selectionStatusOptions.enabled) {
+                scheduleSelectionStatusQuery(requestId, providerName, selectionDigest);
+            }
         }
         updateRequestLifecycleState(requestId, RequestLifecycleState::SELECTION_PUBLISHED);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISHED timestamp_us="
