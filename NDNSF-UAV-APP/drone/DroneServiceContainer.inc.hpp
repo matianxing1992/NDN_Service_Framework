@@ -2628,7 +2628,6 @@ private:
   publishStatus(const std::string& value)
   {
     NDN_LOG_INFO("DRONE_STATUS drone=" << m_droneId << " " << value);
-    std::cout << "DRONE_STATUS drone=" << m_droneId << " " << value << std::endl;
     if (m_statusCallback) {
       m_statusCallback(value);
     }
