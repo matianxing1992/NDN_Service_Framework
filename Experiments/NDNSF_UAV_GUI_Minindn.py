@@ -123,6 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Reserved for NDNSD service discovery experiments; not enabled by default.")
     parser.add_argument("--auto-video-test", action="store_true",
                         help="Have the GS auto-start and auto-stop video for smoke testing.")
+    parser.add_argument("--auto-repeat-stop-test", action="store_true",
+                        help="With --auto-video-test, delay the first Stop response and "
+                             "auto-click Stop again to verify timeout/retry UI behavior.")
     parser.add_argument("--auto-mavlink-test", action="store_true",
                         help="Have the GS send Arm/Takeoff/Land over Targeted NDNSF for smoke testing.")
     parser.add_argument("--auto-telemetry-test", action="store_true",
@@ -764,6 +767,8 @@ def main() -> int:
             for drone_id, node_name in drones
         }
         gs_env = make_env(args, args.gs_node, homes[args.gs_node])
+        if args.auto_repeat_stop_test:
+            gs_env["NDNSF_UAV_SIMULATE_STOP_DELAY_MS"] = "4000"
 
         controller_cmd = app_cmd(APP_CONTROLLER, [
             "--controller-prefix", runtime["controller-prefix"],
@@ -861,6 +866,11 @@ def main() -> int:
                 "--auto-stop-seconds", str(args.auto_stop_seconds),
                 "--auto-start-delay-ms", str(args.auto_start_delay_ms),
             ]
+            if args.auto_repeat_stop_test:
+                gs_argv += [
+                    "--auto-repeat-stop-test",
+                    "--timeout-ms", "2500",
+                ]
         if args.auto_mavlink_test:
             gs_argv += ["--auto-mavlink-test"]
         if args.auto_telemetry_test:
@@ -1019,6 +1029,11 @@ def main() -> int:
             require_log(gs_log, "GS_GUI_EXIT rc=0")
             require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video streaming")
             require_log(drone_logs[args.drone_id], "DRONE_STATUS drone=" + args.drone_id + " video stopped")
+            if args.auto_repeat_stop_test:
+                require_log(gs_log, "Video stop timed out for drone " + args.drone_id)
+                require_log(gs_log, "Video stopped drone=" + args.drone_id)
+                require_log(drone_logs[args.drone_id],
+                            "DRONE_VIDEO_STOP_SIMULATED_DELAY_MS drone=" + args.drone_id)
             print("NDNSF_UAV_GUI_MININDN_SMOKE_OK")
         elif args.no_cli:
             while True:

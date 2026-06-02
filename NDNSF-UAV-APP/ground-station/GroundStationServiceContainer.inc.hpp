@@ -281,6 +281,7 @@ public:
     }
     m_seenVideoStart = false;
     m_videoStartRetries = 0;
+    m_videoStopDelayInjected = false;
     startVideoAttempt(droneId);
   }
 
@@ -1804,8 +1805,14 @@ private:
   void
   stopVideoAttempt(std::string droneId)
   {
+    Fields stopFields{{"type", "video-control"}, {"action", "stop"}};
+    if (const auto* delayMs = std::getenv("NDNSF_UAV_SIMULATE_STOP_DELAY_MS")) {
+      if (!m_videoStopDelayInjected.exchange(true)) {
+        stopFields["simulate_delay_ms"] = delayMs;
+      }
+    }
     postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
-                encodeFields({{"type", "video-control"}, {"action", "stop"}}),
+                encodeFields(stopFields),
                 [this, droneId](const std::string& payload) {
                   m_videoStopInFlight = false;
                   {
@@ -3300,6 +3307,7 @@ private:
   std::atomic<bool> m_seenVideoStart{false};
   std::atomic<bool> m_videoStartInFlight{false};
   std::atomic<bool> m_videoStopInFlight{false};
+  std::atomic<bool> m_videoStopDelayInjected{false};
   std::atomic<bool> m_recordingPlaybackActive{false};
   std::atomic<uint64_t> m_videoStartRetries{0};
   std::atomic<uint64_t> m_firstFrameMs{0};

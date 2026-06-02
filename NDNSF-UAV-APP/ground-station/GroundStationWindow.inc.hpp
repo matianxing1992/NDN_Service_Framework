@@ -10,6 +10,7 @@ public:
                       bool autoManualControlTest,
                       bool autoTwoDroneSwitchTest,
                       bool autoRecordingPlaybackTest,
+                      bool autoRepeatStopTest,
                       std::vector<std::string> droneIds)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
@@ -75,6 +76,7 @@ public:
     , m_padY("Y  Takeoff")
     , m_padLB("LB")
     , m_padRB("RB")
+    , m_autoRepeatStopTest(autoRepeatStopTest)
     , m_droneIds(std::move(droneIds))
   {
     set_title("NDNSF UAV Ground Station");
@@ -600,15 +602,19 @@ public:
       return true;
     }, 1500);
 
-	    if (autoStart) {
-	      std::thread([this, autoStopSeconds, autoStartDelayMs] {
-	        std::this_thread::sleep_for(std::chrono::milliseconds(autoStartDelayMs));
-	        m_runtime.startVideo();
+    if (autoStart) {
+      std::thread([this, autoStopSeconds, autoStartDelayMs] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(autoStartDelayMs));
+        m_runtime.startVideo();
         for (int i = 0; i < 100 && !m_runtime.isStreaming(); ++i) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         std::this_thread::sleep_for(std::chrono::seconds(autoStopSeconds));
         m_runtime.stopVideo();
+        if (m_autoRepeatStopTest) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+          m_runtime.stopVideo();
+        }
         std::this_thread::sleep_for(std::chrono::seconds(5));
         Glib::signal_idle().connect_once([this] {
           hide();
@@ -2122,6 +2128,7 @@ private:
   std::atomic<int> m_manualR{0};
   std::array<std::atomic<int>, 8> m_gamepadAxes{};
   std::array<std::atomic<bool>, 16> m_gamepadButtons{};
+  bool m_autoRepeatStopTest = false;
   uint64_t m_streamGeneration = 0;
   bool m_acceptFrames = false;
   std::atomic<uint64_t> m_decodedFrames{0};

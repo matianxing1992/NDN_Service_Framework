@@ -25,6 +25,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <csignal>
 #include <cerrno>
 #include <cmath>
@@ -379,6 +380,7 @@ main(int argc, char** argv)
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
     const bool autoSingleMissionTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-test", "auto-single-mission-test", false);
     const bool autoSingleMissionStartTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-start-test", "auto-single-mission-start-test", false);
+    const bool autoRepeatStopTest = getConfigBool(argc, argv, appConfig, "--auto-repeat-stop-test", "auto-repeat-stop-test", false);
     const int autoStopSeconds = std::stoi(getConfigOption(argc, argv, appConfig, "--auto-stop-seconds", "auto-stop-seconds", "10"));
     const int autoStartDelayMs = std::stoi(getConfigOption(argc, argv, appConfig, "--auto-start-delay-ms", "auto-start-delay-ms", "3000"));
     const std::string targetDroneId = getConfigOption(argc, argv, appConfig, "--target-drone", "target-drone", "A");
@@ -457,12 +459,13 @@ main(int argc, char** argv)
       std::cout << "GS_TELEMETRY_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
-	    GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
-                                 autoStartDelayMs, autoMavlinkTest,
-                                 autoKeyboardTest, autoManualControlTest,
-                                 autoTwoDroneSwitchTest,
-                                 autoRecordingPlaybackTest,
-                                 patrolDroneIds);
+    GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
+                               autoStartDelayMs, autoMavlinkTest,
+                               autoKeyboardTest, autoManualControlTest,
+                               autoTwoDroneSwitchTest,
+                               autoRecordingPlaybackTest,
+                               autoRepeatStopTest,
+                               patrolDroneIds);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
               << " auto_video_test=" << (autoStart ? "true" : "false")
