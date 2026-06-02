@@ -1101,6 +1101,8 @@ def main() -> int:
             require_log(gs_log, "start_blocked=A:waiting-heartbeat,B:waiting-heartbeat")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=after-ready can_upload=true upload_reason=ok can_start=true start_reason=ok can_stop=true stop_reason=ok")
             require_log(gs_log, "start_eligible_count=2")
+            require_log(gs_log, "MISSION_CONTROL_STATE phase=start-pending can_upload=false upload_reason=start-pending can_start=false start_reason=start-pending can_stop=true stop_reason=ok")
+            require_log(gs_log, "MISSION_CONTROL_STATE phase=stop-pending can_upload=false upload_reason=stop-pending can_start=false start_reason=stop-pending can_stop=false stop_reason=stop-pending")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=progress-active can_upload=false upload_reason=progress-active can_start=false start_reason=progress-active can_stop=true stop_reason=ok")
             require_log(gs_log, "progress_phase=compensating progress_active=true")
             require_log(gs_log, "DRONE_ROW_STATE phase=progress-active selected=A")

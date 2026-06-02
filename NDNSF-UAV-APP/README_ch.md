@@ -711,7 +711,8 @@ UAV service-container workload 的应用。计划顺序如下：
    已经驱动主要飞控按钮、selected-drone action model、selected-drone view-state gate reason、
    inspector/map 文本、地图 marker、左侧 drone list 和 MiniNDN smoke markers。Mission Start/Stop 现在也通过 typed mission start gate
    把 `MissionState`、flight readiness 和 safety 组合起来判断，并向 UI 与 smoke test 暴露
-   upload/start/stop reason。Patrol task progress 现在也有
+   upload/start/stop reason 以及 action-pending tooltip。周期性 telemetry 不会再让空的 idle
+   mission fields 覆盖 GS 侧更新的 mission state。Patrol task progress 现在也有
    typed `MissionProgressState`，用于 assignment、compensation、completion 和 return-home
    planning；ground-station mission 按钮也会使用这个 progress model，在 patrol assignment 或
    compensation 仍然 active 时阻止重复 upload/start。左侧 drone row 和地图 marker 也会使用同一个
@@ -1190,7 +1191,10 @@ launcher 会使用两架 mock drone 环境，并在 GS smoke 路径中注入 upl
 `MissionState`。它会先确认 not-ready flight safety gate 会阻止 uploaded mission start，并明确显示
 `start_reason=blocked-...waiting-heartbeat`；然后注入 ready/unarmed `ReadinessState`，再检查 GS 的
 mission control model 是否变成 `can_start=true` / `start_reason=ok` / `can_stop=true`，不依赖飞控
-waypoint upload 的实际行为。
+waypoint upload 的实际行为。同一个 smoke 还会检查本地 `start-pending` 和 `stop-pending`
+action gate，确保 Mission Start/Stop 按钮状态和 tooltip 在长命令序列执行期间仍然来自 typed
+model。周期性 telemetry 里携带的空 `idle` mission snapshot 如果比 GS 已知的非 idle mission
+state 更弱，不会再覆盖已上传或正在执行的任务状态。
 
 如果要回归测试 Arm/Takeoff/Land/手操按钮是否由 typed `ReadinessState` 驱动：
 

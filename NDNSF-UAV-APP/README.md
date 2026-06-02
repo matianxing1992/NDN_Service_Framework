@@ -1328,7 +1328,12 @@ are still blocked by a not-ready flight safety gate, then injects ready/unarmed
 `ReadinessState` snapshots and verifies that the mission control model changes
 from explicit `start_reason=blocked-...waiting-heartbeat` to
 `can_start=true` / `start_reason=ok` / `can_stop=true`, without depending on
-flight-controller waypoint upload behavior.
+flight-controller waypoint upload behavior. The same smoke also exercises local
+`start-pending` and `stop-pending` action gates, which keep Mission Start/Stop
+button state and tooltips derived from the typed model while a long command
+sequence is in progress. Empty `idle` mission snapshots carried by periodic
+telemetry are treated as stale when the GS already has a newer non-idle mission
+state, so background telemetry polling does not erase an uploaded/active plan.
 
 To regression-test that Arm/Takeoff/Land/manual-control buttons follow typed
 `ReadinessState`:
@@ -1422,7 +1427,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    markers, left drone list, and MiniNDN smoke markers. Mission Start/Stop now
    also goes through a typed mission start gate
    that combines `MissionState` with flight readiness and safety, and exposes
-   upload/start/stop reasons for the UI and smoke tests. Patrol task
+   upload/start/stop reasons and action-pending tooltips for the UI and smoke
+   tests. Periodic telemetry no longer lets empty idle mission fields erase a
+   newer GS-side mission state. Patrol task
    progress now has a typed `MissionProgressState` for assignment,
    compensation, completion, and return-home planning, and the ground-station
    mission buttons use that progress model to block duplicate upload/start
