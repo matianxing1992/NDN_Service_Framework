@@ -2408,6 +2408,17 @@ private:
     std::string videoStatus = "unknown";
     std::string videoAdaptive = "unknown";
     std::string linkState = "unknown";
+    bool safetyAttention = false;
+    bool canArm = false;
+    bool canTakeoff = false;
+    bool canLand = false;
+    bool canManualControl = false;
+    bool canControlPanel = false;
+    std::string armReason = "unknown";
+    std::string takeoffReason = "unknown";
+    std::string landReason = "unknown";
+    std::string manualControlReason = "unknown";
+    std::string controlPanelReason = "unknown";
     MapMarker marker;
   };
 
@@ -2439,6 +2450,18 @@ private:
     state.videoAdaptive = videoAdaptive ? compactVideoAdaptiveSummary(*videoAdaptive) : "unknown";
     state.linkState = safety ? safety->linkState :
                       telemetry ? telemetry->linkState : "unknown";
+    const auto flightGate = FlightSafetyGateState::fromStates(state.selectedDrone, readiness, safety);
+    state.safetyAttention = flightGate.operatorAttention;
+    state.canArm = flightGate.canArm;
+    state.canTakeoff = flightGate.canTakeoff;
+    state.canLand = flightGate.canLand;
+    state.canManualControl = flightGate.canManualControl;
+    state.canControlPanel = flightGate.canControlPanel;
+    state.armReason = flightGate.armReason;
+    state.takeoffReason = flightGate.takeoffReason;
+    state.landReason = flightGate.landReason;
+    state.manualControlReason = flightGate.manualControlReason;
+    state.controlPanelReason = flightGate.controlPanelReason;
     if (telemetry) {
       state.hasTelemetry = true;
       state.inspectorText = telemetry->statusLine() +
@@ -2507,6 +2530,17 @@ private:
        << " video=" << state.videoStatus
        << " video_adaptive=" << state.videoAdaptive
        << " link=" << state.linkState
+       << " safety_attention=" << (state.safetyAttention ? "true" : "false")
+       << " can_arm=" << (state.canArm ? "true" : "false")
+       << " arm_reason=" << state.armReason
+       << " can_takeoff=" << (state.canTakeoff ? "true" : "false")
+       << " takeoff_reason=" << state.takeoffReason
+       << " can_land=" << (state.canLand ? "true" : "false")
+       << " land_reason=" << state.landReason
+       << " can_manual=" << (state.canManualControl ? "true" : "false")
+       << " manual_reason=" << state.manualControlReason
+       << " can_panel=" << (state.canControlPanel ? "true" : "false")
+       << " panel_reason=" << state.controlPanelReason
        << " marker=" << state.marker.label;
     NDN_LOG_INFO(os.str());
     std::cout << os.str() << std::endl;
