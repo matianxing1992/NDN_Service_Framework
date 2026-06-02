@@ -376,6 +376,7 @@ main(int argc, char** argv)
     const bool autoKeyboardTest = getConfigBool(argc, argv, appConfig, "--auto-keyboard-test", "auto-keyboard-test", false);
     const bool autoManualControlTest = getConfigBool(argc, argv, appConfig, "--auto-manual-control-test", "auto-manual-control-test", false);
     const bool autoTwoDroneSwitchTest = getConfigBool(argc, argv, appConfig, "--auto-two-drone-switch-test", "auto-two-drone-switch-test", false);
+    const bool autoLinkStateTest = getConfigBool(argc, argv, appConfig, "--auto-link-state-test", "auto-link-state-test", false);
     const bool autoRecordingPlaybackTest = getConfigBool(argc, argv, appConfig, "--auto-recording-playback-test", "auto-recording-playback-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
     const bool autoSingleMissionTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-test", "auto-single-mission-test", false);
@@ -398,6 +399,12 @@ main(int argc, char** argv)
     const std::string yoloWorkerScript = getConfigOption(
       argc, argv, appConfig, "--yolo-worker-script", "yolo-worker-script",
       "NDNSF-UAV-APP/tools/yolo_detect_worker.py");
+    const auto linkStaleMs = static_cast<uint64_t>(
+      std::stoull(getConfigOption(argc, argv, appConfig, "--link-stale-ms", "link-stale-ms", "3500")));
+    const auto linkLostMs = static_cast<uint64_t>(
+      std::stoull(getConfigOption(argc, argv, appConfig, "--link-lost-ms", "link-lost-ms", "8000")));
+    const std::string lostLinkAction = getConfigOption(
+      argc, argv, appConfig, "--lost-link-action", "lost-link-action", "notify");
     UavRuntimeConfig config = loadUavRuntimeConfig(
       getConfigOption(argc, argv, appConfig, "--runtime-config", "runtime-config",
                       "NDNSF-UAV-APP/configs/uav_runtime.conf"));
@@ -428,6 +435,7 @@ main(int argc, char** argv)
 
     const bool interactiveGui = !(autoStart || autoMavlinkTest || autoTelemetryTest || autoKeyboardTest ||
                                   autoManualControlTest || autoTwoDroneSwitchTest ||
+                                  autoLinkStateTest ||
                                   autoRecordingPlaybackTest ||
                                   autoPatrolTest || autoSingleMissionTest);
     if (interactiveGui && !hasFlag(argc, argv, "--no-cert-dialog") &&
@@ -438,7 +446,7 @@ main(int argc, char** argv)
     auto runtime = std::make_unique<GroundStationServiceContainer>(
       serveCertificates, ackTimeoutMs, timeoutMs, config, targetDroneId,
       videoBitrateKbps, videoFrameWidth, patrolDroneIds, yoloModel, yoloScript,
-      yoloWorkerScript);
+      yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
@@ -459,6 +467,11 @@ main(int argc, char** argv)
       std::cout << "GS_TELEMETRY_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoLinkStateTest) {
+      const bool ok = runtime->runLinkStateAgingTest(std::chrono::seconds(15));
+      std::cout << "GS_LINK_STATE_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
     GroundStationWindow window(*runtime, autoStart, autoStopSeconds,
                                autoStartDelayMs, autoMavlinkTest,
                                autoKeyboardTest, autoManualControlTest,
@@ -471,6 +484,7 @@ main(int argc, char** argv)
               << " auto_video_test=" << (autoStart ? "true" : "false")
               << " auto_mavlink_test=" << (autoMavlinkTest ? "true" : "false")
               << " auto_telemetry_test=" << (autoTelemetryTest ? "true" : "false")
+              << " auto_link_state_test=" << (autoLinkStateTest ? "true" : "false")
               << " auto_keyboard_test=" << (autoKeyboardTest ? "true" : "false")
               << " auto_manual_control_test=" << (autoManualControlTest ? "true" : "false")
               << " auto_two_drone_switch_test=" << (autoTwoDroneSwitchTest ? "true" : "false")

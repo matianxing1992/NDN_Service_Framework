@@ -132,6 +132,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS send Arm/Takeoff/Land over Targeted NDNSF for smoke testing.")
     parser.add_argument("--auto-telemetry-test", action="store_true",
                         help="Have the GS verify PX4/jMAVSim telemetry fields and state changes.")
+    parser.add_argument("--auto-link-state-test", action="store_true",
+                        help="Have the GS verify local telemetry stale/lost link state aging.")
     parser.add_argument("--auto-keyboard-test", action="store_true",
                         help="Have the GS trigger the same keyboard shortcuts as a/t/l for smoke testing.")
     parser.add_argument("--auto-manual-control-test", action="store_true",
@@ -151,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-stop-seconds", type=int, default=10)
     parser.add_argument("--auto-start-delay-ms", type=int, default=3000,
                         help="Delay before auto video start; useful for reproducing early manual clicks.")
+    parser.add_argument("--link-stale-ms", type=int, default=3500,
+                        help="GS local telemetry age threshold for stale link diagnostics.")
+    parser.add_argument("--link-lost-ms", type=int, default=8000,
+                        help="GS local telemetry age threshold for lost link diagnostics.")
+    parser.add_argument("--lost-link-action", default="notify",
+                        help="GS local diagnostic action label for lost-link state.")
     parser.add_argument("--no-cli", action="store_true",
                         help="Do not open the MiniNDN CLI; wait until interrupted.")
     parser.add_argument("--no-xhost", action="store_true",
@@ -881,6 +889,13 @@ def main() -> int:
             gs_argv += ["--auto-mavlink-test"]
         if args.auto_telemetry_test:
             gs_argv += ["--auto-telemetry-test", "--timeout-ms", "30000"]
+        if args.auto_link_state_test:
+            gs_argv += [
+                "--auto-link-state-test",
+                "--link-stale-ms", str(args.link_stale_ms),
+                "--link-lost-ms", str(args.link_lost_ms),
+                "--lost-link-action", args.lost_link_action,
+            ]
         if args.auto_keyboard_test:
             gs_argv += ["--auto-keyboard-test"]
         if args.auto_manual_control_test:
@@ -910,7 +925,8 @@ def main() -> int:
                 gs_argv += ["--auto-single-mission-start-test"]
         gs_proc, gs_log = start(ndn.net[args.gs_node], "ground-station",
                                 app_cmd(APP_GS, gs_argv), gs_env, output_dir, processes)
-        if not (args.auto_patrol_test or args.auto_single_mission_test or args.auto_telemetry_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
+        if not (args.auto_patrol_test or args.auto_single_mission_test or
+                args.auto_telemetry_test or args.auto_link_state_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
         print("")
@@ -978,6 +994,21 @@ def main() -> int:
             require_log(gs_log, "lat=")
             require_log(gs_log, "lon=")
             print("NDNSF_UAV_TELEMETRY_MININDN_SMOKE_OK")
+        elif args.auto_link_state_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station link-state smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "LINK_STATE_AGING sample=initial")
+            require_log(gs_log, "LINK_STATE_AGING sample=stale")
+            require_log(gs_log, "LINK_STATE_AGING sample=lost")
+            require_log(gs_log, "state=stale")
+            require_log(gs_log, "state=lost")
+            require_log(gs_log, "LINK_STATE_AGING_RESULT ok=true")
+            require_log(gs_log, "GS_LINK_STATE_EXIT ok=true")
+            print("NDNSF_UAV_LINK_STATE_MININDN_SMOKE_OK")
         elif (args.auto_mavlink_test or args.auto_keyboard_test or
               args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:
             try:

@@ -411,6 +411,10 @@ readiness reason，而不是继续向链路里灌入无效控制请求。
 manual-control freshness、replay 是否活跃、neutral fallback 是否已经发送，以及 replay
 count。GS 的 vehicle list、地图 marker 和 inspector 都直接渲染这个模型，所以 stale
 manual input 和 heartbeat loss 会表现成状态，而不是只藏在 backend log 里。
+GS 还会根据最近一次收到的 `TelemetryState` 在本地推导 telemetry age。Ground-station
+配置里的 `link-stale-ms`、`link-lost-ms` 和 `lost-link-action` 决定什么时候把选中的
+drone 显示为 `stale` 或 `lost`；这只是 operator 诊断状态，不改变 NDNSF service
+protocol。
 
 Takeoff 会受 telemetry state 保护：GS 在发送 Targeted takeoff command 前，必须看到
 heartbeat、flight-controller readiness、GPS/EKF readiness、电池 readiness 和 armed 状态。
@@ -1079,6 +1083,17 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 这个测试会在 GS 通过 NDNSF Targeted request 执行 arm/takeoff/land 时，检查
 `gps_fix_name`、`ekf_ready`、`landed_state_name`、`battery_voltage_v`、
 `armed` 和 `lat/lon`。
+
+如果要在没有真机硬件的情况下回归测试 GS 本地 stale/lost link 模型：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-link-state-test --link-stale-ms 600 \
+  --link-lost-ms 1400 --no-cli
+```
+
+这个测试先获取一次 telemetry，然后停止刷新并等待，确认 GS safety model 会从
+fresh/connected 变成 `stale`，再变成 `lost`。
 
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动

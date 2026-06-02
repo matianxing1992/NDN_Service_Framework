@@ -465,6 +465,11 @@ reports the current link state, manual-control freshness, replay activity,
 neutral fallback, and replay count. The GS vehicle list, map marker, and
 inspector render that model directly, so stale manual input and heartbeat loss
 are visible as state rather than only as backend logs.
+The GS also derives local telemetry age from the latest received
+`TelemetryState`. `link-stale-ms`, `link-lost-ms`, and `lost-link-action` in
+the ground-station config determine when a selected drone is shown as
+`stale` or `lost`; this is a local operator diagnostic and does not change the
+NDNSF service protocol.
 
 Takeoff is guarded by the telemetry state: the GS requires heartbeat,
 flight-controller readiness, GPS/EKF readiness, battery readiness, and an armed
@@ -1220,6 +1225,18 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 This checks `gps_fix_name`, `ekf_ready`, `landed_state_name`,
 `battery_voltage_v`, `armed`, and `lat/lon` while the GS runs
 arm/takeoff/land over NDNSF Targeted requests.
+
+To regression-test the GS local stale/lost link model without real hardware:
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-link-state-test --link-stale-ms 600 \
+  --link-lost-ms 1400 --no-cli
+```
+
+The test fetches one telemetry sample, waits without refreshing it, and checks
+that the GS safety model transitions from fresh/connected to `stale` and then
+`lost`.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance

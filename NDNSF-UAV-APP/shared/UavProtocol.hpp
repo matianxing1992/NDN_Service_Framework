@@ -132,6 +132,8 @@ struct SafetyState
   std::string manualNeutralSent = "true";
   uint64_t manualFreshForMs = 0;
   uint64_t manualReplayCount = 0;
+  uint64_t linkAgeMs = 0;
+  std::string lostLinkAction = "notify";
   std::string detail = "idle";
   uint64_t updatedMs = 0;
 
