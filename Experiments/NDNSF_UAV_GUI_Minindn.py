@@ -144,6 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS verify video Start/Stop controls follow the selected drone.")
     parser.add_argument("--auto-mission-controls-test", action="store_true",
                         help="Have the GS verify mission buttons follow typed MissionState.")
+    parser.add_argument("--auto-flight-controls-test", action="store_true",
+                        help="Have the GS verify flight action buttons follow typed ReadinessState.")
     parser.add_argument("--auto-recording-playback-test", action="store_true",
                         help="Have the drone record to its local repo and the GS discover/replay the recording.")
     parser.add_argument("--auto-patrol-test", action="store_true",
@@ -229,6 +231,7 @@ def active_drones(args: argparse.Namespace) -> list[tuple[str, str]]:
     if not (args.auto_patrol_test or args.auto_two_drone_switch_test or
             args.auto_video_selection_test or
             args.auto_mission_controls_test or
+            args.auto_flight_controls_test or
             args.multi_drone_gui or interactive_default):
         return [(args.drone_id, args.drone_node)]
     ids = csv_values(args.patrol_drone_ids)
@@ -919,6 +922,8 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "3000",
             ]
+        if args.auto_flight_controls_test:
+            gs_argv += ["--auto-flight-controls-test"]
         if args.auto_recording_playback_test:
             gs_argv += [
                 "--auto-recording-playback-test",
@@ -1053,6 +1058,20 @@ def main() -> int:
             require_log(gs_log, "MISSION_CONTROL_STATE phase=after-upload can_upload=true can_start=true can_stop=true")
             require_log(gs_log, "MISSION_CONTROL_STATE phase=final can_upload=true can_start=true can_stop=true")
             print("NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK")
+        elif args.auto_flight_controls_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station flight controls smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "FLIGHT_ACTION_STATE phase=not-ready selected=")
+            require_log(gs_log, "can_arm=false arm_reason=waiting-heartbeat can_takeoff=false takeoff_reason=waiting-heartbeat")
+            require_log(gs_log, "FLIGHT_ACTION_STATE phase=ready-unarmed selected=")
+            require_log(gs_log, "can_arm=true arm_reason=ok can_takeoff=false takeoff_reason=not-armed")
+            require_log(gs_log, "FLIGHT_ACTION_STATE phase=armed-ready selected=")
+            require_log(gs_log, "can_arm=false arm_reason=already-armed can_takeoff=true takeoff_reason=ok can_land=true land_reason=ok can_manual=true")
+            print("NDNSF_UAV_FLIGHT_CONTROLS_MININDN_SMOKE_OK")
         elif (args.auto_mavlink_test or args.auto_keyboard_test or
               args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:
             try:

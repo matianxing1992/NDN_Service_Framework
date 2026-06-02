@@ -315,6 +315,19 @@ public:
     return found->second;
   }
 
+  void
+  injectReadinessStateForTest(ReadinessState readiness)
+  {
+    if (readiness.timestampMs == 0) {
+      readiness.timestampMs = nowMilliseconds();
+    }
+    if (readiness.droneId.empty() || readiness.droneId == "unknown") {
+      return;
+    }
+    std::lock_guard<std::mutex> guard(m_telemetryMutex);
+    m_readinessByDrone[readiness.droneId] = std::move(readiness);
+  }
+
   std::optional<VideoState>
   videoForDrone(const std::string& droneId) const
   {

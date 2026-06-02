@@ -1119,6 +1119,17 @@ launcher 会使用两架 mock drone 环境，并在 GS smoke 路径中注入 upl
 `can_start=false` / `can_stop=false` 变成 mission part 可启动后的
 `can_start=true` / `can_stop=true`，不依赖飞控 waypoint upload 的实际行为。
 
+如果要回归测试 Arm/Takeoff/Land/手操按钮是否由 typed `ReadinessState` 驱动：
+
+```bash
+sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-flight-controls-test --no-cli
+```
+
+launcher 会在 GS smoke 路径中注入 not-ready、ready-but-not-armed 和
+armed-ready 三种 readiness snapshot。它检查 Arm 只在选中无人机 ready 且未 armed 时启用，
+Takeoff/Land/手操只在选中无人机 armed 后启用。
+
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动
 `px4 -i 0` 和 `px4 -i 1`。Drone A 使用 PX4 MAVLink UDP 端口

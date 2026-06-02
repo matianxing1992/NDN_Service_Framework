@@ -11,6 +11,7 @@ public:
                       bool autoTwoDroneSwitchTest,
                       bool autoVideoSelectionTest,
                       bool autoMissionControlsTest,
+                      bool autoFlightControlsTest,
                       bool autoRecordingPlaybackTest,
                       bool autoRepeatStopTest,
                       std::vector<std::string> droneIds)
@@ -870,6 +871,49 @@ public:
         });
       }).detach();
     }
+    if (autoFlightControlsTest) {
+      std::thread([this] {
+        auto makeReadiness = [this] (std::string droneId, bool ready, bool armed) {
+          ReadinessState readiness;
+          readiness.droneId = std::move(droneId);
+          readiness.heartbeatSeen = ready ? "true" : "false";
+          readiness.flightControllerReady = ready ? "true" : "false";
+          readiness.gpsReady = ready ? "true" : "false";
+          readiness.ekfReady = ready ? "true" : "false";
+          readiness.batteryReady = ready ? "true" : "false";
+          readiness.armed = armed ? "true" : "false";
+          readiness.mode = armed ? "GUIDED" : "STANDBY";
+          readiness.landedStateName = armed ? "on-ground" : "unknown";
+          readiness.readiness = ready ? "ready" : "not-ready";
+          readiness.readinessReason = ready ? "ok" : "waiting-heartbeat";
+          readiness.timestampMs = nowMilliseconds();
+          return readiness;
+        };
+
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), false, false)] {
+          m_runtime.injectReadinessStateForTest(readiness);
+          updateVehicleRows();
+          logFlightActionControlState("not-ready");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, false)] {
+          m_runtime.injectReadinessStateForTest(readiness);
+          updateVehicleRows();
+          logFlightActionControlState("ready-unarmed");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this, readiness = makeReadiness(m_runtime.targetDroneId(), true, true)] {
+          m_runtime.injectReadinessStateForTest(readiness);
+          updateVehicleRows();
+          logFlightActionControlState("armed-ready");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Glib::signal_idle().connect_once([this] {
+          hide();
+        });
+      }).detach();
+    }
     if (autoRecordingPlaybackTest) {
       std::thread([this] {
         std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -918,9 +962,10 @@ public:
 
 private:
   bool
-  selectedReadinessAllows(const std::string& action, std::string& reason) const
+  readinessAllowsAction(const std::optional<ReadinessState>& readiness,
+                        const std::string& action,
+                        std::string& reason) const
   {
-    const auto readiness = m_runtime.readinessForDrone(m_runtime.targetDroneId());
     if (!readiness) {
       reason = "no-telemetry";
       return false;
@@ -974,6 +1019,13 @@ private:
   }
 
   bool
+  selectedReadinessAllows(const std::string& action, std::string& reason) const
+  {
+    return readinessAllowsAction(m_runtime.readinessForDrone(m_runtime.targetDroneId()),
+                                 action, reason);
+  }
+
+  bool
   sendSelectedFlightCommandIfReady(const std::string& commandName, Fields params = {})
   {
     std::string reason;
@@ -990,24 +1042,72 @@ private:
     return m_runtime.sendMavlinkCommand(commandName, std::move(params));
   }
 
+  struct FlightActionControlState
+  {
+    std::string selectedDrone;
+    bool hasReadiness = false;
+    bool canArm = false;
+    bool canTakeoff = false;
+    bool canLand = false;
+    bool canManualControl = false;
+    bool canControlPanel = false;
+    std::string armReason;
+    std::string takeoffReason;
+    std::string landReason;
+    std::string manualControlReason;
+    std::string controlPanelReason;
+  };
+
+  FlightActionControlState
+  flightActionControlStateForSelected() const
+  {
+    FlightActionControlState state;
+    state.selectedDrone = m_runtime.targetDroneId();
+    const auto readiness = m_runtime.readinessForDrone(state.selectedDrone);
+    state.hasReadiness = readiness.has_value();
+    state.canArm = readinessAllowsAction(readiness, "arm", state.armReason);
+    state.canTakeoff = readinessAllowsAction(readiness, "takeoff", state.takeoffReason);
+    state.canLand = readinessAllowsAction(readiness, "land", state.landReason);
+    state.canManualControl = readinessAllowsAction(readiness, "manual_control", state.manualControlReason);
+    state.canControlPanel = readinessAllowsAction(readiness, "control_panel", state.controlPanelReason);
+    return state;
+  }
+
+  void
+  logFlightActionControlState(const std::string& phase) const
+  {
+    const auto state = flightActionControlStateForSelected();
+    std::ostringstream os;
+    os << "FLIGHT_ACTION_STATE phase=" << phase
+       << " selected=" << state.selectedDrone
+       << " has_readiness=" << (state.hasReadiness ? "true" : "false")
+       << " can_arm=" << (state.canArm ? "true" : "false")
+       << " arm_reason=" << state.armReason
+       << " can_takeoff=" << (state.canTakeoff ? "true" : "false")
+       << " takeoff_reason=" << state.takeoffReason
+       << " can_land=" << (state.canLand ? "true" : "false")
+       << " land_reason=" << state.landReason
+       << " can_manual=" << (state.canManualControl ? "true" : "false")
+       << " manual_reason=" << state.manualControlReason
+       << " can_panel=" << (state.canControlPanel ? "true" : "false")
+       << " panel_reason=" << state.controlPanelReason;
+    NDN_LOG_INFO(os.str());
+    std::cout << os.str() << std::endl;
+  }
+
   void
   updateFlightControlControls()
   {
-    std::string reason;
-    const bool armOk = selectedReadinessAllows("arm", reason);
-    const bool takeoffOk = selectedReadinessAllows("takeoff", reason);
-    const bool landOk = selectedReadinessAllows("land", reason);
-    const bool manualOk = selectedReadinessAllows("manual_control", reason);
-    const bool panelOk = selectedReadinessAllows("control_panel", reason);
-    m_arm.set_sensitive(armOk);
-    m_takeoff.set_sensitive(takeoffOk);
-    m_land.set_sensitive(landOk);
-    if (m_controlMode && !panelOk) {
+    const auto state = flightActionControlStateForSelected();
+    m_arm.set_sensitive(state.canArm);
+    m_takeoff.set_sensitive(state.canTakeoff);
+    m_land.set_sensitive(state.canLand);
+    if (m_controlMode && !state.canControlPanel) {
       setControlMode(false);
       m_status.set_text("Manual control disabled: drone=" + m_runtime.targetDroneId() +
-                        " reason=" + reason);
+                        " reason=" + state.controlPanelReason);
     }
-    m_controlToggle.set_sensitive(panelOk || m_controlMode || manualOk);
+    m_controlToggle.set_sensitive(state.canControlPanel || m_controlMode || state.canManualControl);
   }
 
   bool
