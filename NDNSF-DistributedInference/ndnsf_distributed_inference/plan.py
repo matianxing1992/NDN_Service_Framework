@@ -94,6 +94,7 @@ class InferenceDependency:
     key_scope: str
     topic_prefix: str
     required: bool = True
+    tensors: list[str] = field(default_factory=list)
 
     def ndnsf_dependency(self) -> CollaborationDependency:
         return CollaborationDependency(
@@ -114,6 +115,7 @@ class DependencyEdge:
     key_scope: str
     topic_prefix: str
     required: bool = True
+    tensors: list[str] = field(default_factory=list)
 
     def topic(self, suffix: str = "") -> str:
         if not suffix:
@@ -159,9 +161,9 @@ class RoleDependencyView:
 class DependencyGraph:
     """Dependency graph supplied by the model splitter or application.
 
-    NDNSF-DistributedInference does not infer model dependencies. It carries
-    the dependencies provided in ``DistributedInferencePlan`` and materializes
-    role-local views for provider handlers.
+    NDNSF-DistributedInference carries dependencies supplied by a splitter,
+    application planner, or optional analyzer, then materializes role-local
+    views for provider handlers.
     """
 
     roles: list[str]
@@ -182,6 +184,7 @@ class DependencyGraph:
                     key_scope=dep.key_scope,
                     topic_prefix=dep.topic_prefix,
                     required=dep.required,
+                    tensors=list(dep.tensors),
                 )
                 for dep in dependencies
             ],

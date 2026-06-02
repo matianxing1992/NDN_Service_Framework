@@ -66,6 +66,15 @@ public:
     const RepoNode& node,
     const RepoObjectManifest& manifest);
 
+  /**
+   * Fetch one logical repo object described by manifest. This is the preferred
+   * object-level API for callers that do not care whether the object was stored
+   * as one payload or as object-level chunks.
+   */
+  static std::vector<uint8_t> getObject(
+    const RepoNode& node,
+    const RepoObjectManifest& manifest);
+
   static RepoObjectManifest localPut(
     ndn_service_framework::LocalServiceRegistry& registry,
     const ndn::Name& repoServicePrefix,
@@ -108,6 +117,14 @@ public:
    * Same as getSegmented(), but fetches chunks from the local registry.
    */
   static std::vector<uint8_t> localGetSegmented(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest);
+
+  /**
+   * Local trusted equivalent of getObject().
+   */
+  static std::vector<uint8_t> localGetObject(
     ndn_service_framework::LocalServiceRegistry& registry,
     const ndn::Name& repoServicePrefix,
     const RepoObjectManifest& manifest);

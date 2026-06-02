@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import re
 import shutil
 import subprocess
 from contextlib import contextmanager
@@ -16,9 +17,18 @@ import numpy as np
 import onnxruntime as ort
 import torch
 import torch.nn as nn
-from ultralytics import YOLO
+import yaml
 
-from ndnsf_distributed_inference import InferenceDependency
+from ndnsf_distributed_inference import (
+    InferenceDependency,
+    ProviderProfile,
+    SequentialSplitCandidate,
+    analyze_onnx_graph,
+    estimate_split_candidates,
+    homogeneous_provider_profiles,
+    recommend_sequential_splits,
+    write_onnx_graph_summary,
+)
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact,
     SplitServiceSpec,
@@ -75,6 +85,8 @@ def optional_local_nfd(enabled: bool) -> Iterator[None]:
 
 @lru_cache(maxsize=2)
 def load_yolo_model(preferred: str = "yolo26n.pt"):
+    from ultralytics import YOLO
+
     last_error: Exception | None = None
     candidates = (preferred,) + tuple(
         name for name in DEFAULT_MODEL_CANDIDATES if name != preferred)
@@ -122,6 +134,15 @@ class YoloStage1(nn.Module):
             saved[index] = value
         out, _ = run_modules(self.model, self.split, len(self.model.model), x, saved)
         return first_tensor(out)
+
+
+class YoloFull(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        return first_tensor(self.model(x))
 
 
 @torch.no_grad()
@@ -227,6 +248,30 @@ def decode_onnx_output(payload: bytes) -> np.ndarray:
     return load_npz_payload(payload)["output"].astype(np.float32)
 
 
+def full_forward_from_policy_onnx(config_path: str | Path, x: torch.Tensor) -> np.ndarray | None:
+    """Run the full ONNX model recorded by an auto-split policy, if present."""
+
+    data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    for service in data.get("services", []):
+        metadata_candidates = [service.get("metadata") or {}]
+        metadata_candidates.extend(
+            (artifact.get("metadata") or {})
+            for artifact in service.get("artifacts", [])
+        )
+        full_model_path = next(
+            (metadata.get("full_onnx_model")
+             for metadata in metadata_candidates
+             if metadata.get("full_onnx_model")),
+            None,
+        )
+        if not full_model_path:
+            continue
+        session = make_ort_session(full_model_path)
+        output = session.run(None, {"images": x.float().cpu().numpy().astype(np.float32)})[0]
+        return np.asarray(output, dtype=np.float32)
+    return None
+
+
 @torch.no_grad()
 def full_forward(model, x: torch.Tensor) -> torch.Tensor:
     model.eval()
@@ -238,19 +283,37 @@ def export_yolo_split_onnx(
     output_dir: str | Path,
     input_size: int = DEFAULT_INPUT_SIZE,
     opset: int = 17,
+    auto_split: bool = False,
+    provider_profiles: list[ProviderProfile] | None = None,
 ) -> dict:
     """Export stage0 and stage1 ONNX models for the selected YOLO nano model."""
 
     model_name, model = load_yolo_model(preferred)
-    split = split_index(model)
-    saved_indices = [int(index) for index in model.save if int(index) < split]
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     stem = Path(model_name).stem
+    x = make_input(input_size).float()
+
+    split_metadata: dict[str, Any] = {
+        "split_source": "yolo-fixed",
+    }
+    if auto_split:
+        split, split_metadata = _planner_selected_split(
+            model=model,
+            model_name=model_name,
+            output_dir=output,
+            input_size=input_size,
+            sample_input=x,
+            opset=opset,
+            provider_profiles=provider_profiles or default_planner_provider_profiles(),
+        )
+    else:
+        split = split_index(model)
+
+    saved_indices = [int(index) for index in model.save if int(index) < split]
     stage0_path = output / f"{stem}-stage0-{input_size}.onnx"
     stage1_path = output / f"{stem}-stage1-{input_size}.onnx"
 
-    x = make_input(input_size).float()
     with torch.no_grad():
         stage0_outputs = YoloStage0(model, split, saved_indices)(x)
 
@@ -283,7 +346,94 @@ def export_yolo_split_onnx(
         "input_size": input_size,
         "stage0_path": stage0_path,
         "stage1_path": stage1_path,
+        **split_metadata,
     }
+
+
+def default_planner_provider_profiles() -> list[ProviderProfile]:
+    return homogeneous_provider_profiles([
+        "/example/hello/provider",
+        "/example/hello/provider/A",
+    ])
+
+
+def load_provider_profiles(path: str | Path) -> list[ProviderProfile]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        data = data.get("providers", [])
+    if not isinstance(data, list):
+        raise ValueError("provider profile file must contain a list or {providers: [...]}")
+    return [ProviderProfile.from_dict(item) for item in data]
+
+
+def _planner_selected_split(
+    *,
+    model,
+    model_name: str,
+    output_dir: Path,
+    input_size: int,
+    sample_input: torch.Tensor,
+    opset: int,
+    provider_profiles: list[ProviderProfile],
+) -> tuple[int, dict[str, Any]]:
+    stem = Path(model_name).stem
+    full_model_path = output_dir / f"{stem}-full-{input_size}.onnx"
+    if not full_model_path.exists():
+        torch.onnx.export(
+            YoloFull(model).eval(),
+            sample_input,
+            str(full_model_path),
+            input_names=["images"],
+            output_names=["predictions"],
+            opset_version=opset,
+            do_constant_folding=True,
+        )
+
+    full_summary = analyze_onnx_graph(full_model_path)
+    split_candidates = estimate_split_candidates(full_summary, max_candidates=200)
+    planner_recommendations = recommend_sequential_splits(
+        [
+            SequentialSplitCandidate.from_onnx_candidate(candidate)
+            for candidate in split_candidates
+        ],
+        total_nodes=len(full_summary.nodes),
+        providers=provider_profiles,
+        max_recommendations=10,
+    )
+    if not planner_recommendations:
+        return split_index(model), {"split_source": "yolo-fixed-fallback"}
+
+    selected = planner_recommendations[0]
+    split = _module_split_from_cut(
+        full_summary.nodes[selected.candidate.cut_after_node].name,
+        module_count=len(model.model),
+        fallback=split_index(model),
+    )
+    summary_path = output_dir / f"{stem}-2stage-onnx-graph-summary.json"
+    write_onnx_graph_summary(
+        summary_path,
+        full_model_summary=full_summary,
+        split_candidates=split_candidates,
+        planner_recommendations=planner_recommendations,
+    )
+    return split, {
+        "split_source": "onnx-planner",
+        "full_model_path": full_model_path,
+        "onnx_graph_summary": summary_path,
+        "planner_selected_cut_after_node": selected.candidate.cut_after_node,
+        "planner_selected_node": full_summary.nodes[selected.candidate.cut_after_node].name,
+        "planner_selected_score": selected.score,
+        "planner_selected_transfer_ms": selected.transfer_ms,
+        "planner_selected_compute_imbalance": selected.compute_imbalance,
+    }
+
+
+def _module_split_from_cut(node_name: str, *, module_count: int, fallback: int) -> int:
+    match = re.search(r"/model(?:/model)?\.(\d+)(?:/|$)", node_name)
+    if not match:
+        return fallback
+    module_index = int(match.group(1))
+    return max(1, min(module_count - 1, module_index + 1))
 
 
 def yolo_splitter_output(exported: dict) -> SplitterOutput:
@@ -301,6 +451,24 @@ def yolo_splitter_output(exported: dict) -> SplitterOutput:
         "split": int(exported["split"]),
         "saved_indices": [int(value) for value in exported["saved_indices"]],
         "input_size": input_size,
+        "split_source": str(exported.get("split_source", "yolo-fixed")),
+        **({"full_onnx_model": str(exported["full_model_path"])}
+           if exported.get("full_model_path") else {}),
+        **({"onnx_graph_summary": str(exported["onnx_graph_summary"])}
+           if exported.get("onnx_graph_summary") else {}),
+        **({"planner_selected_cut_after_node":
+            int(exported["planner_selected_cut_after_node"])}
+           if exported.get("planner_selected_cut_after_node") is not None else {}),
+        **({"planner_selected_node": str(exported["planner_selected_node"])}
+           if exported.get("planner_selected_node") else {}),
+        **({"planner_selected_score": float(exported["planner_selected_score"])}
+           if exported.get("planner_selected_score") is not None else {}),
+        **({"planner_selected_transfer_ms":
+            float(exported["planner_selected_transfer_ms"])}
+           if exported.get("planner_selected_transfer_ms") is not None else {}),
+        **({"planner_selected_compute_imbalance":
+            float(exported["planner_selected_compute_imbalance"])}
+           if exported.get("planner_selected_compute_imbalance") is not None else {}),
     }
     service = SplitServiceSpec(
         name=SERVICE,
@@ -312,6 +480,7 @@ def yolo_splitter_output(exported: dict) -> SplitterOutput:
                 consumers=[ROLE_STAGE1],
                 key_scope="stage0-to-stage1",
                 topic_prefix="/activation",
+                tensors=["x"] + [f"saved_{index}" for index in exported["saved_indices"]],
             ),
         ],
         artifacts=[

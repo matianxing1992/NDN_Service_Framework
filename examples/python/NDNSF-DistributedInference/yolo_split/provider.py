@@ -9,24 +9,23 @@ from ndnsf_distributed_inference import (
     APPProvider,
     ProviderRuntimeContext,
 )
-from ndnsf_distributed_inference.backends.onnxruntime import run_downloaded_runner
 
 from yolo_split_lib import (
     CONFIG_FILE,
     ROLE_STAGE0,
     ROLE_STAGE1,
-    ROLE_TO_RUNNER_STAGE,
     SERVICE,
     optional_local_nfd,
+    run_onnx_stage0,
+    run_onnx_stage1,
 )
 
 
 def handle_role(ctx: ProviderRuntimeContext) -> None:
     ndnsf = ctx.ndnsf
-    stage = ROLE_TO_RUNNER_STAGE[ctx.role]
 
     if ctx.role == ROLE_STAGE0:
-        activation = run_downloaded_runner(ctx.execution, stage, ctx.request)
+        activation = run_onnx_stage0(ctx.execution.path("model"), ctx.request)
         large_name = ctx.publish_output_large(
             activation,
             max_segment_size=7000,
@@ -49,7 +48,7 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
         if activation is None:
             ndnsf.fail("failed to fetch segmented stage0 activation")
             return
-        payload = run_downloaded_runner(ctx.execution, stage, activation)
+        payload = run_onnx_stage1(ctx.execution.path("model"), activation)
         ndnsf.publish_final_response(payload)
         print(f"YOLO_STAGE1 model={ctx.execution.path('model')} "
               f"work_dir={ctx.execution.work_dir} activation_bytes={len(activation)} "

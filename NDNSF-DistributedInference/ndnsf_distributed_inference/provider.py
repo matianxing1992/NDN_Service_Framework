@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import tempfile
 from typing import Callable, Sequence
@@ -20,6 +20,50 @@ from ndnsf import (
 from .plan import RoleDependencyView
 
 
+class DependencyPrefetcher:
+    """Prefetch predictable dependency objects for one provider invocation.
+
+    The prefetcher is intentionally model-agnostic. It only knows the current
+    NDNSF collaboration context, a role-local dependency edge, and the planned
+    dependency topic. Applications decide which edge/topic suffix is safe to
+    prefetch based on their plan.
+    """
+
+    def __init__(self, ndnsf: CollaborationContext, *, max_workers: int = 4):
+        self._ndnsf = ndnsf
+        self._executor = ThreadPoolExecutor(
+            max_workers=max(1, int(max_workers)),
+            thread_name_prefix="ndnsf-di-prefetch",
+        )
+
+    def prefetch_large(self, edge, topic_suffix: str = "", *,
+                       ref_timeout_ms: int = 10000,
+                       fetch_timeout_ms: int = 10000) -> Future:
+        topic = edge.topic(topic_suffix)
+
+        def fetch() -> bytes:
+            ref = self._ndnsf.wait_one(edge.key_scope, topic, ref_timeout_ms)
+            if ref is None:
+                raise TimeoutError(
+                    f"timed out waiting for dependency ref "
+                    f"scope={edge.key_scope} topic={topic}")
+            payload = self._ndnsf.fetch_large(
+                ref.payload.decode(),
+                edge.key_scope,
+                fetch_timeout_ms,
+            )
+            if payload is None:
+                raise TimeoutError(
+                    f"timed out fetching dependency object "
+                    f"scope={edge.key_scope} topic={topic}")
+            return payload
+
+        return self._executor.submit(fetch)
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=True)
+
+
 @dataclass(frozen=True)
 class ProviderRuntimeContext:
     ndnsf: CollaborationContext
@@ -28,6 +72,7 @@ class ProviderRuntimeContext:
     role: str
     dependencies: RoleDependencyView = field(
         default_factory=lambda: RoleDependencyView(role=""))
+    prefetcher: DependencyPrefetcher | None = None
 
     def publish_output(self, payload: bytes, *, key_scope: str = "",
                        topic_suffix: str = "") -> None:
@@ -51,6 +96,34 @@ class ProviderRuntimeContext:
                    timeout_ms: int = 10000):
         edge = self.dependencies.input(key_scope)
         return self.ndnsf.wait_one(edge.key_scope, edge.topic(topic_suffix), timeout_ms)
+
+    def prefetch_input_large(self, *, key_scope: str = "",
+                             topic_suffix: str = "",
+                             ref_timeout_ms: int = 10000,
+                             fetch_timeout_ms: int = 10000) -> Future:
+        """Start fetching a planned input dependency in the background.
+
+        This is useful when a distributed plan makes dependency names
+        predictable. The method does not know model semantics; it simply waits
+        for the dependency reference on the selected edge and fetches the large
+        object named by that reference.
+        """
+
+        if self.prefetcher is None:
+            raise RuntimeError("dependency prefetcher is not available")
+        edge = self.dependencies.input(key_scope)
+        return self.prefetcher.prefetch_large(
+            edge,
+            topic_suffix,
+            ref_timeout_ms=ref_timeout_ms,
+            fetch_timeout_ms=fetch_timeout_ms,
+        )
+
+    @staticmethod
+    def wait_prefetched_input_large(future: Future, *,
+                                    timeout_ms: int | None = None) -> bytes:
+        timeout_s = None if timeout_ms is None else max(0, timeout_ms) / 1000.0
+        return future.result(timeout=timeout_s)
 
     def publish_internal(self, payload: bytes, *, key_scope: str = "",
                          topic_suffix: str = "") -> None:
@@ -209,15 +282,20 @@ class DistributedInferenceProvider:
                 ctx.fail(f"failed to prepare inference execution: {exc}")
                 return
 
-            self._run_handler(handler, ProviderRuntimeContext(
-                ndnsf=ctx,
-                execution=execution,
-                request=request,
-                role=ctx.assignment.role,
-                dependencies=(dependency_graph.for_role(ctx.assignment.role)
-                              if dependency_graph is not None
-                              else RoleDependencyView(ctx.assignment.role)),
-            ))
+            prefetcher = DependencyPrefetcher(ctx)
+            try:
+                self._run_handler(handler, ProviderRuntimeContext(
+                    ndnsf=ctx,
+                    execution=execution,
+                    request=request,
+                    role=ctx.assignment.role,
+                    dependencies=(dependency_graph.for_role(ctx.assignment.role)
+                                  if dependency_graph is not None
+                                  else RoleDependencyView(ctx.assignment.role)),
+                    prefetcher=prefetcher,
+                ))
+            finally:
+                prefetcher.shutdown()
 
         self.provider.add_collaboration_handler(service, [safe_role], wrapped, ack)
 
@@ -291,15 +369,20 @@ class DistributedInferenceProvider:
                 ctx.fail(f"failed to prepare inference execution: {exc}")
                 return
 
-            self._run_handler(handler, ProviderRuntimeContext(
-                ndnsf=ctx,
-                execution=execution,
-                request=request,
-                role=ctx.assignment.role,
-                dependencies=(dependency_graph.for_role(ctx.assignment.role)
-                              if dependency_graph is not None
-                              else RoleDependencyView(ctx.assignment.role)),
-            ))
+            prefetcher = DependencyPrefetcher(ctx)
+            try:
+                self._run_handler(handler, ProviderRuntimeContext(
+                    ndnsf=ctx,
+                    execution=execution,
+                    request=request,
+                    role=ctx.assignment.role,
+                    dependencies=(dependency_graph.for_role(ctx.assignment.role)
+                                  if dependency_graph is not None
+                                  else RoleDependencyView(ctx.assignment.role)),
+                    prefetcher=prefetcher,
+                ))
+            finally:
+                prefetcher.shutdown()
 
         self.provider.add_collaboration_handler(service, role_list, wrapped, ack)
 
