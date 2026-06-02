@@ -247,6 +247,8 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   state.duplicatePressure = 10;
   state.lossPressure = 8;
   state.backlogPressure = 30;
+  state.primaryPressure = "timeout";
+  state.policyReason = "pressure-timeout";
   state.pendingChunks = 12;
   state.receivedChunks = 100;
   state.timeouts = 2;
@@ -267,10 +269,14 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_EQUAL(decoded.window, 64);
   BOOST_CHECK_EQUAL(decoded.missingTimeoutMs, 240);
   BOOST_CHECK_EQUAL(decoded.timeoutPressure, 55);
+  BOOST_CHECK_EQUAL(decoded.primaryPressure, "timeout");
+  BOOST_CHECK_EQUAL(decoded.policyReason, "pressure-timeout");
   BOOST_CHECK(decoded.underPressure());
   BOOST_CHECK_NE(decoded.statusLine().find("VideoAdaptive drone=A"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("suggested_bitrate_kbps=4000"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("bitrate_action=decrease"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("primary_pressure=timeout"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("policy_reason=pressure-timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frames=45"), std::string::npos);
 }
@@ -305,6 +311,8 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyShrinksUnderPressure)
   BOOST_CHECK_LE(stressed.missingTimeoutMs, relaxed.missingTimeoutMs);
   BOOST_CHECK_EQUAL(stressed.bitrateAction, "decrease");
   BOOST_CHECK_EQUAL(stressed.bitrateReason, "pressure");
+  BOOST_CHECK_EQUAL(stressed.primaryPressure, "backlog");
+  BOOST_CHECK_EQUAL(stressed.policyReason, "pressure-backlog");
   BOOST_CHECK_LT(stressed.suggestedBitrateKbps, pressured.acceptedBitrateKbps);
 }
 
@@ -325,6 +333,7 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyHandlesHighRttAndRecovery)
   const auto slowLink = computeVideoAdaptivePolicy(highRtt);
   BOOST_CHECK_EQUAL(slowLink.bitrateAction, "decrease");
   BOOST_CHECK_EQUAL(slowLink.bitrateReason, "high-rtt");
+  BOOST_CHECK_EQUAL(slowLink.policyReason, "high-rtt");
   BOOST_CHECK_LT(slowLink.suggestedBitrateKbps, highRtt.acceptedBitrateKbps);
 
   auto recovering = highRtt;
@@ -335,6 +344,7 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyHandlesHighRttAndRecovery)
   const auto recovered = computeVideoAdaptivePolicy(recovering);
   BOOST_CHECK_EQUAL(recovered.bitrateAction, "increase");
   BOOST_CHECK_EQUAL(recovered.bitrateReason, "recovery");
+  BOOST_CHECK_EQUAL(recovered.policyReason, "recovery");
   BOOST_CHECK_GT(recovered.suggestedBitrateKbps, recovering.acceptedBitrateKbps);
 }
 

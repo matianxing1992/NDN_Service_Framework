@@ -1216,6 +1216,8 @@ def main() -> int:
             require_log(gs_log, "missing_timeout_ms=")
             require_log(gs_log, "suggested_bitrate_kbps=")
             require_log(gs_log, "bitrate_action=")
+            require_log(gs_log, "primary_pressure=")
+            require_log(gs_log, "policy_reason=")
             if args.auto_apply_bitrate_test:
                 require_log(gs_log, "AUTO_VIDEO_APPLY_BITRATE_ATTEMPT applied=true")
                 require_log(gs_log, "GS_VIDEO_BITRATE_CHANGE_APPLY drone=" + args.drone_id)

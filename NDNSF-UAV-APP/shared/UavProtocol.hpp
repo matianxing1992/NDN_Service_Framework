@@ -229,6 +229,8 @@ struct VideoAdaptiveState
   uint64_t duplicatePressure = 0;
   uint64_t lossPressure = 0;
   uint64_t backlogPressure = 0;
+  std::string primaryPressure = "none";
+  std::string policyReason = "stable";
   uint64_t pendingChunks = 0;
   uint64_t receivedChunks = 0;
   uint64_t timeouts = 0;
@@ -275,6 +277,8 @@ struct VideoAdaptivePolicyDecision
   uint64_t congestionPressure = 0;
   uint64_t probePressure = 0;
   uint64_t backlogPressure = 0;
+  std::string primaryPressure = "none";
+  std::string policyReason = "stable";
   uint64_t suggestedBitrateKbps = 0;
   std::string bitrateAction = "hold";
   std::string bitrateReason = "stable";

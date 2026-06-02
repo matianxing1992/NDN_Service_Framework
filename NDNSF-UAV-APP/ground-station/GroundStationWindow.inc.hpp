@@ -2146,9 +2146,11 @@ private:
     return "rtt=" + std::to_string(adaptive.rttMs) +
            "ms,win=" + std::to_string(adaptive.window) +
            ",pressure=" + std::to_string(maxVideoPressure(adaptive)) +
+           "/" + adaptive.primaryPressure +
            ",bitrate=" + std::to_string(adaptive.acceptedBitrateKbps) +
            "->" + std::to_string(adaptive.suggestedBitrateKbps) +
-           "kbps/" + adaptive.bitrateAction;
+           "kbps/" + adaptive.bitrateAction +
+           ",reason=" + adaptive.policyReason;
   }
 
   DroneListRowState
@@ -2730,6 +2732,8 @@ private:
          << " interest_lifetime_ms=" << adaptive->interestLifetimeMs
          << " missing_timeout_ms=" << adaptive->missingTimeoutMs
          << " pressure=" << maxVideoPressure(*adaptive)
+         << " primary_pressure=" << adaptive->primaryPressure
+         << " policy_reason=" << adaptive->policyReason
          << " pending_chunks=" << adaptive->pendingChunks
          << " received_chunks=" << adaptive->receivedChunks
          << " decoded_frames=" << adaptive->decodedFrames;
