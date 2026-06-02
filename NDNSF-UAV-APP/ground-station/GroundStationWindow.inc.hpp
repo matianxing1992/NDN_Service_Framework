@@ -750,31 +750,34 @@ public:
     if (autoManualControlTest) {
       std::thread([this] {
         std::this_thread::sleep_for(std::chrono::seconds(3));
+        m_runtime.sendMavlinkCommand("arm");
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        m_runtime.requestTelemetryStatusForDroneSync(m_runtime.targetDroneId(),
+                                                     std::chrono::milliseconds(2500));
+        m_runtime.sendMavlinkCommand("takeoff");
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        m_runtime.requestTelemetryStatusForDroneSync(m_runtime.targetDroneId(),
+                                                     std::chrono::milliseconds(2500));
         Glib::signal_idle().connect_once([this] {
           setControlMode(true);
-          handleShortcutKeyPress(GDK_KEY_i);
-          handleShortcutKeyRelease(GDK_KEY_i);
         });
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        Glib::signal_idle().connect_once([this] {
-          handleShortcutKeyPress(GDK_KEY_t);
-          handleShortcutKeyRelease(GDK_KEY_t);
-        });
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
           handleShortcutKeyPress(GDK_KEY_w);
           handleShortcutKeyPress(GDK_KEY_r);
         });
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        logManualSafetyProbe("fresh");
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         Glib::signal_idle().connect_once([this] {
           handleShortcutKeyRelease(GDK_KEY_w);
           handleShortcutKeyRelease(GDK_KEY_r);
+          setControlMode(false);
         });
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-        Glib::signal_idle().connect_once([this] {
-          handleShortcutKeyPress(GDK_KEY_l);
-          handleShortcutKeyRelease(GDK_KEY_l);
-        });
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        logManualSafetyProbe("neutral-timeout");
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        m_runtime.sendMavlinkCommand("land");
         std::this_thread::sleep_for(std::chrono::seconds(4));
         Glib::signal_idle().connect_once([this] {
           hide();
@@ -1194,6 +1197,29 @@ private:
        << " panel_reason=" << state.controlPanelReason
        << " emergency_stop=" << (state.canEmergencyStop ? "true" : "false")
        << " emergency_reason=" << state.emergencyStopReason;
+    NDN_LOG_INFO(os.str());
+  }
+
+  void
+  logManualSafetyProbe(const std::string& phase)
+  {
+    const auto droneId = m_runtime.targetDroneId();
+    const auto fields = m_runtime.requestTelemetryStatusForDroneSync(
+      droneId, std::chrono::milliseconds(2500));
+    const auto safety = m_runtime.safetyForDrone(droneId);
+    const auto flight = FlightActionControlState::fromGate(
+      FlightSafetyGateState::fromStates(droneId, m_runtime.readinessForDrone(droneId), safety));
+    std::ostringstream os;
+    os << "MANUAL_SAFETY_STATE phase=" << phase
+       << " drone=" << droneId
+       << " telemetry=" << (fields.empty() ? "false" : "true");
+    if (safety) {
+      os << " " << safety->statusLine();
+    }
+    else {
+      os << " Safety drone=" << droneId << " missing";
+    }
+    os << " " << flight.statusLine();
     NDN_LOG_INFO(os.str());
   }
 
