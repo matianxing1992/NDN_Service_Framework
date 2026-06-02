@@ -270,25 +270,26 @@ class APPClient:
             freshness_ms=freshness_ms,
         )
 
-    def infer_service(self, service: str, payload: bytes, *,
-                      ack_timeout_ms: int = 500,
-                      timeout_ms: int = 30000,
-                      freshness_ms: int = 60000,
-                      dynamic_provisioning: bool | None = None,
-                      runtime: RuntimeSpec | None = None,
-                      repo_manifests: dict | str | Path | None = None) -> InferenceResult:
-        """Invoke a deployed service by name.
+    def distributed_inference(self, service: str, value: Any, *,
+                              ack_timeout_ms: int = 500,
+                              timeout_ms: int = 30000,
+                              freshness_ms: int = 60000,
+                              dynamic_provisioning: bool | None = None,
+                              runtime: RuntimeSpec | None = None,
+                              repo_manifests: dict | str | Path | None = None) -> InferenceResult:
+        """Run one distributed inference request for a deployed service.
 
         The normal application-facing path is service-level: the caller names
-        the service and passes request bytes. The service policy fixes the
-        roles, dependency graph, and default artifacts. If artifacts are
-        present, the client publishes an execution plan so homogeneous
-        providers can be assigned roles and fetch the needed shard at request
-        time. If no artifacts are present, this falls back to the pre-deployed
-        model path.
+        the service and passes an application object, tensor bundle, or already
+        encoded bytes. The service policy fixes the roles, dependency graph,
+        input codec, and default artifacts. If artifacts are present, the
+        client publishes an execution plan so homogeneous providers can be
+        assigned roles and fetch the needed shard at request time. If no
+        artifacts are present, this falls back to the pre-deployed model path.
         """
 
         service_policy = self.deployment.service_policy(service)
+        payload = self.encode_input(service, value)
         if dynamic_provisioning is None:
             dynamic_provisioning = bool(service_policy.artifacts or repo_manifests)
         if dynamic_provisioning:
@@ -322,8 +323,8 @@ class APPClient:
 
         This is the service-level equivalent of manually constructing a
         ``DistributedInferencePlan``. It is useful when callers want to inspect
-        or reuse the plan, but most applications can call ``infer_service``
-        directly.
+        or reuse the plan, but most applications can call
+        ``distributed_inference`` directly.
         """
 
         service_policy = self.deployment.service_policy(service)
@@ -453,13 +454,13 @@ class APPClient:
             entrypoint="runner",
         )
 
-    def input_contract(self, service: str) -> dict[str, Any]:
-        """Return the application payload contract recorded for a service."""
+    def describe_input(self, service: str) -> dict[str, Any]:
+        """Describe the input payload expected by a service."""
 
         return dict(self.deployment.service_policy(service).input_schema or {})
 
-    def output_contract(self, service: str) -> dict[str, Any]:
-        """Return the application response contract recorded for a service."""
+    def describe_output(self, service: str) -> dict[str, Any]:
+        """Describe the output payload returned by a service."""
 
         return dict(self.deployment.service_policy(service).output_schema or {})
 
@@ -480,7 +481,7 @@ class APPClient:
             return value
         if isinstance(value, (bytearray, memoryview)):
             return bytes(value)
-        contract = self.input_contract(service)
+        contract = self.describe_input(service)
         encoder = self._input_encoders.get(service)
         if encoder is None:
             payload = self._encode_default_input(value, contract)
@@ -541,28 +542,10 @@ class APPClient:
             freshness_ms=freshness_ms,
         )
 
-    def infer_service_object(self, service: str, value: Any, *,
-                             ack_timeout_ms: int = 500,
-                             timeout_ms: int = 30000,
-                             freshness_ms: int = 60000,
-                             dynamic_provisioning: bool | None = None,
-                             runtime: RuntimeSpec | None = None,
-                             repo_manifests: dict | str | Path | None = None) -> InferenceResult:
-        return self.infer_service(
-            service,
-            self.encode_input(service, value),
-            ack_timeout_ms=ack_timeout_ms,
-            timeout_ms=timeout_ms,
-            freshness_ms=freshness_ms,
-            dynamic_provisioning=dynamic_provisioning,
-            runtime=runtime,
-            repo_manifests=repo_manifests,
-        )
-
-    def infer_service_async(
+    def async_distributed_inference(
         self,
         service: str,
-        payload: bytes,
+        value: Any,
         *,
         ack_timeout_ms: int = 500,
         timeout_ms: int = 30000,
@@ -574,6 +557,7 @@ class APPClient:
         on_error: Callable[[BaseException], None] | None = None,
     ) -> Future:
         service_policy = self.deployment.service_policy(service)
+        payload = self.encode_input(service, value)
         if dynamic_provisioning is None:
             dynamic_provisioning = bool(service_policy.artifacts or repo_manifests)
         if dynamic_provisioning:
@@ -619,33 +603,6 @@ class APPClient:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             freshness_ms=freshness_ms,
-            on_result=on_result,
-            on_error=on_error,
-        )
-
-    def infer_service_object_async(
-        self,
-        service: str,
-        value: Any,
-        *,
-        ack_timeout_ms: int = 500,
-        timeout_ms: int = 30000,
-        freshness_ms: int = 60000,
-        dynamic_provisioning: bool | None = None,
-        runtime: RuntimeSpec | None = None,
-        repo_manifests: dict | str | Path | None = None,
-        on_result: Callable[[InferenceResult], None] | None = None,
-        on_error: Callable[[BaseException], None] | None = None,
-    ) -> Future:
-        return self.infer_service_async(
-            service,
-            self.encode_input(service, value),
-            ack_timeout_ms=ack_timeout_ms,
-            timeout_ms=timeout_ms,
-            freshness_ms=freshness_ms,
-            dynamic_provisioning=dynamic_provisioning,
-            runtime=runtime,
-            repo_manifests=repo_manifests,
             on_result=on_result,
             on_error=on_error,
         )

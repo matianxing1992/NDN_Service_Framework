@@ -43,7 +43,7 @@ def main() -> int:
         client.register_input_encoder(SERVICE, encode_input)
         payload = client.encode_input(SERVICE, x)
         futures = [
-            client.infer_service_async(
+            client.async_distributed_inference(
                 SERVICE,
                 payload,
                 ack_timeout_ms=args.ack_timeout_ms,

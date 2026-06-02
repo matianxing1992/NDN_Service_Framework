@@ -1,25 +1,85 @@
+# editable deployment section
+# Edit these names for a real deployment.
+# application: local label for this APP deployment; change it when this policy
+#   describes a different model/application instance.
 application: yolo-2x2-demo
-controller: /example/hello/controller
-group: /example/hello/group
+# controller: NDNSF ServiceController identity/prefix. Set it to the controller
+#   node identity that signs and distributes permissions.
+controller: /NDNSF-DistributeInference/example/controller
+# group: NDN-SVS group prefix shared by controller, users, and providers.
+group: /NDNSF-DistributeInference/example/group
 
-identities:
-  user: /example/hello/user
-  provider_prefix: /example/hello/provider
+runtime:
+  # user_identity: identity used when this config starts a user/client process.
+  # This does not grant permission by itself; service users below do that.
+  user_identity: /NDNSF-DistributeInference/example/user
+  # provider_prefix: naming helper used by examples to derive provider names
+  # such as /NDNSF-DistributeInference/example/provider/A. It is not permission.
+  provider_prefix: /NDNSF-DistributeInference/example/provider
 
 trust:
+  # app_roots: trust-schema roots for this deployment namespace.
   app_roots:
-    - /example/hello
+    - /NDNSF-DistributeInference/example
   # Production deployments should anchor validation at the trust-root certificate.
   # anchor_file: /path/to/root.cert
 
+# Artifact security section: edit only if providers should download executable
+# runtimes or model artifacts dynamically from a repo.
 artifact_security:
   allowlist: []
   sandbox:
     kind: ""
 
+# generated authorization summary
+# Read-only review aid derived from services[].users/providers.
+authorization_summary:
+  users:
+    - identity: /NDNSF-DistributeInference/example/user
+      services:
+        - /AI/YOLO/2x2Inference
+        - /NDNSF/DistributedRepo
+  providers:
+    - identity: /NDNSF-DistributeInference/example/provider
+      services:
+        - service: /AI/YOLO/2x2Inference
+          roles: all
+    - identity: /NDNSF-DistributeInference/example/provider/A
+      services:
+        - service: /AI/YOLO/2x2Inference
+          roles: all
+    - identity: /NDNSF-DistributeInference/example/provider/B
+      services:
+        - service: /AI/YOLO/2x2Inference
+          roles: all
+    - identity: /NDNSF-DistributeInference/example/provider/C
+      services:
+        - service: /AI/YOLO/2x2Inference
+          roles: all
+    - identity: /NDNSF-DistributeInference/example/provider/D
+      services:
+        - service: /NDNSF/DistributedRepo
+          roles: []
+
+# generated model-plan section
+# Edit users/providers per service to grant
+# exact identities permission. roles/dependencies/input/output are
+# splitter/planner output and normally should be regenerated instead of
+# hand-edited.
 services:
   - name: /AI/YOLO/2x2Inference
     model: /Model/Ultralytics/YOLO/2x2
+    users:
+      - /NDNSF-DistributeInference/example/user
+    providers:
+      - identity: /NDNSF-DistributeInference/example/provider
+        roles: all
+      - identity: /NDNSF-DistributeInference/example/provider/A
+        roles: all
+      - identity: /NDNSF-DistributeInference/example/provider/B
+        roles: all
+      - identity: /NDNSF-DistributeInference/example/provider/C
+        roles: all
     roles:
       - /Stage/0/Shard/0
       - /Stage/0/Shard/1
@@ -55,24 +115,13 @@ services:
       fields:
         output:
           dtype: float32
-    users:
-      - /example/hello/user
-    providers:
-      - identity: /example/hello/provider
-        roles: all
-      - identity: /example/hello/provider/A
-        roles: all
-      - identity: /example/hello/provider/B
-        roles: all
-      - identity: /example/hello/provider/C
-        roles: all
 
   - name: /NDNSF/DistributedRepo
     model: /NDNSF/DistributedRepo
+    users:
+      - /NDNSF-DistributeInference/example/user
+    providers:
+      - identity: /NDNSF-DistributeInference/example/provider/D
+        roles: []
     roles: []
     dependencies: []
-    users:
-      - /example/hello/user
-    providers:
-      - identity: /example/hello/provider/D
-        roles: []

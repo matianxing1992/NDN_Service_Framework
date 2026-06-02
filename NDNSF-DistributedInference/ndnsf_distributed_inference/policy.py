@@ -81,10 +81,11 @@ class DistributedInferenceDeployment:
 
     @property
     def bootstrap_identities(self) -> list[str]:
-        identities: list[str] = []
+        identities: list[str] = [self.user]
         for service in self.services:
             identities.extend(service.users)
-            identities.extend(provider.identity for provider in service.providers)
+            identities.extend(provider.identity for provider in service.providers
+                              if provider.identity)
         seen = set()
         return [name for name in identities if not (name in seen or seen.add(name))]
 
@@ -93,7 +94,7 @@ class DistributedInferenceDeployment:
             if service and service_policy.name != service:
                 continue
             for provider in service_policy.providers:
-                if role in provider.roles:
+                if role in provider.roles and provider.identity:
                     return provider.identity
         return self.provider_prefix
 
@@ -198,6 +199,23 @@ def _as_tuple(value: Any) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
+def _runtime_config(config: dict[str, Any]) -> dict[str, Any]:
+    runtime = config.get("runtime", {})
+    if isinstance(runtime, dict):
+        return runtime
+    return {}
+
+
+def _runtime_user_identity(config: dict[str, Any]) -> str:
+    runtime = _runtime_config(config)
+    return str(runtime.get("user_identity", runtime.get("user", "")))
+
+
+def _runtime_provider_prefix(config: dict[str, Any]) -> str:
+    runtime = _runtime_config(config)
+    return str(runtime.get("provider_prefix", ""))
+
+
 def _role_permission(service: str, role: str) -> str:
     name = service.rstrip("/") + "/ROLE"
     role = role.strip("/")
@@ -246,8 +264,9 @@ def parse_services(config: dict[str, Any]) -> tuple[ServicePolicy, ...]:
             roles = _as_tuple(provider.get("roles"))
             if len(roles) == 1 and roles[0].lower() == "all":
                 if not service_roles:
+                    provider_name = provider.get("identity", "<unnamed provider>")
                     raise ValueError(
-                        f"provider {provider['identity']} uses roles=all but "
+                        f"provider {provider_name} uses roles=all but "
                         f"service {item['name']} does not define service roles")
                 roles = service_roles
             providers.append(ProviderPolicy(
@@ -270,6 +289,210 @@ def parse_services(config: dict[str, Any]) -> tuple[ServicePolicy, ...]:
     return tuple(services)
 
 
+def validate_runtime_user_authorization(
+    config: dict[str, Any],
+    services: tuple[ServicePolicy, ...],
+) -> None:
+    user_identity = _runtime_user_identity(config)
+    if not user_identity:
+        raise ValueError(
+            "policy config must set runtime.user_identity for the local "
+            "client/user process")
+    if not any(user_identity in service.users for service in services):
+        service_names = ", ".join(service.name for service in services)
+        raise ValueError(
+            f"runtime.user_identity {user_identity} is not authorized by any "
+            f"service users list. Add it to services[].users for one of: "
+            f"{service_names}")
+
+
+def _unique_non_empty(values: list[str]) -> list[str]:
+    seen = set()
+    return [
+        value for value in values
+        if value and not (value in seen or seen.add(value))
+    ]
+
+
+def validate_service_provider_role_coverage(
+    services: tuple[ServicePolicy, ...],
+) -> None:
+    for service in services:
+        declared_roles = set(service.roles)
+        dependency_roles = _unique_non_empty([
+            role
+            for dependency in service.dependencies
+            for role in [*dependency.producers, *dependency.consumers]
+        ])
+        artifact_roles = _unique_non_empty([
+            artifact.role for artifact in service.artifacts
+        ])
+        referenced_roles = _unique_non_empty([
+            *dependency_roles,
+            *artifact_roles,
+        ])
+        if declared_roles:
+            undeclared = [
+                role for role in referenced_roles
+                if role not in declared_roles
+            ]
+            if undeclared:
+                raise ValueError(
+                    f"service {service.name} references role(s) not declared "
+                    f"in service roles: {', '.join(undeclared)}")
+
+        required_roles = _unique_non_empty([
+            *service.roles,
+            *referenced_roles,
+        ])
+        if not required_roles:
+            continue
+
+        provider_roles = set()
+        for provider in service.providers:
+            provider_roles.update(role for role in provider.roles if role)
+            if declared_roles:
+                extra_roles = [
+                    role for role in provider.roles
+                    if role and role not in declared_roles
+                ]
+                if extra_roles:
+                    raise ValueError(
+                        f"provider {provider.identity} for service "
+                        f"{service.name} lists role(s) not declared in "
+                        f"service roles: {', '.join(extra_roles)}")
+
+        missing = [
+            role for role in required_roles
+            if role not in provider_roles
+        ]
+        if missing:
+            raise ValueError(
+                f"service {service.name} has role(s) with no authorized "
+                f"provider: {', '.join(missing)}. Add provider entries for "
+                "these roles or use roles=all for providers that may run any "
+                "service role.")
+
+
+def _artifact_by_role(service: ServicePolicy) -> dict[str, ArtifactPolicy]:
+    return {
+        artifact.role: artifact
+        for artifact in service.artifacts
+        if artifact.role
+    }
+
+
+def _table(headers: list[str], rows: list[list[str]]) -> str:
+    if not rows:
+        return "  (none)"
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        for index in range(len(headers))
+    ]
+
+    def render(row: list[str]) -> str:
+        return "  " + "  ".join(
+            value.ljust(widths[index])
+            for index, value in enumerate(row)
+        )
+
+    separator = "  " + "  ".join("-" * width for width in widths)
+    return "\n".join([render(headers), separator, *(render(row) for row in rows)])
+
+
+def explain_policy(
+    deployment: DistributedInferenceDeployment,
+) -> str:
+    user_rows = []
+    user_services: dict[str, list[str]] = {}
+    for service in deployment.services:
+        for user in service.users:
+            user_services.setdefault(user, []).append(service.name)
+    for user, services in sorted(user_services.items()):
+        user_rows.append([user, ", ".join(services)])
+
+    provider_rows = []
+    for service in deployment.services:
+        for provider in service.providers:
+            roles = ", ".join(provider.roles) if provider.roles else "(service-level)"
+            provider_rows.append([provider.identity, service.name, roles])
+
+    role_rows = []
+    artifact_rows = []
+    for service in deployment.services:
+        providers_by_role: dict[str, list[str]] = {}
+        for provider in service.providers:
+            for role in provider.roles:
+                providers_by_role.setdefault(role, []).append(provider.identity)
+        artifacts = _artifact_by_role(service)
+        roles = list(service.roles)
+        for artifact in service.artifacts:
+            if artifact.role not in roles:
+                roles.append(artifact.role)
+        for role in roles:
+            providers = providers_by_role.get(role, [])
+            artifact = artifacts.get(role)
+            role_rows.append([
+                service.name,
+                role,
+                ", ".join(providers) if providers else "(none)",
+                "yes" if artifact else "predeployed or runtime-provided",
+            ])
+            if artifact:
+                artifact_rows.append([
+                    service.name,
+                    role,
+                    artifact.kind,
+                    artifact.backend or "-",
+                    artifact.filename or Path(artifact.path).name or "-",
+                ])
+        if not roles and not service.artifacts:
+            role_rows.append([
+                service.name,
+                "(service-level)",
+                ", ".join(provider.identity for provider in service.providers) or "(none)",
+                "predeployed or runtime-provided",
+            ])
+
+    artifact_security = deployment.artifact_security
+    artifact_security_status = (
+        "dynamic executable artifacts enabled"
+        if deployment.allow_executable_artifacts()
+        else "dynamic executable artifacts disabled"
+    )
+    if deployment.trust_anchor_file or artifact_security.anchor_file:
+        trust_anchor = deployment.trust_anchor_file or artifact_security.anchor_file
+    else:
+        trust_anchor = "(none; demo/local only)"
+
+    sections = [
+        "NDNSF-DI policy summary",
+        f"Application: {deployment.application}",
+        f"Controller: {deployment.controller}",
+        f"Group: {deployment.group}",
+        f"Runtime user: {deployment.user}",
+        "",
+        "User permissions",
+        _table(["User", "Services"], user_rows),
+        "",
+        "Provider permissions",
+        _table(["Provider", "Service", "Roles"], provider_rows),
+        "",
+        "Role coverage",
+        _table(["Service", "Role", "Authorized providers", "Artifact"], role_rows),
+        "",
+        "Artifact coverage",
+        _table(["Service", "Role", "Kind", "Backend", "File"], artifact_rows),
+        "",
+        "Artifact security",
+        f"  Status: {artifact_security_status}",
+        f"  Trust anchor: {trust_anchor}",
+        f"  Allowlist entries: {len(artifact_security.allowlist)}",
+        f"  Sandbox: {artifact_security.sandbox.kind or '(not configured)'}",
+    ]
+    return "\n".join(sections) + "\n"
+
+
 def _first_component_root(name: str) -> str:
     parts = [part for part in name.split("/") if part]
     return "/" + parts[0] if parts else "/"
@@ -282,7 +505,7 @@ def app_roots(config: dict[str, Any], services: tuple[ServicePolicy, ...]) -> li
     roots = {
         _first_component_root(str(config.get("controller", ""))),
         _first_component_root(str(config.get("group", ""))),
-        _first_component_root(str(config.get("identities", {}).get("user", ""))),
+        _first_component_root(_runtime_user_identity(config)),
     }
     for service in services:
         for user in service.users:
@@ -576,6 +799,8 @@ def write_policy_bundle(
 ) -> DistributedInferenceDeployment:
     config = load_config(config_path)
     services = parse_services(config)
+    validate_runtime_user_authorization(config, services)
+    validate_service_provider_role_coverage(services)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     trust_schema = out / "trust-schema.conf"
@@ -584,13 +809,12 @@ def write_policy_bundle(
     trust_schema.write_text(generate_trust_schema(config, services))
     policy_file.write_text(generate_controller_policy(config, services))
     manifest_sha256 = write_service_manifest(services, service_manifest_file)
-    identities = config.get("identities", {})
     return DistributedInferenceDeployment(
         application=str(config.get("application", "distributed-inference")),
         controller=str(config["controller"]),
-        group=str(config.get("group", "/example/hello/group")),
-        user=str(identities.get("user", "")),
-        provider_prefix=str(identities.get("provider_prefix", "")),
+        group=str(config.get("group", "/NDNSF-DistributeInference/example/group")),
+        user=_runtime_user_identity(config),
+        provider_prefix=_runtime_provider_prefix(config),
         services=services,
         trust_schema=str(trust_schema),
         policy_file=str(policy_file),
@@ -616,10 +840,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument(
+        "--print-summary",
+        "--explain",
+        action="store_true",
+        dest="print_summary",
+        help="print user/provider permission, role coverage, and artifact coverage summary",
+    )
     args = parser.parse_args(argv)
     deployment = write_policy_bundle(args.config, args.out_dir)
     print("Generated trust schema:", deployment.trust_schema)
     print("Generated controller policy:", deployment.policy_file)
+    if args.print_summary:
+        print()
+        print(explain_policy(deployment), end="")
     return 0
 
 

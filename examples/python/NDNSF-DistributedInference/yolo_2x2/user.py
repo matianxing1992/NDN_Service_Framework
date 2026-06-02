@@ -80,7 +80,7 @@ def main() -> int:
             dynamic_provisioning = True
         if args.sequential_requests:
             futures = [
-                _ImmediateResult(client.infer_service(
+                _ImmediateResult(client.distributed_inference(
                     SERVICE,
                     payload,
                     ack_timeout_ms=args.ack_timeout_ms,
@@ -93,7 +93,7 @@ def main() -> int:
             ]
         else:
             futures = [
-                client.infer_service_async(
+                client.async_distributed_inference(
                     SERVICE,
                     payload,
                     ack_timeout_ms=args.ack_timeout_ms,

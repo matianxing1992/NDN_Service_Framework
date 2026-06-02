@@ -136,20 +136,20 @@ def main() -> None:
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
         rh.addOrigin(
             [ndn.net["memphis"]],
-            ["/example/hello/controller", "/example/hello/user", "/example/hello/group"],
+            ["/NDNSF-DistributeInference/example/controller", "/NDNSF-DistributeInference/example/user", "/NDNSF-DistributeInference/example/group"],
         )
         origins = [
-            ("ucla", "/example/hello/provider"),
-            ("wustl", "/example/hello/provider/A"),
-            ("uiuc", "/example/hello/provider/B"),
-            ("csu", "/example/hello/provider/C"),
+            ("ucla", "/NDNSF-DistributeInference/example/provider"),
+            ("wustl", "/NDNSF-DistributeInference/example/provider/A"),
+            ("uiuc", "/NDNSF-DistributeInference/example/provider/B"),
+            ("csu", "/NDNSF-DistributeInference/example/provider/C"),
         ]
         for node_name, prefix in origins:
-            rh.addOrigin([ndn.net[node_name]], [prefix, prefix + "/KEY", "/example/hello/group"])
+            rh.addOrigin([ndn.net[node_name]], [prefix, prefix + "/KEY", "/NDNSF-DistributeInference/example/group"])
         rh.calculateRoutes()
         for node in ndn.net.hosts:
-            Nfdc.setStrategy(node, "/example/hello", Nfdc.STRATEGY_MULTICAST)
-            Nfdc.setStrategy(node, "/example/hello/group", Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
 
         perf.initialize_example_keychains(ndn, args, OUT)
         session = int(time.time()) + os.getpid()

@@ -69,7 +69,7 @@ def main() -> int:
         else:
             expected_source = "policy-full-onnx"
 
-        result = client.infer_service(
+        result = client.distributed_inference(
             SERVICE,
             request_payload,
             ack_timeout_ms=args.ack_timeout_ms,

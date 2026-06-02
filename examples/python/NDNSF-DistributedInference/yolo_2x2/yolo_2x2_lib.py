@@ -48,10 +48,10 @@ from ndnsf_distributed_inference.splitter import (
 
 
 SERVICE = "/AI/YOLO/2x2Inference"
-GROUP = "/example/hello/group"
-CONTROLLER = "/example/hello/controller"
-USER = "/example/hello/user"
-PROVIDER_PREFIX = "/example/hello/provider"
+GROUP = "/NDNSF-DistributeInference/example/group"
+CONTROLLER = "/NDNSF-DistributeInference/example/controller"
+USER = "/NDNSF-DistributeInference/example/user"
+PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
 CONFIG_FILE = str(Path(__file__).with_name("yolo_policy.yaml"))
 RUNTIME_NAME = "/Runtime/NDNSF/YOLO2x2/OnnxRuntime/v1"
 REPO_SERVICE = "/NDNSF/DistributedRepo"
@@ -370,8 +370,8 @@ def split_model(output_dir: str | Path,
 
 def default_planner_provider_profiles() -> list[ProviderProfile]:
     return homogeneous_provider_profiles([
-        "/example/hello/provider/A",
-        "/example/hello/provider/B",
+        "/NDNSF-DistributeInference/example/provider/A",
+        "/NDNSF-DistributeInference/example/provider/B",
     ])
 
 
