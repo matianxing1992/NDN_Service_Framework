@@ -717,6 +717,8 @@ UAV service-container workload 的应用。计划顺序如下：
    planning；ground-station mission 按钮也会使用这个 progress model，在 patrol assignment 或
    compensation 仍然 active 时阻止重复 upload/start。左侧 drone row 和地图 marker 也会使用同一个
    progress model，让操作者不用打开 inspector 就能看到 compensation active 或 completed 状态。
+   左侧 vehicle list 现在使用共享的 `DroneListRowState` 派生逻辑，保证 selected/standby、
+   readiness、mission progress、video、command 和 safety 摘要与其它状态层显示一致。
    直播链路现在也有 typed `VideoAdaptiveState`，记录 RTT、prefetch window、lookahead、
    timeout pressure、probe pressure、decoder backlog 和 decoded-frame progress；video panel、
    selected-drone view、左侧 drone row 和 MiniNDN smoke logs 都从这个 model 读取状态，而不是

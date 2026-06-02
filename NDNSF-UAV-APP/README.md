@@ -1445,7 +1445,10 @@ to make it a deployable UAV service-container workload. The planned order is:
    actions while a patrol assignment or compensation step is still active. The
    same progress model also updates left-side drone rows and map marker labels
    so operators can see active compensation or completion without opening the
-   inspector. The live downlink also exposes a typed `VideoAdaptiveState`
+   inspector. The left vehicle list now uses shared `DroneListRowState`
+   derivation, keeping selected/standby, readiness, mission progress, video,
+   command, and safety summaries consistent with the rest of the state layer.
+   The live downlink also exposes a typed `VideoAdaptiveState`
    covering RTT, prefetch window, lookahead, timeout pressure, probe pressure,
    decoder backlog, and decoded-frame progress; the video panel, selected-drone
    view, left drone rows, and MiniNDN smoke logs read that model instead of

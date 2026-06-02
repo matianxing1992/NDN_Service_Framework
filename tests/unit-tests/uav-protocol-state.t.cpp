@@ -6,6 +6,8 @@ namespace ndn_service_framework::test {
 namespace {
 
 using ndnsf::examples::uav::FlightSafetyGateState;
+using ndnsf::examples::uav::FlightCommandState;
+using ndnsf::examples::uav::DroneListRowState;
 using ndnsf::examples::uav::Fields;
 using ndnsf::examples::uav::MissionStartGateState;
 using ndnsf::examples::uav::MissionPart;
@@ -16,8 +18,10 @@ using ndnsf::examples::uav::MissionWaypoint;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::RecordingDataProductState;
 using ndnsf::examples::uav::SafetyState;
+using ndnsf::examples::uav::TelemetryState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
+using ndnsf::examples::uav::VideoState;
 using ndnsf::examples::uav::buildPatrolMissionPlan;
 using ndnsf::examples::uav::computeVideoAdaptivePolicy;
 
@@ -376,6 +380,86 @@ BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyIdentifiesPressureProfiles)
   probe.probePressure = 90;
   BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).primaryPressure, "probe");
   BOOST_CHECK_EQUAL(computeVideoAdaptivePolicy(probe).policyReason, "pressure-probe");
+}
+
+BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)
+{
+  TelemetryState telemetry;
+  telemetry.droneId = "A";
+  telemetry.batteryPercent = "87";
+  telemetry.video = "streaming";
+  telemetry.readiness = "ready";
+  telemetry.armed = "true";
+  telemetry.gpsFixName = "3d-fix";
+
+  auto readiness = makeReadyState(true);
+  auto mission = makeMissionState("executing");
+
+  VideoState video;
+  video.droneId = "A";
+  video.status = "streaming";
+
+  VideoAdaptiveState adaptive;
+  adaptive.droneId = "A";
+  adaptive.rttMs = 115;
+  adaptive.window = 36;
+  adaptive.timeoutPressure = 30;
+  adaptive.probePressure = 10;
+  adaptive.backlogPressure = 55;
+  adaptive.primaryPressure = "backlog";
+  adaptive.acceptedBitrateKbps = 6000;
+  adaptive.suggestedBitrateKbps = 4000;
+  adaptive.bitrateAction = "decrease";
+  adaptive.policyReason = "pressure-backlog";
+
+  FlightCommandState command;
+  command.droneId = "A";
+  command.command = "takeoff";
+  command.ackResult = "accepted";
+
+  auto safety = makeSafeState();
+
+  MissionProgressState progress;
+  progress.phase = "executing";
+  progress.drones = "A,B";
+
+  BOOST_CHECK(progress.appliesToDrone("A"));
+  BOOST_CHECK(progress.appliesToDrone("B"));
+  BOOST_CHECK(!progress.appliesToDrone("C"));
+  BOOST_CHECK_EQUAL(adaptive.maxPressure(), 55);
+  BOOST_CHECK_NE(adaptive.compactSummary().find("pressure=55/backlog"), std::string::npos);
+
+  const auto row = DroneListRowState::fromStates("A", true, telemetry, readiness,
+                                                 mission, video, adaptive, command,
+                                                 safety, progress);
+  BOOST_CHECK(row.selected);
+  BOOST_CHECK(row.hasTelemetry);
+  BOOST_CHECK(row.hasReadiness);
+  BOOST_CHECK(row.hasMission);
+  BOOST_CHECK(row.hasMissionProgress);
+  BOOST_CHECK(row.hasVideo);
+  BOOST_CHECK(row.hasVideoAdaptive);
+  BOOST_CHECK(row.hasCommand);
+  BOOST_CHECK(row.hasSafety);
+  BOOST_CHECK_EQUAL(row.readiness, "ready");
+  BOOST_CHECK_EQUAL(row.armed, "true");
+  BOOST_CHECK_EQUAL(row.gps, "true");
+  BOOST_CHECK_EQUAL(row.battery, "87%");
+  BOOST_CHECK_EQUAL(row.mission, "executing");
+  BOOST_CHECK_EQUAL(row.missionProgress, "executing");
+  BOOST_CHECK_EQUAL(row.video, "streaming");
+  BOOST_CHECK_NE(row.rowText.find("Drone A active"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("progress=executing"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("adaptive=rtt=115ms"), std::string::npos);
+
+  const auto unrelatedRow = DroneListRowState::fromStates("C", false, std::nullopt,
+                                                          std::nullopt, std::nullopt,
+                                                          std::nullopt, std::nullopt,
+                                                          std::nullopt, std::nullopt,
+                                                          progress);
+  BOOST_CHECK(!unrelatedRow.hasMissionProgress);
+  BOOST_CHECK_EQUAL(unrelatedRow.missionProgress, "idle");
+  BOOST_CHECK_NE(unrelatedRow.rowText.find("Drone C standby"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(RecordingDataProductTracksEncryptedManifest)

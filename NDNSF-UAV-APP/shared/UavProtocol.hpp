@@ -242,6 +242,8 @@ struct VideoAdaptiveState
   static VideoAdaptiveState fromFields(const Fields& fields);
   Fields toFields() const;
   bool underPressure() const;
+  uint64_t maxPressure() const;
+  std::string compactSummary() const;
   std::string statusLine() const;
 };
 
@@ -380,7 +382,44 @@ struct MissionProgressState
   bool needsCompensation() const;
   bool isComplete() const;
   bool isFailed() const;
+  bool appliesToDrone(const std::string& droneId) const;
   std::string statusLine() const;
+};
+
+struct DroneListRowState
+{
+  std::string droneId;
+  bool selected = false;
+  bool hasTelemetry = false;
+  bool hasReadiness = false;
+  bool hasMission = false;
+  bool hasVideo = false;
+  bool hasCommand = false;
+  bool hasSafety = false;
+  bool hasMissionProgress = false;
+  bool hasVideoAdaptive = false;
+  std::string readiness = "unknown";
+  std::string armed = "unknown";
+  std::string gps = "unknown";
+  std::string battery = "unknown";
+  std::string mission = "idle";
+  std::string missionProgress = "idle";
+  std::string video = "unknown";
+  std::string videoAdaptive = "unknown";
+  std::string command = "none";
+  std::string safety = "unknown";
+  std::string rowText;
+
+  static DroneListRowState fromStates(const std::string& droneId,
+                                      bool selected,
+                                      const std::optional<TelemetryState>& telemetry,
+                                      const std::optional<ReadinessState>& readiness,
+                                      const std::optional<MissionState>& mission,
+                                      const std::optional<VideoState>& video,
+                                      const std::optional<VideoAdaptiveState>& videoAdaptive,
+                                      const std::optional<FlightCommandState>& command,
+                                      const std::optional<SafetyState>& safety,
+                                      const std::optional<MissionProgressState>& progress);
 };
 
 struct MissionWaypoint
