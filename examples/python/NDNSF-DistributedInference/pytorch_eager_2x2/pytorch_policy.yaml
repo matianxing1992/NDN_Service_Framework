@@ -1,20 +1,69 @@
+# editable deployment section
+# Edit these names for a real deployment.
+# application: local label for this APP deployment.
 application: pytorch-eager-2x2-demo
-controller: /example/hello/controller
-group: /example/hello/group
+# controller: NDNSF ServiceController identity/prefix for permissions.
+controller: /NDNSF-DistributeInference/example/controller
+# group: NDN-SVS group prefix shared by all participants.
+group: /NDNSF-DistributeInference/example/group
 
-identities:
-  user: /example/hello/user
-  provider_prefix: /example/hello/provider
+runtime:
+  # user_identity: identity used when this config starts a user/client process.
+  # This does not grant permission by itself; service users below do that.
+  user_identity: /NDNSF-DistributeInference/example/user
+  # provider_prefix: naming helper used by examples to derive concrete providers.
+  provider_prefix: /NDNSF-DistributeInference/example/provider
 
 trust:
+  # app_roots: trust-schema roots for this deployment namespace.
   app_roots:
-    - /example/hello
+    - /NDNSF-DistributeInference/example
   # Production deployments should anchor validation at the trust-root certificate.
   # anchor_file: /path/to/root.cert
 
+# generated authorization summary
+# Read-only review aid derived from services[].users/providers.
+authorization_summary:
+  users:
+    - identity: /NDNSF-DistributeInference/example/user
+      services:
+        - /AI/PyTorch/Eager2x2Inference
+  providers:
+    - identity: /NDNSF-DistributeInference/example/provider
+      services:
+        - service: /AI/PyTorch/Eager2x2Inference
+          roles: all
+    - identity: /NDNSF-DistributeInference/example/provider/A
+      services:
+        - service: /AI/PyTorch/Eager2x2Inference
+          roles: all
+    - identity: /NDNSF-DistributeInference/example/provider/B
+      services:
+        - service: /AI/PyTorch/Eager2x2Inference
+          roles: all
+    - identity: /NDNSF-DistributeInference/example/provider/C
+      services:
+        - service: /AI/PyTorch/Eager2x2Inference
+          roles: all
+
+# generated model-plan section
+# Edit users/providers per service to grant
+# exact identities permission. Regenerate roles/dependencies/input/output when
+# the model split changes.
 services:
   - name: /AI/PyTorch/Eager2x2Inference
     model: /Model/PyTorch/Eager2x2
+    users:
+      - /NDNSF-DistributeInference/example/user
+    providers:
+      - identity: /NDNSF-DistributeInference/example/provider
+        roles: all
+      - identity: /NDNSF-DistributeInference/example/provider/A
+        roles: all
+      - identity: /NDNSF-DistributeInference/example/provider/B
+        roles: all
+      - identity: /NDNSF-DistributeInference/example/provider/C
+        roles: all
     roles:
       - /Stage/0/Shard/0
       - /Stage/0/Shard/1
@@ -43,14 +92,3 @@ services:
         output:
           dtype: float32
           shape: [1, 4]
-    users:
-      - /example/hello/user
-    providers:
-      - identity: /example/hello/provider
-        roles: all
-      - identity: /example/hello/provider/A
-        roles: all
-      - identity: /example/hello/provider/B
-        roles: all
-      - identity: /example/hello/provider/C
-        roles: all

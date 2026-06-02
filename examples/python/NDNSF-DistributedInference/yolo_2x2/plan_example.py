@@ -37,21 +37,21 @@ def fake_onnx_payload(stage: int, shard: int) -> bytes:
 def build_repo() -> LocalDistributedRepo:
     return LocalDistributedRepo([
         StorageCapability(
-            "/example/hello/repo/A",
+            "/NDNSF-DistributeInference/example/repo/A",
             free_bytes=4_000_000_000,
             recent_load=0.10,
             availability_score=0.99,
             failure_domain="rack-a",
         ),
         StorageCapability(
-            "/example/hello/repo/B",
+            "/NDNSF-DistributeInference/example/repo/B",
             free_bytes=3_000_000_000,
             recent_load=0.05,
             availability_score=0.98,
             failure_domain="rack-b",
         ),
         StorageCapability(
-            "/example/hello/repo/C",
+            "/NDNSF-DistributeInference/example/repo/C",
             free_bytes=2_000_000_000,
             recent_load=0.25,
             availability_score=0.97,
@@ -74,7 +74,7 @@ def inspect_yolo_2x2_policy():
         for shard in range(2):
             payload = fake_onnx_payload(stage, shard)
             object_name = (
-                "/example/hello/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/"
+                "/NDNSF-DistributeInference/example/controller/NDNSF-DISTRIBUTED-REPO/OBJECT/"
                 "NDNSF-DI/ARTIFACT/AI/YOLO/2x2"
                 f"/Stage/{stage}/Shard/{shard}/model"
             )
@@ -103,7 +103,7 @@ def validate_repo_intermediate_data(repo: LocalDistributedRepo) -> None:
     payload = b"activation tensor from stage0 shards to stage1 shards"
     manifest = repo.put(
         object_name=(
-            "/example/hello/user/NDNSF-DISTRIBUTED-REPO/OBJECT/"
+            "/NDNSF-DistributeInference/example/user/NDNSF-DISTRIBUTED-REPO/OBJECT/"
             "NDNSF-DI/INTERMEDIATE/AI/YOLO/2x2/session-0/stage0-to-stage1"
         ),
         payload=payload,

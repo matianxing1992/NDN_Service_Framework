@@ -22,10 +22,10 @@ from ndnsf_distributed_inference.splitter import (
 
 
 SERVICE = "/AI/PyTorch/Eager2x2Inference"
-GROUP = "/example/hello/group"
-CONTROLLER = "/example/hello/controller"
-USER = "/example/hello/user"
-PROVIDER_PREFIX = "/example/hello/provider"
+GROUP = "/NDNSF-DistributeInference/example/group"
+CONTROLLER = "/NDNSF-DistributeInference/example/controller"
+USER = "/NDNSF-DistributeInference/example/user"
+PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
 CONFIG_FILE = str(Path(__file__).with_name("pytorch_policy.yaml"))
 
 ROLE_S0_0 = "/Stage/0/Shard/0"

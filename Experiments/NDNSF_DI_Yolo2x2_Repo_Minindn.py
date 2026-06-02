@@ -92,30 +92,30 @@ def main() -> None:
         perf.wait_for_nfd_sockets(ndn, OUT)
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
-        rh.addOrigin([ndn.net["csu"]], ["/example/hello/controller"])
-        rh.addOrigin([ndn.net["memphis"]], ["/example/hello/user"])
-        rh.addOrigin([ndn.net["ucla"]], ["/example/hello/provider/repoA"])
-        rh.addOrigin([ndn.net["wustl"]], ["/example/hello/provider/repoB"])
-        rh.addOrigin([ndn.net["uiuc"]], ["/example/hello/provider/repoC"])
+        rh.addOrigin([ndn.net["csu"]], ["/NDNSF-DistributeInference/example/controller"])
+        rh.addOrigin([ndn.net["memphis"]], ["/NDNSF-DistributeInference/example/user"])
+        rh.addOrigin([ndn.net["ucla"]], ["/NDNSF-DistributeInference/example/provider/repoA"])
+        rh.addOrigin([ndn.net["wustl"]], ["/NDNSF-DistributeInference/example/provider/repoB"])
+        rh.addOrigin([ndn.net["uiuc"]], ["/NDNSF-DistributeInference/example/provider/repoC"])
         rh.addOrigin(
             [ndn.net["ucla"], ndn.net["wustl"], ndn.net["uiuc"]],
             ["/NDNSF/DistributedRepo/Object"],
         )
-        rh.addOrigin(ndn.net.hosts, ["/example/hello/group"])
+        rh.addOrigin(ndn.net.hosts, ["/NDNSF-DistributeInference/example/group"])
         rh.calculateRoutes()
         log("Waiting 15s for NLSR base convergence")
         time.sleep(15.0)
         for node in ndn.net.hosts:
-            Nfdc.setStrategy(node, "/example/hello", Nfdc.STRATEGY_MULTICAST)
-            Nfdc.setStrategy(node, "/example/hello/group", Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
 
         identities = {
-            "csu": "/example/hello/controller",
-            "memphis": "/example/hello/user",
-            "ucla": "/example/hello/provider/repoA",
-            "wustl": "/example/hello/provider/repoB",
-            "uiuc": "/example/hello/provider/repoC",
+            "csu": "/NDNSF-DistributeInference/example/controller",
+            "memphis": "/NDNSF-DistributeInference/example/user",
+            "ucla": "/NDNSF-DistributeInference/example/provider/repoA",
+            "wustl": "/NDNSF-DistributeInference/example/provider/repoB",
+            "uiuc": "/NDNSF-DistributeInference/example/provider/repoC",
         }
         homes = {}
         for host_name, identity in identities.items():
@@ -135,7 +135,7 @@ def main() -> None:
         (key_source / ".ndn").mkdir(parents=True, exist_ok=True)
         (key_source / ".ndn/client.conf").write_text("transport=unix:///run/nfd/csu.sock\n",
                                                      encoding="utf-8")
-        root_identity = "/example/hello"
+        root_identity = "/NDNSF-DistributeInference/example"
         root_cert = OUT / "root.cert"
         subprocess.run(
             "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} > {}; "
@@ -235,7 +235,7 @@ def main() -> None:
             "ucla",
             "repoA",
             base + perf.shell_quote(PY_DIR / "repo_node.py") +
-            " --provider-id repoA --repo-node /example/hello/provider/repoA "
+            " --provider-id repoA --repo-node /NDNSF-DistributeInference/example/provider/repoA "
             "--failure-domain rack-a "
             f"--storage-dir {MININDN_ROOT}/ucla/repo-store "
             "--advertise-stored-prefixes",
@@ -244,7 +244,7 @@ def main() -> None:
             "wustl",
             "repoB",
             base + perf.shell_quote(PY_DIR / "repo_node.py") +
-            " --provider-id repoB --repo-node /example/hello/provider/repoB "
+            " --provider-id repoB --repo-node /NDNSF-DistributeInference/example/provider/repoB "
             "--failure-domain rack-b "
             f"--storage-dir {MININDN_ROOT}/wustl/repo-store "
             "--advertise-stored-prefixes",
@@ -253,7 +253,7 @@ def main() -> None:
             "uiuc",
             "repoC",
             base + perf.shell_quote(PY_DIR / "repo_node.py") +
-            " --provider-id repoC --repo-node /example/hello/provider/repoC "
+            " --provider-id repoC --repo-node /NDNSF-DistributeInference/example/provider/repoC "
             "--failure-domain rack-c "
             f"--storage-dir {MININDN_ROOT}/uiuc/repo-store "
             "--advertise-stored-prefixes",

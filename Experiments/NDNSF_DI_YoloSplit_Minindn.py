@@ -152,29 +152,29 @@ def main() -> None:
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
         rh.addOrigin([ndn.net["csu"]], [
-            "/example/hello/controller",
-            "/example/hello/controller/DKEY",
-            "/example/hello/controller/KEY",
-            "/example/hello/group",
+            "/NDNSF-DistributeInference/example/controller",
+            "/NDNSF-DistributeInference/example/controller/DKEY",
+            "/NDNSF-DistributeInference/example/controller/KEY",
+            "/NDNSF-DistributeInference/example/group",
         ])
         rh.addOrigin([ndn.net["memphis"]], [
-            "/example/hello/user",
-            "/example/hello/group",
+            "/NDNSF-DistributeInference/example/user",
+            "/NDNSF-DistributeInference/example/group",
         ])
         rh.addOrigin([ndn.net["ucla"]], [
-            "/example/hello/provider",
-            "/example/hello/provider/KEY",
-            "/example/hello/group",
+            "/NDNSF-DistributeInference/example/provider",
+            "/NDNSF-DistributeInference/example/provider/KEY",
+            "/NDNSF-DistributeInference/example/group",
         ])
         rh.addOrigin([ndn.net["wustl"]], [
-            "/example/hello/provider/A",
-            "/example/hello/provider/A/KEY",
-            "/example/hello/group",
+            "/NDNSF-DistributeInference/example/provider/A",
+            "/NDNSF-DistributeInference/example/provider/A/KEY",
+            "/NDNSF-DistributeInference/example/group",
         ])
         rh.calculateRoutes()
         for node in ndn.net.hosts:
-            Nfdc.setStrategy(node, "/example/hello", Nfdc.STRATEGY_MULTICAST)
-            Nfdc.setStrategy(node, "/example/hello/group", Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
 
         perf.initialize_example_keychains(ndn, args, OUT)
         session = int(time.time()) + os.getpid()

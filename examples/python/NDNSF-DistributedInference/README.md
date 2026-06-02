@@ -1,76 +1,287 @@
 # NDNSF-DistributedInference Examples
 
-These examples use the high-level `ndnsf_distributed_inference` package. App
-code should import this package rather than using the lower-level `ndnsf`
-wrapper directly.
+This directory contains runnable examples for the high-level
+`ndnsf_distributed_inference` APP API. If you are new to this API, start here
+instead of calling the lower-level `ndnsf` Python wrapper directly.
 
-Install the Python packages in editable mode from the repository root:
+The examples demonstrate the same workflow:
+
+```text
+1. Generate or review a policy YAML.
+2. Start an APPController from that policy.
+3. Start providers from that policy.
+4. Start a user/client from that policy.
+5. The user calls distributed_inference(service, input_object).
+6. Providers exchange activation objects according to the dependency graph.
+7. The user receives final predictions.
+```
+
+The important point is that the user does not manually choose NDN names,
+Interest/Data packets, segment names, NAC-ABE attributes, or provider-specific
+dependency topics. The service policy and APP API hide that machinery.
+
+## Install
+
+From the repository root:
 
 ```bash
 python3 -m pip install -e ./pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
 ```
 
-## Examples
+For ONNX examples, install the model/runtime packages needed by the example
+environment, such as `numpy`, `onnx`, and `onnxruntime`. The MiniNDN scripts
+also assume the repository has been built and that the native NDNSF runtime can
+be found by the Python wrapper.
 
-`yolo_split/` shows a two-stage ONNX Runtime deployment. The model splitter
-produces the service config, input/output contract, dependency graph, and
-artifact references; the controller, providers, and user then load the
-generated config. Run `split_model.py` first so the generated policy records
-the ONNX shard paths before providers start.
+## What Each Example Shows
 
-`yolo_2x2/` shows a four-provider 2x2 split-inference deployment. It uses a
-deterministic YOLO-style tensor pipeline, splits it into two stages and two
-shards per stage, and checks the distributed result against the local full
-model. Its MiniNDN test runs a separate repo node. The controller-side deployer
-stores model shards and the executable runner in that repo before inference;
-the user only assigns roles with repo manifest references. Providers start
-without local model/runtime files, fetch the required artifacts on the first
-command, and reuse the provider artifact cache on the second command.
-`plan_example.py` remains a policy/repo inspection helper.
-Repo artifact and intermediate Data names are publisher-scoped: controller
-artifacts are under the controller namespace, user inputs/intermediates are
-under the user namespace, and provider outputs are under provider namespaces.
-Generated trust schemas validate data and certificates hierarchically; a
-production deployment should use a trust-root certificate as the anchor.
+```text
+yolo_split/
+  Two-stage ONNX Runtime inference.
+  One provider runs Stage 0, another provider runs Stage 1.
+  Stage 0 publishes an activation object; Stage 1 fetches it and finishes.
 
-`pytorch_eager_2x2/` shows a four-provider Python runtime deployment. It splits
-a small fully connected network into two stages and two shards per stage, then
-checks the distributed output against the local full model. Its policy records
-the tensor payload contract and per-role PyTorch state artifact paths.
+yolo_2x2/
+  Four-role ONNX Runtime inference.
+  Stage 0 has two sequential shards and Stage 1 has two sequential shards.
+  The example uses repo-backed dynamic provisioning: providers can start
+  without local model/runtime files, then fetch the assigned role artifact.
 
-## MiniNDN Smoke
-
-Run the YOLO 2x2 MiniNDN split-inference smoke test from the repository root:
-
-```bash
-sudo -n python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
+pytorch_eager_2x2/
+  Four-role Python/PyTorch eager inference.
+  This is useful for research prototypes that cannot be cleanly exported to
+  ONNX yet. It checks distributed output against a local full-model reference.
 ```
 
-Expected output includes:
+For a deployment-oriented ONNX path, use `yolo_split/` or `yolo_2x2/`.
+For flexible Python model logic, use `pytorch_eager_2x2/`.
+
+## Policy Files
+
+Each example has a `*_policy.yaml`. This file is the deployment contract:
+
+```text
+runtime.user_identity       identity used by the client/user process
+services[].users            exact users allowed to invoke each service
+services[].providers        exact providers allowed to provide each service
+services[].roles            model stages/shards that can be assigned
+services[].dependencies     tensor/object edges between roles
+services[].artifacts        model/runtime files or repo-backed artifacts
+services[].input/output     request and response payload descriptions
+```
+
+Generated policies are split into:
+
+```text
+# editable deployment section
+  Names, controller/group prefixes, runtime user, trust root, artifact policy.
+
+# generated authorization summary
+  Read-only summary of which users/providers can use/provide which services.
+
+# generated model-plan section
+  Services, roles, dependencies, artifacts, input/output contracts.
+```
+
+Real authorization comes from `services[].users` and `services[].providers`.
+The summary is only a review aid.
+
+Before running an example, inspect the policy:
+
+```bash
+PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
+python3 -m ndnsf_distributed_inference.policy \
+  --config examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml \
+  --out-dir /tmp/ndnsf-di-policy-review \
+  --print-summary
+```
+
+This prints user permissions, provider permissions, role coverage, artifact
+coverage, and artifact-security status. `--explain` is an alias for
+`--print-summary`.
+
+## User-Side API
+
+Application users should normally write only this:
+
+```python
+from ndnsf_distributed_inference import APPClient
+
+client = APPClient.from_config("yolo_policy.yaml")
+service = "/AI/YOLO/SplitInference"
+
+print(client.describe_input(service))
+print(client.describe_output(service))
+
+result = client.distributed_inference(service, image_tensor)
+```
+
+For concurrent requests:
+
+```python
+future = client.async_distributed_inference(service, image_tensor)
+result = future.result(timeout=30)
+```
+
+If the policy declares `codec: npz`, common numpy tensor inputs are encoded
+automatically. Use a custom input encoder only for model-specific preprocessing
+that a generic tensor encoder cannot know.
+
+## Provider-Side API
+
+Providers register the service and advertise roles:
+
+```python
+from ndnsf_distributed_inference import APPProvider
+
+provider = APPProvider.from_config("yolo_policy.yaml", provider_id="A")
+provider.serve_service(
+    service="/AI/YOLO/SplitInference",
+    roles="all",
+    handler=handle_assigned_role,
+    backends=["onnxruntime"],
+    temp_dir="/tmp/ndnsf-di-provider-A",
+    has_model=False,
+    can_provision=True,
+)
+provider.run()
+```
+
+In the homogeneous-worker case, all providers can advertise `roles="all"`.
+The assignment tells each selected provider which role to run. If dynamic
+provisioning is enabled, the provider fetches the model/runtime artifact for
+that assigned role.
+
+## Controller API
+
+The controller starts from the same policy:
+
+```python
+from ndnsf_distributed_inference import APPController
+
+controller = APPController.from_config("yolo_policy.yaml")
+controller.run()
+```
+
+The controller distributes NDNSF permissions and trust material generated from
+the policy. In real deployments, run it on the node that owns the controller
+identity and trust root.
+
+## Running the MiniNDN Examples
+
+Run these commands from the repository root.
+
+Two-stage YOLO ONNX split:
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
+```
+
+Expected markers:
+
+```text
+YOLO_SPLIT_RESULT ... ok=true
+YOLO_SPLIT_MININDN_OK ...
+```
+
+Four-role YOLO 2x2 ONNX split:
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
+```
+
+Expected markers:
 
 ```text
 YOLO_2X2_RESULT ... ok=true
 YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
 ```
 
-Provider logs should contain `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS` for the
-first command and `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT` for the second command.
-
-Run the PyTorch eager 2x2 MiniNDN smoke test from the repository root:
+Four-role PyTorch eager split:
 
 ```bash
-sudo -n python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
+sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
 ```
 
-Expected output includes:
+Expected markers:
 
 ```text
 PYTORCH_2X2_RESULT ... ok=true
 PYTORCH_2X2_MININDN_OK ...
 ```
 
-If the user process prints `PYTORCH_2X2_MININDN_TEARDOWN_WARNING`, the
-inference completed correctly but the native Python wrapper still has a cleanup
-path that should be improved. Treat that as a lifecycle warning, not an
-inference correctness failure.
+The unified runner can launch all supported DI cases:
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
+```
+
+## Manual Multi-Process Run
+
+MiniNDN is the easiest way to run a full topology, but you can also run the
+same APP roles manually in separate shells if local routing and certificates
+are already prepared.
+
+For `yolo_split/`:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_split/split_model.py
+
+python3 examples/python/NDNSF-DistributedInference/yolo_split/controller.py \
+  --config examples/python/NDNSF-DistributedInference/yolo_split/yolo_policy.yaml
+
+python3 examples/python/NDNSF-DistributedInference/yolo_split/provider.py \
+  --config examples/python/NDNSF-DistributedInference/yolo_split/yolo_policy.yaml \
+  --provider-id A \
+  --temp-dir /tmp/ndnsf-yolo-stage0
+
+python3 examples/python/NDNSF-DistributedInference/yolo_split/provider.py \
+  --config examples/python/NDNSF-DistributedInference/yolo_split/yolo_policy.yaml \
+  --provider-id B \
+  --temp-dir /tmp/ndnsf-yolo-stage1
+
+python3 examples/python/NDNSF-DistributedInference/yolo_split/user.py \
+  --config examples/python/NDNSF-DistributedInference/yolo_split/yolo_policy.yaml
+```
+
+Manual runs are useful for debugging APIs, but MiniNDN is preferred for
+network-level regression because it starts per-node NFDs and routes.
+
+## Dynamic Provisioning and Repo-Backed Artifacts
+
+`yolo_2x2/` demonstrates dynamic provisioning. The controller-side deployer
+stores model shards and runtime bundles in an NDNSF-DistributedRepo node before
+inference. The user request carries repo manifest references instead of large
+model bytes. Selected providers fetch their assigned role artifacts, cache
+them locally, execute the role, and publish activation objects for dependent
+roles.
+
+Provider logs should show:
+
+```text
+NDNSF_EXECUTION_ARTIFACT_CACHE_MISS
+NDNSF_EXECUTION_ARTIFACT_CACHE_HIT
+```
+
+The first command should miss and fetch artifacts. Later commands can reuse
+the provider artifact cache.
+
+## Common Mistakes
+
+Use `--print-summary` first if anything looks odd. Frequent mistakes are:
+
+```text
+runtime.user_identity is not listed in any service users list
+provider identity is not listed in service providers
+service role has no authorized provider
+artifact path points to a missing file
+repo manifest was not published before inference
+input tensor shape/dtype does not match client.describe_input(service)
+provider has can_provision=False but does not have local model shards
+production trust.anchor_file is missing
+```
+
+If a MiniNDN run prints a teardown warning after an `ok=true` result, treat it
+as a lifecycle cleanup warning rather than inference failure. The correctness
+markers are the `... RESULT ... ok=true` lines.
