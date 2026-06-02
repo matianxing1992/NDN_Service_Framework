@@ -398,6 +398,9 @@ Mission upload response 和后续 telemetry 都会更新同一个 `MissionState`
 Manual-control safety 采用保守策略。Drone 只会在很短的新鲜窗口内重放最新 `MANUAL_CONTROL`
 frame。窗口过期后，它会发送一次 neutral manual-control frame，然后停止重放，直到收到新的
 GS command。这样可以避免链路卡住后旧的键盘/手柄输入一直持续生效。
+GS 在发送 manual-control update 前也会检查最近 telemetry：必须看到 heartbeat、flight
+controller ready，并且无人机已经 armed。如果这些条件不满足，GS 会抑制手操包，并显示
+readiness reason，而不是继续向链路里灌入无效控制请求。
 
 Takeoff 会受 telemetry state 保护：GS 在发送 Targeted takeoff command 前，必须看到
 heartbeat、flight-controller readiness、GPS/EKF readiness、电池 readiness 和 armed 状态。
@@ -589,14 +592,18 @@ bitrate、accepted bitrate、requested width、accepted width、FPS、encoder qu
 payload 大小。ground station 再用 accepted bitrate 以及每个 packet metadata 里的
 high-watermark 估计 prefetch window，避免盲目请求无边界的 packet sequence number。同时 GS 会用
 实测 video RTT 动态调整 live prefetch window、lookahead、decoder reorder window、Interest
-lifetime、probe backoff 和 missing-packet skip timeout。这样低 bitrate / 低 FPS 摄像头不会
+lifetime、probe backoff 和 missing-packet skip timeout。timeout 和 Nack 压力也会进入同一套策略：
+当链路开始丢包或 chunk 延迟变高时，GS 会降低 lookahead/prefetch 压力，并缩短 decoder
+等待缺失 delta chunk 的时间。这样低 bitrate / 低 FPS 摄像头不会
 过度预取，高 bitrate stream 也能保持足够的 in-flight Interests，减少卡顿。当前 demo
 默认是 8000 kbps、480 px frame width、30 FPS 的 H264 stream。提高 bitrate 会增加 stream 质量和
 packet 数据量；提高 frame width 才会让 GUI 里显示的视频更大。
 
 点击 `Stop Video` 后，drone 会停止实时 stream，清空 pending Interests 和缓存的 stream packets，
 并忽略已经停止的 stream 上迟到的 frame Interests。这样可以避免 GS 端视频停了，但 drone 还在继续
-服务旧缓存包。如果 drone 配置启用了 `camera-capture-on-start` 或
+服务旧缓存包。GS 即使已经停止本地 decoder，也会继续发送 stop control request；如果 control
+response 超时，会短时间重试，因此关闭 GS 窗口、点击 `Stop Video` 或 auto-stop smoke test
+都不应该留下 drone 继续发布直播流。如果 drone 配置启用了 `camera-capture-on-start` 或
 `camera-record-to-local-repo`，本地摄像头采集/录像可以在直播停止后继续运行。
 
 后续可以增加每个 stream 独立的小 SVS group 来发布 frame-name announcement，但它应该和主 UAV
@@ -674,6 +681,9 @@ telemetry、camera frame 和 mission assignment。core 现在提供了通用的
 `UavDroneApp` 和 `UavGroundStationApp` 会先启动 NDNSF runtime，等 runtime ready 后才显示
 GUI 窗口。这样 NDNSF/NAC-ABE 构造、SVS 初始化、权限获取仍然尽量接近普通命令行 example 的
 写法；GUI main loop 只在 runtime ready 之后启动。
+真实无人机上如果不需要本地 operator 窗口，可以使用 `UavDroneApp --headless`。headless
+模式运行同一套 NDNSF 服务、MAVLink backend、摄像头和本地录像 pipeline，但不会创建 GTK
+窗口，也就不需要在小型机载计算机上额外使用 Xvfb。
 
 先启动 NFD 和 UAV controller，然后启动一个 drone 窗口和一个 ground-station 窗口：
 
@@ -685,6 +695,8 @@ nfd-start
   --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
 
 ./build/examples/UavDroneApp --drone-id A --video-source /dev/video0
+# 真实机载计算机没有显示器时：
+# ./build/examples/UavDroneApp --drone-id A --video-source auto --headless
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480
 ```

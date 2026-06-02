@@ -313,27 +313,8 @@ public:
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
     stopDecoder();
-    postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
-                encodeFields({{"type", "video-control"}, {"action", "stop"}}),
-                [this, droneId](const std::string& payload) {
-                  m_videoStopInFlight = false;
-                  {
-                    std::lock_guard<std::mutex> guard(m_videoStateMutex);
-                    if (m_activeVideoDroneId == droneId) {
-                      m_activeVideoDroneId.clear();
-                    }
-                  }
-                  const auto fields = decodeFields(payload);
-                  publishStatus("Video stopped drone=" + droneId + ", packets=" +
-                                fieldOr(fields, "stream_packets_published",
-                                        fieldOr(fields, "frames_published", "0")) +
-                                ", fec_groups=" +
-                                fieldOr(fields, "fec_groups_published", "0"));
-                },
-                {},
-                [this] {
-                  m_videoStopInFlight = false;
-                });
+    m_videoStopRetries = 0;
+    stopVideoAttempt(droneId);
   }
 
   bool
@@ -391,6 +372,17 @@ public:
   sendMavlinkCommandToDrone(const std::string& droneId, const std::string& commandName, Fields params = {})
   {
     const bool isManualControl = commandName == "manual_control";
+    if (isManualControl) {
+      std::string reason;
+      if (!validateManualControlReadiness(droneId, reason)) {
+        const auto now = nowMilliseconds();
+        if (now > m_lastManualControlBlockedLogMs.load() + 1000) {
+          m_lastManualControlBlockedLogMs = now;
+          publishStatus("Manual control blocked drone=" + droneId + " reason=" + reason);
+        }
+        return false;
+      }
+    }
     if (commandName == "takeoff") {
       std::string reason;
       if (!validateTakeoffReadiness(droneId, reason)) {
@@ -1347,20 +1339,7 @@ private:
   bool
   validateTakeoffReadiness(const std::string& droneId, std::string& reason)
   {
-    auto telemetry = telemetryForDrone(droneId);
-    if (!telemetry || telemetry->timestampMs == 0 ||
-        nowMilliseconds() > telemetry->timestampMs + 2500) {
-      const auto fields = requestTelemetryStatusForDroneSync(
-        droneId, std::chrono::milliseconds(std::min(m_timeoutMs, 2500)));
-      if (!fields.empty()) {
-        auto fresh = TelemetryState::fromFields(fields);
-        if (fresh.droneId == "unknown") {
-          fresh.droneId = droneId;
-        }
-        updateDroneState(fresh, MissionState::fromFields(fields));
-        telemetry = fresh;
-      }
-    }
+    auto telemetry = freshTelemetryForSafetyCheck(droneId, 2500);
 
     if (!telemetry) {
       reason = "no-telemetry";
@@ -1392,6 +1371,50 @@ private:
     }
     reason = "ok";
     return true;
+  }
+
+  bool
+  validateManualControlReadiness(const std::string& droneId, std::string& reason)
+  {
+    const auto telemetry = freshTelemetryForSafetyCheck(droneId, 1200);
+    if (!telemetry) {
+      reason = "no-telemetry";
+      return false;
+    }
+    if (telemetry->heartbeatSeen != "true") {
+      reason = "waiting-heartbeat";
+      return false;
+    }
+    if (telemetry->flightControllerReady != "true") {
+      reason = "flight-controller-not-ready";
+      return false;
+    }
+    if (telemetry->armed != "true") {
+      reason = "not-armed";
+      return false;
+    }
+    reason = "ok";
+    return true;
+  }
+
+  std::optional<TelemetryState>
+  freshTelemetryForSafetyCheck(const std::string& droneId, uint64_t maxAgeMs)
+  {
+    auto telemetry = telemetryForDrone(droneId);
+    if (!telemetry || telemetry->timestampMs == 0 ||
+        nowMilliseconds() > telemetry->timestampMs + maxAgeMs) {
+      const auto fields = requestTelemetryStatusForDroneSync(
+        droneId, std::chrono::milliseconds(std::min(m_timeoutMs, 2500)));
+      if (!fields.empty()) {
+        auto fresh = TelemetryState::fromFields(fields);
+        if (fresh.droneId == "unknown") {
+          fresh.droneId = droneId;
+        }
+        updateDroneState(fresh, MissionState::fromFields(fields));
+        telemetry = fresh;
+      }
+    }
+    return telemetry;
   }
 
   void
@@ -1776,6 +1799,45 @@ private:
                   if (!m_seenVideoStart.load()) {
                     m_videoStartInFlight = false;
                   }
+                });
+  }
+
+  void
+  stopVideoAttempt(std::string droneId)
+  {
+    postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
+                encodeFields({{"type", "video-control"}, {"action", "stop"}}),
+                [this, droneId](const std::string& payload) {
+                  m_videoStopInFlight = false;
+                  m_videoStopRetries = 0;
+                  {
+                    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+                    if (m_activeVideoDroneId == droneId) {
+                      m_activeVideoDroneId.clear();
+                    }
+                  }
+                  const auto fields = decodeFields(payload);
+                  publishStatus("Video stopped drone=" + droneId + ", packets=" +
+                                fieldOr(fields, "stream_packets_published",
+                                        fieldOr(fields, "frames_published", "0")) +
+                                ", fec_groups=" +
+                                fieldOr(fields, "fec_groups_published", "0"));
+                },
+                [this, droneId] {
+                  const uint64_t retry = m_videoStopRetries.fetch_add(1);
+                  if (retry < MAX_VIDEO_STOP_RETRIES) {
+                    publishStatus("Video stop retry " + std::to_string(retry + 1));
+                    boost::asio::post(m_face.getIoContext(), [this, droneId] {
+                      stopVideoAttempt(droneId);
+                    });
+                    return true;
+                  }
+                  return false;
+                },
+                [this, droneId] {
+                  m_videoStopInFlight = false;
+                  m_videoStopRetries = 0;
+                  publishStatus("Video stop timed out for drone " + droneId);
                 });
   }
 
@@ -2329,16 +2391,26 @@ private:
   dynamicVideoWindow() const
   {
     const auto rtt = videoRttMs();
+    const auto lossPressure = videoLossPressurePercent();
     const auto targetBufferMs = std::clamp<uint64_t>(rtt + 80, 180, 750);
-    return packetsForDurationMs(targetBufferMs, 8, m_dynamicWindowMax);
+    const auto pressureCap = lossPressure > 0 ?
+      std::max<uint64_t>(16, m_dynamicWindowMax *
+                             (100 - std::min<uint64_t>(lossPressure, 70)) / 100) :
+      m_dynamicWindowMax;
+    return packetsForDurationMs(targetBufferMs, 8, pressureCap);
   }
 
   uint64_t
   dynamicVideoLookahead() const
   {
     const auto rtt = videoRttMs();
+    const auto lossPressure = videoLossPressurePercent();
     const auto futureMs = std::clamp<uint64_t>(rtt / 3 + 40, 50, 250);
-    return packetsForDurationMs(futureMs, 2, m_dynamicLookaheadMax);
+    const auto pressureCap = lossPressure > 0 ?
+      std::max<uint64_t>(4, m_dynamicLookaheadMax *
+                            (100 - std::min<uint64_t>(lossPressure, 60)) / 100) :
+      m_dynamicLookaheadMax;
+    return packetsForDurationMs(futureMs, 2, pressureCap);
   }
 
   uint64_t
@@ -2357,10 +2429,25 @@ private:
   dynamicDecoderMissingTimeoutMs() const
   {
     const auto frameMs = std::max<uint64_t>(1, 1000 / std::max<uint64_t>(1, m_videoFps));
+    const auto lossPressure = videoLossPressurePercent();
     const auto minWaitMs = std::clamp<uint64_t>(std::max<uint64_t>(frameMs * 2, videoRttMs() / 2),
                                                100, 350);
     const auto maxWaitMs = std::clamp<uint64_t>(videoRttMs() * 2 + frameMs * 3, 300, 1800);
-    return std::clamp<uint64_t>(videoRttMs() + frameMs * 3, minWaitMs, maxWaitMs);
+    const auto baseWaitMs = std::clamp<uint64_t>(videoRttMs() + frameMs * 3, minWaitMs, maxWaitMs);
+    const auto pressureReductionMs = std::min<uint64_t>(lossPressure * 4, baseWaitMs / 2);
+    return std::clamp<uint64_t>(baseWaitMs - pressureReductionMs, minWaitMs, maxWaitMs);
+  }
+
+  uint64_t
+  videoLossPressurePercent() const
+  {
+    const auto received = m_receivedChunks.load();
+    const auto losses = m_frameNacks.load() + m_frameTimeouts.load();
+    if (received + losses < 20) {
+      return 0;
+    }
+    return std::clamp<uint64_t>((losses * 100) / std::max<uint64_t>(1, received + losses),
+                                0, 80);
   }
 
   void
@@ -2415,11 +2502,13 @@ private:
                        << " name=" << data.getName()
                        << " bytes=" << data.getContent().value_size()
                        << " rttMs=" << videoRttMs()
+                       << " lossPressure=" << videoLossPressurePercent()
                        << " window=" << dynamicVideoWindow());
           std::cout << "GS_VIDEO_CHUNK count=" << receivedCount
                       << " packetSeq=" << packetSeq
                     << " bytes=" << data.getContent().value_size()
                     << " rttMs=" << videoRttMs()
+                    << " lossPressure=" << videoLossPressurePercent()
                     << " window=" << dynamicVideoWindow() << std::endl;
         }
         if (m_firstFrameMs == 0) {
@@ -3221,6 +3310,7 @@ private:
   std::atomic<bool> m_videoStopInFlight{false};
   std::atomic<bool> m_recordingPlaybackActive{false};
   std::atomic<uint64_t> m_videoStartRetries{0};
+  std::atomic<uint64_t> m_videoStopRetries{0};
   std::atomic<uint64_t> m_firstFrameMs{0};
   std::atomic<uint64_t> m_receivedChunks{0};
   std::atomic<uint64_t> m_highestReceivedVideoPacketSeq{UINT64_MAX};
@@ -3228,6 +3318,7 @@ private:
   std::atomic<uint64_t> m_frameTimeouts{0};
   std::atomic<bool> m_mavlinkCommandInFlight{false};
   std::atomic<bool> m_manualControlInFlight{false};
+  std::atomic<uint64_t> m_lastManualControlBlockedLogMs{0};
   mutable std::mutex m_telemetryMutex;
   std::set<std::string> m_telemetryInFlightDrones;
   std::map<std::string, TelemetryState> m_telemetryByDrone;
@@ -3256,6 +3347,7 @@ private:
   static constexpr uint64_t DEFAULT_VIDEO_RTT_MS = 120;
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
+  static constexpr uint64_t MAX_VIDEO_STOP_RETRIES = 4;
   std::atomic<uint64_t> m_videoRttEwmaMs{DEFAULT_VIDEO_RTT_MS};
   std::atomic<bool> m_done{false};
   std::atomic<bool> m_videoPumpScheduled{false};

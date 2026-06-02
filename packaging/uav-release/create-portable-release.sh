@@ -116,8 +116,10 @@ is_never_bundle_lib() {
   local base
   base="$(basename "$path")"
   case "$base" in
-    linux-vdso.so*|ld-linux*.so*|libc.so*|libpthread.so*|libdl.so*|\
-    librt.so*|libm.so*|libresolv.so*|libnsl.so*|libutil.so*)
+    linux-vdso.so*|ld-*.so*|ld-linux*.so*|libc.so*|libc-*.so|\
+    libpthread.so*|libpthread-*.so|libdl.so*|libdl-*.so|\
+    librt.so*|librt-*.so|libm.so*|libm-*.so|libresolv.so*|\
+    libresolv-*.so|libnsl.so*|libnsl-*.so|libutil.so*|libutil-*.so)
       return 0
       ;;
   esac
@@ -149,6 +151,7 @@ collect_libraries() {
 }
 
 declare -A seen_libs=()
+declare -A force_bundle_libs=()
 queue=()
 for binary in "${required_bins[@]}"; do
   while IFS= read -r lib; do
@@ -157,7 +160,11 @@ for binary in "${required_bins[@]}"; do
 done
 for binary in "${optional_runtime_bins[@]}"; do
   while IFS= read -r lib; do
-    [[ -n "$lib" ]] && queue+=("$lib")
+    if [[ -n "$lib" ]]; then
+      queue+=("$lib")
+      real="$(readlink -f "$lib" 2>/dev/null || true)"
+      [[ -n "$real" ]] && force_bundle_libs[$real]=1
+    fi
   done < <(collect_libraries "$binary")
 done
 
@@ -173,10 +180,18 @@ while ((${#queue[@]})); do
     continue
   fi
 
-  if is_required_private_lib "$real" || [[ "$include_system_libs" == "1" ]]; then
+  if is_required_private_lib "$real" ||
+     [[ "$include_system_libs" == "1" ]] ||
+     [[ -n "${force_bundle_libs[$real]:-}" ]]; then
     copy_lib "$lib"
     while IFS= read -r dep; do
-      [[ -n "$dep" ]] && queue+=("$dep")
+      if [[ -n "$dep" ]]; then
+        queue+=("$dep")
+        if [[ -n "${force_bundle_libs[$real]:-}" ]]; then
+          dep_real="$(readlink -f "$dep" 2>/dev/null || true)"
+          [[ -n "$dep_real" ]] && force_bundle_libs[$dep_real]=1
+        fi
+      fi
     done < <(collect_libraries "$real" 2>/dev/null || true)
   fi
 done

@@ -447,6 +447,11 @@ latest `MANUAL_CONTROL` frame only inside a short freshness window. When that
 window expires, it sends one neutral manual-control frame and stops replaying
 until a new GS command arrives. This prevents stale keyboard/gamepad input from
 continuing indefinitely after a link stall.
+The ground station also checks recent telemetry before sending manual-control
+updates: it requires a heartbeat, a ready flight controller, and an armed
+vehicle. If those conditions are missing, manual-control packets are suppressed
+and the operator sees the readiness reason instead of silently flooding the
+link.
 
 Takeoff is guarded by the telemetry state: the GS requires heartbeat,
 flight-controller readiness, GPS/EKF readiness, battery readiness, and an armed
@@ -674,16 +679,21 @@ packet payload size. The ground station derives its prefetch window from those
 returned values and from the packet high-watermark carried in each packet.
 It also uses the measured video RTT to adapt the live prefetch window,
 lookahead, decoder reorder window, Interest lifetime, probe backoff, and
-missing-packet skip timeout. This keeps low-bitrate/low-FPS camera streams from
-overfetching while giving higher-bitrate streams enough in-flight Interests to
-avoid stalls.
+missing-packet skip timeout. Timeout and Nack pressure are folded into the same
+policy: when the link starts dropping or delaying chunks, the GS reduces
+lookahead/prefetch pressure and shortens the decoder's wait for missing delta
+chunks. This keeps low-bitrate/low-FPS camera streams from overfetching while
+giving higher-bitrate streams enough in-flight Interests to avoid stalls.
 The default is currently 8000 kbps, 480 px frame width, and 30 FPS for the demo
 H264 stream. Raising bitrate improves stream quality and packet volume; raising
 frame width makes the displayed video larger.
 
 When `Stop Video` is invoked, the drone stops the live stream, clears pending
 Interests and cached stream packets, and ignores late frame Interests for the
-stopped stream. If the drone config enables `camera-capture-on-start` or
+stopped stream. The GS sends the stop control request even after it has stopped
+the local decoder, and retries it briefly if the control response times out, so
+closing the GS window, clicking `Stop Video`, or auto-stop smoke tests do not
+leave the drone publishing a live stream. If the drone config enables `camera-capture-on-start` or
 `camera-record-to-local-repo`, the camera capture loop may continue running
 locally after the live stream stops.
 
@@ -780,6 +790,10 @@ From the repository root:
 window is shown. This keeps the NDNSF/NAC-ABE construction, SVS setup, and
 permission fetch path close to the normal command-line examples, while the GUI
 main loop only starts after the runtime reports ready.
+On a physical drone, use `UavDroneApp --headless` when no local operator window
+is needed. Headless mode runs the same NDNSF services, MAVLink backend, camera,
+and local recording pipeline, but avoids the GTK window and the need for Xvfb on
+small onboard computers.
 
 Start NFD and the UAV controller once, then start one drone window and one
 ground-station window:
@@ -792,6 +806,8 @@ nfd-start
   --policy-file NDNSF-UAV-APP/configs/uav_demo.policies
 
 ./build/examples/UavDroneApp --drone-id A --video-source /dev/video0
+# On a real onboard computer without a display:
+# ./build/examples/UavDroneApp --drone-id A --video-source auto --headless
 ./build/examples/UavGroundStationApp --target-drone A \
   --video-bitrate-kbps 8000 --video-width 480
 ```
