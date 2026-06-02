@@ -691,9 +691,10 @@ frame width makes the displayed video larger.
 When `Stop Video` is invoked, the drone stops the live stream, clears pending
 Interests and cached stream packets, and ignores late frame Interests for the
 stopped stream. The GS sends the stop control request even after it has stopped
-the local decoder, and retries it briefly if the control response times out, so
-closing the GS window, clicking `Stop Video`, or auto-stop smoke tests do not
-leave the drone publishing a live stream. If the drone config enables `camera-capture-on-start` or
+the local decoder. If the control response times out, NDNSF emits selection-status
+timeout diagnostics and the GS prompts the operator to click `Stop Video` again
+if the drone still reports streaming; duplicate stop requests are safe because
+the drone treats stop as idempotent. If the drone config enables `camera-capture-on-start` or
 `camera-record-to-local-repo`, the camera capture loop may continue running
 locally after the live stream stops.
 
