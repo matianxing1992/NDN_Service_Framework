@@ -737,7 +737,10 @@ UAV service-container workload 的应用。计划顺序如下：
    建议转换成显式 Stop-then-Start stream restart。默认策略仍然是 manual；
    `auto-after-pressure` 可以用于实验场景，在压力持续一段时间后自动应用建议。
 5. **任务协作模型。** 把当前 patrol demo 提升成可复用 mission model，包括 `MissionPlan`、
-   `MissionPart`、assignment、progress、failure/compensation 和 return-to-home 语义。
+   `MissionPart`、assignment、progress、failure/compensation 和 return-to-home 语义。Patrol
+   route clustering、默认 sector 生成、drone assignment 和 return-to-departure waypoint
+   插入现在都放进共享 typed mission helper，因此 GUI workflow、service container 和测试使用
+   同一套协作模型。
 6. **Repo-backed UAV data products。** 通过 `NDNSF-DistributedRepo` 保存 recording、mission
    image、telemetry log、object-detection event 和 report，使用 publisher-owned name、
    encrypted payload 和 manifest-based discovery。Camera recording manifest 现在会解析成

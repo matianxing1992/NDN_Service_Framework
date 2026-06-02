@@ -1577,6 +1577,246 @@ MissionProgressState::statusLine() const
          " pending=" + pendingPartIds;
 }
 
+std::string
+MissionWaypoint::str() const
+{
+  std::ostringstream os;
+  os << std::fixed << std::setprecision(6) << lat << "," << lon;
+  return os.str();
+}
+
+MissionWaypoint
+MissionPart::firstWaypointOr(MissionWaypoint fallback) const
+{
+  if (waypoints.empty()) {
+    return fallback;
+  }
+  return waypoints.front();
+}
+
+std::vector<std::string>
+MissionPart::waypointStrings() const
+{
+  std::vector<std::string> out;
+  out.reserve(waypoints.size());
+  for (const auto& waypoint : waypoints) {
+    out.push_back(waypoint.str());
+  }
+  return out;
+}
+
+std::string
+MissionPart::waypointText() const
+{
+  std::ostringstream os;
+  os << (role.empty() ? "route" : role) << ":";
+  for (size_t i = 0; i < waypoints.size(); ++i) {
+    if (i > 0) {
+      os << ">";
+    }
+    os << waypoints[i].str();
+  }
+  return os.str();
+}
+
+std::string
+MissionPart::statusLine() const
+{
+  return "MissionPart id=" + id +
+         " role=" + role +
+         " drone=" + assignedDrone +
+         " waypoints=" + std::to_string(waypoints.size()) +
+         " attempt=" + std::to_string(attempt) +
+         " done=" + std::string(done ? "true" : "false") +
+         " return_home=" + std::string(returnHomePlanned ? "true" : "false");
+}
+
+std::string
+MissionPlan::droneList() const
+{
+  std::string out;
+  for (const auto& part : parts) {
+    if (part.assignedDrone.empty()) {
+      continue;
+    }
+    if (!out.empty()) {
+      out += ",";
+    }
+    out += part.assignedDrone;
+  }
+  return out.empty() ? "none" : out;
+}
+
+std::string
+MissionPlan::statusLine() const
+{
+  return "MissionPlan task=" + taskId +
+         " assignment=" + assignment +
+         " drones=" + droneList() +
+         " parts=" + std::to_string(parts.size()) +
+         " return_home=" + std::string(returnHomePlanned ? "true" : "false");
+}
+
+namespace {
+
+double
+missionDistanceSq(const MissionWaypoint& a, const MissionWaypoint& b, double referenceLat)
+{
+  const auto latScale = 111320.0;
+  const auto lonScale = 111320.0 * std::max(0.2, std::cos(referenceLat * M_PI / 180.0));
+  const auto dLat = (a.lat - b.lat) * latScale;
+  const auto dLon = (a.lon - b.lon) * lonScale;
+  return dLat * dLat + dLon * dLon;
+}
+
+std::vector<MissionWaypoint>
+nearestNeighborMissionRoute(std::vector<MissionWaypoint> points, double referenceLat)
+{
+  std::vector<MissionWaypoint> route;
+  if (points.empty()) {
+    return route;
+  }
+  auto startIt = std::min_element(points.begin(), points.end(),
+    [] (const MissionWaypoint& a, const MissionWaypoint& b) {
+      if (a.lat == b.lat) {
+        return a.lon < b.lon;
+      }
+      return a.lat < b.lat;
+    });
+  route.push_back(*startIt);
+  points.erase(startIt);
+  while (!points.empty()) {
+    const auto current = route.back();
+    auto nextIt = std::min_element(points.begin(), points.end(),
+      [current, referenceLat] (const MissionWaypoint& a, const MissionWaypoint& b) {
+        return missionDistanceSq(current, a, referenceLat) <
+               missionDistanceSq(current, b, referenceLat);
+      });
+    route.push_back(*nextIt);
+    points.erase(nextIt);
+  }
+  return route;
+}
+
+} // namespace
+
+MissionPlan
+buildPatrolMissionPlan(const std::string& taskId,
+                       double centerLat,
+                       double centerLon,
+                       double sideMeters,
+                       const std::vector<std::string>& droneIds,
+                       const std::vector<MissionWaypoint>& routeWaypoints,
+                       const std::map<std::string, MissionWaypoint>& departurePoints)
+{
+  MissionPlan plan;
+  plan.taskId = taskId;
+  plan.returnHomePlanned = true;
+  if (droneIds.empty()) {
+    return plan;
+  }
+
+  sideMeters = std::clamp(sideMeters, 40.0, 1000.0);
+  const auto latStep = sideMeters / 111320.0;
+  const auto lonStep = sideMeters / (111320.0 * std::max(0.2, std::cos(centerLat * M_PI / 180.0)));
+
+  if (routeWaypoints.size() >= 2) {
+    const size_t clusterCount = std::min(droneIds.size(), routeWaypoints.size());
+    std::vector<MissionWaypoint> centers;
+    centers.reserve(clusterCount);
+    auto sorted = routeWaypoints;
+    std::sort(sorted.begin(), sorted.end(), [] (const MissionWaypoint& a, const MissionWaypoint& b) {
+      if (a.lon == b.lon) {
+        return a.lat < b.lat;
+      }
+      return a.lon < b.lon;
+    });
+    for (size_t i = 0; i < clusterCount; ++i) {
+      const size_t index = std::min(sorted.size() - 1, i * sorted.size() / clusterCount);
+      centers.push_back(sorted[index]);
+    }
+
+    std::vector<size_t> assignments(routeWaypoints.size(), 0);
+    for (int iteration = 0; iteration < 8; ++iteration) {
+      std::vector<std::vector<MissionWaypoint>> groups(clusterCount);
+      for (size_t pointIndex = 0; pointIndex < routeWaypoints.size(); ++pointIndex) {
+        size_t best = 0;
+        double bestDistance = missionDistanceSq(routeWaypoints[pointIndex], centers.front(), centerLat);
+        for (size_t centerIndex = 1; centerIndex < centers.size(); ++centerIndex) {
+          const auto candidateDistance =
+            missionDistanceSq(routeWaypoints[pointIndex], centers[centerIndex], centerLat);
+          if (candidateDistance < bestDistance) {
+            best = centerIndex;
+            bestDistance = candidateDistance;
+          }
+        }
+        assignments[pointIndex] = best;
+        groups[best].push_back(routeWaypoints[pointIndex]);
+      }
+      for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        if (groups[groupIndex].empty()) {
+          continue;
+        }
+        MissionWaypoint nextCenter{};
+        for (const auto& point : groups[groupIndex]) {
+          nextCenter.lat += point.lat;
+          nextCenter.lon += point.lon;
+        }
+        nextCenter.lat /= static_cast<double>(groups[groupIndex].size());
+        nextCenter.lon /= static_cast<double>(groups[groupIndex].size());
+        centers[groupIndex] = nextCenter;
+      }
+    }
+
+    std::vector<std::vector<MissionWaypoint>> groups(clusterCount);
+    for (size_t pointIndex = 0; pointIndex < routeWaypoints.size(); ++pointIndex) {
+      groups[assignments[pointIndex]].push_back(routeWaypoints[pointIndex]);
+    }
+    for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+      if (groups[groupIndex].empty()) {
+        continue;
+      }
+      MissionPart part;
+      part.id = "part" + std::to_string(plan.parts.size());
+      part.role = "waypoint-cluster-" + std::to_string(groupIndex);
+      part.waypoints = nearestNeighborMissionRoute(groups[groupIndex], centerLat);
+      part.returnHomePlanned = true;
+      plan.parts.push_back(std::move(part));
+    }
+  }
+
+  if (plan.parts.empty()) {
+    const auto spacing = lonStep * 1.20;
+    const auto startLon = centerLon - spacing * (static_cast<double>(droneIds.size()) - 1.0) / 2.0;
+    plan.parts.reserve(droneIds.size());
+    for (size_t i = 0; i < droneIds.size(); ++i) {
+      const auto sectorLon = startLon + spacing * static_cast<double>(i);
+      const auto sectorLat = centerLat - latStep / 2.0;
+      MissionPart part;
+      part.id = "part" + std::to_string(plan.parts.size());
+      part.role = "patrol-cluster-" + std::to_string(i);
+      part.waypoints = {
+        {sectorLat, sectorLon - lonStep / 2.0},
+        {sectorLat + latStep, sectorLon - lonStep / 2.0},
+        {sectorLat + latStep, sectorLon + lonStep / 2.0},
+        {sectorLat, sectorLon + lonStep / 2.0},
+      };
+      part.returnHomePlanned = true;
+      plan.parts.push_back(std::move(part));
+    }
+  }
+
+  for (size_t i = 0; i < plan.parts.size(); ++i) {
+    auto& part = plan.parts[i];
+    part.assignedDrone = droneIds[i % droneIds.size()];
+    const auto fallback = part.firstWaypointOr(MissionWaypoint{centerLat, centerLon});
+    const auto it = departurePoints.find(part.assignedDrone);
+    part.waypoints.push_back(it == departurePoints.end() ? fallback : it->second);
+  }
+
+  return plan;
+}
+
 std::vector<uint8_t>
 encodeVideoPacket(const VideoPacket& packet)
 {

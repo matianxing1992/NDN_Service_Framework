@@ -1105,28 +1105,11 @@ public:
                             double sideMeters, bool simulateFirstPartMissing,
                             const std::vector<std::pair<double, double>>& routeWaypoints = {})
   {
-    struct GeoPoint
-    {
-      double lat = 0.0;
-      double lon = 0.0;
-    };
-
-    struct PatrolPart
-    {
-      std::string id;
-      std::string role;
-      std::string waypoints;
-      std::string assignedDrone;
-      std::string completedBy;
-      int attempt = 0;
-      bool done = false;
-    };
-
     struct PatrolDemoState
     {
       std::mutex mutex;
       std::condition_variable cv;
-      std::map<std::string, PatrolPart> parts;
+      std::map<std::string, MissionPart> parts;
       std::set<std::string> timedOut;
     };
 
@@ -1141,201 +1124,19 @@ public:
       m_missionReadyDrones.clear();
     }
     auto state = std::make_shared<PatrolDemoState>();
-    sideMeters = std::clamp(sideMeters, 40.0, 1000.0);
-    const auto latStep = sideMeters / 111320.0;
-    const auto lonStep = sideMeters / (111320.0 * std::max(0.2, std::cos(centerLat * M_PI / 180.0)));
-    auto makeWaypointText = [] (const std::string& sector,
-                                const std::vector<GeoPoint>& points) {
-      std::ostringstream os;
-      os << sector << ":";
-      for (size_t i = 0; i < points.size(); ++i) {
-        if (i > 0) {
-          os << ">";
-        }
-        os << std::fixed << std::setprecision(6)
-           << points[i].lat << "," << points[i].lon;
-      }
-      return os.str();
-    };
+    std::vector<MissionWaypoint> missionRouteWaypoints;
+    missionRouteWaypoints.reserve(routeWaypoints.size());
+    for (const auto& waypoint : routeWaypoints) {
+      missionRouteWaypoints.push_back({waypoint.first, waypoint.second});
+    }
 
-    auto distanceSq = [] (const GeoPoint& a, const GeoPoint& b, double referenceLat) {
-      const auto latScale = 111320.0;
-      const auto lonScale = 111320.0 * std::max(0.2, std::cos(referenceLat * M_PI / 180.0));
-      const auto dLat = (a.lat - b.lat) * latScale;
-      const auto dLon = (a.lon - b.lon) * lonScale;
-      return dLat * dLat + dLon * dLon;
-    };
-
-    auto nearestNeighborRoute = [&distanceSq] (std::vector<GeoPoint> points, double referenceLat) {
-      std::vector<GeoPoint> route;
-      if (points.empty()) {
-        return route;
-      }
-      auto startIt = std::min_element(points.begin(), points.end(),
-        [] (const GeoPoint& a, const GeoPoint& b) {
-          if (a.lat == b.lat) {
-            return a.lon < b.lon;
-          }
-          return a.lat < b.lat;
-        });
-      route.push_back(*startIt);
-      points.erase(startIt);
-      while (!points.empty()) {
-        const auto current = route.back();
-        auto nextIt = std::min_element(points.begin(), points.end(),
-          [current, referenceLat, &distanceSq] (const GeoPoint& a, const GeoPoint& b) {
-            return distanceSq(current, a, referenceLat) < distanceSq(current, b, referenceLat);
-          });
-        route.push_back(*nextIt);
-        points.erase(nextIt);
-      }
-      return route;
-    };
-
-    auto clusterRouteWaypoints =
-      [&distanceSq, &nearestNeighborRoute, &makeWaypointText, centerLat] (
-        const std::vector<std::pair<double, double>>& points,
-        size_t requestedClusters) {
-        std::vector<PatrolPart> parts;
-        if (points.empty() || requestedClusters == 0) {
-          return parts;
-        }
-        std::vector<GeoPoint> allPoints;
-        allPoints.reserve(points.size());
-        for (const auto& point : points) {
-          allPoints.push_back({point.first, point.second});
-        }
-        const size_t clusterCount = std::min(requestedClusters, allPoints.size());
-        std::vector<GeoPoint> centers;
-        centers.reserve(clusterCount);
-        auto sorted = allPoints;
-        std::sort(sorted.begin(), sorted.end(), [] (const GeoPoint& a, const GeoPoint& b) {
-          if (a.lon == b.lon) {
-            return a.lat < b.lat;
-          }
-          return a.lon < b.lon;
-        });
-        for (size_t i = 0; i < clusterCount; ++i) {
-          const size_t index = std::min(sorted.size() - 1,
-                                        i * sorted.size() / clusterCount);
-          centers.push_back(sorted[index]);
-        }
-
-        std::vector<size_t> assignments(allPoints.size(), 0);
-        for (int iteration = 0; iteration < 8; ++iteration) {
-          std::vector<std::vector<GeoPoint>> groups(clusterCount);
-          for (size_t pointIndex = 0; pointIndex < allPoints.size(); ++pointIndex) {
-            size_t best = 0;
-            double bestDistance = distanceSq(allPoints[pointIndex], centers.front(), centerLat);
-            for (size_t centerIndex = 1; centerIndex < centers.size(); ++centerIndex) {
-              const auto candidateDistance =
-                distanceSq(allPoints[pointIndex], centers[centerIndex], centerLat);
-              if (candidateDistance < bestDistance) {
-                best = centerIndex;
-                bestDistance = candidateDistance;
-              }
-            }
-            assignments[pointIndex] = best;
-            groups[best].push_back(allPoints[pointIndex]);
-          }
-          for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
-            if (groups[groupIndex].empty()) {
-              continue;
-            }
-            GeoPoint nextCenter{};
-            for (const auto& point : groups[groupIndex]) {
-              nextCenter.lat += point.lat;
-              nextCenter.lon += point.lon;
-            }
-            nextCenter.lat /= static_cast<double>(groups[groupIndex].size());
-            nextCenter.lon /= static_cast<double>(groups[groupIndex].size());
-            centers[groupIndex] = nextCenter;
-          }
-        }
-
-        std::vector<std::vector<GeoPoint>> groups(clusterCount);
-        for (size_t pointIndex = 0; pointIndex < allPoints.size(); ++pointIndex) {
-          groups[assignments[pointIndex]].push_back(allPoints[pointIndex]);
-        }
-        for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
-          if (groups[groupIndex].empty()) {
-            continue;
-          }
-          const auto role = "waypoint-cluster-" + std::to_string(groupIndex);
-          const auto route = nearestNeighborRoute(groups[groupIndex], centerLat);
-          const auto id = "part" + std::to_string(parts.size());
-          parts.push_back(PatrolPart{id, role, makeWaypointText(role, route),
-                                     "", "", 0, false});
-        }
-        return parts;
-      };
-
-    auto makeAutoSectorParts =
-      [&makeWaypointText, centerLat, centerLon, latStep, lonStep] (size_t partCount) {
-        std::vector<PatrolPart> parts;
-        parts.reserve(partCount);
-        const auto spacing = lonStep * 1.20;
-        const auto startLon = centerLon - spacing * (static_cast<double>(partCount) - 1.0) / 2.0;
-        for (size_t i = 0; i < partCount; ++i) {
-          const auto sectorLon = startLon + spacing * static_cast<double>(i);
-          const auto sectorLat = centerLat - latStep / 2.0;
-          const auto role = "patrol-cluster-" + std::to_string(i);
-          std::vector<GeoPoint> route{
-            {sectorLat, sectorLon - lonStep / 2.0},
-            {sectorLat + latStep, sectorLon - lonStep / 2.0},
-            {sectorLat + latStep, sectorLon + lonStep / 2.0},
-            {sectorLat, sectorLon + lonStep / 2.0},
-          };
-          const auto id = "part" + std::to_string(parts.size());
-          parts.push_back(PatrolPart{id, role, makeWaypointText(role, route),
-                                     "", "", 0, false});
-        }
-        return parts;
-      };
-
-    auto parseFirstWaypointOr = [] (const std::string& waypoints, GeoPoint fallback) {
-      const auto colon = waypoints.find(':');
-      const auto bodyStart = colon == std::string::npos ? 0 : colon + 1;
-      const auto itemEnd = waypoints.find('>', bodyStart);
-      const auto item = waypoints.substr(bodyStart, itemEnd == std::string::npos ?
-                                                   std::string::npos : itemEnd - bodyStart);
-      const auto comma = item.find(',');
-      if (comma == std::string::npos) {
-        return fallback;
-      }
-      try {
-        return GeoPoint{std::stod(item.substr(0, comma)),
-                        std::stod(item.substr(comma + 1))};
-      }
-      catch (const std::exception&) {
-        return fallback;
-      }
-    };
-
-    auto appendReturnWaypoint = [] (std::string waypoints, GeoPoint returnPoint) {
-      if (waypoints.empty()) {
-        waypoints = "route";
-      }
-      if (waypoints.find(':') == std::string::npos) {
-        waypoints += ':';
-      }
-      else if (waypoints.back() != ':') {
-        waypoints += '>';
-      }
-      std::ostringstream point;
-      point << std::fixed << std::setprecision(6)
-            << returnPoint.lat << "," << returnPoint.lon;
-      waypoints += point.str();
-      return waypoints;
-    };
-
-    auto departurePointForDrone = [this] (const std::string& droneId, GeoPoint fallback) {
+    auto departurePointForDrone = [this] (const std::string& droneId, MissionWaypoint fallback) {
       const auto telemetry = requestTelemetryStatusForDroneSync(droneId, std::chrono::milliseconds(900));
       try {
         const auto lat = std::stod(fieldOr(telemetry, "lat", ""));
         const auto lon = std::stod(fieldOr(telemetry, "lon", ""));
         if (std::isfinite(lat) && std::isfinite(lon)) {
-          return GeoPoint{lat, lon};
+          return MissionWaypoint{lat, lon};
         }
       }
       catch (const std::exception&) {
@@ -1343,26 +1144,30 @@ public:
       return fallback;
     };
 
-    std::vector<PatrolPart> plannedParts;
-    if (routeWaypoints.size() >= 2) {
-      plannedParts = clusterRouteWaypoints(routeWaypoints, m_patrolDroneIds.size());
+    const auto initialPlan = buildPatrolMissionPlan(taskId, centerLat, centerLon, sideMeters,
+                                                    m_patrolDroneIds, missionRouteWaypoints);
+    std::map<std::string, MissionWaypoint> departurePoints;
+    for (const auto& part : initialPlan.parts) {
+      if (part.assignedDrone.empty() || departurePoints.count(part.assignedDrone) > 0) {
+        continue;
+      }
+      const auto routeStart = part.firstWaypointOr(MissionWaypoint{centerLat, centerLon});
+      departurePoints.emplace(part.assignedDrone, departurePointForDrone(part.assignedDrone, routeStart));
     }
-    if (plannedParts.empty()) {
-      plannedParts = makeAutoSectorParts(m_patrolDroneIds.size());
-    }
-    for (size_t i = 0; i < plannedParts.size(); ++i) {
-      const auto droneId = m_patrolDroneIds[i % m_patrolDroneIds.size()];
-      plannedParts[i].assignedDrone = droneId;
-      const auto routeStart = parseFirstWaypointOr(plannedParts[i].waypoints,
-                                                   GeoPoint{centerLat, centerLon});
-      const auto departure = departurePointForDrone(droneId, routeStart);
-      plannedParts[i].waypoints = appendReturnWaypoint(plannedParts[i].waypoints, departure);
-      state->parts.emplace(plannedParts[i].id, plannedParts[i]);
+    const auto plan = buildPatrolMissionPlan(taskId, centerLat, centerLon, sideMeters,
+                                             m_patrolDroneIds, missionRouteWaypoints,
+                                             departurePoints);
+    for (const auto& part : plan.parts) {
+      state->parts.emplace(part.id, part);
     }
 
     auto logLedger = [] (const std::string& line) {
       NDN_LOG_INFO(line);
     };
+    logLedger("PATROL_PLAN " + plan.statusLine());
+    for (const auto& part : plan.parts) {
+      logLedger("PATROL_PART " + part.statusLine() + " waypoints=" + part.waypointText());
+    }
 
     auto joinDroneIds = [] (const std::vector<std::string>& droneIds) {
       std::string out;
@@ -1451,7 +1256,7 @@ public:
     auto dispatchPart = [&] (const std::string& partId, std::vector<std::string> droneIds,
                              int attempt, bool simulateNoResponse) {
       const std::string candidateText = joinDroneIds(droneIds);
-      PatrolPart part;
+      MissionPart part;
       {
         std::lock_guard<std::mutex> guard(state->mutex);
         auto& storedPart = state->parts[partId];
@@ -1467,7 +1272,7 @@ public:
         {"part_id", part.id},
         {"role", part.role},
         {"area", "demo-area"},
-        {"waypoints", part.waypoints},
+        {"waypoints", part.waypointText()},
         {"capture_required", "true"},
         {"simulate_no_response", simulateNoResponse ? "true" : "false"},
         {"simulate_delay_ms", "6500"},
@@ -1482,7 +1287,7 @@ public:
                 " part=" + part.id +
                 " candidates=" + candidateText +
                 " simulate_no_response=" + (simulateNoResponse ? "true" : "false") +
-                " waypoints=" + part.waypoints);
+                " waypoints=" + part.waypointText());
 
       auto requestMessage = makeRequest(payload);
       std::vector<ndn::Name> providerNames;
