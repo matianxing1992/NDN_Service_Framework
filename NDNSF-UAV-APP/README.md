@@ -750,7 +750,9 @@ stopped stream. The GS sends the stop control request even after it has stopped
 the local decoder. If the control response times out, NDNSF emits selection-status
 timeout diagnostics and the GS prompts the operator to click `Stop Video` again
 if the drone still reports streaming; duplicate stop requests are safe because
-the drone treats stop as idempotent. If the drone config enables `camera-capture-on-start` or
+the drone treats stop as idempotent. The GS also refreshes the selected-drone
+video control state after a stop timeout, so the Stop button becomes available
+again when the last telemetry still reports a streaming drone. If the drone config enables `camera-capture-on-start` or
 `camera-record-to-local-repo`, the camera capture loop may continue running
 locally after the live stream stops.
 
@@ -1207,6 +1209,9 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 Add `--auto-apply-bitrate-test` to the same command when you want the smoke test
 to exercise the explicit `Apply Bitrate` Stop-then-Start path.
+Add `--auto-repeat-stop-test` when you want the smoke test to delay the first
+stop response, check that the GS re-enables the Stop button after timeout, and
+then send a second idempotent stop request.
 For the policy-driven path, use `--video-bitrate-policy auto-after-pressure`
 with a short `--video-bitrate-auto-pressure-ms` value; use `0` when the smoke
 test must deterministically exercise the automatic Stop-then-Start path. The

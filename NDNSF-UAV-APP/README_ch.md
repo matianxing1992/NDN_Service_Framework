@@ -640,7 +640,8 @@ packet 数据量；提高 frame width 才会让 GUI 里显示的视频更大。
 服务旧缓存包。GS 即使已经停止本地 decoder，也会继续发送 stop control request；如果 control
 response 超时，NDNSF 会写出 selection-status timeout diagnostics，GS 会提示操作者在 drone
 仍显示 streaming 时再次点击 `Stop Video`。重复 stop request 是安全的，因为 drone 把 stop
-作为幂等操作处理。如果 drone 配置启用了 `camera-capture-on-start` 或
+作为幂等操作处理。GS 也会在 stop timeout 后刷新 selected-drone video control state；如果最近
+telemetry 仍显示 drone 处于 streaming，Stop 按钮会重新变成可用。如果 drone 配置启用了 `camera-capture-on-start` 或
 `camera-record-to-local-repo`，本地摄像头采集/录像可以在直播停止后继续运行。
 
 后续可以增加每个 stream 独立的小 SVS group 来发布 frame-name announcement，但它应该和主 UAV
@@ -1084,6 +1085,8 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 
 如果需要让 smoke test 覆盖显式 `Apply Bitrate` Stop-then-Start 路径，在同一命令后加
 `--auto-apply-bitrate-test`。
+如果需要验证 stop timeout 后按钮恢复和重复 stop request 的幂等性，可以加
+`--auto-repeat-stop-test`；脚本会延迟第一次 stop response，检查 GS 重新启用 Stop 按钮，然后再发第二次 stop。
 如果需要覆盖 policy-driven 路径，可以加
 `--video-bitrate-policy auto-after-pressure --video-bitrate-auto-pressure-ms <ms>`；当 smoke test
 必须稳定覆盖自动 Stop-then-Start 路径时，可以把 `<ms>` 设成 `0`。
