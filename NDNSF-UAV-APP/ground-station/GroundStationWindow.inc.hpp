@@ -1784,25 +1784,14 @@ private:
     m_pendingClearFrame = true;
   }
 
-  struct VideoControlState
-  {
-    std::string selectedDrone;
-    bool remoteStreaming = false;
-    bool displayActive = false;
-    bool canStart = true;
-    bool canStop = false;
-  };
-
   VideoControlState
   videoControlStateForSelected() const
   {
-    VideoControlState state;
-    state.selectedDrone = m_runtime.targetDroneId();
-    state.remoteStreaming = isVideoStateStreamingForDrone(state.selectedDrone);
-    state.displayActive = m_runtime.isVideoDisplayActiveForDrone(state.selectedDrone);
-    state.canStart = !state.remoteStreaming && !state.displayActive;
-    state.canStop = state.remoteStreaming || state.displayActive;
-    return state;
+    const auto selectedDrone = m_runtime.targetDroneId();
+    return VideoControlState::fromStates(
+      selectedDrone,
+      m_runtime.videoForDrone(selectedDrone),
+      m_runtime.isVideoDisplayActiveForDrone(selectedDrone));
   }
 
   void
