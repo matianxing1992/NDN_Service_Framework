@@ -118,6 +118,17 @@ services to share the same identity, local GUI state, hardware adapters, and
 process lifecycle without merging their service names or permissions into one
 monolithic RPC endpoint.
 
+The current container boundary follows a simple rule. Cross-node control and
+data discovery always use NDNSF remote or Targeted invocation, including
+MAVLink commands, video-control requests, telemetry polling, mission
+assignment, recording manifest discovery, and GS object-detection calls from a
+drone. Same-process helper composition uses the core
+`ServiceContainer.localRegistry()` path instead. Today this is used for
+helpers such as GS object-detection execution, Drone camera-status reads, and
+Drone recording-manifest assembly. These local helpers are trusted
+process-internal functions; they do not create a new wire protocol mode and
+cannot be selected by a remote caller.
+
 ## Physical Deployment On One PC And Multiple Drones
 
 This section is for a private deployment where one PC acts as the ground station
