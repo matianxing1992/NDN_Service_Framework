@@ -2828,6 +2828,14 @@ private:
         return makeResponse(true, encodeFields(cameraStatusFields()));
       });
 
+    m_coreContainer.localRegistry().registerLocalService(
+      localRecordingManifestServiceName(),
+      [this](const ndn::Name&,
+             const ndn::Name&,
+             const ndn_service_framework::RequestMessage&) {
+        return makeResponse(true, encodeFields(recordingManifestFields()));
+      });
+
     m_provider->addService(
       droneVideoControlService(m_config, m_droneId),
       ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
@@ -2883,8 +2891,9 @@ private:
       droneCameraRecordingManifestService(m_config, m_droneId),
       ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
-        [this](const ndn_service_framework::RequestMessage&) {
-          return makeResponse(true, encodeFields(recordingManifestFields()));
+        [this](const ndn_service_framework::RequestMessage& request) {
+          return m_coreContainer.localRegistry().localInvokeRaw(
+            localRecordingManifestServiceName(), request, m_identity);
         }),
       ServiceInvocationMode::NormalOnly);
 
@@ -3093,6 +3102,12 @@ private:
   localCameraStatusServiceName() const
   {
     return ndn::Name(m_identity).append("Local").append("Camera").append("Status");
+  }
+
+  ndn::Name
+  localRecordingManifestServiceName() const
+  {
+    return ndn::Name(m_identity).append("Local").append("Recording").append("Manifest");
   }
 
   void
