@@ -1435,6 +1435,40 @@ mission upload state is reflected as a typed marker suffix instead of temporary
 status string parsing. The left drone list is checked through the same typed
 state path, including readiness, mission, video, and safety summaries.
 
+### ServiceContainer/local helper regression bundle
+
+After changing `ServiceContainer`, `LocalServiceRegistry`, or UAV same-process
+helpers, rerun this MiniNDN-only bundle before migrating more helpers. The
+bundle keeps the intended boundary visible: cross-node controls and data access
+still go through NDNSF remote/Targeted invocation, while local helpers are
+exercised indirectly through normal GS/Drone workflows.
+
+```bash
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-telemetry-test --auto-telemetry-allow-mock-fields \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-mission-controls-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-video-test --auto-stop-seconds 8 \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-recording-playback-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+```
+
+The expected success markers are
+`NDNSF_UAV_TELEMETRY_MININDN_SMOKE_OK`,
+`NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK`,
+`NDNSF_UAV_GUI_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK`. This bundle intentionally uses
+mock flight-controller fields and the virtual camera path, so it does not
+require PX4, jMAVSim, a USB camera, or real UAV hardware.
+
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance
 `make px4_sitl jmavsim` target twice. Drone A uses PX4 MAVLink UDP port
