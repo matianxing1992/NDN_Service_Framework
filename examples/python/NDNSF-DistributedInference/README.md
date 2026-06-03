@@ -49,13 +49,16 @@ yolo_2x2/
   without local model/runtime files, then fetch the assigned role artifact.
 
 pytorch_eager_2x2/
-  Four-role Python/PyTorch eager inference.
-  This is useful for research prototypes that cannot be cleanly exported to
-  ONNX yet. It checks distributed output against a local full-model reference.
+  Four-role fully connected ONNX inference generated from a PyTorch-defined
+  model. The splitter exports a full ONNX reference graph, analyzes candidate
+  cut points, and writes four ONNX shards: two hidden-layer shards and two
+  output-layer shards. The distributed output is checked against the local
+  full-model reference.
 ```
 
 For a deployment-oriented ONNX path, use `yolo_split/` or `yolo_2x2/`.
-For flexible Python model logic, use `pytorch_eager_2x2/`.
+For a compact model-specific splitter that demonstrates horizontal splitting
+inside fully connected layers, use `pytorch_eager_2x2/`.
 
 ## Policy Files
 
@@ -230,7 +233,7 @@ YOLO_2X2_RESULT ... ok=true
 YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
 ```
 
-Four-role PyTorch eager split:
+Four-role PyTorch-defined fully connected ONNX split:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
