@@ -1291,6 +1291,35 @@ Takeoff/Land/手操只在选中无人机 armed 后启用。这些 UI gate 和实
 state 派生；例如 mission upload 后用 typed marker suffix 表示，而不是解析临时 status string。
 左侧 drone list 也通过同一套 typed state 路径检查，包括 readiness、mission、video 和 safety 摘要。
 
+### ServiceContainer/local helper 回归组合
+
+修改 `ServiceContainer`、`LocalServiceRegistry` 或 UAV 同进程 helper 后，继续迁移更多
+helper 前建议先复跑这一组 MiniNDN-only 回归。它用于保持边界清晰：跨节点控制和数据访问仍然走
+NDNSF remote/Targeted invocation；local helper 只通过正常 GS/Drone 工作流被间接覆盖。
+
+```bash
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-telemetry-test --auto-telemetry-allow-mock-fields \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-mission-controls-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-video-test --auto-stop-seconds 8 \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-recording-playback-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+```
+
+预期成功标记分别是 `NDNSF_UAV_TELEMETRY_MININDN_SMOKE_OK`、
+`NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK`、`NDNSF_UAV_GUI_MININDN_SMOKE_OK`
+和 `NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK`。这一组测试刻意使用 mock
+flight-controller 字段和虚拟摄像头路径，因此不需要 PX4、jMAVSim、USB 摄像头或真实无人机硬件。
+
 对于两架无人机的 jMAVSim 路径，launcher 不会把单实例
 `make px4_sitl jmavsim` target 启动两次，而是显式启动
 `px4 -i 0` 和 `px4 -i 1`。Drone A 使用 PX4 MAVLink UDP 端口
