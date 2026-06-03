@@ -26,6 +26,11 @@ from typing import Iterator
 
 import numpy as np
 import onnxruntime as ort
+from ndnsf import (
+    LargeDataReference,
+    encode_large_data_reference_payload,
+    parse_large_data_reference_payload,
+)
 
 from ndnsf_distributed_inference import (
     InferenceDependency,
@@ -651,19 +656,31 @@ def decode_image(payload: bytes) -> np.ndarray:
 
 
 def encode_image_reference(data_name: str, payload: bytes) -> bytes:
-    return json.dumps({
-        "kind": "ndnsf-large-data-ref",
-        "data_name": data_name,
-        "size": len(payload),
-        "sha256": hashlib.sha256(payload).hexdigest(),
-    }, sort_keys=True).encode()
+    return encode_large_data_reference_payload(LargeDataReference(
+        data_name=data_name,
+        object_type="application/x-ndnsf-di-input+npz",
+        object_id="inference-input-image",
+        plaintext_size=len(payload),
+        encrypted=True,
+        digest="sha256:" + hashlib.sha256(payload).hexdigest(),
+    ))
 
 
 def decode_image_reference(payload: bytes) -> dict:
-    ref = json.loads(payload.decode())
-    if ref.get("kind") != "ndnsf-large-data-ref":
+    ref = parse_large_data_reference_payload(payload)
+    if ref is None:
         raise ValueError("request payload is not an NDNSF large-data reference")
-    return ref
+    digest = ref.digest
+    if digest.startswith("sha256:"):
+        digest = digest[len("sha256:"):]
+    return {
+        "data_name": ref.data_name,
+        "size": ref.plaintext_size,
+        "sha256": digest,
+        "object_type": ref.object_type,
+        "object_id": ref.object_id,
+        "encrypted": ref.encrypted,
+    }
 
 
 def verify_referenced_payload(ref: dict, payload: bytes) -> None:

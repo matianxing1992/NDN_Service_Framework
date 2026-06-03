@@ -39,6 +39,7 @@ public:
     if (m_patrolDroneIds.empty()) {
       m_patrolDroneIds.push_back(m_targetDroneId);
     }
+    m_targetDroneLocked = !m_targetDroneId.empty();
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
     m_gsCert = getOrCreateIdentity(m_keyChain, m_config.groundStationIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_config.controllerPrefix);
@@ -133,9 +134,122 @@ public:
   }
 
   void
-  setFrameCallback(std::function<void(std::vector<uint8_t>, uint64_t, uint64_t)> callback)
+  setFrameCallback(std::function<void(std::vector<uint8_t>, uint64_t, uint64_t, std::string, uint64_t)> callback)
   {
     m_frameCallback = std::move(callback);
+  }
+
+  std::string
+  activeVideoStreamId() const
+  {
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    return m_activeStreamId;
+  }
+
+  uint64_t
+  videoStreamSessionEpoch() const
+  {
+    return m_videoStreamSessionEpoch.load();
+  }
+
+  bool
+  isCurrentStreamSession(uint64_t streamSessionEpoch) const
+  {
+    return streamSessionEpoch != 0 && streamSessionEpoch == videoStreamSessionEpoch();
+  }
+
+  std::string
+  makeVideoSessionId(const std::string& tag, const std::string& droneId)
+  {
+    return tag + "|" + droneId + "|" + std::to_string(nowMilliseconds()) + "|" +
+      std::to_string(++m_videoSessionCounter);
+  }
+
+  uint64_t
+  allocateStreamSessionEpoch(std::string streamId)
+  {
+    const auto epoch = ++m_videoSessionCounter;
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    m_activeStreamId = std::move(streamId);
+    m_videoStreamSessionEpoch = epoch;
+    m_streamEpochByStreamId[m_activeStreamId] = epoch;
+    return epoch;
+  }
+
+  uint64_t
+  allocateStreamSessionEpoch(std::string streamId, uint64_t streamSessionEpoch)
+  {
+    if (streamSessionEpoch == 0) {
+      return allocateStreamSessionEpoch(std::move(streamId));
+    }
+
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    if (streamSessionEpoch <= m_videoStreamSessionEpoch.load()) {
+      NDN_LOG_WARN("GS_VIDEO_STREAM_SESSION stale epoch ignored streamId="
+                   << streamId << " epoch=" << streamSessionEpoch
+                   << " current=" << m_videoStreamSessionEpoch.load());
+      m_streamEpochByStreamId[streamId] = m_videoStreamSessionEpoch.load();
+      m_videoStreamSessionEpoch = m_videoStreamSessionEpoch.load();
+      if (m_activeStreamId.empty()) {
+        m_activeStreamId = std::move(streamId);
+      }
+      return m_videoStreamSessionEpoch.load();
+    }
+
+    m_videoSessionCounter = streamSessionEpoch;
+    m_activeStreamId = std::move(streamId);
+    m_videoStreamSessionEpoch = streamSessionEpoch;
+    m_streamEpochByStreamId[m_activeStreamId] = streamSessionEpoch;
+    return streamSessionEpoch;
+  }
+
+  void
+  syncStreamSessionFromActiveId()
+  {
+    if (m_activeStreamId.empty()) {
+      return;
+    }
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    m_streamEpochByStreamId[m_activeStreamId] = m_videoStreamSessionEpoch.load();
+  }
+
+  uint64_t
+  streamSessionEpochForStreamId(const std::string& streamId) const
+  {
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    const auto it = m_streamEpochByStreamId.find(streamId);
+    return it == m_streamEpochByStreamId.end() ? 0 : it->second;
+  }
+
+  bool
+  isCurrentVideoSessionPacket(const std::string& streamId, uint64_t streamSessionEpoch) const
+  {
+    if (streamSessionEpoch == 0 || m_videoStreamSessionEpoch.load() == 0) {
+      return false;
+    }
+    return isCurrentLiveVideoStream(streamId) && isCurrentStreamSession(streamSessionEpoch);
+  }
+
+  bool
+  isCurrentSessionStreamId(const std::string& streamId) const
+  {
+    const auto activeStreamId = activeVideoStreamId();
+    return activeStreamId.empty() || streamId == activeStreamId;
+  }
+
+  void
+  setActiveStreamSession(std::string streamId)
+  {
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    m_activeStreamId = std::move(streamId);
+    m_streamEpochByStreamId[m_activeStreamId] = m_videoStreamSessionEpoch.load();
+  }
+
+  bool
+  isCurrentLiveVideoStream(const std::string& streamId) const
+  {
+    const auto activeStreamId = activeVideoStreamId();
+    return activeStreamId.empty() || streamId == activeStreamId;
   }
 
   std::string
@@ -148,8 +262,27 @@ public:
   void
   setTargetDroneId(std::string droneId)
   {
+    setTargetDroneId(std::move(droneId), TargetSelectionSource::User);
+  }
+
+  enum class TargetSelectionSource
+  {
+    User,
+    Auto,
+    Internal
+  };
+
+  void
+  setTargetDroneId(std::string droneId, TargetSelectionSource source)
+  {
     if (droneId.empty()) {
       return;
+    }
+    if (source != TargetSelectionSource::User) {
+      std::lock_guard<std::mutex> guard(m_targetMutex);
+      if (m_targetDroneLocked) {
+        return;
+      }
     }
     {
       std::lock_guard<std::mutex> guard(m_targetMutex);
@@ -157,8 +290,18 @@ public:
         return;
       }
       m_targetDroneId = std::move(droneId);
+      if (source == TargetSelectionSource::User) {
+        m_targetDroneLocked = true;
+      }
     }
     publishStatus("Selected drone " + targetDroneId());
+  }
+
+  bool
+  isTargetDroneLocked() const
+  {
+    std::lock_guard<std::mutex> guard(m_targetMutex);
+    return m_targetDroneLocked;
   }
 
   std::vector<std::string>
@@ -347,6 +490,174 @@ public:
       return std::nullopt;
     }
     return m_latestMissionPlan;
+  }
+
+  GroundStationRuntimeState
+  runtimeSnapshot() const
+  {
+    GroundStationRuntimeState snapshot;
+    snapshot.selectedDroneId = targetDroneId();
+    snapshot.selectedDroneLocked = isTargetDroneLocked();
+    snapshot.updatedMs = nowMilliseconds();
+    snapshot.missionPlan = missionPlanSnapshot();
+    snapshot.missionProgress = missionProgressSnapshot();
+
+    auto toAvailability = [] (const std::string& value) {
+      if (value == "true" || value == "online" || value == "connected" || value == "ready") {
+        return RuntimeAvailability::Available;
+      }
+      if (value == "false" || value == "offline" || value == "unavailable" || value == "lost") {
+        return RuntimeAvailability::Unavailable;
+      }
+      return RuntimeAvailability::Unknown;
+    };
+
+    auto toConnection = [] (const std::string& linkState) {
+      if (linkState == "connected" || linkState == "fresh") {
+        return RuntimeConnectionState::Online;
+      }
+      if (linkState == "stale") {
+        return RuntimeConnectionState::Stale;
+      }
+      if (linkState == "lost" || linkState == "offline") {
+        return RuntimeConnectionState::Offline;
+      }
+      return RuntimeConnectionState::Unknown;
+    };
+    const auto classifyTelemetryFreshness = [this, now = nowMilliseconds()] (uint64_t timestampMs) {
+      if (timestampMs == 0) {
+        return "unknown";
+      }
+      const auto ageMs = now > timestampMs ? now - timestampMs : 0;
+      if (ageMs >= m_linkLostMs) {
+        return "missing";
+      }
+      if (ageMs >= m_linkStaleMs) {
+        return "stale";
+      }
+      return "fresh";
+    };
+
+    std::set<std::string> droneIds;
+    {
+      std::lock_guard<std::mutex> guard(m_telemetryMutex);
+      for (const auto& item : m_telemetryByDrone) {
+        droneIds.insert(item.first);
+      }
+      for (const auto& item : m_readinessByDrone) {
+        droneIds.insert(item.first);
+      }
+      for (const auto& item : m_missionByDrone) {
+        droneIds.insert(item.first);
+      }
+      for (const auto& item : m_videoByDrone) {
+        droneIds.insert(item.first);
+      }
+      for (const auto& item : m_videoAdaptiveByDrone) {
+        droneIds.insert(item.first);
+      }
+      for (const auto& item : m_commandByDrone) {
+        droneIds.insert(item.first);
+      }
+      for (const auto& item : m_safetyByDrone) {
+        droneIds.insert(item.first);
+      }
+
+      for (const auto& droneId : droneIds) {
+        auto& droneState = snapshot.ensureDrone(droneId);
+        droneState.clearNotReadyReasons();
+        uint64_t lastUpdatedMs = 0;
+        if (const auto telemetryIt = m_telemetryByDrone.find(droneId);
+            telemetryIt != m_telemetryByDrone.end()) {
+          auto telemetryCopy = telemetryIt->second;
+          telemetryCopy.telemetryFreshness = classifyTelemetryFreshness(telemetryCopy.timestampMs);
+          droneState.telemetry = telemetryCopy;
+          lastUpdatedMs = std::max(lastUpdatedMs, telemetryIt->second.timestampMs);
+          droneState.telemetryReady = RuntimeAvailability::Available;
+          droneState.cameraReady = toAvailability(telemetryIt->second.cameraAvailable);
+          droneState.videoReady = telemetryIt->second.recording == "true" || telemetryIt->second.video == "true" ?
+                                 RuntimeAvailability::Available : RuntimeAvailability::Unknown;
+          droneState.flightControllerReady = toAvailability(telemetryIt->second.flightControllerReady);
+        }
+
+        if (const auto readinessIt = m_readinessByDrone.find(droneId);
+            readinessIt != m_readinessByDrone.end()) {
+          droneState.readiness = readinessIt->second;
+          lastUpdatedMs = std::max(lastUpdatedMs, readinessIt->second.timestampMs);
+          droneState.missionReady = readinessIt->second.readiness == "ready" ?
+                                    RuntimeAvailability::Available : RuntimeAvailability::Unavailable;
+        }
+
+        if (const auto missionIt = m_missionByDrone.find(droneId);
+            missionIt != m_missionByDrone.end()) {
+          droneState.mission = missionIt->second;
+          lastUpdatedMs = std::max(lastUpdatedMs, missionIt->second.updatedMs);
+        }
+
+        if (const auto videoIt = m_videoByDrone.find(droneId);
+            videoIt != m_videoByDrone.end()) {
+          droneState.video = videoIt->second;
+          lastUpdatedMs = std::max(lastUpdatedMs, videoIt->second.updatedMs);
+          droneState.videoReady = toAvailability(videoIt->second.status == "streaming" ||
+                                                 videoIt->second.status == "active" ? "true" : videoIt->second.status);
+          droneState.repoReady = toAvailability(videoIt->second.recording == "true" ? "true" : videoIt->second.recording);
+        }
+
+        if (const auto adaptiveIt = m_videoAdaptiveByDrone.find(droneId);
+            adaptiveIt != m_videoAdaptiveByDrone.end()) {
+          droneState.videoAdaptive = adaptiveIt->second;
+          lastUpdatedMs = std::max(lastUpdatedMs, adaptiveIt->second.updatedMs);
+        }
+
+        if (const auto commandIt = m_commandByDrone.find(droneId);
+            commandIt != m_commandByDrone.end()) {
+          const auto& command = commandIt->second;
+          RuntimeCommandSnapshot runtimeCommand;
+          runtimeCommand.command = command.command;
+          runtimeCommand.lifecycle = commandLifecycle(command);
+          runtimeCommand.detail = command.detail;
+          runtimeCommand.updatedMs = command.updatedMs;
+          lastUpdatedMs = std::max(lastUpdatedMs, command.updatedMs);
+          droneState.commandStates[command.command] = std::move(runtimeCommand);
+        }
+        if (const auto historyIt = m_commandHistoryByDrone.find(droneId);
+            historyIt != m_commandHistoryByDrone.end()) {
+          droneState.commandHistory = historyIt->second;
+        }
+
+        if (const auto safetyIt = m_safetyByDrone.find(droneId);
+            safetyIt != m_safetyByDrone.end()) {
+          const auto& safety = safetyIt->second;
+          droneState.safety = safety;
+          droneState.connection = toConnection(safety.linkState);
+          lastUpdatedMs = std::max(lastUpdatedMs, safety.updatedMs);
+          droneState.cameraReady = toAvailability(safety.detail == "idle" ? "unknown" : safety.manualControlState);
+          droneState.repoReady = toAvailability(safety.lostLinkAction.empty() ? "false" : safety.lostLinkAction);
+        }
+        else if (droneState.safety.has_value()) {
+          droneState.connection = RuntimeConnectionState::Offline;
+        }
+
+        if (lastUpdatedMs == 0 && droneState.telemetry.has_value()) {
+          lastUpdatedMs = droneState.telemetry->timestampMs;
+        }
+        if (!m_containerReady.load()) {
+          droneState.appendNotReadyReason(NotReadyReason::Certificate);
+        }
+        if (droneState.flightControllerReady == RuntimeAvailability::Unavailable) {
+          droneState.appendNotReadyReason(NotReadyReason::FlightController);
+        }
+        if (droneState.cameraReady == RuntimeAvailability::Unavailable) {
+          droneState.appendNotReadyReason(NotReadyReason::Camera);
+        }
+        if (droneState.repoReady == RuntimeAvailability::Unavailable) {
+          droneState.appendNotReadyReason(NotReadyReason::Repo);
+        }
+        droneState.updatedMs = lastUpdatedMs;
+      }
+    }
+
+    return snapshot;
   }
 
   std::optional<MissionPart>
@@ -541,6 +852,12 @@ public:
   stopVideo()
   {
     const auto droneId = targetDroneId();
+    const auto nowMs = nowMilliseconds();
+    const auto stopSuppressUntil = m_videoStopSuppressUntilMs.load();
+    if (stopSuppressUntil > nowMs) {
+      publishStatus("Video stop for drone " + droneId + " is rate-limited; please avoid repeated clicks.");
+      return;
+    }
     if (m_recordingPlaybackActive.load() && activeRecordingPlaybackDroneId() == droneId) {
       m_recordingPlaybackActive = false;
       stopDecoder();
@@ -558,17 +875,19 @@ public:
     }
     if (m_videoStopInFlight.exchange(true)) {
       publishStatus("Video stop already pending");
+      m_videoStopSuppressUntilMs = nowMs + VIDEO_STOP_CLICK_SUPPRESS_MS;
       return;
     }
     m_videoStartInFlight = false;
     m_streaming = false;
-    m_activeStreamId.clear();
+    m_activeStreamId = makeVideoSessionId("live-stop", droneId);
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
     publishVideoAdaptiveState("stop-requested", true);
     stopDecoder();
     stopVideoAttempt(droneId);
+    m_videoStopSuppressUntilMs = nowMs + VIDEO_STOP_CLICK_SUPPRESS_MS;
   }
 
   bool
@@ -676,17 +995,35 @@ public:
     params.emplace("target_component", "1");
     const auto missionId = "manual-" + commandName + "-" + std::to_string(nowMilliseconds());
     const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
+    const auto requestStartMs = nowMilliseconds();
+    updateCommandState(FlightCommandState{
+      droneId,
+      commandName,
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "targeted-request-sent",
+      requestStartMs,
+      m_timeoutMs,
+    });
     postTargetedRequest(
       droneIdentity(m_config, droneId),
       m_config.serviceMavlinkExecute,
       payload,
-      [this, commandName, isManualControl, isEmergencyStop, droneId](const std::string& responsePayload) {
+      [this, commandName, isManualControl, isEmergencyStop, droneId, requestStartMs](
+        const std::string& responsePayload) {
         mavlinkInFlightFlag(isManualControl, isEmergencyStop) = false;
         const auto fields = decodeFields(responsePayload);
         auto commandState = FlightCommandState::fromFields(fields);
         commandState.droneId = droneId;
         commandState.command = commandName;
-        commandState.updatedMs = nowMilliseconds();
+        const auto nowMs = nowMilliseconds();
+        commandState.updatedMs = nowMs;
+        commandState.rttMs = nowMs - requestStartMs;
         if (commandState.detail == "idle") {
           commandState.detail = commandState.isAccepted() ? "response-accepted" : "response-rejected";
         }
@@ -710,7 +1047,7 @@ public:
       },
       [this, commandName, isManualControl, isEmergencyStop, droneId] {
         mavlinkInFlightFlag(isManualControl, isEmergencyStop) = false;
-        updateCommandState(FlightCommandState{
+        auto timeoutState = FlightCommandState{
           droneId,
           commandName,
           "false",
@@ -720,12 +1057,16 @@ public:
           "unknown",
           "unknown",
           "0",
-          "targeted-request-timeout",
+          "operator-timeout-decision",
           nowMilliseconds(),
-        });
+          0,
+          m_timeoutMs
+        };
+        updateCommandState(timeoutState);
         publishStatus("MAVLink " + commandName +
-                      " drone=" + droneId +
-                      " accepted=false ack=timeout forwarded_bytes=0 detail=targeted-request-timeout");
+                      " timed out for drone=" + droneId +
+                      " accepted=false ack=timeout forwarded_bytes=0" +
+                      " detail=operator-timeout-decision");
       });
     return true;
   }
@@ -771,18 +1112,35 @@ public:
     params.emplace("target_component", "1");
     const auto missionId = "auto-" + commandName + "-" + std::to_string(nowMilliseconds());
     const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
+    const auto requestStartMs = nowMilliseconds();
+    updateCommandState(FlightCommandState{
+      droneId,
+      commandName,
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "unknown",
+      "sync-targeted-request-sent",
+      requestStartMs,
+      m_timeoutMs,
+    });
     postTargetedRequest(
       droneIdentity(m_config, droneId),
       m_config.serviceMavlinkExecute,
       payload,
-      [&](const std::string& responsePayload) {
+      [&, requestStartMs](const std::string& responsePayload) {
         const auto fields = decodeFields(responsePayload);
         ackResult = fieldOr(fields, "ack_result", "unknown");
         const auto accepted = fieldOr(fields, "accepted", "false");
         auto commandState = FlightCommandState::fromFields(fields);
         commandState.droneId = droneId;
         commandState.command = commandName;
-        commandState.updatedMs = nowMilliseconds();
+        const auto nowMs = nowMilliseconds();
+        commandState.updatedMs = nowMs;
+        commandState.rttMs = nowMs - requestStartMs;
         if (commandState.detail == "idle") {
           commandState.detail = accepted == "true" ? "sync-response-accepted" : "sync-response-rejected";
         }
@@ -796,7 +1154,7 @@ public:
         cv.notify_all();
       },
       [&] {
-        updateCommandState(FlightCommandState{
+        auto timeoutState = FlightCommandState{
           droneId,
           commandName,
           "false",
@@ -806,9 +1164,18 @@ public:
           "unknown",
           "unknown",
           "0",
-          "sync-targeted-request-timeout",
+          "operator-timeout-decision",
           nowMilliseconds(),
-        });
+          0,
+          m_timeoutMs
+        };
+        timeoutState.timeoutMs = m_timeoutMs;
+        timeoutState.rttMs = 0;
+        updateCommandState(timeoutState);
+        publishStatus("MAVLink " + commandName +
+                      " timed out for drone=" + droneId +
+                      " accepted=false ack=timeout forwarded_bytes=0" +
+                      " detail=operator-timeout-decision");
         std::lock_guard<std::mutex> guard(mutex);
         ackResult = "timeout";
         done = true;
@@ -904,10 +1271,11 @@ public:
                                                                  std::nullopt, std::nullopt,
                                                                  progress, video,
                                                                  videoAdaptive, safety);
+      const auto missionPart = missionPartForDrone(droneId);
       const auto row = DroneListRowState::fromStates(droneId, true, telemetry,
                                                      readiness, mission, video,
                                                      videoAdaptive, std::nullopt,
-                                                     safety, progress);
+                                                     safety, progress, missionPart);
       const auto known = [](const std::string& value) {
         return !value.empty() && value != "unknown";
       };
@@ -1220,6 +1588,40 @@ public:
   }
 
   bool
+  cancelCurrentPatrolMission()
+  {
+    std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+    if (m_activePatrolTaskId.empty()) {
+      return false;
+    }
+    m_patrolCancelRequested = true;
+    NDN_LOG_INFO("PATROL_CANCEL_REQUEST task=" << m_activePatrolTaskId);
+    return true;
+  }
+
+  bool
+  cancelPatrolMission(const std::string& taskId)
+  {
+    std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+    if (taskId.empty() || taskId != m_activePatrolTaskId) {
+      return false;
+    }
+    m_patrolCancelRequested = true;
+    NDN_LOG_INFO("PATROL_CANCEL_REQUEST task=" << taskId);
+    return true;
+  }
+
+  std::optional<std::string>
+  activePatrolMissionId() const
+  {
+    std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+    if (m_activePatrolTaskId.empty()) {
+      return std::nullopt;
+    }
+    return m_activePatrolTaskId;
+  }
+
+  bool
   runPatrolCompensationTask(std::chrono::seconds timeout, double centerLat, double centerLon,
                             double sideMeters, bool simulateFirstPartMissing,
                             const std::vector<std::pair<double, double>>& routeWaypoints = {})
@@ -1230,6 +1632,7 @@ public:
       std::condition_variable cv;
       std::map<std::string, MissionPart> parts;
       std::set<std::string> timedOut;
+      bool cancelled = false;
     };
 
     if (m_patrolDroneIds.size() < 2) {
@@ -1241,6 +1644,12 @@ public:
     {
       std::lock_guard<std::mutex> guard(m_missionReadyMutex);
       m_missionReadyDrones.clear();
+    }
+
+    {
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      m_activePatrolTaskId = taskId;
+      m_patrolCancelRequested = false;
     }
     auto state = std::make_shared<PatrolDemoState>();
     std::vector<MissionWaypoint> missionRouteWaypoints;
@@ -1265,6 +1674,7 @@ public:
 
     const auto initialPlan = buildPatrolMissionPlan(taskId, centerLat, centerLon, sideMeters,
                                                     m_patrolDroneIds, missionRouteWaypoints);
+    const std::string completionObjective = "return-to-start";
     std::map<std::string, MissionWaypoint> departurePoints;
     for (const auto& part : initialPlan.parts) {
       if (part.assignedDrone.empty() || departurePoints.count(part.assignedDrone) > 0) {
@@ -1273,9 +1683,12 @@ public:
       const auto routeStart = part.firstWaypointOr(MissionWaypoint{centerLat, centerLon});
       departurePoints.emplace(part.assignedDrone, departurePointForDrone(part.assignedDrone, routeStart));
     }
-    const auto plan = buildPatrolMissionPlan(taskId, centerLat, centerLon, sideMeters,
+    auto plan = buildPatrolMissionPlan(taskId, centerLat, centerLon, sideMeters,
                                              m_patrolDroneIds, missionRouteWaypoints,
                                              departurePoints);
+    // Ensure every generated mission plan carries an explicit completion objective.
+    // Return-to-start is the default behavior for patrol demos.
+    plan.completionObjective = completionObjective;
     updateMissionPlan(plan);
     for (const auto& part : plan.parts) {
       state->parts.emplace(part.id, part);
@@ -1313,7 +1726,60 @@ public:
       return out;
     };
 
-    auto emitProgress = [this, state, taskId, assignmentMode, patrolDroneText, logLedger](
+    struct CompensationTaskObject
+    {
+      std::string taskId;
+      uint64_t attempt = 1;
+      std::vector<std::string> partIds;
+      std::vector<std::string> candidateDrones;
+    };
+
+    auto buildCompensationTaskObjects = [&] (const std::string& baseTaskId,
+                                            const std::vector<std::string>& partIds,
+                                            uint64_t attempt,
+                                            const std::vector<std::string>& candidateDrones) {
+      std::vector<CompensationTaskObject> tasks;
+      tasks.reserve(partIds.size());
+      for (const auto& partId : partIds) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        if (state->parts.find(partId) == state->parts.end()) {
+          continue;
+        }
+        CompensationTaskObject task;
+        task.taskId = baseTaskId + "/comp/attempt-" + std::to_string(attempt) + "/part-" + partId;
+        task.attempt = attempt;
+        task.partIds.push_back(partId);
+        task.candidateDrones = candidateDrones;
+        tasks.push_back(std::move(task));
+      }
+      return tasks;
+    };
+
+    auto buildCompensationPlanView = [&state, completionObjective] (
+                                      const std::string& baseTaskId,
+                                      uint64_t attempt,
+                                      const std::vector<std::string>& missingPartIds) {
+      MissionPlan view;
+      view.taskId = baseTaskId + "/comp-plan/" + std::to_string(attempt);
+      view.assignment = "compensation";
+      view.completionObjective = completionObjective;
+      view.returnHomePlanned = true;
+
+      std::lock_guard<std::mutex> guard(state->mutex);
+      for (const auto& partId : missingPartIds) {
+        const auto it = state->parts.find(partId);
+        if (it == state->parts.end()) {
+          continue;
+        }
+        auto compensationPart = it->second;
+        compensationPart.id = partId + "/retry/" + std::to_string(attempt);
+        compensationPart.attempt = attempt;
+        view.parts.push_back(std::move(compensationPart));
+      }
+      return view;
+    };
+
+    auto emitProgress = [this, state, taskId, assignmentMode, patrolDroneText, completionObjective, logLedger](
                           std::string phase, uint64_t attempts) {
       auto appendId = [] (std::string& list, const std::string& id) {
         if (!list.empty() && list != "none") {
@@ -1329,6 +1795,7 @@ public:
       progress.taskId = taskId;
       progress.phase = std::move(phase);
       progress.assignment = assignmentMode;
+      progress.completionObjective = completionObjective;
       progress.drones = patrolDroneText;
       progress.attempts = attempts;
       progress.returnHomePlanned = true;
@@ -1373,8 +1840,116 @@ public:
       return true;
     };
 
+    auto isTaskCancelled = [this, state, taskId] {
+      {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        if (state->cancelled) {
+          return true;
+        }
+      }
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      return m_patrolCancelRequested && m_activePatrolTaskId == taskId;
+    };
+
+    auto parseDroneIds = [] (const std::string& droneIds) {
+      std::vector<std::string> parsed;
+      if (droneIds.empty() || droneIds == "none") {
+        return parsed;
+      }
+      std::string token;
+      std::istringstream stream(droneIds);
+      while (std::getline(stream, token, ',')) {
+        token.erase(0, token.find_first_not_of(" \t\r\n"));
+        token.erase(token.find_last_not_of(" \t\r\n") + 1);
+        if (!token.empty()) {
+          parsed.push_back(token);
+        }
+      }
+      return parsed;
+    };
+
+    auto applyPatrolCancel = [this, state, taskId, completionObjective, patrolDroneText,
+                             logLedger, parseDroneIds] (uint64_t attempts) {
+      bool firstFinalize = false;
+      {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        if (state->cancelled) {
+          return;
+        }
+        state->cancelled = true;
+        firstFinalize = true;
+      }
+      if (!firstFinalize) {
+        return;
+      }
+
+      logLedger("PATROL_TASK_CANCEL_FINALIZE task=" + taskId + " attempts=" + std::to_string(attempts));
+
+      {
+        std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+        if (m_activePatrolTaskId == taskId) {
+          m_patrolCancelRequested = false;
+        }
+      }
+
+      std::vector<std::string> candidateDrones = parseDroneIds(patrolDroneText);
+      if (candidateDrones.empty()) {
+        candidateDrones = m_patrolDroneIds;
+      }
+      std::set<std::string> updated;
+      {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        for (const auto& item : state->parts) {
+          const auto& part = item.second;
+          const auto fromPart = parseDroneIds(part.assignedDrone);
+          if (!fromPart.empty()) {
+            for (const auto& droneId : fromPart) {
+              updated.insert(droneId);
+            }
+          }
+        }
+      }
+      for (const auto& droneId : candidateDrones) {
+        updated.insert(droneId);
+      }
+
+      const auto now = nowMilliseconds();
+      for (const auto& droneId : updated) {
+        MissionState cancelState;
+        cancelState.droneId = droneId;
+        cancelState.missionId = taskId;
+        cancelState.partId = "cancel";
+        cancelState.phase = "cancelled";
+        cancelState.detail = "user-cancel";
+        cancelState.ack = "user_requested";
+        cancelState.transport = completionObjective;
+        cancelState.updatedMs = now;
+        updateMissionState(cancelState);
+      }
+    };
+
+    auto markCancel = [this, state, taskId, logLedger] {
+      {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->cancelled = true;
+      }
+      {
+        std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+        if (m_activePatrolTaskId == taskId) {
+          m_patrolCancelRequested = false;
+        }
+      }
+      logLedger("PATROL_CANCELLED task=" + taskId);
+    };
+
     auto dispatchPart = [&] (const std::string& partId, std::vector<std::string> droneIds,
                              int attempt, bool simulateNoResponse) {
+      if (isTaskCancelled()) {
+        logLedger("PATROL_DISPATCH_SKIPPED task=" + taskId +
+                  " attempt=" + std::to_string(attempt) +
+                  " part=" + partId + " reason=cancelled");
+        return;
+      }
       const std::string candidateText = joinDroneIds(droneIds);
       MissionPart part;
       {
@@ -1388,6 +1963,7 @@ public:
         {"type", "patrol-task"},
         {"patrol_task_id", taskId},
         {"mission_id", taskId},
+        {"mission_completion_objective", completionObjective},
         {"attempt_id", std::to_string(attempt)},
         {"part_id", part.id},
         {"role", part.role},
@@ -1418,8 +1994,14 @@ public:
       boost::asio::post(m_face.getIoContext(), [this, requestMessage = std::move(requestMessage),
                                   providerNames = std::move(providerNames),
                                   taskId, partId, candidateText,
-                                  attempt, state,
+                                  attempt, state, isTaskCancelled,
                                   logLedger, emitProgress] () mutable {
+        if (isTaskCancelled()) {
+          logLedger("PATROL_DISPATCH_SKIPPED task=" + taskId +
+                    " attempt=" + std::to_string(attempt) +
+                    " part=" + partId + " reason=cancelled");
+          return;
+        }
         if (!m_containerReady.load() || !m_user) {
           logLedger("PATROL_RUNTIME_NOT_READY task=" + taskId +
                     " part=" + partId);
@@ -1480,7 +2062,14 @@ public:
           m_ackTimeoutMs,
           std::move(selectIdleCandidate),
           m_timeoutMs,
-          [taskId, partId, candidateText, attempt, state, logLedger, emitProgress](const ndn::Name&) {
+          [taskId, partId, candidateText, attempt, state, isTaskCancelled,
+           logLedger, emitProgress](const ndn::Name&) {
+            if (isTaskCancelled()) {
+              logLedger("PATROL_PART_TIMEOUT_IGNORED task=" + taskId +
+                        " attempt=" + std::to_string(attempt) +
+                        " part=" + partId + " reason=cancelled");
+              return;
+            }
             logLedger("PATROL_PART_MISSING task=" + taskId +
                       " attempt=" + std::to_string(attempt) +
                       " part=" + partId +
@@ -1494,8 +2083,16 @@ public:
             state->cv.notify_all();
             emitProgress("waiting-compensation", attempt);
           },
-          [this, taskId, partId, candidateText, attempt, state, logLedger, emitProgress](
+          [this, taskId, partId, candidateText, attempt, state, isTaskCancelled,
+           logLedger, emitProgress](
             const ndn_service_framework::ResponseMessage& response) {
+            if (isTaskCancelled()) {
+              logLedger("PATROL_PART_DONE_IGNORED task=" + taskId +
+                        " attempt=" + std::to_string(attempt) +
+                        " part=" + partId + " reason=cancelled");
+              state->cv.notify_all();
+              return;
+            }
             const auto fields = decodeFields(responsePayload(response));
             auto mission = MissionState::fromFields(fields);
             const auto responder = mission.droneId == "unknown" ? candidateText : mission.droneId;
@@ -1573,6 +2170,9 @@ public:
     {
       std::unique_lock<std::mutex> lock(state->mutex);
       state->cv.wait_until(lock, deadline, [&] {
+        if (state->cancelled || isTaskCancelled()) {
+          return true;
+        }
         if (allDone()) {
           return true;
         }
@@ -1605,22 +2205,89 @@ public:
     if (completedInFirstAttempt) {
       emitProgress("completed", 1);
       logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=1");
+      markCancel();
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      if (m_activePatrolTaskId == taskId) {
+        m_activePatrolTaskId.clear();
+      }
       return true;
     }
-    emitProgress("waiting-compensation", 1);
+    if (isTaskCancelled()) {
+      emitProgress("cancelled", 1);
+      logLedger("PATROL_TASK_CANCELLED task=" + taskId);
+      applyPatrolCancel(1);
+      {
+        std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+        if (m_activePatrolTaskId == taskId) {
+          m_activePatrolTaskId.clear();
+        }
+      }
+      return false;
+    }
 
-    for (const auto& partId : missingParts) {
-      logLedger("PATROL_COMPENSATION task=" + taskId +
-                " attempt=2 parts=" + partId +
-                " candidates=" + patrolDroneText);
-      emitProgress("compensating", 2);
-      dispatchPart(partId, m_patrolDroneIds, 2, false);
+    const auto compensationTasks = buildCompensationTaskObjects(taskId, missingParts, 2,
+                                                              m_patrolDroneIds);
+    emitProgress("waiting-compensation", 1);
+    if (!compensationTasks.empty()) {
+      const auto compensationPlan = buildCompensationPlanView(taskId, 2, missingParts);
+      updateMissionPlan(compensationPlan);
+      for (const auto& compensationTask : compensationTasks) {
+        std::string partList;
+        for (const auto& partId : compensationTask.partIds) {
+          if (!partList.empty()) {
+            partList += ",";
+          }
+          partList += partId;
+        }
+        logLedger("PATROL_COMP_TASK task=" + compensationTask.taskId +
+                  " attempt=" + std::to_string(compensationTask.attempt) +
+                  " parts=" + partList +
+                  " candidates=" + joinDroneIds(compensationTask.candidateDrones) +
+                  " plan=" + compensationPlan.statusLine());
+      }
+    }
+
+    for (const auto& compensationTask : compensationTasks) {
+      for (const auto& partId : compensationTask.partIds) {
+        if (isTaskCancelled()) {
+          emitProgress("cancelled", 2);
+          logLedger("PATROL_TASK_CANCELLED task=" + taskId +
+                    " attempt=" + std::to_string(compensationTask.attempt));
+          applyPatrolCancel(compensationTask.attempt);
+          std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+          if (m_activePatrolTaskId == taskId) {
+            m_activePatrolTaskId.clear();
+          }
+          return false;
+        }
+        logLedger("PATROL_COMPENSATION task=" + compensationTask.taskId +
+                  " attempt=" + std::to_string(compensationTask.attempt) +
+                  " parts=" + partId +
+                  " candidates=" + joinDroneIds(compensationTask.candidateDrones));
+        emitProgress("compensating", 2);
+        dispatchPart(partId, compensationTask.candidateDrones, 2, false);
+      }
+    }
+    if (compensationTasks.empty()) {
+      for (const auto& partId : missingParts) {
+        logLedger("PATROL_COMPENSATION task=" + taskId +
+                  " attempt=2 parts=" + partId +
+                  " candidates=" + patrolDroneText +
+                  " fallback=all-drones");
+        emitProgress("compensating", 2);
+        dispatchPart(partId, m_patrolDroneIds, 2, false);
+      }
     }
 
     bool failed = false;
     {
       std::unique_lock<std::mutex> lock(state->mutex);
-      state->cv.wait_until(lock, deadline, allDone);
+      state->cv.wait_until(lock, deadline, [&] {
+        if (state->cancelled || isTaskCancelled()) {
+          return true;
+        }
+        return allDone();
+      });
       if (!allDone()) {
         failed = true;
       }
@@ -1628,10 +2295,30 @@ public:
     if (failed) {
       emitProgress("failed", 2);
       logLedger("PATROL_TASK_FAILED task=" + taskId);
+      markCancel();
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      if (m_activePatrolTaskId == taskId) {
+        m_activePatrolTaskId.clear();
+      }
+      return false;
+    }
+    if (isTaskCancelled()) {
+      emitProgress("cancelled", 2);
+      logLedger("PATROL_TASK_CANCELLED task=" + taskId);
+      applyPatrolCancel(2);
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      if (m_activePatrolTaskId == taskId) {
+        m_activePatrolTaskId.clear();
+      }
       return false;
     }
     emitProgress("completed", 2);
     logLedger("PATROL_TASK_DONE task=" + taskId + " attempts=2");
+    markCancel();
+    std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+    if (m_activePatrolTaskId == taskId) {
+      m_activePatrolTaskId.clear();
+    }
     return true;
   }
 
@@ -1752,6 +2439,9 @@ private:
   updateMissionPlan(MissionPlan plan)
   {
     std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    if (plan.completionObjective.empty()) {
+      plan.completionObjective = "return-to-start";
+    }
     m_latestMissionPlan = std::move(plan);
   }
 
@@ -1799,7 +2489,38 @@ private:
     }
     std::lock_guard<std::mutex> guard(m_telemetryMutex);
     m_commandByDrone[command.droneId] = command;
+    auto runtimeCommand = RuntimeCommandSnapshot{
+      command.command,
+      commandLifecycle(command),
+      command.detail,
+      command.updatedMs,
+      command.rttMs,
+      command.timeoutMs
+    };
+    auto& commandHistory = m_commandHistoryByDrone[command.droneId];
+    commandHistory.push_back(std::move(runtimeCommand));
+    if (commandHistory.size() > 10) {
+      commandHistory.erase(commandHistory.begin());
+    }
     NDN_LOG_INFO("GS_COMMAND_STATE " << command.statusLine());
+  }
+
+  CommandLifecycle
+  commandLifecycle(const FlightCommandState& command) const
+  {
+    if (command.isTimeout()) {
+      return CommandLifecycle::Timeout;
+    }
+    if (command.accepted == "false") {
+      return CommandLifecycle::Failed;
+    }
+    if (command.accepted == "true") {
+      return command.ackResult == "success" ? CommandLifecycle::Success : CommandLifecycle::Running;
+    }
+    if (!command.ackResult.empty() && command.ackResult != "unknown") {
+      return CommandLifecycle::AckWait;
+    }
+    return CommandLifecycle::Sending;
   }
 
   void
@@ -2201,6 +2922,7 @@ private:
     if (requestedBitrateKbps == 0) {
       requestedBitrateKbps = m_videoBitrateKbps.load();
     }
+    m_activeStreamId = makeVideoSessionId("live-start", droneId);
     postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
                 encodeFields({
                   {"type", "video-control"},
@@ -2213,6 +2935,13 @@ private:
                   const auto fields = decodeFields(payload);
                   const auto prefix = fieldOr(fields, "stream_prefix", "");
                   const auto seqText = fieldOr(fields, "next_seq", "0");
+                  uint64_t streamSessionEpoch = 0;
+                  try {
+                    streamSessionEpoch = std::stoull(fieldOr(fields, "stream_session_epoch", "0"));
+                  }
+                  catch (const std::exception&) {
+                    streamSessionEpoch = 0;
+                  }
                   if (prefix.empty()) {
                     publishStatus("Video control response missing stream prefix");
                     return;
@@ -2222,6 +2951,17 @@ private:
                   m_videoBitrateKbps = requestedBitrateKbps;
                   m_streamPrefix = ndn::Name(prefix);
                   m_activeStreamId = fieldOr(fields, "stream_id", "");
+                  if (m_activeStreamId.empty()) {
+                    m_activeStreamId = "live|" + droneId + "|" +
+                      std::to_string(nowMilliseconds()) + "|" +
+                      std::to_string(++m_videoSessionCounter);
+                  }
+                  if (streamSessionEpoch > 0) {
+                    allocateStreamSessionEpoch(m_activeStreamId, streamSessionEpoch);
+                  }
+                  else {
+                    allocateStreamSessionEpoch(m_activeStreamId);
+                  }
                   {
                     std::lock_guard<std::mutex> guard(m_videoStateMutex);
                     m_activeVideoDroneId = droneId;
@@ -2244,6 +2984,7 @@ private:
                   resetVideoAdaptiveState();
                   m_highestReceivedVideoPacketSeq = UINT64_MAX;
                   m_nextChunkSeqToDecode = 0;
+                  m_fecFrames.clear();
                   resetVideoPacketTracking();
                   {
                     std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
@@ -2325,7 +3066,7 @@ private:
     m_videoBitrateChangeToKbps = requestedBitrateKbps;
     m_videoBitrateChangePending = true;
     m_streaming = false;
-    m_activeStreamId.clear();
+    m_activeStreamId = makeVideoSessionId("live-restart", droneId);
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
@@ -2429,7 +3170,7 @@ private:
                     }
                   }
                   if (activeVideoDroneId().empty()) {
-                    m_activeStreamId.clear();
+                    m_activeStreamId = makeVideoSessionId("live-stop-ack", droneId);
                   }
                   publishStatus("Video stopped drone=" + droneId + ", packets=" +
                                 fieldOr(fields, "stream_packets_published",
@@ -2448,10 +3189,12 @@ private:
                   publishStatus("Video stop timed out for drone " + droneId +
                                 "; NDNSF status diagnostics were queried. "
                                 "If the drone still shows video streaming, "
-                                "click Stop Video again.");
+                                "retry after a short delay.");
+                  m_videoStopSuppressUntilMs = nowMilliseconds() + VIDEO_STOP_TIMEOUT_RETRY_GUARD_MS;
                   if (onStopTimeout) {
                     onStopTimeout();
                   }
+                  m_activeStreamId = makeVideoSessionId("live-stop-timeout", droneId);
                 });
   }
 
@@ -2497,7 +3240,9 @@ private:
     }
 
     m_streaming = false;
-    m_activeStreamId.clear();
+    m_activeStreamId = "recording|" + manifest.droneId + "|" +
+      manifest.sessionId + "|" + std::to_string(nowMilliseconds()) + "|" +
+      std::to_string(++m_videoSessionCounter);
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
@@ -2524,7 +3269,7 @@ private:
     constexpr uint64_t recordingFetchWindow = 16;
     const auto initialFetches = std::min<uint64_t>(recordingFetchWindow, manifest.chunks);
     for (uint64_t index = 0; index < initialFetches; ++index) {
-      fetchRecordingChunk(manifest, index, recordingFetchWindow);
+        fetchRecordingChunk(manifest, index, recordingFetchWindow);
     }
   }
 
@@ -2555,7 +3300,12 @@ private:
             std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
             m_recordingPlaybackChunks[index] = payload;
           }
-          insertChunkForDecode(index, payload, nowMilliseconds() - m_firstFrameMs.load());
+          const auto sessionId = fieldOr(manifest.toFields(), "session_id", m_activeStreamId);
+          insertChunkForDecode(index,
+                               payload,
+                               sessionId,
+                               streamSessionEpochForStreamId(sessionId),
+                               nowMilliseconds() - m_firstFrameMs.load());
           const auto receivedCount = ++m_receivedChunks;
           if (receivedCount <= 3 || receivedCount % 30 == 0) {
             publishStatus("Recording playback chunk drone=" + manifest.droneId +
@@ -2848,16 +3598,20 @@ private:
     uint64_t probeNotBeforeMs = 0;
   };
 
-  struct StreamChunk
+struct StreamChunk
   {
     uint64_t packetSeq = 0;
     uint64_t arrivalMs = 0;
     uint64_t elapsedMs = 0;
+    uint64_t streamSessionEpoch = 0;
+    std::string streamId;
     std::vector<uint8_t> payload;
   };
 
   struct FecFrameState
   {
+    uint64_t streamSessionEpoch = 0;
+    std::string streamId;
     bool initialized = false;
     uint64_t frameSeq = 0;
     uint64_t frameFirstPacketSeq = 0;
@@ -3290,13 +4044,22 @@ private:
         if (m_firstFrameMs == 0) {
           m_firstFrameMs = receivedMs;
         }
-        const auto content = data.getContent();
-        std::vector<uint8_t> bytes(content.value(), content.value() + content.value_size());
+          const auto content = data.getContent();
+          std::vector<uint8_t> bytes(content.value(), content.value() + content.value_size());
           try {
             const auto packet = decodeVideoPacket(bytes);
-            if (!m_activeStreamId.empty() && !packet.streamId.empty() &&
-                packet.streamId != m_activeStreamId) {
-              NDN_LOG_WARN("GS_VIDEO_STALE_STREAM_PACKET expected=" << m_activeStreamId
+            if (!isCurrentVideoSessionPacket(packet.streamId, packet.streamSessionEpoch)) {
+              NDN_LOG_WARN("GS_VIDEO_STALE_SESSION_PACKET expected="
+                           << activeVideoStreamId() << "@" << m_videoStreamSessionEpoch.load()
+                           << " got=" << packet.streamId << "@" << packet.streamSessionEpoch
+                           << " packetSeq=" << packet.packetSeq
+                           << " requestedSeq=" << packetSeq);
+              requestVideoPackets();
+              return;
+            }
+            const auto activeStreamId = activeVideoStreamId();
+            if (!activeStreamId.empty() && packet.streamId != activeStreamId) {
+              NDN_LOG_WARN("GS_VIDEO_STALE_STREAM_PACKET expected=" << activeStreamId
                            << " got=" << packet.streamId
                            << " packetSeq=" << packet.packetSeq
                            << " requestedSeq=" << packetSeq);
@@ -3521,6 +4284,21 @@ private:
       return;
     }
 
+    if (!isCurrentVideoSessionPacket(packet.streamId, packet.streamSessionEpoch)) {
+      NDN_LOG_WARN("GS_VIDEO_STALE_SESSION_QUEUE dropped stream="
+                   << packet.streamId << " session=" << packet.streamSessionEpoch
+                   << " active_session=" << m_videoStreamSessionEpoch.load()
+                   << " seq=" << packet.packetSeq);
+      return;
+    }
+
+    if (!isCurrentLiveVideoStream(packet.streamId)) {
+      NDN_LOG_WARN("GS_VIDEO_STALE_STREAM_QUEUE dropped=" << packet.streamId
+                   << " active=" << activeVideoStreamId()
+                   << " seq=" << packet.packetSeq);
+      return;
+    }
+
     if (packet.fecDataShards > 0 || packet.fecParityShards > 0 || packet.fecSymbolCount > 0) {
       processFecChunk(packet, receivedMs);
       return;
@@ -3531,7 +4309,11 @@ private:
     }
 
     const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
-    insertChunkForDecode(packet.packetSeq, packet.payload, elapsedMs);
+    insertChunkForDecode(packet.packetSeq,
+                         packet.payload,
+                         packet.streamId,
+                         packet.streamSessionEpoch,
+                         elapsedMs);
   }
 
   void
@@ -3542,10 +4324,47 @@ private:
       return;
     }
 
+    if (!isCurrentVideoSessionPacket(packet.streamId, packet.streamSessionEpoch)) {
+      NDN_LOG_WARN("GS_VIDEO_STALE_SESSION_FEC dropped stream="
+                   << packet.streamId << " session=" << packet.streamSessionEpoch
+                   << " active_session=" << m_videoStreamSessionEpoch.load()
+                   << " frameSeq=" << packet.frameSeq);
+      return;
+    }
+
+    if (!isCurrentLiveVideoStream(packet.streamId)) {
+      NDN_LOG_WARN("GS_VIDEO_STALE_STREAM_FEC dropped=" << packet.streamId
+                   << " active=" << activeVideoStreamId()
+                   << " seq=" << packet.packetSeq
+                   << " frameSeq=" << packet.frameSeq);
+      return;
+    }
+
     const auto frameSeq = packet.frameSeq;
-    auto& state = m_fecFrames[frameSeq];
+    const auto frameKey = std::make_pair(packet.streamSessionEpoch, frameSeq);
+    auto it = m_fecFrames.find(frameKey);
+    if (it == m_fecFrames.end()) {
+      it = m_fecFrames.emplace(frameKey, FecFrameState{}).first;
+      it->second.streamSessionEpoch = packet.streamSessionEpoch;
+      it->second.frameSeq = frameSeq;
+    }
+
+    if (it->second.initialized && !it->second.streamId.empty() && it->second.streamId != packet.streamId) {
+      NDN_LOG_INFO("GS_VIDEO_STALE_STREAM_FEC_STATE reset stream=" << it->second.streamId
+                   << " frameSeq=" << frameSeq
+                   << " incoming=" << packet.streamId
+                   << " seq=" << packet.packetSeq);
+      m_fecFrames.erase(it);
+      it = m_fecFrames.emplace(frameKey, FecFrameState{}).first;
+      it->second.streamSessionEpoch = packet.streamSessionEpoch;
+      it->second.frameSeq = frameSeq;
+      it->second.streamId = packet.streamId;
+    }
+
+    auto& state = it->second;
 
     if (!state.initialized) {
+      state.streamId = packet.streamId;
       state.frameSeq = frameSeq;
       state.frameFirstPacketSeq = packet.frameFirstPacketSeq;
       state.frameLastPacketSeq = packet.frameLastPacketSeq;
@@ -3575,7 +4394,11 @@ private:
     const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
     attemptAndRecoverFrame(state);
     if (packet.fecSymbolIndex < state.dataShards) {
-      insertChunkForDecode(packet.packetSeq, packet.payload, elapsedMs);
+      insertChunkForDecode(packet.packetSeq,
+                           packet.payload,
+                           packet.streamId,
+                           packet.streamSessionEpoch,
+                           elapsedMs);
     }
     if (state.complete) {
       cleanupFecFrames();
@@ -3622,7 +4445,11 @@ private:
         return;
       }
       const auto recoveredElapsed = (m_firstFrameMs == 0 ? 0 : state.firstArrivalMs - m_firstFrameMs);
-      insertChunkForDecode(recoveredSeq, recovered, recoveredElapsed);
+      insertChunkForDecode(recoveredSeq,
+                          recovered,
+                          !state.streamId.empty() ? state.streamId : activeVideoStreamId(),
+                          state.streamSessionEpoch,
+                          recoveredElapsed);
       state.shards[missingIdx] = recovered;
       state.complete = true;
       break;
@@ -3709,7 +4536,10 @@ private:
   }
 
   void
-  insertChunkForDecode(uint64_t packetSeq, const std::vector<uint8_t>& payload,
+  insertChunkForDecode(uint64_t packetSeq,
+                      const std::vector<uint8_t>& payload,
+                      const std::string& streamId,
+                      uint64_t streamSessionEpoch,
                       uint64_t elapsedMs)
   {
     if (packetSeq == UINT64_MAX) {
@@ -3729,6 +4559,8 @@ private:
         chunk.packetSeq = packetSeq;
         chunk.arrivalMs = (m_firstFrameMs == 0 ? 0 : m_firstFrameMs + elapsedMs);
         chunk.elapsedMs = elapsedMs;
+        chunk.streamSessionEpoch = streamSessionEpoch;
+        chunk.streamId = streamId;
         chunk.payload = payload;
         inserted.first->second = std::move(chunk);
       }
@@ -3786,10 +4618,12 @@ private:
       return;
     }
 
-    m_decoderRunning = true;
-    m_lastOutputChunkSeq = 0;
-    m_lastOutputChunkElapsedMs = 0;
-    m_decoderDroppedChunks = 0;
+  m_decoderRunning = true;
+  m_lastOutputChunkSeq = 0;
+  m_lastOutputChunkElapsedMs = 0;
+  m_lastOutputChunkStreamId.clear();
+  m_lastOutputChunkStreamSessionEpoch = 0;
+  m_decoderDroppedChunks = 0;
     m_decoderMissingChunkSeq = UINT64_MAX;
     m_decoderMissingChunkStartMs = 0;
     m_closeDecoderInputWhenQueueDrained = false;
@@ -3810,6 +4644,9 @@ private:
   void
   decodeRecordingFromFetchedChunksAsync(RecordingDataProductState manifest)
   {
+    const auto sessionId = std::string{
+      !manifest.sessionId.empty() ? manifest.sessionId : m_activeStreamId};
+    auto sessionGuard = sessionId;
     std::map<uint64_t, std::vector<uint8_t>> chunks;
     {
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
@@ -3823,7 +4660,8 @@ private:
       m_recordingPlaybackDecodeThread.join();
     }
     m_recordingPlaybackDecodeThread =
-      std::thread([this, manifest = std::move(manifest), chunks = std::move(chunks)]() mutable {
+      std::thread([this, manifest = std::move(manifest), chunks = std::move(chunks),
+                   sessionGuard]() mutable {
       const auto tempPath = "/tmp/ndnsf-uav-recording-playback-" +
         std::to_string(getpid()) + "-" + std::to_string(nowMilliseconds()) + ".h264";
       {
@@ -3889,7 +4727,11 @@ private:
           }
           ++frameCount;
           if (m_frameCallback) {
-            m_frameCallback(std::move(frame), frameCount, frameCount * 33);
+            m_frameCallback(std::move(frame),
+                            frameCount,
+                            frameCount * 33,
+                            sessionGuard,
+                            streamSessionEpochForStreamId(sessionGuard));
           }
           std::this_thread::sleep_for(33ms);
         }
@@ -3938,6 +4780,8 @@ private:
       m_pendingChunks.clear();
       m_decoderPendingChunkCount = 0;
       m_decoderOutBuffer.clear();
+      m_lastOutputChunkStreamId.clear();
+      m_lastOutputChunkStreamSessionEpoch = 0;
       m_decoderMissingChunkSeq = UINT64_MAX;
       m_decoderMissingChunkStartMs = 0;
     }
@@ -3982,6 +4826,11 @@ private:
       }
       m_lastOutputChunkSeq = chunk.packetSeq;
       m_lastOutputChunkElapsedMs = chunk.elapsedMs;
+      {
+        std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+        m_lastOutputChunkStreamId = chunk.streamId;
+        m_lastOutputChunkStreamSessionEpoch = chunk.streamSessionEpoch;
+      }
 
       const auto* data = chunk.payload.data();
       auto remaining = chunk.payload.size();
@@ -4061,6 +4910,13 @@ private:
     }
 
     for (auto& frame : frameCandidates) {
+      std::string streamId;
+      uint64_t streamSessionEpoch = 0;
+      {
+        std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
+        streamId = m_lastOutputChunkStreamId;
+        streamSessionEpoch = m_lastOutputChunkStreamSessionEpoch;
+      }
       {
         std::lock_guard<std::mutex> guard(m_latestDecodedFrameMutex);
         m_latestDecodedFrame = frame;
@@ -4070,7 +4926,11 @@ private:
         publishVideoAdaptiveState("decoded");
       }
       if (m_frameCallback) {
-        m_frameCallback(std::move(frame), decoded, m_lastOutputChunkElapsedMs);
+        m_frameCallback(std::move(frame),
+                        decoded,
+                        m_lastOutputChunkElapsedMs,
+                        streamId,
+                        streamSessionEpoch);
       }
     }
   }
@@ -4176,6 +5036,7 @@ private:
   int m_ackTimeoutMs;
   int m_timeoutMs;
   std::string m_targetDroneId;
+  bool m_targetDroneLocked = false;
   mutable std::mutex m_targetMutex;
   mutable std::mutex m_missionReadyMutex;
   mutable std::mutex m_missionProgressMutex;
@@ -4190,6 +5051,9 @@ private:
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;
+  mutable std::mutex m_patrolTaskMutex;
+  std::string m_activePatrolTaskId;
+  bool m_patrolCancelRequested = false;
   std::string m_yoloModel;
   std::string m_yoloScript;
   std::string m_yoloWorkerScript;
@@ -4215,14 +5079,17 @@ private:
   std::unique_ptr<ndn_service_framework::ServiceProvider> m_objectDetectionProvider;
   std::thread m_faceThread;
   std::function<void(std::string)> m_statusCallback;
-  std::function<void(std::vector<uint8_t>, uint64_t, uint64_t)> m_frameCallback;
+  std::function<void(std::vector<uint8_t>, uint64_t, uint64_t, std::string, uint64_t)> m_frameCallback;
   std::atomic<bool> m_containerReady{false};
   std::atomic<bool> m_streaming{false};
   std::atomic<bool> m_seenVideoStart{false};
   std::atomic<bool> m_videoStartInFlight{false};
   std::atomic<bool> m_videoStopInFlight{false};
+  std::atomic<uint64_t> m_videoStopSuppressUntilMs{0};
   std::atomic<bool> m_videoStopDelayInjected{false};
   std::atomic<bool> m_recordingPlaybackActive{false};
+  std::atomic<uint64_t> m_videoSessionCounter{0};
+  std::atomic<uint64_t> m_videoStreamSessionEpoch{0};
   std::atomic<uint64_t> m_videoStartRetries{0};
   std::atomic<uint64_t> m_firstFrameMs{0};
   std::atomic<uint64_t> m_receivedChunks{0};
@@ -4250,9 +5117,11 @@ private:
   std::map<std::string, VideoState> m_videoByDrone;
   std::map<std::string, VideoAdaptiveState> m_videoAdaptiveByDrone;
   std::map<std::string, FlightCommandState> m_commandByDrone;
+  std::map<std::string, std::vector<RuntimeCommandSnapshot>> m_commandHistoryByDrone;
   std::map<std::string, SafetyState> m_safetyByDrone;
   ndn::Name m_streamPrefix;
   std::string m_activeStreamId;
+  std::map<std::string, uint64_t> m_streamEpochByStreamId;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;
   uint64_t m_keyPacketsPerSecond = 16;
@@ -4273,6 +5142,8 @@ private:
   uint64_t m_decoderMissingChunkSeq = UINT64_MAX;
   uint64_t m_decoderMissingChunkStartMs = 0;
   uint64_t m_lastOutputChunkSeq = 0;
+  std::string m_lastOutputChunkStreamId;
+  uint64_t m_lastOutputChunkStreamSessionEpoch = 0;
   uint64_t m_lastOutputChunkElapsedMs = 0;
   static constexpr uint64_t VIDEO_FPS = 30;
   static constexpr uint64_t INITIAL_PACKET_PROBE = 4;
@@ -4280,6 +5151,8 @@ private:
   static constexpr uint64_t STREAM_PUMP_INTERVAL_MS = 25;
   static constexpr uint64_t MAX_VIDEO_START_RETRIES = 2;
   static constexpr uint64_t VIDEO_BITRATE_APPLY_COOLDOWN_MS = 8000;
+  static constexpr uint64_t VIDEO_STOP_CLICK_SUPPRESS_MS = 900;
+  static constexpr uint64_t VIDEO_STOP_TIMEOUT_RETRY_GUARD_MS = 2500;
   std::atomic<uint64_t> m_videoRttEwmaMs{DEFAULT_VIDEO_RTT_MS};
   std::atomic<uint64_t> m_videoTimeoutPressurePercent{0};
   std::atomic<uint64_t> m_videoProbePressurePercent{0};
@@ -4297,7 +5170,7 @@ private:
   std::deque<StreamChunk> m_chunkQueue;
   std::map<uint64_t, StreamChunk> m_pendingChunks;
   std::map<uint64_t, std::vector<uint8_t>> m_recordingPlaybackChunks;
-  std::map<uint64_t, FecFrameState> m_fecFrames;
+  std::map<std::pair<uint64_t, uint64_t>, FecFrameState> m_fecFrames;
   std::vector<uint8_t> m_decoderOutBuffer;
   std::thread m_decoderWriterThread;
   std::thread m_decoderReaderThread;

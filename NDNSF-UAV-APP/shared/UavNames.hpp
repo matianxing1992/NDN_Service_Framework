@@ -3,6 +3,7 @@
 
 #include <ndn-cxx/name.hpp>
 
+#include <limits>
 #include <string>
 
 namespace ndnsf::examples::uav {
@@ -20,6 +21,8 @@ inline const ndn::Name SERVICE_CAMERA_FRAME("/UAV/Camera/GetFrame");
 inline const ndn::Name SERVICE_CAMERA_VIDEO_CONTROL_SUFFIX("/UAV/Camera/Video");
 inline const ndn::Name SERVICE_CAMERA_RECORDING_MANIFEST_SUFFIX("/UAV/Camera/Recording/Manifest");
 inline const ndn::Name SERVICE_GS_OBJECT_DETECTION("/UAV/GS/ObjectDetection");
+inline constexpr double DEFAULT_GS_MAP_LAT = 35.1186;
+inline constexpr double DEFAULT_GS_MAP_LON = -89.9375;
 
 struct UavRuntimeConfig
 {
@@ -35,6 +38,8 @@ struct UavRuntimeConfig
   ndn::Name serviceCameraVideoControlSuffix = SERVICE_CAMERA_VIDEO_CONTROL_SUFFIX;
   ndn::Name serviceCameraRecordingManifestSuffix = SERVICE_CAMERA_RECORDING_MANIFEST_SUFFIX;
   ndn::Name serviceGsObjectDetection = SERVICE_GS_OBJECT_DETECTION;
+  double groundStationMapLat = std::numeric_limits<double>::quiet_NaN();
+  double groundStationMapLon = std::numeric_limits<double>::quiet_NaN();
 };
 
 UavRuntimeConfig

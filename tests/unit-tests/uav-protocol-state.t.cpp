@@ -26,9 +26,12 @@ using ndnsf::examples::uav::TelemetryState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
 using ndnsf::examples::uav::VideoControlState;
+using ndnsf::examples::uav::VideoPacket;
 using ndnsf::examples::uav::VideoState;
 using ndnsf::examples::uav::buildPatrolMissionPlan;
 using ndnsf::examples::uav::computeVideoAdaptivePolicy;
+using ndnsf::examples::uav::decodeVideoPacket;
+using ndnsf::examples::uav::encodeVideoPacket;
 
 ReadinessState
 makeReadyState(bool armed)
@@ -347,10 +350,12 @@ BOOST_AUTO_TEST_CASE(MissionPlanClustersWaypointsAndReturnsHome)
                                            140.0, drones, route, departures);
   BOOST_CHECK_EQUAL(plan.taskId, "patrol-test");
   BOOST_CHECK_EQUAL(plan.assignment, "clustered-waypoints-return-to-start");
+  BOOST_CHECK_EQUAL(plan.completionObjective, "return-to-start");
   BOOST_CHECK_EQUAL(plan.parts.size(), 2);
   BOOST_CHECK(plan.returnHomePlanned);
   BOOST_CHECK_EQUAL(plan.droneList(), "A,B");
   BOOST_CHECK_NE(plan.statusLine().find("parts=2"), std::string::npos);
+  BOOST_CHECK_NE(plan.statusLine().find("completion_objective=return-to-start"), std::string::npos);
 
   BOOST_CHECK_EQUAL(plan.parts[0].assignedDrone, "A");
   BOOST_CHECK_EQUAL(plan.parts[1].assignedDrone, "B");
@@ -371,6 +376,7 @@ BOOST_AUTO_TEST_CASE(MissionPlanBuildsDefaultSectorsWithoutRoute)
   const auto plan = buildPatrolMissionPlan("patrol-auto", 35.1186, -89.9375,
                                            140.0, drones);
   BOOST_CHECK_EQUAL(plan.parts.size(), 3);
+  BOOST_CHECK_EQUAL(plan.completionObjective, "return-to-start");
   BOOST_CHECK_EQUAL(plan.droneList(), "A,B,C");
   for (size_t i = 0; i < plan.parts.size(); ++i) {
     const auto& part = plan.parts[i];
@@ -378,6 +384,46 @@ BOOST_AUTO_TEST_CASE(MissionPlanBuildsDefaultSectorsWithoutRoute)
     BOOST_CHECK_EQUAL(part.assignedDrone, drones[i]);
     BOOST_CHECK_EQUAL(part.waypoints.size(), 5);
     BOOST_CHECK_EQUAL(part.waypoints.back().str(), part.waypoints.front().str());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(MissionPlanDeterministicClusteringPrototype)
+{
+  const std::vector<std::string> drones{"A", "B", "C"};
+  const std::vector<MissionWaypoint> route{
+    {35.119100, -89.936100},
+    {35.119200, -89.936300},
+    {35.118900, -89.937900},
+    {35.119900, -89.937100},
+    {35.120100, -89.936500},
+  };
+  const std::map<std::string, MissionWaypoint> departures{
+    {"A", {35.118000, -89.938000}},
+    {"B", {35.119000, -89.935000}},
+    {"C", {35.120000, -89.938000}},
+  };
+
+  const auto plan1 = buildPatrolMissionPlan("patrol-deterministic", 35.1186, -89.9375,
+                                           140.0, drones, route, departures);
+  const auto plan2 = buildPatrolMissionPlan("patrol-deterministic", 35.1186, -89.9375,
+                                           140.0, drones, route, departures);
+
+  BOOST_CHECK_EQUAL(plan1.parts.size(), plan2.parts.size());
+  BOOST_CHECK_EQUAL(plan1.droneList(), plan2.droneList());
+  BOOST_CHECK_EQUAL(plan1.assignment, plan2.assignment);
+  BOOST_CHECK_EQUAL(plan1.returnHomePlanned, plan2.returnHomePlanned);
+  for (size_t i = 0; i < plan1.parts.size(); ++i) {
+    const auto& p1 = plan1.parts[i];
+    const auto& p2 = plan2.parts[i];
+    BOOST_CHECK_EQUAL(p1.id, p2.id);
+    BOOST_CHECK_EQUAL(p1.role, p2.role);
+    BOOST_CHECK_EQUAL(p1.assignedDrone, p2.assignedDrone);
+    BOOST_CHECK_EQUAL(p1.returnHomePlanned, p2.returnHomePlanned);
+    BOOST_CHECK_EQUAL(p1.waypoints.size(), p2.waypoints.size());
+    for (size_t j = 0; j < p1.waypoints.size(); ++j) {
+      BOOST_CHECK_CLOSE(p1.waypoints[j].lat, p2.waypoints[j].lat, 0.000001);
+      BOOST_CHECK_CLOSE(p1.waypoints[j].lon, p2.waypoints[j].lon, 0.000001);
+    }
   }
 }
 
@@ -747,6 +793,180 @@ BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)
   BOOST_CHECK(!unrelatedRow.hasMissionProgress);
   BOOST_CHECK_EQUAL(unrelatedRow.missionProgress, "idle");
   BOOST_CHECK_NE(unrelatedRow.rowText.find("Drone C standby"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(DroneListAvailabilitySummaryShowsSubsystems)
+{
+  TelemetryState telemetry;
+  telemetry.droneId = "A";
+  telemetry.telemetryFreshness = "fresh";
+  telemetry.readiness = "ready";
+  telemetry.flightControllerAvailable = "true";
+  telemetry.flightControllerReady = "true";
+  telemetry.flightControllerBackend = "udp";
+  telemetry.cameraAvailable = "true";
+  telemetry.cameraSource = "/dev/video0";
+  telemetry.cameraReason = "ok";
+  telemetry.video = "streaming";
+  telemetry.capture = "active";
+  telemetry.recording = "recording";
+
+  VideoState video;
+  video.droneId = "A";
+  video.status = "streaming";
+  video.capture = "active";
+  video.recording = "recording";
+  video.cameraAvailable = "true";
+  video.cameraReason = "ok";
+  video.recordingChunks = 5;
+  video.recordingBytes = 1234;
+
+  const auto row = DroneListRowState::fromStates(
+    "A", true, telemetry, makeReadyState(true), makeMissionState("executing"),
+    video, std::nullopt, std::nullopt, makeSafeState(), std::nullopt,
+    "available", "available", "available", "recording", "stored");
+
+  BOOST_CHECK(row.hasTelemetry);
+  BOOST_CHECK(row.hasReadiness);
+  BOOST_CHECK(row.hasMission);
+  BOOST_CHECK(row.hasVideo);
+  BOOST_CHECK_EQUAL(row.serviceCamera, "available");
+  BOOST_CHECK_EQUAL(row.serviceMavlink, "available");
+  BOOST_CHECK_EQUAL(row.serviceMission, "available");
+  BOOST_CHECK_EQUAL(row.serviceRecording, "recording");
+  BOOST_CHECK_EQUAL(row.serviceRepo, "stored");
+  BOOST_CHECK_NE(row.rowText.find("fc=true/true"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("cam=true"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("mission=executing"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("video=streaming"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("recording=recording"), std::string::npos);
+  BOOST_CHECK_NE(row.rowText.find("repo=stored"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(TelemetryFreshnessAndManualNeutralRegression)
+{
+  TelemetryState telemetry;
+  telemetry.droneId = "A";
+  telemetry.telemetryFreshness = "fresh";
+  BOOST_CHECK(telemetry.telemetryIsFresh());
+  BOOST_CHECK(!telemetry.telemetryIsStale());
+  BOOST_CHECK(!telemetry.telemetryIsMissing());
+
+  telemetry.telemetryFreshness = "stale";
+  BOOST_CHECK(telemetry.telemetryIsStale());
+  BOOST_CHECK_NE(telemetry.statusLine().find("freshness=stale"), std::string::npos);
+
+  telemetry.telemetryFreshness = "missing";
+  BOOST_CHECK(telemetry.telemetryIsMissing());
+
+  SafetyState safety;
+  safety.droneId = "A";
+  safety.linkState = "connected";
+  safety.manualControlState = "fresh";
+  safety.manualReplayActive = "true";
+  safety.manualNeutralSent = "false";
+  safety.manualFreshForMs = 120;
+  BOOST_CHECK(safety.manualControlFresh());
+  BOOST_CHECK(!safety.needsOperatorAttention());
+
+  safety.manualControlState = "stale-waiting-neutral";
+  safety.manualReplayActive = "false";
+  safety.manualNeutralSent = "true";
+  safety.manualFreshForMs = 0;
+  BOOST_CHECK(!safety.manualControlFresh());
+  BOOST_CHECK(safety.needsOperatorAttention());
+  BOOST_CHECK_NE(safety.statusLine().find("neutral_sent=true"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(FlightCommandLifecycleTimeoutAndRttAreVisible)
+{
+  Fields successFields{
+    {"drone_id", "A"},
+    {"command", "takeoff"},
+    {"accepted", "true"},
+    {"ack_result", "accepted"},
+    {"fc_state", "ready"},
+    {"rtt_ms", "87"},
+    {"timeout_ms", "0"},
+    {"detail", "success"},
+  };
+  const auto success = FlightCommandState::fromFields(successFields);
+  BOOST_CHECK(success.isAccepted());
+  BOOST_CHECK(!success.isTimeout());
+  BOOST_CHECK(success.isSafetyCritical());
+  BOOST_CHECK_EQUAL(success.rttMs, 87);
+  BOOST_CHECK_NE(success.statusLine().find("command=takeoff"), std::string::npos);
+  BOOST_CHECK_NE(success.statusLine().find("rtt_ms=87"), std::string::npos);
+
+  Fields timeoutFields{
+    {"drone_id", "A"},
+    {"command", "land"},
+    {"accepted", "false"},
+    {"ack_result", "timeout"},
+    {"timeout_ms", "2500"},
+    {"detail", "operator-retry-required"},
+  };
+  const auto timeout = FlightCommandState::fromFields(timeoutFields);
+  BOOST_CHECK(!timeout.isAccepted());
+  BOOST_CHECK(timeout.isTimeout());
+  BOOST_CHECK(timeout.isSafetyCritical());
+  BOOST_CHECK_EQUAL(timeout.timeoutMs, 2500);
+  BOOST_CHECK_NE(timeout.statusLine().find("ack=timeout"), std::string::npos);
+  BOOST_CHECK_NE(timeout.statusLine().find("detail=operator-retry-required"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(MissionPartialRecoveryAndCancelStatesAreExplicit)
+{
+  MissionProgressState partial;
+  partial.taskId = "patrol-test";
+  partial.phase = "waiting-compensation";
+  partial.drones = "A,B";
+  partial.totalParts = 2;
+  partial.completedParts = 1;
+  partial.missingParts = 1;
+  partial.completedPartIds = "part0";
+  partial.missingPartIds = "part1";
+  partial.pendingPartIds = "part1";
+
+  BOOST_CHECK(partial.isActive());
+  BOOST_CHECK(partial.needsCompensation());
+  BOOST_CHECK_EQUAL(partial.segmentStateForPart("part0", "executing"), "DONE");
+  BOOST_CHECK_EQUAL(partial.segmentStateForPart("part1", "executing"), "RUNNING");
+  BOOST_CHECK_NE(partial.statusLine().find("missing_parts=1"), std::string::npos);
+
+  MissionState cancelled = makeMissionState("cancelled");
+  BOOST_CHECK(cancelled.isCancelled());
+  BOOST_CHECK(cancelled.isTerminal());
+  BOOST_CHECK_EQUAL(partial.segmentStateForPart("part1", cancelled.phase), "FAILED");
+}
+
+BOOST_AUTO_TEST_CASE(VideoPacketSessionMetadataRoundTrips)
+{
+  VideoPacket packet;
+  packet.streamId = "live|A|1";
+  packet.streamSessionEpoch = 42;
+  packet.packetSeq = 7;
+  packet.frameSeq = 3;
+  packet.frameFirstPacketSeq = 6;
+  packet.frameLastPacketSeq = 8;
+  packet.frameSegmentIndex = 1;
+  packet.frameSegmentCount = 3;
+  packet.encoding = "h264";
+  packet.keyFrame = false;
+  packet.payload = {0x01, 0x02, 0x03};
+
+  const auto decoded = decodeVideoPacket(encodeVideoPacket(packet));
+  BOOST_CHECK_EQUAL(decoded.streamId, packet.streamId);
+  BOOST_CHECK_EQUAL(decoded.streamSessionEpoch, 42);
+  BOOST_CHECK_EQUAL(decoded.packetSeq, 7);
+  BOOST_CHECK_EQUAL(decoded.frameSeq, 3);
+  BOOST_CHECK_EQUAL(decoded.frameFirstPacketSeq, 6);
+  BOOST_CHECK_EQUAL(decoded.frameLastPacketSeq, 8);
+  BOOST_CHECK_EQUAL(decoded.payload.size(), 3);
+
+  VideoPacket oldSession = decoded;
+  oldSession.streamSessionEpoch = 41;
+  BOOST_CHECK_NE(oldSession.streamSessionEpoch, decoded.streamSessionEpoch);
 }
 
 BOOST_AUTO_TEST_CASE(RecordingDataProductTracksEncryptedManifest)

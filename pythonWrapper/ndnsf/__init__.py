@@ -26,6 +26,7 @@ from .service import (
     ExecutionArtifact,
     ExecutionArtifactSpec,
     ExecutionContext,
+    LargeDataReference,
     LargeDataPublishResult,
     SegmentHintRange,
     SegmentedObjectProducer,
@@ -34,11 +35,13 @@ from .service import (
     ServiceResponse,
     ServiceUser,
     StoredDataProducer,
+    encode_large_data_reference_payload,
     fetch_segmented_object,
     fetch_segmented_object_with_segment_hints,
     fetch_known_segmented_object_with_segment_hints,
     fetch_segmented_data_packets,
     make_segmented_data_packets,
+    parse_large_data_reference_payload,
 )
 
 __all__ = [
@@ -56,6 +59,7 @@ __all__ = [
     "ExecutionArtifact",
     "ExecutionArtifactSpec",
     "ExecutionContext",
+    "LargeDataReference",
     "LargeDataPublishResult",
     "NDNSFSession",
     "NdnProcess",
@@ -70,9 +74,11 @@ __all__ = [
     "ServiceUser",
     "StoredDataProducer",
     "UserConfig",
+    "encode_large_data_reference_payload",
     "fetch_segmented_object",
     "fetch_segmented_object_with_segment_hints",
     "fetch_known_segmented_object_with_segment_hints",
     "fetch_segmented_data_packets",
     "make_segmented_data_packets",
+    "parse_large_data_reference_payload",
 ]

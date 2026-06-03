@@ -5205,6 +5205,24 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         return result;
     }
 
+    LargeDataFetchResult ServiceProvider::resolveLargeDataReferencePayload(
+        const ndn::Buffer& payload,
+        const std::string& serviceName)
+    {
+        LargeDataFetchResult result;
+        const auto reference = parseLargeDataReferencePayload(payload);
+        if (!reference) {
+            result.plaintext.assign(payload.begin(), payload.end());
+            result.success = true;
+            return result;
+        }
+        if (!reference->encrypted) {
+            result.errorMessage = "large-data reference is not encrypted";
+            return result;
+        }
+        return fetchAndDecryptLargeData(reference->dataName, serviceName);
+    }
+
 
 
     void ServiceProvider::PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload, const std::string& userToken, const std::string& providerToken)

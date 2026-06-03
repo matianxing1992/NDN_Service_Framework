@@ -683,7 +683,7 @@ Framework/internal code:
 In other words, an AI application developer should describe the model layout,
 roles, artifacts, dependencies, and input/output codecs. They should not need
 to manually build NDN names or fetch individual Data segments in normal use.
-If a handler has to call `ctx.ndnsf.wait_one(...)` or `ctx.ndnsf.fetch_large(...)`
+If a handler has to call `ctx.ndnsf.wait_one(...)` or `ctx.ndnsf.fetch_large_reference(...)`
 directly, that is a sign that the APP/runtime helper is still too low-level for
 that workload.
 
@@ -915,13 +915,15 @@ instead of repeating topic strings by hand:
 def handle_assigned_role(ctx):
     if ctx.dependencies.outputs:
         activation = run_local_stage(ctx.execution.path("model"), ctx.request)
-        large_name = ctx.publish_output_large(activation)
-        edge = ctx.dependencies.output()
-        ctx.ndnsf.publish(edge.key_scope, edge.topic("ref"), large_name.encode())
+        ctx.publish_output_large_reference(
+            activation,
+            data_topic_suffix="activation",
+            ref_topic_suffix="ref",
+            object_type="application/x-ndnsf-di-activation+npz")
 
     if ctx.dependencies.inputs:
-        edge = ctx.dependencies.input()
-        ref = ctx.ndnsf.wait_one(edge.key_scope, edge.topic("ref"), 10000)
+        future = ctx.prefetch_input_large(topic_suffix="ref")
+        activation = ctx.wait_prefetched_input_large(future)
 ```
 
 For roles with multiple inputs or outputs, pass `key_scope` explicitly, e.g.
@@ -1216,7 +1218,9 @@ starts a background wait/fetch for a role-local dependency reference, and
 the handler needs it. This optimization is generic: it depends only on the
 declared dependency edge and topic suffix, not on YOLO. It should be used only
 when the plan gives deterministic dependency names; otherwise handlers can keep
-using explicit `wait_one(...)` and `fetch_large(...)`.
+using explicit `wait_one(...)` and `fetch_large_reference(...)`. New code should
+publish dependency references with the standard NDNSF large-data reference
+payload instead of placing naked Data names in collaboration messages.
 
 For ONNX chunks, the helper
 `execute_onnx_dependency_chunk(...)` is the preferred provider-side path. It

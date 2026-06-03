@@ -11,6 +11,11 @@ import tempfile
 import numpy as np
 import torch
 
+from ndnsf import (
+    LargeDataReference,
+    encode_large_data_reference_payload,
+    parse_large_data_reference_payload,
+)
 from ndnsf_distributed_inference import (
     DependencyEdge,
     ProviderRuntimeContext,
@@ -37,6 +42,20 @@ class _FakeNdnsfContext:
         self.large_objects[name] = payload
         return name
 
+    def publish_large_reference(self, key_scope: str, data_topic: str,
+                                ref_topic: str, payload: bytes,
+                                *args, **kwargs) -> str:
+        name = self.publish_large(key_scope, data_topic, payload, *args, **kwargs)
+        ref = encode_large_data_reference_payload(LargeDataReference(
+            data_name=name,
+            object_type=str(kwargs.get("object_type", "")),
+            object_id=str(kwargs.get("object_id", "")),
+            plaintext_size=len(payload),
+            encrypted=True,
+        ))
+        self.publish(key_scope, ref_topic, ref)
+        return name
+
     def publish(self, key_scope: str, topic: str, payload: bytes) -> None:
         self.refs[(key_scope, topic)] = payload
 
@@ -48,6 +67,13 @@ class _FakeNdnsfContext:
 
     def fetch_large(self, data_name: str, key_scope: str, timeout_ms: int):
         return self.large_objects.get(data_name)
+
+    def fetch_large_reference(self, reference_payload: bytes,
+                              key_scope: str, timeout_ms: int):
+        ref = parse_large_data_reference_payload(reference_payload)
+        if ref is None:
+            return self.fetch_large(reference_payload.decode(), key_scope, timeout_ms)
+        return self.fetch_large(ref.data_name, key_scope, timeout_ms)
 
 
 class _SynchronousPrefetcher:
@@ -64,8 +90,8 @@ class _SynchronousPrefetcher:
             future.set_exception(
                 TimeoutError(f"missing ref {edge.key_scope} {edge.topic(topic_suffix)}"))
             return future
-        payload = self.ndnsf.fetch_large(ref.payload.decode(), edge.key_scope,
-                                        fetch_timeout_ms)
+        payload = self.ndnsf.fetch_large_reference(ref.payload, edge.key_scope,
+                                                  fetch_timeout_ms)
         if payload is None:
             future.set_exception(
                 TimeoutError(f"missing large object {ref.payload.decode()}"))

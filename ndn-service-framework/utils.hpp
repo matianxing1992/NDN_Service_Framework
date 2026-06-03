@@ -97,6 +97,16 @@ namespace ndn_service_framework
         uint64_t sequence = 0;
     };
 
+    struct LargeDataReference
+    {
+        ndn::Name dataName;
+        std::string objectType;
+        std::string objectId;
+        size_t plaintextSize = 0;
+        bool encrypted = true;
+        std::string digest;
+    };
+
     // V2 wire names use one unified serviceName endpoint path, never ServiceName + FunctionName.
     // NAC-ABE attributes follow message direction: REQUEST/SELECTION use
     // /SERVICE/<serviceName>; RESPONSE/ACK use /PERMISSION/<serviceName>.
@@ -158,6 +168,10 @@ namespace ndn_service_framework
                                         uint64_t sequence);
     std::optional<CollaborationDataName>
     parseCollaborationDataName(const ndn::Name& collaborationDataName);
+
+    ndn::Buffer encodeLargeDataReferencePayload(const LargeDataReference& reference);
+    std::optional<LargeDataReference> parseLargeDataReferencePayload(const ndn::Buffer& payload);
+    bool isLargeDataReferencePayload(const ndn::Buffer& payload);
 
     // /muas/drone1/NDNSF/TOKEN/ObjectDetection/YOLOv8/0
     // <provider> <service> <function> <seqNum>

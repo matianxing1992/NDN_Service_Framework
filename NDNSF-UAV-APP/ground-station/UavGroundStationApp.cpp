@@ -1,5 +1,6 @@
 #include "../shared/UavNames.hpp"
 #include "../shared/UavProtocol.hpp"
+#include "GroundStationRuntimeState.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -424,16 +425,39 @@ main(int argc, char** argv)
                       "NDNSF-UAV-APP/configs/uav_runtime.conf"));
     config.groupPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--group-prefix", "group-prefix", config.groupPrefix.toUri()));
     config.controllerPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--controller-prefix", "controller-prefix", config.controllerPrefix.toUri()));
-    config.groundStationIdentity = ndn::Name(getConfigOption(argc, argv, appConfig, "--ground-station-identity", "ground-station-identity", config.groundStationIdentity.toUri()));
-    config.droneIdentityPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--drone-prefix", "drone-prefix", config.droneIdentityPrefix.toUri()));
-    config.trustSchema = getConfigOption(argc, argv, appConfig, "--trust-schema", "trust-schema", config.trustSchema);
-    config.serviceMavlinkExecute = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-execute", "service-mavlink-execute", config.serviceMavlinkExecute.toUri()));
-    config.serviceMissionAssign = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mission-assign", "service-mission-assign", config.serviceMissionAssign.toUri()));
+  config.groundStationIdentity = ndn::Name(getConfigOption(argc, argv, appConfig, "--ground-station-identity", "ground-station-identity", config.groundStationIdentity.toUri()));
+  config.droneIdentityPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--drone-prefix", "drone-prefix", config.droneIdentityPrefix.toUri()));
+  config.trustSchema = getConfigOption(argc, argv, appConfig, "--trust-schema", "trust-schema", config.trustSchema);
+  config.serviceMavlinkExecute = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-execute", "service-mavlink-execute", config.serviceMavlinkExecute.toUri()));
+  config.serviceMissionAssign = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mission-assign", "service-mission-assign", config.serviceMissionAssign.toUri()));
     config.serviceTelemetryStatus = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-telemetry-status", "service-telemetry-status", config.serviceTelemetryStatus.toUri()));
     config.serviceCameraFrame = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-frame", "service-camera-frame", config.serviceCameraFrame.toUri()));
-    config.serviceCameraVideoControlSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-video-control-suffix", "service-camera-video-control-suffix", config.serviceCameraVideoControlSuffix.toUri()));
-    config.serviceCameraRecordingManifestSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-manifest-suffix", "service-camera-recording-manifest-suffix", config.serviceCameraRecordingManifestSuffix.toUri()));
-    config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
+  config.serviceCameraVideoControlSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-video-control-suffix", "service-camera-video-control-suffix", config.serviceCameraVideoControlSuffix.toUri()));
+  config.serviceCameraRecordingManifestSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-manifest-suffix", "service-camera-recording-manifest-suffix", config.serviceCameraRecordingManifestSuffix.toUri()));
+  config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
+  const auto groundStationMapLatText =
+    getConfigOption(argc, argv, appConfig, "--ground-station-map-lat", "ground-station-map-lat", std::to_string(config.groundStationMapLat));
+  const auto groundStationMapLonText =
+    getConfigOption(argc, argv, appConfig, "--ground-station-map-lon", "ground-station-map-lon", std::to_string(config.groundStationMapLon));
+  try {
+    config.groundStationMapLat = std::stod(groundStationMapLatText);
+  }
+  catch (const std::exception&) {
+    config.groundStationMapLat = std::numeric_limits<double>::quiet_NaN();
+  }
+  try {
+    config.groundStationMapLon = std::stod(groundStationMapLonText);
+  }
+  catch (const std::exception&) {
+    config.groundStationMapLon = std::numeric_limits<double>::quiet_NaN();
+  }
+
+  if (std::isnan(config.groundStationMapLat)) {
+    config.groundStationMapLat = DEFAULT_GS_MAP_LAT;
+  }
+  if (std::isnan(config.groundStationMapLon)) {
+    config.groundStationMapLon = DEFAULT_GS_MAP_LON;
+  }
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 
     if (objectDetectionMode) {
@@ -502,7 +526,9 @@ main(int argc, char** argv)
                                autoApplyBitrateTest,
                                autoVideoPressureProfileTest,
                                autoRepeatStopTest,
-                               patrolDroneIds);
+                               patrolDroneIds,
+                               config.groundStationMapLat,
+                               config.groundStationMapLon);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
               << " auto_video_test=" << (autoStart ? "true" : "false")

@@ -47,8 +47,8 @@ class DependencyPrefetcher:
                 raise TimeoutError(
                     f"timed out waiting for dependency ref "
                     f"scope={edge.key_scope} topic={topic}")
-            payload = self._ndnsf.fetch_large(
-                ref.payload.decode(),
+            payload = self._ndnsf.fetch_large_reference(
+                ref.payload,
                 edge.key_scope,
                 fetch_timeout_ms,
             )
@@ -88,6 +88,26 @@ class ProviderRuntimeContext:
             edge.key_scope,
             edge.topic(topic_suffix),
             payload,
+            max_segment_size=max_segment_size,
+            freshness_ms=freshness_ms,
+        )
+
+    def publish_output_large_reference(self, payload: bytes, *,
+                                       key_scope: str = "",
+                                       data_topic_suffix: str = "",
+                                       ref_topic_suffix: str = "",
+                                       object_type: str = "",
+                                       object_id: str = "",
+                                       max_segment_size: int = 7000,
+                                       freshness_ms: int = 60000) -> str:
+        edge = self.dependencies.output(key_scope)
+        return self.ndnsf.publish_large_reference(
+            edge.key_scope,
+            edge.topic(data_topic_suffix),
+            edge.topic(ref_topic_suffix),
+            payload,
+            object_type=object_type,
+            object_id=object_id,
             max_segment_size=max_segment_size,
             freshness_ms=freshness_ms,
         )

@@ -3,6 +3,8 @@
 #include <ndn-cxx/security/transform.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
+#include <sstream>
+
 namespace ndn_service_framework
 {
 
@@ -118,6 +120,32 @@ namespace ndn_service_framework
         mutableBufferToSpan(ndn::Buffer& buffer)
         {
             return ndn::span<uint8_t>(buffer.data(), buffer.size());
+        }
+
+        constexpr const char* LARGE_DATA_REFERENCE_MAGIC = "NDNSF-LARGE-DATA-REF";
+
+        std::string
+        bufferToString(const ndn::Buffer& payload)
+        {
+            return std::string(reinterpret_cast<const char*>(payload.data()),
+                               payload.size());
+        }
+
+        std::string
+        sanitizeReferenceField(std::string value)
+        {
+            for (auto& ch : value) {
+                if (ch == '\n' || ch == '\r') {
+                    ch = ' ';
+                }
+            }
+            return value;
+        }
+
+        bool
+        parseBoolText(const std::string& value)
+        {
+            return value == "1" || value == "true" || value == "yes";
         }
 
         ndn::Buffer
@@ -588,6 +616,85 @@ namespace ndn_service_framework
             topic,
             sequence
         };
+    }
+
+    ndn::Buffer
+    encodeLargeDataReferencePayload(const LargeDataReference& reference)
+    {
+        std::ostringstream os;
+        os << LARGE_DATA_REFERENCE_MAGIC << "\n"
+           << "version=1\n"
+           << "name=" << reference.dataName.toUri() << "\n"
+           << "type=" << sanitizeReferenceField(reference.objectType) << "\n"
+           << "object_id=" << sanitizeReferenceField(reference.objectId) << "\n"
+           << "plaintext_size=" << reference.plaintextSize << "\n"
+           << "encrypted=" << (reference.encrypted ? "1" : "0") << "\n"
+           << "digest=" << sanitizeReferenceField(reference.digest) << "\n";
+        const auto text = os.str();
+        return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    }
+
+    std::optional<LargeDataReference>
+    parseLargeDataReferencePayload(const ndn::Buffer& payload)
+    {
+        const auto text = bufferToString(payload);
+        if (text.rfind(std::string(LARGE_DATA_REFERENCE_MAGIC) + "\n", 0) != 0 &&
+            text != LARGE_DATA_REFERENCE_MAGIC) {
+            return std::nullopt;
+        }
+
+        LargeDataReference reference;
+        std::istringstream input(text);
+        std::string line;
+        std::getline(input, line);
+
+        while (std::getline(input, line)) {
+            const auto pos = line.find('=');
+            if (pos == std::string::npos) {
+                continue;
+            }
+            const auto key = line.substr(0, pos);
+            const auto value = line.substr(pos + 1);
+            if (key == "name") {
+                try {
+                    reference.dataName = ndn::Name(value);
+                }
+                catch (const std::exception&) {
+                    return std::nullopt;
+                }
+            }
+            else if (key == "type") {
+                reference.objectType = value;
+            }
+            else if (key == "object_id") {
+                reference.objectId = value;
+            }
+            else if (key == "plaintext_size") {
+                try {
+                    reference.plaintextSize = static_cast<size_t>(std::stoull(value));
+                }
+                catch (const std::exception&) {
+                    return std::nullopt;
+                }
+            }
+            else if (key == "encrypted") {
+                reference.encrypted = parseBoolText(value);
+            }
+            else if (key == "digest") {
+                reference.digest = value;
+            }
+        }
+
+        if (reference.dataName.empty()) {
+            return std::nullopt;
+        }
+        return reference;
+    }
+
+    bool
+    isLargeDataReferencePayload(const ndn::Buffer& payload)
+    {
+        return parseLargeDataReferencePayload(payload).has_value();
     }
 
     std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name>>

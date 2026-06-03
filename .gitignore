@@ -35,3 +35,7 @@ Experiments/pythonEnv/
 
 # Local Chinese README translations
 README_ch.md
+
+# Local UAV roadmap drafts (do not commit)
+NDNSF-UAV-APP/ROADMAP.md
+NDNSF-UAV-APP/ROADMAP_ch.md

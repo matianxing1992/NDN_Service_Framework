@@ -69,6 +69,45 @@ class LargeDataPublishResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class LargeDataReference:
+    data_name: str
+    object_type: str = ""
+    object_id: str = ""
+    plaintext_size: int = 0
+    encrypted: bool = True
+    digest: str = ""
+
+
+def encode_large_data_reference_payload(reference: LargeDataReference) -> bytes:
+    """Encode a standard NDNSF large-data reference payload."""
+
+    return bytes(_ndnsf.encode_large_data_reference_payload(
+        reference.data_name,
+        reference.object_type,
+        reference.object_id,
+        int(reference.plaintext_size),
+        bool(reference.encrypted),
+        reference.digest,
+    ))
+
+
+def parse_large_data_reference_payload(payload: bytes) -> Optional[LargeDataReference]:
+    """Parse a standard NDNSF large-data reference payload, or return None."""
+
+    parsed = _ndnsf.parse_large_data_reference_payload(bytes(payload))
+    if parsed is None:
+        return None
+    return LargeDataReference(
+        data_name=str(parsed.get("data_name", "")),
+        object_type=str(parsed.get("object_type", "")),
+        object_id=str(parsed.get("object_id", "")),
+        plaintext_size=int(parsed.get("plaintext_size", 0)),
+        encrypted=bool(parsed.get("encrypted", True)),
+        digest=str(parsed.get("digest", "")),
+    )
+
+
 class SegmentedObjectProducer:
     """Serve one payload as signed segmented NDN Data.
 
@@ -608,6 +647,41 @@ class CollaborationContext:
             freshness_ms,
         ))
 
+    def publish_large_reference(
+        self,
+        key_scope: str,
+        data_topic: str,
+        ref_topic: str,
+        payload: bytes,
+        *,
+        object_type: str = "",
+        object_id: str = "",
+        digest: str = "",
+        max_segment_size: int = 7000,
+        freshness_ms: int = 60000,
+    ) -> str:
+        """Publish a large collaboration object and advertise a standard reference."""
+
+        payload_bytes = bytes(payload)
+        data_name = self.publish_large(
+            key_scope,
+            data_topic,
+            payload_bytes,
+            max_segment_size=max_segment_size,
+            freshness_ms=freshness_ms,
+        )
+        effective_digest = digest or ("sha256:" + hashlib.sha256(payload_bytes).hexdigest())
+        reference = encode_large_data_reference_payload(LargeDataReference(
+            data_name=data_name,
+            object_type=object_type,
+            object_id=object_id,
+            plaintext_size=len(payload_bytes),
+            encrypted=True,
+            digest=effective_digest,
+        ))
+        self.publish(key_scope, ref_topic, reference)
+        return data_name
+
     def fetch_large(
         self,
         data_name: str,
@@ -618,6 +692,42 @@ class CollaborationContext:
         if value is None:
             return None
         return bytes(value)
+
+    def fetch_large_reference(
+        self,
+        reference_payload: bytes,
+        key_scope: str,
+        timeout_ms: int = 5000,
+    ) -> Optional[bytes]:
+        """Fetch a large collaboration object described by a standard reference.
+
+        Older examples published only a naked Data name in the reference
+        message. That form is accepted for migration, while new publishers use
+        ``LargeDataReference``.
+        """
+
+        reference = parse_large_data_reference_payload(bytes(reference_payload))
+        if reference is None:
+            data_name = bytes(reference_payload).decode()
+            expected_size = 0
+            expected_digest = ""
+        else:
+            data_name = reference.data_name
+            expected_size = reference.plaintext_size
+            expected_digest = reference.digest
+        payload = self.fetch_large(data_name, key_scope, timeout_ms)
+        if payload is None:
+            return None
+        if expected_size and len(payload) != expected_size:
+            raise ValueError(
+                f"large reference size mismatch: expected={expected_size} actual={len(payload)}")
+        if expected_digest:
+            digest = expected_digest
+            if digest.startswith("sha256:"):
+                digest = digest[len("sha256:"):]
+            if digest and hashlib.sha256(payload).hexdigest() != digest:
+                raise ValueError("large reference SHA-256 mismatch")
+        return payload
 
     def wait_one(
         self,

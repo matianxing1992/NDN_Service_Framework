@@ -409,6 +409,10 @@ namespace ndn_service_framework{
                 const ndn::Name& encryptedDataName,
                 const std::string& serviceName);
 
+            LargeDataFetchResult resolveLargeDataReferencePayload(
+                const ndn::Buffer& payload,
+                const std::string& serviceName);
+
             ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
                                             const ndn::Name& providerName,
                                             const ndn::Name& serviceName,

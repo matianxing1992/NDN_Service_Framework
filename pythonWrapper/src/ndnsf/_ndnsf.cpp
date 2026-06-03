@@ -90,6 +90,19 @@ toPyBytes(const ndn::Buffer& value)
   return py::bytes(reinterpret_cast<const char*>(value.data()), value.size());
 }
 
+py::dict
+largeDataReferenceToDict(const nsf::LargeDataReference& reference)
+{
+  py::dict output;
+  output["data_name"] = reference.dataName.toUri();
+  output["object_type"] = reference.objectType;
+  output["object_id"] = reference.objectId;
+  output["plaintext_size"] = reference.plaintextSize;
+  output["encrypted"] = reference.encrypted;
+  output["digest"] = reference.digest;
+  return output;
+}
+
 std::shared_ptr<const nsf::AckSelectionPolicy>
 selectionPolicyByName(const std::string& strategy)
 {
@@ -2108,6 +2121,40 @@ private:
 
 PYBIND11_MODULE(_ndnsf, m)
 {
+  m.def("encode_large_data_reference_payload",
+        [](const std::string& dataName,
+           const std::string& objectType,
+           const std::string& objectId,
+           size_t plaintextSize,
+           bool encrypted,
+           const std::string& digest) {
+          nsf::LargeDataReference reference;
+          reference.dataName = ndn::Name(dataName);
+          reference.objectType = objectType;
+          reference.objectId = objectId;
+          reference.plaintextSize = plaintextSize;
+          reference.encrypted = encrypted;
+          reference.digest = digest;
+          const auto payload = nsf::encodeLargeDataReferencePayload(reference);
+          return toPyBytes(payload);
+        },
+        py::arg("data_name"),
+        py::arg("object_type") = "",
+        py::arg("object_id") = "",
+        py::arg("plaintext_size") = 0,
+        py::arg("encrypted") = true,
+        py::arg("digest") = "");
+
+  m.def("parse_large_data_reference_payload",
+        [](const py::bytes& payload) -> py::object {
+          const auto reference = nsf::parseLargeDataReferencePayload(toBuffer(payload));
+          if (!reference) {
+            return py::none();
+          }
+          return largeDataReferenceToDict(*reference);
+        },
+        py::arg("payload"));
+
   py::class_<PyServiceResponse>(m, "ServiceResponse")
     .def(py::init<>())
     .def_readwrite("status", &PyServiceResponse::status)

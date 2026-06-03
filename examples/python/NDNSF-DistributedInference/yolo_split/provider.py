@@ -26,13 +26,15 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
 
     if ctx.role == ROLE_STAGE0:
         activation = run_onnx_stage0(ctx.execution.path("model"), ctx.request)
-        large_name = ctx.publish_output_large(
+        ctx.publish_output_large_reference(
             activation,
+            data_topic_suffix="activation",
+            ref_topic_suffix="ref",
+            object_type="application/x-ndnsf-di-activation+npz",
+            object_id="stage0-activation",
             max_segment_size=7000,
             freshness_ms=60000,
         )
-        edge = ctx.dependencies.output()
-        ndnsf.publish(edge.key_scope, edge.topic("ref"), large_name.encode())
         print(f"YOLO_STAGE0 model={ctx.execution.path('model')} "
               f"work_dir={ctx.execution.work_dir} activation_bytes={len(activation)}",
               flush=True)
@@ -44,7 +46,7 @@ def handle_role(ctx: ProviderRuntimeContext) -> None:
         if ref is None:
             ndnsf.fail("timed out waiting for stage0 activation reference")
             return
-        activation = ndnsf.fetch_large(ref.payload.decode(), edge.key_scope, 10000)
+        activation = ndnsf.fetch_large_reference(ref.payload, edge.key_scope, 10000)
         if activation is None:
             ndnsf.fail("failed to fetch segmented stage0 activation")
             return

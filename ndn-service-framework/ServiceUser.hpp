@@ -145,6 +145,15 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    struct LargeDataReferenceRequestResult
+    {
+        bool success = false;
+        bool usedLargeDataReference = false;
+        ndn_service_framework::RequestMessage requestMessage;
+        LargeDataPublishResult largeData;
+        std::string errorMessage;
+    };
+
     using Timeout_Callback = std::function<void(const std::string & reason)>;
 
     class ServiceUser
@@ -377,6 +386,14 @@ namespace ndn_service_framework{
                 const PreparedServiceRequest& ctx,
                 const std::vector<uint8_t>& plaintext,
                 const std::string& objectLabel = "",
+                const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
+
+            LargeDataReferenceRequestResult makeRequestWithLargeDataOptimization(
+                const PreparedServiceRequest& ctx,
+                const std::vector<uint8_t>& payload,
+                const std::string& objectLabel = "",
+                const std::string& objectType = "",
+                size_t thresholdBytes = 1024,
                 const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
             ndn::Name RequestService(const PreparedServiceRequest& ctx,

@@ -39,7 +39,8 @@ The first version demonstrates the main UAV workflow:
 - The drone exposes telemetry and camera-frame services.
 - The ground station starts/stops video streaming through a provider-specific
   control service named under the target drone; the drone publishes frames
-  under its own namespace, and the ground station fetches frames by name.
+  as signed NDN video packets under its own namespace, and the ground station
+  prefetches packets by predictable names.
 - The ground station assigns one patrol/inspection mission to multiple drones
   by splitting the area into role-specific waypoint sectors.
 - The drone returns a mock image capture result and can ask the ground station
@@ -52,6 +53,39 @@ The first version demonstrates the main UAV workflow:
   requests.
 - Multiple drones can advertise the same services; if one drone suppresses ACKs
   or is unavailable, NDNSF provider selection can choose another drone.
+
+## Current Runtime Status
+
+The current implementation should be read as a service-oriented UAV prototype
+with several real deployment-facing pieces already wired in:
+
+- **Camera.** DroneAPP supports file, USB/V4L2, and `auto` video sources. In
+  `auto` mode it probes local camera capability conservatively, falls back to
+  the bundled sample video for local troubleshooting when no camera is usable,
+  and reports camera availability/source/reason through telemetry and readiness
+  state so GS can show whether the selected drone actually has a usable camera.
+- **Flight controller.** DroneAPP supports mock, UDP MAVLink, serial MAVLink,
+  and the `mavlink-router` alias for the UDP path. GPS is intentionally read
+  from MAVLink telemetry produced by PX4/ArduPilot; the companion computer does
+  not scan standalone USB or serial GPS units. GS shows heartbeat, armed,
+  flight-controller readiness, GPS/EKF, battery, landed state, and command ACK
+  fields when the backend provides them.
+- **Mission.** Mission upload/start/stop is represented as typed
+  `MissionState`, `MissionPlan`, and `MissionProgressState` data. Patrol
+  waypoints are clustered deterministically across selected drones, each part
+  can include a return-to-start target sampled from telemetry, and GS prevents
+  obvious duplicate mission operations while progress is active.
+- **Video.** Live video uses a provider-specific video-control NDNSF service and
+  drone-owned signed NDN Data packets for the high-rate stream. The receiver
+  tracks adaptive RTT/timeout/backlog pressure, packet sequence, stream id, and
+  stream session metadata so stale packets from an older live session can be
+  dropped instead of being displayed as current video.
+- **Repo.** Drone-side recording to an embedded `NDNSF-DistributedRepo` is
+  optional and configured on the drone, not by the GS Start Video button. The
+  current concrete repo-backed UAV data product is encrypted camera recording:
+  GS discovers it through a recording manifest service, then fetches/decrypts
+  the named chunks for playback. Mission images, telemetry logs, detection
+  events, and reports are planned extensions of the same data-product model.
 
 The drone does not interpret MAVLink command semantics. The ground station owns
 MAVLink message construction. The drone app treats MAVLink as opaque bytes and
@@ -759,13 +793,13 @@ again when the last telemetry still reports a streaming drone. If the drone conf
 `camera-record-to-local-repo`, the camera capture loop may continue running
 locally after the live stream stops.
 
-A later version can add a small per-stream SVS group for frame-name
+A later version can add a small per-stream SVS group for video-packet
 announcements, but it should remain separate from the main UAV control group so
 high-rate video signaling does not disturb command/telemetry/mission traffic.
 The same control service can also carry future H265 or tuned GOP parameters.
 
-The frame data should be published under the drone's namespace, signed by the
-drone, and optionally stored through `NDNSF-DistributedRepo` for replay or
+Video packet data is published under the drone's namespace, signed by the drone,
+and can optionally be stored through `NDNSF-DistributedRepo` for replay or
 post-mission analysis.
 
 ## GUI Plan
@@ -778,7 +812,7 @@ The GUI should be a ground-station frontend over the same service layer:
 
 - mission map and role assignment panel;
 - live telemetry table;
-- video preview panel fed by the frame-name/prefetch pipeline;
+- video preview panel fed by the video-packet/prefetch pipeline;
 - keyboard/gamepad control mode;
 - object-detection result overlay;
 - drone availability and selected-provider view.
@@ -1447,12 +1481,14 @@ To simulate an unavailable drone:
 ```
 
 That drone suppresses successful ACKs, so NDNSF provider selection can choose
-another drone that provides the same service.
+another available provider.
 
 ## Development Roadmap
 
-The app is now useful as a MiniNDN and SITL demonstrator, but the next work is
-to make it a deployable UAV service-container workload. The planned order is:
+At this checkpoint, the app is useful as a MiniNDN/SITL demonstrator and has
+several deployment-facing pieces in place. The remaining roadmap is best read as
+a mix of completed stabilization work and future hardening for a deployable UAV
+service-container workload:
 
 1. **State model consolidation.** Telemetry, readiness, mission, video, command,
    and safety state now drive the main flight buttons, selected-drone action
@@ -1496,9 +1532,9 @@ to make it a deployable UAV service-container workload. The planned order is:
    of only synthetic GUI injections. Continue extending this rule to new
    mission/video/safety UI paths: GUI code should not infer state from ad hoc
    status strings when a typed state model is available.
-2. **Drone headless deployment mode.** Keep the Drone container usable on
-   ODROID-class or real airframe computers without a GUI/X server. In headless
-   mode the app should run only NDNSF, MAVLink, camera, repo, telemetry, and
+2. **Drone headless deployment mode.** The Drone container is intended to stay
+   usable on ODROID-class or real airframe computers without a GUI/X server. In
+   headless mode the app runs NDNSF, MAVLink, camera, repo, telemetry, and
    mission services.
 3. **Flight-controller readiness and safety gates.** Before arm/takeoff/mission
    execution, surface heartbeat, GPS fix, EKF readiness, battery, arming state,
@@ -1527,8 +1563,8 @@ to make it a deployable UAV service-container workload. The planned order is:
    The default policy remains manual, while `auto-after-pressure` can be enabled
    for experiments that should apply persistent-pressure recommendations
    automatically.
-5. **Mission collaboration model.** Promote the patrol demo into a reusable
-   mission model with `MissionPlan`, `MissionPart`, assignment, progress,
+5. **Mission collaboration model.** The patrol demo has been promoted toward a
+   reusable mission model with `MissionPlan`, `MissionPart`, assignment, progress,
    failure/compensation, and return-to-home semantics. Patrol route clustering,
    default sector generation, drone assignment, and return-to-departure waypoint
    insertion now live in a shared typed mission helper, so GUI workflows,
@@ -1537,12 +1573,13 @@ to make it a deployable UAV service-container workload. The planned order is:
    typed view state instead of only logging internal assignment strings. The GUI
    now builds a pre-upload mission preview from drawn waypoints with the same
    helper, so planned parts are visible before the mission is sent.
-6. **Repo-backed UAV data products.** Store recordings, mission images,
-   telemetry logs, object-detection events, and reports through
-   `NDNSF-DistributedRepo` using publisher-owned names, encrypted payloads,
-   and manifest-based discovery. Camera recording manifests are now parsed into
+6. **Repo-backed UAV data products.** The implemented repo-backed product is
+   encrypted camera recording stored through `NDNSF-DistributedRepo` with
+   publisher-owned names and manifest-based discovery. Mission images,
+   telemetry logs, object-detection events, and reports should reuse that same
+   data-product pattern. Camera recording manifests are now parsed into
    typed `RecordingDataProductState` instances so GS playback and smoke tests
    reason about product availability/playability instead of ad hoc strings.
-7. **Distributed inference integration.** Connect selected image and
-   object-detection workflows to `NDNSF-DistributedInference` when model
-   execution is split across ground stations, drones, and edge machines.
+7. **Distributed inference integration.** Future image and object-detection
+   workflows can connect to `NDNSF-DistributedInference` when model execution is
+   split across ground stations, drones, and edge machines.
