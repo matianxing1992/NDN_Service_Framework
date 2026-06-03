@@ -890,6 +890,7 @@ public:
       {
         std::lock_guard<std::mutex> guard(m_videoStateMutex);
         m_recordingPlaybackDroneId.clear();
+        m_recordingPlaybackStreamId.clear();
       }
       publishStatus("Recording playback stopped drone=" + droneId);
       return;
@@ -947,6 +948,13 @@ public:
   {
     std::lock_guard<std::mutex> guard(m_videoStateMutex);
     return m_recordingPlaybackDroneId;
+  }
+
+  std::string
+  activeRecordingPlaybackStreamId() const
+  {
+    std::lock_guard<std::mutex> guard(m_videoStateMutex);
+    return m_recordingPlaybackStreamId;
   }
 
   void
@@ -3281,9 +3289,9 @@ private:
     }
 
     m_streaming = false;
-    m_activeStreamId = "recording|" + manifest.droneId + "|" +
-      manifest.sessionId + "|" + std::to_string(nowMilliseconds()) + "|" +
-      std::to_string(++m_videoSessionCounter);
+    const auto recordingStreamId = "recording|" + manifest.droneId + "|" +
+      manifest.sessionId + "|" + std::to_string(nowMilliseconds());
+    allocateStreamSessionEpoch(recordingStreamId);
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
@@ -3302,6 +3310,7 @@ private:
       std::lock_guard<std::mutex> guard(m_videoStateMutex);
       m_activeVideoDroneId.clear();
       m_recordingPlaybackDroneId = manifest.droneId;
+      m_recordingPlaybackStreamId = recordingStreamId;
     }
     m_recordingPlaybackActive = true;
     startDecoder();
@@ -3341,7 +3350,7 @@ private:
             std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
             m_recordingPlaybackChunks[index] = payload;
           }
-          const auto sessionId = fieldOr(manifest.toFields(), "session_id", m_activeStreamId);
+          const auto sessionId = activeRecordingPlaybackStreamId();
           insertChunkForDecode(index,
                                payload,
                                sessionId,
@@ -4685,8 +4694,7 @@ struct StreamChunk
   void
   decodeRecordingFromFetchedChunksAsync(RecordingDataProductState manifest)
   {
-    const auto sessionId = std::string{
-      !manifest.sessionId.empty() ? manifest.sessionId : m_activeStreamId};
+    const auto sessionId = activeRecordingPlaybackStreamId();
     auto sessionGuard = sessionId;
     std::map<uint64_t, std::vector<uint8_t>> chunks;
     {
@@ -5089,6 +5097,7 @@ private:
   MissionProgressState m_latestMissionProgress;
   std::string m_activeVideoDroneId;
   std::string m_recordingPlaybackDroneId;
+  std::string m_recordingPlaybackStreamId;
   std::map<std::string, RecordingDataProductState> m_recordingManifests;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
