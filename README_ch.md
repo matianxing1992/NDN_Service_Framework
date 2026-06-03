@@ -244,6 +244,59 @@ auto future = localRegistry.localInvokeAsync<TelemetryRequest, TelemetryStatus>(
 `RequestServiceTargeted(...)`。Local invocation 不会增加 `/NDNSF/LOCAL/...` 名字，
 也不能被远程节点通过 request 指定。
 
+对于更复杂的 service-oriented application，NDNSF core 还提供
+`ServiceContainer`，作为同一进程内的 runtime composition 和 lifecycle
+边界。它不会替代 `ServiceUser`、`ServiceProvider` 或
+`LocalServiceRegistry`，而是拥有或引用它们，让一个应用可以在同一个进程级
+配置下管理多个角色。UAV-APP 和 DistributedInference 这类应用中，一个进程
+可能同时是 user、provider、本地 helper host 和 embedded service runtime，
+这正是 ServiceContainer 的适用场景。
+
+`ServiceContainer` 负责：
+
+```text
+管理同一进程内的多个 ServiceUser、ServiceProvider、helper 和 local-only module；
+协调 lifecycle start/stop hook、runtime configuration 和 local service registration；
+暴露 LocalServiceRegistry，用于可信的同进程组合；
+把 remote、Targeted 和 local service registration 放在同一个应用边界里管理；
+为复杂 NDNSF 应用提供标准结构。
+```
+
+`ServiceContainer` 不负责：
+
+```text
+改变 Request/ACK/Selection/Response wire protocol；
+让远程 caller 选择 container-local mode；
+绕过 remote permission、signature、NAC-ABE、UserToken、ProviderToken 或 replay protection；
+把应用特定状态模型强塞进 NDNSF core。
+```
+
+真正调用服务的 API 保持不变：
+
+```cpp
+ndn_service_framework::ServiceContainer container({
+  ndn::Name("/example/app/container"),
+  ndn::Name("/example/group"),
+  ndn::Name("/example/controller"),
+  "examples/trust-any.conf"
+});
+
+container.addUser("operator", user);
+container.addProvider("drone-services", provider);
+
+container.provider("drone-services").addHandler<RequestT, ResponseT>(
+  serviceName, handler);
+
+container.user("operator").RequestService<RequestT, ResponseT>(
+  providers, serviceName, request, onResponse, onTimeout, timeoutMs, strategy);
+
+container.localRegistry().registerLocalService<LocalRequest, LocalResponse>(
+  localServiceName, localHandler);
+```
+
+简单说，`ServiceProvider` 是面向网络的 provider role，`ServiceUser` 是面向网络的
+caller role，而 `ServiceContainer` 是可信进程内部用于组合和管理这些角色的 runtime。
+
 `RequestT` 和 `ResponseT` 只需要提供类似 protobuf 的方法：
 
 ```cpp

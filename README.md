@@ -262,6 +262,65 @@ Use normal `RequestService(...)` or `RequestServiceTargeted(...)` for any
 cross-process, cross-node, or untrusted caller. Local invocation does not add
 `/NDNSF/LOCAL/...` names and cannot be requested by a remote node.
 
+For larger service-oriented applications, NDNSF core also provides
+`ServiceContainer` as an in-process runtime composition and lifecycle boundary.
+It does not replace `ServiceUser`, `ServiceProvider`, or
+`LocalServiceRegistry`; it owns or references them so an application can manage
+multiple roles under one process-level configuration. This is useful for
+applications such as UAV-APP and DistributedInference, where one process may
+act as a user, a provider, a local helper host, and an embedded service runtime
+at the same time.
+
+`ServiceContainer` is responsible for:
+
+```text
+managing multiple ServiceUser, ServiceProvider, helper, and local-only modules
+inside one process;
+coordinating lifecycle start/stop hooks, runtime configuration, and local
+service registration;
+exposing LocalServiceRegistry for trusted same-process composition;
+keeping remote, Targeted, and local service registration in one application
+boundary;
+providing a standard structure for complex NDNSF applications.
+```
+
+`ServiceContainer` is not responsible for:
+
+```text
+changing the Request/ACK/Selection/Response wire protocol;
+letting a remote caller select a container-local mode;
+bypassing remote permissions, signatures, NAC-ABE, UserToken, ProviderToken, or
+replay protection;
+embedding application-specific state models into NDNSF core.
+```
+
+The service invocation APIs remain unchanged:
+
+```cpp
+ndn_service_framework::ServiceContainer container({
+  ndn::Name("/example/app/container"),
+  ndn::Name("/example/group"),
+  ndn::Name("/example/controller"),
+  "examples/trust-any.conf"
+});
+
+container.addUser("operator", user);
+container.addProvider("drone-services", provider);
+
+container.provider("drone-services").addHandler<RequestT, ResponseT>(
+  serviceName, handler);
+
+container.user("operator").RequestService<RequestT, ResponseT>(
+  providers, serviceName, request, onResponse, onTimeout, timeoutMs, strategy);
+
+container.localRegistry().registerLocalService<LocalRequest, LocalResponse>(
+  localServiceName, localHandler);
+```
+
+In short, `ServiceProvider` is the network-facing provider role,
+`ServiceUser` is the network-facing caller role, and `ServiceContainer` is the
+trusted process-local runtime that composes and manages those roles.
+
 `RequestT` and `ResponseT` only need protobuf-like methods:
 
 ```cpp
