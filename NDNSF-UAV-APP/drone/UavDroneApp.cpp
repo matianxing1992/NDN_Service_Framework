@@ -2,6 +2,7 @@
 #include "../shared/UavProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
+#include "ndn-service-framework/ServiceContainer.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/NDNSFMessages.hpp"

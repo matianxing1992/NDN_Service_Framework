@@ -2487,6 +2487,12 @@ public:
     , m_droneId(std::move(droneId))
     , m_available(available)
     , m_identity(droneIdentity(m_config, m_droneId))
+    , m_coreContainer({
+        m_identity,
+        m_config.groupPrefix,
+        m_config.controllerPrefix,
+        m_config.trustSchema
+      })
     , m_flightControllerBackend(std::move(flightControllerBackend))
     , m_mavlinkUdpHost(std::move(mavlinkUdpHost))
     , m_mavlinkUdpPort(std::move(mavlinkUdpPort))
@@ -2501,10 +2507,15 @@ public:
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_config.controllerPrefix);
     m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_identity));
     m_videoPath = std::move(videoPath);
+    m_coreContainer.addLifecycleHook("drone-runtime", {
+      [this] { publishStatus("NDNSF service container started"); },
+      [this] { publishStatus("NDNSF service container stopped"); }
+    });
   }
 
   ~DroneServiceContainer()
   {
+    m_coreContainer.stop();
     m_statusCallback = nullptr;
     stopObjectDetectionLoop();
     m_done = true;
@@ -2532,14 +2543,17 @@ public:
           m_provider = std::move(provider);
           m_videoPublisher = std::move(videoPublisher);
         }
+        m_coreContainer.useProvider("drone-services", *m_provider);
         m_user = std::make_unique<ndn_service_framework::ServiceUser>(
           m_face, m_config.groupPrefix, m_providerCert, m_controllerCert, m_config.trustSchema);
         m_user->setHandlerThreads(1);
+        m_coreContainer.useUser("drone-user", *m_user);
         installServiceInstances();
         m_provider->init();
         m_provider->fetchPermissionsFromController(m_config.controllerPrefix);
         m_user->init();
         m_user->fetchPermissionsFromController(m_config.controllerPrefix);
+        m_coreContainer.start();
         m_containerReady = true;
         publishStatus("NDNSF runtime ready");
 
@@ -2575,6 +2589,18 @@ public:
       std::this_thread::sleep_for(50ms);
     }
     return m_containerReady.load();
+  }
+
+  ndn_service_framework::ServiceContainer&
+  ndnsfContainer()
+  {
+    return m_coreContainer;
+  }
+
+  ndn_service_framework::LocalServiceRegistry&
+  localRegistry()
+  {
+    return m_coreContainer.localRegistry();
   }
 
   void
@@ -3150,6 +3176,7 @@ private:
   std::string m_droneId;
   bool m_available;
   ndn::Name m_identity;
+  ndn_service_framework::ServiceContainer m_coreContainer;
   std::string m_videoPath;
   std::string m_flightControllerBackend;
   std::string m_mavlinkUdpHost;

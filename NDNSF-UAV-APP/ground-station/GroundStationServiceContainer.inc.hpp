@@ -19,6 +19,12 @@ public:
                        uint64_t videoBitrateAutoPressureMs = 2500)
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
+    , m_coreContainer({
+        m_config.groundStationIdentity,
+        m_config.groupPrefix,
+        m_config.controllerPrefix,
+        m_config.trustSchema
+      })
     , m_ackTimeoutMs(ackTimeoutMs)
     , m_timeoutMs(timeoutMs)
     , m_targetDroneId(std::move(targetDroneId))
@@ -46,6 +52,10 @@ public:
     m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_config.groundStationIdentity));
     m_videoRequestedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps.load());
     m_videoAcceptedBitrateKbps = std::max<uint64_t>(128, m_videoBitrateKbps.load());
+    m_coreContainer.addLifecycleHook("ground-station-runtime", {
+      [this] { publishStatus("NDNSF service container started"); },
+      [this] { publishStatus("NDNSF service container stopped"); }
+    });
   }
 
   ~GroundStationServiceContainer()
@@ -59,6 +69,7 @@ public:
     if (m_done.exchange(true)) {
       return;
     }
+    m_coreContainer.stop();
     m_streaming = false;
     m_recordingPlaybackActive = false;
     if (m_yoloPrewarmThread.joinable()) {
@@ -88,10 +99,13 @@ public:
           m_face, m_config.groupPrefix, m_gsCert, m_controllerCert, m_config.trustSchema);
         m_user->setHandlerThreads(2);
         m_user->init();
+        m_coreContainer.useUser("ground-station", *m_user);
         m_user->fetchPermissionsFromController(m_config.controllerPrefix);
         installServiceInstances();
         m_objectDetectionProvider->init();
+        m_coreContainer.useProvider("object-detection", *m_objectDetectionProvider);
         m_objectDetectionProvider->fetchPermissionsFromController(m_config.controllerPrefix);
+        m_coreContainer.start();
         m_containerReady = true;
         publishStatus("NDNSF runtime ready");
         m_yoloPrewarmThread = std::thread([this] {
@@ -125,6 +139,18 @@ public:
       std::this_thread::sleep_for(50ms);
     }
     return m_containerReady.load();
+  }
+
+  ndn_service_framework::ServiceContainer&
+  ndnsfContainer()
+  {
+    return m_coreContainer;
+  }
+
+  ndn_service_framework::LocalServiceRegistry&
+  localRegistry()
+  {
+    return m_coreContainer.localRegistry();
   }
 
   void
@@ -5033,6 +5059,7 @@ struct StreamChunk
 private:
   bool m_serveCertificates;
   UavRuntimeConfig m_config;
+  ndn_service_framework::ServiceContainer m_coreContainer;
   int m_ackTimeoutMs;
   int m_timeoutMs;
   std::string m_targetDroneId;
