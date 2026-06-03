@@ -529,6 +529,10 @@ def yolo_splitter_output(exported: dict) -> SplitterOutput:
         group=GROUP,
         user=USER,
         provider_prefix=PROVIDER_PREFIX,
+        provider_identities=[
+            PROVIDER_PREFIX,
+            PROVIDER_PREFIX + "/A",
+        ],
         services=[service],
         trust_app_roots=["/example"],
         metadata=common_metadata,

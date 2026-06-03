@@ -41,6 +41,9 @@ def main() -> int:
                         help="Directory for generated trust schema and policy files")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--start-local-nfd", action="store_true")
+    parser.add_argument("--predeployed-artifacts", action="store_true",
+                        help="Use model shard paths recorded in the policy instead of "
+                             "publishing artifacts with each request")
     args = parser.parse_args()
 
     if args.dry_run:
@@ -74,6 +77,7 @@ def main() -> int:
             request_payload,
             ack_timeout_ms=args.ack_timeout_ms,
             timeout_ms=args.timeout_ms,
+            dynamic_provisioning=not args.predeployed_artifacts,
         )
 
         if not result.status:

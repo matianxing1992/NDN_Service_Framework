@@ -236,6 +236,64 @@ python3 -m ndnsf_distributed_inference.policy \
 to catch most policy-level mistakes before starting controller, providers, or
 users.
 
+## Graphical Deployment Tool
+
+For users who are not comfortable editing YAML by hand, NDNSF-DI also includes
+a lightweight Python GUI:
+
+```bash
+PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
+python3 Experiments/NDNSF_DI_GUI.py
+```
+
+The first version uses the Python standard-library `tkinter` toolkit so it can
+run on a normal Ubuntu desktop without adding a Qt dependency. It provides:
+
+```text
+Project Wizard
+  Import an ONNX/PyTorch/policy file, choose service/controller/group/user
+  names, choose providers and roles, and generate a policy skeleton.
+
+Policy Editor
+  Load and edit YAML, browse users/providers/services, validate the policy,
+  and show the same --explain summary as ndnsf-di-policy.
+
+Model Split
+  Import an ONNX model, display graph summary and candidate split points, and
+  seed a two-stage policy skeleton.
+
+Certificate / Identity Manager
+  Run ndnsec list, select a local identity for runtime.user_identity, generate
+  key requests, and import safebags. Certificate signing is still expected to
+  follow the deployment trust process; the GUI only wraps common ndnsec tasks.
+
+Controller / User / Provider certificate tools
+  The role tabs include the deployment certificate workflow. A User or
+  Provider tab can generate its own private key and key request, then copy the
+  request text to the Controller tab. If the current node is the root/controller
+  node, the Controller tab can generate the root certificate and sign pasted or
+  file-based requests. The signed certificate can then be copied back to the
+  User or Provider tab and installed with ndnsec cert-install. This keeps the
+  private key on the requesting node while allowing the root/controller node to
+  sign deployment identities.
+
+Deployment Runner
+  Launch example controller/provider/user processes, show logs, and run the
+  unified DI regression runner. The default YOLO 2x2 regression starts MiniNDN,
+  runs distributed inference, and checks for YOLO_2X2_RESULT ... ok=true.
+  The auto-split two-stage regression is also available as a selectable case.
+```
+
+The same GUI also has role-specific `Controller`, `User`, and `Provider` tabs.
+A real node can enable any combination of these roles: for example, one desktop
+can run the controller and user, while another worker runs one or more provider
+roles. These tabs configure and launch the APP-level role processes from the
+same policy file, then send their logs to the Deployment Runner pane.
+
+The GUI is intentionally built on the APP-level APIs and the existing
+`ndnsf-di-policy` validation path. It does not introduce a separate policy
+format or a second authorization mechanism.
+
 ## Application-Level API
 
 The recommended API for application developers is `APPClient`,

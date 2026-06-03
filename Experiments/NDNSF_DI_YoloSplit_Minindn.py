@@ -29,6 +29,10 @@ OUT = REPO / "results/yolo_split_minindn_auto"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_split"
 CONFIG = OUT / "yolo_policy.yaml"
 GEN_POLICY = "/tmp/ndnsf-di-yolo-split-policy"
+APP_ROOT = "/NDNSF-DistributeInference/example"
+CONTROLLER_IDENTITY = APP_ROOT + "/controller"
+USER_IDENTITY = APP_ROOT + "/user"
+PROVIDER_PREFIX = APP_ROOT + "/provider"
 
 
 class Args(SimpleNamespace):
@@ -111,6 +115,57 @@ def generate_auto_split_policy() -> None:
     ], cwd=str(REPO), env=env, check=True)
 
 
+def initialize_di_keychains(ndn, output_dir: Path) -> None:
+    """Install root-signed keys that match the generated DI policy namespace."""
+    log("Installing root-signed DI keychain material on MiniNDN nodes")
+    security_dir = output_dir / "security"
+    security_dir.mkdir(parents=True, exist_ok=True)
+    identities = [
+        CONTROLLER_IDENTITY,
+        PROVIDER_PREFIX,
+        PROVIDER_PREFIX + "/A",
+        PROVIDER_PREFIX + "/B",
+        PROVIDER_PREFIX + "/C",
+        USER_IDENTITY,
+    ]
+
+    for node in ndn.net.hosts:
+        for identity in [APP_ROOT] + identities:
+            perf.node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
+                perf.shell_quote(identity)))
+
+    controller = ndn.net["csu"]
+    root_cert_path = security_dir / "di-root.cert"
+    perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
+        perf.shell_quote(APP_ROOT), perf.shell_quote(root_cert_path)))
+    perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+        perf.shell_quote(root_cert_path)))
+    log("di_root_cert identity={} name={} file={}".format(
+        APP_ROOT, perf.certificate_name_from_file(root_cert_path), root_cert_path))
+
+    exported_keys = []
+    for index, identity in enumerate(identities):
+        cert_path = security_dir / f"di-identity-{index}.cert"
+        req_path = security_dir / f"di-identity-{index}.req"
+        key_path = security_dir / f"di-identity-{index}.ndnkey"
+        perf.node_cmd(controller, "ndnsec key-gen -n -t r {} > {}".format(
+            perf.shell_quote(identity), perf.shell_quote(req_path)))
+        perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
+            perf.shell_quote(APP_ROOT), perf.shell_quote(req_path), perf.shell_quote(cert_path)))
+        perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+            perf.shell_quote(cert_path)))
+        perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -i {}".format(
+            perf.shell_quote(key_path), perf.shell_quote(identity)))
+        exported_keys.append(key_path)
+
+    for node in ndn.net.hosts:
+        perf.node_cmd(node, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+            perf.shell_quote(root_cert_path)))
+        for key_path in exported_keys:
+            perf.node_cmd(node, "ndnsec import -P 123456 {} >/dev/null 2>&1 || true".format(
+                perf.shell_quote(key_path)))
+
+
 def main() -> None:
     setLogLevel("info")
     generate_auto_split_policy()
@@ -152,31 +207,31 @@ def main() -> None:
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
         rh.addOrigin([ndn.net["csu"]], [
-            "/NDNSF-DistributeInference/example/controller",
-            "/NDNSF-DistributeInference/example/controller/DKEY",
-            "/NDNSF-DistributeInference/example/controller/KEY",
-            "/NDNSF-DistributeInference/example/group",
+            CONTROLLER_IDENTITY,
+            CONTROLLER_IDENTITY + "/DKEY",
+            CONTROLLER_IDENTITY + "/KEY",
+            APP_ROOT + "/group",
         ])
         rh.addOrigin([ndn.net["memphis"]], [
-            "/NDNSF-DistributeInference/example/user",
-            "/NDNSF-DistributeInference/example/group",
+            USER_IDENTITY,
+            APP_ROOT + "/group",
         ])
         rh.addOrigin([ndn.net["ucla"]], [
-            "/NDNSF-DistributeInference/example/provider",
-            "/NDNSF-DistributeInference/example/provider/KEY",
-            "/NDNSF-DistributeInference/example/group",
+            PROVIDER_PREFIX,
+            PROVIDER_PREFIX + "/KEY",
+            APP_ROOT + "/group",
         ])
         rh.addOrigin([ndn.net["wustl"]], [
-            "/NDNSF-DistributeInference/example/provider/A",
-            "/NDNSF-DistributeInference/example/provider/A/KEY",
-            "/NDNSF-DistributeInference/example/group",
+            PROVIDER_PREFIX + "/A",
+            PROVIDER_PREFIX + "/A/KEY",
+            APP_ROOT + "/group",
         ])
         rh.calculateRoutes()
         for node in ndn.net.hosts:
-            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_MULTICAST)
-            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, APP_ROOT, Nfdc.STRATEGY_MULTICAST)
+            Nfdc.setStrategy(node, APP_ROOT + "/group", Nfdc.STRATEGY_MULTICAST)
 
-        perf.initialize_example_keychains(ndn, args, OUT)
+        initialize_di_keychains(ndn, OUT)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
         env["NDNSF_HANDLER_THREADS"] = "1"
@@ -215,6 +270,7 @@ def main() -> None:
                                         "--ack-timeout-ms", "1500",
                                         "--timeout-ms", "60000",
                                         "--input-size", "32",
+                                        "--predeployed-artifacts",
                                     ]),
                                     env, procs)
         user_proc.wait(timeout=90)

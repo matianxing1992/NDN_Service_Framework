@@ -101,6 +101,30 @@ This prints user permissions, provider permissions, role coverage, artifact
 coverage, and artifact-security status. `--explain` is an alias for
 `--print-summary`.
 
+## Optional GUI
+
+If you want to generate or inspect a policy without editing YAML by hand, start
+the lightweight DI GUI from the repository root:
+
+```bash
+PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
+python3 Experiments/NDNSF_DI_GUI.py
+```
+
+The GUI has tabs for creating a service project, editing and validating a
+policy, inspecting ONNX graph split candidates, selecting local `ndnsec`
+identities, and launching example controller/provider/user processes. Its
+Deployment Runner defaults to the YOLO 2x2 MiniNDN smoke path, which starts
+MiniNDN, executes distributed inference, and reports
+`YOLO_2X2_RESULT ... ok=true`. The auto-split two-stage path is also available
+as a selectable regression case. The `Controller`, `User`, and `Provider` tabs
+are separate because a real node may run one or more roles at the same time. It
+uses the same policy format and validation logic as the command-line tools.
+The role tabs also include the normal NDN certificate workflow: users and
+providers generate their own key requests, the controller/root node signs those
+requests, and the signed certificates are copied back and installed on the
+requesting nodes.
+
 ## User-Side API
 
 Application users should normally write only this:

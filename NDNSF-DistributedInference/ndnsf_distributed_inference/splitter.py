@@ -146,6 +146,7 @@ class SplitterOutput:
     user: str
     provider_prefix: str
     services: list[SplitServiceSpec]
+    provider_identities: list[str] = field(default_factory=list)
     trust_app_roots: list[str] = field(default_factory=list)
     trust_anchor_file: str = ""
     artifact_allowlist: list[str] = field(default_factory=list)
@@ -159,11 +160,15 @@ class SplitterOutput:
         raise KeyError(f"splitter output has no service {name}")
 
     def to_policy_config(self) -> dict[str, Any]:
+        provider_identities = list(self.provider_identities) or [
+            self.provider_prefix,
+            self.provider_prefix.rstrip("/") + "/A",
+            self.provider_prefix.rstrip("/") + "/B",
+            self.provider_prefix.rstrip("/") + "/C",
+        ]
         providers = [
-            {"identity": self.provider_prefix, "roles": "all"},
-            {"identity": self.provider_prefix.rstrip("/") + "/A", "roles": "all"},
-            {"identity": self.provider_prefix.rstrip("/") + "/B", "roles": "all"},
-            {"identity": self.provider_prefix.rstrip("/") + "/C", "roles": "all"},
+            {"identity": identity, "roles": "all"}
+            for identity in provider_identities
         ]
         return {
             "application": self.application,
