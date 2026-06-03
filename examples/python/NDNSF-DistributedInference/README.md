@@ -111,6 +111,14 @@ PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
 python3 Experiments/NDNSF_DI_GUI.py
 ```
 
+For a one-command GUI preflight and optional MiniNDN smoke:
+
+```bash
+python3 Experiments/NDNSF_DI_GUI_Minindn.py
+python3 Experiments/NDNSF_DI_GUI_Minindn.py --run-minindn --case app-api --no-gui
+python3 Experiments/NDNSF_DI_GUI_Minindn.py --run-minindn --case yolo-2x2 --no-gui
+```
+
 The GUI has tabs for creating a service project, editing and validating a
 policy, inspecting ONNX graph split candidates, selecting local `ndnsec`
 identities, and launching example controller/provider/user processes. Its

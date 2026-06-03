@@ -246,6 +246,20 @@ PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
 python3 Experiments/NDNSF_DI_GUI.py
 ```
 
+For a GUI-oriented preflight launcher that can also run a MiniNDN regression
+before opening the GUI, use:
+
+```bash
+python3 Experiments/NDNSF_DI_GUI_Minindn.py
+python3 Experiments/NDNSF_DI_GUI_Minindn.py --run-minindn --case app-api --no-gui
+python3 Experiments/NDNSF_DI_GUI_Minindn.py --run-minindn --case yolo-2x2 --no-gui
+```
+
+The first command checks `tkinter`, imports the GUI, validates the default
+policy, and opens the GUI. The second command runs a quick non-MiniNDN API
+smoke through the same launcher. The third command runs the full YOLO 2x2
+MiniNDN distributed-inference diagnostic path.
+
 The first version uses the Python standard-library `tkinter` toolkit so it can
 run on a normal Ubuntu desktop without adding a Qt dependency. It provides:
 
