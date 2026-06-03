@@ -1068,6 +1068,7 @@ class DistributedInferenceGui(tk.Tk):
         super().__init__()
         self.title("NDNSF Distributed Inference")
         self.geometry("1280x820")
+        self.status = tk.StringVar(value="Ready")
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
         self.wizard = WizardTab(self.notebook, self)
@@ -1086,7 +1087,6 @@ class DistributedInferenceGui(tk.Tk):
         self.notebook.add(self.user_runtime, text="User")
         self.notebook.add(self.provider_runtime, text="Provider")
         self.notebook.add(self.runner, text="Deployment Runner")
-        self.status = tk.StringVar(value="Ready")
         ttk.Label(self, textvariable=self.status, anchor="w").pack(fill="x")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1097,7 +1097,9 @@ class DistributedInferenceGui(tk.Tk):
                 return
 
     def set_status(self, value: str) -> None:
-        self.status.set(value)
+        status = getattr(self, "status", None)
+        if status is not None:
+            status.set(value)
 
     def _on_close(self) -> None:
         self.runner.stop_processes()
