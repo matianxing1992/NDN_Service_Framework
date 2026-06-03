@@ -14,6 +14,7 @@ from ndnsf_distributed_inference import (
     APPController,
     APPDeployment,
     NetworkDistributedRepoClient,
+    repo_artifact_reference,
 )
 from yolo_2x2_lib import REPO_SERVICE, ROLES, SERVICE, build_runner_script
 
@@ -122,8 +123,16 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
             policy_epoch="/Policy/yolo-2x2/v1",
         )
         manifests["roles"][role] = {
-            "model": model_manifest.to_dict(),
-            "runner": runner_manifest.to_dict(),
+            "model": repo_artifact_reference(
+                model_manifest,
+                object_type=artifact.kind or "model",
+                object_id=artifact.artifact_name or role + "/model",
+            ),
+            "runner": repo_artifact_reference(
+                runner_manifest,
+                object_type="runtime-script",
+                object_id="runner/" + runner_hash,
+            ),
         }
         print("YOLO_2X2_CONTROLLER_REPO_OBJECT", role, model_object, flush=True)
     target = Path(manifest_path)

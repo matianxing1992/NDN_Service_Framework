@@ -389,6 +389,41 @@ RepoObjectManifest::toJson() const
 }
 
 std::string
+RepoDataReference::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"objectName\":" << jsonQuote(objectName) << ",";
+  os << "\"dataPrefix\":" << jsonQuote(dataPrefix) << ",";
+  os << "\"firstSegment\":" << firstSegment << ",";
+  os << "\"finalSegment\":" << finalSegment << ",";
+  os << "\"hasFinalSegment\":" << (hasFinalSegment ? "true" : "false") << ",";
+  os << "\"forwardingHint\":" << jsonQuote(forwardingHint) << ",";
+  os << "\"expectedSha256\":" << jsonQuote(expectedSha256) << ",";
+  os << "\"expectedSize\":" << expectedSize << ",";
+  os << "\"storeWirePackets\":" << (storeWirePackets ? "true" : "false") << ",";
+  os << "\"objectType\":" << jsonQuote(objectType);
+  os << "}";
+  return os.str();
+}
+
+std::string
+RepoOperationStatus::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"operationId\":" << jsonQuote(operationId) << ",";
+  os << "\"operation\":" << jsonQuote(operation) << ",";
+  os << "\"state\":" << jsonQuote(state) << ",";
+  os << "\"objectName\":" << jsonQuote(objectName) << ",";
+  os << "\"message\":" << jsonQuote(message) << ",";
+  os << "\"completedSegments\":" << completedSegments << ",";
+  os << "\"totalSegments\":" << totalSegments;
+  os << "}";
+  return os.str();
+}
+
+std::string
 StorageCapability::toJson() const
 {
   std::ostringstream os;

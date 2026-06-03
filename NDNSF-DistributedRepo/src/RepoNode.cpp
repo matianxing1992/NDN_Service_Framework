@@ -4,6 +4,7 @@
 
 #include <exception>
 #include <stdexcept>
+#include <sstream>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
@@ -111,6 +112,19 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
     });
 
   provider.addService(
+    makeRepoServiceName(m_servicePrefix, "INSERT"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleInsert(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
     makeRepoServiceName(m_servicePrefix, "STORE_MANIFEST"),
     ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
@@ -169,6 +183,19 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
             const ndn_service_framework::RequestMessage&) {
       try {
         return makeResponse(handleCapability());
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "STATUS"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleStatus(payloadOf(request)));
       }
       catch (const std::exception& e) {
         return makeError(e.what());
@@ -204,6 +231,17 @@ RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& reg
     });
 
   registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "INSERT"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleInsert(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
     makeRepoServiceName(m_servicePrefix, "STORE_MANIFEST"),
     [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
       try {
@@ -252,6 +290,17 @@ RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& reg
     [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage&) {
       try {
         return makeResponse(handleCapability());
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  registry.registerLocalService(
+    makeRepoServiceName(m_servicePrefix, "STATUS"),
+    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleStatus(payloadOf(request)));
       }
       catch (const std::exception& e) {
         return makeError(e.what());
@@ -292,10 +341,130 @@ RepoNode::registerDeploymentServices(
   }
 }
 
+void
+RepoNode::setDataReferenceFetcher(DataReferenceFetcher fetcher)
+{
+  m_dataReferenceFetcher = std::move(fetcher);
+}
+
+RepoOperationStatus
+RepoNode::insertWirePackets(const RepoDataReference& reference,
+                            const std::vector<std::vector<uint8_t>>& wirePackets)
+{
+  if (reference.objectName.empty()) {
+    throw std::invalid_argument("repo data reference objectName must not be empty");
+  }
+
+  RepoOperationStatus status;
+  status.operationId = allocateOperationId();
+  status.operation = "INSERT";
+  status.state = "STORING";
+  status.objectName = reference.objectName;
+  status.totalSegments = wirePackets.size();
+  status.message = "storing opaque Data wire packets";
+  rememberStatus(status);
+
+  try {
+    std::vector<uint8_t> concatenated;
+    uint64_t totalSize = 0;
+    for (size_t i = 0; i < wirePackets.size(); ++i) {
+      totalSize += wirePackets[i].size();
+      concatenated.insert(concatenated.end(), wirePackets[i].begin(), wirePackets[i].end());
+      m_core.put(reference.objectName + "/ndn-data/" + std::to_string(i),
+                 wirePackets[i],
+                 reference.objectType + ".wire",
+                 1,
+                 "",
+                 {});
+      status.completedSegments = i + 1;
+      rememberStatus(status);
+    }
+
+    if (reference.expectedSize != 0 && totalSize != reference.expectedSize) {
+      status.state = "FAILED";
+      status.message = "fetched wire packet size mismatch";
+      rememberStatus(status);
+      return status;
+    }
+    if (!reference.expectedSha256.empty() &&
+        sha256Hex(concatenated) != reference.expectedSha256) {
+      status.state = "FAILED";
+      status.message = "fetched wire packet sha256 mismatch";
+      rememberStatus(status);
+      return status;
+    }
+
+    RepoObjectManifest manifest;
+    manifest.objectName = reference.objectName;
+    manifest.objectType = reference.objectType;
+    manifest.sha256 = sha256Hex(concatenated);
+    manifest.size = totalSize;
+    manifest.segmentCount = static_cast<uint32_t>(wirePackets.size());
+    m_core.putManifest(manifest);
+
+    status.state = "DONE";
+    status.message = "stored app-owned segmented Data wire packets";
+    status.completedSegments = wirePackets.size();
+    status.totalSegments = wirePackets.size();
+    rememberStatus(status);
+    return status;
+  }
+  catch (const std::exception& e) {
+    status.state = "FAILED";
+    status.message = e.what();
+    rememberStatus(status);
+    return status;
+  }
+}
+
 std::vector<uint8_t>
 RepoNode::handleStore(const std::vector<uint8_t>& request)
 {
   return m_core.handleStore(request);
+}
+
+std::vector<uint8_t>
+RepoNode::handleInsert(const std::vector<uint8_t>& request)
+{
+  const auto reference = parseDataReferenceJson(toString(request));
+  if (reference.objectName.empty()) {
+    throw std::invalid_argument("repo data reference objectName must not be empty");
+  }
+  if (reference.dataPrefix.empty()) {
+    throw std::invalid_argument("repo data reference dataPrefix must not be empty");
+  }
+
+  if (m_dataReferenceFetcher) {
+    try {
+      auto wirePackets = m_dataReferenceFetcher(reference);
+      const auto storedStatus = insertWirePackets(reference, wirePackets);
+      return toBytes(storedStatus.toJson());
+    }
+    catch (const std::exception& e) {
+      RepoOperationStatus status;
+      status.operationId = allocateOperationId();
+      status.operation = "INSERT";
+      status.state = "FAILED";
+      status.objectName = reference.objectName;
+      status.message = e.what();
+      rememberStatus(status);
+      return toBytes(status.toJson());
+    }
+  }
+
+  RepoOperationStatus status;
+  status.operationId = allocateOperationId();
+  status.operation = "INSERT";
+  status.state = "FAILED";
+  status.objectName = reference.objectName;
+  status.totalSegments = reference.hasFinalSegment
+    ? (reference.finalSegment >= reference.firstSegment
+       ? reference.finalSegment - reference.firstSegment + 1
+       : 0)
+    : 0;
+  status.message = "no SegmentFetcher adapter configured";
+  rememberStatus(status);
+  return toBytes(status.toJson());
 }
 
 std::vector<uint8_t>
@@ -334,6 +503,23 @@ RepoNode::handleDelete(const std::vector<uint8_t>& request)
   return m_core.handleDelete(request);
 }
 
+std::vector<uint8_t>
+RepoNode::handleStatus(const std::vector<uint8_t>& request) const
+{
+  const auto operationId = toString(request);
+  std::lock_guard<std::mutex> guard(m_statusMutex);
+  const auto it = m_statusById.find(operationId);
+  if (it == m_statusById.end()) {
+    RepoOperationStatus status;
+    status.operationId = operationId;
+    status.operation = "UNKNOWN";
+    status.state = "UNKNOWN";
+    status.message = "repo operation status not found";
+    return toBytes(status.toJson());
+  }
+  return toBytes(it->second.toJson());
+}
+
 ndn_service_framework::ResponseMessage
 RepoNode::makeResponse(const std::vector<uint8_t>& payload) const
 {
@@ -355,6 +541,22 @@ RepoNode::makeError(const std::string& error) const
   ndn::Buffer responsePayload(payload.data(), payload.size());
   response.setPayload(responsePayload, responsePayload.size());
   return response;
+}
+
+std::string
+RepoNode::allocateOperationId()
+{
+  std::lock_guard<std::mutex> guard(m_statusMutex);
+  std::ostringstream os;
+  os << "repo-op-" << ++m_nextOperationId;
+  return os.str();
+}
+
+void
+RepoNode::rememberStatus(const RepoOperationStatus& status)
+{
+  std::lock_guard<std::mutex> guard(m_statusMutex);
+  m_statusById[status.operationId] = status;
 }
 
 } // namespace ndnsf_distributed_repo

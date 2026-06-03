@@ -37,6 +37,7 @@ from .provider import (
     InferenceHandler,
     ProviderRuntimeContext,
 )
+from .repo import repo_manifest_from_artifact_reference
 
 
 @dataclass(frozen=True)
@@ -348,6 +349,7 @@ class APPClient:
             role_manifests = self._repo_manifests_for_role(manifests, artifact.role)
             role_runtime = runtime
             if role_manifests and runtime.artifact is not None and "runner" in role_manifests:
+                runner_manifest = repo_manifest_from_artifact_reference(role_manifests["runner"])
                 role_runtime = RuntimeSpec(
                     name=runtime.name,
                     backend=runtime.backend,
@@ -359,9 +361,13 @@ class APPClient:
                         kind=runtime.artifact.kind,
                         executable=runtime.artifact.executable,
                         cache_name=runtime.artifact.cache_name,
-                        repo_manifest=role_manifests["runner"],
+                        repo_manifest=runner_manifest,
                     ),
                 )
+            model_manifest = (
+                repo_manifest_from_artifact_reference(role_manifests["model"])
+                if role_manifests and "model" in role_manifests else {}
+            )
             builder.add_part(
                 role=artifact.role,
                 model=b"" if role_manifests else artifact.path,
@@ -370,8 +376,7 @@ class APPClient:
                 kind=artifact.kind,
                 backend=artifact.backend or runtime.backend,
                 cache_name=artifact.artifact_name,
-                repo_manifest=(role_manifests.get("model", {})
-                               if role_manifests else {}),
+                repo_manifest=model_manifest,
                 runtime=role_runtime,
                 metadata=dict(artifact.metadata or {}),
                 allow_dynamic_provisioning=True,

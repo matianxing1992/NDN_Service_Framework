@@ -287,10 +287,10 @@ network-level regression because it starts per-node NFDs and routes.
 
 `yolo_2x2/` demonstrates dynamic provisioning. The controller-side deployer
 stores model shards and runtime bundles in an NDNSF-DistributedRepo node before
-inference. The user request carries repo manifest references instead of large
-model bytes. Selected providers fetch their assigned role artifacts, cache
-them locally, execute the role, and publish activation objects for dependent
-roles.
+inference. The generated repo deployment manifest carries both `repoManifest`
+and `largeDataReference` metadata for each artifact instead of large model
+bytes. Selected providers fetch their assigned role artifacts, cache them
+locally, execute the role, and publish activation objects for dependent roles.
 
 Provider logs should show:
 

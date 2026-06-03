@@ -74,7 +74,7 @@ from py_repoclient import RepoClient
 user = ServiceUser(...)
 repo = RepoClient(user, "/NDNSF/DistributedRepo")
 
-manifest = repo.store(
+manifest = repo.insert(
     object_name="/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Model/Shard/0",
     payload=b"...",
     object_type="model-shard",

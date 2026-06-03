@@ -7,6 +7,10 @@
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 
+#include <functional>
+#include <map>
+#include <mutex>
+
 namespace ndn_service_framework {
 class LocalServiceRegistry;
 } // namespace ndn_service_framework
@@ -16,6 +20,9 @@ namespace ndnsf_distributed_repo {
 class RepoNode
 {
 public:
+  using DataReferenceFetcher =
+    std::function<std::vector<std::vector<uint8_t>>(const RepoDataReference&)>;
+
   RepoNode(ndn::Name servicePrefix, StorageCapability capability);
   RepoNode(ndn::Name servicePrefix,
            StorageCapability capability,
@@ -51,7 +58,15 @@ public:
 
   bool remove(const std::string& objectName);
 
+  void setDataReferenceFetcher(DataReferenceFetcher fetcher);
+
+  RepoOperationStatus insertWirePackets(
+    const RepoDataReference& reference,
+    const std::vector<std::vector<uint8_t>>& wirePackets);
+
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
+
+  std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
 
@@ -65,14 +80,24 @@ public:
 
   std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
 
+  std::vector<uint8_t> handleStatus(const std::vector<uint8_t>& request) const;
+
 private:
   ndn_service_framework::ResponseMessage makeResponse(const std::vector<uint8_t>& payload) const;
 
   ndn_service_framework::ResponseMessage makeError(const std::string& error) const;
 
+  std::string allocateOperationId();
+
+  void rememberStatus(const RepoOperationStatus& status);
+
 private:
   ndn::Name m_servicePrefix;
   RepoCore m_core;
+  DataReferenceFetcher m_dataReferenceFetcher;
+  mutable std::mutex m_statusMutex;
+  std::map<std::string, RepoOperationStatus> m_statusById;
+  uint64_t m_nextOperationId = 0;
 };
 
 } // namespace ndnsf_distributed_repo

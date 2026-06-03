@@ -26,32 +26,64 @@ The service name is application-configurable. By default, all repo nodes share:
 /NDNSF/DistributedRepo
 ```
 
-The C++ repo node exposes operation-specific services under this prefix, for
-example `/NDNSF/DistributedRepo/STORE` and `/NDNSF/DistributedRepo/FETCH`.
-Current C++ operations include:
+The C++ repo node exposes operation-specific services under this prefix. The
+repo-level operation is `INSERT`: an application publishes signed and optionally
+encrypted NDN Data segments, and the repo stores those opaque Data packets by
+name. `STORE` and `STORE_MANIFEST` are current payload-accepting adapters used
+by existing helpers and tests. They are input conveniences: the caller may hand
+the API payload bytes, but the repo/client adapter should still name, segment,
+and sign those bytes as NDN Data and then use the same segment storage
+semantics. They are not a separate "small object" repo model. Current C++
+services include:
 
 ```text
 CAPABILITY
 STORE
+INSERT
 STORE_MANIFEST
 FETCH
 MANIFEST
 INVENTORY
+STATUS
 DELETE
 ```
 
-Python/NDNSF-DI helpers may also use higher-level operations such as
-`STORE_FROM_NDN` and `FETCH_PREPARE` for app-owned segmented Data packets.
+Python/NDNSF-DI helpers should move toward `INSERT` for app-owned segmented
+Data packets.
 
 Objects are described by `RepoObjectManifest`, which contains object name,
 object type, SHA-256, size, segment count, replication factor, selected replica
-nodes, and policy epoch. Large object transfer can use app-owned ndn-cxx
-Segmenter/SegmentFetcher Data packets, or the C++ `RepoClient` object-level
-segmented helpers. Placement and replica selection use NDNSF service discovery
-and ACK metadata. This keeps the repo generic: the payload may be a model
-shard, runner, ONNX file, PyTorch artifact, activation tensor,
+nodes, and policy epoch. The manifest is metadata that maps an application
+object name to stored Data segments and hash information; it is not a second
+payload transport. Placement and replica selection use NDNSF service discovery
+and ACK metadata. This keeps the repo generic: the stored Data may represent a
+model shard, runner, ONNX file, PyTorch artifact, activation tensor,
 payment-workflow record, telemetry log, JSON configuration, or any other NDNSF
 application object.
+
+## App-Owned Segmented Data References
+
+For large objects, the preferred NDN-native path is for the application to
+publish signed and optionally encrypted segmented Data under its own namespace.
+The repo request then carries only a `RepoDataReference`: object name, Data
+prefix, optional segment range/final segment hint, forwarding hint, expected
+size, and expected SHA-256. The repo fetches those Data packets through an
+injected SegmentFetcher adapter, stores each fetched wire packet as opaque
+bytes under `<objectName>/ndn-data/<N>`, and stores a manifest-only parent
+object.
+
+The repo does not decrypt, reinterpret, or re-authorize the application data.
+It only stores opaque Data wire packets and reports operation status:
+
+```text
+/NDNSF/DistributedRepo/INSERT
+/NDNSF/DistributedRepo/STATUS
+```
+
+`STATUS` returns a `RepoOperationStatus` with states such as `FETCHING`,
+`STORING`, `DONE`, and `FAILED`. If a standalone repo node has not configured a
+SegmentFetcher adapter yet, `INSERT` fails visibly instead of
+pretending that remote Data was fetched.
 
 The recommended Python-facing generic object API hides most NDNSF setup
 details. In a running deployment, repo nodes can preload the deployment config
@@ -149,7 +181,7 @@ the NDNSF `ServiceUser`:
 from py_repoclient import RepoClient
 
 repo = RepoClient(user, "/NDNSF/DistributedRepo")
-manifest = repo.store(
+manifest = repo.insert(
     object_name="/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/APP/Generic/BinaryBlob/demo",
     payload=payload,
     object_type="binary-blob",

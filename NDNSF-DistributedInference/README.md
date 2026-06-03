@@ -431,6 +431,17 @@ inspect or reuse the generated plan. The optional `repo_manifests` argument to
 NDNSF-DistributedRepo, not to input images or activation tensors. Inputs and
 intermediate tensors use the service payload contract plus NDNSF large-data or
 dependency-object helpers.
+Repo-backed artifacts still fetch through the manifest-aware repo path, but the
+execution spec also carries the same large-data reference metadata shape used
+by inputs and activations. New planner or executor code should consume that
+reference metadata instead of passing naked Data-name strings.
+The metadata has a `source` field: `repo-manifest` means the provider should
+use the repo manifest-aware object fetch path, while `ndn-large-data` means the
+provider can fetch the named encrypted large Data directly.
+Generated repo deployment manifest files write both fields explicitly for each
+artifact: `repoManifest` for the manifest-aware fetch path and
+`largeDataReference` for human/planner inspection of source, Data name, hash,
+and size.
 
 Provider side:
 
@@ -1221,6 +1232,11 @@ when the plan gives deterministic dependency names; otherwise handlers can keep
 using explicit `wait_one(...)` and `fetch_large_reference(...)`. New code should
 publish dependency references with the standard NDNSF large-data reference
 payload instead of placing naked Data names in collaboration messages.
+The same reference metadata is attached to repo-backed model/runtime artifacts
+inside execution specs, even though their bytes are fetched through the repo's
+manifest-aware object API.
+Provider artifact materialization now checks that reference first and then
+falls back to legacy `repoManifest`, chunk-list, or single Data-name fields.
 
 For ONNX chunks, the helper
 `execute_onnx_dependency_chunk(...)` is the preferred provider-side path. It

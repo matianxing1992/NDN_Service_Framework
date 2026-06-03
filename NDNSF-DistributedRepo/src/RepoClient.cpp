@@ -3,6 +3,8 @@
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 
+#include <ndn-cxx/util/segmenter.hpp>
+
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -114,6 +116,60 @@ RepoClient::remove(RepoNode& node, const std::string& objectName)
   return node.remove(objectName);
 }
 
+RepoOperationStatus
+RepoClient::insert(RepoNode& node,
+                   const RepoDataReference& reference)
+{
+  return parseOperationStatusJson(toString(
+    node.handleInsert(encodeDataReferenceRequest(reference))));
+}
+
+RepoOperationStatus
+RepoClient::insertPayload(RepoNode& node,
+                          const std::string& objectName,
+                          const std::vector<uint8_t>& payload,
+                          ndn::KeyChain& keyChain,
+                          const ndn::security::SigningInfo& signingInfo,
+                          StoreOptions options,
+                          size_t maxSegmentPayload)
+{
+  ndn::Segmenter segmenter(keyChain, signingInfo);
+  auto dataPackets = segmenter.segment(
+    ndn::span<const uint8_t>(payload.data(), payload.size()),
+    ndn::Name(objectName),
+    std::max<size_t>(1, maxSegmentPayload),
+    ndn::time::hours(1));
+
+  std::vector<std::vector<uint8_t>> wirePackets;
+  wirePackets.reserve(dataPackets.size());
+  std::vector<uint8_t> concatenated;
+  for (const auto& data : dataPackets) {
+    const auto wire = data->wireEncode();
+    std::vector<uint8_t> wireBytes(wire.begin(), wire.end());
+    concatenated.insert(concatenated.end(), wireBytes.begin(), wireBytes.end());
+    wirePackets.push_back(std::move(wireBytes));
+  }
+
+  RepoDataReference reference;
+  reference.objectName = objectName;
+  reference.dataPrefix = objectName;
+  reference.firstSegment = 0;
+  reference.hasFinalSegment = !wirePackets.empty();
+  reference.finalSegment = wirePackets.empty() ? 0 : wirePackets.size() - 1;
+  reference.expectedSize = concatenated.size();
+  reference.expectedSha256 = sha256Hex(concatenated);
+  reference.storeWirePackets = true;
+  reference.objectType = options.objectType.empty() ? "ndn-segmented-data" : options.objectType;
+
+  return node.insertWirePackets(reference, wirePackets);
+}
+
+RepoOperationStatus
+RepoClient::status(const RepoNode& node, const std::string& operationId)
+{
+  return parseOperationStatusJson(toString(node.handleStatus(encodeStatusRequest(operationId))));
+}
+
 RepoObjectManifest
 RepoClient::putSegmented(RepoNode& node,
                          const std::string& objectName,
@@ -216,6 +272,25 @@ RepoClient::localRemove(ndn_service_framework::LocalServiceRegistry& registry,
 {
   return toString(localRequest(registry, repoServicePrefix, "DELETE",
                                toBytes(objectName))) == "deleted";
+}
+
+RepoOperationStatus
+RepoClient::localInsert(ndn_service_framework::LocalServiceRegistry& registry,
+                                       const ndn::Name& repoServicePrefix,
+                                       const RepoDataReference& reference)
+{
+  return parseOperationStatusJson(toString(localRequest(
+    registry, repoServicePrefix, "INSERT",
+    encodeDataReferenceRequest(reference))));
+}
+
+RepoOperationStatus
+RepoClient::localStatus(ndn_service_framework::LocalServiceRegistry& registry,
+                        const ndn::Name& repoServicePrefix,
+                        const std::string& operationId)
+{
+  return parseOperationStatusJson(toString(localRequest(
+    registry, repoServicePrefix, "STATUS", encodeStatusRequest(operationId))));
 }
 
 RepoObjectManifest
@@ -342,6 +417,23 @@ RepoClient::requestStore(
 }
 
 ndn::Name
+RepoClient::requestInsert(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const RepoDataReference& reference,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(
+    makeRepoServiceName(repoServicePrefix, "INSERT"),
+    makeRequest(encodeDataReferenceRequest(reference)),
+    timeoutMs,
+    std::move(onTimeout),
+    std::move(onResponse));
+}
+
+ndn::Name
 RepoClient::requestFetch(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
@@ -399,6 +491,22 @@ RepoClient::requestDelete(
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "DELETE"),
                              makeRequest(toBytes(objectName)),
+                             timeoutMs,
+                             std::move(onTimeout),
+                             std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestStatus(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  const std::string& operationId,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(makeRepoServiceName(repoServicePrefix, "STATUS"),
+                             makeRequest(encodeStatusRequest(operationId)),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));

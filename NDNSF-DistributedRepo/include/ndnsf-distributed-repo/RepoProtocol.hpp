@@ -27,10 +27,22 @@ encodeStoreRequest(const RepoObjectManifest& manifest,
 std::vector<uint8_t>
 encodeManifestRequest(const RepoObjectManifest& manifest);
 
+std::vector<uint8_t>
+encodeDataReferenceRequest(const RepoDataReference& reference);
+
+std::vector<uint8_t>
+encodeStatusRequest(const std::string& operationId);
+
 void
 decodeStoreRequest(const std::vector<uint8_t>& request,
                    RepoObjectManifest& manifest,
                    std::vector<uint8_t>& payload);
+
+RepoDataReference
+parseDataReferenceJson(const std::string& referenceJson);
+
+RepoOperationStatus
+parseOperationStatusJson(const std::string& statusJson);
 
 RepoObjectManifest
 parseManifestJson(const std::string& manifestJson);

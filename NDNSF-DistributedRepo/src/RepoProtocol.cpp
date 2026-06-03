@@ -70,6 +70,24 @@ extractJsonUInt(const std::string& json, const std::string& key, uint64_t fallba
   return std::stoull(json.substr(valueStart, valueEnd - valueStart));
 }
 
+bool
+extractJsonBool(const std::string& json, const std::string& key, bool fallback)
+{
+  const std::string marker = "\"" + key + "\":";
+  const auto start = json.find(marker);
+  if (start == std::string::npos) {
+    return fallback;
+  }
+  const auto valueStart = start + marker.size();
+  if (json.compare(valueStart, 4, "true") == 0) {
+    return true;
+  }
+  if (json.compare(valueStart, 5, "false") == 0) {
+    return false;
+  }
+  return fallback;
+}
+
 std::vector<std::string>
 extractJsonStringArray(const std::string& json, const std::string& key)
 {
@@ -143,6 +161,18 @@ encodeManifestRequest(const RepoObjectManifest& manifest)
   return toBytes(manifest.toJson());
 }
 
+std::vector<uint8_t>
+encodeDataReferenceRequest(const RepoDataReference& reference)
+{
+  return toBytes(reference.toJson());
+}
+
+std::vector<uint8_t>
+encodeStatusRequest(const std::string& operationId)
+{
+  return toBytes(operationId);
+}
+
 void
 decodeStoreRequest(const std::vector<uint8_t>& request,
                    RepoObjectManifest& manifest,
@@ -163,6 +193,40 @@ decodeStoreRequest(const std::vector<uint8_t>& request,
     manifestSize);
   manifest = parseManifestJson(manifestJson);
   payload.assign(request.begin() + manifestStart + manifestSize, request.end());
+}
+
+RepoDataReference
+parseDataReferenceJson(const std::string& referenceJson)
+{
+  RepoDataReference reference;
+  reference.objectName = extractJsonString(referenceJson, "objectName");
+  reference.dataPrefix = extractJsonString(referenceJson, "dataPrefix");
+  reference.firstSegment = extractJsonUInt(referenceJson, "firstSegment", 0);
+  reference.finalSegment = extractJsonUInt(referenceJson, "finalSegment", 0);
+  reference.hasFinalSegment = extractJsonBool(referenceJson, "hasFinalSegment", false);
+  reference.forwardingHint = extractJsonString(referenceJson, "forwardingHint");
+  reference.expectedSha256 = extractJsonString(referenceJson, "expectedSha256");
+  reference.expectedSize = extractJsonUInt(referenceJson, "expectedSize", 0);
+  reference.storeWirePackets = extractJsonBool(referenceJson, "storeWirePackets", true);
+  reference.objectType = extractJsonString(referenceJson, "objectType");
+  if (reference.objectType.empty()) {
+    reference.objectType = "ndn-segmented-data";
+  }
+  return reference;
+}
+
+RepoOperationStatus
+parseOperationStatusJson(const std::string& statusJson)
+{
+  RepoOperationStatus status;
+  status.operationId = extractJsonString(statusJson, "operationId");
+  status.operation = extractJsonString(statusJson, "operation");
+  status.state = extractJsonString(statusJson, "state");
+  status.objectName = extractJsonString(statusJson, "objectName");
+  status.message = extractJsonString(statusJson, "message");
+  status.completedSegments = extractJsonUInt(statusJson, "completedSegments", 0);
+  status.totalSegments = extractJsonUInt(statusJson, "totalSegments", 0);
+  return status;
 }
 
 RepoObjectManifest
