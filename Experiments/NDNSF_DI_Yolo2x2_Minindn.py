@@ -29,6 +29,10 @@ PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 CONFIG = OUT / "yolo_policy.yaml"
 GEN_POLICY = "/tmp/ndnsf-di-yolo-2x2-policy"
 REPO_MANIFEST = OUT / "repo-manifests.json"
+APP_ROOT = "/NDNSF-DistributeInference/example"
+CONTROLLER_IDENTITY = APP_ROOT + "/controller"
+USER_IDENTITY = APP_ROOT + "/user"
+PROVIDER_PREFIX = APP_ROOT + "/provider"
 
 
 class Args(SimpleNamespace):
@@ -76,6 +80,59 @@ def stop(procs):
             except Exception:
                 p.kill()
         f.close()
+
+
+def initialize_di_keychains(ndn, output_dir: Path) -> None:
+    """Install root-signed keys that match the generated DI policy namespace."""
+    log("Installing root-signed DI keychain material on MiniNDN nodes")
+    security_dir = output_dir / "security"
+    security_dir.mkdir(parents=True, exist_ok=True)
+    identities = [
+        CONTROLLER_IDENTITY,
+        PROVIDER_PREFIX,
+        PROVIDER_PREFIX + "/A",
+        PROVIDER_PREFIX + "/B",
+        PROVIDER_PREFIX + "/C",
+        PROVIDER_PREFIX + "/D",
+        PROVIDER_PREFIX + "/E",
+        USER_IDENTITY,
+    ]
+
+    for node in ndn.net.hosts:
+        for identity in [APP_ROOT] + identities:
+            perf.node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
+                perf.shell_quote(identity)))
+
+    controller = ndn.net["csu"]
+    root_cert_path = security_dir / "root.cert"
+    perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
+        perf.shell_quote(APP_ROOT), perf.shell_quote(root_cert_path)))
+    perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+        perf.shell_quote(root_cert_path)))
+    log("di_root_cert identity={} name={} file={}".format(
+        APP_ROOT, perf.certificate_name_from_file(root_cert_path), root_cert_path))
+
+    exported_keys = []
+    for index, identity in enumerate(identities):
+        cert_path = security_dir / f"di-identity-{index}.cert"
+        req_path = security_dir / f"di-identity-{index}.req"
+        key_path = security_dir / f"di-identity-{index}.ndnkey"
+        perf.node_cmd(controller, "ndnsec key-gen -n -t r {} > {}".format(
+            perf.shell_quote(identity), perf.shell_quote(req_path)))
+        perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
+            perf.shell_quote(APP_ROOT), perf.shell_quote(req_path), perf.shell_quote(cert_path)))
+        perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+            perf.shell_quote(cert_path)))
+        perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -i {}".format(
+            perf.shell_quote(key_path), perf.shell_quote(identity)))
+        exported_keys.append(key_path)
+
+    for node in ndn.net.hosts:
+        perf.node_cmd(node, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+            perf.shell_quote(root_cert_path)))
+        for key_path in exported_keys:
+            perf.node_cmd(node, "ndnsec import -P 123456 {} >/dev/null 2>&1 || true".format(
+                perf.shell_quote(key_path)))
 
 
 def main() -> None:
@@ -159,7 +216,7 @@ def main() -> None:
             Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
 
-        perf.initialize_example_keychains(ndn, args, OUT)
+        initialize_di_keychains(ndn, OUT)
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)

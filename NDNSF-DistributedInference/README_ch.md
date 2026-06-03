@@ -219,6 +219,60 @@ python3 -m ndnsf_distributed_inference.policy \
   --explain
 ```
 
+## 图形化部署工具
+
+对于不熟悉 YAML、NDN name 和证书命令的用户，NDNSF-DI 还提供一个轻量级
+Python GUI：
+
+```bash
+PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
+python3 Experiments/NDNSF_DI_GUI.py
+```
+
+第一版使用 Python 标准库里的 `tkinter`，因此普通 Ubuntu 桌面不需要额外引入
+Qt 依赖。它提供：
+
+```text
+Service Project Wizard
+  导入 ONNX、PyTorch 或已有 policy 文件，选择 service/controller/group/user
+  名字，选择 provider identities 和 roles，并生成 policy skeleton。
+
+Policy Editor
+  加载和编辑 YAML，浏览 users/providers/services，保存前运行 policy
+  validation，并显示与 ndnsf-di-policy --explain 相同的 summary。
+
+Model Split
+  导入 ONNX 模型，显示 graph summary 和 candidate split points，并把推荐
+  split 写入两段式 policy skeleton。
+
+Certificate / Identity Manager
+  调用 ndnsec list，显示本机 identities/certificates，选择
+  runtime.user_identity，生成 key request，并导入 safebag。GUI 不直接随意
+  签发证书；证书签名仍应遵循 deployment trust process。
+
+Controller / User / Provider certificate tools
+  各个 role tab 也包含部署证书流程。User 或 Provider tab 可以在本机生成自己的
+  private key 和 key request，然后把 request 文本复制到 Controller tab。如果当前
+  节点是 root/controller 节点，Controller tab 可以生成 root certificate，并对粘贴
+  进来的 request 或 request file 进行签名。签好的 certificate 再复制回 User 或
+  Provider tab，通过 ndnsec cert-install 安装。这样 private key 始终留在申请节点，
+  只有 certificate request 交给 root/controller 签名。
+
+Deployment Runner
+  启动 example controller/provider/user，显示 logs，并运行统一 DI regression
+  runner。默认 YOLO 2x2 regression 会启动 MiniNDN，执行分布式推理，并检查
+  YOLO_2X2_RESULT ... ok=true。auto-split 两段式 regression 也作为可选 case
+  保留。
+```
+
+同一个 GUI 里也有独立的 `Controller`、`User` 和 `Provider` tabs。真实节点可以
+同时启用任意组合：例如一台桌面机器可以同时运行 controller 和 user，另一台 worker
+节点运行一个或多个 provider roles。这些 tabs 从同一个 policy 文件配置和启动
+APP-level role process，并把日志发送到 Deployment Runner pane。
+
+这个 GUI 只封装现有 APP-level APIs 和 `ndnsf-di-policy` validation path。
+它不引入新的 policy format，也不改变 NDNSF 的 authorization 机制。
+
 ## Application-Level API
 
 推荐应用开发者使用 `APPClient`、`APPProvider`、`APPController` 和 `APPDeployment`。这些名字隐藏了 Face、SVS、trust schema files、permission Interests 和 artifact Data names 等 NDN-specific concepts。APP developer 只需要描述：
