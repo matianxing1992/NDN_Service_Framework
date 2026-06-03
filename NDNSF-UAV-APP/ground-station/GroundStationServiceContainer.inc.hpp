@@ -2642,6 +2642,14 @@ private:
   {
     using ServiceInvocationMode = ndn_service_framework::ServiceProvider::ServiceInvocationMode;
 
+    m_coreContainer.localRegistry().registerLocalService(
+      m_config.serviceGsObjectDetection,
+      [this](const ndn::Name&,
+             const ndn::Name&,
+             const ndn_service_framework::RequestMessage& request) {
+        return runObjectDetectionLocal(request);
+      });
+
     m_objectDetectionProvider->addService(
       m_config.serviceGsObjectDetection,
       ndn_service_framework::ServiceProvider::AckStrategyHandler(
@@ -2657,33 +2665,40 @@ private:
         }),
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
         [this](const ndn_service_framework::RequestMessage& request) {
-          const auto payload = request.getPayload();
-          const auto fields = decodeFields(std::string(
-            reinterpret_cast<const char*>(payload.data()), payload.size()));
-          const auto frameId = fieldOr(fields, "frame_id", "live-frame");
-          const auto frameSeq = std::stoull(fieldOr(fields, "frame_seq", "0"));
-          auto detection = runYoloDetection(frameId);
-          const bool ok = fieldOr(detection, "ok", "false") == "true";
-          const bool car = fieldOr(detection, "car", "false") == "true";
-          const bool truck = fieldOr(detection, "truck", "false") == "true";
-          const auto objects = fieldOr(detection, "objects", "none");
-          return makeResponse(true, encodeFields({
-            {"frame_id", frameId},
-            {"frame_seq", std::to_string(frameSeq)},
-            {"objects", objects},
-            {"car", car ? "true" : "false"},
-            {"truck", truck ? "true" : "false"},
-            {"detector_ok", ok ? "true" : "false"},
-            {"car_count", fieldOr(detection, "car_count", "0")},
-            {"truck_count", fieldOr(detection, "truck_count", "0")},
-            {"car_conf", fieldOr(detection, "car_conf", "0")},
-            {"truck_conf", fieldOr(detection, "truck_conf", "0")},
-            {"model", fieldOr(detection, "model", m_yoloModel)},
-            {"summary", ok ? (objects == "none" ? "no target vehicle" : "detected " + objects)
-                           : fieldOr(detection, "error", "detector failed")},
-          }));
+          return m_coreContainer.localRegistry().localInvokeRaw(
+            m_config.serviceGsObjectDetection, request, m_config.groundStationIdentity);
         }),
       ServiceInvocationMode::NormalOnly);
+  }
+
+  ndn_service_framework::ResponseMessage
+  runObjectDetectionLocal(const ndn_service_framework::RequestMessage& request)
+  {
+    const auto payload = request.getPayload();
+    const auto fields = decodeFields(std::string(
+      reinterpret_cast<const char*>(payload.data()), payload.size()));
+    const auto frameId = fieldOr(fields, "frame_id", "live-frame");
+    const auto frameSeq = std::stoull(fieldOr(fields, "frame_seq", "0"));
+    auto detection = runYoloDetection(frameId);
+    const bool ok = fieldOr(detection, "ok", "false") == "true";
+    const bool car = fieldOr(detection, "car", "false") == "true";
+    const bool truck = fieldOr(detection, "truck", "false") == "true";
+    const auto objects = fieldOr(detection, "objects", "none");
+    return makeResponse(true, encodeFields({
+      {"frame_id", frameId},
+      {"frame_seq", std::to_string(frameSeq)},
+      {"objects", objects},
+      {"car", car ? "true" : "false"},
+      {"truck", truck ? "true" : "false"},
+      {"detector_ok", ok ? "true" : "false"},
+      {"car_count", fieldOr(detection, "car_count", "0")},
+      {"truck_count", fieldOr(detection, "truck_count", "0")},
+      {"car_conf", fieldOr(detection, "car_conf", "0")},
+      {"truck_conf", fieldOr(detection, "truck_conf", "0")},
+      {"model", fieldOr(detection, "model", m_yoloModel)},
+      {"summary", ok ? (objects == "none" ? "no target vehicle" : "detected " + objects)
+                     : fieldOr(detection, "error", "detector failed")},
+    }));
   }
 
   bool
