@@ -90,6 +90,14 @@ UavGroundStationApp
 本地 GUI 状态、硬件 adapter 和进程生命周期，但不应该把它们的服务名和权限合并成一个单体 RPC
 endpoint。
 
+当前 container 边界遵循一个简单规则。跨节点控制和数据发现始终使用 NDNSF remote 或
+Targeted invocation，包括 MAVLink command、video-control request、telemetry polling、
+mission assignment、recording manifest discovery，以及 drone 反向调用 GS object detection。
+同进程 helper composition 则使用 core `ServiceContainer.localRegistry()` 路径。当前已经用于
+GS object-detection execution、Drone camera-status 读取和 Drone recording-manifest 组装等 helper。
+这些 local helper 是可信进程内部函数；它们不会创建新的 wire protocol mode，也不能被远程 caller
+选择。
+
 ## 一台 PC 和多架无人机的实机部署
 
 这一节面向私有部署：一台 PC 作为 ground station 和 controller，每架物理无人机运行一个
