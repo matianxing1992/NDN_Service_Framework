@@ -33,10 +33,14 @@ case "$arch" in
   *) target_arch="$arch" ;;
 esac
 
-version="${NDNSF_UAV_RELEASE_VERSION:-local-test}"
-result_link="$output_dir/NDNSF-UAV-nixos-$target_arch-$version-result"
-paths_file="$output_dir/NDNSF-UAV-nixos-$target_arch-$version.paths"
-closure="$output_dir/NDNSF-UAV-nixos-$target_arch-$version.closure"
+version="${NDNSF_UAV_RELEASE_VERSION:-}"
+release_stem="NDNSF-UAV-nixos-$target_arch"
+if [[ -n "$version" ]]; then
+  release_stem="$release_stem-$version"
+fi
+result_link="$output_dir/$release_stem-result"
+paths_file="$output_dir/$release_stem.paths"
+closure="$output_dir/$release_stem.closure"
 closure_gz="$closure.gz"
 
 nix-build "$repo_root/packaging/uav-release/nixos-binary/default.nix" \

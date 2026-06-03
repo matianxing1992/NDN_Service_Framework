@@ -562,6 +562,7 @@ public:
     }
     m_videoStartInFlight = false;
     m_streaming = false;
+    m_activeStreamId.clear();
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
@@ -949,20 +950,40 @@ public:
                    << " " << selectedAction.statusLine()
                    << " " << summary.statusLine()
                    << " row=" << row.rowText);
+      return readiness.value_or(ReadinessState{});
     };
 
     int sampleIndex = 0;
-    sample("initial", sampleIndex++);
-    if (std::chrono::steady_clock::now() >= deadline) {
+    auto sampledReadiness = sample("initial", sampleIndex++);
+    bool readyForArm = sampledReadiness.readyForArm();
+    while (!readyForArm && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      sampledReadiness = sample("wait-ready", sampleIndex++);
+      readyForArm = sampledReadiness.readyForArm();
+    }
+    if (!readyForArm || std::chrono::steady_clock::now() >= deadline) {
+      NDN_LOG_INFO("TELEMETRY_LIVE_RESULT ok=false reason=not-ready-for-arm");
       return false;
     }
     const bool armOk = sendMavlinkCommandToDroneSync(
       droneId, "arm", {{"arm", "true"}}, commandTimeout);
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-    sample("armed", sampleIndex++);
+    sampledReadiness = sample("armed", sampleIndex++);
+    bool readyForTakeoff = sampledReadiness.readyForTakeoff();
+    while (armOk && !readyForTakeoff && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      sampledReadiness = sample("wait-armed", sampleIndex++);
+      readyForTakeoff = sampledReadiness.readyForTakeoff();
+    }
 
-    const bool takeoffOk = sendMavlinkCommandToDroneSync(
-      droneId, "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}}, commandTimeout);
+    bool takeoffOk = false;
+    if (readyForTakeoff) {
+      takeoffOk = sendMavlinkCommandToDroneSync(
+        droneId, "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}}, commandTimeout);
+    }
+    else {
+      NDN_LOG_INFO("TELEMETRY_LIVE_RESULT ok=false reason=not-ready-for-takeoff");
+    }
     for (int i = 0; i < 4 && std::chrono::steady_clock::now() < deadline; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1200));
       sample("takeoff", sampleIndex++);
@@ -2200,6 +2221,7 @@ private:
                   updateVideoState(droneId, fields);
                   m_videoBitrateKbps = requestedBitrateKbps;
                   m_streamPrefix = ndn::Name(prefix);
+                  m_activeStreamId = fieldOr(fields, "stream_id", "");
                   {
                     std::lock_guard<std::mutex> guard(m_videoStateMutex);
                     m_activeVideoDroneId = droneId;
@@ -2303,6 +2325,7 @@ private:
     m_videoBitrateChangeToKbps = requestedBitrateKbps;
     m_videoBitrateChangePending = true;
     m_streaming = false;
+    m_activeStreamId.clear();
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
@@ -2405,6 +2428,9 @@ private:
                       m_activeVideoDroneId.clear();
                     }
                   }
+                  if (activeVideoDroneId().empty()) {
+                    m_activeStreamId.clear();
+                  }
                   publishStatus("Video stopped drone=" + droneId + ", packets=" +
                                 fieldOr(fields, "stream_packets_published",
                                         fieldOr(fields, "frames_published", "0")) +
@@ -2471,6 +2497,7 @@ private:
     }
 
     m_streaming = false;
+    m_activeStreamId.clear();
     m_videoPumpScheduled = false;
     boost::system::error_code ec;
     m_videoPumpTimer.cancel(ec);
@@ -3267,6 +3294,15 @@ private:
         std::vector<uint8_t> bytes(content.value(), content.value() + content.value_size());
           try {
             const auto packet = decodeVideoPacket(bytes);
+            if (!m_activeStreamId.empty() && !packet.streamId.empty() &&
+                packet.streamId != m_activeStreamId) {
+              NDN_LOG_WARN("GS_VIDEO_STALE_STREAM_PACKET expected=" << m_activeStreamId
+                           << " got=" << packet.streamId
+                           << " packetSeq=" << packet.packetSeq
+                           << " requestedSeq=" << packetSeq);
+              requestVideoPackets();
+              return;
+            }
             if (!markVideoPacketCompleted(packet.packetSeq)) {
               recordVideoDuplicatePacket();
               const auto duplicateCount = ++m_duplicateVideoPackets;
@@ -4034,7 +4070,7 @@ private:
         publishVideoAdaptiveState("decoded");
       }
       if (m_frameCallback) {
-        m_frameCallback(std::move(frame), m_lastOutputChunkSeq, m_lastOutputChunkElapsedMs);
+        m_frameCallback(std::move(frame), decoded, m_lastOutputChunkElapsedMs);
       }
     }
   }
@@ -4216,6 +4252,7 @@ private:
   std::map<std::string, FlightCommandState> m_commandByDrone;
   std::map<std::string, SafetyState> m_safetyByDrone;
   ndn::Name m_streamPrefix;
+  std::string m_activeStreamId;
   PacketLane m_keyLane;
   PacketLane m_deltaLane;
   uint64_t m_keyPacketsPerSecond = 16;

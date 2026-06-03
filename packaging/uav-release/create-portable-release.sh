@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-version="${NDNSF_UAV_RELEASE_VERSION:-$(date +%Y%m%d_%H%M%S)}"
+version="${NDNSF_UAV_RELEASE_VERSION:-}"
 output_dir="${1:-$repo_root/RELEASE}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
@@ -25,7 +25,10 @@ detect_release_target() {
 }
 
 release_target="${NDNSF_UAV_RELEASE_TARGET:-$(detect_release_target)}"
-release_name="NDNSF-UAV-$release_target-$version"
+release_name="NDNSF-UAV-$release_target"
+if [[ -n "$version" ]]; then
+  release_name="$release_name-$version"
+fi
 stage="$output_dir/$release_name"
 
 include_system_libs="${NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS:-0}"
@@ -37,7 +40,9 @@ Usage: $0 [output-dir]
 Build a portable NDNSF-UAV release directory and tarball for the current host.
 
 Environment:
-  NDNSF_UAV_RELEASE_VERSION=<name>          Override release suffix.
+  NDNSF_UAV_RELEASE_VERSION=<name>          Optional release suffix, for example
+                                            v0.1.0. Omit for the plain target
+                                            name such as NDNSF-UAV-ubuntu20-x86_64.
   NDNSF_UAV_RELEASE_TARGET=<target>         Override target label, for example
                                             ubuntu20-x86_64 or debian12-aarch64.
   NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1   Also bundle most ldd-discovered

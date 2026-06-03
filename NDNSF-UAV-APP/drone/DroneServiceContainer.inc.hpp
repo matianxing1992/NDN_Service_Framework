@@ -1491,7 +1491,10 @@ public:
   bool
   cameraAvailable() const
   {
-    return !m_videoPath.empty() && access(m_videoPath.c_str(), F_OK) == 0;
+    if (m_videoPath.empty() || access(m_videoPath.c_str(), F_OK) != 0) {
+      return false;
+    }
+    return !isVideoDevice(m_videoPath) || m_cameraCaptureUsable.load();
   }
 
   std::string
@@ -1508,6 +1511,9 @@ public:
     }
     if (access(m_videoPath.c_str(), F_OK) != 0) {
       return "source-unavailable";
+    }
+    if (isVideoDevice(m_videoPath) && !m_cameraCaptureUsable.load()) {
+      return "capture-probe-failed";
     }
     if (!isCapturing()) {
       return "capture-off";
@@ -2049,6 +2055,7 @@ private:
 
     for (uint64_t i = 0; i < dataShardCount; ++i) {
       VideoPacket packet;
+      packet.streamId = m_streamId;
       packet.second = second;
       packet.packetSeq = firstPacketSeq + i;
       packet.frameSeq = frameSeq;
@@ -2075,6 +2082,7 @@ private:
     for (uint64_t i = 0; i < m_fecParityShards; ++i) {
       const auto symbolIndex = dataShardCount + i;
       VideoPacket packet;
+      packet.streamId = m_streamId;
       packet.second = second;
       packet.packetSeq = firstPacketSeq + symbolIndex;
       packet.frameSeq = frameSeq;
@@ -2134,6 +2142,14 @@ private:
         std::string inputArgs;
         if (isVideoDevice(m_videoPath)) {
           const auto v4l2Input = resolveV4l2Input(m_videoPath, m_cameraOptions);
+          if (!v4l2Input.usable) {
+            m_cameraCaptureUsable = false;
+            NDN_LOG_WARN("V4L2_CAMERA_UNUSABLE path=" << m_videoPath
+                         << " failures=" << m_cameraProbeFailures.fetch_add(1) + 1);
+            std::this_thread::sleep_for(1s);
+            continue;
+          }
+          m_cameraCaptureUsable = true;
           inputArgs = " -thread_queue_size 512 -f v4l2";
           if (!v4l2Input.format.empty()) {
             inputArgs += " -input_format " + shellQuote(v4l2Input.format);
@@ -2206,6 +2222,7 @@ private:
     std::string format;
     std::string size;
     uint64_t fps = 0;
+    bool usable = true;
   };
 
   static std::string
@@ -2307,6 +2324,7 @@ private:
     if (fd < 0) {
       NDN_LOG_WARN("V4L2_CAMERA_PROBE_FAILED path=" << path
                    << " reason=open errno=" << errno);
+      selection.usable = false;
       return selection;
     }
 
@@ -2365,6 +2383,7 @@ private:
 
     if (candidates.empty()) {
       NDN_LOG_WARN("V4L2_CAMERA_PROBE_EMPTY path=" << path);
+      selection.usable = false;
       return selection;
     }
 
@@ -2411,6 +2430,8 @@ private:
   bool m_recordingFilterRegistered = false;
   std::atomic<bool> m_streaming{false};
   std::atomic<bool> m_captureEnabled{false};
+  std::atomic<bool> m_cameraCaptureUsable{true};
+  std::atomic<uint64_t> m_cameraProbeFailures{0};
   std::atomic<bool> m_done{false};
   std::atomic<uint64_t> m_nextSeq{0};
   std::atomic<uint64_t> m_nextPacketSeq{0};

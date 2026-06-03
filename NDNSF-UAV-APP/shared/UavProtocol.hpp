@@ -13,6 +13,7 @@ using Fields = std::map<std::string, std::string>;
 
 struct VideoPacket
 {
+  std::string streamId;
   uint64_t second = 0;
   uint64_t packetSeq = 0;
   uint64_t frameSeq = 0;

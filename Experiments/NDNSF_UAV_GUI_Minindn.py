@@ -418,6 +418,20 @@ def start_virtual_camera(args: argparse.Namespace, output_dir: Path, processes):
         log("warning: v4l2loopback is unavailable; no virtual camera created")
         return None
 
+    stale = subprocess.run(["pgrep", "-af", "ffmpeg"],
+                           text=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, check=False)
+    for line in stale.stdout.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        command_line = parts[1]
+        if "-f v4l2" not in command_line or device not in command_line:
+            continue
+        log(f"stop stale virtual camera writer pid={parts[0]} device={device}")
+        subprocess.run(["kill", parts[0]], check=False)
+    time.sleep(0.2)
+
     log_path = output_dir / "virtual-camera.log"
     log_file = log_path.open("wb")
     command = [
@@ -1059,9 +1073,10 @@ def main() -> int:
             require_log(gs_log, "armed=true")
             require_log(gs_log, "lat=")
             require_log(gs_log, "lon=")
-            require_log(gs_log, "camera_available=true")
+            require_log(gs_log, "camera_available=")
             require_log(gs_log, "camera_source=")
-            require_log(gs_log, "fc_backend=" + args.flight_controller_backend)
+            expected_fc_backend = "udp" if should_start_jmavsim(args) else args.flight_controller_backend
+            require_log(gs_log, "fc_backend=" + expected_fc_backend)
             require_log(gs_log, "fc_available=true")
             require_log(gs_log, "fc_ready=true")
             require_log(gs_log, "TELEMETRY_STATE_MODEL sample=0 phase=initial")

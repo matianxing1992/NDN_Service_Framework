@@ -19,7 +19,6 @@ public:
                       std::vector<std::string> droneIds)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
-    , m_buttons(Gtk::ORIENTATION_HORIZONTAL, 8)
     , m_patrolControls(Gtk::ORIENTATION_HORIZONTAL, 6)
     , m_workspace(Gtk::ORIENTATION_HORIZONTAL, 10)
     , m_vehicleFrame("Vehicles")
@@ -36,17 +35,17 @@ public:
     , m_statusPanel(Gtk::ORIENTATION_VERTICAL, 6)
     , m_start("Start Video")
     , m_stop("Stop Video")
-    , m_applyBitrate("Apply Bitrate")
+    , m_applyBitrate("Bitrate")
     , m_arm("Arm")
     , m_takeoff("Takeoff")
     , m_land("Land")
-    , m_emergencyStop("Emergency Stop")
-    , m_patrol("Upload Patrol Mission")
+    , m_emergencyStop("E-Stop")
+    , m_patrol("Upload Mission")
     , m_startMission("Start Mission")
     , m_stopPatrol("Stop Patrol")
-    , m_controlToggle("Start Control")
-    , m_refreshRecording("Find Recordings")
-    , m_playRecording("Play Recording")
+    , m_controlToggle("Control")
+    , m_refreshRecording("Find Rec.")
+    , m_playRecording("Play Rec.")
     , m_mapZoomIn("+")
     , m_mapZoomOut("-")
     , m_mapCenterGs("Center GS")
@@ -88,7 +87,7 @@ public:
     , m_droneIds(std::move(droneIds))
   {
     set_title("NDNSF UAV Ground Station");
-    set_default_size(1180, 740);
+    set_default_size(1600, 800);
     set_border_width(12);
     set_can_focus(true);
     if (m_droneIds.empty()) {
@@ -98,31 +97,30 @@ public:
     m_status.set_text("Video stopped");
     m_stats.set_text("Frames: 0");
     m_linkStatus.set_text("Link RTT: waiting");
-    m_mapMission.set_text("Map / mission workspace\n\n"
-                          "GS center: University of Memphis\n"
-                          "Selected drone: " + m_runtime.targetDroneId() + "\n"
-                          "Markers: GS, drone A/B, and mission waypoints\n"
-                          "Click to append WP1/WP2/..., drag to pan, Center GS to return.\n"
-                          "Upload Patrol Mission sends the route; arm/takeoff/mission mode makes PX4 fly it.");
+    m_mapMission.set_text(mapWorkspaceStatusText("ready", m_runtime.targetDroneId(),
+                                                 "click-map-to-add-waypoint"));
     m_services.set_text(m_runtime.serviceCatalogForDrone(m_runtime.targetDroneId()));
     m_telemetry.set_text("Telemetry: waiting for flight-controller response");
     m_stop.set_sensitive(false);
     m_startMission.set_sensitive(false);
     m_stopPatrol.set_sensitive(false);
 
-    m_buttons.pack_start(m_start, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_stop, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_applyBitrate, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_arm, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_takeoff, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_land, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_emergencyStop, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_patrol, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_startMission, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_stopPatrol, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_controlToggle, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_refreshRecording, Gtk::PACK_SHRINK);
-    m_buttons.pack_start(m_playRecording, Gtk::PACK_SHRINK);
+    m_buttons.set_selection_mode(Gtk::SELECTION_NONE);
+    m_buttons.set_row_spacing(6);
+    m_buttons.set_column_spacing(6);
+    m_buttons.set_homogeneous(false);
+    m_buttons.set_min_children_per_line(2);
+    m_buttons.set_max_children_per_line(7);
+    m_buttons.set_hexpand(true);
+    for (auto* button : {&m_start, &m_stop, &m_applyBitrate, &m_arm, &m_takeoff,
+                         &m_land, &m_emergencyStop, &m_patrol, &m_startMission,
+                         &m_stopPatrol, &m_controlToggle, &m_refreshRecording,
+                         &m_playRecording}) {
+      button->set_size_request(104, -1);
+      button->set_hexpand(false);
+      button->set_halign(Gtk::ALIGN_START);
+      m_buttons.insert(*button, -1);
+    }
     m_box.pack_start(m_buttons, Gtk::PACK_SHRINK);
 
     m_patrolHint.set_text("Patrol center / size");
@@ -138,8 +136,14 @@ public:
     m_patrolControls.pack_start(m_patrolSizeMeters, Gtk::PACK_SHRINK);
     m_box.pack_start(m_patrolControls, Gtk::PACK_SHRINK);
 
+    m_workspace.set_size_request(-1, 600);
+    m_workspace.set_vexpand(false);
+
     m_vehiclePanel.set_border_width(8);
     m_vehicleHint.set_text("Connected / expected drones");
+    m_vehicleHint.set_size_request(236, -1);
+    m_vehicleHint.set_line_wrap(true);
+    m_vehicleHint.set_line_wrap_mode(Pango::WRAP_WORD_CHAR);
     m_vehiclePanel.pack_start(m_vehicleHint, Gtk::PACK_SHRINK);
     for (size_t i = 0; i < m_droneIds.size(); ++i) {
       const auto selected = i == 0;
@@ -147,6 +151,12 @@ public:
         std::string(selected ? "● " : "○ ") + "Drone " + m_droneIds[i] +
         (selected ? "  active" : "  standby")));
       rowLabel->set_xalign(0.0F);
+      rowLabel->set_size_request(236, -1);
+      rowLabel->set_width_chars(28);
+      rowLabel->set_max_width_chars(28);
+      rowLabel->set_line_wrap(true);
+      rowLabel->set_line_wrap_mode(Pango::WRAP_WORD_CHAR);
+      rowLabel->set_ellipsize(Pango::ELLIPSIZE_NONE);
       m_vehicleList.append(*rowLabel);
     }
     m_vehicleList.signal_row_selected().connect([this](Gtk::ListBoxRow* row) {
@@ -169,6 +179,11 @@ public:
 
     m_centerPanel.set_border_width(8);
     m_mapMission.set_xalign(0.0F);
+    m_mapMission.set_size_request(300, -1);
+    m_mapMission.set_width_chars(36);
+    m_mapMission.set_max_width_chars(36);
+    m_mapMission.set_line_wrap(true);
+    m_mapMission.set_line_wrap_mode(Pango::WRAP_WORD_CHAR);
     m_mapZoomIn.set_tooltip_text("Zoom in");
     m_mapZoomOut.set_tooltip_text("Zoom out");
     m_mapCenterGs.set_tooltip_text("Return map view to the ground station");
@@ -180,6 +195,9 @@ public:
     m_mapControls.pack_start(m_mapUndoWp, Gtk::PACK_SHRINK);
     m_mapControls.pack_start(m_mapClearWp, Gtk::PACK_SHRINK);
     m_mapPanel.set_border_width(6);
+    m_mapFrame.set_size_request(320, 580);
+    m_mapFrame.set_hexpand(false);
+    m_mapPanel.set_size_request(312, -1);
     m_mapPanel.pack_start(m_mapControls, Gtk::PACK_SHRINK);
     m_mapImage.set_size_request(256, 256);
     m_mapEventBox.set_size_request(256, 256);
@@ -235,41 +253,70 @@ public:
     m_mapFrame.add(m_mapPanel);
     m_flyContent.pack_start(m_mapFrame, Gtk::PACK_SHRINK);
     m_videoPanel.set_border_width(6);
-    m_image.set_size_request(420, 260);
+    m_videoFrame.set_size_request(560, 360);
+    m_videoFrame.set_hexpand(false);
+    m_videoFrame.set_vexpand(false);
+    m_image.set_size_request(520, 300);
     m_image.set_halign(Gtk::ALIGN_CENTER);
     m_image.set_valign(Gtk::ALIGN_CENTER);
-    m_videoPanel.pack_start(m_image, Gtk::PACK_EXPAND_WIDGET);
+    m_videoPanel.pack_start(m_image, Gtk::PACK_SHRINK);
+    m_stats.set_size_request(520, -1);
+    m_stats.set_width_chars(60);
+    m_stats.set_max_width_chars(60);
+    m_stats.set_line_wrap(true);
+    m_stats.set_line_wrap_mode(Pango::WRAP_WORD_CHAR);
     m_videoPanel.pack_start(m_stats, Gtk::PACK_SHRINK);
     m_videoFrame.add(m_videoPanel);
-    m_flyContent.pack_start(m_videoFrame, Gtk::PACK_EXPAND_WIDGET);
-    m_centerPanel.pack_start(m_flyContent, Gtk::PACK_EXPAND_WIDGET);
+    m_flyContent.pack_start(m_videoFrame, Gtk::PACK_SHRINK);
+    m_centerPanel.pack_start(m_flyContent, Gtk::PACK_SHRINK);
     m_centerFrame.add(m_centerPanel);
-    m_workspace.pack_start(m_centerFrame, Gtk::PACK_EXPAND_WIDGET);
+    m_centerFrame.set_size_request(920, 600);
+    m_centerFrame.set_hexpand(false);
+    m_workspace.pack_start(m_centerFrame, Gtk::PACK_SHRINK);
 
     m_statusPanel.set_border_width(8);
     m_vehicleFrame.set_size_request(260, -1);
     m_vehicleFrame.set_hexpand(false);
-    m_statusFrame.set_size_request(260, -1);
+    m_vehicleList.set_size_request(240, -1);
+    m_statusFrame.set_size_request(300, -1);
     m_statusFrame.set_hexpand(false);
     m_status.set_xalign(0.0F);
     m_stats.set_xalign(0.0F);
     m_services.set_xalign(0.0F);
     m_telemetry.set_xalign(0.0F);
     m_linkStatus.set_xalign(0.0F);
-    for (auto* label : {&m_status, &m_linkStatus, &m_services, &m_telemetry}) {
-      label->set_size_request(232, -1);
-      label->set_width_chars(28);
-      label->set_max_width_chars(28);
+    for (auto* label : {&m_status, &m_linkStatus, &m_services, &m_telemetry,
+                         &m_flightInspector, &m_cameraInspector, &m_videoInspector,
+                         &m_telemetryInspector, &m_missionInspector}) {
+      label->set_size_request(264, -1);
+      label->set_width_chars(32);
+      label->set_max_width_chars(32);
       label->set_line_wrap(true);
       label->set_line_wrap_mode(Pango::WRAP_WORD_CHAR);
       label->set_ellipsize(Pango::ELLIPSIZE_NONE);
+      label->set_selectable(true);
     }
-    m_statusPanel.pack_start(m_status, Gtk::PACK_SHRINK);
-    m_statusPanel.pack_start(m_linkStatus, Gtk::PACK_SHRINK);
-    m_statusPanel.pack_start(m_services, Gtk::PACK_SHRINK);
-    m_statusPanel.pack_start(m_telemetry, Gtk::PACK_SHRINK);
-    m_statusFrame.add(m_statusPanel);
+    auto addInspectorSection = [this](Gtk::Frame& frame, Gtk::Label& label,
+                                      const std::string& title) {
+      frame.set_label(title);
+      frame.set_shadow_type(Gtk::SHADOW_ETCHED_IN);
+      frame.add(label);
+      m_statusPanel.pack_start(frame, Gtk::PACK_SHRINK);
+    };
+    addInspectorSection(m_flightInspectorFrame, m_flightInspector, "Flight Controller");
+    addInspectorSection(m_telemetryInspectorFrame, m_telemetryInspector, "Telemetry");
+    addInspectorSection(m_cameraInspectorFrame, m_cameraInspector, "Camera");
+    addInspectorSection(m_videoInspectorFrame, m_videoInspector, "Video");
+    addInspectorSection(m_missionInspectorFrame, m_missionInspector, "Mission / Safety");
+    addInspectorSection(m_serviceInspectorFrame, m_services, "Services / Link");
+    addInspectorSection(m_eventInspectorFrame, m_status, "Events");
+    m_statusScroll.set_policy(Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
+    m_statusScroll.set_size_request(286, 540);
+    m_statusScroll.set_min_content_height(540);
+    m_statusScroll.add(m_statusPanel);
+    m_statusFrame.add(m_statusScroll);
     m_workspace.pack_start(m_statusFrame, Gtk::PACK_SHRINK);
+    updateInspectorPanel();
 
     m_gamepadDevicePath = findJoystickDevice();
     m_gamepadAvailable = !m_gamepadDevicePath.empty();
@@ -358,7 +405,12 @@ public:
     configureKeycap(m_padLB);
     configureKeycap(m_padRB);
     m_controlPanel.hide();
-    add(m_box);
+    m_scroll.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
+    m_scroll.set_min_content_height(760);
+    m_scroll.set_hexpand(true);
+    m_scroll.set_vexpand(true);
+    m_scroll.add(m_box);
+    add(m_scroll);
     show_all_children();
     m_controlPanel.hide();
     if (auto* firstRow = m_vehicleList.get_row_at_index(0)) {
@@ -578,19 +630,18 @@ public:
       if (m_pendingClearFrame) {
         m_image.clear();
         m_stats.set_text("Decoded frames: 0");
+        m_lastDisplayedSeq = 0;
         m_pendingClearFrame = false;
       }
       m_status.set_text(m_pendingStatus);
-      if (!m_pendingLinkStatus.empty()) {
-        m_linkStatus.set_text(m_pendingLinkStatus);
-      }
       if (!m_pendingTelemetry.empty()) {
-        m_telemetry.set_text("Telemetry: " + m_pendingTelemetry);
+        m_lastInspectorDetail = m_pendingTelemetry;
       }
       if (m_pendingVehicleRowsRefresh) {
         updateVehicleRows();
         m_pendingVehicleRowsRefresh = false;
       }
+      updateInspectorPanel();
       if (!m_pendingMap.empty()) {
         m_mapMission.set_text(m_pendingMap);
         refreshMapTile();
@@ -616,6 +667,10 @@ public:
         elapsedMs = m_pendingElapsedMs;
       }
       if (pixbuf) {
+        if (m_lastDisplayedSeq != 0 && seq <= m_lastDisplayedSeq) {
+          return;
+        }
+        m_lastDisplayedSeq = seq;
         m_image.set(pixbuf);
         auto stats = "Decoded frames: " + std::to_string(m_decodedFrames.load()) +
                      "  latest chunk: " + std::to_string(seq) +
@@ -1745,6 +1800,7 @@ private:
     m_decodedFrames = 0;
     m_pendingSeq = 0;
     m_pendingElapsedMs = 0;
+    m_lastDisplayedSeq = 0;
     m_pendingPixbuf.reset();
   }
 
@@ -1776,6 +1832,7 @@ private:
     m_pendingPixbuf.reset();
     m_pendingSeq = 0;
     m_pendingElapsedMs = 0;
+    m_lastDisplayedSeq = 0;
     m_decodedFrames = 0;
     m_pendingClearFrame = true;
   }
@@ -1880,13 +1937,136 @@ private:
         continue;
       }
       const auto rowState = droneListRowState(m_droneIds[i], m_droneIds[i] == selectedDrone);
-      label->set_text(rowState.rowText);
+      label->set_text(compactDroneRowText(rowState));
+      label->set_tooltip_text(rowState.rowText);
     }
     const auto view = selectedDroneViewState();
     m_mapMission.set_text(view.mapText);
-    m_services.set_text(m_runtime.serviceCatalogForDrone(selectedDrone));
+    updateInspectorPanel();
     updateSelectedActionControls();
     refreshMapTile();
+  }
+
+  static std::string
+  valueOr(const std::string& value, const std::string& fallback = "unknown")
+  {
+    return value.empty() ? fallback : value;
+  }
+
+  static void
+  appendInspectorRow(std::ostringstream& os, const std::string& key,
+                     const std::string& value)
+  {
+    os << key << ": " << valueOr(value) << "\n";
+  }
+
+  void
+  updateInspectorPanel()
+  {
+    const auto selectedDrone = m_runtime.targetDroneId();
+    const auto telemetry = m_runtime.telemetryForDrone(selectedDrone);
+    const auto readiness = m_runtime.readinessForDrone(selectedDrone);
+    const auto video = m_runtime.videoForDrone(selectedDrone);
+    const auto videoAdaptive = m_runtime.videoAdaptiveForDrone(selectedDrone);
+    const auto mission = m_runtime.missionForDrone(selectedDrone);
+    const auto command = m_runtime.commandForDrone(selectedDrone);
+    const auto safety = m_runtime.safetyForDrone(selectedDrone);
+    const auto missionProgress = m_runtime.missionProgressSnapshot();
+    const auto missionPlan = m_runtime.missionPlanSnapshot();
+    const auto missionPart = m_runtime.missionPartForDrone(selectedDrone);
+
+    std::ostringstream flight;
+    appendInspectorRow(flight, "Drone", selectedDrone);
+    appendInspectorRow(flight, "Backend", telemetry ? telemetry->flightControllerBackend : "unknown");
+    appendInspectorRow(flight, "Available", telemetry ? telemetry->flightControllerAvailable : "unknown");
+    appendInspectorRow(flight, "Ready", readiness ? readiness->flightControllerReady :
+                       telemetry ? telemetry->flightControllerReady : "unknown");
+    appendInspectorRow(flight, "Reason", readiness ? readiness->readinessReason :
+                       telemetry ? telemetry->readinessReason : "unknown");
+    appendInspectorRow(flight, "Armed", readiness ? readiness->armed :
+                       telemetry ? telemetry->armed : "unknown");
+    appendInspectorRow(flight, "Landed", readiness ? readiness->landedStateName :
+                       telemetry ? telemetry->landedStateName : "unknown");
+    appendInspectorRow(flight, "System", telemetry ? telemetry->systemStatusName : "unknown");
+    appendInspectorRow(flight, "GPS fix", telemetry ? telemetry->gpsFixName : "unknown");
+    appendInspectorRow(flight, "GPS sats", telemetry ? telemetry->gpsSatellitesVisible : "unknown");
+    appendInspectorRow(flight, "EKF", telemetry ? telemetry->ekfReady : "unknown");
+    m_flightInspector.set_text(flight.str());
+
+    std::ostringstream telem;
+    appendInspectorRow(telem, "Lat", telemetry ? telemetry->lat : "unknown");
+    appendInspectorRow(telem, "Lon", telemetry ? telemetry->lon : "unknown");
+    appendInspectorRow(telem, "Altitude", telemetry ? telemetry->altitudeM + " m" : "unknown");
+    appendInspectorRow(telem, "Speed", telemetry ? telemetry->groundspeedMps + " m/s" : "unknown");
+    appendInspectorRow(telem, "Battery", telemetry ? telemetry->batteryPercent + "%" : "unknown");
+    appendInspectorRow(telem, "Voltage", telemetry ? telemetry->batteryVoltageV + " V" : "unknown");
+    appendInspectorRow(telem, "Current", telemetry ? telemetry->batteryCurrentA + " A" : "unknown");
+    appendInspectorRow(telem, "Heartbeat", telemetry ? telemetry->heartbeatSeen : "unknown");
+    m_telemetryInspector.set_text(telem.str());
+
+    std::ostringstream camera;
+    appendInspectorRow(camera, "Available", video ? video->cameraAvailable :
+                       telemetry ? telemetry->cameraAvailable : "unknown");
+    appendInspectorRow(camera, "Source", video ? video->source :
+                       telemetry ? telemetry->cameraSource : "unknown");
+    appendInspectorRow(camera, "Reason", video ? video->cameraReason :
+                       telemetry ? telemetry->cameraReason : "unknown");
+    appendInspectorRow(camera, "Capture", video ? video->capture :
+                       telemetry ? telemetry->capture : "unknown");
+    appendInspectorRow(camera, "Recording", video ? video->recording :
+                       telemetry ? telemetry->recording : "unknown");
+    if (video) {
+      appendInspectorRow(camera, "Chunks", std::to_string(video->recordingChunks));
+      appendInspectorRow(camera, "Bytes", std::to_string(video->recordingBytes));
+    }
+    m_cameraInspector.set_text(camera.str());
+
+    std::ostringstream videoText;
+    appendInspectorRow(videoText, "State", video ? video->status : "unknown");
+    appendInspectorRow(videoText, "Encoding", video ? video->encoding : "unknown");
+    appendInspectorRow(videoText, "Bitrate", video ?
+                       std::to_string(video->acceptedBitrateKbps) + "/" +
+                       std::to_string(video->requestedBitrateKbps) + " kbps" : "unknown");
+    appendInspectorRow(videoText, "Frame", video ?
+                       std::to_string(video->acceptedFrameWidth) + " px @ " +
+                       std::to_string(video->fps) + " fps" : "unknown");
+    appendInspectorRow(videoText, "Packets", video ?
+                       std::to_string(video->streamPacketsPublished) : "unknown");
+    appendInspectorRow(videoText, "Frames", video ?
+                       std::to_string(video->framesPublished) + " pub / " +
+                       std::to_string(video->decodedFrames) + " dec" : "unknown");
+    if (videoAdaptive) {
+      appendInspectorRow(videoText, "Adaptive", videoAdaptive->state);
+      appendInspectorRow(videoText, "Window", std::to_string(videoAdaptive->window));
+      appendInspectorRow(videoText, "Pressure", videoAdaptive->primaryPressure);
+      appendInspectorRow(videoText, "Suggest", videoAdaptive->bitrateAction + " " +
+                         std::to_string(videoAdaptive->suggestedBitrateKbps) + " kbps");
+    }
+    m_videoInspector.set_text(videoText.str());
+
+    std::ostringstream missionText;
+    appendInspectorRow(missionText, "Mission", mission ? mission->phase : "idle");
+    appendInspectorRow(missionText, "Detail", mission ? mission->detail : "idle");
+    appendInspectorRow(missionText, "Task", missionPlan ? missionPlan->taskId : "none");
+    appendInspectorRow(missionText, "Part", missionPart ? missionPart->id : "none");
+    appendInspectorRow(missionText, "Waypoints", missionPart ?
+                       std::to_string(missionPart->waypoints.size()) : "0");
+    appendInspectorRow(missionText, "Progress", missionProgress ? missionProgress->phase : "idle");
+    appendInspectorRow(missionText, "Safety", safety ? safety->detail : "idle");
+    appendInspectorRow(missionText, "Link", safety ? safety->linkState :
+                       telemetry ? telemetry->linkState : "unknown");
+    appendInspectorRow(missionText, "Manual", safety ? safety->manualControlState :
+                       telemetry ? telemetry->manualControlState : "idle");
+    if (command) {
+      appendInspectorRow(missionText, "Last cmd", command->command + " " + command->accepted);
+    }
+    m_missionInspector.set_text(missionText.str());
+
+    std::ostringstream services;
+    services << (m_pendingLinkStatus.empty() ? "Link RTT: waiting" : m_pendingLinkStatus) << "\n";
+    services << "Services for Drone " << selectedDrone << ":\n";
+    services << m_runtime.serviceCatalogForDrone(selectedDrone);
+    m_services.set_text(services.str());
   }
 
   void
@@ -1962,6 +2142,25 @@ private:
     return DroneListRowState::fromStates(droneId, selected, telemetry, readiness,
                                          mission, video, videoAdaptive, command,
                                          safety, progress);
+  }
+
+  static std::string
+  compactDroneRowText(const DroneListRowState& state)
+  {
+    std::ostringstream os;
+    os << (state.selected ? "● " : "○ ") << "Drone " << state.droneId
+       << (state.selected ? " active" : " standby");
+    if (state.hasReadiness || state.hasTelemetry) {
+      os << "\n" << state.readiness
+         << " arm=" << state.armed
+         << " gps=" << state.gps
+         << " bat=" << state.battery;
+    }
+    if (state.hasTelemetry || state.hasVideo || state.hasSafety) {
+      os << "\nvideo=" << state.video
+         << " safe=" << state.safety;
+    }
+    return os.str();
   }
 
   void
@@ -2112,55 +2311,62 @@ private:
                       const std::optional<FlightCommandState>& command = std::nullopt,
                       const std::optional<SafetyState>& safety = std::nullopt)
   {
+    std::ostringstream text;
     const auto missionPhase = mission ? mission->phase : "idle";
     const auto missionDetail = mission ? mission->detail : "idle";
-    std::string text = telemetry.mapSummary(selectedDrone) + "\n"
-      "Mission: " + missionPhase + " (" + missionDetail + ")";
+    text << "Map Status\n"
+         << "Center: selected drone / GS map\n"
+         << "Selected: Drone " << selectedDrone << "\n"
+         << "Position: " << telemetry.lat << ", " << telemetry.lon << "\n"
+         << "Altitude: " << telemetry.altitudeM << " m\n"
+         << "Speed: " << telemetry.groundspeedMps << " m/s\n"
+         << "Mission: " << missionPhase << " (" << missionDetail << ")\n";
     if (mission) {
-      text += "\nMission model: start=" + std::string(mission->isStartable() ? "ready" : "blocked") +
-              " stop=" + std::string(mission->isStoppable() ? "ready" : "blocked") +
-              " busy=" + std::string(mission->isBusyForAssignment() ? "yes" : "no") +
-              " terminal=" + std::string(mission->isTerminal() ? "yes" : "no");
+      text << "Mission gate: start=" << (mission->isStartable() ? "ready" : "blocked")
+           << " stop=" << (mission->isStoppable() ? "ready" : "blocked")
+           << " busy=" << (mission->isBusyForAssignment() ? "yes" : "no") << "\n";
     }
     if (readiness) {
-      text += "\nReadiness model: " + readiness->readiness +
-              " reason=" + readiness->readinessReason +
-              " arm=" + (readiness->readyForArm() ? "ready" : "blocked") +
-              " takeoff=" + (readiness->readyForTakeoff() ? "ready" : "blocked") +
-              " land=" + (readiness->readyForLand() ? "ready" : "blocked") +
-              " manual=" + (readiness->readyForManualControl() ? "ready" : "blocked");
+      text << "Flight gate: " << readiness->readiness
+           << " reason=" << readiness->readinessReason << "\n"
+           << "Actions: arm=" << (readiness->readyForArm() ? "ready" : "blocked")
+           << " takeoff=" << (readiness->readyForTakeoff() ? "ready" : "blocked")
+           << " land=" << (readiness->readyForLand() ? "ready" : "blocked") << "\n";
     }
     if (video) {
-      text += "\nVideo model: " + video->status +
-              " capture=" + video->capture +
-              " recording=" + video->recording +
-              " camera=" + video->cameraAvailable +
-              " camera_reason=" + video->cameraReason +
-              " source=" + video->source +
-              " stream=" + video->streamId +
-              " packets=" + std::to_string(video->streamPacketsPublished) +
-              " decoded=" + std::to_string(video->decodedFrames);
+      text << "Video: " << video->status
+           << " capture=" << video->capture
+           << " camera=" << video->cameraAvailable
+           << " packets=" << video->streamPacketsPublished << "\n";
     }
     if (command && command->command != "none") {
-      text += "\nCommand model: " + command->command +
-              " accepted=" + command->accepted +
-              " ack=" + command->ackResult +
-              " state=" + command->flightControllerState +
-              " safety=" + std::string(command->isSafetyCritical() ? "yes" : "no") +
-              " detail=" + command->detail;
+      text << "Last command: " << command->command
+           << " accepted=" << command->accepted
+           << " ack=" << command->ackResult << "\n";
     }
     if (safety) {
-      text += "\nSafety model: link=" + safety->linkState +
-              " manual=" + safety->manualControlState +
-              " replay=" + safety->manualReplayActive +
-              " neutral=" + safety->manualNeutralSent +
-              " fresh_for=" + std::to_string(safety->manualFreshForMs) + "ms" +
-              " link_age=" + std::to_string(safety->linkAgeMs) + "ms" +
-              " lost_action=" + safety->lostLinkAction +
-              " attention=" + std::string(safety->needsOperatorAttention() ? "yes" : "no") +
-              " detail=" + safety->detail;
+      text << "Safety: link=" << safety->linkState
+           << " manual=" << safety->manualControlState
+           << " attention=" << (safety->needsOperatorAttention() ? "yes" : "no") << "\n";
     }
-    return text;
+    text << "Map tools: click=add WP, drag=pan, wheel=zoom";
+    return text.str();
+  }
+
+  std::string
+  mapWorkspaceStatusText(const std::string& event, const std::string& selectedDrone,
+                         const std::string& action) const
+  {
+    std::ostringstream text;
+    text << "Map Status\n"
+         << "Center: " << std::fixed << std::setprecision(6)
+         << m_mapCenterLat << ", " << m_mapCenterLon << "\n"
+         << "Selected: Drone " << selectedDrone << "\n"
+         << "Event: " << event << "\n"
+         << "Waypoints: " << m_planWaypoints.size() << "\n"
+         << "Action: " << action << "\n"
+         << "Map tools: click=add WP, drag=pan, wheel=zoom";
+    return text.str();
   }
 
   struct MapMarker
@@ -2307,42 +2513,40 @@ private:
       state.mapText = mapTextForTelemetry(*telemetry, mission, state.selectedDrone,
                                           readiness, video, command, safety);
       if (videoAdaptive) {
-        state.mapText += "\nVideo adaptive: " + videoAdaptive->compactSummary() +
-                         " timeout=" + std::to_string(videoAdaptive->missingTimeoutMs) +
-                         "ms lookahead=" + std::to_string(videoAdaptive->lookahead);
+        state.mapText += "\nVideo adaptive: " + videoAdaptive->compactSummary();
+        state.mapText += "\nVideo timeout: " + std::to_string(videoAdaptive->missingTimeoutMs) + " ms";
+        state.mapText += "\nVideo lookahead: " + std::to_string(videoAdaptive->lookahead);
       }
       if (missionProgress) {
-        state.mapText += "\nMission progress: " + missionProgress->phase +
-                         " parts=" + std::to_string(missionProgress->completedParts) +
-                         "/" + std::to_string(missionProgress->totalParts) +
-                         " missing=" + std::to_string(missionProgress->missingParts) +
-                         " compensated=" + std::to_string(missionProgress->compensatedParts) +
-                         " return_home=" +
+        state.mapText += "\nProgress: " + missionProgress->phase;
+        state.mapText += "\nParts: " + std::to_string(missionProgress->completedParts) +
+                         "/" + std::to_string(missionProgress->totalParts);
+        state.mapText += "\nMissing: " + std::to_string(missionProgress->missingParts);
+        state.mapText += "\nCompensated: " + std::to_string(missionProgress->compensatedParts);
+        state.mapText += "\nReturn home: " +
                          std::string(missionProgress->returnHomePlanned ? "yes" : "no");
       }
       if (missionPart) {
-        state.mapText += "\nMission part: " + missionPart->id +
-                         " role=" + missionPart->role +
-                         " waypoints=" + std::to_string(missionPart->waypoints.size()) +
-                         " return_home=" +
+        state.mapText += "\nPart: " + missionPart->id;
+        state.mapText += "\nRole: " + missionPart->role;
+        state.mapText += "\nPart WPs: " + std::to_string(missionPart->waypoints.size());
+        state.mapText += "\nPart return: " +
                          std::string(missionPart->returnHomePlanned ? "yes" : "no");
       }
     }
     else {
       state.inspectorText = "No telemetry for selected drone " + state.selectedDrone;
-      state.mapText = "Map / mission workspace\n\n"
-                      "GS center: University of Memphis\n"
-                      "Selected drone: " + state.selectedDrone + "\n"
-                      "Map markers show GS, drones, and mission waypoints.\n"
-                      "Click map to append waypoints, then upload/start the mission.";
+      state.mapText = mapWorkspaceStatusText("waiting-for-telemetry",
+                                             state.selectedDrone,
+                                             "click-map-to-plan-mission");
       if (missionProgress) {
         state.inspectorText += " " + missionProgress->statusLine();
-        state.mapText += "\nMission progress: " + missionProgress->phase +
-                         " parts=" + std::to_string(missionProgress->completedParts) +
-                         "/" + std::to_string(missionProgress->totalParts) +
-                         " missing=" + std::to_string(missionProgress->missingParts) +
-                         " compensated=" + std::to_string(missionProgress->compensatedParts) +
-                         " return_home=" +
+        state.mapText += "\nProgress: " + missionProgress->phase;
+        state.mapText += "\nParts: " + std::to_string(missionProgress->completedParts) +
+                         "/" + std::to_string(missionProgress->totalParts);
+        state.mapText += "\nMissing: " + std::to_string(missionProgress->missingParts);
+        state.mapText += "\nCompensated: " + std::to_string(missionProgress->compensatedParts);
+        state.mapText += "\nReturn home: " +
                          std::string(missionProgress->returnHomePlanned ? "yes" : "no");
       }
       if (missionPlan) {
@@ -2350,17 +2554,17 @@ private:
       }
       if (missionPart) {
         state.inspectorText += " " + missionPart->statusLine();
-        state.mapText += "\nMission part: " + missionPart->id +
-                         " role=" + missionPart->role +
-                         " waypoints=" + std::to_string(missionPart->waypoints.size()) +
-                         " return_home=" +
+        state.mapText += "\nPart: " + missionPart->id;
+        state.mapText += "\nRole: " + missionPart->role;
+        state.mapText += "\nPart WPs: " + std::to_string(missionPart->waypoints.size());
+        state.mapText += "\nPart return: " +
                          std::string(missionPart->returnHomePlanned ? "yes" : "no");
       }
       if (videoAdaptive) {
         state.inspectorText += " " + videoAdaptive->statusLine();
-        state.mapText += "\nVideo adaptive: " + videoAdaptive->compactSummary() +
-                         " timeout=" + std::to_string(videoAdaptive->missingTimeoutMs) +
-                         "ms lookahead=" + std::to_string(videoAdaptive->lookahead);
+        state.mapText += "\nVideo adaptive: " + videoAdaptive->compactSummary();
+        state.mapText += "\nVideo timeout: " + std::to_string(videoAdaptive->missingTimeoutMs) + " ms";
+        state.mapText += "\nVideo lookahead: " + std::to_string(videoAdaptive->lookahead);
       }
     }
     return state;
@@ -2726,9 +2930,9 @@ private:
     m_planWaypoints.pop_back();
     updatePatrolInputsFromWaypoints();
     refreshMissionPlanPreview("undo-waypoint");
-    m_mapMission.set_text("Map / mission workspace\n\n"
-                          "Removed last waypoint. Current mission waypoint count: " +
-                          std::to_string(m_planWaypoints.size()) + ".");
+    m_mapMission.set_text(mapWorkspaceStatusText("removed-last-waypoint",
+                                                 m_runtime.targetDroneId(),
+                                                 "review-or-upload-mission"));
     refreshMapTile();
   }
 
@@ -2738,8 +2942,9 @@ private:
     m_planWaypoints.clear();
     updatePatrolInputsFromWaypoints();
     refreshMissionPlanPreview("clear-waypoints");
-    m_mapMission.set_text("Map / mission workspace\n\n"
-                          "Mission waypoints cleared. Click the map to append WP1/WP2/...");
+    m_mapMission.set_text(mapWorkspaceStatusText("waypoints-cleared",
+                                                 m_runtime.targetDroneId(),
+                                                 "click-map-to-add-waypoint"));
     refreshMapTile();
   }
 
@@ -2900,8 +3105,9 @@ private:
       placePatrolCenterFromMapClick(imagePixel.first, imagePixel.second);
       return;
     }
-    m_mapMission.set_text("Map / mission workspace\n\n"
-                          "Map panned. Click to append a waypoint, or press Center GS.");
+    m_mapMission.set_text(mapWorkspaceStatusText("map-panned",
+                                                 m_runtime.targetDroneId(),
+                                                 "click-map-or-center-gs"));
     refreshMapTile();
   }
 
@@ -2934,9 +3140,9 @@ private:
   {
     m_mapCenterLat = m_groundStationLat;
     m_mapCenterLon = m_groundStationLon;
-    m_mapMission.set_text("Map / mission workspace\n\n"
-                          "Map centered on GS / University of Memphis.\n"
-                          "Click to append mission waypoints, drag to pan, +/- to zoom.");
+    m_mapMission.set_text(mapWorkspaceStatusText("centered-on-gs",
+                                                 m_runtime.targetDroneId(),
+                                                 "click-map-to-add-waypoint"));
     refreshMapTile();
   }
 
@@ -2953,11 +3159,11 @@ private:
     std::ostringstream pointText;
     pointText << std::fixed << std::setprecision(6)
               << latLon.first << "," << latLon.second;
-    m_mapMission.set_text("Map / mission workspace\n\n"
-                          "GS center: University of Memphis\n"
-                          "Added WP" + std::to_string(m_planWaypoints.size()) +
-                          " at " + pointText.str() + "\n"
-                          "Upload Patrol Mission sends this route; Undo/Clear edits it.");
+    m_mapMission.set_text(mapWorkspaceStatusText("added-wp" +
+                                                 std::to_string(m_planWaypoints.size()) +
+                                                 " " + pointText.str(),
+                                                 m_runtime.targetDroneId(),
+                                                 "upload-mission-or-edit-wps"));
     refreshMapTile();
   }
 
@@ -3079,8 +3285,9 @@ private:
 
 private:
   GroundStationServiceContainer& m_runtime;
+  Gtk::ScrolledWindow m_scroll;
   Gtk::Box m_box;
-  Gtk::Box m_buttons;
+  Gtk::FlowBox m_buttons;
   Gtk::Box m_patrolControls;
   Gtk::Box m_workspace;
   Gtk::Frame m_vehicleFrame;
@@ -3099,7 +3306,15 @@ private:
   Gtk::Frame m_videoFrame;
   Gtk::Box m_videoPanel;
   Gtk::Frame m_statusFrame;
+  Gtk::ScrolledWindow m_statusScroll;
   Gtk::Box m_statusPanel;
+  Gtk::Frame m_flightInspectorFrame;
+  Gtk::Frame m_telemetryInspectorFrame;
+  Gtk::Frame m_cameraInspectorFrame;
+  Gtk::Frame m_videoInspectorFrame;
+  Gtk::Frame m_missionInspectorFrame;
+  Gtk::Frame m_serviceInspectorFrame;
+  Gtk::Frame m_eventInspectorFrame;
   Gtk::Button m_start;
   Gtk::Button m_stop;
   Gtk::Button m_applyBitrate;
@@ -3166,6 +3381,11 @@ private:
   Gtk::Label m_linkStatus;
   Gtk::Label m_services;
   Gtk::Label m_telemetry;
+  Gtk::Label m_flightInspector;
+  Gtk::Label m_cameraInspector;
+  Gtk::Label m_videoInspector;
+  Gtk::Label m_telemetryInspector;
+  Gtk::Label m_missionInspector;
   Gtk::Image m_image;
   Gtk::Label m_stats;
   Glib::Dispatcher m_statusDispatcher;
@@ -3175,6 +3395,7 @@ private:
   std::string m_pendingStatus = "Video stopped";
   std::string m_pendingLinkStatus;
   std::string m_pendingTelemetry;
+  std::string m_lastInspectorDetail;
   std::string m_pendingMap;
   bool m_pendingMapRefresh = false;
   std::string m_pendingMapLat = "35.1186";
@@ -3234,6 +3455,7 @@ private:
   std::array<std::atomic<bool>, 16> m_gamepadButtons{};
   bool m_autoRepeatStopTest = false;
   uint64_t m_streamGeneration = 0;
+  uint64_t m_lastDisplayedSeq = 0;
   bool m_acceptFrames = false;
   std::atomic<uint64_t> m_decodedFrames{0};
   std::vector<std::string> m_droneIds;

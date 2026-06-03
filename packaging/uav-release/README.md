@@ -27,7 +27,6 @@ Build the UAV executables first:
 Create the release under `RELEASE/`:
 
 ```bash
-NDNSF_UAV_RELEASE_VERSION=local-test \
 NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
   packaging/uav-release/create-portable-release.sh RELEASE
 ```
@@ -35,7 +34,7 @@ NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
 On the Ubuntu 20.04 x86_64 development host this creates:
 
 ```text
-RELEASE/NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz
+RELEASE/NDNSF-UAV-ubuntu20-x86_64.tar.gz
 ```
 
 The tarball includes:
@@ -101,16 +100,15 @@ sh <(curl -L https://nixos.org/nix/install) --daemon
 On the local x86_64 host:
 
 ```bash
-NDNSF_UAV_RELEASE_VERSION=local-test \
   packaging/uav-release/create-nixos-closure.sh \
-  RELEASE/NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz \
+  RELEASE/NDNSF-UAV-ubuntu20-x86_64.tar.gz \
   RELEASE
 ```
 
 This creates:
 
 ```text
-RELEASE/NDNSF-UAV-nixos-x86_64-local-test.closure.gz
+RELEASE/NDNSF-UAV-nixos-x86_64.closure.gz
 ```
 
 On an aarch64 build host, such as the Debian 12 GCP ARM VM used for Odroid C4
@@ -118,19 +116,17 @@ release preparation, build an aarch64 portable tarball and closure there:
 
 ```bash
 ./waf build -j$(nproc) --targets=App_ServiceController,UavDroneApp,UavGroundStationApp
-NDNSF_UAV_RELEASE_VERSION=local-test \
 NDNSF_UAV_RELEASE_INCLUDE_SYSTEM_LIBS=1 \
   packaging/uav-release/create-portable-release.sh RELEASE
-NDNSF_UAV_RELEASE_VERSION=local-test \
   packaging/uav-release/create-nixos-closure.sh \
-  RELEASE/NDNSF-UAV-debian12-aarch64-local-test.tar.gz \
+  RELEASE/NDNSF-UAV-debian12-aarch64.tar.gz \
   RELEASE
 ```
 
 Only copy the final Nix closure back into this repository's `RELEASE/`:
 
 ```text
-RELEASE/NDNSF-UAV-nixos-aarch64-local-test.closure.gz
+RELEASE/NDNSF-UAV-nixos-aarch64.closure.gz
 ```
 
 The closure includes the Nix glibc loader and the Nix runtime paths needed by
@@ -144,8 +140,8 @@ machine-specific routes.
 For Ubuntu 20.04 x86_64 machines:
 
 ```bash
-tar -xzf NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz
-cd NDNSF-UAV-ubuntu20-x86_64-local-test
+tar -xzf NDNSF-UAV-ubuntu20-x86_64.tar.gz
+cd NDNSF-UAV-ubuntu20-x86_64
 ./scripts/check-runtime-deps.sh
 ./bin/ndnsf-uav-controller
 ./bin/ndnsf-uav-gs
@@ -160,7 +156,7 @@ certificates/safebags, start NFD, and configure routes.
 Copy the matching closure to the NixOS target and import it:
 
 ```bash
-gzip -dc NDNSF-UAV-nixos-aarch64-local-test.closure.gz | nix-store --import | tee imported-paths.txt
+gzip -dc NDNSF-UAV-nixos-aarch64.closure.gz | nix-store --import | tee imported-paths.txt
 app=$(grep 'ndnsf-uav-release' imported-paths.txt | tail -1)
 echo "$app"
 ```
@@ -203,7 +199,7 @@ checking that the packaged apps can run through the NDNSF demo path.
 
 ```bash
 python3 Experiments/NDNSF_UAV_GUI_Minindn_Release.py \
-  --release-dir RELEASE/NDNSF-UAV-ubuntu20-x86_64-local-test \
+  --release-dir RELEASE/NDNSF-UAV-ubuntu20-x86_64 \
   --auto-recording-playback-test --no-cli --no-xhost --camera-mode file \
   --output-dir results/uav_recording_playback_release_smoke
 ```

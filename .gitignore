@@ -22,6 +22,9 @@ docs/
 results/
 RELEASE/*
 !RELEASE/README.md
+!RELEASE/usermanual.md
+!RELEASE/assets/
+!RELEASE/assets/gs-runtime.png
 !RELEASE/*.tar.gz
 !RELEASE/*.closure.gz
 *.pt
