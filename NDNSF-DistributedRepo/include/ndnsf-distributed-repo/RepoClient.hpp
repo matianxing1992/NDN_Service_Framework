@@ -6,6 +6,9 @@
 
 #include "ndn-service-framework/ServiceUser.hpp"
 
+#include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/signing-info.hpp>
+
 namespace ndn_service_framework {
 class LocalServiceRegistry;
 }
@@ -42,6 +45,28 @@ public:
 
   static bool remove(RepoNode& node,
                      const std::string& objectName);
+
+  static RepoOperationStatus insert(
+    RepoNode& node,
+    const RepoDataReference& reference);
+
+  /**
+   * Convenience INSERT adapter for callers that have payload bytes instead of
+   * pre-published Data. The adapter segments and signs the payload under
+   * objectName using ndn-cxx Segmenter, then stores the resulting Data wire
+   * packets through the same opaque segment path used by insert().
+   */
+  static RepoOperationStatus insertPayload(
+    RepoNode& node,
+    const std::string& objectName,
+    const std::vector<uint8_t>& payload,
+    ndn::KeyChain& keyChain,
+    const ndn::security::SigningInfo& signingInfo,
+    StoreOptions options = {},
+    size_t maxSegmentPayload = 6000);
+
+  static RepoOperationStatus status(const RepoNode& node,
+                                    const std::string& operationId);
 
   /**
    * Store a large object as object-level chunks named
@@ -101,6 +126,16 @@ public:
     const ndn::Name& repoServicePrefix,
     const std::string& objectName);
 
+  static RepoOperationStatus localInsert(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoDataReference& reference);
+
+  static RepoOperationStatus localStatus(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& operationId);
+
   /**
    * Same as putSegmented(), but invokes a repo registered in the same trusted
    * LocalServiceRegistry instead of using NDNSF network messages.
@@ -155,6 +190,14 @@ public:
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
 
+  static ndn::Name requestInsert(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const RepoDataReference& reference,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
   static ndn::Name requestFetch(
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,
@@ -182,6 +225,14 @@ public:
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,
     const std::string& objectName,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestStatus(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const std::string& operationId,
     int timeoutMs,
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);

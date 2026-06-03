@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -69,6 +70,40 @@ def wait_log(path: Path, needle: str, timeout: int = 30, proc=None) -> bool:
             return False
         time.sleep(0.2)
     return False
+
+
+def validate_repo_manifest_references(path: Path) -> None:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    roles = manifest.get("roles", {})
+    if not isinstance(roles, dict) or not roles:
+        raise RuntimeError(f"repo manifest has no roles: {path}")
+    for role, artifacts in roles.items():
+        if not isinstance(artifacts, dict):
+            raise RuntimeError(f"repo manifest role {role} is not a mapping")
+        for artifact_name in ("model", "runner"):
+            entry = artifacts.get(artifact_name)
+            if not isinstance(entry, dict):
+                raise RuntimeError(f"repo manifest role {role} missing {artifact_name}")
+            repo_manifest = entry.get("repoManifest")
+            reference = entry.get("largeDataReference")
+            if not isinstance(repo_manifest, dict):
+                raise RuntimeError(f"repo manifest role {role} {artifact_name} missing repoManifest")
+            if not isinstance(reference, dict):
+                raise RuntimeError(f"repo manifest role {role} {artifact_name} missing largeDataReference")
+            if reference.get("source") != "repo-manifest":
+                raise RuntimeError(
+                    f"repo manifest role {role} {artifact_name} unexpected source={reference.get('source')}")
+            if reference.get("dataName") != repo_manifest.get("objectName"):
+                raise RuntimeError(
+                    f"repo manifest role {role} {artifact_name} dataName/objectName mismatch")
+            expected_digest = "sha256:" + str(repo_manifest.get("sha256", ""))
+            if reference.get("digest") != expected_digest:
+                raise RuntimeError(
+                    f"repo manifest role {role} {artifact_name} digest mismatch")
+            if int(reference.get("plaintextSize", -1)) != int(repo_manifest.get("size", -2)):
+                raise RuntimeError(
+                    f"repo manifest role {role} {artifact_name} size mismatch")
+    print(f"YOLO_2X2_REPO_MANIFEST_REFERENCES_OK path={path}")
 
 
 def stop(procs):
@@ -274,6 +309,7 @@ def main() -> None:
             raise RuntimeError(
                 "controller did not deploy repo artifacts; "
                 f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
+        validate_repo_manifest_references(REPO_MANIFEST)
 
         providers = [
             ("ucla", "provider-s00", ["--role", "/Stage/0/Shard/0"]),

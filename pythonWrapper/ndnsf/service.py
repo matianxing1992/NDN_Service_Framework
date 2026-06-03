@@ -381,6 +381,7 @@ class ExecutionArtifact:
     executable: bool = False
     cache_name: str = ""
     repo_manifest: dict = None
+    large_data_reference: dict = None
 
 
 @dataclass(frozen=True)
@@ -407,6 +408,7 @@ class ExecutionArtifactSpec:
                     "executable": bool(artifact.executable),
                     "cacheName": artifact.cache_name,
                     "repoManifest": dict(artifact.repo_manifest or {}),
+                    "largeDataReference": dict(artifact.large_data_reference or {}),
                 }
                 for artifact in (self.artifacts or [])
             ],
@@ -431,6 +433,7 @@ class ExecutionArtifactSpec:
                     executable=bool(item.get("executable", False)),
                     cache_name=str(item.get("cacheName", "")),
                     repo_manifest=dict(item.get("repoManifest", {})),
+                    large_data_reference=dict(item.get("largeDataReference", {})),
                 )
                 for item in obj.get("artifacts", [])
             ],
@@ -559,6 +562,14 @@ class CollaborationContext:
                     flush=True,
                 )
                 payload = cached_payload
+            elif artifact.large_data_reference:
+                print(
+                    "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS "
+                    f"role={spec.role} artifact={artifact.name} "
+                    f"cacheName={artifact.cache_name} source=reference",
+                    flush=True,
+                )
+                payload = self._fetch_artifact_reference_payload(assignment.service, artifact)
             elif artifact.repo_manifest:
                 print(
                     "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS "
@@ -616,6 +627,31 @@ class CollaborationContext:
         return ExecutionContext(spec=spec,
                                 artifact_paths=artifact_paths,
                                 work_dir=work_dir)
+
+    def _fetch_artifact_reference_payload(
+        self,
+        service: str,
+        artifact: ExecutionArtifact,
+    ) -> bytes:
+        reference = dict(artifact.large_data_reference or {})
+        source = str(reference.get("source", reference.get("sourceType", ""))).lower()
+        data_name = str(reference.get("dataName", reference.get("data_name", "")))
+        if source in {"repo", "repo-manifest", "repo_manifest"} or (
+            not source and artifact.repo_manifest
+        ):
+            if not artifact.repo_manifest:
+                raise RuntimeError(
+                    f"artifact {artifact.name} reference source is repo but no repoManifest is present")
+            return _fetch_repo_manifest_payload(artifact.repo_manifest)
+        if not data_name:
+            data_name = artifact.data_name
+        if not data_name:
+            raise RuntimeError(f"artifact {artifact.name} reference has no Data name")
+        payload = self.fetch_encrypted_large_data(data_name, service)
+        if payload is None:
+            raise RuntimeError(
+                f"failed to fetch execution artifact {artifact.name} from reference {data_name}")
+        return payload
 
     def fail(self, reason: str) -> None:
         self._native.fail(reason)
@@ -842,7 +878,31 @@ def _artifact_from_repo_spec(name: str, spec: dict) -> Optional[ExecutionArtifac
         executable=bool(spec.get("executable", False)),
         cache_name=str(spec.get("cache_name", spec.get("cacheName", ""))),
         repo_manifest=dict(manifest),
+        large_data_reference=_large_data_reference_dict_from_manifest(
+            manifest,
+            object_type=str(spec.get("kind", "model")),
+            object_id=str(spec.get("cache_name", spec.get("cacheName", spec["filename"]))),
+        ),
     )
+
+
+def _large_data_reference_dict_from_manifest(
+    manifest: dict,
+    *,
+    object_type: str = "",
+    object_id: str = "",
+) -> dict:
+    """Represent a repo manifest as the generic large-object reference shape."""
+
+    return {
+        "source": "repo-manifest",
+        "dataName": str(manifest.get("objectName", "")),
+        "objectType": object_type,
+        "objectId": object_id,
+        "plaintextSize": int(manifest.get("size", 0)),
+        "encrypted": bool(manifest.get("encrypted", False)),
+        "digest": "sha256:" + str(manifest.get("sha256", "")),
+    }
 
 
 def _safe_file_token(value: str) -> str:
@@ -1426,6 +1486,18 @@ class ServiceUser:
                 chunks=chunks,
                 executable=executable,
                 cache_name=cache_name,
+                large_data_reference=(
+                    {
+                        "source": "ndn-large-data",
+                        "dataName": data_name,
+                        "objectType": kind,
+                        "objectId": cache_name or filename,
+                        "plaintextSize": len(payload),
+                        "encrypted": True,
+                        "digest": "sha256:" + sha256_bytes(bytes(payload)),
+                    }
+                    if data_name else {}
+                ),
             ))
 
         spec = ExecutionArtifactSpec(

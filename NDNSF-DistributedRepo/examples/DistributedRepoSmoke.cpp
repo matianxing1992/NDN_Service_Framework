@@ -5,15 +5,23 @@
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 
+#include <ndn-cxx/security/key-chain.hpp>
+
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 
 int
 main()
 {
   using namespace ndnsf_distributed_repo;
+
+  ndn::KeyChain keyChain;
+  ndn::Name signerIdentity("/example/repo/user/smoke");
+  signerIdentity.appendNumber(static_cast<uint64_t>(getpid()));
+  const auto signingIdentity = keyChain.createIdentity(signerIdentity);
 
   const std::vector<uint8_t> payload = {'n', 'd', 'n', 's', 'f', '-', 'r', 'e', 'p', 'o'};
   const std::vector<StorageCapability> candidates = {
@@ -109,6 +117,79 @@ main()
       node.getManifest(segmentedManifest.objectName).segmentCount !=
         segmentedManifest.segmentCount) {
     std::cerr << "direct segmented repo object mismatch\n";
+    return 1;
+  }
+
+  StoreOptions insertPayloadOptions;
+  insertPayloadOptions.objectType = "signed-payload-data";
+  const auto insertPayloadStatus = RepoClient::insertPayload(
+    node,
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api",
+    largePayload,
+    keyChain,
+    ndn::security::SigningInfo(signingIdentity),
+    insertPayloadOptions,
+    8);
+  if (insertPayloadStatus.state != "DONE" ||
+      insertPayloadStatus.completedSegments <= 1 ||
+      node.getManifest(
+        "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api")
+          .segmentCount != insertPayloadStatus.completedSegments ||
+      node.get(
+        "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api/ndn-data/0")
+          .empty()) {
+    std::cerr << "repo payload insert did not produce signed Data segments\n";
+    return 1;
+  }
+
+  RepoDataReference noFetcherReference;
+  noFetcherReference.objectName =
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/no-fetcher";
+  noFetcherReference.dataPrefix =
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/no-fetcher";
+  noFetcherReference.hasFinalSegment = true;
+  noFetcherReference.finalSegment = 1;
+  const auto noFetcherStatus = RepoClient::insert(node, noFetcherReference);
+  if (noFetcherStatus.state != "FAILED" ||
+      noFetcherStatus.message.find("SegmentFetcher") == std::string::npos) {
+    std::cerr << "repo store-from-reference missing fetcher did not fail visibly\n";
+    return 1;
+  }
+
+  const std::vector<std::vector<uint8_t>> fakeWirePackets = {
+    {'D', 'a', 't', 'a', '0'},
+    {'D', 'a', 't', 'a', '1'},
+  };
+  std::vector<uint8_t> fakeConcatenated;
+  for (const auto& packet : fakeWirePackets) {
+    fakeConcatenated.insert(fakeConcatenated.end(), packet.begin(), packet.end());
+  }
+  node.setDataReferenceFetcher([&] (const RepoDataReference& reference) {
+    if (reference.dataPrefix !=
+        "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/model") {
+      throw std::runtime_error("unexpected fake data prefix");
+    }
+    return fakeWirePackets;
+  });
+  RepoDataReference reference;
+  reference.objectName =
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/model";
+  reference.dataPrefix =
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/model";
+  reference.hasFinalSegment = true;
+  reference.finalSegment = 1;
+  reference.expectedSize = fakeConcatenated.size();
+  reference.expectedSha256 = sha256Hex(fakeConcatenated);
+  reference.objectType = "app-owned-segmented-data";
+  const auto referenceStatus = RepoClient::insert(node, reference);
+  const auto queriedReferenceStatus = RepoClient::status(node, referenceStatus.operationId);
+  if (referenceStatus.state != "DONE" ||
+      queriedReferenceStatus.state != "DONE" ||
+      queriedReferenceStatus.completedSegments != fakeWirePackets.size() ||
+      node.getManifest(reference.objectName).segmentCount != fakeWirePackets.size() ||
+      node.get(reference.objectName + "/ndn-data/0") != fakeWirePackets[0] ||
+      node.get(reference.objectName + "/ndn-data/1") != fakeWirePackets[1]) {
+    std::cerr << "repo store-from-reference wire packet path mismatch\n";
     return 1;
   }
 
@@ -241,8 +322,13 @@ main()
   }
   bothNode.registerDeploymentServices(nullptr, &bothRegistry, RepoDeploymentMode::Embedded);
   if (!bothRegistry.hasService(
-        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STORE"))) {
-    std::cerr << "embedded mode did not register local STORE\n";
+        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STORE")) ||
+      !bothRegistry.hasService(
+        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+                            "INSERT")) ||
+      !bothRegistry.hasService(
+        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STATUS"))) {
+    std::cerr << "embedded mode did not register local repo services\n";
     return 1;
   }
 

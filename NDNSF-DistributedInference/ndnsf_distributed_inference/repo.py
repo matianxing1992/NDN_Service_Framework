@@ -91,6 +91,57 @@ class RepoObjectManifest:
         )
 
 
+def large_data_reference_from_repo_manifest(
+    manifest: RepoObjectManifest | dict,
+    *,
+    object_type: str = "",
+    object_id: str = "",
+) -> dict:
+    """Return the generic large-object reference metadata for a repo manifest."""
+
+    manifest_dict = manifest.to_dict() if isinstance(manifest, RepoObjectManifest) else dict(manifest)
+    return {
+        "source": "repo-manifest",
+        "dataName": str(manifest_dict.get("objectName", "")),
+        "objectType": object_type or str(manifest_dict.get("objectType", "")),
+        "objectId": object_id or str(manifest_dict.get("objectName", "")),
+        "plaintextSize": int(manifest_dict.get("size", 0)),
+        "encrypted": bool(manifest_dict.get("encrypted", False)),
+        "digest": "sha256:" + str(manifest_dict.get("sha256", "")),
+    }
+
+
+def repo_artifact_reference(
+    manifest: RepoObjectManifest | dict,
+    *,
+    object_type: str = "",
+    object_id: str = "",
+) -> dict:
+    """Wrap a repo manifest with explicit large-data reference metadata."""
+
+    manifest_dict = manifest.to_dict() if isinstance(manifest, RepoObjectManifest) else dict(manifest)
+    return {
+        "repoManifest": manifest_dict,
+        "largeDataReference": large_data_reference_from_repo_manifest(
+            manifest_dict,
+            object_type=object_type,
+            object_id=object_id,
+        ),
+    }
+
+
+def repo_manifest_from_artifact_reference(entry: dict) -> dict:
+    """Extract the repo manifest from a new or legacy artifact manifest entry."""
+
+    if not isinstance(entry, dict):
+        raise ValueError("repo artifact entry must be a mapping")
+    if "repoManifest" in entry:
+        return dict(entry["repoManifest"])
+    if "repo_manifest" in entry:
+        return dict(entry["repo_manifest"])
+    return dict(entry)
+
+
 @dataclass(frozen=True)
 class StorageCapability:
     repo_node: str
@@ -299,7 +350,7 @@ class RepoNodeApp:
 
     Every repo node registers the same ``service_name``. Node identity and
     capability are carried in ACK metadata, while request payloads carry the
-    operation. For a replicated STORE, the client includes selected
+    operation. For a replicated INSERT/payload adapter request, the client includes selected
     ``replicaNodes`` in the manifest; nodes not in that set acknowledge the
     request but skip storing the payload.
     """
@@ -1004,7 +1055,7 @@ class RepoNodeApp:
                     "repoNode": self.repo_node,
                     "manifest": manifest.to_dict(),
                 }, sort_keys=True).encode())
-            if operation == "STORE_FROM_NDN":
+            if operation == "INSERT":
                 manifest = RepoObjectManifest.from_dict(request["manifest"])
                 replica_nodes = set(manifest.replica_nodes)
                 if replica_nodes and self.repo_node not in replica_nodes:
@@ -1031,7 +1082,7 @@ class RepoNodeApp:
                     object_payload,
                 )
                 return ServiceResponse(True, json.dumps({
-                    "status": "stored-from-ndn",
+                    "status": "inserted",
                     "repoNode": self.repo_node,
                     "manifest": manifest.to_dict(),
                 }, sort_keys=True).encode())

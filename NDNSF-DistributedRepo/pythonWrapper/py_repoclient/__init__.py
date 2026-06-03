@@ -141,7 +141,7 @@ class RepoClient:
             return [_capability_from_json(obj)]
         return []
 
-    def store(
+    def insert(
         self,
         *,
         object_name: str,
@@ -186,6 +186,27 @@ class RepoClient:
             pass
         return manifest
 
+    def store(
+        self,
+        *,
+        object_name: str,
+        payload: bytes,
+        object_type: str = "artifact",
+        replication_factor: int = 1,
+        replica_nodes: Iterable[str] = (),
+        policy_epoch: str = "",
+        selector: Optional[Callable[[list[AckCandidate]], list[str]]] = None,
+    ) -> RepoObjectManifest:
+        return self.insert(
+            object_name=object_name,
+            payload=payload,
+            object_type=object_type,
+            replication_factor=replication_factor,
+            replica_nodes=replica_nodes,
+            policy_epoch=policy_epoch,
+            selector=selector,
+        )
+
     def put(
         self,
         object_name: str,
@@ -197,7 +218,7 @@ class RepoClient:
         policy_epoch: str = "",
         selector: Optional[Callable[[list[AckCandidate]], list[str]]] = None,
     ) -> RepoObjectManifest:
-        return self.store(
+        return self.insert(
             object_name=object_name,
             payload=payload,
             object_type=object_type,

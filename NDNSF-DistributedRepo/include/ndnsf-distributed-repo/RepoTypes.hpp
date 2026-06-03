@@ -31,6 +31,35 @@ struct RepoObjectManifest
   std::string toJson() const;
 };
 
+struct RepoDataReference
+{
+  std::string objectName;
+  std::string dataPrefix;
+  uint64_t firstSegment = 0;
+  uint64_t finalSegment = 0;
+  bool hasFinalSegment = false;
+  std::string forwardingHint;
+  std::string expectedSha256;
+  uint64_t expectedSize = 0;
+  bool storeWirePackets = true;
+  std::string objectType = "ndn-segmented-data";
+
+  std::string toJson() const;
+};
+
+struct RepoOperationStatus
+{
+  std::string operationId;
+  std::string operation;
+  std::string state = "RECEIVED";
+  std::string objectName;
+  std::string message;
+  uint64_t completedSegments = 0;
+  uint64_t totalSegments = 0;
+
+  std::string toJson() const;
+};
+
 struct StorageCapability
 {
   std::string repoNode;
