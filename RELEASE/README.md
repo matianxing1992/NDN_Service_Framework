@@ -3,24 +3,47 @@
 This directory intentionally contains only the final downloadable release files:
 
 ```text
-NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz
-NDNSF-UAV-nixos-x86_64-local-test.closure.gz
-NDNSF-UAV-nixos-aarch64-local-test.closure.gz
+NDNSF-UAV-ubuntu20-x86_64.tar.gz
+NDNSF-UAV-nixos-x86_64.closure.gz
+NDNSF-UAV-nixos-aarch64.closure.gz
 ```
 
 Use the Ubuntu tarball on Ubuntu 20.04 x86_64 machines. Use the Nix closures on
 NixOS-style targets, including the Odroid C4 aarch64 target.
 
+Current validation summary:
+
+```text
+Ubuntu 20.04 x86_64 tarball:
+  Built locally and passed the release MiniNDN recording/playback smoke.
+
+NixOS aarch64 closure:
+  Built on an aarch64 Debian 12 GCP host, imported on an Odroid C4
+  NixOS/aarch64 target, and checked for bundled library resolution and NFD
+  socket visibility. The Drone wrapper started far enough to auto-select the
+  local camera device /dev/video1.
+
+Not yet claimed as passed:
+  Odroid USB-camera live downlink and physical PX4/flight-controller control.
+```
+
 NFD is not included in any release file. Each target machine still needs a
 running NFD, configured routes/faces, and installed NDN certificates.
+
+For a step-by-step operator guide, MiniNDN test workflow, GUI usage, config
+layout, and troubleshooting notes, read:
+
+```text
+usermanual.md
+```
 
 ## Ubuntu 20.04 x86_64
 
 Extract the tarball:
 
 ```bash
-tar -xzf NDNSF-UAV-ubuntu20-x86_64-local-test.tar.gz
-cd NDNSF-UAV-ubuntu20-x86_64-local-test
+tar -xzf NDNSF-UAV-ubuntu20-x86_64.tar.gz
+cd NDNSF-UAV-ubuntu20-x86_64
 ```
 
 Check dependencies:
@@ -80,13 +103,13 @@ export NDNSF_UAV_CONFIG_DIR=/path/to/config
 Import the matching closure:
 
 ```bash
-gzip -dc NDNSF-UAV-nixos-aarch64-local-test.closure.gz | \
+gzip -dc NDNSF-UAV-nixos-aarch64.closure.gz | \
   sudo nix-store --option require-sigs false --import | tee imported-paths.txt
 app=$(grep 'ndnsf-uav-release' imported-paths.txt | tail -1)
 echo "$app"
 ```
 
-Use `NDNSF-UAV-nixos-x86_64-local-test.closure.gz` instead on x86_64 NixOS.
+Use `NDNSF-UAV-nixos-x86_64.closure.gz` instead on x86_64 NixOS.
 `require-sigs false` is needed because these closures are local release
 artifacts, not paths signed by a public Nix binary cache.
 

@@ -2435,6 +2435,7 @@ std::vector<uint8_t>
 encodeVideoPacket(const VideoPacket& packet)
 {
   const auto header = encodeFields({
+    {"stream_id", packet.streamId},
     {"capture_ms", std::to_string(packet.captureMs)},
     {"bucket_packet_count", std::to_string(packet.bucketPacketCount)},
     {"encoding", packet.encoding},
@@ -2486,6 +2487,7 @@ decodeVideoPacket(const std::vector<uint8_t>& payload)
   const auto header = decodeFields(std::string(
     reinterpret_cast<const char*>(payload.data() + 4), headerSize));
   VideoPacket packet;
+  packet.streamId = fieldOr(header, "stream_id", "");
   packet.second = std::stoull(fieldOr(header, "second", "0"));
   packet.packetSeq = std::stoull(fieldOr(header, "packet_seq", "0"));
   packet.frameSeq = std::stoull(fieldOr(header, "frame_seq", "0"));
