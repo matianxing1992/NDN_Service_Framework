@@ -14,6 +14,7 @@ using Fields = std::map<std::string, std::string>;
 struct VideoPacket
 {
   std::string streamId;
+  uint64_t streamSessionEpoch = 0;
   uint64_t second = 0;
   uint64_t packetSeq = 0;
   uint64_t frameSeq = 0;
@@ -35,6 +36,7 @@ struct VideoPacket
 
 struct TelemetryState
 {
+  std::string telemetryFreshness = "unknown";
   std::string droneId = "unknown";
   std::string lat = "unknown";
   std::string lon = "unknown";
@@ -80,6 +82,10 @@ struct TelemetryState
 
   static TelemetryState fromFields(const Fields& fields);
   Fields toFields() const;
+  std::string telemetryFreshnessLabel() const;
+  bool telemetryIsFresh() const;
+  bool telemetryIsStale() const;
+  bool telemetryIsMissing() const;
   std::string statusLine() const;
   std::string mapSummary(const std::string& selectedDrone) const;
 };
@@ -122,7 +128,9 @@ struct FlightCommandState
   std::string batteryPercent = "unknown";
   std::string forwardedBytes = "0";
   std::string detail = "idle";
+  uint64_t rttMs = 0;
   uint64_t updatedMs = 0;
+  uint64_t timeoutMs = 0;
 
   static FlightCommandState fromFields(const Fields& fields);
   Fields toFields() const;
@@ -421,6 +429,7 @@ struct MissionProgressState
   std::string taskId = "none";
   std::string phase = "idle";
   std::string assignment = "unknown";
+  std::string completionObjective = "return-to-start";
   std::string drones = "none";
   uint64_t attempts = 0;
   uint64_t totalParts = 0;
@@ -438,6 +447,31 @@ struct MissionProgressState
   bool isComplete() const;
   bool isFailed() const;
   bool appliesToDrone(const std::string& droneId) const;
+  std::string segmentStateForPart(const std::string& partId, const std::string& missionPhase = "idle") const;
+  std::string statusLine() const;
+};
+
+struct MissionWaypoint
+{
+  double lat = 0.0;
+  double lon = 0.0;
+
+  std::string str() const;
+};
+
+struct MissionObject
+{
+  std::string missionId = "none";
+  MissionState state;
+  std::vector<MissionWaypoint> waypoints;
+  std::vector<std::string> assignedDrones;
+  MissionProgressState progress;
+
+  static MissionObject fromFields(const Fields& fields, const std::string& fallbackMissionId = "none");
+  Fields toFields() const;
+  bool isKnown() const;
+  bool hasAssignment(const std::string& droneId) const;
+  size_t waypointCount() const;
   std::string statusLine() const;
 };
 
@@ -494,6 +528,8 @@ struct SelectedActionState
   std::string statusLine() const;
 };
 
+struct MissionPart;
+
 struct DroneListRowState
 {
   std::string droneId;
@@ -512,10 +548,17 @@ struct DroneListRowState
   std::string battery = "unknown";
   std::string mission = "idle";
   std::string missionProgress = "idle";
+  std::string missionPartId = "none";
+  std::string missionSegmentState = "unknown";
   std::string video = "unknown";
   std::string videoAdaptive = "unknown";
   std::string command = "none";
   std::string safety = "unknown";
+  std::string serviceCamera = "unknown";
+  std::string serviceMavlink = "unknown";
+  std::string serviceMission = "unknown";
+  std::string serviceRecording = "unknown";
+  std::string serviceRepo = "unknown";
   std::string rowText;
 
   static DroneListRowState fromStates(const std::string& droneId,
@@ -527,15 +570,29 @@ struct DroneListRowState
                                       const std::optional<VideoAdaptiveState>& videoAdaptive,
                                       const std::optional<FlightCommandState>& command,
                                       const std::optional<SafetyState>& safety,
-                                      const std::optional<MissionProgressState>& progress);
-};
+                                      const std::optional<MissionProgressState>& progress,
+                                      const std::optional<MissionPart>& missionPart,
+                                      const std::string& cameraService = "unknown",
+                                      const std::string& mavlinkService = "unknown",
+                                      const std::string& missionService = "unknown",
+                                      const std::string& recordingService = "unknown",
+                                      const std::string& repoService = "unknown");
 
-struct MissionWaypoint
-{
-  double lat = 0.0;
-  double lon = 0.0;
-
-  std::string str() const;
+  static DroneListRowState fromStates(const std::string& droneId,
+                                      bool selected,
+                                      const std::optional<TelemetryState>& telemetry,
+                                      const std::optional<ReadinessState>& readiness,
+                                      const std::optional<MissionState>& mission,
+                                      const std::optional<VideoState>& video,
+                                      const std::optional<VideoAdaptiveState>& videoAdaptive,
+                                      const std::optional<FlightCommandState>& command,
+                                      const std::optional<SafetyState>& safety,
+                                      const std::optional<MissionProgressState>& progress,
+                                      const std::string& cameraService = "unknown",
+                                      const std::string& mavlinkService = "unknown",
+                                      const std::string& missionService = "unknown",
+                                      const std::string& recordingService = "unknown",
+                                      const std::string& repoService = "unknown");
 };
 
 struct MissionPart
@@ -559,6 +616,7 @@ struct MissionPlan
 {
   std::string taskId;
   std::string assignment = "clustered-waypoints-return-to-start";
+  std::string completionObjective = "return-to-start";
   std::vector<MissionPart> parts;
   bool returnHomePlanned = false;
 
@@ -573,6 +631,7 @@ struct SelectedDroneSummaryState
   std::string readiness = "unknown";
   std::string missionPhase = "unknown";
   std::string missionProgressPhase = "unknown";
+  std::string missionSegmentState = "unknown";
   std::string missionPlanTask = "none";
   std::string missionPartId = "none";
   uint64_t missionPartWaypoints = 0;

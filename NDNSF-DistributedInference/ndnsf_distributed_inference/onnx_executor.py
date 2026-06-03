@@ -155,15 +155,13 @@ def execute_onnx_dependency_chunk(
         edge_payload = encode_tensor_bundle(
             select_tensor_payload(output_payload, edge.tensors)
         )
-        name = ctx.ndnsf.publish_large(
+        ctx.ndnsf.publish_large_reference(
             edge.key_scope,
             edge.topic(role_topic_token(ctx.role)),
-            edge_payload,
-        )
-        ctx.ndnsf.publish(
-            edge.key_scope,
             edge.topic("ref/" + role_topic_token(ctx.role)),
-            name.encode(),
+            edge_payload,
+            object_type="application/x-ndnsf-di-tensor-bundle+npz",
+            object_id=role_topic_token(ctx.role),
         )
         published.append(edge.key_scope)
     return OnnxExecutionResult(

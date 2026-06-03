@@ -16,6 +16,99 @@ namespace ndnsf::examples::uav {
 
 namespace {
 
+double
+missionDistanceSq(const MissionWaypoint& a, const MissionWaypoint& b, double referenceLat);
+
+struct DeterministicIndexedWaypoint
+{
+  MissionWaypoint point;
+  size_t index = 0;
+};
+
+std::vector<DeterministicIndexedWaypoint>
+canonicalizeRouteWaypoints(const std::vector<MissionWaypoint>& routeWaypoints)
+{
+  std::vector<DeterministicIndexedWaypoint> indexed;
+  indexed.reserve(routeWaypoints.size());
+  for (size_t i = 0; i < routeWaypoints.size(); ++i) {
+    indexed.push_back({routeWaypoints[i], i});
+  }
+
+  std::sort(indexed.begin(), indexed.end(),
+            [] (const DeterministicIndexedWaypoint& a, const DeterministicIndexedWaypoint& b) {
+    if (a.point.lat != b.point.lat) {
+      return a.point.lat < b.point.lat;
+    }
+    if (a.point.lon != b.point.lon) {
+      return a.point.lon < b.point.lon;
+    }
+    return a.index < b.index;
+  });
+  return indexed;
+}
+
+std::vector<std::vector<MissionWaypoint>>
+clusterPatrolWaypointsDeterministic(const std::vector<MissionWaypoint>& routeWaypoints,
+                                   size_t clusterCount,
+                                   double referenceLat)
+{
+  if (routeWaypoints.empty() || clusterCount == 0) {
+    return {};
+  }
+
+  auto canonical = canonicalizeRouteWaypoints(routeWaypoints);
+  std::vector<MissionWaypoint> sortedRoute;
+  sortedRoute.reserve(canonical.size());
+  for (const auto& wp : canonical) {
+    sortedRoute.push_back(wp.point);
+  }
+
+  std::vector<MissionWaypoint> centers;
+  centers.reserve(clusterCount);
+  for (size_t i = 0; i < clusterCount; ++i) {
+    const size_t index = std::min(sortedRoute.size() - 1, i * sortedRoute.size() / clusterCount);
+    centers.push_back(sortedRoute[index]);
+  }
+
+  std::vector<size_t> assignments(routeWaypoints.size(), 0);
+  for (int iteration = 0; iteration < 8; ++iteration) {
+    std::vector<std::vector<MissionWaypoint>> groups(clusterCount);
+    for (size_t pointIndex = 0; pointIndex < sortedRoute.size(); ++pointIndex) {
+      size_t best = 0;
+      double bestDistance = missionDistanceSq(sortedRoute[pointIndex], centers.front(), referenceLat);
+      for (size_t centerIndex = 1; centerIndex < centers.size(); ++centerIndex) {
+        const double candidateDistance =
+          missionDistanceSq(sortedRoute[pointIndex], centers[centerIndex], referenceLat);
+        if (candidateDistance < bestDistance) {
+          best = centerIndex;
+          bestDistance = candidateDistance;
+        }
+      }
+      assignments[pointIndex] = best;
+      groups[best].push_back(sortedRoute[pointIndex]);
+    }
+    for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+      if (groups[groupIndex].empty()) {
+        continue;
+      }
+      MissionWaypoint nextCenter{};
+      for (const auto& point : groups[groupIndex]) {
+        nextCenter.lat += point.lat;
+        nextCenter.lon += point.lon;
+      }
+      nextCenter.lat /= static_cast<double>(groups[groupIndex].size());
+      nextCenter.lon /= static_cast<double>(groups[groupIndex].size());
+      centers[groupIndex] = nextCenter;
+    }
+  }
+
+  std::vector<std::vector<MissionWaypoint>> groups(clusterCount);
+  for (size_t pointIndex = 0; pointIndex < sortedRoute.size(); ++pointIndex) {
+    groups[assignments[pointIndex]].push_back(sortedRoute[pointIndex]);
+  }
+  return groups;
+}
+
 std::string
 trimConfigText(std::string text)
 {
@@ -65,6 +158,22 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   }
   else if (key == "service-gs-object-detection") {
     config.serviceGsObjectDetection = ndn::Name(value);
+  }
+  else if (key == "ground-station-map-lat") {
+    try {
+      config.groundStationMapLat = std::stod(value);
+    }
+    catch (const std::exception&) {
+      config.groundStationMapLat = std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+  else if (key == "ground-station-map-lon") {
+    try {
+      config.groundStationMapLon = std::stod(value);
+    }
+    catch (const std::exception&) {
+      config.groundStationMapLon = std::numeric_limits<double>::quiet_NaN();
+    }
   }
 }
 
@@ -260,6 +369,7 @@ TelemetryState
 TelemetryState::fromFields(const Fields& fields)
 {
   TelemetryState state;
+  state.telemetryFreshness = fieldOr(fields, "telemetry_freshness", state.telemetryFreshness);
   state.droneId = fieldOr(fields, "drone_id", state.droneId);
   state.lat = fieldOr(fields, "lat", state.lat);
   state.lon = fieldOr(fields, "lon", state.lon);
@@ -384,6 +494,7 @@ TelemetryState::toFields() const
     {"battery_current_a", batteryCurrentA},
     {"readiness", readiness},
     {"readiness_reason", readinessReason},
+    {"telemetry_freshness", telemetryFreshness},
     {"ready_for_takeoff", readyForTakeoff ? "true" : "false"},
     {"video", video},
     {"capture", capture},
@@ -423,7 +534,32 @@ TelemetryState::statusLine() const
          " video=" + video +
          " camera_available=" + cameraAvailable +
          " link=" + linkState +
+         " freshness=" + telemetryFreshnessLabel() +
          " manual=" + manualControlState;
+}
+
+std::string
+TelemetryState::telemetryFreshnessLabel() const
+{
+  return telemetryFreshness.empty() ? "unknown" : telemetryFreshness;
+}
+
+bool
+TelemetryState::telemetryIsFresh() const
+{
+  return telemetryFreshnessLabel() == "fresh";
+}
+
+bool
+TelemetryState::telemetryIsStale() const
+{
+  return telemetryFreshnessLabel() == "stale";
+}
+
+bool
+TelemetryState::telemetryIsMissing() const
+{
+  return telemetryFreshnessLabel() == "missing";
 }
 
 std::string
@@ -601,7 +737,9 @@ FlightCommandState::fromFields(const Fields& fields)
   state.batteryPercent = fieldOr(fields, "battery_percent", state.batteryPercent);
   state.forwardedBytes = fieldOr(fields, "forwarded_bytes", state.forwardedBytes);
   state.detail = fieldOr(fields, "detail", fieldOr(fields, "reason", state.detail));
+  state.rttMs = uint64FieldOr(fields, "rtt_ms", state.rttMs);
   state.updatedMs = uint64FieldOr(fields, "updated_ms", state.updatedMs);
+  state.timeoutMs = uint64FieldOr(fields, "timeout_ms", state.timeoutMs);
   if (state.updatedMs == 0) {
     state.updatedMs = uint64FieldOr(fields, "timestamp_ms", state.updatedMs);
   }
@@ -622,7 +760,9 @@ FlightCommandState::toFields() const
     {"battery_percent", batteryPercent},
     {"forwarded_bytes", forwardedBytes},
     {"detail", detail},
+    {"rtt_ms", std::to_string(rttMs)},
     {"updated_ms", std::to_string(updatedMs)},
+    {"timeout_ms", std::to_string(timeoutMs)},
   };
 }
 
@@ -655,6 +795,7 @@ FlightCommandState::statusLine() const
          " command=" + command +
          " accepted=" + accepted +
          " ack=" + ackResult +
+         " rtt_ms=" + std::to_string(rttMs) +
          " state=" + flightControllerState +
          " alt=" + altitudeM + "m" +
          " speed=" + groundspeedMps + "m/s" +
@@ -1711,6 +1852,185 @@ MissionState::statusLine() const
          " accepted=" + waypointAcksAccepted;
 }
 
+namespace {
+
+std::vector<MissionWaypoint>
+decodeMissionWaypoints(const std::string& value)
+{
+  std::vector<MissionWaypoint> waypoints;
+  if (value.empty() || value == "none") {
+    return waypoints;
+  }
+
+  std::istringstream parts(value);
+  std::string pairText;
+  while (std::getline(parts, pairText, ';')) {
+    auto commaPos = pairText.find(',');
+    if (commaPos == std::string::npos) {
+      continue;
+    }
+
+    const auto latText = pairText.substr(0, commaPos);
+    const auto lonText = pairText.substr(commaPos + 1);
+    if (latText.empty() || lonText.empty()) {
+      continue;
+    }
+
+    try {
+      waypoints.push_back({
+        std::stod(latText),
+        std::stod(lonText)
+      });
+    }
+    catch (const std::exception&) {
+      continue;
+    }
+  }
+  return waypoints;
+}
+
+std::string
+encodeMissionWaypoints(const std::vector<MissionWaypoint>& waypoints)
+{
+  if (waypoints.empty()) {
+    return "none";
+  }
+
+  std::ostringstream out;
+  for (size_t i = 0; i < waypoints.size(); ++i) {
+    if (i > 0) {
+      out << ';';
+    }
+    out << waypoints[i].lat << "," << waypoints[i].lon;
+  }
+  return out.str();
+}
+
+std::string
+encodeAssignedDrones(const std::vector<std::string>& drones)
+{
+  if (drones.empty()) {
+    return "none";
+  }
+  std::ostringstream out;
+  for (size_t i = 0; i < drones.size(); ++i) {
+    if (i > 0) {
+      out << ',';
+    }
+    out << drones[i];
+  }
+  return out.str();
+}
+
+std::vector<std::string>
+decodeAssignedDrones(const std::string& value)
+{
+  std::vector<std::string> drones;
+  if (value.empty() || value == "none") {
+    return drones;
+  }
+
+  std::istringstream parts(value);
+  std::string drone;
+  while (std::getline(parts, drone, ',')) {
+    if (!drone.empty()) {
+      drones.push_back(drone);
+    }
+  }
+  return drones;
+}
+
+} // namespace
+
+MissionObject
+MissionObject::fromFields(const Fields& fields, const std::string& fallbackMissionId)
+{
+  MissionObject mission;
+  mission.state = MissionState::fromFields(fields);
+  mission.missionId = fieldOr(fields, "mission_id", fieldOr(fields, "missionId", fallbackMissionId));
+  if (mission.missionId == "none" || mission.missionId.empty()) {
+    mission.missionId = mission.state.missionId.empty() ? fallbackMissionId : mission.state.missionId;
+  }
+  mission.state.missionId = mission.missionId;
+
+  mission.waypoints = decodeMissionWaypoints(fieldOr(fields, "mission_waypoints", ""));
+  mission.assignedDrones = decodeAssignedDrones(fieldOr(fields, "mission_assigned_drones", ""));
+
+  mission.progress.taskId = fieldOr(fields, "mission_progress_task_id", mission.state.partId);
+  mission.progress.phase = fieldOr(fields, "mission_progress_phase", mission.progress.phase);
+  mission.progress.assignment = fieldOr(fields, "mission_progress_assignment", mission.progress.assignment);
+  mission.progress.completionObjective = fieldOr(fields, "mission_progress_completion_objective",
+                                               mission.progress.completionObjective);
+  mission.progress.drones = fieldOr(fields, "mission_progress_drones", mission.progress.drones);
+  mission.progress.attempts = uint64FieldOr(fields, "mission_progress_attempts", mission.progress.attempts);
+  mission.progress.totalParts = uint64FieldOr(fields, "mission_progress_total_parts", mission.progress.totalParts);
+  mission.progress.completedParts = uint64FieldOr(fields, "mission_progress_completed_parts", mission.progress.completedParts);
+  mission.progress.missingParts = uint64FieldOr(fields, "mission_progress_missing_parts", mission.progress.missingParts);
+  mission.progress.compensatedParts = uint64FieldOr(fields, "mission_progress_compensated_parts", mission.progress.compensatedParts);
+  mission.progress.returnHomePlanned = fieldOr(fields, "mission_progress_return_home", "false") == "true";
+  mission.progress.completedPartIds = fieldOr(fields, "mission_progress_completed_part_ids", mission.progress.completedPartIds);
+  mission.progress.missingPartIds = fieldOr(fields, "mission_progress_missing_part_ids", mission.progress.missingPartIds);
+  mission.progress.compensatedPartIds = fieldOr(fields, "mission_progress_compensated_part_ids", mission.progress.compensatedPartIds);
+  mission.progress.pendingPartIds = fieldOr(fields, "mission_progress_pending_part_ids", mission.progress.pendingPartIds);
+
+  return mission;
+}
+
+Fields
+MissionObject::toFields() const
+{
+  auto fields = state.toFields();
+  fields["mission_assigned_drones"] = encodeAssignedDrones(assignedDrones);
+  fields["mission_waypoints"] = encodeMissionWaypoints(waypoints);
+  fields["mission_progress_task_id"] = progress.taskId;
+  fields["mission_progress_phase"] = progress.phase;
+  fields["mission_progress_assignment"] = progress.assignment;
+  fields["mission_progress_completion_objective"] = progress.completionObjective;
+  fields["mission_progress_drones"] = progress.drones;
+  fields["mission_progress_attempts"] = std::to_string(progress.attempts);
+  fields["mission_progress_total_parts"] = std::to_string(progress.totalParts);
+  fields["mission_progress_completed_parts"] = std::to_string(progress.completedParts);
+  fields["mission_progress_missing_parts"] = std::to_string(progress.missingParts);
+  fields["mission_progress_compensated_parts"] = std::to_string(progress.compensatedParts);
+  fields["mission_progress_return_home"] = progress.returnHomePlanned ? "true" : "false";
+  fields["mission_progress_completed_part_ids"] = progress.completedPartIds;
+  fields["mission_progress_missing_part_ids"] = progress.missingPartIds;
+  fields["mission_progress_compensated_part_ids"] = progress.compensatedPartIds;
+  fields["mission_progress_pending_part_ids"] = progress.pendingPartIds;
+  return fields;
+}
+
+bool
+MissionObject::isKnown() const
+{
+  return !missionId.empty() && missionId != "none";
+}
+
+bool
+MissionObject::hasAssignment(const std::string& droneId) const
+{
+  if (droneId.empty()) {
+    return false;
+  }
+  return std::find(assignedDrones.begin(), assignedDrones.end(), droneId) != assignedDrones.end();
+}
+
+size_t
+MissionObject::waypointCount() const
+{
+  return waypoints.size();
+}
+
+std::string
+MissionObject::statusLine() const
+{
+  return "MissionObject id=" + missionId +
+         " state=" + state.phase +
+         " waypoints=" + std::to_string(waypointCount()) +
+         " assigned=" + encodeAssignedDrones(assignedDrones) +
+         " progress=" + progress.phase;
+}
+
 MissionStartGateState
 MissionStartGateState::fromStates(const std::string& droneId,
                                   const std::optional<MissionState>& mission,
@@ -1820,6 +2140,33 @@ MissionProgressState::appliesToDrone(const std::string& droneId) const
 }
 
 std::string
+MissionProgressState::segmentStateForPart(const std::string& partId, const std::string& missionPhase) const
+{
+  if (partId.empty() || partId == "none") {
+    return "PENDING";
+  }
+  if (isFailed() || missionPhase == "failed" || missionPhase == "cancelled" ||
+      missionPhase == "stopping") {
+    return "FAILED";
+  }
+  if (commaSeparatedContains(completedPartIds, partId)) {
+    return "DONE";
+  }
+  if (isActive() || commaSeparatedContains(pendingPartIds, partId) ||
+      missionPhase == "assigning" || missionPhase == "waiting-compensation" ||
+      missionPhase == "compensating" || missionPhase == "executing") {
+    return "RUNNING";
+  }
+  if (commaSeparatedContains(missingPartIds, partId)) {
+    return "FAILED";
+  }
+  if (isComplete() && missionPhase == "completed") {
+    return "DONE";
+  }
+  return "PENDING";
+}
+
+std::string
 MissionProgressState::statusLine() const
 {
   return "MissionProgress task=" + taskId +
@@ -1827,6 +2174,7 @@ MissionProgressState::statusLine() const
          " assignment=" + assignment +
          " drones=" + drones +
          " attempts=" + std::to_string(attempts) +
+         " completion_objective=" + completionObjective +
          " total_parts=" + std::to_string(totalParts) +
          " completed_parts=" + std::to_string(completedParts) +
          " missing_parts=" + std::to_string(missingParts) +
@@ -2057,7 +2405,13 @@ DroneListRowState::fromStates(const std::string& droneId,
                               const std::optional<VideoAdaptiveState>& videoAdaptive,
                               const std::optional<FlightCommandState>& command,
                               const std::optional<SafetyState>& safety,
-                              const std::optional<MissionProgressState>& progress)
+                              const std::optional<MissionProgressState>& progress,
+                              const std::optional<MissionPart>& missionPart,
+                              const std::string& cameraService,
+                              const std::string& mavlinkService,
+                              const std::string& missionService,
+                              const std::string& recordingService,
+                              const std::string& repoService)
 {
   DroneListRowState state;
   state.droneId = droneId;
@@ -2080,11 +2434,20 @@ DroneListRowState::fromStates(const std::string& droneId,
   state.battery = telemetry ? telemetry->batteryPercent + "%" : "unknown";
   state.mission = mission ? mission->phase : "idle";
   state.missionProgress = state.hasMissionProgress ? progress->phase : "idle";
+  state.missionPartId = missionPart ? missionPart->id : "none";
+  state.missionSegmentState = missionPart && progress && progress->appliesToDrone(droneId)
+    ? progress->segmentStateForPart(missionPart->id, state.missionProgress)
+    : "PENDING";
   state.video = video ? video->status :
                 telemetry ? telemetry->video : "unknown";
   state.videoAdaptive = videoAdaptive ? videoAdaptive->compactSummary() : "unknown";
   state.command = state.hasCommand ? command->command + ":" + command->ackResult : "none";
   state.safety = safety ? safety->manualControlState + "/" + safety->linkState : "unknown";
+  state.serviceCamera = cameraService;
+  state.serviceMavlink = mavlinkService;
+  state.serviceMission = missionService;
+  state.serviceRecording = recordingService;
+  state.serviceRepo = repoService;
 
   state.rowText = std::string(selected ? "● " : "○ ") + "Drone " + droneId +
                   (selected ? " active" : " standby");
@@ -2105,6 +2468,9 @@ DroneListRowState::fromStates(const std::string& droneId,
   if (state.hasMissionProgress && state.missionProgress != "idle") {
     state.rowText += " progress=" + state.missionProgress;
   }
+  if (state.missionPartId != "none") {
+    state.rowText += " segment=" + state.missionPartId + ":" + state.missionSegmentState;
+  }
   if ((state.hasVideo || state.hasTelemetry) && state.video != "unknown") {
     state.rowText += " video=" + state.video;
   }
@@ -2117,7 +2483,38 @@ DroneListRowState::fromStates(const std::string& droneId,
   if (state.hasSafety) {
     state.rowText += " safe=" + state.safety;
   }
+  if (!state.serviceCamera.empty() || !state.serviceMavlink.empty() ||
+      !state.serviceMission.empty() || !state.serviceRecording.empty() ||
+      !state.serviceRepo.empty()) {
+    state.rowText += " services[camera=" + state.serviceCamera +
+                     " mavlink=" + state.serviceMavlink +
+                     " mission=" + state.serviceMission +
+                     " recording=" + state.serviceRecording +
+                     " repo=" + state.serviceRepo + "]";
+  }
   return state;
+}
+
+DroneListRowState
+DroneListRowState::fromStates(const std::string& droneId,
+                              bool selected,
+                              const std::optional<TelemetryState>& telemetry,
+                              const std::optional<ReadinessState>& readiness,
+                              const std::optional<MissionState>& mission,
+                              const std::optional<VideoState>& video,
+                              const std::optional<VideoAdaptiveState>& videoAdaptive,
+                              const std::optional<FlightCommandState>& command,
+                              const std::optional<SafetyState>& safety,
+                              const std::optional<MissionProgressState>& progress,
+                              const std::string& cameraService,
+                              const std::string& mavlinkService,
+                              const std::string& missionService,
+                              const std::string& recordingService,
+                              const std::string& repoService)
+{
+  return fromStates(droneId, selected, telemetry, readiness, mission, video, videoAdaptive,
+                    command, safety, progress, std::nullopt, cameraService, mavlinkService,
+                    missionService, recordingService, repoService);
 }
 
 std::string
@@ -2195,6 +2592,7 @@ MissionPlan::statusLine() const
 {
   return "MissionPlan task=" + taskId +
          " assignment=" + assignment +
+         " completion_objective=" + completionObjective +
          " drones=" + droneList() +
          " parts=" + std::to_string(parts.size()) +
          " return_home=" + std::string(returnHomePlanned ? "true" : "false");
@@ -2219,6 +2617,8 @@ SelectedDroneSummaryState::fromStates(const std::string& selectedDrone,
                     telemetry ? telemetry->readiness : "unknown";
   state.missionPhase = mission ? mission->phase : "idle";
   state.missionProgressPhase = missionProgress ? missionProgress->phase : "idle";
+  state.missionSegmentState = missionPart && missionProgress ? missionProgress->segmentStateForPart(
+                              missionPart->id, state.missionProgressPhase) : "none";
   state.missionPlanTask = missionPlan ? missionPlan->taskId : "none";
   state.missionPartId = missionPart ? missionPart->id : "none";
   state.missionPartWaypoints = missionPart ? missionPart->waypoints.size() : 0;
@@ -2252,6 +2652,7 @@ SelectedDroneSummaryState::statusLine() const
          " readiness=" + readiness +
          " mission=" + missionPhase +
          " mission_progress=" + missionProgressPhase +
+         " mission_segment_state=" + missionSegmentState +
          " mission_plan=" + missionPlanTask +
          " mission_part=" + missionPartId +
          " mission_part_waypoints=" + std::to_string(missionPartWaypoints) +
@@ -2325,6 +2726,7 @@ buildPatrolMissionPlan(const std::string& taskId,
 {
   MissionPlan plan;
   plan.taskId = taskId;
+  plan.completionObjective = "return-to-start";
   plan.returnHomePlanned = true;
   if (droneIds.empty()) {
     return plan;
@@ -2336,56 +2738,7 @@ buildPatrolMissionPlan(const std::string& taskId,
 
   if (routeWaypoints.size() >= 2) {
     const size_t clusterCount = std::min(droneIds.size(), routeWaypoints.size());
-    std::vector<MissionWaypoint> centers;
-    centers.reserve(clusterCount);
-    auto sorted = routeWaypoints;
-    std::sort(sorted.begin(), sorted.end(), [] (const MissionWaypoint& a, const MissionWaypoint& b) {
-      if (a.lon == b.lon) {
-        return a.lat < b.lat;
-      }
-      return a.lon < b.lon;
-    });
-    for (size_t i = 0; i < clusterCount; ++i) {
-      const size_t index = std::min(sorted.size() - 1, i * sorted.size() / clusterCount);
-      centers.push_back(sorted[index]);
-    }
-
-    std::vector<size_t> assignments(routeWaypoints.size(), 0);
-    for (int iteration = 0; iteration < 8; ++iteration) {
-      std::vector<std::vector<MissionWaypoint>> groups(clusterCount);
-      for (size_t pointIndex = 0; pointIndex < routeWaypoints.size(); ++pointIndex) {
-        size_t best = 0;
-        double bestDistance = missionDistanceSq(routeWaypoints[pointIndex], centers.front(), centerLat);
-        for (size_t centerIndex = 1; centerIndex < centers.size(); ++centerIndex) {
-          const auto candidateDistance =
-            missionDistanceSq(routeWaypoints[pointIndex], centers[centerIndex], centerLat);
-          if (candidateDistance < bestDistance) {
-            best = centerIndex;
-            bestDistance = candidateDistance;
-          }
-        }
-        assignments[pointIndex] = best;
-        groups[best].push_back(routeWaypoints[pointIndex]);
-      }
-      for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
-        if (groups[groupIndex].empty()) {
-          continue;
-        }
-        MissionWaypoint nextCenter{};
-        for (const auto& point : groups[groupIndex]) {
-          nextCenter.lat += point.lat;
-          nextCenter.lon += point.lon;
-        }
-        nextCenter.lat /= static_cast<double>(groups[groupIndex].size());
-        nextCenter.lon /= static_cast<double>(groups[groupIndex].size());
-        centers[groupIndex] = nextCenter;
-      }
-    }
-
-    std::vector<std::vector<MissionWaypoint>> groups(clusterCount);
-    for (size_t pointIndex = 0; pointIndex < routeWaypoints.size(); ++pointIndex) {
-      groups[assignments[pointIndex]].push_back(routeWaypoints[pointIndex]);
-    }
+    const auto groups = clusterPatrolWaypointsDeterministic(routeWaypoints, clusterCount, centerLat);
     for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
       if (groups[groupIndex].empty()) {
         continue;
@@ -2436,6 +2789,7 @@ encodeVideoPacket(const VideoPacket& packet)
 {
   const auto header = encodeFields({
     {"stream_id", packet.streamId},
+    {"stream_session_epoch", std::to_string(packet.streamSessionEpoch)},
     {"capture_ms", std::to_string(packet.captureMs)},
     {"bucket_packet_count", std::to_string(packet.bucketPacketCount)},
     {"encoding", packet.encoding},
@@ -2488,6 +2842,7 @@ decodeVideoPacket(const std::vector<uint8_t>& payload)
     reinterpret_cast<const char*>(payload.data() + 4), headerSize));
   VideoPacket packet;
   packet.streamId = fieldOr(header, "stream_id", "");
+  packet.streamSessionEpoch = std::stoull(fieldOr(header, "stream_session_epoch", "0"));
   packet.second = std::stoull(fieldOr(header, "second", "0"));
   packet.packetSeq = std::stoull(fieldOr(header, "packet_seq", "0"));
   packet.frameSeq = std::stoull(fieldOr(header, "frame_seq", "0"));

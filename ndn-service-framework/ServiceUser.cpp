@@ -2817,6 +2817,46 @@ namespace ndn_service_framework
         return result;
     }
 
+    LargeDataReferenceRequestResult ServiceUser::makeRequestWithLargeDataOptimization(
+        const PreparedServiceRequest& ctx,
+        const std::vector<uint8_t>& payload,
+        const std::string& objectLabel,
+        const std::string& objectType,
+        size_t thresholdBytes,
+        const ndn::time::milliseconds& freshness)
+    {
+        LargeDataReferenceRequestResult result;
+        if (payload.size() <= thresholdBytes) {
+            ndn::Buffer inlinePayload;
+            if (!payload.empty()) {
+                inlinePayload = ndn::Buffer(payload.data(), payload.size());
+            }
+            result.requestMessage.setPayload(inlinePayload, inlinePayload.size());
+            result.success = true;
+            return result;
+        }
+
+        result.largeData = publishEncryptedLargeData(ctx, payload, objectLabel, freshness);
+        if (!result.largeData.success) {
+            result.errorMessage = result.largeData.errorMessage.empty()
+                ? "failed to publish encrypted large data"
+                : result.largeData.errorMessage;
+            return result;
+        }
+
+        LargeDataReference reference;
+        reference.dataName = result.largeData.encryptedDataName;
+        reference.objectType = objectType;
+        reference.objectId = result.largeData.objectId;
+        reference.plaintextSize = payload.size();
+        reference.encrypted = true;
+        auto referencePayload = encodeLargeDataReferencePayload(reference);
+        result.requestMessage.setPayload(referencePayload, referencePayload.size());
+        result.usedLargeDataReference = true;
+        result.success = true;
+        return result;
+    }
+
     ndn::Name ServiceUser::startRequestServiceWithRequestId(
         const ndn::Name& requestId,
         const std::vector<ndn::Name>& providers,

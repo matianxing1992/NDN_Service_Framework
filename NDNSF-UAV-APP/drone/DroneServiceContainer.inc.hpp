@@ -1361,6 +1361,7 @@ public:
   start(const Fields& requestFields)
   {
     std::lock_guard<std::mutex> guard(m_mutex);
+    ++m_streamSessionEpoch;
     m_targetFps = std::clamp<uint64_t>(
       std::stoull(fieldOr(requestFields, "fps", "30")), 1, 60);
     m_requestedBitrateKbps = std::max<uint64_t>(
@@ -1405,6 +1406,7 @@ public:
       {"recording_chunks", std::to_string(m_recordingChunks.load())},
       {"recording_bytes", std::to_string(m_recordingBytes.load())},
       {"stream_id", m_streamId},
+      {"stream_session_epoch", std::to_string(m_streamSessionEpoch)},
       {"stream_prefix", m_streamPrefix.toUri()},
       {"fps", std::to_string(m_targetFps)},
       {"requested_bitrate_kbps", std::to_string(m_requestedBitrateKbps)},
@@ -1435,6 +1437,12 @@ public:
   Fields
   stop()
   {
+    return stopWithReason("stopped");
+  }
+
+  Fields
+  stopWithReason(const std::string& reason)
+  {
     std::lock_guard<std::mutex> guard(m_mutex);
     const auto streamPacketsPublished = m_nextSeq.load();
     const auto fecGroupsPublished = m_nextFecFrameSeq.load();
@@ -1453,6 +1461,7 @@ public:
     return {
       {"status", "stopped"},
       {"drone_id", m_droneId},
+      {"reason", reason},
       {"capture", isCapturing() ? "on" : "off"},
       {"recording", isRecording() ? "on" : "off"},
       {"recording_session_id", m_recordingSessionId},
@@ -2056,6 +2065,7 @@ private:
     for (uint64_t i = 0; i < dataShardCount; ++i) {
       VideoPacket packet;
       packet.streamId = m_streamId;
+      packet.streamSessionEpoch = m_streamSessionEpoch;
       packet.second = second;
       packet.packetSeq = firstPacketSeq + i;
       packet.frameSeq = frameSeq;
@@ -2083,6 +2093,7 @@ private:
       const auto symbolIndex = dataShardCount + i;
       VideoPacket packet;
       packet.streamId = m_streamId;
+      packet.streamSessionEpoch = m_streamSessionEpoch;
       packet.second = second;
       packet.packetSeq = firstPacketSeq + symbolIndex;
       packet.frameSeq = frameSeq;
@@ -2426,6 +2437,7 @@ private:
   ndn::Name m_videoPrefix;
   ndn::Name m_streamPrefix;
   std::string m_streamId = "idle";
+  uint64_t m_streamSessionEpoch = 0;
   bool m_filterRegistered = false;
   bool m_recordingFilterRegistered = false;
   std::atomic<bool> m_streaming{false};
@@ -2812,11 +2824,18 @@ private:
                              << " value=" << delayText << " error=" << e.what());
               }
             }
-            std::lock_guard<std::mutex> guard(m_containerMutex);
-            const auto responseFields = m_videoPublisher->stop();
-            stopObjectDetectionLoop();
-            publishStatus("video stopped");
-            return makeResponse(true, encodeFields(responseFields));
+            {
+              std::lock_guard<std::mutex> guard(m_containerMutex);
+              if (!m_videoPublisher->isStreaming()) {
+                const auto responseFields = m_videoPublisher->stopWithReason("already-stopped");
+                publishStatus("video already stopped");
+                return makeResponse(true, encodeFields(responseFields));
+              }
+              const auto responseFields = m_videoPublisher->stop();
+              stopObjectDetectionLoop();
+              publishStatus("video stopped");
+              return makeResponse(true, encodeFields(responseFields));
+            }
           }
           return makeResponse(false, encodeFields({
             {"status", "rejected"},

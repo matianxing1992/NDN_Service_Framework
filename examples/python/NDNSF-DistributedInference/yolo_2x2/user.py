@@ -12,7 +12,6 @@ from yolo_2x2_lib import (
     SERVICE,
     decode_yolo_output,
     decode_image,
-    encode_image_reference,
     full_forward,
     make_input,
     optional_local_nfd,
@@ -53,15 +52,13 @@ def main() -> int:
         )
         image = make_input(args.input_size)
         image_payload = client.encode_input(SERVICE, image)
-        image_ref = client.publish_large_payload(
+        payload = client.publish_large_payload_reference(
             SERVICE,
             image_payload,
             object_label="inference-input-image",
+            object_type="application/x-ndnsf-di-input+npz",
             freshness_ms=120000,
         )
-        if not image_ref.success:
-            raise RuntimeError(f"input image publish failed: {image_ref.error}")
-        payload = encode_image_reference(image_ref.encrypted_data_name, image_payload)
         inference_image = decode_image(image_payload)
         artifact_paths = {
             artifact.role: artifact.path

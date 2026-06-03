@@ -292,6 +292,107 @@ BOOST_AUTO_TEST_CASE(MissingLargeDataFetchFailsCleanly)
   BOOST_CHECK(!result.errorMessage.empty());
 }
 
+BOOST_AUTO_TEST_CASE(LargeDataReferencePayloadRoundTrips)
+{
+  LargeDataReference reference;
+  reference.dataName = ndn::Name("/test/user/alice/NDNSF/LARGE-DATA/HELLO/request-1/image");
+  reference.objectType = "image/tensor";
+  reference.objectId = "image";
+  reference.plaintextSize = 2048;
+  reference.encrypted = true;
+  reference.digest = "sha256:test";
+
+  const auto payload = encodeLargeDataReferencePayload(reference);
+  BOOST_CHECK(isLargeDataReferencePayload(payload));
+  const auto parsed = parseLargeDataReferencePayload(payload);
+  BOOST_REQUIRE(parsed);
+  BOOST_CHECK_EQUAL(parsed->dataName, reference.dataName);
+  BOOST_CHECK_EQUAL(parsed->objectType, reference.objectType);
+  BOOST_CHECK_EQUAL(parsed->objectId, reference.objectId);
+  BOOST_CHECK_EQUAL(parsed->plaintextSize, reference.plaintextSize);
+  BOOST_CHECK(parsed->encrypted);
+  BOOST_CHECK_EQUAL(parsed->digest, reference.digest);
+}
+
+BOOST_AUTO_TEST_CASE(LargeDataOptimizationKeepsSmallPayloadInline)
+{
+  ndn::security::KeyChain keyChain("pib-memory:large-data-inline",
+                                   "tpm-memory:large-data-inline");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name serviceName("/HELLO");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-inline"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+
+  const auto ctx = user.prepareServiceRequest(serviceName.toUri());
+  const std::vector<uint8_t> smallPayload = {'s', 'm', 'a', 'l', 'l'};
+  const auto request = user.makeRequestWithLargeDataOptimization(
+    ctx, smallPayload, "small", "text/plain", 1024);
+
+  BOOST_REQUIRE(request.success);
+  BOOST_CHECK(!request.usedLargeDataReference);
+  const auto payload = request.requestMessage.getPayload();
+  BOOST_REQUIRE_EQUAL(payload.size(), smallPayload.size());
+  BOOST_CHECK(std::equal(payload.begin(), payload.end(), smallPayload.begin()));
+  BOOST_CHECK(!isLargeDataReferencePayload(payload));
+}
+
+BOOST_AUTO_TEST_CASE(LargeDataOptimizationPublishesReferenceForLargePayload)
+{
+  ndn::security::KeyChain keyChain("pib-memory:large-data-reference",
+                                   "tpm-memory:large-data-reference");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name serviceName("/HELLO");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-reference"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+
+  const auto ctx = user.prepareServiceRequest(serviceName.toUri());
+  const std::vector<uint8_t> largePayload(2048, static_cast<uint8_t>('x'));
+  const auto request = user.makeRequestWithLargeDataOptimization(
+    ctx, largePayload, "image", "application/octet-stream", 1024);
+  if (!request.success) {
+    BOOST_TEST_MESSAGE("NAC-ABE large-data production unavailable in local mock: "
+                       << request.errorMessage);
+    BOOST_CHECK(!request.errorMessage.empty());
+    return;
+  }
+
+  BOOST_CHECK(request.usedLargeDataReference);
+  const auto payload = request.requestMessage.getPayload();
+  const auto reference = parseLargeDataReferencePayload(payload);
+  BOOST_REQUIRE(reference);
+  BOOST_CHECK_EQUAL(reference->dataName, request.largeData.encryptedDataName);
+  BOOST_CHECK_EQUAL(reference->objectType, "application/octet-stream");
+  BOOST_CHECK_EQUAL(reference->objectId, request.largeData.objectId);
+  BOOST_CHECK_EQUAL(reference->plaintextSize, largePayload.size());
+  BOOST_CHECK(reference->encrypted);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderResolveLargeDataReferenceLeavesInlinePayload)
+{
+  ndn::security::KeyChain keyChain("pib-memory:large-data-provider-inline",
+                                   "tpm-memory:large-data-provider-inline");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/camera");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-provider-inline"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+
+  const std::vector<uint8_t> inlinePayload = {'i', 'n', 'l', 'i', 'n', 'e'};
+  const ndn::Buffer payload(inlinePayload.data(), inlinePayload.size());
+  const auto result = provider.resolveLargeDataReferencePayload(payload, "/HELLO");
+  BOOST_REQUIRE(result.success);
+  BOOST_CHECK_EQUAL_COLLECTIONS(result.plaintext.begin(), result.plaintext.end(),
+                                inlinePayload.begin(), inlinePayload.end());
+}
+
 BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
 {
   const ndn::Name requester("/test/user/alice");

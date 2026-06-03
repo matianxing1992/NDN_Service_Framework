@@ -10,11 +10,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from concurrent.futures import Future
+import hashlib
 import io
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from ndnsf import CollaborationRole
+from ndnsf import (
+    CollaborationRole,
+    LargeDataReference,
+    encode_large_data_reference_payload,
+)
 
 from .client import DistributedInferenceClient, InferenceResult
 from .controller import DistributedInferenceController
@@ -541,6 +546,41 @@ class APPClient:
             object_label=object_label,
             freshness_ms=freshness_ms,
         )
+
+    def publish_large_payload_reference(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        object_label: str = "input",
+        object_type: str = "",
+        freshness_ms: int = 60000,
+        digest: str = "",
+    ) -> bytes:
+        """Publish a large payload and return a standard NDNSF reference payload.
+
+        This is the preferred request payload for large application inputs:
+        callers pass the returned bytes to distributed_inference(), while
+        providers parse the reference and fetch the encrypted segmented Data.
+        """
+
+        published = self.publish_large_payload(
+            service,
+            payload,
+            object_label=object_label,
+            freshness_ms=freshness_ms,
+        )
+        if not published.success:
+            raise RuntimeError(f"large payload publish failed: {published.error}")
+        effective_digest = digest or ("sha256:" + hashlib.sha256(payload).hexdigest())
+        return encode_large_data_reference_payload(LargeDataReference(
+            data_name=published.encrypted_data_name,
+            object_type=object_type,
+            object_id=published.object_id,
+            plaintext_size=len(payload),
+            encrypted=True,
+            digest=effective_digest,
+        ))
 
     def async_distributed_inference(
         self,
