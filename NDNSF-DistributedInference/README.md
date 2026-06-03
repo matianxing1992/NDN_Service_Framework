@@ -515,15 +515,18 @@ yolo_2x2/
   provider artifact cache on the second command.
 
 pytorch_eager_2x2/
-  Four-provider PyTorch eager example. It splits a random fully connected
-  network into two stages and two shards per stage, then verifies the
-  distributed result against a local full-model reference.
+  Four-provider fully connected ONNX example generated from a PyTorch-defined
+  model. The splitter exports a full ONNX reference graph, analyzes candidate
+  cut points, then writes four ONNX shards: two hidden-layer shards and two
+  output-layer shards. It verifies the distributed result against a local
+  full-model reference.
 ```
 
 The ONNX examples represent the preferred portable deployment path when a
-model can be exported to ONNX. The PyTorch eager example represents the most
-flexible Python runtime path for dynamic control flow, custom Python logic, and
-research prototypes.
+model can be exported to ONNX. The fully connected example shows why some
+model families still need model-specific splitters: a generic sequential ONNX
+cut can find graph boundaries, but horizontal splitting inside a dense layer
+requires knowledge of weight rows, activation offsets, and output merge order.
 
 The lower-level `DistributedInferenceClient`,
 `DistributedInferenceProvider`, and `DistributedInferenceController` remain
@@ -867,7 +870,7 @@ split = SplitterOutput(
     group="/NDNSF-DistributeInference/example/group",
     user="/NDNSF-DistributeInference/example/user",
     provider_prefix="/NDNSF-DistributeInference/example/provider",
-    trust_app_roots=["/example"],
+    trust_app_roots=["/NDNSF-DistributeInference/example"],
     services=[
         SplitServiceSpec(
             name="/AI/YOLO/SplitInference",
