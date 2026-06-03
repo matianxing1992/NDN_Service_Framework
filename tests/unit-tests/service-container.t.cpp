@@ -95,8 +95,11 @@ BOOST_AUTO_TEST_CASE(ServiceContainerRejectsMissingRolesAndNullComponents)
 
   BOOST_CHECK_THROW(container.defaultUser(), std::out_of_range);
   BOOST_CHECK_THROW(container.defaultProvider(), std::out_of_range);
+  BOOST_CHECK_THROW(container.defaultController(), std::out_of_range);
   BOOST_CHECK_THROW(container.user("missing"), std::out_of_range);
   BOOST_CHECK_THROW(container.provider("missing"), std::out_of_range);
+  BOOST_CHECK_THROW(container.controller("missing"), std::out_of_range);
+  BOOST_CHECK_EQUAL(container.controllerRoles().size(), 0);
   BOOST_CHECK_THROW(container.addUser("", std::shared_ptr<ServiceUser>{}),
                     std::invalid_argument);
   BOOST_CHECK_THROW(container.addUser("bad", std::shared_ptr<ServiceUser>{}),
@@ -105,7 +108,101 @@ BOOST_AUTO_TEST_CASE(ServiceContainerRejectsMissingRolesAndNullComponents)
                     std::invalid_argument);
   BOOST_CHECK_THROW(container.addProvider("bad", std::shared_ptr<ServiceProvider>{}),
                     std::invalid_argument);
+  BOOST_CHECK_THROW(container.addController("", std::shared_ptr<ServiceController>{}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(container.addController("bad", std::shared_ptr<ServiceController>{}),
+                    std::invalid_argument);
   BOOST_CHECK_THROW(container.addLifecycleHook("", {}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(ServiceContainerRollsBackFailedStartAndAllowsRetry)
+{
+  ServiceContainer container;
+  std::vector<std::string> lifecycle;
+
+  container.addLifecycleHook("face", {
+    [&] { lifecycle.push_back("start-face"); },
+    [&] { lifecycle.push_back("stop-face"); }
+  });
+  container.addLifecycleHook("repo", {
+    [&] {
+      lifecycle.push_back("start-repo");
+      throw std::runtime_error("repo failed");
+    },
+    [&] { lifecycle.push_back("stop-repo"); }
+  });
+
+  BOOST_CHECK_THROW(container.start(), std::runtime_error);
+  BOOST_CHECK(!container.isStarted());
+
+  BOOST_REQUIRE_EQUAL(lifecycle.size(), 3);
+  BOOST_CHECK_EQUAL(lifecycle[0], "start-face");
+  BOOST_CHECK_EQUAL(lifecycle[1], "start-repo");
+  BOOST_CHECK_EQUAL(lifecycle[2], "stop-face");
+
+  container.addLifecycleHook("repo", {
+    [&] { lifecycle.push_back("start-repo-ok"); },
+    [&] { lifecycle.push_back("stop-repo-ok"); }
+  });
+
+  container.start();
+  BOOST_CHECK(container.isStarted());
+  container.stop();
+  BOOST_CHECK(!container.isStarted());
+  BOOST_REQUIRE_EQUAL(lifecycle.size(), 7);
+  BOOST_CHECK_EQUAL(lifecycle[3], "start-face");
+  BOOST_CHECK_EQUAL(lifecycle[4], "start-repo-ok");
+  BOOST_CHECK_EQUAL(lifecycle[5], "stop-repo-ok");
+  BOOST_CHECK_EQUAL(lifecycle[6], "stop-face");
+}
+
+BOOST_AUTO_TEST_CASE(ServiceContainerRejectsRegistryChangesAfterStart)
+{
+  ServiceContainer container;
+
+  container.addLifecycleHook("noop", {});
+  container.start();
+  BOOST_CHECK(container.isStarted());
+
+  BOOST_CHECK_THROW(container.addLifecycleHook("late", {}), std::logic_error);
+  BOOST_CHECK_THROW(container.addController("late-controller", std::shared_ptr<ServiceController>{}),
+                    std::logic_error);
+  BOOST_CHECK_THROW(container.addUser("late-user", std::shared_ptr<ServiceUser>{}),
+                    std::logic_error);
+  BOOST_CHECK_THROW(container.addProvider("late-provider", std::shared_ptr<ServiceProvider>{}),
+                    std::logic_error);
+
+  container.stop();
+  BOOST_CHECK(!container.isStarted());
+  BOOST_CHECK_NO_THROW(container.addLifecycleHook("after-stop", {}));
+}
+
+BOOST_AUTO_TEST_CASE(ServiceContainerStopRunsAllHooksBeforeReportingError)
+{
+  ServiceContainer container;
+  std::vector<std::string> lifecycle;
+
+  container.addLifecycleHook("face", {
+    [&] { lifecycle.push_back("start-face"); },
+    [&] {
+      lifecycle.push_back("stop-face");
+      throw std::runtime_error("face stop failed");
+    }
+  });
+  container.addLifecycleHook("repo", {
+    [&] { lifecycle.push_back("start-repo"); },
+    [&] { lifecycle.push_back("stop-repo"); }
+  });
+
+  container.start();
+  BOOST_CHECK_THROW(container.stop(), std::runtime_error);
+  BOOST_CHECK(!container.isStarted());
+
+  BOOST_REQUIRE_EQUAL(lifecycle.size(), 4);
+  BOOST_CHECK_EQUAL(lifecycle[0], "start-face");
+  BOOST_CHECK_EQUAL(lifecycle[1], "start-repo");
+  BOOST_CHECK_EQUAL(lifecycle[2], "stop-repo");
+  BOOST_CHECK_EQUAL(lifecycle[3], "stop-face");
 }
 
 } // namespace ndn_service_framework::test

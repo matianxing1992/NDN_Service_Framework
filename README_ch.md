@@ -246,17 +246,20 @@ auto future = localRegistry.localInvokeAsync<TelemetryRequest, TelemetryStatus>(
 
 对于更复杂的 service-oriented application，NDNSF core 还提供
 `ServiceContainer`，作为同一进程内的 runtime composition 和 lifecycle
-边界。它不会替代 `ServiceUser`、`ServiceProvider` 或
+边界。它不会替代 `ServiceController`、`ServiceUser`、`ServiceProvider` 或
 `LocalServiceRegistry`，而是拥有或引用它们，让一个应用可以在同一个进程级
-配置下管理多个角色。UAV-APP 和 DistributedInference 这类应用中，一个进程
-可能同时是 user、provider、本地 helper host 和 embedded service runtime，
-这正是 ServiceContainer 的适用场景。
+配置下管理多个角色。一个 container 可以包含 controller、user、provider 和
+local helper 的任意组合，但不要求每个进程都运行所有角色。UAV-APP 和
+DistributedInference 这类应用中，一个进程可能同时是 user、provider、本地
+helper host，有时还会嵌入 controller runtime，这正是 ServiceContainer 的适用场景。
 
 `ServiceContainer` 负责：
 
 ```text
-管理同一进程内的多个 ServiceUser、ServiceProvider、helper 和 local-only module；
-协调 lifecycle start/stop hook、runtime configuration 和 local service registration；
+管理同一进程内的多个 ServiceController、ServiceUser、ServiceProvider、helper 和
+local-only module；
+提供共享的进程级 runtime configuration；
+协调应用自己拥有的 module 的 lifecycle start/stop hook；
 暴露 LocalServiceRegistry，用于可信的同进程组合；
 把 remote、Targeted 和 local service registration 放在同一个应用边界里管理；
 为复杂 NDNSF 应用提供标准结构。
@@ -271,6 +274,12 @@ auto future = localRegistry.localInvokeAsync<TelemetryRequest, TelemetryStatus>(
 把应用特定状态模型强塞进 NDNSF core。
 ```
 
+Container registration 采用保守语义。应用应该在调用 `start()` 之前完成 user、
+provider、local service 和 lifecycle hook 注册。`start()` 之后，role 和 hook
+注册会被拒绝，避免进程级 service 边界在 request 运行期间改变。`start()` 是幂等的；
+如果某个 start hook 抛异常，已经启动的 hook 会按相反顺序停止，container 保持 stopped。
+`stop()` 也是幂等的，并按相反顺序执行 stop hook。
+
 真正调用服务的 API 保持不变：
 
 ```cpp
@@ -283,6 +292,7 @@ ndn_service_framework::ServiceContainer container({
 
 container.addUser("operator", user);
 container.addProvider("drone-services", provider);
+container.addController("controller", controller);
 
 container.provider("drone-services").addHandler<RequestT, ResponseT>(
   serviceName, handler);
@@ -292,10 +302,19 @@ container.user("operator").RequestService<RequestT, ResponseT>(
 
 container.localRegistry().registerLocalService<LocalRequest, LocalResponse>(
   localServiceName, localHandler);
+
+container.addLifecycleHook("repo-helper", {
+  [] { /* start application helper */ },
+  [] { /* stop application helper */ }
+});
+
+container.start();
+container.stop();
 ```
 
-简单说，`ServiceProvider` 是面向网络的 provider role，`ServiceUser` 是面向网络的
-caller role，而 `ServiceContainer` 是可信进程内部用于组合和管理这些角色的 runtime。
+简单说，`ServiceController` 是面向网络的 authority/policy role，`ServiceProvider`
+是面向网络的 provider role，`ServiceUser` 是面向网络的 caller role，而
+`ServiceContainer` 是可信进程内部用于组合和管理这些角色的 runtime。
 
 `RequestT` 和 `ResponseT` 只需要提供类似 protobuf 的方法：
 

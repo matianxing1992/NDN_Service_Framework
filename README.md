@@ -264,20 +264,22 @@ cross-process, cross-node, or untrusted caller. Local invocation does not add
 
 For larger service-oriented applications, NDNSF core also provides
 `ServiceContainer` as an in-process runtime composition and lifecycle boundary.
-It does not replace `ServiceUser`, `ServiceProvider`, or
+It does not replace `ServiceController`, `ServiceUser`, `ServiceProvider`, or
 `LocalServiceRegistry`; it owns or references them so an application can manage
-multiple roles under one process-level configuration. This is useful for
-applications such as UAV-APP and DistributedInference, where one process may
-act as a user, a provider, a local helper host, and an embedded service runtime
-at the same time.
+multiple roles under one process-level configuration. A container may hold any
+combination of controller, user, provider, and local helper roles. It does not
+require every process to run every role. This is useful for applications such as
+UAV-APP and DistributedInference, where one process may act as a user, a
+provider, a local helper host, and sometimes an embedded controller runtime at
+the same time.
 
 `ServiceContainer` is responsible for:
 
 ```text
-managing multiple ServiceUser, ServiceProvider, helper, and local-only modules
-inside one process;
-coordinating lifecycle start/stop hooks, runtime configuration, and local
-service registration;
+managing multiple ServiceController, ServiceUser, ServiceProvider, helper, and
+local-only modules inside one process;
+providing a shared process-level runtime configuration;
+coordinating lifecycle start/stop hooks for application-owned modules;
 exposing LocalServiceRegistry for trusted same-process composition;
 keeping remote, Targeted, and local service registration in one application
 boundary;
@@ -294,6 +296,14 @@ replay protection;
 embedding application-specific state models into NDNSF core.
 ```
 
+Container registration is intentionally conservative. Applications should
+register users, providers, local services, and lifecycle hooks before calling
+`start()`. After `start()`, role and hook registration is rejected so the
+process-level service boundary does not change while requests are in flight.
+`start()` is idempotent; if a start hook throws, hooks that already started are
+stopped in reverse order and the container remains stopped. `stop()` is also
+idempotent and runs stop hooks in reverse order.
+
 The service invocation APIs remain unchanged:
 
 ```cpp
@@ -306,6 +316,7 @@ ndn_service_framework::ServiceContainer container({
 
 container.addUser("operator", user);
 container.addProvider("drone-services", provider);
+container.addController("controller", controller);
 
 container.provider("drone-services").addHandler<RequestT, ResponseT>(
   serviceName, handler);
@@ -315,11 +326,20 @@ container.user("operator").RequestService<RequestT, ResponseT>(
 
 container.localRegistry().registerLocalService<LocalRequest, LocalResponse>(
   localServiceName, localHandler);
+
+container.addLifecycleHook("repo-helper", {
+  [] { /* start application helper */ },
+  [] { /* stop application helper */ }
+});
+
+container.start();
+container.stop();
 ```
 
-In short, `ServiceProvider` is the network-facing provider role,
-`ServiceUser` is the network-facing caller role, and `ServiceContainer` is the
-trusted process-local runtime that composes and manages those roles.
+In short, `ServiceController` is the network-facing authority/policy role,
+`ServiceProvider` is the network-facing provider role, `ServiceUser` is the
+network-facing caller role, and `ServiceContainer` is the trusted process-local
+runtime that composes and manages those roles.
 
 `RequestT` and `ResponseT` only need protobuf-like methods:
 

@@ -2,6 +2,7 @@
 #define NDN_SERVICE_FRAMEWORK_SERVICE_CONTAINER_HPP
 
 #include "LocalServiceRegistry.hpp"
+#include "ServiceController.hpp"
 #include "ServiceProvider.hpp"
 #include "ServiceUser.hpp"
 
@@ -9,6 +10,7 @@
 
 #include <functional>
 #include <algorithm>
+#include <exception>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -22,10 +24,15 @@ namespace ndn_service_framework {
  * In-process runtime boundary for composing NDNSF roles and helper modules.
  *
  * ServiceContainer is not a wire protocol role and does not replace
- * ServiceUser or ServiceProvider. It owns or references the users, providers,
- * trusted local services, and helper lifecycle hooks that live in the same
- * process. Remote invocation still goes through ServiceUser and ServiceProvider
- * APIs; trusted same-process composition still goes through LocalServiceRegistry.
+ * ServiceController, ServiceUser, or ServiceProvider. It owns or references the
+ * controllers, users, providers, trusted local services, and helper lifecycle
+ * hooks that live in the same process. Remote invocation still goes through
+ * ServiceUser and ServiceProvider APIs; trusted same-process composition still
+ * goes through LocalServiceRegistry.
+ *
+ * Applications should finish registering roles and lifecycle hooks before
+ * start(). Runtime service invocation still uses ServiceUser/ServiceProvider;
+ * ServiceContainer only coordinates process-local composition.
  */
 class ServiceContainer
 {
@@ -69,8 +76,72 @@ public:
   }
 
   void
+  addController(const std::string& role, std::shared_ptr<ServiceController> controller)
+  {
+    ensureNotStarted("register controller roles");
+    if (role.empty()) {
+      throw std::invalid_argument("ServiceContainer controller role must not be empty");
+    }
+    if (controller == nullptr) {
+      throw std::invalid_argument("ServiceContainer controller must not be null");
+    }
+    m_controllers[role] = std::move(controller);
+    if (m_defaultControllerRole.empty()) {
+      m_defaultControllerRole = role;
+    }
+  }
+
+  void
+  addController(const std::string& role, std::unique_ptr<ServiceController> controller)
+  {
+    addController(role, std::shared_ptr<ServiceController>(std::move(controller)));
+  }
+
+  void
+  useController(const std::string& role, ServiceController& controller)
+  {
+    addController(role, std::shared_ptr<ServiceController>(&controller, [] (ServiceController*) {}));
+  }
+
+  bool
+  hasController(const std::string& role) const
+  {
+    return m_controllers.find(role) != m_controllers.end();
+  }
+
+  ServiceController&
+  controller(const std::string& role)
+  {
+    const auto it = m_controllers.find(role);
+    if (it == m_controllers.end()) {
+      throw std::out_of_range("ServiceContainer controller role is not registered: " + role);
+    }
+    return *it->second;
+  }
+
+  const ServiceController&
+  controller(const std::string& role) const
+  {
+    const auto it = m_controllers.find(role);
+    if (it == m_controllers.end()) {
+      throw std::out_of_range("ServiceContainer controller role is not registered: " + role);
+    }
+    return *it->second;
+  }
+
+  ServiceController&
+  defaultController()
+  {
+    if (m_defaultControllerRole.empty()) {
+      throw std::out_of_range("ServiceContainer has no default controller");
+    }
+    return controller(m_defaultControllerRole);
+  }
+
+  void
   addUser(const std::string& role, std::shared_ptr<ServiceUser> user)
   {
+    ensureNotStarted("register user roles");
     if (role.empty()) {
       throw std::invalid_argument("ServiceContainer user role must not be empty");
     }
@@ -133,6 +204,7 @@ public:
   void
   addProvider(const std::string& role, std::shared_ptr<ServiceProvider> provider)
   {
+    ensureNotStarted("register provider roles");
     if (role.empty()) {
       throw std::invalid_argument("ServiceContainer provider role must not be empty");
     }
@@ -193,6 +265,16 @@ public:
   }
 
   std::vector<std::string>
+  controllerRoles() const
+  {
+    std::vector<std::string> roles;
+    for (const auto& entry : m_controllers) {
+      roles.push_back(entry.first);
+    }
+    return roles;
+  }
+
+  std::vector<std::string>
   userRoles() const
   {
     std::vector<std::string> roles;
@@ -215,6 +297,7 @@ public:
   void
   addLifecycleHook(const std::string& name, LifecycleHook hook)
   {
+    ensureNotStarted("register lifecycle hooks");
     if (name.empty()) {
       throw std::invalid_argument("ServiceContainer lifecycle hook name must not be empty");
     }
@@ -242,10 +325,30 @@ public:
     if (m_started) {
       return;
     }
-    for (auto& entry : m_lifecycleHooks) {
-      if (entry.second.start) {
-        entry.second.start();
+    size_t startedHooks = 0;
+    try {
+      for (auto& entry : m_lifecycleHooks) {
+        if (entry.second.start) {
+          entry.second.start();
+        }
+        ++startedHooks;
       }
+    }
+    catch (...) {
+      while (startedHooks > 0) {
+        --startedHooks;
+        const auto& hook = m_lifecycleHooks[startedHooks].second;
+        if (hook.stop) {
+          try {
+            hook.stop();
+          }
+          catch (...) {
+            // Preserve the original startup failure. Applications can retry
+            // start() after fixing the failed hook.
+          }
+        }
+      }
+      throw;
     }
     m_started = true;
   }
@@ -256,20 +359,43 @@ public:
     if (!m_started) {
       return;
     }
+    std::exception_ptr firstError;
     for (auto it = m_lifecycleHooks.rbegin(); it != m_lifecycleHooks.rend(); ++it) {
-      if (it->second.stop) {
+      if (!it->second.stop) {
+        continue;
+      }
+      try {
         it->second.stop();
+      }
+      catch (...) {
+        if (!firstError) {
+          firstError = std::current_exception();
+        }
       }
     }
     m_started = false;
+    if (firstError) {
+      std::rethrow_exception(firstError);
+    }
   }
 
 private:
+  void
+  ensureNotStarted(const char* action) const
+  {
+    if (m_started) {
+      throw std::logic_error(std::string("ServiceContainer cannot ") + action +
+                             " after start()");
+    }
+  }
+
   RuntimeConfig m_config;
   LocalServiceRegistry m_localRegistry;
+  std::map<std::string, std::shared_ptr<ServiceController>> m_controllers;
   std::map<std::string, std::shared_ptr<ServiceUser>> m_users;
   std::map<std::string, std::shared_ptr<ServiceProvider>> m_providers;
   std::vector<std::pair<std::string, LifecycleHook>> m_lifecycleHooks;
+  std::string m_defaultControllerRole;
   std::string m_defaultUserRole;
   std::string m_defaultProviderRole;
   bool m_started = false;
