@@ -2492,6 +2492,32 @@ private:
 
 class DroneServiceContainer
 {
+private:
+  class RecordingManifestLocalHelper
+  {
+  public:
+    explicit RecordingManifestLocalHelper(std::function<Fields()> manifestProvider)
+      : m_manifestProvider(std::move(manifestProvider))
+    {
+    }
+
+    void
+    registerService(ndn_service_framework::LocalServiceRegistry& localRegistry,
+                   const ndn::Name& serviceName)
+    {
+      localRegistry.registerLocalService(
+        serviceName,
+        [this](const ndn::Name&,
+               const ndn::Name&,
+               const ndn_service_framework::RequestMessage&) {
+          return makeResponse(true, encodeFields(m_manifestProvider()));
+        });
+    }
+
+  private:
+    std::function<Fields()> m_manifestProvider;
+  };
+
 public:
   DroneServiceContainer(std::string droneId, bool available, bool serveCertificates,
                UavRuntimeConfig config,
@@ -2848,13 +2874,12 @@ private:
         return makeResponse(true, encodeFields(cameraStatusFields()));
       });
 
-    m_coreContainer.localRegistry().registerLocalService(
-      localRecordingManifestServiceName(),
-      [this](const ndn::Name&,
-             const ndn::Name&,
-             const ndn_service_framework::RequestMessage&) {
-        return makeResponse(true, encodeFields(recordingManifestFields()));
-      });
+    if (!m_recordingManifestLocalHelper) {
+      m_recordingManifestLocalHelper = std::make_unique<RecordingManifestLocalHelper>(
+        [this] { return recordingManifestFields(); });
+    }
+    m_recordingManifestLocalHelper->registerService(m_coreContainer.localRegistry(),
+                                                   localRecordingManifestServiceName());
 
     m_provider->addService(
       droneVideoControlService(m_config, m_droneId),
@@ -3238,6 +3263,7 @@ private:
   bool m_available;
   ndn::Name m_identity;
   ndn_service_framework::ServiceContainer m_coreContainer;
+  std::unique_ptr<RecordingManifestLocalHelper> m_recordingManifestLocalHelper;
   std::string m_videoPath;
   std::string m_flightControllerBackend;
   std::string m_mavlinkUdpHost;
