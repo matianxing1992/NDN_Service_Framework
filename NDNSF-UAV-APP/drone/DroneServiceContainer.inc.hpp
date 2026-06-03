@@ -1291,10 +1291,14 @@ public:
   };
 
   VideoPublisher(ndn::Face& face, ndn::KeyChain& keyChain,
+                 ndn_service_framework::LocalServiceRegistry& localRegistry,
+                 ndn::Name localRecordingChunkServiceName,
                  UavRuntimeConfig config, std::string droneId, std::string videoPath,
                  CameraRuntimeOptions options)
     : m_face(face)
     , m_keyChain(keyChain)
+    , m_localRegistry(localRegistry)
+    , m_localRecordingChunkServiceName(std::move(localRecordingChunkServiceName))
     , m_config(std::move(config))
     , m_droneId(std::move(droneId))
     , m_videoPath(std::move(videoPath))
@@ -1331,6 +1335,16 @@ public:
         .append("hybrid-key")
         .toUri();
       m_recordingContentKey = loadOrCreateRecordingContentKey();
+      m_localRegistry.registerLocalService(
+        m_localRecordingChunkServiceName,
+        [this](const ndn::Name&,
+               const ndn::Name&,
+               const ndn_service_framework::RequestMessage& request) {
+          const auto objectName = payloadToString(request);
+          const auto payload = recordingChunkData(objectName);
+          return makeBinaryResponse(!payload.empty(), payload,
+                                    payload.empty() ? "recording chunk not found" : "No error");
+        });
       ensureRecordingFilterRegistered();
       NDN_LOG_INFO("CAMERA_RECORDING_ENCRYPTION drone=" << m_droneId
                    << " algorithm=hybrid-aes-256-gcm-at-rest"
@@ -1778,7 +1792,10 @@ private:
   onRecordingChunkInterest(const ndn::Interest& interest)
   {
     const auto objectName = interest.getName().toUri();
-    const auto payload = recordingChunkData(objectName);
+    const auto response = m_localRegistry.localInvokeRaw(
+      m_localRecordingChunkServiceName, makeRequest(objectName), droneIdentity(m_config, m_droneId));
+    const auto responsePayload = response.getPayload();
+    std::vector<uint8_t> payload(responsePayload.begin(), responsePayload.end());
     if (payload.empty()) {
       NDN_LOG_DEBUG("CAMERA_RECORDING_CHUNK_MISS object=" << objectName);
       return;
@@ -2424,6 +2441,8 @@ private:
   static constexpr uint64_t MAX_VIDEO_FRAME_WIDTH = 1280;
   ndn::Face& m_face;
   ndn::KeyChain& m_keyChain;
+  ndn_service_framework::LocalServiceRegistry& m_localRegistry;
+  ndn::Name m_localRecordingChunkServiceName;
   UavRuntimeConfig m_config;
   std::string m_droneId;
   std::string m_videoPath;
@@ -2537,7 +2556,8 @@ public:
         auto provider = std::make_unique<ndn_service_framework::ServiceProvider>(
           m_face, m_config.groupPrefix, m_providerCert, m_controllerCert, m_config.trustSchema);
         auto videoPublisher = std::make_unique<VideoPublisher>(
-          m_face, m_keyChain, m_config, m_droneId, m_videoPath, m_cameraOptions);
+          m_face, m_keyChain, m_coreContainer.localRegistry(), localRecordingChunkServiceName(),
+          m_config, m_droneId, m_videoPath, m_cameraOptions);
         {
           std::lock_guard<std::mutex> guard(m_containerMutex);
           m_provider = std::move(provider);
@@ -3108,6 +3128,12 @@ private:
   localRecordingManifestServiceName() const
   {
     return ndn::Name(m_identity).append("Local").append("Recording").append("Manifest");
+  }
+
+  ndn::Name
+  localRecordingChunkServiceName() const
+  {
+    return ndn::Name(m_identity).append("Local").append("Recording").append("Chunk");
   }
 
   void

@@ -428,8 +428,12 @@ main(int argc, char** argv)
 
       ndn::Face smokeFace;
       ndn::KeyChain smokeKeyChain;
+      ndn_service_framework::LocalServiceRegistry smokeLocalRegistry;
+      const auto smokeLocalRecordingChunkService =
+        droneIdentity(config, droneId).append("Local").append("Recording").append("Chunk");
       VideoPublisher smokePublisher(
-        smokeFace, smokeKeyChain, config, droneId, videoPath, cameraOptions);
+        smokeFace, smokeKeyChain, smokeLocalRegistry, smokeLocalRecordingChunkService,
+        config, droneId, videoPath, cameraOptions);
 
       const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(autoCameraRecordTimeoutSeconds);
