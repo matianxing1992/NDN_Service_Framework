@@ -229,6 +229,19 @@ PYTHONPATH="NDNSF-DistributedInference:$PYTHONPATH" \
 python3 Experiments/NDNSF_DI_GUI.py
 ```
 
+如果希望先做 GUI preflight，或者在打开 GUI 前顺便跑一次 MiniNDN regression，
+可以用这个面向 GUI 试用的入口：
+
+```bash
+python3 Experiments/NDNSF_DI_GUI_Minindn.py
+python3 Experiments/NDNSF_DI_GUI_Minindn.py --run-minindn --case app-api --no-gui
+python3 Experiments/NDNSF_DI_GUI_Minindn.py --run-minindn --case yolo-2x2 --no-gui
+```
+
+第一条命令会检查 `tkinter`、导入 GUI、验证默认 policy，然后打开 GUI。第二条
+命令通过同一个 launcher 运行快速的非 MiniNDN API smoke。第三条命令运行完整的
+YOLO 2x2 MiniNDN distributed-inference diagnostic path。
+
 第一版使用 Python 标准库里的 `tkinter`，因此普通 Ubuntu 桌面不需要额外引入
 Qt 依赖。它提供：
 
