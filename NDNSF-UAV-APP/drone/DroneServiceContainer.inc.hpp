@@ -2820,6 +2820,14 @@ private:
       return decision;
     };
 
+    m_coreContainer.localRegistry().registerLocalService(
+      localCameraStatusServiceName(),
+      [this](const ndn::Name&,
+             const ndn::Name&,
+             const ndn_service_framework::RequestMessage&) {
+        return makeResponse(true, encodeFields(cameraStatusFields()));
+      });
+
     m_provider->addService(
       droneVideoControlService(m_config, m_droneId),
       ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
@@ -2933,8 +2941,14 @@ private:
           telemetry["flight_controller_backend"] = m_flightControllerBackend;
           telemetry["flight_controller_available"] = m_backend ? "true" : "false";
           telemetry["flight_controller_reason"] = m_backend ? "ok" : "backend-not-created";
-          const auto cameraFields = cameraStatusFields();
-          telemetry.insert(cameraFields.begin(), cameraFields.end());
+          const auto cameraResponse = m_coreContainer.localRegistry().localInvokeRaw(
+            localCameraStatusServiceName(), ndn_service_framework::RequestMessage{}, m_identity);
+          if (cameraResponse.getStatus()) {
+            const auto cameraPayload = cameraResponse.getPayload();
+            const auto cameraFields = decodeFields(std::string(
+              reinterpret_cast<const char*>(cameraPayload.data()), cameraPayload.size()));
+            telemetry.insert(cameraFields.begin(), cameraFields.end());
+          }
           telemetry["stream_packets_published"] = std::to_string(streamPacketsPublished());
           telemetry["fec_groups_published"] = std::to_string(fecGroupsPublished());
           telemetry["frames_published"] = std::to_string(fecGroupsPublished());
@@ -3073,6 +3087,12 @@ private:
                               missionAccepted ? "No error" : "flight controller did not accept mission");
         }),
       ServiceInvocationMode::NormalOnly);
+  }
+
+  ndn::Name
+  localCameraStatusServiceName() const
+  {
+    return ndn::Name(m_identity).append("Local").append("Camera").append("Status");
   }
 
   void
