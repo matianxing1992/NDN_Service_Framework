@@ -280,6 +280,13 @@ provider、local service 和 lifecycle hook 注册。`start()` 之后，role 和
 如果某个 start hook 抛异常，已经启动的 hook 会按相反顺序停止，container 保持 stopped。
 `stop()` 也是幂等的，并按相反顺序执行 stop hook。
 
+对于由 container 管理的本地 helper，推荐使用 `container.addLocalService(...)`，
+而不是直接调用 `container.localRegistry().registerLocalService(...)`。registry accessor
+仍然保留为低层 escape hatch，并用于 local invocation；但 `addLocalService(...)` 会使用
+与 role 和 hook registration 一致的 lifecycle 边界。`start()` 前重复注册同一个 local
+service name 时，沿用 `LocalServiceRegistry` 语义，新的 handler 会替换旧 handler。
+`stop()` 之后，应用可以在再次启动 container 前调整 role、local service 和 lifecycle hook。
+
 真正调用服务的 API 保持不变：
 
 ```cpp
@@ -458,11 +465,18 @@ ndnsec-ls-identity -c
 
 `/examples/generic-dynamic-user-provider.cpp` 是最小通用动态示例。它直接使用 `ServiceProvider::addHandler<RequestT, ResponseT>` 和 `ServiceUser::RequestService<RequestT, ResponseT>`。它使用本地/mock request publication，因此可以不依赖真实 NFD/network 展示 request/response 流程。
 
+`/examples/ServiceContainer_LocalHelper.cpp` 是最小 ServiceContainer 组合示例。
+同一个进程拥有 user role、provider role 和一个可信 local helper。provider 的 remote
+service handler 会通过 `LocalServiceRegistry` 调用这个 local helper，但 user 仍然只看到
+普通 remote service invocation。这个例子说明 local helper 是进程内部组合工具，不会变成
+外部 caller 可以选择的网络服务。
+
 构建：
 
 ```bash
 ./waf configure --with-examples
 ./waf build --target=generic-dynamic-user-provider
+./waf build --target=service-container-local-helper
 ```
 
 `/examples/App_ServiceController.cpp`、`/examples/App_Provider.cpp` 和 `/examples/App_User.cpp` 是当前 HELLO regression examples。它们使用 controller-issued permission mapping、动态 `addService(...)`、`RequestMessage.payload = "HELLO"`、`ResponseMessage.payload = "HELLO"`、`AckDecision` metadata payload、`UserToken`/`ProviderToken` 握手，以及基于 timeout 的 `AckSelectionCandidate` custom selection。
