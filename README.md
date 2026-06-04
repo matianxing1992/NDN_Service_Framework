@@ -304,6 +304,15 @@ process-level service boundary does not change while requests are in flight.
 stopped in reverse order and the container remains stopped. `stop()` is also
 idempotent and runs stop hooks in reverse order.
 
+For container-owned local helpers, prefer `container.addLocalService(...)` over
+calling `container.localRegistry().registerLocalService(...)` directly. The
+registry accessor remains available as a low-level escape hatch and for local
+invocation, but `addLocalService(...)` applies the same lifecycle boundary as
+role and hook registration. Re-registering the same local service name before
+`start()` follows `LocalServiceRegistry` semantics and replaces the previous
+handler. After `stop()`, the application may adjust roles, local services, and
+lifecycle hooks before starting the container again.
+
 The service invocation APIs remain unchanged:
 
 ```cpp
@@ -510,11 +519,19 @@ one machine and transfers private keys to another machine.
 
 `/examples/generic-dynamic-user-provider.cpp` is the minimal generic dynamic example. It uses `ServiceProvider::addHandler<RequestT, ResponseT>` and `ServiceUser::RequestService<RequestT, ResponseT>` directly, without generated service users, generated service providers, generated services, or stubs. It uses local/mock request publication so it can demonstrate the request/response flow without requiring real NFD/network.
 
+`/examples/ServiceContainer_LocalHelper.cpp` is the minimal ServiceContainer
+composition example. One process owns a user role, a provider role, and a
+trusted local helper. The provider's remote service handler invokes the local
+helper through `LocalServiceRegistry`, while the user still sees only the normal
+remote service invocation. This demonstrates that local helpers are internal
+composition tools and do not become externally selectable network services.
+
 Build it with:
 
 ```bash
 ./waf configure --with-examples
 ./waf build --target=generic-dynamic-user-provider
+./waf build --target=service-container-local-helper
 ```
 
 `/examples/App_ServiceController.cpp`, `/examples/App_Provider.cpp`, and `/examples/App_User.cpp` are the current HELLO regression examples. They use controller-issued permission mappings, dynamic `addService(...)`, `RequestMessage.payload = "HELLO"`, `ResponseMessage.payload = "HELLO"`, `AckDecision` metadata payloads, `UserToken`/`ProviderToken` handshakes, and timeout-driven custom selection over `AckSelectionCandidate`.

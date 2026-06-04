@@ -183,6 +183,42 @@ BOOST_AUTO_TEST_CASE(ServiceContainerRejectsRegistryChangesAfterStart)
   container.stop();
   BOOST_CHECK(!container.isStarted());
   BOOST_CHECK_NO_THROW(container.addLifecycleHook("after-stop", {}));
+  const auto registerLocalAfterStop = [&] {
+    container.addLocalService<DynamicRequest, DynamicResponse>(
+      ndn::Name("/after-stop/local/service"),
+      [] (const ndn::Name&,
+          const DynamicRequest&,
+          DynamicResponse&) {});
+  };
+  BOOST_CHECK_NO_THROW(registerLocalAfterStop());
+}
+
+BOOST_AUTO_TEST_CASE(ServiceContainerLocalServiceRegistrationCanOverrideBeforeStart)
+{
+  ServiceContainer container;
+  const ndn::Name serviceName("/Container/Local/Override");
+
+  container.addLocalService<DynamicRequest, DynamicResponse>(
+    serviceName,
+    [] (const ndn::Name&,
+        const DynamicRequest&,
+        DynamicResponse& response) {
+      response.setClassification(1);
+    });
+  container.addLocalService<DynamicRequest, DynamicResponse>(
+    serviceName,
+    [] (const ndn::Name&,
+        const DynamicRequest&,
+        DynamicResponse& response) {
+      response.setClassification(2);
+    });
+
+  DynamicRequest request;
+  request.setPayload("override");
+  const auto result = container.localRegistry().localInvoke<DynamicRequest, DynamicResponse>(
+    serviceName, request);
+  BOOST_REQUIRE(result.success);
+  BOOST_CHECK_EQUAL(result.response.getClassification(), 2);
 }
 
 BOOST_AUTO_TEST_CASE(ServiceContainerStopRunsAllHooksBeforeReportingError)

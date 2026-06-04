@@ -27,6 +27,22 @@ export NDNSF_LIBRARY_DIR=$PWD/build
 
 The example binaries are generated under `build/examples/`.
 
+Two small local/mock C++ examples are useful when checking the API shape:
+
+```bash
+./waf configure --with-examples
+./waf build --target=generic-dynamic-user-provider
+./waf build --target=service-container-local-helper
+./build/examples/generic-dynamic-user-provider
+./build/examples/service-container-local-helper
+```
+
+`generic-dynamic-user-provider` shows the current generic dynamic user/provider
+API. `service-container-local-helper` shows a process that owns a user role, a
+provider role, and a trusted local helper; the provider's remote service handler
+uses the local helper internally, while the remote caller still uses normal
+NDNSF service invocation.
+
 ## Run On One Real Machine
 
 Start a local NFD, run the controller, then run the provider and user examples:
