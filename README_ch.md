@@ -1,5 +1,29 @@
 # ndn_service_framework
 
+NDNSF 是一个基于 Named Data Networking 的通用动态 service framework。本仓库包含
+C++ core runtime、Python bindings、distributed repo prototype、distributed inference
+package，以及用于应用驱动验证的 UAV application。新应用应使用统一 service name 和动态
+user/provider/controller API。旧的 generated service/stub 路径已经不再是支持的新开发方向。
+
+当前主要组件：
+
+```text
+ndn-service-framework/        C++ core runtime 和通用动态 API
+pythonWrapper/                Python 业务逻辑 API 和进程编排
+NDNSF-DistributedRepo/        Distributed repo prototype 和 Python binding
+NDNSF-DistributedInference/   高层 distributed inference package
+NDNSF-UAV-APP/                基于 NDNSF 的 UAV network application
+examples/                     C++ 和 Python smoke/regression examples
+Experiments/                  MiniNDN 和实验 harness
+RELEASE/                      本地 release packaging artifacts 和 manuals
+```
+
+框架贡献本身是 service runtime：provider discovery、permission distribution、
+NAC-ABE-backed message protection、一次性 token handshake、ACK/Selection/Response
+execution、面向已知 provider 的 Targeted invocation、同进程 trusted local invocation、
+基于 ServiceContainer 的进程内组合，以及通用 large-data reference abstraction。
+UAV 和 DistributedInference 是应用层 workload，用来验证并压力测试这些框架机制。
+
 ## 1. 前置条件
 
 为了保证整个软件栈的版本一致，建议使用下面这些仓库：
@@ -164,18 +188,31 @@ ObjectDetectionRequest request;
 request.set_image("frame-bytes");
 
 user.RequestService<ObjectDetectionRequest, ObjectDetectionResponse>(
-  providers,
   ndn::Name("/ObjectDetection/YOLOv8"),
   request,
+  300, // ACK collection window，单位 ms。
+  ndn_service_framework::strategy::FirstResponding,
+  1000, // 总 response timeout，单位 ms。
   [](const ObjectDetectionResponse& response) {
     // 处理 typed response。
   },
-  [] {
+  [](const ndn::Name& requestId) {
     // 处理 timeout。
-  },
-  1000,
-  ndn_service_framework::tlv::FirstResponding);
+  });
 ```
+
+对于新的 C++ application code，建议把公开 API surface 控制在下面这组入口：
+
+```text
+Provider normal service:       addHandler<RequestT, ResponseT>(serviceName, handler)
+Provider known-target service: addTargetedService(serviceName, handler)
+User normal service:           RequestService<RequestT, ResponseT>(serviceName, request, ackMs, policy, timeoutMs, onResponse, onTimeout)
+User known-target service:     RequestServiceTargeted<RequestT, ResponseT>(provider, serviceName, request, onResponse, onTimeout, timeoutMs)
+Same-process helper:           ServiceContainer::addLocalService<RequestT, ResponseT>(serviceName, handler)
+```
+
+接受 raw `RequestMessage`、legacy integer strategy、或显式 provider list 的低层 overload
+仍然保留给 framework internals、tests 和兼容用途，但不建议作为新应用的起点。
 
 对于已经知道目标 provider 的低延迟命令，例如 UAV flight-control/MAVLink
 执行，使用 targeted invocation。Targeted invocation 仍然使用 NDNSF 的
@@ -507,7 +544,30 @@ service handler 会通过 `LocalServiceRegistry` 调用这个 local helper，但
 
 `run_token_handshake_negative_regression.sh` 验证错误 `UserToken` 的 ACK/response 会被拒绝，错误 `ProviderToken` 的 selection 会被拒绝，以及 replayed ProviderToken 会被拒绝。
 
-这些 regression 对应的安全机制：
+### 3.8 Python wrapper 和高层应用包
+
+Python wrapper 是当前 C++ runtime 的 binding，不是另一个独立 framework implementation。
+它支持普通 service handler、service-independent ACK decision、应用自定义 ACK selection、
+异步请求、collaboration handler、collaboration request、encrypted large-data publication、
+标准 large-data reference payload，以及 NDN segmented Data helpers。API 示例见
+`pythonWrapper/README.md`。
+
+`NDNSF-DistributedInference` 构建在这个 wrapper 之上，并暴露 model-plan 和 distributed
+inference API。当前路径支持 ONNX chunk policy、dependency-driven execution、repo-backed
+或 NDN-backed artifacts、通过 large-data reference 交换 activation，以及 MiniNDN smoke
+tests。它仍然是 NDNSF core 之上的应用包；model-specific splitter 和 planner 保留在该包中，
+不会放进 framework core。
+
+`NDNSF-DistributedRepo` 是 repository-oriented application layer。它应该保存和服务应用
+已经发布的 NDN Data segments 或 references，而不是重新定义 NDNSF service security。
+Repo 细节有意保持在 core service invocation protocol 之外。
+
+`NDNSF-UAV-APP` 是基于 NDNSF 的 UAV service application。跨节点 control、telemetry、
+video、recording discovery 和 mission operations 走 NDNSF remote/Targeted services。
+同进程 helper 可以通过 `container.addLocalService(...)` 使用
+`ServiceContainer::localRegistry()`，但 local helper 不是外部可选择的 service。
+
+### 3.9 这些 regression 对应的安全机制
 
 ```text
 Permission distribution:
@@ -537,7 +597,7 @@ Authorization:
   Service authorization is enforced by NAC-ABE attributes, provider permission checks, and token handshake validation.
 ```
 
-### 3.8 如何把日志写到文件
+### 3.10 如何把日志写到文件
 
 例如程序是 `./app`，并且希望记录所有日志，先在命令行设置 log level：
 
@@ -553,7 +613,7 @@ export NDN_LOG="*=TRACE"
 
 输出会保存到当前目录下的 `filename.log`。如果使用 MiniNDN，输出会存储到 `/tmp/minindn/<nodeName>`。
 
-### 3.9 MiniNDN latency reproduction profile
+### 3.11 MiniNDN latency reproduction profile
 
 低延迟 HELLO benchmark 使用动态 API：Memphis 作为 user，UCLA 作为 provider，
 CSU 作为 controller，默认禁用 adaptive admission control，SVS maximum

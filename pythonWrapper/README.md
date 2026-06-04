@@ -14,6 +14,11 @@ The wrapper provides two layers:
 - `NDNSFSession`: lower-level process orchestration for launching existing C++
   applications in experiments.
 
+The business-logic API now covers ordinary service invocation, provider ACK
+decisions, application-defined ACK selection, asynchronous requests,
+provider-side collaboration handlers, user-side collaboration requests, and the
+generic NDNSF large-data reference helpers used by higher-level applications.
+
 Application-specific orchestration, such as which AI roles to start or which
 policy file to use, belongs in user code or `examples/`, not in this wrapper
 package.
@@ -114,6 +119,20 @@ user.request_service_async(
 user.stop()
 ```
 
+Applications that need service-specific provider selection can inspect the ACK
+candidates collected during the ACK window:
+
+```python
+response = user.request_service_select(
+    "/Storage/Insert",
+    payload,
+    selector=lambda candidates: [
+        item.provider_name for item in candidates if item.status
+    ][:2],
+    ack_timeout_ms=300,
+    timeout_ms=5000)
+```
+
 `ServiceProvider` exposes service-independent runtime options such as
 `group`, `controller`, `provider_prefix`, `trust_schema`, `handler_threads`,
 and `serve_certificates`. `ServiceUser` exposes `group`, `controller`, `user`,
@@ -158,6 +177,72 @@ with NDNSFSession(
 Both layers keep core NDNSF mechanisms in C++. Python code supplies application
 payloads, handlers, and orchestration policy.
 
+## Collaboration and Large Data
+
+The Python wrapper exposes the current generic collaboration path. Providers
+can register collaboration handlers with allowed roles, and users can request a
+multi-provider collaboration by describing roles, key scopes, dependencies, and
+optional artifact Data names:
+
+```python
+from ndnsf import CollaborationRole, ServiceProvider, ServiceUser
+
+provider = ServiceProvider()
+
+@provider.collaboration_handler(
+    "/AI/DistributedInference",
+    allowed_roles=["/Stage/0", "/Stage/1"])
+def handle_stage(ctx, payload: bytes) -> None:
+    ctx.publish("activation", "/stage/output", payload)
+    ctx.publish_final_response(b"ok")
+
+provider.run()
+
+user = ServiceUser()
+response = user.request_collaboration(
+    "/AI/DistributedInference",
+    b"input",
+    roles=[CollaborationRole(role="/Stage/0"), CollaborationRole(role="/Stage/1")],
+    key_scopes={"activation": ["/Stage/0", "/Stage/1"]},
+    dependencies=[])
+```
+
+For large objects, applications should avoid embedding large byte arrays inside
+small service messages. The wrapper provides `LargeDataReference`,
+`encode_large_data_reference_payload(...)`, and
+`parse_large_data_reference_payload(...)` so applications can carry a compact
+Data reference. Collaboration handlers also provide `publish_large(...)`,
+`publish_large_reference(...)`, `fetch_large(...)`, and
+`fetch_large_reference(...)` for scoped collaboration data.
+
+For NDN-native segmented objects, the wrapper exposes helpers around ndn-cxx
+segment production and fetching:
+
+```python
+from ndnsf import (
+    SegmentedObjectProducer,
+    StoredDataProducer,
+    fetch_segmented_object,
+    fetch_segmented_data_packets,
+    make_segmented_data_packets,
+)
+
+producer = SegmentedObjectProducer("/example/object", b"payload").start()
+payload = fetch_segmented_object(producer.versioned_name)
+producer.stop()
+
+packets = make_segmented_data_packets("/example/native-packets", b"payload")
+stored = StoredDataProducer("/example/native-packets", [p.wire for p in packets]).start()
+fetched_packets = fetch_segmented_data_packets("/example/native-packets")
+stored.stop()
+```
+
+`SegmentedObjectProducer` creates signed segmented Data from a payload.
+`StoredDataProducer` serves already-signed Data wire packets without rewriting
+them. Higher-level packages such as `NDNSF-DistributedInference` decide whether
+those objects are model artifacts, runner bundles, activations, or other
+application data.
+
 ## Layout
 
 - `ndnsf/service.py`: Python business-logic API.
@@ -199,7 +284,9 @@ python3 examples/python/hello_service.py --run --start-local-nfd
 python3 examples/python/ai_distributed_collaboration.py --run --start-local-nfd
 ```
 
-The current Python binding covers ordinary service request / response handlers
-and provider ACK decisions. Distributed collaboration examples still use the
-lower-level orchestration layer until collaboration-specific Python bindings
-are added.
+The current Python binding covers ordinary service request/response handlers,
+provider ACK decisions, custom ACK selection, asynchronous requests,
+collaboration handlers, collaboration requests, encrypted large-data publishing,
+large-data references, and NDN segmented Data helpers. Higher-level examples
+may still use `NDNSFSession` when they need to launch existing C++ binaries or
+coordinate multi-process experiments.

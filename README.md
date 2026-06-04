@@ -1,5 +1,33 @@
 # ndn_service_framework
 
+NDNSF is a generic dynamic service framework over Named Data Networking. This
+repository contains the C++ core runtime, Python bindings, a distributed repo
+prototype, a distributed inference package, and a UAV application used as an
+application-driven validation workload. New applications should use unified
+service names and the dynamic user/provider/controller APIs. The old generated
+service/stub path is no longer the supported development direction.
+
+Current major components:
+
+```text
+ndn-service-framework/        C++ core runtime and generic dynamic API
+pythonWrapper/                Python business-logic API and process orchestration
+NDNSF-DistributedRepo/        Distributed repo prototype and Python binding
+NDNSF-DistributedInference/   Higher-level distributed inference package
+NDNSF-UAV-APP/                UAV network application over NDNSF
+examples/                     C++ and Python smoke/regression examples
+Experiments/                  MiniNDN and experiment harnesses
+RELEASE/                      Local release packaging artifacts and manuals
+```
+
+The framework contribution is the service runtime itself: provider discovery,
+permission distribution, NAC-ABE-backed message protection, one-time token
+handshakes, ACK/Selection/Response execution, Targeted invocation for known
+providers, trusted local invocation inside one process, ServiceContainer-based
+process composition, and a common large-data reference abstraction. The UAV and
+DistributedInference applications are application layers that validate and
+stress these framework mechanisms.
+
 1. Prerequisites
 
 To keep the stack version-consistent, use the following repositories:
@@ -179,18 +207,33 @@ ObjectDetectionRequest request;
 request.set_image("frame-bytes");
 
 user.RequestService<ObjectDetectionRequest, ObjectDetectionResponse>(
-  providers,
   ndn::Name("/ObjectDetection/YOLOv8"),
   request,
+  300, // ACK collection window in milliseconds.
+  ndn_service_framework::strategy::FirstResponding,
+  1000, // Overall response timeout in milliseconds.
   [](const ObjectDetectionResponse& response) {
     // Handle typed response.
   },
-  [] {
+  [](const ndn::Name& requestId) {
     // Handle timeout.
-  },
-  1000,
-  ndn_service_framework::tlv::FirstResponding);
+  });
 ```
+
+For new C++ application code, keep the public API surface small:
+
+```text
+Provider normal service:       addHandler<RequestT, ResponseT>(serviceName, handler)
+Provider known-target service: addTargetedService(serviceName, handler)
+User normal service:           RequestService<RequestT, ResponseT>(serviceName, request, ackMs, policy, timeoutMs, onResponse, onTimeout)
+User known-target service:     RequestServiceTargeted<RequestT, ResponseT>(provider, serviceName, request, onResponse, onTimeout, timeoutMs)
+Same-process helper:           ServiceContainer::addLocalService<RequestT, ResponseT>(serviceName, handler)
+```
+
+Lower-level overloads that accept raw `RequestMessage`, legacy integer strategy
+values, or explicit provider lists remain available for framework internals,
+tests, and compatibility. They are not the recommended starting point for new
+applications.
 
 For known-provider low-latency commands, such as UAV flight-control/MAVLink
 execution, use targeted invocation. Targeted invocation still uses NDNSF
@@ -564,7 +607,34 @@ The current HELLO examples are exercised by the regression scripts below.
 
 `run_token_handshake_negative_regression.sh` verifies rejection of ACKs and responses with wrong `UserToken` values, selection messages with wrong `ProviderToken` values, and replayed ProviderTokens.
 
-Security-mechanism alignment for these regressions:
+3.8 Python wrapper and higher-level application packages
+
+The Python wrapper is a binding to the current C++ runtime, not a separate
+framework implementation. It supports ordinary service handlers,
+service-independent ACK decisions, application-defined ACK selection,
+asynchronous requests, collaboration handlers, collaboration requests,
+encrypted large-data publication, standard large-data reference payloads, and
+NDN segmented Data helpers. See `pythonWrapper/README.md` for API examples.
+
+`NDNSF-DistributedInference` builds on this wrapper and exposes model-plan and
+distributed inference APIs. Its current path supports ONNX chunk policies,
+dependency-driven execution, repo-backed or NDN-backed artifacts, activation
+exchange through large-data references, and MiniNDN smoke tests. It remains an
+application package above NDNSF core; model-specific splitters and planners are
+kept there rather than inside the framework core.
+
+`NDNSF-DistributedRepo` is a repository-oriented application layer. It should
+store and serve application-published NDN Data segments or references without
+redefining NDNSF service security. Repo details are intentionally outside the
+core service invocation protocol.
+
+`NDNSF-UAV-APP` is a UAV service application over NDNSF. Cross-node control,
+telemetry, video, recording discovery, and mission operations use NDNSF
+remote/Targeted services. Same-process helpers may use
+`ServiceContainer::localRegistry()` through `container.addLocalService(...)`,
+but local helpers are not externally selectable services.
+
+3.9 Security-mechanism alignment for these regressions:
 
 ```text
 Permission distribution:
@@ -594,7 +664,7 @@ Authorization:
   Service authorization is enforced by NAC-ABE attributes, provider permission checks, and token handshake validation.
 ```
 
-3.8 How to log to file:
+3.10 How to log to file:
 For example, assuming your program is `./app` and you want to log everything, first set the log level in the command line using:
 
 ```bash
@@ -610,7 +680,7 @@ Then run:
 The output will be saved in the file `filename.log` in the current directory.
 If you're using MiniNDN, the output will be stored under `/tmp/minindn/<nodeName>`.
 
-3.9 MiniNDN latency reproduction profile
+3.11 MiniNDN latency reproduction profile
 
 The low-latency HELLO benchmark uses the dynamic API with one Memphis user, one
 UCLA provider, the CSU controller, no adaptive admission control, SVS maximum
