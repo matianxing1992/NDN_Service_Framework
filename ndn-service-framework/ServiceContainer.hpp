@@ -69,6 +69,15 @@ public:
     return m_localRegistry;
   }
 
+  template <typename RequestT, typename ResponseT, typename HandlerT>
+  void
+  addLocalService(const ndn::Name& serviceName, HandlerT&& handler)
+  {
+    ensureNotStarted("register local services");
+    m_localRegistry.registerLocalService<RequestT, ResponseT>(serviceName,
+                                                           std::forward<HandlerT>(handler));
+  }
+
   const LocalServiceRegistry&
   localRegistry() const
   {

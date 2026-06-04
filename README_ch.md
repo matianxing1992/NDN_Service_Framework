@@ -300,7 +300,7 @@ container.provider("drone-services").addHandler<RequestT, ResponseT>(
 container.user("operator").RequestService<RequestT, ResponseT>(
   providers, serviceName, request, onResponse, onTimeout, timeoutMs, strategy);
 
-container.localRegistry().registerLocalService<LocalRequest, LocalResponse>(
+container.addLocalService<LocalRequest, LocalResponse>(
   localServiceName, localHandler);
 
 container.addLifecycleHook("repo-helper", {
