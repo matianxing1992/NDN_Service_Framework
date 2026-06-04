@@ -146,7 +146,7 @@ main()
                            provider.getName(),
                            serviceName));
 
-  provider.RegisterService<ObjectDetectionRequest, ObjectDetectionResponse>(
+  provider.addHandler<ObjectDetectionRequest, ObjectDetectionResponse>(
     serviceName,
     std::function<void(const ndn::Name&,
                        const ObjectDetectionRequest&,
