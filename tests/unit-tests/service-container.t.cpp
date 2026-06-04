@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(ServiceContainerComposesUsersProvidersLocalServicesAndLifec
   BOOST_CHECK_EQUAL(&container.defaultProvider(), droneProvider.get());
 
   const ndn::Name serviceName("/Container/Local/Echo");
-  container.localRegistry().registerLocalService<DynamicRequest, DynamicResponse>(
+  container.addLocalService<DynamicRequest, DynamicResponse>(
     serviceName,
     [] (const ndn::Name& requester,
         const DynamicRequest& request,
@@ -171,6 +171,14 @@ BOOST_AUTO_TEST_CASE(ServiceContainerRejectsRegistryChangesAfterStart)
                     std::logic_error);
   BOOST_CHECK_THROW(container.addProvider("late-provider", std::shared_ptr<ServiceProvider>{}),
                     std::logic_error);
+  const auto registerLocalAfterStart = [&] {
+    container.addLocalService<DynamicRequest, DynamicResponse>(
+      ndn::Name("/late/local/service"),
+      [] (const ndn::Name&,
+          const DynamicRequest&,
+          DynamicResponse&) {});
+  };
+  BOOST_CHECK_THROW(registerLocalAfterStart(), std::logic_error);
 
   container.stop();
   BOOST_CHECK(!container.isStarted());
