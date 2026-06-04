@@ -1335,6 +1335,7 @@ public:
         .append("hybrid-key")
         .toUri();
       m_recordingContentKey = loadOrCreateRecordingContentKey();
+      m_recordingLastUpdateMs = nowMilliseconds();
       m_localRegistry.registerLocalService(
         m_localRecordingChunkServiceName,
         [this](const ndn::Name&,
@@ -1512,6 +1513,31 @@ public:
   }
 
   bool
+  isRecordingEnabled() const
+  {
+    return m_cameraOptions.recordToLocalRepo;
+  }
+
+  bool
+  isRepoOpen() const
+  {
+    return m_recordingRepo != nullptr;
+  }
+
+  std::string
+  recordingRepoPath() const
+  {
+    return m_cameraOptions.recordRepoPath.empty() ? std::string("memory-db")
+                                                 : m_cameraOptions.recordRepoPath;
+  }
+
+  std::string
+  recordingObjectPrefix() const
+  {
+    return m_cameraOptions.recordObjectPrefix;
+  }
+
+  bool
   cameraAvailable() const
   {
     if (m_videoPath.empty() || access(m_videoPath.c_str(), F_OK) != 0) {
@@ -1568,6 +1594,12 @@ public:
     return m_recordingBytes.load();
   }
 
+  uint64_t
+  recordingLastUpdateMs() const
+  {
+    return m_recordingLastUpdateMs.load();
+  }
+
   std::string
   recordingPrefix() const
   {
@@ -1603,6 +1635,25 @@ public:
         m_recordingSessionId + "/chunk/" + std::to_string(chunks - 1);
     }
     return fields;
+  }
+
+  Fields
+  repoStatusFields() const
+  {
+    return {
+      {"type", "camera-repo-status"},
+      {"drone_id", m_droneId},
+      {"repo_open", isRepoOpen() ? "true" : "false"},
+      {"recording_enabled", isRecordingEnabled() ? "true" : "false"},
+      {"recording_repo_path", recordingRepoPath()},
+      {"recording_object_prefix", recordingObjectPrefix()},
+      {"recording_session_id", m_recordingSessionId},
+      {"recording_chunks", std::to_string(recordingChunks())},
+      {"recording_bytes", std::to_string(recordingBytes())},
+      {"recording_last_update_ms", std::to_string(recordingLastUpdateMs())},
+      {"recording_chunk_limit", std::to_string(m_cameraOptions.recordChunkLimit)},
+      {"timestamp_ms", std::to_string(nowMilliseconds())},
+    };
   }
 
   std::vector<uint8_t>
@@ -1919,6 +1970,7 @@ private:
                              ";key_id=" + m_recordingKeyId,
                            {droneIdentity(m_config, m_droneId).toUri()});
       m_recordingBytes += static_cast<uint64_t>(size);
+      m_recordingLastUpdateMs = nowMilliseconds();
     }
     catch (const std::exception& e) {
       NDN_LOG_WARN("CAMERA_RECORD_CHUNK_FAILED object=" << objectName
@@ -2471,6 +2523,7 @@ private:
   std::atomic<uint64_t> m_framePuts{0};
   std::atomic<uint64_t> m_recordingChunks{0};
   std::atomic<uint64_t> m_recordingBytes{0};
+  std::atomic<uint64_t> m_recordingLastUpdateMs{0};
   std::atomic<uint64_t> m_targetFps{30};
   std::atomic<uint64_t> m_requestedBitrateKbps{8000};
   std::atomic<uint64_t> m_acceptedBitrateKbps{8000};
@@ -2493,6 +2546,31 @@ private:
 class DroneServiceContainer
 {
 private:
+  class RepoStatusLocalHelper
+  {
+  public:
+    explicit RepoStatusLocalHelper(std::function<Fields()> repoStatusProvider)
+      : m_repoStatusProvider(std::move(repoStatusProvider))
+    {
+    }
+
+    void
+    registerService(ndn_service_framework::LocalServiceRegistry& localRegistry,
+                   const ndn::Name& serviceName)
+    {
+      localRegistry.registerLocalService(
+        serviceName,
+        [this](const ndn::Name&,
+               const ndn::Name&,
+               const ndn_service_framework::RequestMessage&) {
+          return makeResponse(true, encodeFields(m_repoStatusProvider()));
+        });
+    }
+
+  private:
+    std::function<Fields()> m_repoStatusProvider;
+  };
+
   class RecordingManifestLocalHelper
   {
   public:
@@ -2733,6 +2811,30 @@ public:
     return m_videoPublisher->recordingManifestFields();
   }
 
+  Fields
+  repoStatusFields() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    if (m_videoPublisher == nullptr) {
+      return Fields{
+        {"type", "camera-repo-status"},
+        {"drone_id", m_droneId},
+        {"repo_open", "false"},
+        {"recording_enabled", "false"},
+        {"recording_repo_path", "none"},
+        {"recording_object_prefix",
+         m_cameraOptions.recordObjectPrefix.empty() ? "none" : m_cameraOptions.recordObjectPrefix},
+        {"recording_session_id", "record-idle"},
+        {"recording_chunks", "0"},
+        {"recording_bytes", "0"},
+        {"recording_last_update_ms", "0"},
+        {"recording_chunk_limit", std::to_string(m_cameraOptions.recordChunkLimit)},
+        {"timestamp_ms", std::to_string(nowMilliseconds())},
+      };
+    }
+    return m_videoPublisher->repoStatusFields();
+  }
+
   std::vector<uint8_t>
   recordingChunk(const std::string& objectName) const
   {
@@ -2873,6 +2975,13 @@ private:
              const ndn_service_framework::RequestMessage&) {
         return makeResponse(true, encodeFields(cameraStatusFields()));
       });
+
+    if (!m_repoStatusLocalHelper) {
+      m_repoStatusLocalHelper = std::make_unique<RepoStatusLocalHelper>(
+        [this] { return repoStatusFields(); });
+    }
+    m_repoStatusLocalHelper->registerService(m_coreContainer.localRegistry(),
+                                            localRepoStatusServiceName());
 
     if (!m_recordingManifestLocalHelper) {
       m_recordingManifestLocalHelper = std::make_unique<RecordingManifestLocalHelper>(
@@ -3156,6 +3265,12 @@ private:
   }
 
   ndn::Name
+  localRepoStatusServiceName() const
+  {
+    return ndn::Name(m_identity).append("Local").append("Repo").append("Status");
+  }
+
+  ndn::Name
   localRecordingChunkServiceName() const
   {
     return ndn::Name(m_identity).append("Local").append("Recording").append("Chunk");
@@ -3264,6 +3379,7 @@ private:
   ndn::Name m_identity;
   ndn_service_framework::ServiceContainer m_coreContainer;
   std::unique_ptr<RecordingManifestLocalHelper> m_recordingManifestLocalHelper;
+  std::unique_ptr<RepoStatusLocalHelper> m_repoStatusLocalHelper;
   std::string m_videoPath;
   std::string m_flightControllerBackend;
   std::string m_mavlinkUdpHost;
