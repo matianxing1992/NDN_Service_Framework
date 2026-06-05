@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 
 from ndnsf import make_segmented_data_packets
 from ndnsf_distributed_inference import APPDeployment, DistributedRepo
@@ -88,6 +89,14 @@ def main() -> int:
                         help="Repo object name that stores the deployment config")
     parser.add_argument("--ack-timeout-ms", type=int, default=2500)
     parser.add_argument("--timeout-ms", type=int, default=60000)
+    parser.add_argument("--test-delete", action="store_true",
+                        help="Also exercise deletion after store/fetch/catalog checks")
+    parser.add_argument("--fsck-stale-repo-smoke", action="store_true",
+                        help="Only verify that catalog lookup reports a stale/under-replicated object")
+    parser.add_argument("--fsck-repo-node", default="/example/repo/provider/repoA")
+    parser.add_argument("--fsck-stale-repo", default="/example/repo/provider/repoC")
+    parser.add_argument("--fsck-object-suffix",
+                        default="APP/Generic/BinaryBlob/demo-192KiB")
     args = parser.parse_args()
 
     if args.use_local_config:
@@ -116,6 +125,23 @@ def main() -> int:
             timeout_ms=args.timeout_ms,
         )
         user_name = args.user
+
+    if args.fsck_stale_repo_smoke:
+        object_name = repo.object_name(args.fsck_object_suffix)
+        lookup = repo.catalog_lookup(object_name, args.fsck_repo_node)
+        stale_repos = set(str(value) for value in lookup.get("staleRepos", []))
+        if args.fsck_stale_repo not in stale_repos:
+            raise RuntimeError(
+                f"catalog fsck did not mark stale repo={args.fsck_stale_repo} "
+                f"lookup={lookup}"
+            )
+        if not lookup.get("underReplicated"):
+            raise RuntimeError(f"catalog fsck did not mark under-replicated: {lookup}")
+        repair_plan = lookup.get("repairPlan", {})
+        if not isinstance(repair_plan, dict) or not repair_plan.get("needed"):
+            raise RuntimeError(f"catalog fsck missing repair hint: {lookup}")
+        print("GENERIC_DISTRIBUTED_REPO_FSCK_STALE_OK", flush=True)
+        return 0
 
     capability = repo.wait_until_ready(15.0)
     manifests = []
@@ -173,9 +199,55 @@ def main() -> int:
     inventory = repo.list()
     if not all(manifest.object_name in inventory for manifest in manifests[:3]):
         raise RuntimeError("repo inventory missing stored objects")
-    removed = repo.remove(manifests[0].object_name)
-    if not removed:
-        raise RuntimeError("repo remove reported no deletion")
+    repo_nodes = (
+        "/example/repo/provider/repoA",
+        "/example/repo/provider/repoB",
+        "/example/repo/provider/repoC",
+    )
+    time.sleep(15.0)
+    catalog_manifest = manifests[-2]
+    for repo_node in repo_nodes:
+        lookup = repo.catalog_lookup(catalog_manifest.object_name, repo_node)
+        if str(lookup.get("objectSha256", "")) != catalog_manifest.sha256:
+            raise RuntimeError(
+                f"catalog object hash mismatch repo={repo_node} "
+                f"object={catalog_manifest.object_name}"
+            )
+        if not lookup.get("manifestSha256"):
+            raise RuntimeError(
+                f"catalog manifest hash missing repo={repo_node} "
+                f"object={catalog_manifest.object_name}"
+            )
+        if int(lookup.get("desiredReplicationFactor", 0)) < catalog_manifest.replication_factor:
+            raise RuntimeError(
+                f"catalog desired replication too small repo={repo_node} "
+                f"object={catalog_manifest.object_name}"
+            )
+        if int(lookup.get("availableReplicaCount", 0)) < catalog_manifest.replication_factor:
+            raise RuntimeError(
+                f"catalog under-replicated unexpectedly repo={repo_node} "
+                f"object={catalog_manifest.object_name} lookup={lookup}"
+            )
+        if lookup.get("underReplicated"):
+            raise RuntimeError(
+                f"catalog repair hint unexpectedly active repo={repo_node} "
+                f"object={catalog_manifest.object_name} lookup={lookup}"
+            )
+        if not lookup.get("candidateReplicas"):
+            raise RuntimeError(
+                f"catalog lookup has no candidate replicas repo={repo_node} "
+                f"object={catalog_manifest.object_name}"
+            )
+        if "repairPlan" not in lookup:
+            raise RuntimeError(
+                f"catalog lookup missing repair plan repo={repo_node} "
+                f"object={catalog_manifest.object_name}"
+            )
+    print("GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK", flush=True)
+    if args.test_delete:
+        removed = repo.remove(manifests[0].object_name)
+        if not removed:
+            raise RuntimeError("repo remove reported no deletion")
 
     print("GENERIC_DISTRIBUTED_REPO_OK")
     print("first_capability:", capability)

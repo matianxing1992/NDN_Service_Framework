@@ -203,6 +203,58 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
     });
 
   provider.addService(
+    makeRepoServiceName(m_servicePrefix, "CATALOG_STATUS"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage&) {
+      try {
+        return makeResponse(handleCatalogStatus());
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "CATALOG_SNAPSHOT"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage&) {
+      try {
+        return makeResponse(handleCatalogSnapshot());
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "CATALOG_DELTA"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleCatalogDelta(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "CATALOG_LOOKUP"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage& request) {
+      try {
+        return makeResponse(handleCatalogLookup(payloadOf(request)));
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
     makeRepoServiceName(m_servicePrefix, "DELETE"),
     ack,
     [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
@@ -219,104 +271,62 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
 void
 RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry)
 {
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "STORE"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
-      try {
-        return makeResponse(handleStore(payloadOf(request)));
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
+  auto registerLocalRepoService =
+    [&] (const std::string& operation,
+         std::function<std::vector<uint8_t>(const std::vector<uint8_t>&)> handler) {
+      registry.registerLocalService(
+        makeRepoServiceName(m_servicePrefix, operation),
+        [this, handler = std::move(handler)] (
+          const ndn::Name&, const ndn::Name&,
+          const ndn_service_framework::RequestMessage& request) {
+          try {
+            return makeResponse(handler(payloadOf(request)));
+          }
+          catch (const std::exception& e) {
+            return makeError(e.what());
+          }
+        });
+    };
 
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "INSERT"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
-      try {
-        return makeResponse(handleInsert(payloadOf(request)));
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
-
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "STORE_MANIFEST"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
-      try {
-        return makeResponse(handleStoreManifest(payloadOf(request)));
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
-
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "FETCH"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
-      try {
-        return makeResponse(handleFetch(payloadOf(request)));
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
-
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "MANIFEST"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
-      try {
-        return makeResponse(handleManifest(payloadOf(request)));
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
-
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "INVENTORY"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage&) {
-      try {
-        return makeResponse(handleInventory());
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
-
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "CAPABILITY"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage&) {
-      try {
-        return makeResponse(handleCapability());
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
-
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "STATUS"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
-      try {
-        return makeResponse(handleStatus(payloadOf(request)));
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
-
-  registry.registerLocalService(
-    makeRepoServiceName(m_servicePrefix, "DELETE"),
-    [this] (const ndn::Name&, const ndn::Name&, const ndn_service_framework::RequestMessage& request) {
-      try {
-        return makeResponse(handleDelete(payloadOf(request)));
-      }
-      catch (const std::exception& e) {
-        return makeError(e.what());
-      }
-    });
+  registerLocalRepoService("STORE", [this] (const std::vector<uint8_t>& request) {
+    return handleStore(request);
+  });
+  registerLocalRepoService("INSERT", [this] (const std::vector<uint8_t>& request) {
+    return handleInsert(request);
+  });
+  registerLocalRepoService("STORE_MANIFEST", [this] (const std::vector<uint8_t>& request) {
+    return handleStoreManifest(request);
+  });
+  registerLocalRepoService("FETCH", [this] (const std::vector<uint8_t>& request) {
+    return handleFetch(request);
+  });
+  registerLocalRepoService("MANIFEST", [this] (const std::vector<uint8_t>& request) {
+    return handleManifest(request);
+  });
+  registerLocalRepoService("INVENTORY", [this] (const std::vector<uint8_t>&) {
+    return handleInventory();
+  });
+  registerLocalRepoService("CAPABILITY", [this] (const std::vector<uint8_t>&) {
+    return handleCapability();
+  });
+  registerLocalRepoService("STATUS", [this] (const std::vector<uint8_t>& request) {
+    return handleStatus(request);
+  });
+  registerLocalRepoService("CATALOG_STATUS", [this] (const std::vector<uint8_t>&) {
+    return handleCatalogStatus();
+  });
+  registerLocalRepoService("CATALOG_SNAPSHOT", [this] (const std::vector<uint8_t>&) {
+    return handleCatalogSnapshot();
+  });
+  registerLocalRepoService("CATALOG_DELTA", [this] (const std::vector<uint8_t>& request) {
+    return handleCatalogDelta(request);
+  });
+  registerLocalRepoService("CATALOG_LOOKUP", [this] (const std::vector<uint8_t>& request) {
+    return handleCatalogLookup(request);
+  });
+  registerLocalRepoService("DELETE", [this] (const std::vector<uint8_t>& request) {
+    return handleDelete(request);
+  });
 }
 
 void
@@ -495,6 +505,30 @@ std::vector<uint8_t>
 RepoNode::handleCapability() const
 {
   return m_core.handleCapability();
+}
+
+std::vector<uint8_t>
+RepoNode::handleCatalogStatus() const
+{
+  return m_core.handleCatalogStatus();
+}
+
+std::vector<uint8_t>
+RepoNode::handleCatalogSnapshot() const
+{
+  return m_core.handleCatalogSnapshot();
+}
+
+std::vector<uint8_t>
+RepoNode::handleCatalogDelta(const std::vector<uint8_t>& request) const
+{
+  return m_core.handleCatalogDelta(request);
+}
+
+std::vector<uint8_t>
+RepoNode::handleCatalogLookup(const std::vector<uint8_t>& request) const
+{
+  return m_core.handleCatalogLookup(request);
 }
 
 std::vector<uint8_t>

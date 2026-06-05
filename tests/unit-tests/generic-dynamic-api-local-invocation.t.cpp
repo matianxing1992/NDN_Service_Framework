@@ -56,6 +56,42 @@ BOOST_AUTO_TEST_CASE(SynchronousLocalInvocationUsesTypedHandler)
   BOOST_CHECK(registry.hasService(ndn::Name("/Telemetry/GetStatus")));
 }
 
+BOOST_AUTO_TEST_CASE(RawLocalInvocationCanFillCallerOwnedResponse)
+{
+  LocalServiceRegistry registry;
+  registry.registerLocalService(
+    ndn::Name("/Repo/Local/Fetch"),
+    LocalServiceRegistry::LocalRequestHandler(
+      [] (const ndn::Name&,
+          const ndn::Name&,
+          const RequestMessage& request,
+          ResponseMessage& response) {
+        response.setStatus(true);
+        response.setErrorInfo("No error");
+        response.setPayloadBlock(request.getPayloadBlock());
+      }));
+
+  const std::vector<uint8_t> payload = {'r', 'e', 'p', 'o', '-', 'p', 'a', 'y'};
+  auto payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType,
+                                           payload.begin(),
+                                           payload.end());
+  payloadBlock.encode();
+
+  RequestMessage request;
+  request.setPayloadBlock(payloadBlock);
+  ResponseMessage response;
+  BOOST_CHECK(registry.localInvokeRawInto(
+    ndn::Name("/Repo/Local/Fetch"), request, response));
+
+  BOOST_CHECK(response.getStatus());
+  BOOST_CHECK_EQUAL(response.getPayloadBlock().type(), tlv::PayloadType);
+  const auto responsePayload = response.getPayload();
+  BOOST_CHECK_EQUAL_COLLECTIONS(responsePayload.begin(),
+                                responsePayload.end(),
+                                payload.begin(),
+                                payload.end());
+}
+
 BOOST_AUTO_TEST_CASE(FutureAsyncLocalInvocationWorks)
 {
   LocalServiceRegistry registry;

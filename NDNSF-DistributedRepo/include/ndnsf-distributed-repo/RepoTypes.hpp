@@ -69,6 +69,41 @@ struct StorageCapability
   double availabilityScore = 1.0;
   std::string failureDomain;
   std::vector<std::string> storageClasses;
+  std::string repoMode = "persistent";
+  bool acceptsBackupReplica = true;
+
+  std::string toJson() const;
+};
+
+struct RepoCatalogEntry
+{
+  RepoObjectManifest manifest;
+  std::string sourceRepo;
+  std::string repoMode = "persistent";
+  std::string state = "AVAILABLE";
+  uint64_t catalogEpoch = 0;
+
+  std::string toJson() const;
+};
+
+struct RepoCatalogStatus
+{
+  std::string repoNode;
+  std::string repoMode = "persistent";
+  uint64_t catalogEpoch = 0;
+  uint64_t objectCount = 0;
+  bool acceptsBackupReplica = true;
+
+  std::string toJson() const;
+};
+
+struct RepoCatalogDelta
+{
+  std::string repoNode;
+  std::string repoMode = "persistent";
+  uint64_t sinceEpoch = 0;
+  uint64_t catalogEpoch = 0;
+  std::vector<RepoCatalogEntry> entries;
 
   std::string toJson() const;
 };
@@ -98,6 +133,12 @@ enablesRemote(RepoDeploymentMode mode);
 
 bool
 enablesEmbedded(RepoDeploymentMode mode);
+
+bool
+isInAppRepo(const StorageCapability& capability);
+
+bool
+isPersistentRepo(const StorageCapability& capability);
 
 std::string
 sha256Hex(const std::vector<uint8_t>& payload);

@@ -19,6 +19,8 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include <ndn-cxx/util/sha256.hpp>
+
 namespace ndn_service_framework
 {
 
@@ -382,6 +384,17 @@ namespace ndn_service_framework
                 token.push_back(alphabet[randomDevice() % (sizeof(alphabet) - 1)]);
             }
             return token;
+        }
+
+        std::string
+        sha256DigestString(const ndn::Buffer& payload)
+        {
+            ndn::util::Sha256 digest;
+            if (!payload.empty()) {
+                digest << std::string(reinterpret_cast<const char*>(payload.data()),
+                                      payload.size());
+            }
+            return "sha256:" + digest.toString();
         }
 
         ndn::Name
@@ -3650,6 +3663,241 @@ namespace ndn_service_framework
         return handleDecryptedResponseByName(responseName, responseMessage);
     }
 
+    std::optional<ResponseMessage>
+    ServiceUser::resolveLargeResponseReferencePayload(
+        const ResponseMessage& responseMessage,
+        const ndn::Name& responseName,
+        const ndn::Name& serviceName,
+        std::string& errorMessage)
+    {
+        const auto reference = parseLargeDataReferencePayload(responseMessage.getPayload());
+        if (!reference) {
+            return responseMessage;
+        }
+        if (!reference->encrypted) {
+            errorMessage = "large response reference is not encrypted";
+            return std::nullopt;
+        }
+        if (reference->dataName.empty()) {
+            errorMessage = "large response reference has empty Data name";
+            return std::nullopt;
+        }
+
+        auto completed = std::make_shared<std::atomic<bool>>(false);
+        auto mutex = std::make_shared<std::mutex>();
+        auto cv = std::make_shared<std::condition_variable>();
+        auto error = std::make_shared<std::string>();
+        auto encodedEnvelope = std::make_shared<ndn::Buffer>();
+
+        boost::asio::post(m_face.getIoContext(),
+            [this, dataName = reference->dataName, completed, mutex, cv, error, encodedEnvelope] {
+                ndn::Interest interest(dataName);
+                interest.setCanBePrefix(true);
+                interest.setMustBeFresh(true);
+                interest.setInterestLifetime(ndn::time::seconds(4));
+
+                try {
+                    ndn::SegmentFetcher::Options options;
+                    options.probeLatestVersion = false;
+                    options.useConstantCwnd = true;
+                    options.initCwnd = 4.0;
+                    options.maxTimeout = ndn::time::seconds(10);
+                    auto fetcher = ndn::SegmentFetcher::start(m_face,
+                                                               interest,
+                                                               nac_validator,
+                                                               options);
+                    fetcher->onComplete.connect(
+                        [completed, mutex, cv, encodedEnvelope](ndn::ConstBufferPtr buffer) {
+                            {
+                                std::lock_guard<std::mutex> lock(*mutex);
+                                encodedEnvelope->assign(buffer->begin(), buffer->end());
+                                completed->store(true);
+                            }
+                            cv->notify_one();
+                        });
+                    fetcher->onError.connect(
+                        [completed, mutex, cv, error](uint32_t code, const std::string& msg) {
+                            {
+                                std::lock_guard<std::mutex> lock(*mutex);
+                                *error = "SegmentFetcher error " + std::to_string(code) +
+                                         ": " + msg;
+                                completed->store(true);
+                            }
+                            cv->notify_one();
+                        });
+                }
+                catch (const std::exception& e) {
+                    {
+                        std::lock_guard<std::mutex> lock(*mutex);
+                        *error = std::string("large response fetch/decrypt failed: ") + e.what();
+                        completed->store(true);
+                    }
+                    cv->notify_one();
+                }
+            });
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        std::unique_lock<std::mutex> lock(*mutex);
+        cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
+        if (!completed->load()) {
+            errorMessage = "large response fetch timed out for " + reference->dataName.toUri();
+            return std::nullopt;
+        }
+        if (!error->empty()) {
+            errorMessage = "large response fetch failure for " +
+                           reference->dataName.toUri() + ": " + *error;
+            return std::nullopt;
+        }
+
+        HybridMessageEnvelope envelope;
+        try {
+            ndn::Block block(*encodedEnvelope);
+            if (!envelope.WireDecode(block)) {
+                errorMessage = "large response hybrid envelope decode failed";
+                return std::nullopt;
+            }
+        }
+        catch (const std::exception& e) {
+            errorMessage = std::string("large response hybrid envelope parse failed: ") + e.what();
+            return std::nullopt;
+        }
+
+        ndn::Name providerName;
+        ndn::Name requestId;
+        if (auto parsedV2 = parseResponseNameV2(responseName)) {
+            providerName = parsedV2->providerName;
+            requestId = parsedV2->requestId;
+        }
+        else {
+            errorMessage = "large response reference requires a V2 response name";
+            return std::nullopt;
+        }
+        auto decryptCompleted = std::make_shared<std::atomic<bool>>(false);
+        auto decryptMutex = std::make_shared<std::mutex>();
+        auto decryptCv = std::make_shared<std::condition_variable>();
+        auto decryptError = std::make_shared<std::string>();
+        auto plaintext = std::make_shared<ndn::Buffer>();
+
+        auto finishDecrypt = [this, envelope, responseName, serviceName, requestId, providerName,
+                              plaintext, decryptCompleted, decryptMutex, decryptCv, decryptError](
+                                 const ndn::Buffer& key) mutable {
+            const auto ad = hybridAssociatedData(responseName,
+                                                 envelope.getMessageType(),
+                                                 requestId,
+                                                 serviceName,
+                                                 providerName,
+                                                 envelope.getKeyId(),
+                                                 envelope.getEpochId());
+            ndn::Buffer decrypted;
+            const bool ok = hybridAesGcmDecrypt(
+                key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), decrypted);
+            {
+                std::lock_guard<std::mutex> lock(*decryptMutex);
+                if (!ok) {
+                    *decryptError = "hybrid AES-GCM authentication failed";
+                }
+                else {
+                    *plaintext = decrypted;
+                }
+                decryptCompleted->store(true);
+            }
+            decryptCv->notify_one();
+        };
+
+        ndn::Buffer key;
+        if (m_hybridMessageCrypto.findReceiveKey(envelope.getKeyId(),
+                                                 key,
+                                                 m_hybridCryptoCounters)) {
+            finishDecrypt(key);
+        }
+        else if (envelope.hasWrappedMessageKey()) {
+            boost::asio::post(m_face.getIoContext(),
+                [this, envelope, finishDecrypt, decryptCompleted,
+                 decryptMutex, decryptCv, decryptError]() mutable {
+                    nacConsumer.consume(
+                        ndn::Name(envelope.getKeyId()),
+                        ndn::Block(envelope.getWrappedMessageKey()),
+                        [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
+                            m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
+                                                                  envelope.getEpochId(),
+                                                                  unwrappedKey);
+                            finishDecrypt(unwrappedKey);
+                        },
+                        [decryptCompleted, decryptMutex, decryptCv, decryptError](
+                            const std::string& reason) {
+                            {
+                                std::lock_guard<std::mutex> lock(*decryptMutex);
+                                *decryptError = "hybrid MessageKey unwrap failed: " + reason;
+                                decryptCompleted->store(true);
+                            }
+                            decryptCv->notify_one();
+                        });
+                });
+        }
+        else {
+            boost::asio::post(m_face.getIoContext(),
+                [this, providerName, envelope, finishDecrypt, decryptCompleted,
+                 decryptMutex, decryptCv, decryptError]() mutable {
+                    ndn::Name keyDataName = providerName;
+                    keyDataName.append(ndn::Name(envelope.getKeyId()));
+                    nacConsumer.consume(
+                        keyDataName,
+                        [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
+                            m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
+                                                                  envelope.getEpochId(),
+                                                                  unwrappedKey);
+                            finishDecrypt(unwrappedKey);
+                        },
+                        [decryptCompleted, decryptMutex, decryptCv, decryptError, keyDataName](
+                            const std::string& reason) {
+                            {
+                                std::lock_guard<std::mutex> lock(*decryptMutex);
+                                *decryptError = "hybrid MessageKey fetch failed " +
+                                                keyDataName.toUri() + ": " + reason;
+                                decryptCompleted->store(true);
+                            }
+                            decryptCv->notify_one();
+                        });
+                });
+        }
+
+        const auto decryptDeadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        std::unique_lock<std::mutex> decryptLock(*decryptMutex);
+        decryptCv->wait_until(decryptLock, decryptDeadline,
+                              [&decryptCompleted] { return decryptCompleted->load(); });
+        if (!decryptCompleted->load()) {
+            errorMessage = "large response hybrid decrypt timed out for " +
+                           reference->dataName.toUri();
+            return std::nullopt;
+        }
+        if (!decryptError->empty()) {
+            errorMessage = "large response hybrid decrypt failure for " +
+                           serviceName.toUri() + ": " + *decryptError;
+            return std::nullopt;
+        }
+
+        if (reference->plaintextSize != 0 &&
+            plaintext->size() != reference->plaintextSize) {
+            errorMessage = "large response size mismatch for " + reference->dataName.toUri();
+            return std::nullopt;
+        }
+        if (!reference->digest.empty() &&
+            sha256DigestString(*plaintext) != reference->digest) {
+            errorMessage = "large response digest mismatch for " + reference->dataName.toUri();
+            return std::nullopt;
+        }
+
+        ResponseMessage resolved(responseMessage);
+        ndn::Buffer payload(*plaintext);
+        resolved.setPayload(payload, payload.size());
+        NDN_LOG_INFO("LARGE_RESPONSE_REFERENCE_RESOLVED"
+                     << " name=" << reference->dataName.toUri()
+                     << " serviceName=" << serviceName.toUri()
+                     << " plaintextBytes=" << payload.size());
+        return resolved;
+    }
+
     void ServiceUser::dispatchDecryptedResponseByName(const ndn::Name& responseName,
                                                       const ndn::Name& requestId,
                                                       const ndn::Buffer& buffer)
@@ -3695,6 +3943,60 @@ namespace ndn_service_framework
         const ndn::Name&,
         ndn_service_framework::ResponseMessage responseMessage)
     {
+        ndn::Name serviceName;
+        if (auto parsedV2 = ndn_service_framework::parseResponseNameV2(responseName)) {
+            serviceName = parsedV2->serviceName;
+        }
+        else if (auto parsed = ndn_service_framework::parseResponseName(responseName)) {
+            ndn::Name requesterIdentity;
+            ndn::Name providerName;
+            ndn::Name legacyServiceName;
+            ndn::Name functionName;
+            ndn::Name requestId;
+            std::tie(requesterIdentity, providerName, legacyServiceName, functionName, requestId) =
+                parsed.value();
+            serviceName = makeUnifiedServiceName(legacyServiceName, functionName);
+        }
+        if (parseLargeDataReferencePayload(responseMessage.getPayload())) {
+            auto resolveAndFinish =
+                [this, responseName, serviceName,
+                 responseMessage = std::move(responseMessage)]() mutable {
+                    std::string error;
+                    auto resolved =
+                        resolveLargeResponseReferencePayload(responseMessage,
+                                                             responseName,
+                                                             serviceName,
+                                                             error);
+                    boost::asio::post(m_face.getIoContext(),
+                        [this, responseName, resolved = std::move(resolved),
+                         responseMessage = std::move(responseMessage),
+                         error = std::move(error)]() mutable {
+                            if (!resolved) {
+                                NDN_LOG_ERROR("Failed to resolve large response reference: "
+                                              << error);
+                                ResponseMessage failure(responseMessage);
+                                failure.setStatus(false);
+                                failure.setErrorInfo("large response reference fetch failed: " +
+                                                     error);
+                                if (!handleDecryptedResponseByName(responseName, failure)) {
+                                    NDN_LOG_DEBUG("OnResponse: no pending async callback for "
+                                                  << responseName);
+                                }
+                                return;
+                            }
+                            if (!handleDecryptedResponseByName(responseName, *resolved)) {
+                                NDN_LOG_DEBUG("OnResponse: no pending async callback for "
+                                              << responseName);
+                            }
+                        });
+                };
+            if (m_handlerPool.getThreadCount() > 0 &&
+                m_handlerPool.post(resolveAndFinish)) {
+                return;
+            }
+            std::thread(resolveAndFinish).detach();
+            return;
+        }
         if (!handleDecryptedResponseByName(responseName, responseMessage)) {
             NDN_LOG_DEBUG("OnResponse: no pending async callback for " << responseName);
         }

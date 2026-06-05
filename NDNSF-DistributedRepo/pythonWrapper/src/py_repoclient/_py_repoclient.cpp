@@ -42,7 +42,9 @@ capabilityRepr(const repo::StorageCapability& capability)
 {
   std::ostringstream os;
   os << "StorageCapability(repo_node='" << capability.repoNode
-     << "', free_bytes=" << capability.freeBytes
+     << "', repo_mode='" << capability.repoMode
+     << "', accepts_backup_replica=" << capability.acceptsBackupReplica
+     << ", free_bytes=" << capability.freeBytes
      << ", used_bytes=" << capability.usedBytes
      << ", recent_load=" << capability.recentLoad
      << ", availability_score=" << capability.availabilityScore << ")";
@@ -77,6 +79,8 @@ PYBIND11_MODULE(_py_repoclient, m)
     .def_readwrite("availability_score", &repo::StorageCapability::availabilityScore)
     .def_readwrite("failure_domain", &repo::StorageCapability::failureDomain)
     .def_readwrite("storage_classes", &repo::StorageCapability::storageClasses)
+    .def_readwrite("repo_mode", &repo::StorageCapability::repoMode)
+    .def_readwrite("accepts_backup_replica", &repo::StorageCapability::acceptsBackupReplica)
     .def("to_json", &repo::StorageCapability::toJson)
     .def("__repr__", &capabilityRepr);
 

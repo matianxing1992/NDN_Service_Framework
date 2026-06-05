@@ -43,6 +43,24 @@ namespace ndn_service_framework{
         std::string errorMessage;
     };
 
+    struct LargeDataResponsePublishResult
+    {
+        bool success = false;
+        ndn::Name encryptedDataName;
+        std::string objectId;
+        std::string digest;
+        std::string errorMessage;
+    };
+
+    struct LargeDataReferenceResponseResult
+    {
+        bool success = false;
+        bool usedLargeDataReference = false;
+        ndn_service_framework::ResponseMessage responseMessage;
+        LargeDataResponsePublishResult largeData;
+        std::string errorMessage;
+    };
+
     class ServiceProvider
     {
         public:
@@ -412,6 +430,14 @@ namespace ndn_service_framework{
             LargeDataFetchResult resolveLargeDataReferencePayload(
                 const ndn::Buffer& payload,
                 const std::string& serviceName);
+
+            LargeDataReferenceResponseResult makeResponseWithLargeDataOptimization(
+                const ndn::Name& requesterName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                ResponseMessage response,
+                size_t thresholdBytes = 0,
+                const ndn::time::milliseconds& freshness = ndn::DEFAULT_FRESHNESS_PERIOD);
 
             ResponseMessage dispatchRequest(const ndn::Name& requesterIdentity,
                                             const ndn::Name& providerName,

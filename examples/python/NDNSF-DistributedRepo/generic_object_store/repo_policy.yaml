@@ -2,6 +2,10 @@ application: distributed-repo-generic-demo
 controller: /example/repo/controller
 group: /example/repo/group
 
+runtime:
+  user_identity: /example/repo/user
+  provider_prefix: /example/repo/provider
+
 identities:
   user: /example/repo/user
   provider_prefix: /example/repo/provider
@@ -24,6 +28,9 @@ services:
     dependencies: []
     users:
       - /example/repo/user
+      - /example/repo/provider/repoA
+      - /example/repo/provider/repoB
+      - /example/repo/provider/repoC
     providers:
       - identity: /example/repo/provider/repoA
         roles: []

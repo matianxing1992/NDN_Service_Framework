@@ -1,6 +1,72 @@
 #include "NDNSFMessages.hpp"
 
+#include <algorithm>
+
 namespace ndn_service_framework {
+
+namespace {
+
+ndn::Block
+makePayloadBlock(const uint8_t* payload, size_t size)
+{
+    if (size == 0) {
+        ndn::Block block(tlv::PayloadType);
+        block.encode();
+        return block;
+    }
+    auto block = ndn::makeBinaryBlock(tlv::PayloadType, payload, payload + size);
+    block.encode();
+    return block;
+}
+
+std::shared_ptr<const ndn::Block>
+makePayloadBlockPtr(const uint8_t* payload, size_t size)
+{
+    return std::make_shared<const ndn::Block>(makePayloadBlock(payload, size));
+}
+
+ndn::Block
+makePayloadBlockFromBuffer(const ndn::Buffer& payload, size_t size)
+{
+    const auto boundedSize = std::min(size, payload.size());
+    return makePayloadBlock(payload.data(), boundedSize);
+}
+
+std::shared_ptr<const ndn::Block>
+clonePayloadBlock(const ndn::Block& payloadBlock)
+{
+    if (!payloadBlock.isValid()) {
+        return makePayloadBlockPtr(nullptr, 0);
+    }
+    if (payloadBlock.type() != tlv::PayloadType) {
+        throw std::invalid_argument("message payload block has unexpected TLV type");
+    }
+    return makePayloadBlockPtr(payloadBlock.value(), payloadBlock.value_size());
+}
+
+const ndn::Block&
+emptyPayloadBlock()
+{
+    static const auto payloadBlock = makePayloadBlockPtr(nullptr, 0);
+    return *payloadBlock;
+}
+
+const ndn::Block&
+payloadBlockOrEmpty(const std::shared_ptr<const ndn::Block>& payloadBlock)
+{
+    return payloadBlock ? *payloadBlock : emptyPayloadBlock();
+}
+
+ndn::Buffer
+payloadValueAsBuffer(const std::shared_ptr<const ndn::Block>& payloadBlock)
+{
+    if (!payloadBlock || !payloadBlock->isValid()) {
+        return {};
+    }
+    return ndn::Buffer(payloadBlock->value(), payloadBlock->value_size());
+}
+
+} // namespace
 
 RequestMessage::RequestMessage() {}
 
@@ -16,13 +82,13 @@ RequestMessage::operator=(const RequestMessage& other)
         tokens_ = other.tokens_;
         userToken_ = other.userToken_;
         providerToken_ = other.providerToken_;
-        payload_ = other.payload_;
+        payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
         strategy_ = other.strategy_;
         requestMode_ = other.requestMode_;
         targetProvider_ = other.targetProvider_;
         policyEpoch_ = other.policyEpoch_;
-        m_wire = ndn::Block();
+        m_wire.reset();
     }
     return *this;
 }
@@ -40,8 +106,13 @@ void RequestMessage::setProviderToken(const std::string& providerToken) {
 }
 
 void RequestMessage::setPayload(ndn::Buffer& payload, size_t size) {
-    payload_ = payload;
-    payloadSize_ = size;
+    payloadBlock_ = std::make_shared<const ndn::Block>(makePayloadBlockFromBuffer(payload, size));
+    payloadSize_ = payloadBlock_->value_size();
+}
+
+void RequestMessage::setPayloadBlock(const ndn::Block& payloadBlock) {
+    payloadBlock_ = clonePayloadBlock(payloadBlock);
+    payloadSize_ = payloadBlock_->value_size();
 }
 
 void RequestMessage::setStrategy(size_t strategy) {
@@ -73,7 +144,11 @@ const std::string& RequestMessage::getProviderToken() const {
 }
 
 ndn::Buffer RequestMessage::getPayload() const {
-    return payload_;
+    return payloadValueAsBuffer(payloadBlock_);
+}
+
+const ndn::Block& RequestMessage::getPayloadBlock() const {
+    return payloadBlockOrEmpty(payloadBlock_);
 }
 
 size_t RequestMessage::getPayloadSize() const {
@@ -100,7 +175,7 @@ void RequestMessage::Clear() {
     tokens_.clear();
     userToken_.clear();
     providerToken_.clear();
-    payload_.clear();
+    payloadBlock_.reset();
     payloadSize_ = 0;
     strategy_ = tlv::FirstResponding;
     requestMode_ = tlv::NormalRequest;
@@ -110,8 +185,8 @@ void RequestMessage::Clear() {
 }
 
 ndn::Block RequestMessage::WireEncode() const {
-    if (m_wire.hasWire()) {
-        m_wire = ndn::Block();
+    if (m_wire && m_wire->hasWire()) {
+        m_wire.reset();
     }
     ndn::Block block(tlv::RequestMessageType);
     for (const auto& token : tokens_) {
@@ -124,8 +199,7 @@ ndn::Block RequestMessage::WireEncode() const {
         block.push_back(ndn::makeStringBlock(tlv::ProviderTokenType, providerToken_));
     }
     // payload
-    ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
-    block.push_back(payloadBlock);
+    block.push_back(payloadBlockOrEmpty(payloadBlock_));
     // strategy
     ndn::Block strategyloadBlock = ndn::makeNonNegativeIntegerBlock(tlv::StrategyType, strategy_);
     block.push_back(strategyloadBlock);
@@ -139,8 +213,8 @@ ndn::Block RequestMessage::WireEncode() const {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
     block.encode();
-    m_wire = block;
-    return m_wire;
+    m_wire = std::make_shared<const ndn::Block>(block);
+    return *m_wire;
 }
 
 bool RequestMessage::WireDecode(const ndn::Block& block) {
@@ -168,8 +242,8 @@ bool RequestMessage::WireDecode(const ndn::Block& block) {
             providerToken_ = ndn::readString(b);
         }
         else if (b.type() == tlv::PayloadType) {
-            payload_ = ndn::Buffer(b.value(),b.value_size());
-            payloadSize_ = b.value_size();
+            payloadBlock_ = clonePayloadBlock(b);
+            payloadSize_ = payloadBlock_->value_size();
         }
         else if (b.type() == tlv::StrategyType) {
             strategy_ = ndn::readNonNegativeInteger(b);
@@ -203,10 +277,10 @@ ResponseMessage::operator=(const ResponseMessage& other)
         errorInfo_ = other.errorInfo_;
         tokens_ = other.tokens_;
         userToken_ = other.userToken_;
-        payload_ = other.payload_;
+        payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
         policyEpoch_ = other.policyEpoch_;
-        m_wire = ndn::Block();
+        m_wire.reset();
     }
     return *this;
 }
@@ -228,8 +302,13 @@ void ResponseMessage::setUserToken(const std::string& userToken) {
 }
 
 void ResponseMessage::setPayload(ndn::Buffer& payload, size_t size) {
-    payload_ = payload;
-    payloadSize_ = size;
+    payloadBlock_ = std::make_shared<const ndn::Block>(makePayloadBlockFromBuffer(payload, size));
+    payloadSize_ = payloadBlock_->value_size();
+}
+
+void ResponseMessage::setPayloadBlock(const ndn::Block& payloadBlock) {
+    payloadBlock_ = clonePayloadBlock(payloadBlock);
+    payloadSize_ = payloadBlock_->value_size();
 }
 
 void ResponseMessage::setPolicyEpoch(size_t policyEpoch) {
@@ -253,7 +332,11 @@ const std::string& ResponseMessage::getUserToken() const {
 }
 
 ndn::Buffer ResponseMessage::getPayload() const {
-    return payload_;
+    return payloadValueAsBuffer(payloadBlock_);
+}
+
+const ndn::Block& ResponseMessage::getPayloadBlock() const {
+    return payloadBlockOrEmpty(payloadBlock_);
 }
 
 size_t ResponseMessage::getPayloadSize() const {
@@ -269,15 +352,15 @@ void ResponseMessage::Clear() {
     errorInfo_.clear();
     tokens_.clear();
     userToken_.clear();
-    payload_.clear();
+    payloadBlock_.reset();
     payloadSize_ = 0;
     policyEpoch_ = 0;
     m_wire.reset();
 }
 
 ndn::Block ResponseMessage::WireEncode() const {
-    if (m_wire.hasWire()) {
-        m_wire = ndn::Block();
+    if (m_wire && m_wire->hasWire()) {
+        m_wire.reset();
     }
     ndn::Block block(tlv::ResponseMessageType);
     // 编码 status
@@ -291,14 +374,13 @@ ndn::Block ResponseMessage::WireEncode() const {
         block.push_back(ndn::makeStringBlock(tlv::UserTokenType, userToken_));
     }
     // 编码 payload
-    ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
-    block.push_back(payloadBlock);
+    block.push_back(payloadBlockOrEmpty(payloadBlock_));
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
     block.encode();
-    m_wire = block;
-    return m_wire;
+    m_wire = std::make_shared<const ndn::Block>(block);
+    return *m_wire;
 }
 
 bool ResponseMessage::WireDecode(const ndn::Block& block) {
@@ -326,8 +408,8 @@ bool ResponseMessage::WireDecode(const ndn::Block& block) {
             userToken_ = ndn::readString(b);
         }
         else if (b.type() == tlv::PayloadType) {
-            payload_ = ndn::Buffer(b.value(),b.value_size());
-            payloadSize_ = b.value_size();
+            payloadBlock_ = clonePayloadBlock(b);
+            payloadSize_ = payloadBlock_->value_size();
         }
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
@@ -352,7 +434,7 @@ RequestAckMessage::operator=(const RequestAckMessage& other)
         message_ = other.message_;
         userToken_ = other.userToken_;
         providerToken_ = other.providerToken_;
-        payload_ = other.payload_;
+        payloadBlock_ = clonePayloadBlock(other.getPayloadBlock());
         payloadSize_ = other.payloadSize_;
         policyEpoch_ = other.policyEpoch_;
         m_wire.reset();
@@ -377,8 +459,13 @@ void RequestAckMessage::setProviderToken(const std::string& providerToken) {
 }
 
 void RequestAckMessage::setPayload(ndn::Buffer& payload, size_t size) {
-    payload_ = payload;
-    payloadSize_ = size;
+    payloadBlock_ = std::make_shared<const ndn::Block>(makePayloadBlockFromBuffer(payload, size));
+    payloadSize_ = payloadBlock_->value_size();
+}
+
+void RequestAckMessage::setPayloadBlock(const ndn::Block& payloadBlock) {
+    payloadBlock_ = clonePayloadBlock(payloadBlock);
+    payloadSize_ = payloadBlock_->value_size();
 }
 
 void RequestAckMessage::setPolicyEpoch(size_t policyEpoch) {
@@ -402,7 +489,11 @@ const std::string& RequestAckMessage::getProviderToken() const {
 }
 
 ndn::Buffer RequestAckMessage::getPayload() const {
-    return payload_;
+    return payloadValueAsBuffer(payloadBlock_);
+}
+
+const ndn::Block& RequestAckMessage::getPayloadBlock() const {
+    return payloadBlockOrEmpty(payloadBlock_);
 }
 
 size_t RequestAckMessage::getPayloadSize() const {
@@ -418,14 +509,14 @@ void RequestAckMessage::Clear() {
     message_.clear();
     userToken_.clear();
     providerToken_.clear();
-    payload_.clear();
+    payloadBlock_.reset();
     payloadSize_ = 0;
     policyEpoch_ = 0;
     m_wire.reset();
 }
 
 ndn::Block RequestAckMessage::WireEncode() const {
-    if (m_wire.hasWire()) {
+    if (m_wire && m_wire->hasWire()) {
         m_wire.reset();
     }
     ndn::Block block(tlv::RequestAckMessageType);
@@ -440,14 +531,13 @@ ndn::Block RequestAckMessage::WireEncode() const {
         block.push_back(ndn::makeStringBlock(tlv::ProviderTokenType, providerToken_));
     }
     // 编码 payload
-    ndn::Block payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType, payload_.begin(), payload_.end());
-    block.push_back(payloadBlock);
+    block.push_back(payloadBlockOrEmpty(payloadBlock_));
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
     }
     block.encode();
-    m_wire = block;
-    return m_wire;
+    m_wire = std::make_shared<const ndn::Block>(block);
+    return *m_wire;
 }
 
 bool RequestAckMessage::WireDecode(const ndn::Block& block) {
@@ -472,8 +562,8 @@ bool RequestAckMessage::WireDecode(const ndn::Block& block) {
             providerToken_ = ndn::readString(b);
         }
         else if (b.type() == tlv::PayloadType) {
-            payload_ = ndn::Buffer(b.value(),b.value_size());
-            payloadSize_ = b.value_size();
+            payloadBlock_ = clonePayloadBlock(b);
+            payloadSize_ = payloadBlock_->value_size();
         }
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);

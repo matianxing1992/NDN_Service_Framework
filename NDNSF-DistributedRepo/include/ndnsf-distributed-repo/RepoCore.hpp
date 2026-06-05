@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace ndnsf_distributed_repo {
 
@@ -44,16 +45,41 @@ public:
 
   std::vector<uint8_t> handleCapability() const;
 
+  RepoCatalogStatus catalogStatus() const;
+
+  RepoCatalogDelta catalogSnapshot() const;
+
+  RepoCatalogDelta catalogDelta(uint64_t sinceEpoch) const;
+
+  RepoCatalogEntry catalogLookup(const std::string& objectName) const;
+
+  std::vector<uint8_t> handleCatalogStatus() const;
+
+  std::vector<uint8_t> handleCatalogSnapshot() const;
+
+  std::vector<uint8_t> handleCatalogDelta(const std::vector<uint8_t>& request) const;
+
+  std::vector<uint8_t> handleCatalogLookup(const std::vector<uint8_t>& request) const;
+
   std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
 
 private:
   void refreshCapabilityUsage();
+
+  RepoCatalogEntry makeCatalogEntry(const RepoObjectManifest& manifest,
+                                    std::string state,
+                                    uint64_t epoch) const;
+
+  void rememberCatalogChange(const RepoObjectManifest& manifest,
+                             const std::string& state);
 
 private:
   StorageCapability m_capability;
   uint64_t m_capacityBytes = 0;
   mutable std::mutex m_mutex;
   std::shared_ptr<RepoStoreBackend> m_store;
+  uint64_t m_catalogEpoch = 0;
+  std::vector<RepoCatalogEntry> m_catalogChanges;
 };
 
 } // namespace ndnsf_distributed_repo

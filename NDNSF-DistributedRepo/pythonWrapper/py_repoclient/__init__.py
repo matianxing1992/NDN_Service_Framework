@@ -49,6 +49,9 @@ def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
             fields.get("availabilityScore", fields.get("availability", "1"))
         )
         capability.failure_domain = fields.get("failureDomain", "")
+        capability.repo_mode = fields.get("repoMode", "persistent")
+        capability.accepts_backup_replica = _parse_bool(
+            fields.get("acceptsBackupReplica", "true"))
         storage_classes = fields.get("storageClasses", "")
         if storage_classes:
             capability.storage_classes = [
@@ -333,7 +336,14 @@ def _capability_from_json(obj: dict) -> StorageCapability:
     capability.availability_score = float(obj.get("availabilityScore", 1))
     capability.failure_domain = str(obj.get("failureDomain", ""))
     capability.storage_classes = [str(value) for value in obj.get("storageClasses", [])]
+    capability.repo_mode = str(obj.get("repoMode", "persistent"))
+    capability.accepts_backup_replica = _parse_bool(
+        str(obj.get("acceptsBackupReplica", "true")))
     return capability
+
+
+def _parse_bool(value: str) -> bool:
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _request(operation: str, **fields) -> bytes:

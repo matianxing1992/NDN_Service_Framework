@@ -88,6 +88,115 @@ extractJsonBool(const std::string& json, const std::string& key, bool fallback)
   return fallback;
 }
 
+std::string
+extractJsonObject(const std::string& json, const std::string& key)
+{
+  const std::string marker = "\"" + key + "\":";
+  const auto markerStart = json.find(marker);
+  if (markerStart == std::string::npos) {
+    return "";
+  }
+  const auto valueStart = json.find('{', markerStart + marker.size());
+  if (valueStart == std::string::npos) {
+    return "";
+  }
+
+  size_t depth = 0;
+  bool inString = false;
+  bool escaping = false;
+  for (size_t i = valueStart; i < json.size(); ++i) {
+    const char ch = json[i];
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      }
+      else if (ch == '\\') {
+        escaping = true;
+      }
+      else if (ch == '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch == '"') {
+      inString = true;
+      continue;
+    }
+    if (ch == '{') {
+      ++depth;
+      continue;
+    }
+    if (ch == '}') {
+      if (depth == 0) {
+        return "";
+      }
+      --depth;
+      if (depth == 0) {
+        return json.substr(valueStart, i - valueStart + 1);
+      }
+    }
+  }
+  return "";
+}
+
+std::vector<std::string>
+extractJsonObjectArray(const std::string& json, const std::string& key)
+{
+  std::vector<std::string> objects;
+  const std::string marker = "\"" + key + "\":[";
+  const auto start = json.find(marker);
+  if (start == std::string::npos) {
+    return objects;
+  }
+  const auto arrayStart = start + marker.size();
+  size_t depth = 0;
+  size_t objectStart = std::string::npos;
+  bool inString = false;
+  bool escaping = false;
+
+  for (size_t i = arrayStart; i < json.size(); ++i) {
+    const char ch = json[i];
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      }
+      else if (ch == '\\') {
+        escaping = true;
+      }
+      else if (ch == '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch == '"') {
+      inString = true;
+      continue;
+    }
+    if (ch == '{') {
+      if (depth == 0) {
+        objectStart = i;
+      }
+      ++depth;
+      continue;
+    }
+    if (ch == '}') {
+      if (depth == 0) {
+        throw std::invalid_argument("repo catalog JSON has unmatched object close");
+      }
+      --depth;
+      if (depth == 0 && objectStart != std::string::npos) {
+        objects.push_back(json.substr(objectStart, i - objectStart + 1));
+        objectStart = std::string::npos;
+      }
+      continue;
+    }
+    if (ch == ']' && depth == 0) {
+      break;
+    }
+  }
+  return objects;
+}
+
 std::vector<std::string>
 extractJsonStringArray(const std::string& json, const std::string& key)
 {
@@ -173,6 +282,18 @@ encodeStatusRequest(const std::string& operationId)
   return toBytes(operationId);
 }
 
+std::vector<uint8_t>
+encodeCatalogDeltaRequest(uint64_t sinceEpoch)
+{
+  return toBytes(std::to_string(sinceEpoch));
+}
+
+std::vector<uint8_t>
+encodeCatalogLookupRequest(const std::string& objectName)
+{
+  return toBytes(objectName);
+}
+
 void
 decodeStoreRequest(const std::vector<uint8_t>& request,
                    RepoObjectManifest& manifest,
@@ -244,6 +365,68 @@ parseManifestJson(const std::string& manifestJson)
   manifest.policyEpoch = extractJsonString(manifestJson, "policyEpoch");
   manifest.replicaNodes = extractJsonStringArray(manifestJson, "replicaNodes");
   return manifest;
+}
+
+RepoCatalogEntry
+parseCatalogEntryJson(const std::string& entryJson)
+{
+  RepoCatalogEntry entry;
+  const auto manifestJson = extractJsonObject(entryJson, "manifest");
+  if (!manifestJson.empty()) {
+    entry.manifest = parseManifestJson(manifestJson);
+  }
+  else {
+    entry.manifest.objectName = extractJsonString(entryJson, "objectName");
+    entry.manifest.objectType = extractJsonString(entryJson, "objectType");
+    entry.manifest.sha256 = extractJsonString(entryJson, "manifestSha256");
+    entry.manifest.size = extractJsonUInt(entryJson, "size", 0);
+    entry.manifest.segmentCount = static_cast<uint32_t>(
+      extractJsonUInt(entryJson, "segmentCount", 1));
+    entry.manifest.replicaNodes = extractJsonStringArray(entryJson, "replicaNodes");
+  }
+  entry.sourceRepo = extractJsonString(entryJson, "sourceRepo");
+  entry.repoMode = extractJsonString(entryJson, "repoMode");
+  if (entry.repoMode.empty()) {
+    entry.repoMode = "persistent";
+  }
+  entry.state = extractJsonString(entryJson, "state");
+  if (entry.state.empty()) {
+    entry.state = "AVAILABLE";
+  }
+  entry.catalogEpoch = extractJsonUInt(entryJson, "catalogEpoch", 0);
+  return entry;
+}
+
+RepoCatalogStatus
+parseCatalogStatusJson(const std::string& statusJson)
+{
+  RepoCatalogStatus status;
+  status.repoNode = extractJsonString(statusJson, "repoNode");
+  status.repoMode = extractJsonString(statusJson, "repoMode");
+  if (status.repoMode.empty()) {
+    status.repoMode = "persistent";
+  }
+  status.catalogEpoch = extractJsonUInt(statusJson, "catalogEpoch", 0);
+  status.objectCount = extractJsonUInt(statusJson, "objectCount", 0);
+  status.acceptsBackupReplica = extractJsonBool(statusJson, "acceptsBackupReplica", true);
+  return status;
+}
+
+RepoCatalogDelta
+parseCatalogDeltaJson(const std::string& deltaJson)
+{
+  RepoCatalogDelta delta;
+  delta.repoNode = extractJsonString(deltaJson, "repoNode");
+  delta.repoMode = extractJsonString(deltaJson, "repoMode");
+  if (delta.repoMode.empty()) {
+    delta.repoMode = "persistent";
+  }
+  delta.sinceEpoch = extractJsonUInt(deltaJson, "sinceEpoch", 0);
+  delta.catalogEpoch = extractJsonUInt(deltaJson, "catalogEpoch", 0);
+  for (const auto& entryJson : extractJsonObjectArray(deltaJson, "entries")) {
+    delta.entries.push_back(parseCatalogEntryJson(entryJson));
+  }
+  return delta;
 }
 
 std::vector<RepoObjectManifest>

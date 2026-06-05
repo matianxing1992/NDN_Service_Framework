@@ -62,6 +62,8 @@ def build_extension() -> Extension:
         sources=[
             "src/py_repoclient/_py_repoclient.cpp",
             "../src/RepoClient.cpp",
+            "../src/RepoCore.cpp",
+            "../src/RepoNode.cpp",
             "../src/RepoProtocol.cpp",
             "../src/RepoTypes.cpp",
         ],

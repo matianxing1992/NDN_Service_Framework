@@ -329,11 +329,12 @@ parseRepoDeploymentMode(const std::string& value)
     return RepoDeploymentMode::Remote;
   }
   if (normalized == "embedded" || normalized == "local" ||
-      normalized == "inprocess") {
+      normalized == "inprocess" || normalized == "inapp") {
     return RepoDeploymentMode::Embedded;
   }
   if (normalized == "both" || normalized == "remoteembedded" ||
-      normalized == "embeddedremote") {
+      normalized == "embeddedremote" || normalized == "remotelocal" ||
+      normalized == "localremote") {
     return RepoDeploymentMode::Both;
   }
   throw std::invalid_argument("unknown repo deployment mode: " + value);
@@ -429,6 +430,8 @@ StorageCapability::toJson() const
   std::ostringstream os;
   os << "{";
   os << "\"repoNode\":" << jsonQuote(repoNode) << ",";
+  os << "\"repoMode\":" << jsonQuote(repoMode) << ",";
+  os << "\"acceptsBackupReplica\":" << (acceptsBackupReplica ? "true" : "false") << ",";
   os << "\"freeBytes\":" << freeBytes << ",";
   os << "\"usedBytes\":" << usedBytes << ",";
   os << "\"recentLoad\":" << recentLoad << ",";
@@ -443,6 +446,83 @@ StorageCapability::toJson() const
   }
   os << "]}";
   return os.str();
+}
+
+std::string
+RepoCatalogEntry::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"objectName\":" << jsonQuote(manifest.objectName) << ",";
+  os << "\"manifestSha256\":" << jsonQuote(manifest.sha256) << ",";
+  os << "\"objectType\":" << jsonQuote(manifest.objectType) << ",";
+  os << "\"size\":" << manifest.size << ",";
+  os << "\"segmentCount\":" << manifest.segmentCount << ",";
+  os << "\"sourceRepo\":" << jsonQuote(sourceRepo) << ",";
+  os << "\"repoMode\":" << jsonQuote(repoMode) << ",";
+  os << "\"state\":" << jsonQuote(state) << ",";
+  os << "\"catalogEpoch\":" << catalogEpoch << ",";
+  os << "\"replicaNodes\":[";
+  for (size_t i = 0; i < manifest.replicaNodes.size(); ++i) {
+    if (i != 0) {
+      os << ",";
+    }
+    os << jsonQuote(manifest.replicaNodes[i]);
+  }
+  os << "],";
+  os << "\"manifest\":" << manifest.toJson();
+  os << "}";
+  return os.str();
+}
+
+std::string
+RepoCatalogStatus::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"repoNode\":" << jsonQuote(repoNode) << ",";
+  os << "\"repoMode\":" << jsonQuote(repoMode) << ",";
+  os << "\"catalogEpoch\":" << catalogEpoch << ",";
+  os << "\"objectCount\":" << objectCount << ",";
+  os << "\"acceptsBackupReplica\":" << (acceptsBackupReplica ? "true" : "false");
+  os << "}";
+  return os.str();
+}
+
+std::string
+RepoCatalogDelta::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"repoNode\":" << jsonQuote(repoNode) << ",";
+  os << "\"repoMode\":" << jsonQuote(repoMode) << ",";
+  os << "\"sinceEpoch\":" << sinceEpoch << ",";
+  os << "\"catalogEpoch\":" << catalogEpoch << ",";
+  os << "\"entries\":[";
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (i != 0) {
+      os << ",";
+    }
+    os << entries[i].toJson();
+  }
+  os << "]}";
+  return os.str();
+}
+
+bool
+isInAppRepo(const StorageCapability& capability)
+{
+  const auto normalized = normalizeModeText(capability.repoMode);
+  return normalized == "inapp" || normalized == "embedded" ||
+         normalized == "local" || normalized == "inprocess";
+}
+
+bool
+isPersistentRepo(const StorageCapability& capability)
+{
+  const auto normalized = normalizeModeText(capability.repoMode);
+  return normalized.empty() || normalized == "persistent" ||
+         normalized == "standalone" || normalized == "remote";
 }
 
 std::string
@@ -466,7 +546,9 @@ selectReplicas(const std::vector<StorageCapability>& candidates,
 {
   std::vector<StorageCapability> filtered;
   for (const auto& candidate : candidates) {
-    if (!candidate.repoNode.empty() && candidate.freeBytes >= objectSize) {
+    if (!candidate.repoNode.empty() &&
+        candidate.acceptsBackupReplica &&
+        candidate.freeBytes >= objectSize) {
       filtered.push_back(candidate);
     }
   }

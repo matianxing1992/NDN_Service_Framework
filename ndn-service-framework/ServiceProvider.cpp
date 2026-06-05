@@ -116,6 +116,75 @@ namespace ndn_service_framework
         }
 
         size_t
+        responseLargeDataThresholdBytes()
+        {
+            if (isTruthyEnv("NDNSF_DISABLE_RESPONSE_LARGE_DATA_REFERENCE")) {
+                return 0;
+            }
+            const int configured =
+                intEnvOrDefault("NDNSF_RESPONSE_LARGE_DATA_THRESHOLD", 6000);
+            return configured <= 0 ? 0 : static_cast<size_t>(configured);
+        }
+
+        std::string
+        sanitizeLargeDataObjectId(std::string value)
+        {
+            if (value.empty()) {
+                value = "response";
+            }
+            for (auto& ch : value) {
+                const bool ok = (ch >= 'a' && ch <= 'z') ||
+                                (ch >= 'A' && ch <= 'Z') ||
+                                (ch >= '0' && ch <= '9') ||
+                                ch == '-' || ch == '_' || ch == '.';
+                if (!ok) {
+                    ch = '-';
+                }
+            }
+            return value;
+        }
+
+        ndn::Name
+        makeLargeResponseDataNameWithoutPrefix(const ndn::Name& requesterName,
+                                               const ndn::Name& serviceName,
+                                               const ndn::Name& requestId,
+                                               const std::string& objectId)
+        {
+            ndn::Name name("/NDNSF/LARGE-RESPONSE");
+            name.append(ndn::name::Component(requesterName.toUri()));
+            name.append(serviceName);
+            name.append(requestId);
+            name.append(objectId);
+            return name;
+        }
+
+        ndn::Name
+        makeLargeResponseDataName(const ndn::Name& providerPrefix,
+                                  const ndn::Name& requesterName,
+                                  const ndn::Name& serviceName,
+                                  const ndn::Name& requestId,
+                                  const std::string& objectId)
+        {
+            ndn::Name name(providerPrefix);
+            name.append(makeLargeResponseDataNameWithoutPrefix(requesterName,
+                                                               serviceName,
+                                                               requestId,
+                                                               objectId));
+            return name;
+        }
+
+        std::string
+        sha256DigestString(const ndn::Buffer& payload)
+        {
+            ndn::util::Sha256 digest;
+            if (!payload.empty()) {
+                digest << std::string(reinterpret_cast<const char*>(payload.data()),
+                                      payload.size());
+            }
+            return "sha256:" + digest.toString();
+        }
+
+        size_t
         defaultNdnsfWorkerThreads()
         {
             if (std::getenv("NDNSF_HANDLER_THREADS") == nullptr) {
@@ -2165,6 +2234,134 @@ namespace ndn_service_framework
         return true;
     }
 
+    LargeDataReferenceResponseResult
+    ServiceProvider::makeResponseWithLargeDataOptimization(
+        const ndn::Name& requesterName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        ResponseMessage response,
+        size_t thresholdBytes,
+        const ndn::time::milliseconds& freshness)
+    {
+        LargeDataReferenceResponseResult result;
+        const auto threshold = thresholdBytes == 0 ?
+            responseLargeDataThresholdBytes() : thresholdBytes;
+        const auto payload = response.getPayload();
+        if (!response.getStatus() ||
+            threshold == 0 ||
+            payload.size() <= threshold ||
+            isLargeDataReferencePayload(payload)) {
+            result.responseMessage = std::move(response);
+            result.success = true;
+            return result;
+        }
+
+        if (requesterName.empty() || serviceName.empty() || requestId.empty()) {
+            result.errorMessage = "large response reference requires requesterName, serviceName, and requestId";
+            return result;
+        }
+
+        result.largeData.objectId =
+            sanitizeLargeDataObjectId("response-" + requestId.toUri());
+        ndn::Name encryptedDataName =
+            makeLargeResponseDataName(identity,
+                                      requesterName,
+                                      serviceName,
+                                      requestId,
+                                      result.largeData.objectId);
+        encryptedDataName.appendVersion();
+        const auto responseName = makeResponseNameV2(identity,
+                                                     requesterName,
+                                                     serviceName,
+                                                     requestId);
+        const auto messageType = std::string("RESPONSE");
+        const auto accessAttribute = std::string("/PERMISSION") + serviceName.toUri();
+
+        try {
+            auto key = m_hybridMessageCrypto.getOrCreateSendKey(
+                serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
+
+            HybridMessageEnvelope envelope;
+            envelope.setKeyId(key.keyId);
+            envelope.setEpochId(key.epochId);
+            envelope.setMessageType(messageType);
+
+            if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
+                ndn::nacabe::SPtrVector<ndn::Data> contentData;
+                ndn::nacabe::SPtrVector<ndn::Data> ckData;
+                std::tie(contentData, ckData) =
+                    nacProducer.produce(key.keyName,
+                                        std::vector<std::string>{accessAttribute},
+                                        ndn::span<const uint8_t>(key.key.data(),
+                                                                key.key.size()),
+                                        m_signingInfo);
+                auto wrapped = mergeDataContents(contentData);
+                envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
+                serveDataWithIMS(contentData, ckData);
+                m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+                ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
+            }
+
+            const auto ad = hybridAssociatedData(responseName,
+                                                 messageType,
+                                                 requestId,
+                                                 serviceName,
+                                                 identity,
+                                                 key.keyId,
+                                                 key.epochId);
+            auto encrypted = hybridAesGcmEncrypt(
+                key.key,
+                ndn::span<const uint8_t>(payload.data(), payload.size()),
+                ndn::span<const uint8_t>(ad.data(), ad.size()));
+            envelope.setNonce(encrypted.nonce);
+            envelope.setCipherText(encrypted.ciphertext);
+            envelope.setAuthTag(encrypted.tag);
+            auto envelopeBlock = envelope.WireEncode();
+            ndn::Buffer encoded(envelopeBlock.begin(), envelopeBlock.end());
+
+            ndn::Segmenter segmenter(m_keyChain, m_signingInfo);
+            auto segments = segmenter.segment(
+                ndn::span<const uint8_t>(encoded.data(), encoded.size()),
+                encryptedDataName,
+                7000,
+                freshness);
+            {
+                std::lock_guard<std::mutex> lock(_cache_mutex);
+                for (const auto& data : segments) {
+                    m_IMS.insert(*data, freshness);
+                }
+            }
+            result.largeData.encryptedDataName = encryptedDataName;
+            result.largeData.digest = sha256DigestString(payload);
+
+            LargeDataReference reference;
+            reference.dataName = encryptedDataName;
+            reference.objectType = "ndnsf-response";
+            reference.objectId = result.largeData.objectId;
+            reference.plaintextSize = payload.size();
+            reference.encrypted = true;
+            reference.digest = result.largeData.digest;
+            auto referencePayload = encodeLargeDataReferencePayload(reference);
+            response.setPayload(referencePayload, referencePayload.size());
+
+            result.responseMessage = std::move(response);
+            result.usedLargeDataReference = true;
+            result.success = true;
+            NDN_LOG_INFO("LARGE_RESPONSE_REFERENCE_PUBLISHED"
+                         << " name=" << encryptedDataName.toUri()
+                         << " requestId=" << requestId.toUri()
+                         << " serviceName=" << serviceName.toUri()
+                         << " plaintextBytes=" << payload.size()
+                         << " envelopeBytes=" << encoded.size()
+                         << " segments=" << segments.size()
+                         << " wrappedKeyAttached=" << envelope.hasWrappedMessageKey());
+        }
+        catch (const std::exception& e) {
+            result.errorMessage = e.what();
+        }
+        return result;
+    }
+
     void ServiceProvider::finishRequestExecutionOnEventLoop(
         const ndn::Name& requesterName,
         const ndn::Name& providerName,
@@ -2199,6 +2396,22 @@ namespace ndn_service_framework
             registeredService != m_services.end() &&
             registeredService->second.targetedRequestHandler) {
             attachTargetedTokenBatch(requesterName, serviceName, response);
+        }
+        auto optimizedResponse = makeResponseWithLargeDataOptimization(
+            requesterName, serviceName, requestId, std::move(response));
+        if (!optimizedResponse.success) {
+            NDN_LOG_ERROR("Failed to prepare large response reference requestId="
+                          << requestId.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " error=" << optimizedResponse.errorMessage);
+            response = makeErrorResponse("large response reference preparation failed: " +
+                                         optimizedResponse.errorMessage);
+            if (m_useTokens) {
+                response.setUserToken(requestMessage.getUserToken());
+            }
+        }
+        else {
+            response = std::move(optimizedResponse.responseMessage);
         }
         response.setPolicyEpoch(m_currentPolicyEpoch);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=RESPONSE_DISPATCHED timestamp_us="

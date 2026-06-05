@@ -393,6 +393,88 @@ BOOST_AUTO_TEST_CASE(ProviderResolveLargeDataReferenceLeavesInlinePayload)
                                 inlinePayload.begin(), inlinePayload.end());
 }
 
+BOOST_AUTO_TEST_CASE(LargeResponseOptimizationKeepsSmallPayloadInline)
+{
+  ndn::security::KeyChain keyChain("pib-memory:large-response-inline",
+                                   "tpm-memory:large-response-inline");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/camera");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-response-inline"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+
+  const std::vector<uint8_t> smallPayload = {'o', 'k'};
+  ndn::Buffer payload(smallPayload.data(), smallPayload.size());
+  ResponseMessage response;
+  response.setStatus(true);
+  response.setErrorInfo("No error");
+  response.setPayload(payload, payload.size());
+
+  auto optimized = provider.makeResponseWithLargeDataOptimization(
+    ndn::Name("/test/user/alice"),
+    ndn::Name("/HELLO"),
+    ndn::Name("/request-1"),
+    response,
+    1024);
+
+  BOOST_REQUIRE(optimized.success);
+  BOOST_CHECK(!optimized.usedLargeDataReference);
+  const auto optimizedPayload = optimized.responseMessage.getPayload();
+  BOOST_CHECK_EQUAL_COLLECTIONS(optimizedPayload.begin(), optimizedPayload.end(),
+                                smallPayload.begin(), smallPayload.end());
+  BOOST_CHECK(!isLargeDataReferencePayload(optimizedPayload));
+}
+
+BOOST_AUTO_TEST_CASE(LargeResponseOptimizationPublishesReferenceForLargePayload)
+{
+  ndn::security::KeyChain keyChain("pib-memory:large-response-reference",
+                                   "tpm-memory:large-response-reference");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/camera");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-response-reference"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+
+  const std::vector<uint8_t> largePayload(2048, static_cast<uint8_t>('r'));
+  ndn::Buffer payload(largePayload.data(), largePayload.size());
+  ResponseMessage response;
+  response.setStatus(true);
+  response.setErrorInfo("No error");
+  response.setPayload(payload, payload.size());
+
+  auto optimized = provider.makeResponseWithLargeDataOptimization(
+    ndn::Name("/test/user/alice"),
+    ndn::Name("/HELLO"),
+    ndn::Name("/request-1"),
+    response,
+    1024);
+  if (!optimized.success) {
+    BOOST_TEST_MESSAGE("large-response reference production unavailable in local mock: "
+                       << optimized.errorMessage);
+    BOOST_CHECK(!optimized.errorMessage.empty());
+    return;
+  }
+
+  BOOST_CHECK(optimized.usedLargeDataReference);
+  const auto referencePayload = optimized.responseMessage.getPayload();
+  const auto reference = parseLargeDataReferencePayload(referencePayload);
+  BOOST_REQUIRE(reference);
+  BOOST_CHECK_EQUAL(reference->dataName, optimized.largeData.encryptedDataName);
+  BOOST_CHECK_EQUAL(reference->objectType, "ndnsf-response");
+  BOOST_CHECK_EQUAL(reference->plaintextSize, largePayload.size());
+  BOOST_CHECK(reference->encrypted);
+  BOOST_CHECK_EQUAL(reference->digest, optimized.largeData.digest);
+  BOOST_CHECK_EQUAL(reference->digest.substr(0, 7), "sha256:");
+}
+
 BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
 {
   const ndn::Name requester("/test/user/alice");

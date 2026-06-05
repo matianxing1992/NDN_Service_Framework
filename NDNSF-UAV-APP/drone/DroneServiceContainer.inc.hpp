@@ -1843,8 +1843,10 @@ private:
   onRecordingChunkInterest(const ndn::Interest& interest)
   {
     const auto objectName = interest.getName().toUri();
-    const auto response = m_localRegistry.localInvokeRaw(
-      m_localRecordingChunkServiceName, makeRequest(objectName), droneIdentity(m_config, m_droneId));
+    ndn_service_framework::ResponseMessage response;
+    m_localRegistry.localInvokeRawInto(
+      m_localRecordingChunkServiceName, makeRequest(objectName), response,
+      droneIdentity(m_config, m_droneId));
     const auto responsePayload = response.getPayload();
     std::vector<uint8_t> payload(responsePayload.begin(), responsePayload.end());
     if (payload.empty()) {
@@ -3046,8 +3048,10 @@ private:
       ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
         [this](const ndn_service_framework::RequestMessage& request) {
-          return m_coreContainer.localRegistry().localInvokeRaw(
-            localRecordingManifestServiceName(), request, m_identity);
+          ndn_service_framework::ResponseMessage response;
+          m_coreContainer.localRegistry().localInvokeRawInto(
+            localRecordingManifestServiceName(), request, response, m_identity);
+          return response;
         }),
       ServiceInvocationMode::NormalOnly);
 
@@ -3104,8 +3108,10 @@ private:
           telemetry["flight_controller_backend"] = m_flightControllerBackend;
           telemetry["flight_controller_available"] = m_backend ? "true" : "false";
           telemetry["flight_controller_reason"] = m_backend ? "ok" : "backend-not-created";
-          const auto cameraResponse = m_coreContainer.localRegistry().localInvokeRaw(
-            localCameraStatusServiceName(), ndn_service_framework::RequestMessage{}, m_identity);
+          ndn_service_framework::ResponseMessage cameraResponse;
+          m_coreContainer.localRegistry().localInvokeRawInto(
+            localCameraStatusServiceName(), ndn_service_framework::RequestMessage{},
+            cameraResponse, m_identity);
           if (cameraResponse.getStatus()) {
             const auto cameraPayload = cameraResponse.getPayload();
             const auto cameraFields = decodeFields(std::string(

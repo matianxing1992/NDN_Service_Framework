@@ -68,6 +68,15 @@ public:
   static RepoOperationStatus status(const RepoNode& node,
                                     const std::string& operationId);
 
+  static RepoCatalogStatus catalogStatus(const RepoNode& node);
+
+  static RepoCatalogDelta catalogSnapshot(const RepoNode& node);
+
+  static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
+
+  static RepoCatalogEntry catalogLookup(const RepoNode& node,
+                                        const std::string& objectName);
+
   /**
    * Store a large object as object-level chunks named
    * <objectName>/seg/<index>, then store a manifest-only parent object.
@@ -135,6 +144,24 @@ public:
     ndn_service_framework::LocalServiceRegistry& registry,
     const ndn::Name& repoServicePrefix,
     const std::string& operationId);
+
+  static RepoCatalogStatus localCatalogStatus(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+
+  static RepoCatalogDelta localCatalogSnapshot(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+
+  static RepoCatalogDelta localCatalogDelta(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    uint64_t sinceEpoch);
+
+  static RepoCatalogEntry localCatalogLookup(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
 
   /**
    * Same as putSegmented(), but invokes a repo registered in the same trusted

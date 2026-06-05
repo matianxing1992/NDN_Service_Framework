@@ -78,6 +78,14 @@ public:
 
   std::vector<uint8_t> handleCapability() const;
 
+  std::vector<uint8_t> handleCatalogStatus() const;
+
+  std::vector<uint8_t> handleCatalogSnapshot() const;
+
+  std::vector<uint8_t> handleCatalogDelta(const std::vector<uint8_t>& request) const;
+
+  std::vector<uint8_t> handleCatalogLookup(const std::vector<uint8_t>& request) const;
+
   std::vector<uint8_t> handleDelete(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleStatus(const std::vector<uint8_t>& request) const;

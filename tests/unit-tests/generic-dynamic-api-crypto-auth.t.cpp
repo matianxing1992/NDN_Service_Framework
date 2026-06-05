@@ -54,6 +54,50 @@ BOOST_AUTO_TEST_CASE(MessageTokenFieldsRoundTrip)
   BOOST_CHECK_EQUAL(decodedManifest.getRequiredKeyEpoch(), 43);
 }
 
+BOOST_AUTO_TEST_CASE(MessagePayloadBlockRoundTrip)
+{
+  const std::vector<uint8_t> payload = {'n', 'd', 'n', 's', 'f', 0, 'b', 'l', 'k'};
+  auto payloadBlock = ndn::makeBinaryBlock(tlv::PayloadType,
+                                           payload.begin(),
+                                           payload.end());
+  payloadBlock.encode();
+
+  RequestMessage request;
+  request.setPayloadBlock(payloadBlock);
+  BOOST_CHECK_EQUAL(request.getPayloadBlock().type(), tlv::PayloadType);
+  BOOST_CHECK_EQUAL(request.getPayloadSize(), payload.size());
+  RequestMessage decodedRequest;
+  BOOST_REQUIRE(decodedRequest.WireDecode(request.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedRequest.getPayloadBlock().type(), tlv::PayloadType);
+  const auto decodedRequestPayload = decodedRequest.getPayload();
+  BOOST_CHECK_EQUAL_COLLECTIONS(decodedRequestPayload.begin(),
+                                decodedRequestPayload.end(),
+                                payload.begin(),
+                                payload.end());
+
+  RequestAckMessage ack;
+  ack.setPayloadBlock(payloadBlock);
+  RequestAckMessage decodedAck;
+  BOOST_REQUIRE(decodedAck.WireDecode(ack.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedAck.getPayloadBlock().type(), tlv::PayloadType);
+  const auto decodedAckPayload = decodedAck.getPayload();
+  BOOST_CHECK_EQUAL_COLLECTIONS(decodedAckPayload.begin(),
+                                decodedAckPayload.end(),
+                                payload.begin(),
+                                payload.end());
+
+  ResponseMessage response;
+  response.setPayloadBlock(payloadBlock);
+  ResponseMessage decodedResponse;
+  BOOST_REQUIRE(decodedResponse.WireDecode(response.WireEncode()));
+  BOOST_CHECK_EQUAL(decodedResponse.getPayloadBlock().type(), tlv::PayloadType);
+  const auto decodedResponsePayload = decodedResponse.getPayload();
+  BOOST_CHECK_EQUAL_COLLECTIONS(decodedResponsePayload.begin(),
+                                decodedResponsePayload.end(),
+                                payload.begin(),
+                                payload.end());
+}
+
 BOOST_AUTO_TEST_CASE(HybridMessageEnvelopeProtectsRequestPayloadAndUserToken)
 {
   HybridMessageCrypto crypto;

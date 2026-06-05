@@ -47,6 +47,23 @@ is still available.
 
 The example intentionally avoids model or artifact semantics.
 
+## Persistent Repo Catalog Gossip
+
+The MiniNDN smoke starts three Persistent repo nodes and a small
+`catalog_sync.py` sidecar beside each repo. The sidecar periodically asks peer
+Persistent repos for `CATALOG_DELTA` and merges the returned entries into its
+local repo with `CATALOG_MERGE`.
+
+The smoke intentionally uses a 10 second sync interval. A shorter all-to-all
+interval can create too many NDNSF service requests and delay normal repo
+operations, which is exactly why catalog exchange should stay object-level and
+delta-based rather than per-segment or full-directory broadcast.
+
+After storing JSON config, telemetry log, binary blob, and app-signed Data
+packet objects, the client waits for catalog propagation and asks every
+Persistent repo for `CATALOG_SNAPSHOT`. The smoke succeeds only when every
+snapshot contains every stored object.
+
 ## Namespace Design
 
 Application data is named by the publisher, not by the repo service. The repo
@@ -123,5 +140,7 @@ sudo -E PYTHONPATH=pythonWrapper:NDNSF-DistributedInference \
 Expected success marker:
 
 ```text
+GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_OK
 GENERIC_DISTRIBUTED_REPO_MININDN_OK
 ```

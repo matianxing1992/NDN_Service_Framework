@@ -255,6 +255,30 @@ Targeted invocation 的安全模型：
 authorization 和 replay resistance。缓存 token pool 用完后，下一次
 `RequestServiceTargeted(...)` 会自动重新走 bootstrap/refill 流程。
 
+对于较大的 service payload，NDNSF 使用统一的 large-data reference abstraction。
+小 request/response payload 仍然内联放在 `RequestMessage.payload` 和
+`ResponseMessage.payload` 里。大的 request input 可以由应用或 runtime 先发布为
+segmented NDN Data，再把 `LargeDataReference` 放进 request payload。大的 response
+则由 NDNSF core 自动处理：如果成功的 `ResponseMessage.payload` 超过配置阈值，
+provider 会把它发布为签名的 segmented NDN Data，并把内联 response payload 替换为
+`LargeDataReference`。user runtime 识别该 reference 后，会自动 fetch segments、解密、
+验证 size/hash，然后把原始 response payload 交给同一个应用 callback。应用层 response
+API 不需要改变。
+
+大的 response 使用 hybrid message encryption，而不是对整个大 payload 使用 NAC-ABE
+加密。payload 本体用 AES-GCM 加密，并作为 segmented `HybridMessageEnvelope` 保存；
+NAC-ABE 只在 message key 尚未缓存时用于包装这个很小的 message key。这样既保留普通
+`/PERMISSION/<service>` response authorization，又避免在大型 catalog snapshot、model
+artifact、activation、recording 等 response body 上调用性能很差的 NAC-ABE
+`produce/consume`。
+
+自动 response reference 的默认阈值是 6000 bytes，可以用环境变量调整或关闭：
+
+```bash
+NDNSF_RESPONSE_LARGE_DATA_THRESHOLD=4096 ./your-app
+NDNSF_DISABLE_RESPONSE_LARGE_DATA_REFERENCE=1 ./your-app
+```
+
 对于同一个进程内部的可信服务组合，NDNSF 也提供 `LocalServiceRegistry`。
 这不是一种网络调用模式，远程 caller 看不到也不能选择它。只有 container 显式把某个
 service 注册到 local registry 后，这个 service 才能被 local call；未注册时 local call

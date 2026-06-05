@@ -14,28 +14,23 @@ namespace ndnsf_distributed_repo {
 namespace {
 
 std::vector<uint8_t>
-payloadBytes(const ndn_service_framework::ResponseMessage& response)
-{
-  const auto payload = response.getPayload();
-  return std::vector<uint8_t>(payload.begin(), payload.end());
-}
-
-std::vector<uint8_t>
 localRequest(ndn_service_framework::LocalServiceRegistry& registry,
              const ndn::Name& repoServicePrefix,
              const std::string& operation,
              const std::vector<uint8_t>& payload)
 {
   auto request = RepoClient::makeRequest(payload);
-  auto response = registry.localInvokeRaw(
+  ndn_service_framework::ResponseMessage response;
+  registry.localInvokeRawInto(
     makeRepoServiceName(repoServicePrefix, operation),
-    request);
-  request.Clear();
+    request,
+    response);
   if (!response.getStatus()) {
     throw std::runtime_error("local repo " + operation + " failed: " +
                              response.getErrorInfo());
   }
-  return payloadBytes(response);
+  const auto responsePayload = response.getPayload();
+  return std::vector<uint8_t>(responsePayload.begin(), responsePayload.end());
 }
 
 std::string
@@ -170,6 +165,33 @@ RepoClient::status(const RepoNode& node, const std::string& operationId)
   return parseOperationStatusJson(toString(node.handleStatus(encodeStatusRequest(operationId))));
 }
 
+RepoCatalogStatus
+RepoClient::catalogStatus(const RepoNode& node)
+{
+  return parseCatalogStatusJson(toString(node.handleCatalogStatus()));
+}
+
+RepoCatalogDelta
+RepoClient::catalogSnapshot(const RepoNode& node)
+{
+  return parseCatalogDeltaJson(toString(node.handleCatalogSnapshot()));
+}
+
+RepoCatalogDelta
+RepoClient::catalogDelta(const RepoNode& node, uint64_t sinceEpoch)
+{
+  return parseCatalogDeltaJson(toString(
+    node.handleCatalogDelta(encodeCatalogDeltaRequest(sinceEpoch))));
+}
+
+RepoCatalogEntry
+RepoClient::catalogLookup(const RepoNode& node,
+                          const std::string& objectName)
+{
+  return parseCatalogEntryJson(toString(
+    node.handleCatalogLookup(encodeCatalogLookupRequest(objectName))));
+}
+
 RepoObjectManifest
 RepoClient::putSegmented(RepoNode& node,
                          const std::string& objectName,
@@ -293,6 +315,42 @@ RepoClient::localStatus(ndn_service_framework::LocalServiceRegistry& registry,
     registry, repoServicePrefix, "STATUS", encodeStatusRequest(operationId))));
 }
 
+RepoCatalogStatus
+RepoClient::localCatalogStatus(ndn_service_framework::LocalServiceRegistry& registry,
+                               const ndn::Name& repoServicePrefix)
+{
+  return parseCatalogStatusJson(toString(localRequest(
+    registry, repoServicePrefix, "CATALOG_STATUS", {})));
+}
+
+RepoCatalogDelta
+RepoClient::localCatalogSnapshot(ndn_service_framework::LocalServiceRegistry& registry,
+                                 const ndn::Name& repoServicePrefix)
+{
+  return parseCatalogDeltaJson(toString(localRequest(
+    registry, repoServicePrefix, "CATALOG_SNAPSHOT", {})));
+}
+
+RepoCatalogDelta
+RepoClient::localCatalogDelta(ndn_service_framework::LocalServiceRegistry& registry,
+                              const ndn::Name& repoServicePrefix,
+                              uint64_t sinceEpoch)
+{
+  return parseCatalogDeltaJson(toString(localRequest(
+    registry, repoServicePrefix, "CATALOG_DELTA",
+    encodeCatalogDeltaRequest(sinceEpoch))));
+}
+
+RepoCatalogEntry
+RepoClient::localCatalogLookup(ndn_service_framework::LocalServiceRegistry& registry,
+                               const ndn::Name& repoServicePrefix,
+                               const std::string& objectName)
+{
+  return parseCatalogEntryJson(toString(localRequest(
+    registry, repoServicePrefix, "CATALOG_LOOKUP",
+    encodeCatalogLookupRequest(objectName))));
+}
+
 RepoObjectManifest
 RepoClient::localPutSegmented(ndn_service_framework::LocalServiceRegistry& registry,
                               const ndn::Name& repoServicePrefix,
@@ -378,7 +436,10 @@ RepoClient::makeManifest(std::string objectName,
 ndn_service_framework::RequestMessage
 RepoClient::makeRequest(const std::vector<uint8_t>& payload)
 {
-  ndn::Buffer buffer(payload.data(), payload.size());
+  ndn::Buffer buffer;
+  if (!payload.empty()) {
+    buffer = ndn::Buffer(payload.data(), payload.size());
+  }
   ndn_service_framework::RequestMessage request;
   request.setPayload(buffer, buffer.size());
   return request;

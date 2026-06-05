@@ -277,6 +277,34 @@ authorization or replay resistance. When the cached token pool is exhausted,
 the next `RequestServiceTargeted(...)` call automatically uses the bootstrap
 flow again.
 
+For large service payloads, NDNSF uses a common large-data reference
+abstraction. Small request and response payloads remain inline in
+`RequestMessage.payload` and `ResponseMessage.payload`. Large request inputs
+can be published by the application/runtime as segmented NDN Data and carried
+as a `LargeDataReference` in the request payload. Large responses are handled
+automatically by NDNSF core: if a successful `ResponseMessage.payload` exceeds
+the configured threshold, the provider publishes it as signed segmented NDN
+Data and replaces the inline response payload with a `LargeDataReference`.
+The user runtime detects that reference, fetches the segments, decrypts and
+verifies the object, and then delivers the original response payload to the
+same application callback. Application response APIs do not need to change.
+
+Large responses use hybrid message encryption, not NAC-ABE encryption over the
+whole large payload. The payload body is encrypted with AES-GCM and stored as a
+segmented `HybridMessageEnvelope`; NAC-ABE is used only to wrap the small
+message key when that key is not already cached. This preserves normal
+`/PERMISSION/<service>` response authorization while avoiding the high cost of
+NAC-ABE `produce/consume` on large catalog snapshots, model artifacts,
+activations, recordings, and other large response bodies.
+
+The default automatic response threshold is 6000 bytes and can be changed or
+disabled with environment variables:
+
+```bash
+NDNSF_RESPONSE_LARGE_DATA_THRESHOLD=4096 ./your-app
+NDNSF_DISABLE_RESPONSE_LARGE_DATA_REFERENCE=1 ./your-app
+```
+
 For trusted composition inside one process, NDNSF also provides
 `LocalServiceRegistry`. This is not a network invocation mode and is not
 visible to remote callers. A service becomes local-callable only when the

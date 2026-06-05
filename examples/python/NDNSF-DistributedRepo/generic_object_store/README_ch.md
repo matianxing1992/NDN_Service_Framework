@@ -27,6 +27,20 @@ Config object 由 deployment side 在 `repo_node.py` 启动时创建。它也是
 
 这个示例故意不包含 model 或 artifact 语义。
 
+## Persistent Repo Catalog Gossip
+
+MiniNDN smoke 会启动三个 Persistent repo node，并在每个 repo 旁边启动一个小型
+`catalog_sync.py` sidecar。Sidecar 会周期性向 peer Persistent repos 请求
+`CATALOG_DELTA`，然后通过 `CATALOG_MERGE` 把返回的 entries 合并到本地 repo。
+
+这个 smoke 有意使用 10 秒同步周期。更短的全互联周期会产生太多 NDNSF service
+requests，并拖慢正常 repo 操作；这正是 catalog exchange 应该保持 object-level 和
+delta-based，而不是广播每个 segment 或完整目录的原因。
+
+在存储 JSON config、telemetry log、binary blob 和 app-signed Data packet objects
+之后，client 会等待 catalog 传播，并向每个 Persistent repo 请求
+`CATALOG_SNAPSHOT`。只有每个 snapshot 都包含所有已存对象时，smoke 才算通过。
+
 ## Namespace Design
 
 应用数据由发布者命名，而不是由 repo service 命名。Repo service name 保持共享和稳定：
@@ -91,5 +105,7 @@ sudo -E PYTHONPATH=pythonWrapper:NDNSF-DistributedInference \
 期望成功标记：
 
 ```text
+GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_OK
 GENERIC_DISTRIBUTED_REPO_MININDN_OK
 ```

@@ -648,6 +648,12 @@ namespace ndn_service_framework{
             bool handleDecryptedResponseByName(const ndn::Name& responseName,
                                                const ndn::Block& responseBlock);
 
+            std::optional<ResponseMessage>
+            resolveLargeResponseReferencePayload(const ResponseMessage& responseMessage,
+                                                 const ndn::Name& responseName,
+                                                 const ndn::Name& serviceName,
+                                                 std::string& errorMessage);
+
             bool handleRequestAckByName(const ndn::Name& ackName,
                                         const ndn_service_framework::RequestAckMessage& ackMessage);
 

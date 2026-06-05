@@ -151,6 +151,8 @@ class StorageCapability:
     availability_score: float = 1.0
     failure_domain: str = ""
     storage_classes: tuple[str, ...] = ("model", "intermediate")
+    repo_mode: str = "persistent"
+    accepts_backup_replica: bool = True
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,8 @@ class _RepoNodeState:
                                 if self.available else 0.0),
             failure_domain=self.capability.failure_domain,
             storage_classes=self.capability.storage_classes,
+            repo_mode=self.capability.repo_mode,
+            accepts_backup_replica=self.capability.accepts_backup_replica,
         )
 
 
@@ -373,12 +377,19 @@ class RepoNodeApp:
         preallocate_bytes: int = 0,
         advertise_stored_prefixes: bool = False,
         advertise_command: str = "nlsrc",
+        repo_mode: str = "persistent",
+        accepts_backup_replica: bool = True,
+        peer_repo_nodes: tuple[str, ...] = (),
+        catalog_sync_interval_s: float = 10.0,
         handler_threads: int = 4,
         ack_threads: int = 2,
         serve_certificates: bool = True,
     ) -> None:
         self.repo_node = repo_node
         self.service_name = service_name
+        self.group = group
+        self.controller = controller
+        self.trust_schema = trust_schema
         self.provider_name = (
             f"{provider_prefix.rstrip('/')}/{provider_id.strip('/')}"
             if provider_id else provider_prefix.rstrip("/")
@@ -388,6 +399,8 @@ class RepoNodeApp:
             free_bytes=free_bytes,
             failure_domain=failure_domain,
             storage_classes=storage_classes,
+            repo_mode=repo_mode,
+            accepts_backup_replica=accepts_backup_replica,
         )
         self.provider = ServiceProvider(
             provider_id=provider_id,
@@ -424,6 +437,20 @@ class RepoNodeApp:
         self.advertise_stored_prefixes = advertise_stored_prefixes
         self.advertise_command = advertise_command
         self._advertised_prefixes: set[str] = set()
+        self.peer_repo_nodes = tuple(
+            peer for peer in peer_repo_nodes
+            if peer and peer.rstrip("/") != self.repo_node.rstrip("/")
+        )
+        self.catalog_sync_interval_s = max(0.5, float(catalog_sync_interval_s))
+        self._catalog_lock = threading.RLock()
+        self._catalog_epoch = 0
+        self._catalog_changes: list[dict] = []
+        self._global_catalog: dict[str, dict[str, dict]] = {}
+        self._repo_status: dict[str, dict] = {}
+        self._peer_catalog_epochs: dict[str, int] = {}
+        self._catalog_stale_after_ms = 30_000
+        self._catalog_stop = threading.Event()
+        self._catalog_thread: Optional[threading.Thread] = None
 
     def _init_sqlite(self) -> None:
         assert self._db is not None
@@ -522,6 +549,8 @@ class RepoNodeApp:
             availability_score=self.capability.availability_score,
             failure_domain=self.capability.failure_domain,
             storage_classes=self.capability.storage_classes,
+            repo_mode=self.capability.repo_mode,
+            accepts_backup_replica=self.capability.accepts_backup_replica,
         )
 
     def _load_manifest(self, object_name: str) -> RepoObjectManifest:
@@ -540,6 +569,7 @@ class RepoNodeApp:
 
     def _persist_object(self, manifest: RepoObjectManifest, payload: bytes) -> None:
         self._cache_put(manifest, payload)
+        self._remember_catalog_change(manifest, "AVAILABLE")
         if self._db is None:
             return
         old_size = 0
@@ -581,6 +611,7 @@ class RepoNodeApp:
             self._db.commit()
 
     def _persist_manifest(self, manifest: RepoObjectManifest) -> None:
+        self._remember_catalog_change(manifest, "AVAILABLE")
         if self._db is None:
             return
         with self._db_lock:
@@ -608,6 +639,7 @@ class RepoNodeApp:
 
     def _persist_packets(self, manifest: RepoObjectManifest, packets: list[DataPacket]) -> None:
         self._packet_cache_put(manifest, packets)
+        self._remember_catalog_change(manifest, "AVAILABLE")
         if self._db is None:
             return
         packet_bytes = sum(len(packet.wire) for packet in packets)
@@ -841,11 +873,256 @@ class RepoNodeApp:
             for name, manifest_json in rows
         }
 
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+    @staticmethod
+    def _manifest_sha256(manifest: RepoObjectManifest) -> str:
+        return hashlib.sha256(manifest.to_bytes()).hexdigest()
+
+    @staticmethod
+    def _catalog_manifest_summary(manifest: RepoObjectManifest) -> dict:
+        return {
+            "objectName": manifest.object_name,
+            "objectType": manifest.object_type,
+            "sha256": manifest.sha256,
+            "size": manifest.size,
+            "segmentCount": manifest.segment_count,
+            "replicationFactor": manifest.replication_factor,
+            "replicaNodes": list(manifest.replica_nodes),
+            "policyEpoch": manifest.policy_epoch,
+        }
+
+    def _catalog_entry(self, manifest: RepoObjectManifest, state: str) -> dict:
+        now_ms = self._now_ms()
+        return {
+            "objectName": manifest.object_name,
+            "objectSha256": manifest.sha256,
+            "manifestSha256": self._manifest_sha256(manifest),
+            "objectType": manifest.object_type,
+            "size": manifest.size,
+            "segmentCount": manifest.segment_count,
+            "sourceRepo": self.repo_node,
+            "repoMode": self.capability.repo_mode,
+            "state": state,
+            "catalogEpoch": self._catalog_epoch,
+            "lastSeenMs": now_ms,
+            "updatedAtMs": now_ms,
+            "desiredReplicationFactor": manifest.replication_factor,
+            "replicaNodes": list(manifest.replica_nodes),
+            "manifest": self._catalog_manifest_summary(manifest),
+        }
+
+    def _catalog_status_entry(self) -> dict:
+        capability = self._capability()
+        return {
+            "repoNode": self.repo_node,
+            "repoMode": capability.repo_mode,
+            "catalogEpoch": self._catalog_epoch,
+            "lastSeenMs": self._now_ms(),
+            "acceptsBackupReplica": capability.accepts_backup_replica,
+            "freeBytes": capability.free_bytes,
+            "usedBytes": capability.used_bytes,
+            "failureDomain": capability.failure_domain,
+        }
+
+    def _merge_repo_status(self, status: dict) -> None:
+        repo_node = str(status.get("repoNode", ""))
+        if not repo_node:
+            return
+        merged = dict(status)
+        merged["lastSeenMs"] = self._now_ms()
+        self._repo_status[repo_node] = merged
+
+    def _upsert_catalog_entry(self, entry: dict) -> None:
+        object_name = str(entry.get("objectName", ""))
+        source_repo = str(entry.get("sourceRepo", ""))
+        if not object_name or not source_repo:
+            return
+        normalized = dict(entry)
+        normalized.setdefault("objectSha256", normalized.get("manifestSha256", ""))
+        if "manifestSha256" not in normalized and "manifest" in normalized:
+            try:
+                normalized["manifestSha256"] = hashlib.sha256(
+                    json.dumps(normalized["manifest"], sort_keys=True).encode()
+                ).hexdigest()
+            except Exception:
+                normalized["manifestSha256"] = ""
+        normalized["lastSeenMs"] = self._now_ms()
+        by_source = self._global_catalog.setdefault(object_name, {})
+        current = by_source.get(source_repo)
+        if current is not None:
+            current_epoch = int(current.get("catalogEpoch", 0))
+            entry_epoch = int(normalized.get("catalogEpoch", 0))
+            if current_epoch > entry_epoch:
+                return
+            if (current_epoch == entry_epoch and
+                    int(current.get("updatedAtMs", 0)) >
+                    int(normalized.get("updatedAtMs", 0))):
+                return
+        by_source[source_repo] = normalized
+        self._merge_repo_status({
+            "repoNode": source_repo,
+            "repoMode": normalized.get("repoMode", ""),
+            "catalogEpoch": normalized.get("catalogEpoch", 0),
+        })
+
+    def _flatten_catalog_entries(self) -> list[dict]:
+        entries: list[dict] = []
+        for by_source in self._global_catalog.values():
+            entries.extend(dict(entry) for entry in by_source.values())
+        return entries
+
+    def _is_entry_stale(self, entry: dict) -> bool:
+        source_repo = str(entry.get("sourceRepo", ""))
+        status = self._repo_status.get(source_repo, {})
+        last_seen = int(status.get("lastSeenMs", entry.get("lastSeenMs", 0)) or 0)
+        return bool(last_seen and self._now_ms() - last_seen > self._catalog_stale_after_ms)
+
+    def _object_catalog_summary(self, object_name: str) -> dict:
+        with self._catalog_lock:
+            entries = [
+                dict(entry)
+                for entry in self._global_catalog.get(object_name, {}).values()
+            ]
+            repo_status = {
+                repo: dict(status)
+                for repo, status in self._repo_status.items()
+            }
+        if not entries:
+            raise KeyError(object_name)
+        for entry in entries:
+            entry["stale"] = self._is_entry_stale(entry)
+        available = [
+            entry for entry in entries
+            if str(entry.get("state", "")) == "AVAILABLE" and not entry.get("stale")
+        ]
+        tombstones = [
+            entry for entry in entries
+            if str(entry.get("state", "")) == "DELETED"
+        ]
+        desired = max(
+            [int(entry.get("desiredReplicationFactor",
+                       entry.get("manifest", {}).get("replicationFactor", 1)) or 1)
+             for entry in entries] or [1]
+        )
+        source_repos = {str(entry.get("sourceRepo", "")) for entry in entries}
+        stale_repos = [
+            str(entry.get("sourceRepo", ""))
+            for entry in entries
+            if entry.get("stale")
+        ]
+        target_candidates = [
+            repo for repo, status in repo_status.items()
+            if repo not in source_repos and
+            str(status.get("repoMode", "")) == "persistent" and
+            bool(status.get("acceptsBackupReplica", True))
+        ]
+        missing = max(0, desired - len(available))
+        repair_plan = {
+            "needed": missing > 0,
+            "missingReplicas": missing,
+            "sourceRepos": [str(entry.get("sourceRepo", "")) for entry in available],
+            "targetCandidates": target_candidates[:missing],
+        }
+        best = (available or entries)[0]
+        return {
+            "objectName": object_name,
+            "objectSha256": best.get("objectSha256", ""),
+            "manifestSha256": best.get("manifestSha256", ""),
+            "objectType": best.get("objectType", ""),
+            "size": best.get("size", 0),
+            "segmentCount": best.get("segmentCount", 0),
+            "state": ("DELETED" if tombstones and not available else
+                      "UNDER_REPLICATED" if missing else "AVAILABLE"),
+            "desiredReplicationFactor": desired,
+            "availableReplicaCount": len(available),
+            "underReplicated": missing > 0,
+            "staleRepos": stale_repos,
+            "entries": entries,
+            "candidateReplicas": available,
+            "repairPlan": repair_plan,
+        }
+
+    def _remember_catalog_change(self, manifest: RepoObjectManifest, state: str) -> None:
+        with self._catalog_lock:
+            self._catalog_epoch += 1
+            entry = self._catalog_entry(manifest, state)
+            entry["catalogEpoch"] = self._catalog_epoch
+            self._catalog_changes.append(entry)
+            self._upsert_catalog_entry(entry)
+
+    def _catalog_snapshot(self) -> dict:
+        inventory = self._sqlite_inventory()
+        inventory.update(self._store.inventory())
+        with self._catalog_lock:
+            for manifest in inventory.values():
+                self._upsert_catalog_entry(self._catalog_entry(manifest, "AVAILABLE"))
+            entries = self._flatten_catalog_entries()
+            object_names = sorted({str(entry.get("objectName", "")) for entry in entries})
+            objects = []
+            for object_name in object_names:
+                if not object_name:
+                    continue
+                try:
+                    objects.append(self._object_catalog_summary(object_name))
+                except KeyError:
+                    pass
+            return {
+                "repoNode": self.repo_node,
+                "repoMode": self.capability.repo_mode,
+                "catalogEpoch": self._catalog_epoch,
+                "generatedAtMs": self._now_ms(),
+                "staleAfterMs": self._catalog_stale_after_ms,
+                "repoStatus": self._catalog_status_entry(),
+                "knownRepos": list(self._repo_status.values()),
+                "entries": entries,
+                "objects": objects,
+            }
+
+    def _catalog_delta(self, since_epoch: int) -> dict:
+        with self._catalog_lock:
+            return {
+                "repoNode": self.repo_node,
+                "repoMode": self.capability.repo_mode,
+                "sinceEpoch": since_epoch,
+                "catalogEpoch": self._catalog_epoch,
+                "generatedAtMs": self._now_ms(),
+                "staleAfterMs": self._catalog_stale_after_ms,
+                "repoStatus": self._catalog_status_entry(),
+                "entries": [
+                    entry for entry in self._catalog_changes
+                    if int(entry.get("catalogEpoch", 0)) > since_epoch
+                ],
+            }
+
+    def _merge_catalog_entries(self, entries: Iterable[dict],
+                               source_status: Optional[dict] = None) -> None:
+        with self._catalog_lock:
+            if source_status:
+                self._merge_repo_status(source_status)
+            for raw_entry in entries:
+                self._upsert_catalog_entry(dict(raw_entry))
+
+    def _catalog_lookup(self, object_name: str) -> dict:
+        try:
+            manifest = self._load_manifest(object_name)
+            self._upsert_catalog_entry(self._catalog_entry(manifest, "AVAILABLE"))
+        except KeyError:
+            pass
+        return self._object_catalog_summary(object_name)
+
     def _sqlite_payload_bytes(self, object_name: str) -> bytes:
         _, payload = self._load_persisted_object(object_name)
         return payload
 
     def _delete_object(self, object_name: str) -> bool:
+        deleted_manifest: RepoObjectManifest | None = None
+        try:
+            deleted_manifest = self._load_manifest(object_name)
+        except KeyError:
+            pass
         removed = self._store.erase(object_name)
         self._cache.pop(object_name, None)
         self._packet_cache.pop(object_name, None)
@@ -861,6 +1138,8 @@ class RepoNodeApp:
                 )
                 self._db.commit()
                 removed = removed or cursor.rowcount > 0
+        if removed and deleted_manifest is not None:
+            self._remember_catalog_change(deleted_manifest, "DELETED")
         return removed
 
     @staticmethod
@@ -998,6 +1277,8 @@ class RepoNodeApp:
             f"load={capability.recent_load};"
             f"availability={capability.availability_score};"
             f"failureDomain={capability.failure_domain};"
+            f"repoMode={capability.repo_mode};"
+            f"acceptsBackupReplica={1 if capability.accepts_backup_replica else 0};"
             f"memoryCacheBytes={self.memory_cache_bytes};"
             f"memoryCacheUsedBytes={self._cache_bytes};"
             f"storageBackend={'sqlite' if self._db is not None else 'memory'};"
@@ -1019,6 +1300,8 @@ class RepoNodeApp:
                     "recentLoad": capability.recent_load,
                     "availabilityScore": capability.availability_score,
                     "failureDomain": capability.failure_domain,
+                    "repoMode": capability.repo_mode,
+                    "acceptsBackupReplica": capability.accepts_backup_replica,
                     "storageClasses": list(capability.storage_classes),
                     "storageBackend": "sqlite" if self._db is not None else "memory",
                     "capacityBytes": self.capacity_bytes,
@@ -1166,6 +1449,7 @@ class RepoNodeApp:
                             serve_name,
                             stored_packets,
                         )
+                        self._remember_catalog_change(manifest, "AVAILABLE")
                 except KeyError:
                     pass
                 return ServiceResponse(True, json.dumps({
@@ -1305,6 +1589,45 @@ class RepoNodeApp:
                     name: manifest.to_dict()
                     for name, manifest in inventory.items()
                 }, sort_keys=True).encode())
+            if operation == "CATALOG_STATUS":
+                snapshot = self._catalog_snapshot()
+                status = self._catalog_status_entry()
+                return ServiceResponse(True, json.dumps({
+                    **status,
+                    "objectCount": len(snapshot["entries"]),
+                    "acceptsBackupReplica": self.capability.accepts_backup_replica,
+                    "staleAfterMs": self._catalog_stale_after_ms,
+                }, sort_keys=True).encode())
+            if operation == "CATALOG_SNAPSHOT":
+                return ServiceResponse(
+                    True,
+                    json.dumps(self._catalog_snapshot(), sort_keys=True).encode(),
+                )
+            if operation == "CATALOG_DELTA":
+                since_epoch = int(request.get("sinceEpoch", 0))
+                return ServiceResponse(
+                    True,
+                    json.dumps(self._catalog_delta(since_epoch), sort_keys=True).encode(),
+                )
+            if operation == "CATALOG_LOOKUP":
+                object_name = str(request["objectName"])
+                return ServiceResponse(
+                    True,
+                    json.dumps(self._catalog_lookup(object_name), sort_keys=True).encode(),
+                )
+            if operation == "CATALOG_MERGE":
+                entries = request.get("entries", [])
+                if not isinstance(entries, list):
+                    raise ValueError("CATALOG_MERGE entries must be a list")
+                source_status = request.get("sourceStatus", {})
+                if source_status is not None and not isinstance(source_status, dict):
+                    raise ValueError("CATALOG_MERGE sourceStatus must be an object")
+                self._merge_catalog_entries(entries, source_status)
+                return ServiceResponse(True, json.dumps({
+                    "status": "merged",
+                    "repoNode": self.repo_node,
+                    "entryCount": len(entries),
+                }, sort_keys=True).encode())
             if operation == "DELETE":
                 object_name = str(request["objectName"])
                 removed = self._delete_object(object_name)
@@ -1317,9 +1640,73 @@ class RepoNodeApp:
         except Exception as exc:  # noqa: BLE001
             return ServiceResponse(False, str(exc).encode(), str(exc))
 
+    def _request_peer_catalog_delta(self, peer_repo_node: str, since_epoch: int) -> dict:
+        sync_user = ServiceUser(
+            group=self.group,
+            controller=self.controller,
+            user=self.provider_name,
+            trust_schema=self.trust_schema,
+            permission_wait_ms=6000,
+            adaptive_admission=False,
+            serve_certificates=False,
+        )
+
+        def selector(candidates: list[AckCandidate]) -> list[str]:
+            for candidate in candidates:
+                fields = self._parse_ack_payload(candidate.payload)
+                if fields.get("repoNode") == peer_repo_node:
+                    return [candidate.provider_name]
+            return []
+
+        response = sync_user.request_service_select(
+            self.service_name,
+            encode_repo_request("CATALOG_DELTA", sinceEpoch=since_epoch),
+            selector,
+            ack_timeout_ms=1000,
+            timeout_ms=15000,
+            request_strategy="all-selected",
+        )
+        if not response.status:
+            raise RuntimeError(response.error)
+        decoded = json.loads(response.payload.decode())
+        if not isinstance(decoded, dict):
+            raise ValueError("repo catalog delta response must be a JSON object")
+        return decoded
+
+    def _catalog_sync_loop(self) -> None:
+        time.sleep(min(2.0, self.catalog_sync_interval_s))
+        while not self._catalog_stop.is_set():
+            for peer in self.peer_repo_nodes:
+                since_epoch = self._peer_catalog_epochs.get(peer, 0)
+                try:
+                    delta = self._request_peer_catalog_delta(peer, since_epoch)
+                    self._merge_catalog_entries(delta.get("entries", []))
+                    self._peer_catalog_epochs[peer] = int(
+                        delta.get("catalogEpoch", since_epoch))
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"repo catalog sync warning self={self.repo_node} "
+                        f"peer={peer}: {exc}",
+                        flush=True,
+                    )
+            self._catalog_stop.wait(self.catalog_sync_interval_s)
+
+    def _start_catalog_sync(self) -> None:
+        if self.capability.repo_mode != "persistent" or not self.peer_repo_nodes:
+            return
+        if self._catalog_thread is not None:
+            return
+        self._catalog_thread = threading.Thread(
+            target=self._catalog_sync_loop,
+            name=f"repo-catalog-sync-{self.repo_node}",
+            daemon=True,
+        )
+        self._catalog_thread.start()
+
     def run(self) -> int:
         self.provider.add_handler(self.service_name, self._handle)
         self.provider.set_ack_handler(self.service_name, self._ack)
+        self._start_catalog_sync()
         return self.provider.run(self.service_name)
 
     def seed_object(
@@ -1542,6 +1929,10 @@ class NetworkDistributedRepoClient:
                 recent_load=recent_load,
                 availability_score=availability,
                 failure_domain=fields.get("failureDomain", ""),
+                repo_mode=fields.get("repoMode", "persistent"),
+                accepts_backup_replica=str(
+                    fields.get("acceptsBackupReplica", "1")
+                ).lower() not in {"0", "false", "no", "off"},
             ))
             provider_for_repo[repo_node] = candidate.provider_name
 
@@ -1616,22 +2007,25 @@ class NetworkDistributedRepoClient:
         repo_node: str,
         payload: bytes,
         timeout_ms: int | None = None,
-    ) -> None:
-        request_user = ServiceUser(
-            group=self.user.group,
-            controller=self.user.controller,
-            user=self.user.user,
-            trust_schema=self.user.trust_schema,
-            permission_wait_ms=6000,
-            adaptive_admission=False,
-        )
-
+        isolated_runtime: bool = False,
+    ) -> ServiceResponse:
         def selector(candidates: list[AckCandidate]) -> list[str]:
             for candidate in candidates:
                 fields = self._parse_ack_payload(candidate.payload)
                 if fields.get("repoNode") == repo_node:
                     return [candidate.provider_name]
             return []
+
+        request_user = self.user
+        if isolated_runtime:
+            request_user = ServiceUser(
+                group=self.user.group,
+                controller=self.user.controller,
+                user=self.user.user,
+                trust_schema=self.user.trust_schema,
+                permission_wait_ms=6000,
+                adaptive_admission=False,
+            )
 
         response = request_user.request_service_select(
             self.service_name,
@@ -1645,9 +2039,9 @@ class NetworkDistributedRepoClient:
             raise RuntimeError(response.error)
         if self.verbose and response.payload:
             self._log(
-                f"repo response target={repo_node} "
-                f"payload={response.payload.decode(errors='replace')}"
+                f"repo specific response repo={repo_node} bytes={len(response.payload)}"
             )
+        return response
 
     def _store_once(
         self,
@@ -1890,6 +2284,8 @@ class NetworkDistributedRepoClient:
                 selected = selected[:replication_factor]
                 use_pull_store = len(payload) >= self.pull_store_threshold_bytes
                 data_names = tuple(
+                    self._upload_data_name(repo_node, object_name)
+                    if use_pull_store else
                     self.data_name(repo_node, object_name)
                     for repo_node in selected
                 )
@@ -2136,6 +2532,7 @@ class NetworkDistributedRepoClient:
                         packets=[self._packet_to_request(packet) for packet in batch],
                     ),
                     timeout_ms=max(self.timeout_ms, 60000),
+                    isolated_runtime=True,
                 )
         # Give repo-side local prefix registrations for the stored packet name
         # a short moment to settle before an immediate fetch follows.
@@ -2187,6 +2584,30 @@ class NetworkDistributedRepoClient:
             str(name): RepoObjectManifest.from_dict(value)
             for name, value in obj.items()
         }
+
+    def catalog_lookup(self, object_name: str, repo_node: str) -> dict:
+        response = self._request_specific_repo(
+            repo_node=repo_node,
+            payload=encode_repo_request("CATALOG_LOOKUP", objectName=object_name),
+            timeout_ms=self.timeout_ms,
+            isolated_runtime=True,
+        )
+        decoded = json.loads(response.payload.decode())
+        if not isinstance(decoded, dict):
+            raise ValueError("repo catalog lookup response must be a JSON object")
+        return decoded
+
+    def catalog_snapshot(self, repo_node: str) -> dict:
+        response = self._request_specific_repo(
+            repo_node=repo_node,
+            payload=encode_repo_request("CATALOG_SNAPSHOT"),
+            timeout_ms=self.timeout_ms,
+            isolated_runtime=True,
+        )
+        decoded = json.loads(response.payload.decode())
+        if not isinstance(decoded, dict):
+            raise ValueError("repo catalog snapshot response must be a JSON object")
+        return decoded
 
     def delete(self, object_name: str) -> bool:
         def selector(candidates: list[AckCandidate]) -> list[str]:
@@ -2522,6 +2943,12 @@ class DistributedRepo:
         self._known_manifests.update(inventory)
         return inventory
 
+    def catalog_lookup(self, object_name: str, repo_node: str) -> dict:
+        return self._client.catalog_lookup(object_name, repo_node)
+
+    def catalog_snapshot(self, repo_node: str) -> dict:
+        return self._client.catalog_snapshot(repo_node)
+
     def remove(self, object_name: str) -> bool:
         canonical_name = self._publisher_object_name(object_name)
         manifest = self._known_manifests.get(canonical_name)
@@ -2563,7 +2990,8 @@ def select_replicas(
 ) -> tuple[StorageCapability, ...]:
     eligible = [
         candidate for candidate in candidates
-        if candidate.repo_node and candidate.free_bytes >= object_size
+        if (candidate.repo_node and candidate.accepts_backup_replica and
+            candidate.free_bytes >= object_size)
     ]
     eligible.sort(key=_score, reverse=True)
 

@@ -33,6 +33,12 @@ encodeDataReferenceRequest(const RepoDataReference& reference);
 std::vector<uint8_t>
 encodeStatusRequest(const std::string& operationId);
 
+std::vector<uint8_t>
+encodeCatalogDeltaRequest(uint64_t sinceEpoch);
+
+std::vector<uint8_t>
+encodeCatalogLookupRequest(const std::string& objectName);
+
 void
 decodeStoreRequest(const std::vector<uint8_t>& request,
                    RepoObjectManifest& manifest,
@@ -46,6 +52,15 @@ parseOperationStatusJson(const std::string& statusJson);
 
 RepoObjectManifest
 parseManifestJson(const std::string& manifestJson);
+
+RepoCatalogEntry
+parseCatalogEntryJson(const std::string& entryJson);
+
+RepoCatalogStatus
+parseCatalogStatusJson(const std::string& statusJson);
+
+RepoCatalogDelta
+parseCatalogDeltaJson(const std::string& deltaJson);
 
 std::vector<RepoObjectManifest>
 parseInventoryJson(const std::string& inventoryJson);

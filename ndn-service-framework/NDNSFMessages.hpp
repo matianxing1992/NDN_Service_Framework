@@ -103,6 +103,7 @@ public:
     void setUserToken(const std::string& userToken);
     void setProviderToken(const std::string& providerToken);
     void setPayload(ndn::Buffer& payload, size_t size);
+    void setPayloadBlock(const ndn::Block& payloadBlock);
     // FirstResponding = 0, RandomSelection = 1, AllSelected = 2.
     void setStrategy(size_t strategy);
     void setRequestMode(size_t requestMode);
@@ -112,6 +113,7 @@ public:
     const std::string& getUserToken() const;
     const std::string& getProviderToken() const;
     ndn::Buffer getPayload() const;
+    const ndn::Block& getPayloadBlock() const;
     size_t getPayloadSize() const;
     size_t getStrategy() const;
     size_t getRequestMode() const;
@@ -125,13 +127,13 @@ private:
     std::map<std::string, std::string> tokens_;
     std::string userToken_;
     std::string providerToken_;
-    ndn::Buffer payload_;
+    std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
     size_t strategy_ = tlv::FirstResponding;
     size_t requestMode_ = tlv::NormalRequest;
     ndn::Name targetProvider_;
     size_t policyEpoch_ = 0;
-    mutable ndn::Block m_wire;
+    mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
 class ResponseMessage : public AbstractMessage {
@@ -145,12 +147,14 @@ public:
     void setTokens(const std::map<std::string, std::string>& tokens);
     void setUserToken(const std::string& userToken);
     void setPayload(ndn::Buffer& payload, size_t size);
+    void setPayloadBlock(const ndn::Block& payloadBlock);
     void setPolicyEpoch(size_t policyEpoch);
     bool getStatus() const;
     const std::string& getErrorInfo() const;
     const std::map<std::string, std::string>& getTokens() const;
     const std::string& getUserToken() const;
     ndn::Buffer getPayload() const;
+    const ndn::Block& getPayloadBlock() const;
     size_t getPayloadSize() const;
     size_t getPolicyEpoch() const;
     void Clear() override;
@@ -162,10 +166,10 @@ private:
     std::string errorInfo_;
     std::map<std::string, std::string> tokens_;
     std::string userToken_;
-    ndn::Buffer payload_;
+    std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
     size_t policyEpoch_ = 0;
-    mutable ndn::Block m_wire;
+    mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
 class RequestAckMessage : public AbstractMessage {
@@ -179,12 +183,14 @@ public:
     void setUserToken(const std::string& userToken);
     void setProviderToken(const std::string& providerToken);
     void setPayload(ndn::Buffer& payload, size_t size);
+    void setPayloadBlock(const ndn::Block& payloadBlock);
     void setPolicyEpoch(size_t policyEpoch);
     bool getStatus() const;
     const std::string& getMessage() const;
     const std::string& getUserToken() const;
     const std::string& getProviderToken() const;
     ndn::Buffer getPayload() const;
+    const ndn::Block& getPayloadBlock() const;
     size_t getPayloadSize() const;
     size_t getPolicyEpoch() const;
     void Clear() override;
@@ -196,10 +202,10 @@ private:
     std::string message_;
     std::string userToken_;
     std::string providerToken_;
-    ndn::Buffer payload_;
+    std::shared_ptr<const ndn::Block> payloadBlock_;
     size_t payloadSize_ = 0;
     size_t policyEpoch_ = 0;
-    mutable ndn::Block m_wire;
+    mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
 class ServiceSelectionMessage : public AbstractMessage {

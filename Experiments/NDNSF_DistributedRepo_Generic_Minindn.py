@@ -320,7 +320,7 @@ def main() -> None:
         )
         start("csu", "controller", base + perf.shell_quote(PY_DIR / "controller.py") + common)
         time.sleep(15.0)
-        start(
+        repoA_proc, _ = start(
             "ucla",
             "repoA",
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
@@ -329,7 +329,7 @@ def main() -> None:
             f"--storage-dir {MININDN_ROOT}/ucla/repo-store "
             "--advertise-stored-prefixes",
         )
-        start(
+        repoB_proc, _ = start(
             "wustl",
             "repoB",
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
@@ -338,7 +338,7 @@ def main() -> None:
             f"--storage-dir {MININDN_ROOT}/wustl/repo-store "
             "--advertise-stored-prefixes",
         )
-        start(
+        repoC_proc, _ = start(
             "uiuc",
             "repoC",
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
@@ -347,6 +347,33 @@ def main() -> None:
             f"--storage-dir {MININDN_ROOT}/uiuc/repo-store "
             "--advertise-stored-prefixes",
         )
+        catalogA_proc, _ = start(
+            "ucla",
+            "catalogA",
+            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
+            " --repo-node /example/repo/provider/repoA "
+            "--peer-repo-node /example/repo/provider/repoB "
+            "--peer-repo-node /example/repo/provider/repoC "
+            "--interval-s 10",
+        )
+        catalogB_proc, _ = start(
+            "wustl",
+            "catalogB",
+            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
+            " --repo-node /example/repo/provider/repoB "
+            "--peer-repo-node /example/repo/provider/repoA "
+            "--peer-repo-node /example/repo/provider/repoC "
+            "--interval-s 10",
+        )
+        catalogC_proc, _ = start(
+            "uiuc",
+            "catalogC",
+            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
+            " --repo-node /example/repo/provider/repoC "
+            "--peer-repo-node /example/repo/provider/repoA "
+            "--peer-repo-node /example/repo/provider/repoB "
+            "--interval-s 10",
+        )
         time.sleep(25.0)
         client_log = OUT / "client.log"
         out = client_log.open("wb")
@@ -354,7 +381,7 @@ def main() -> None:
             ndn.net["memphis"],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
-            " --trust-schema {} --ack-timeout-ms 5000".format(
+            " --trust-schema {} --ack-timeout-ms 8000".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
             envDict=node_env("memphis"),
             shell=True,
@@ -362,13 +389,44 @@ def main() -> None:
             stderr=subprocess.STDOUT,
         )
         processes.append((client, out, client_log))
-        client.wait(timeout=180)
+        client.wait(timeout=360)
         text = client_log.read_text(errors="replace")
         print(text)
-        if client.returncode != 0 or "GENERIC_DISTRIBUTED_REPO_OK" not in text:
+        if (client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK" not in text or
+                "GENERIC_DISTRIBUTED_REPO_OK" not in text):
             raise RuntimeError(
                 f"generic DistributedRepo failed rc={client.returncode}; "
                 f"log={client_log}")
+        for proc in (repoC_proc, catalogC_proc):
+            proc.terminate()
+        log("Waiting 35s for repoC catalog entries to become stale")
+        time.sleep(35.0)
+        fsck_log = OUT / "client-fsck.log"
+        out = fsck_log.open("wb")
+        fsck_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--fsck-stale-repo-smoke "
+            "--fsck-repo-node /example/repo/provider/repoA "
+            "--fsck-stale-repo /example/repo/provider/repoC".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((fsck_client, out, fsck_log))
+        fsck_client.wait(timeout=120)
+        fsck_text = fsck_log.read_text(errors="replace")
+        print(fsck_text)
+        if (fsck_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_FSCK_STALE_OK" not in fsck_text):
+            raise RuntimeError(
+                f"generic DistributedRepo fsck failed rc={fsck_client.returncode}; "
+                f"log={fsck_log}")
         print(f"GENERIC_DISTRIBUTED_REPO_MININDN_OK log={client_log}")
     finally:
         for proc, out, _ in processes:

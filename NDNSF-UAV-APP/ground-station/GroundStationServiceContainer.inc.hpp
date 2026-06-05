@@ -2718,8 +2718,11 @@ private:
         }),
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
         [this](const ndn_service_framework::RequestMessage& request) {
-          return m_coreContainer.localRegistry().localInvokeRaw(
-            m_config.serviceGsObjectDetection, request, m_config.groundStationIdentity);
+          ndn_service_framework::ResponseMessage response;
+          m_coreContainer.localRegistry().localInvokeRawInto(
+            m_config.serviceGsObjectDetection, request, response,
+            m_config.groundStationIdentity);
+          return response;
         }),
       ServiceInvocationMode::NormalOnly);
   }

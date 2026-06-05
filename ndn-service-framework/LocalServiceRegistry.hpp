@@ -27,6 +27,12 @@ class LocalServiceRegistry
 {
 public:
   using LocalRequestHandler =
+    std::function<void(const ndn::Name& requesterIdentity,
+                       const ndn::Name& serviceName,
+                       const RequestMessage& requestMessage,
+                       ResponseMessage& responseMessage)>;
+
+  using LegacyLocalRequestHandler =
     std::function<ResponseMessage(const ndn::Name& requesterIdentity,
                                   const ndn::Name& serviceName,
                                   const RequestMessage& requestMessage)>;
@@ -46,6 +52,21 @@ public:
     m_handlers[serviceName] = std::move(handler);
   }
 
+  void
+  registerLocalService(const ndn::Name& serviceName, LegacyLocalRequestHandler handler)
+  {
+    registerLocalService(serviceName,
+                         [handler = std::move(handler)](
+                           const ndn::Name& requesterIdentity,
+                           const ndn::Name& localServiceName,
+                           const RequestMessage& requestMessage,
+                           ResponseMessage& responseMessage) {
+                           responseMessage = handler(requesterIdentity,
+                                                     localServiceName,
+                                                     requestMessage);
+                         });
+  }
+
   template<typename RequestT, typename ResponseT>
   void
   registerLocalService(const ndn::Name& serviceName,
@@ -57,12 +78,15 @@ public:
                          [handler = std::move(handler)](
                            const ndn::Name& requesterIdentity,
                            const ndn::Name& localServiceName,
-                           const RequestMessage& requestMessage) {
+                           const RequestMessage& requestMessage,
+                           ResponseMessage& responseMessage) {
                            const auto payload = requestMessage.getPayload();
                            RequestT typedRequest;
                            if (!typedRequest.ParseFromArray(payload.data(), payload.size())) {
-                             return makeErrorResponse("Failed to parse local request payload for " +
-                                                      localServiceName.toUri());
+                             responseMessage = makeErrorResponse(
+                               "Failed to parse local request payload for " +
+                               localServiceName.toUri());
+                             return;
                            }
 
                            ResponseT typedResponse;
@@ -70,18 +94,18 @@ public:
 
                            std::string responseBytes;
                            if (!typedResponse.SerializeToString(&responseBytes)) {
-                             return makeErrorResponse("Failed to serialize local response payload for " +
-                                                      localServiceName.toUri());
+                             responseMessage = makeErrorResponse(
+                               "Failed to serialize local response payload for " +
+                               localServiceName.toUri());
+                             return;
                            }
 
                            ndn::Buffer responsePayload(
                              reinterpret_cast<const uint8_t*>(responseBytes.data()),
                              responseBytes.size());
-                           ResponseMessage responseMessage;
                            responseMessage.setStatus(true);
                            responseMessage.setErrorInfo("No error");
                            responseMessage.setPayload(responsePayload, responsePayload.size());
-                           return responseMessage;
                          });
   }
 
@@ -92,22 +116,25 @@ public:
     return m_handlers.find(serviceName) != m_handlers.end();
   }
 
-  ResponseMessage
-  localInvokeRaw(const ndn::Name& serviceName,
-                 const RequestMessage& requestMessage,
-                 const ndn::Name& requesterIdentity = ndn::Name("/local"))
+  bool
+  localInvokeRawInto(const ndn::Name& serviceName,
+                     const RequestMessage& requestMessage,
+                     ResponseMessage& responseMessage,
+                     const ndn::Name& requesterIdentity = ndn::Name("/local"))
   {
     LocalRequestHandler handler;
     {
       std::lock_guard<std::mutex> guard(m_mutex);
       const auto it = m_handlers.find(serviceName);
       if (it == m_handlers.end()) {
-        return makeErrorResponse("Local service is not registered: " +
-                                 serviceName.toUri());
+        responseMessage = makeErrorResponse("Local service is not registered: " +
+                                            serviceName.toUri());
+        return false;
       }
       handler = it->second;
     }
-    return handler(requesterIdentity, serviceName, requestMessage);
+    handler(requesterIdentity, serviceName, requestMessage, responseMessage);
+    return responseMessage.getStatus();
   }
 
   template<typename RequestT, typename ResponseT>
@@ -126,7 +153,8 @@ public:
     RequestMessage requestMessage;
     requestMessage.setPayload(requestPayload, requestPayload.size());
 
-    auto responseMessage = localInvokeRaw(serviceName, requestMessage, requesterIdentity);
+    ResponseMessage responseMessage;
+    localInvokeRawInto(serviceName, requestMessage, responseMessage, requesterIdentity);
     if (!responseMessage.getStatus()) {
       return {false, ResponseT{}, responseMessage.getErrorInfo()};
     }

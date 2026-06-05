@@ -45,18 +45,39 @@ from .onnx_graph import (
     estimate_split_candidates,
     write_onnx_graph_summary,
 )
-from .onnx_executor import (
-    OnnxExecutionResult,
-    decode_tensor_bundle,
-    encode_tensor_bundle,
-    execute_onnx_dependency_chunk,
-    load_npz_payload,
-    npz_payload,
-    prefetch_dependency_inputs,
-    role_topic_token,
-    select_tensor_payload,
-    verify_tensor_payload,
-)
+try:
+    from .onnx_executor import (
+        OnnxExecutionResult,
+        decode_tensor_bundle,
+        encode_tensor_bundle,
+        execute_onnx_dependency_chunk,
+        load_npz_payload,
+        npz_payload,
+        prefetch_dependency_inputs,
+        role_topic_token,
+        select_tensor_payload,
+        verify_tensor_payload,
+    )
+except ImportError as exc:  # pragma: no cover - optional ONNX runtime path
+    _onnx_executor_import_error = exc
+
+    class OnnxExecutionResult:  # type: ignore[no-redef]
+        pass
+
+    def _missing_onnx_executor(*args, **kwargs):
+        raise ImportError(
+            "ONNX executor support requires optional ONNX runtime dependencies"
+        ) from _onnx_executor_import_error
+
+    decode_tensor_bundle = _missing_onnx_executor
+    encode_tensor_bundle = _missing_onnx_executor
+    execute_onnx_dependency_chunk = _missing_onnx_executor
+    load_npz_payload = _missing_onnx_executor
+    npz_payload = _missing_onnx_executor
+    prefetch_dependency_inputs = _missing_onnx_executor
+    role_topic_token = _missing_onnx_executor
+    select_tensor_payload = _missing_onnx_executor
+    verify_tensor_payload = _missing_onnx_executor
 from .policy import (
     ArtifactSecurityPolicy,
     DistributedInferenceDeployment,

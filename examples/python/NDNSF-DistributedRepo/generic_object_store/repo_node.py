@@ -27,6 +27,10 @@ def main() -> int:
     parser.add_argument("--preallocate-bytes", type=int, default=0)
     parser.add_argument("--failure-domain", default="")
     parser.add_argument("--storage-dir", default="")
+    parser.add_argument("--repo-mode", default="persistent")
+    parser.add_argument("--accepts-backup-replica", default="true")
+    parser.add_argument("--peer-repo-node", action="append", default=[])
+    parser.add_argument("--catalog-sync-interval-s", type=float, default=10.0)
     parser.add_argument("--config-object", default=CONFIG_OBJECT,
                         help="Repo object name that stores the deployment config")
     parser.add_argument("--advertise-stored-prefixes", action="store_true",
@@ -49,6 +53,11 @@ def main() -> int:
         failure_domain=args.failure_domain,
         storage_classes=("config", "log", "binary", "intermediate"),
         storage_dir=args.storage_dir or None,
+        repo_mode=args.repo_mode,
+        accepts_backup_replica=str(args.accepts_backup_replica).lower()
+        not in {"0", "false", "no", "off"},
+        peer_repo_nodes=(),
+        catalog_sync_interval_s=args.catalog_sync_interval_s,
         memory_cache_bytes=args.memory_cache_bytes,
         preallocate_bytes=args.preallocate_bytes,
         advertise_stored_prefixes=args.advertise_stored_prefixes,

@@ -8,7 +8,10 @@ The current implementation is intentionally small, but it is already organized
 as both a reusable C++ API and an NDNSF service layer:
 
 - `RepoObjectManifest`: signed-manifest-ready metadata for one stored object.
-- `StorageCapability`: advertised capacity/load information for a repo node.
+- `StorageCapability`: advertised capacity/load/mode information for a repo
+  node.
+- `RepoCatalogStatus`, `RepoCatalogEntry`, and `RepoCatalogDelta`: logical
+  object-level catalog metadata for replica discovery and recovery.
 - `PlacementPolicy`: controlled replication requirements.
 - `selectReplicas`: deterministic placement over candidate storage nodes.
 - `InMemoryRepoStore`: a local smoke-test store used by examples.
@@ -45,6 +48,10 @@ FETCH
 MANIFEST
 INVENTORY
 STATUS
+CATALOG_STATUS
+CATALOG_SNAPSHOT
+CATALOG_DELTA
+CATALOG_LOOKUP
 DELETE
 ```
 
@@ -84,6 +91,77 @@ It only stores opaque Data wire packets and reports operation status:
 `STORING`, `DONE`, and `FAILED`. If a standalone repo node has not configured a
 SegmentFetcher adapter yet, `INSERT` fails visibly instead of
 pretending that remote Data was fetched.
+
+## In-App and Persistent Repo Modes
+
+NDNSF-DistributedRepo distinguishes two deployment roles. An **In-App Repo** is
+embedded in the same trusted process as an NDNSF application. It is useful for
+low-latency local cache, temporary intermediate artifacts, recording metadata,
+and fast same-process helper access. It is not the default backup target for
+long-term data. A **Persistent Repo** runs as an independent repo node or
+server. It is the normal target for backup, durable storage, global catalog
+maintenance, and recovery after a node joins late or misses catalog updates.
+
+The code keeps the old `embedded` mode string for compatibility, but the design
+term is In-App Repo. The accepted mode strings are:
+
+```text
+remote          standalone Persistent Repo service path
+embedded        compatibility spelling for In-App Repo
+in-app          preferred spelling for In-App Repo
+both            expose both remote and in-process paths
+```
+
+`StorageCapability` now carries `repoMode` and `acceptsBackupReplica`. Placement
+logic filters out candidates with `acceptsBackupReplica=false` when creating
+backup replicas. In-App Repos may still advertise cached objects, but their
+catalog role should be treated as local/ephemeral unless the application
+explicitly marks them as durable.
+
+## Catalog and Replica Discovery
+
+The catalog follows the useful HDFS idea of separating object-location metadata
+from stored bytes, but keeps the NDN design decentralized. There is no single
+NameNode. Every repo maintains its own local catalog, and Persistent Repos can
+exchange object-level catalog deltas to build a replicated global catalog.
+
+Catalog entries describe logical objects and manifests, not every segment:
+
+```text
+objectName
+manifestSha256
+objectType
+size
+segmentCount
+sourceRepo
+repoMode
+state
+catalogEpoch
+replicaNodes
+manifest
+```
+
+The current service/API surface is:
+
+```text
+/NDNSF/DistributedRepo/CATALOG_STATUS
+/NDNSF/DistributedRepo/CATALOG_SNAPSHOT
+/NDNSF/DistributedRepo/CATALOG_DELTA
+/NDNSF/DistributedRepo/CATALOG_LOOKUP
+```
+
+`CATALOG_STATUS` returns the repo node, mode, current catalog epoch, object
+count, and whether the repo accepts backup replicas. `CATALOG_SNAPSHOT` returns
+a full object-level snapshot for recovery. `CATALOG_DELTA` returns only changes
+after a caller-provided epoch. `CATALOG_LOOKUP` returns the catalog entry for
+one object name.
+
+The catalog should not periodically broadcast full directories or per-segment
+lists. A scalable deployment should publish small periodic deltas, for example
+every 10 seconds, and use snapshot/diff recovery when a Persistent Repo joins
+late or falls too far behind. Large Data packets remain signed/encrypted NDN
+segments; catalog metadata only helps a client decide which repo can serve or
+replicate the object.
 
 The recommended Python-facing generic object API hides most NDNSF setup
 details. In a running deployment, repo nodes can preload the deployment config
@@ -261,12 +339,14 @@ identity /example/repo/repo/A
 controller-prefix /example/repo/controller
 repo-node /example/repo/repo/A
 deployment-mode remote
+repo-mode persistent
+accepts-backup-replica true
 ```
 
-`deployment-mode remote` is the normal standalone mode. The app also accepts
-`embedded` and `both` so the same config vocabulary can be shared with service
-containers, but local invocation is only useful to code running in the same
-trusted process.
+`deployment-mode remote` is the normal standalone Persistent Repo mode. The app
+also accepts `embedded`/`in-app` and `both` so the same config vocabulary can be
+shared with service containers, but local invocation is only useful to code
+running in the same trusted process.
 
 For build and config validation without starting NFD or a controller:
 
@@ -278,7 +358,7 @@ For build and config validation without starting NFD or a controller:
   --local-smoke
 ```
 
-## Embedded Repo Plan
+## In-App Repo Plan
 
 NDNSF-DistributedRepo is being organized so the same repo implementation can run
 either as a standalone repo application or as an embedded service inside another
@@ -288,22 +368,29 @@ The intended layering is:
 
 ```text
 RepoCore
-  pure storage logic: put/get/manifest/list/delete/capability
+  pure storage logic: put/get/manifest/list/delete/capability/catalog
 
 RepoNode
-  NDNSF service adapter: registers STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE
-  on a ServiceProvider and delegates every operation to RepoCore
+  NDNSF service adapter: registers STORE/FETCH/MANIFEST/INVENTORY/
+  CAPABILITY/DELETE/STATUS/CATALOG_* on a ServiceProvider and delegates every
+  operation to RepoCore
 
 Repo app or embedding container
   chooses whether to expose RepoNode remotely, register local services, or both
 ```
 
 Current first step: `RepoCore` owns the object store, manifest validation, and
-capacity accounting. `RepoNode` keeps the existing public API and standalone
-service registration behavior, but now delegates storage work to `RepoCore`.
+capacity/catalog accounting. `RepoNode` keeps the existing public API and
+standalone service registration behavior, but now delegates storage and catalog
+work to `RepoCore`.
 `RepoNode::registerLocalServices(LocalServiceRegistry&)` exposes the same
-STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE handlers for trusted
-in-process invocation.
+STORE/FETCH/MANIFEST/INVENTORY/CAPABILITY/DELETE/STATUS/CATALOG_* handlers for
+trusted in-process invocation. The in-process repo path still uses the normal
+`LocalServiceRegistry::localInvokeRawInto(...)` Request/Response message path; the
+important implementation detail is that NDNSF message payloads are carried as
+payload TLV `ndn::Block`s internally instead of being passed through a separate
+raw byte local API. Applications should still call the typed `RepoClient::local*`
+helpers rather than building repo service names or message wrappers by hand.
 `RepoDeploymentMode` selects which exposure path to enable:
 
 ```cpp
@@ -337,8 +424,9 @@ auto payloadAgain = RepoClient::localGet(
   manifest.objectName);
 ```
 
-Supported mode strings are `remote`, `embedded`, and `both`. Empty config keeps
-the default `remote` behavior for existing standalone repo deployments.
+Supported mode strings are `remote`, `embedded`, `in-app`, and `both`. Empty
+config keeps the default `remote` behavior for existing standalone repo
+deployments.
 
 Next steps:
 

@@ -266,6 +266,13 @@ loadRepoAppConfig(int argc, char** argv)
   appConfig.deploymentMode = ndnsf_distributed_repo::parseRepoDeploymentMode(
     optionOrConfig(argc, argv, config, "--deployment-mode", "deployment-mode",
                    ndnsf_distributed_repo::toString(appConfig.deploymentMode)));
+  const bool deploymentIsInApp = appConfig.deploymentMode == RepoDeploymentMode::Embedded;
+  appConfig.capability.repoMode = optionOrConfig(
+    argc, argv, config, "--repo-mode", "repo-mode",
+    deploymentIsInApp ? "in-app" : "persistent");
+  appConfig.capability.acceptsBackupReplica = parseBool(optionOrConfig(
+    argc, argv, config, "--accepts-backup-replica", "accepts-backup-replica",
+    deploymentIsInApp ? "false" : "true"));
   appConfig.serveCertificates = parseBool(optionOrConfig(
     argc, argv, config, "--serve-certificates", "serve-certificates",
     appConfig.serveCertificates ? "true" : "false"));
@@ -336,6 +343,9 @@ printConfigSummary(const RepoAppConfig& config)
             << " group_prefix=" << config.groupPrefix
             << " controller=" << config.controllerPrefix
             << " repo_node=" << config.capability.repoNode
+            << " repo_mode=" << config.capability.repoMode
+            << " accepts_backup_replica="
+            << (config.capability.acceptsBackupReplica ? "true" : "false")
             << " free_bytes=" << config.capability.freeBytes
             << " deployment_mode=" << ndnsf_distributed_repo::toString(config.deploymentMode)
             << " storage_backend=" << config.storageBackend

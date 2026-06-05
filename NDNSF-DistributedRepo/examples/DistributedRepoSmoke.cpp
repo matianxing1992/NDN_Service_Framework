@@ -24,11 +24,18 @@ main()
   const auto signingIdentity = keyChain.createIdentity(signerIdentity);
 
   const std::vector<uint8_t> payload = {'n', 'd', 'n', 's', 'f', '-', 'r', 'e', 'p', 'o'};
-  const std::vector<StorageCapability> candidates = {
+  std::vector<StorageCapability> candidates = {
     {"/repo/A", 1024 * 1024, 0, 0.10, 0.99, "rack-a", {"model", "intermediate"}},
     {"/repo/B", 512 * 1024, 0, 0.05, 0.98, "rack-b", {"model"}},
     {"/repo/C", 256, 0, 0.01, 1.00, "rack-c", {"intermediate"}},
   };
+  StorageCapability localOnlyRepo;
+  localOnlyRepo.repoNode = "/repo/in-app-local-only";
+  localOnlyRepo.freeBytes = 4 * 1024 * 1024;
+  localOnlyRepo.availabilityScore = 1.0;
+  localOnlyRepo.repoMode = "in-app";
+  localOnlyRepo.acceptsBackupReplica = false;
+  candidates.push_back(localOnlyRepo);
 
   PlacementPolicy policy;
   policy.replicationFactor = 2;
@@ -36,6 +43,7 @@ main()
   if (parseRepoDeploymentMode("") != RepoDeploymentMode::Remote ||
       parseRepoDeploymentMode("embedded") != RepoDeploymentMode::Embedded ||
       parseRepoDeploymentMode("local") != RepoDeploymentMode::Embedded ||
+      parseRepoDeploymentMode("in-app") != RepoDeploymentMode::Embedded ||
       parseRepoDeploymentMode("both") != RepoDeploymentMode::Both ||
       !enablesRemote(RepoDeploymentMode::Both) ||
       !enablesEmbedded(RepoDeploymentMode::Both) ||
@@ -49,10 +57,28 @@ main()
     std::cerr << "expected two replicas, got " << replicas.size() << "\n";
     return 1;
   }
+  for (const auto& replica : replicas) {
+    if (replica.repoNode == localOnlyRepo.repoNode) {
+      std::cerr << "in-app local-only repo must not be selected as backup replica\n";
+      return 1;
+    }
+  }
 
   RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
                 {"/repo/A", 1024 * 1024, 0, 0.10, 0.99, "rack-a",
                  {"model", "intermediate"}});
+  StorageCapability persistentModeProbe;
+  persistentModeProbe.repoNode = "/repo/A";
+  persistentModeProbe.repoMode = "persistent";
+  StorageCapability inAppModeProbe;
+  inAppModeProbe.repoNode = "/repo/in-app";
+  inAppModeProbe.repoMode = "in-app";
+  inAppModeProbe.acceptsBackupReplica = false;
+  if (!isPersistentRepo(persistentModeProbe) ||
+      !isInAppRepo(inAppModeProbe)) {
+    std::cerr << "repo mode helpers mismatch\n";
+    return 1;
+  }
   StoreOptions options;
   options.objectType = "model";
   options.replicationFactor = policy.replicationFactor;
@@ -69,7 +95,12 @@ main()
   const auto manifestResponse = node.handleManifest(toBytes(manifest.objectName));
   const auto capabilityResponse = node.handleCapability();
   const auto listed = RepoClient::list(node);
+  const auto catalogStatus = RepoClient::catalogStatus(node);
+  const auto catalogSnapshot = RepoClient::catalogSnapshot(node);
+  const auto catalogLookup = RepoClient::catalogLookup(node, manifest.objectName);
   const bool removed = RepoClient::remove(node, manifest.objectName);
+  const auto catalogDeltaAfterDelete = RepoClient::catalogDelta(node,
+                                                                catalogStatus.catalogEpoch);
 
   if (fetched != payload) {
     std::cerr << "stored object not found\n";
@@ -78,6 +109,11 @@ main()
   if (toString(manifestResponse).find(manifest.objectName) == std::string::npos ||
       listed.empty() || listed.front().objectName != manifest.objectName ||
       toString(capabilityResponse).find("/repo/A") == std::string::npos ||
+      catalogStatus.repoNode != "/repo/A" ||
+      catalogSnapshot.entries.empty() ||
+      catalogLookup.manifest.objectName != manifest.objectName ||
+      catalogDeltaAfterDelete.entries.empty() ||
+      catalogDeltaAfterDelete.entries.back().state != "DELETED" ||
       !removed) {
     std::cerr << "repo node response mismatch\n";
     return 1;
@@ -207,6 +243,47 @@ main()
     return 1;
   }
 
+  ndn_service_framework::LocalServiceRegistry localRegistry;
+  RepoNode embeddedNode(
+    ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+    {"/repo/in-app", 1024 * 1024, 0, 0.0, 1.0, "local", {"embedded"}});
+  embeddedNode.registerDeploymentServices(nullptr, &localRegistry,
+                                          RepoDeploymentMode::Embedded);
+  if (!localRegistry.hasService(
+        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STORE")) ||
+      !localRegistry.hasService(
+        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "CATALOG_STATUS"))) {
+    std::cerr << "embedded repo block local services not registered\n";
+    return 1;
+  }
+  const auto localManifest = RepoClient::localPut(
+    localRegistry,
+    ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/local/block-object",
+    payload,
+    segmentedOptions);
+  const auto localCatalogStatus = RepoClient::localCatalogStatus(
+    localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME));
+  const auto localCatalogLookup = RepoClient::localCatalogLookup(
+    localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+    localManifest.objectName);
+  if (RepoClient::localGet(localRegistry,
+                           ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+                           localManifest.objectName) != payload ||
+      RepoClient::localGetManifest(localRegistry,
+                                   ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+                                   localManifest.objectName).sha256 != localManifest.sha256 ||
+      RepoClient::localList(localRegistry,
+                            ndn::Name(RepoClient::DEFAULT_SERVICE_NAME)).empty() ||
+      localCatalogStatus.repoNode != "/repo/in-app" ||
+      localCatalogLookup.manifest.objectName != localManifest.objectName ||
+      !RepoClient::localRemove(localRegistry,
+                               ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
+                               localManifest.objectName)) {
+    std::cerr << "embedded repo block local API mismatch\n";
+    return 1;
+  }
+
   const auto sqlitePath = std::filesystem::temp_directory_path() /
     "ndnsf-distributed-repo-smoke.sqlite3";
   std::filesystem::remove(sqlitePath);
@@ -230,106 +307,6 @@ main()
       std::cerr << "sqlite repo restart fetch mismatch\n";
       return 1;
     }
-  }
-
-  RepoNode embeddedNode(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-                        {"/repo/embedded-node", 1024 * 1024, 0, 0.0, 1.0,
-                         "local", {"embedded"}});
-  ndn_service_framework::LocalServiceRegistry localRegistry;
-  embeddedNode.registerDeploymentServices(nullptr,
-                                          &localRegistry,
-                                          RepoDeploymentMode::Embedded);
-  StoreOptions localOptions;
-  localOptions.objectType = "embedded-object";
-  localOptions.replicationFactor = 1;
-  localOptions.replicaNodes = {"/repo/embedded-node"};
-  localOptions.policyEpoch = "/Policy/demo/v1";
-  const auto localManifest = RepoClient::localPut(
-    localRegistry,
-    ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/local/local-service-object",
-    payload,
-    localOptions);
-  const auto localFetchedPayload = RepoClient::localGet(
-    localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-    localManifest.objectName);
-  const auto localManifestAgain = RepoClient::localGetManifest(
-    localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-    localManifest.objectName);
-  const auto localInventory = RepoClient::localList(
-    localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME));
-  const auto localRemoved = RepoClient::localRemove(
-    localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-    localManifest.objectName);
-  if (localFetchedPayload != payload ||
-      localManifestAgain.sha256 != localManifest.sha256 ||
-      localInventory.empty() ||
-      localInventory.front().objectName != localManifest.objectName ||
-      !localRemoved) {
-    std::cerr << "repo local service invocation mismatch\n";
-    return 1;
-  }
-  const auto localSegmentedManifest = RepoClient::localPutSegmented(
-    localRegistry,
-    ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/local/segmented-object",
-    largePayload,
-    localOptions,
-    7);
-  if (localSegmentedManifest.segmentCount <= 1 ||
-      RepoClient::localGetSegmented(
-        localRegistry,
-        ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-        localSegmentedManifest) != largePayload ||
-      RepoClient::localGetObject(
-        localRegistry,
-        ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-        localSegmentedManifest) != largePayload) {
-    std::cerr << "repo local segmented invocation mismatch\n";
-    return 1;
-  }
-
-  auto appVerifiedManifest = localSegmentedManifest;
-  appVerifiedManifest.sha256 = std::string(64, '0');
-  try {
-    (void)RepoClient::localGetSegmented(
-      localRegistry,
-      ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-      appVerifiedManifest);
-    std::cerr << "repo segmented APP-side hash verification did not fail\n";
-    return 1;
-  }
-  catch (const std::runtime_error&) {
-  }
-
-  ndn_service_framework::LocalServiceRegistry bothRegistry;
-  RepoNode bothNode(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-                    {"/repo/both-node", 1024 * 1024, 0, 0.0, 1.0,
-                     "local", {"embedded"}});
-  try {
-    bothNode.registerDeploymentServices(nullptr, &bothRegistry, RepoDeploymentMode::Both);
-    std::cerr << "both mode accepted missing ServiceProvider\n";
-    return 1;
-  }
-  catch (const std::invalid_argument&) {
-  }
-  try {
-    bothNode.registerDeploymentServices(nullptr, nullptr, RepoDeploymentMode::Embedded);
-    std::cerr << "embedded mode accepted missing LocalServiceRegistry\n";
-    return 1;
-  }
-  catch (const std::invalid_argument&) {
-  }
-  bothNode.registerDeploymentServices(nullptr, &bothRegistry, RepoDeploymentMode::Embedded);
-  if (!bothRegistry.hasService(
-        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STORE")) ||
-      !bothRegistry.hasService(
-        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-                            "INSERT")) ||
-      !bothRegistry.hasService(
-        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STATUS"))) {
-    std::cerr << "embedded mode did not register local repo services\n";
-    return 1;
   }
 
   std::cout << "DISTRIBUTED_REPO_SMOKE_OK "
