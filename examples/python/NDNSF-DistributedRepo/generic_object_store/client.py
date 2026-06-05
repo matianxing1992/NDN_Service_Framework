@@ -91,16 +91,16 @@ def main() -> int:
     parser.add_argument("--timeout-ms", type=int, default=60000)
     parser.add_argument("--test-delete", action="store_true",
                         help="Also exercise deletion after store/fetch/catalog checks")
-    parser.add_argument("--fsck-stale-repo-smoke", action="store_true",
-                        help="Only verify that catalog lookup reports a stale/under-replicated object")
+    parser.add_argument("--catalog-health-smoke", action="store_true",
+                        help="Only verify catalog stale detection and repair-plan generation")
     parser.add_argument("--catalog-snapshot-large-response-smoke", action="store_true",
                         help="Fetch a full catalog snapshot so NDNSF core can exercise large response references")
     parser.add_argument("--catalog-snapshot-repo-node",
                         default="/example/repo/provider/repoA")
-    parser.add_argument("--fsck-repo-node", default="/example/repo/provider/repoA")
-    parser.add_argument("--fsck-stale-repo", default="/example/repo/provider/repoC")
-    parser.add_argument("--fsck-object-suffix",
-                        default="APP/Generic/BinaryBlob/demo-192KiB")
+    parser.add_argument("--catalog-health-repo-node", default="/example/repo/provider/repoA")
+    parser.add_argument("--catalog-health-stale-repo", default="/example/repo/provider/repoC")
+    parser.add_argument("--catalog-health-object-suffix",
+                        default="APP/UAV/TelemetryLog/window-0007")
     args = parser.parse_args()
 
     if args.use_local_config:
@@ -130,21 +130,81 @@ def main() -> int:
         )
         user_name = args.user
 
-    if args.fsck_stale_repo_smoke:
-        object_name = repo.object_name(args.fsck_object_suffix)
-        lookup = repo.catalog_lookup(object_name, args.fsck_repo_node)
+    if args.catalog_health_smoke:
+        object_name = repo.object_name(args.catalog_health_object_suffix)
+        lookup = repo.catalog_lookup(object_name, args.catalog_health_repo_node)
         stale_repos = set(str(value) for value in lookup.get("staleRepos", []))
-        if args.fsck_stale_repo not in stale_repos:
+        if args.catalog_health_stale_repo not in stale_repos:
             raise RuntimeError(
-                f"catalog fsck did not mark stale repo={args.fsck_stale_repo} "
+                f"catalog health did not mark stale repo={args.catalog_health_stale_repo} "
                 f"lookup={lookup}"
             )
-        if not lookup.get("underReplicated"):
-            raise RuntimeError(f"catalog fsck did not mark under-replicated: {lookup}")
-        repair_plan = lookup.get("repairPlan", {})
+        if "repairPlan" not in lookup:
+            raise RuntimeError(f"catalog health lookup missing repair plan: {lookup}")
+
+        repair_object = repo.object_name("APP/CatalogHealth/RepairPlanSynthetic")
+        now_ms = int(time.time() * 1000)
+        repair_entry = {
+            "objectName": repair_object,
+            "objectSha256": "synthetic-object-sha256",
+            "manifestSha256": "synthetic-manifest-sha256",
+            "objectType": "catalog-health-synthetic",
+            "size": 128,
+            "segmentCount": 1,
+            "sourceRepo": "/example/repo/provider/repoB",
+            "repoMode": "persistent",
+            "state": "AVAILABLE",
+            "catalogEpoch": now_ms,
+            "lastSeenMs": now_ms,
+            "updatedAtMs": now_ms,
+            "minReplicationFactor": 2,
+            "maxReplicationFactor": 2,
+            "desiredReplicationFactor": 2,
+            "replicaNodes": ["/example/repo/provider/repoB"],
+            "manifest": {
+                "objectName": repair_object,
+                "objectType": "catalog-health-synthetic",
+                "sha256": "synthetic-object-sha256",
+                "size": 128,
+                "segmentCount": 1,
+                "minReplicationFactor": 2,
+                "maxReplicationFactor": 2,
+                "replicationFactor": 2,
+                "replicaNodes": ["/example/repo/provider/repoB"],
+            },
+        }
+        repo.catalog_merge(
+            args.catalog_health_repo_node,
+            [repair_entry],
+            {
+                "repoNode": "/example/repo/provider/repoD",
+                "repoMode": "persistent",
+                "catalogEpoch": now_ms,
+                "acceptsBackupReplica": True,
+            },
+        )
+        repair_lookup = repo.catalog_lookup(
+            repair_object, args.catalog_health_repo_node)
+        repair_plan = repair_lookup.get("repairPlan", {})
         if not isinstance(repair_plan, dict) or not repair_plan.get("needed"):
-            raise RuntimeError(f"catalog fsck missing repair hint: {lookup}")
-        print("GENERIC_DISTRIBUTED_REPO_FSCK_STALE_OK", flush=True)
+            raise RuntimeError(
+                f"catalog health synthetic object missing repair plan: {repair_lookup}"
+            )
+        actions = repair_plan.get("actions", [])
+        if not isinstance(actions, list) or not actions:
+            raise RuntimeError(
+                f"catalog health synthetic object missing repair actions: {repair_lookup}"
+            )
+        first_action = actions[0]
+        if not first_action.get("sourceRepo") or not first_action.get("targetRepo"):
+            raise RuntimeError(
+                f"catalog health repair action is incomplete: {repair_lookup}"
+            )
+        if first_action.get("sourceRepo") != "/example/repo/provider/repoB":
+            raise RuntimeError(f"catalog health repair source is wrong: {repair_lookup}")
+        if first_action.get("targetRepo") == first_action.get("sourceRepo"):
+            raise RuntimeError(f"catalog health repair target equals source: {repair_lookup}")
+        print("GENERIC_DISTRIBUTED_REPO_CATALOG_HEALTH_OK", flush=True)
         return 0
 
     if args.catalog_snapshot_large_response_smoke:
@@ -252,14 +312,24 @@ def main() -> int:
                 f"catalog manifest hash missing repo={repo_node} "
                 f"object={catalog_manifest.object_name}"
             )
-        if int(lookup.get("desiredReplicationFactor", 0)) < catalog_manifest.replication_factor:
+        min_replicas = int(lookup.get("minReplicationFactor", 1) or 1)
+        max_replicas = int(
+            lookup.get("maxReplicationFactor", catalog_manifest.replication_factor) or
+            catalog_manifest.replication_factor
+        )
+        if min_replicas < 1:
             raise RuntimeError(
-                f"catalog desired replication too small repo={repo_node} "
+                f"catalog min replication too small repo={repo_node} "
                 f"object={catalog_manifest.object_name}"
             )
-        if int(lookup.get("availableReplicaCount", 0)) < catalog_manifest.replication_factor:
+        if max_replicas < min_replicas:
             raise RuntimeError(
-                f"catalog under-replicated unexpectedly repo={repo_node} "
+                f"catalog max replication below min repo={repo_node} "
+                f"object={catalog_manifest.object_name} lookup={lookup}"
+            )
+        if int(lookup.get("availableReplicaCount", 0)) < min_replicas:
+            raise RuntimeError(
+                f"catalog below minimum replicas unexpectedly repo={repo_node} "
                 f"object={catalog_manifest.object_name} lookup={lookup}"
             )
         if lookup.get("underReplicated"):

@@ -443,31 +443,31 @@ def main() -> None:
             proc.terminate()
         log("Waiting 35s for repoC catalog entries to become stale")
         time.sleep(35.0)
-        fsck_log = OUT / "client-fsck.log"
-        out = fsck_log.open("wb")
-        fsck_client = getPopen(
+        health_log = OUT / "client-catalog-health.log"
+        out = health_log.open("wb")
+        health_client = getPopen(
             ndn.net["memphis"],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
-            "--fsck-stale-repo-smoke "
-            "--fsck-repo-node /example/repo/provider/repoA "
-            "--fsck-stale-repo /example/repo/provider/repoC".format(
+            "--catalog-health-smoke "
+            "--catalog-health-repo-node /example/repo/provider/repoA "
+            "--catalog-health-stale-repo /example/repo/provider/repoC".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
             envDict=node_env("memphis"),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
         )
-        processes.append((fsck_client, out, fsck_log))
-        fsck_client.wait(timeout=120)
-        fsck_text = fsck_log.read_text(errors="replace")
-        print(fsck_text)
-        if (fsck_client.returncode != 0 or
-                "GENERIC_DISTRIBUTED_REPO_FSCK_STALE_OK" not in fsck_text):
+        processes.append((health_client, out, health_log))
+        health_client.wait(timeout=120)
+        health_text = health_log.read_text(errors="replace")
+        print(health_text)
+        if (health_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_CATALOG_HEALTH_OK" not in health_text):
             raise RuntimeError(
-                f"generic DistributedRepo fsck failed rc={fsck_client.returncode}; "
-                f"log={fsck_log}")
+                "generic DistributedRepo catalog health check failed "
+                f"rc={health_client.returncode}; log={health_log}")
         print(f"GENERIC_DISTRIBUTED_REPO_MININDN_OK log={client_log}")
     finally:
         for proc, out, _ in processes:

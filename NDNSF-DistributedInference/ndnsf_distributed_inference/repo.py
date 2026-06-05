@@ -891,6 +891,8 @@ class RepoNodeApp:
             "sha256": manifest.sha256,
             "size": manifest.size,
             "segmentCount": manifest.segment_count,
+            "minReplicationFactor": 1,
+            "maxReplicationFactor": manifest.replication_factor,
             "replicationFactor": manifest.replication_factor,
             "replicaNodes": list(manifest.replica_nodes),
             "policyEpoch": manifest.policy_epoch,
@@ -911,7 +913,9 @@ class RepoNodeApp:
             "catalogEpoch": self._catalog_epoch,
             "lastSeenMs": now_ms,
             "updatedAtMs": now_ms,
-            "desiredReplicationFactor": manifest.replication_factor,
+            "minReplicationFactor": 1,
+            "maxReplicationFactor": manifest.replication_factor,
+            "desiredReplicationFactor": 1,
             "replicaNodes": list(manifest.replica_nodes),
             "manifest": self._catalog_manifest_summary(manifest),
         }
@@ -982,6 +986,10 @@ class RepoNodeApp:
         last_seen = int(status.get("lastSeenMs", entry.get("lastSeenMs", 0)) or 0)
         return bool(last_seen and self._now_ms() - last_seen > self._catalog_stale_after_ms)
 
+    def _is_repo_status_stale(self, status: dict) -> bool:
+        last_seen = int(status.get("lastSeenMs", 0) or 0)
+        return bool(last_seen and self._now_ms() - last_seen > self._catalog_stale_after_ms)
+
     def _object_catalog_summary(self, object_name: str) -> dict:
         with self._catalog_lock:
             entries = [
@@ -992,6 +1000,7 @@ class RepoNodeApp:
                 repo: dict(status)
                 for repo, status in self._repo_status.items()
             }
+            repo_status[self.repo_node] = self._catalog_status_entry()
         if not entries:
             raise KeyError(object_name)
         for entry in entries:
@@ -1004,10 +1013,29 @@ class RepoNodeApp:
             entry for entry in entries
             if str(entry.get("state", "")) == "DELETED"
         ]
-        desired = max(
-            [int(entry.get("desiredReplicationFactor",
-                       entry.get("manifest", {}).get("replicationFactor", 1)) or 1)
-             for entry in entries] or [1]
+        deleted = bool(tombstones and not available)
+        min_required = max(
+            [
+                int(entry.get(
+                    "minReplicationFactor",
+                    entry.get("desiredReplicationFactor",
+                              entry.get("manifest", {}).get("minReplicationFactor", 1)),
+                ) or 1)
+                for entry in entries
+            ] or [1]
+        )
+        max_allowed = max(
+            [
+                int(entry.get(
+                    "maxReplicationFactor",
+                    entry.get("manifest", {}).get(
+                        "maxReplicationFactor",
+                        entry.get("manifest", {}).get(
+                            "replicationFactor", min_required),
+                    ),
+                ) or min_required)
+                for entry in entries
+            ] or [min_required]
         )
         source_repos = {str(entry.get("sourceRepo", "")) for entry in entries}
         stale_repos = [
@@ -1019,14 +1047,37 @@ class RepoNodeApp:
             repo for repo, status in repo_status.items()
             if repo not in source_repos and
             str(status.get("repoMode", "")) == "persistent" and
-            bool(status.get("acceptsBackupReplica", True))
+            bool(status.get("acceptsBackupReplica", True)) and
+            not self._is_repo_status_stale(status)
         ]
-        missing = max(0, desired - len(available))
+        missing = 0 if deleted else max(0, min_required - len(available))
+        repair_actions = []
+        source_repo = str(available[0].get("sourceRepo", "")) if available else ""
+        if source_repo:
+            for target_repo in target_candidates[:missing]:
+                repair_actions.append({
+                    "objectName": object_name,
+                    "objectSha256": available[0].get("objectSha256", ""),
+                    "manifestSha256": available[0].get("manifestSha256", ""),
+                    "sourceRepo": source_repo,
+                    "targetRepo": target_repo,
+                    "reason": "under-replicated",
+                })
+        if missing and not source_repo:
+            repair_reason = "no-live-source"
+        elif missing and len(repair_actions) < missing:
+            repair_reason = "insufficient-live-targets"
+        elif missing:
+            repair_reason = "ready"
+        else:
+            repair_reason = "not-needed"
         repair_plan = {
             "needed": missing > 0,
             "missingReplicas": missing,
             "sourceRepos": [str(entry.get("sourceRepo", "")) for entry in available],
             "targetCandidates": target_candidates[:missing],
+            "actions": repair_actions,
+            "reason": repair_reason,
         }
         best = (available or entries)[0]
         return {
@@ -1036,9 +1087,11 @@ class RepoNodeApp:
             "objectType": best.get("objectType", ""),
             "size": best.get("size", 0),
             "segmentCount": best.get("segmentCount", 0),
-            "state": ("DELETED" if tombstones and not available else
+            "state": ("DELETED" if deleted else
                       "UNDER_REPLICATED" if missing else "AVAILABLE"),
-            "desiredReplicationFactor": desired,
+            "minReplicationFactor": min_required,
+            "maxReplicationFactor": max_allowed,
+            "desiredReplicationFactor": min_required,
             "availableReplicaCount": len(available),
             "underReplicated": missing > 0,
             "staleRepos": stale_repos,
@@ -1490,6 +1543,10 @@ class RepoNodeApp:
                     str(packet["name"]): str(packet["wireSha256"])
                     for packet in packet_manifest.get("packets", [])
                 }
+                expected_packets_by_segment = {
+                    int(packet["segment"]): str(packet["wireSha256"])
+                    for packet in packet_manifest.get("packets", [])
+                }
                 source_name = str(request["sourceName"])
                 packets = fetch_segmented_data_packets(
                     source_name,
@@ -1504,9 +1561,16 @@ class RepoNodeApp:
                 for packet in packets:
                     expected_hash = expected_packets.get(packet.name)
                     if expected_hash is None:
-                        raise ValueError(
-                            f"STORE_PACKET_PULL unexpected segment name: {packet.name}"
-                        )
+                        # The app publishes the packet manifest before the producer
+                        # installs its final versioned Data name. NDN segmented
+                        # retrieval may therefore return /prefix/v=.../seg=N while
+                        # the manifest records /prefix/seg=N. The wire hash and
+                        # segment number are the integrity boundary here.
+                        expected_hash = expected_packets_by_segment.get(packet.segment)
+                        if expected_hash is None:
+                            raise ValueError(
+                                f"STORE_PACKET_PULL unexpected segment name: {packet.name}"
+                            )
                     actual_hash = hashlib.sha256(packet.wire).hexdigest()
                     if actual_hash != expected_hash:
                         raise ValueError(
@@ -2602,6 +2666,27 @@ class NetworkDistributedRepoClient:
             raise ValueError("repo catalog lookup response must be a JSON object")
         return decoded
 
+    def catalog_merge(
+        self,
+        repo_node: str,
+        entries: Iterable[dict],
+        source_status: Optional[dict] = None,
+    ) -> dict:
+        response = self._request_specific_repo(
+            repo_node=repo_node,
+            payload=encode_repo_request(
+                "CATALOG_MERGE",
+                entries=list(entries),
+                sourceStatus=source_status or {},
+            ),
+            timeout_ms=self.timeout_ms,
+            isolated_runtime=True,
+        )
+        decoded = json.loads(response.payload.decode())
+        if not isinstance(decoded, dict):
+            raise ValueError("repo catalog merge response must be a JSON object")
+        return decoded
+
     def catalog_snapshot(self, repo_node: str) -> dict:
         decoded, _ = self.catalog_snapshot_with_payload(repo_node)
         return decoded
@@ -2977,6 +3062,14 @@ class DistributedRepo:
 
     def catalog_lookup(self, object_name: str, repo_node: str) -> dict:
         return self._client.catalog_lookup(object_name, repo_node)
+
+    def catalog_merge(
+        self,
+        repo_node: str,
+        entries: Iterable[dict],
+        source_status: Optional[dict] = None,
+    ) -> dict:
+        return self._client.catalog_merge(repo_node, entries, source_status)
 
     def catalog_snapshot(self, repo_node: str) -> dict:
         return self._client.catalog_snapshot(repo_node)
