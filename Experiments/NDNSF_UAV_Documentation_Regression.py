@@ -39,6 +39,8 @@ def main() -> int:
 
     for needle in [
         "## Current Runtime Status",
+        "## Current Boundary",
+        "## Comparison With QGroundControl",
         "**Camera.**",
         "**Flight controller.**",
         "**Mission.**",
@@ -47,6 +49,38 @@ def main() -> int:
         "stream session metadata",
         "encrypted camera recording",
         "Mission images, telemetry logs, detection",
+    ]:
+        require(app_readme, needle, "NDNSF-UAV-APP/README.md")
+
+    for needle in [
+        "Vehicle setup/calibration",
+        "Mission editor",
+        "Safety UX",
+        "Parameter/log workflow",
+        "Long-duration reliability",
+        "Hardware breadth",
+        "Not claimed:",
+        "drop-in replacement for a certified autopilot ground station",
+    ]:
+        require(app_readme, needle, "NDNSF-UAV-APP/README.md")
+
+    for needle in [
+        "Functionality",
+        "Practicality",
+        "UavPracticalityState",
+        "Stability",
+        "UavStabilityState",
+        "UAV_APP_QUALITY_STATE",
+        "UavFunctionalityState",
+        "available",
+        "prototype",
+        "limited",
+        "metadata-only",
+        "missing",
+        "operator-visible capabilities",
+        "preflight summaries",
+        "Stop Video idempotence",
+        "stream-session and frame-sequence guards",
     ]:
         require(app_readme, needle, "NDNSF-UAV-APP/README.md")
 

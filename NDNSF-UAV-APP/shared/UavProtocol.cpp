@@ -2672,6 +2672,416 @@ SelectedDroneSummaryState::statusLine() const
          " panel_reason=" + controlPanelReason;
 }
 
+UavFunctionalityState
+UavFunctionalityState::fromFields(const Fields& fields)
+{
+  UavFunctionalityState state;
+  state.missionEditor = fieldOr(fields, "functionality_mission_editor", state.missionEditor);
+  state.perDroneMissionReview = fieldOr(fields, "functionality_per_drone_mission_review",
+                                        state.perDroneMissionReview);
+  state.persistentMissionFiles = fieldOr(fields, "functionality_persistent_mission_files",
+                                         state.persistentMissionFiles);
+  state.recordingLogBrowsing = fieldOr(fields, "functionality_recording_log_browsing",
+                                       state.recordingLogBrowsing);
+  state.parameterStatusInspection = fieldOr(fields, "functionality_parameter_status_inspection",
+                                            state.parameterStatusInspection);
+  state.objectDetectionDisplay = fieldOr(fields, "functionality_object_detection_display",
+                                         state.objectDetectionDisplay);
+  state.multiDroneServiceSelection = fieldOr(fields, "functionality_multi_drone_service_selection",
+                                             state.multiDroneServiceSelection);
+  return state;
+}
+
+UavFunctionalityState
+UavFunctionalityState::fromStates(const std::optional<MissionPlan>& missionPlan,
+                                  const std::optional<MissionPart>& selectedMissionPart,
+                                  const std::optional<RecordingDataProductState>& recording,
+                                  const std::optional<TelemetryState>& telemetry,
+                                  bool objectDetectionServiceAvailable,
+                                  size_t droneCount)
+{
+  UavFunctionalityState state;
+  if (missionPlan && !missionPlan->parts.empty()) {
+    state.missionEditor = "prototype";
+  }
+  if (selectedMissionPart && !selectedMissionPart->id.empty()) {
+    state.perDroneMissionReview = "available";
+  }
+  if (recording && recording->isAvailable()) {
+    state.recordingLogBrowsing = recording->isPlayable() ? "available" : "limited";
+  }
+  if (telemetry &&
+      (telemetry->flightControllerBackend != "unknown" ||
+       telemetry->flightControllerState != "unknown" ||
+       telemetry->systemStatusName != "unknown" ||
+       telemetry->batteryVoltageV != "unknown")) {
+    state.parameterStatusInspection = "limited";
+  }
+  if (objectDetectionServiceAvailable) {
+    state.objectDetectionDisplay = "metadata-only";
+  }
+  if (droneCount > 1) {
+    state.multiDroneServiceSelection = "available";
+  }
+  return state;
+}
+
+Fields
+UavFunctionalityState::toFields() const
+{
+  return {
+    {"functionality_mission_editor", missionEditor},
+    {"functionality_per_drone_mission_review", perDroneMissionReview},
+    {"functionality_persistent_mission_files", persistentMissionFiles},
+    {"functionality_recording_log_browsing", recordingLogBrowsing},
+    {"functionality_parameter_status_inspection", parameterStatusInspection},
+    {"functionality_object_detection_display", objectDetectionDisplay},
+    {"functionality_multi_drone_service_selection", multiDroneServiceSelection},
+  };
+}
+
+size_t
+UavFunctionalityState::implementedCapabilityCount() const
+{
+  const std::vector<std::string> values{
+    missionEditor,
+    perDroneMissionReview,
+    persistentMissionFiles,
+    recordingLogBrowsing,
+    parameterStatusInspection,
+    objectDetectionDisplay,
+    multiDroneServiceSelection,
+  };
+  return static_cast<size_t>(std::count_if(values.begin(), values.end(), [] (const std::string& value) {
+    return value != "missing";
+  }));
+}
+
+std::string
+UavFunctionalityState::missingOrLimitedCapabilities() const
+{
+  std::vector<std::string> items;
+  auto appendIfWeak = [&items] (const std::string& label, const std::string& value) {
+    if (value == "missing" || value == "limited" || value == "prototype" || value == "metadata-only") {
+      items.push_back(label + "=" + value);
+    }
+  };
+
+  appendIfWeak("mission-editor", missionEditor);
+  appendIfWeak("per-drone-review", perDroneMissionReview);
+  appendIfWeak("persistent-mission-files", persistentMissionFiles);
+  appendIfWeak("recording-log-browsing", recordingLogBrowsing);
+  appendIfWeak("parameter-status-inspection", parameterStatusInspection);
+  appendIfWeak("object-detection-display", objectDetectionDisplay);
+  appendIfWeak("multi-drone-selection", multiDroneServiceSelection);
+
+  if (items.empty()) {
+    return "none";
+  }
+
+  std::ostringstream os;
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (i > 0) {
+      os << ",";
+    }
+    os << items[i];
+  }
+  return os.str();
+}
+
+std::string
+UavFunctionalityState::statusLine() const
+{
+  return "UavFunctionality mission_editor=" + missionEditor +
+         " per_drone_review=" + perDroneMissionReview +
+         " persistent_mission_files=" + persistentMissionFiles +
+         " recording_log_browsing=" + recordingLogBrowsing +
+         " parameter_status_inspection=" + parameterStatusInspection +
+         " object_detection_display=" + objectDetectionDisplay +
+         " multi_drone_selection=" + multiDroneServiceSelection +
+         " implemented=" + std::to_string(implementedCapabilityCount()) +
+         " weak=" + missingOrLimitedCapabilities();
+}
+
+UavPracticalityState
+UavPracticalityState::fromFields(const Fields& fields)
+{
+  UavPracticalityState state;
+  state.preflightSummary = fieldOr(fields, "practicality_preflight_summary", state.preflightSummary);
+  state.hardwareCompatibilityNotes = fieldOr(fields, "practicality_hardware_compatibility_notes",
+                                             state.hardwareCompatibilityNotes);
+  state.cameraDiagnostics = fieldOr(fields, "practicality_camera_diagnostics", state.cameraDiagnostics);
+  state.flightControllerDiagnostics = fieldOr(fields, "practicality_flight_controller_diagnostics",
+                                              state.flightControllerDiagnostics);
+  state.configValidation = fieldOr(fields, "practicality_config_validation", state.configValidation);
+  state.identityCertificateGuidance = fieldOr(fields, "practicality_identity_certificate_guidance",
+                                             state.identityCertificateGuidance);
+  state.operatorWorkflowGuidance = fieldOr(fields, "practicality_operator_workflow_guidance",
+                                           state.operatorWorkflowGuidance);
+  return state;
+}
+
+UavPracticalityState
+UavPracticalityState::fromStates(const std::optional<TelemetryState>& telemetry,
+                                 const std::optional<ReadinessState>& readiness,
+                                 bool hasPreflightTool,
+                                 bool hasRuntimeConfig,
+                                 bool hasReleaseManual)
+{
+  UavPracticalityState state;
+  state.preflightSummary = hasPreflightTool ? "available" : "missing";
+  state.hardwareCompatibilityNotes = hasReleaseManual ? "documented" : "missing";
+  state.configValidation = hasRuntimeConfig ? "available" : "missing";
+  state.identityCertificateGuidance = hasReleaseManual ? "documented" : "missing";
+  state.operatorWorkflowGuidance = hasReleaseManual ? "documented" : "missing";
+
+  if (telemetry &&
+      (telemetry->cameraAvailable != "unknown" ||
+       telemetry->cameraSource != "unknown" ||
+       telemetry->cameraReason != "unknown")) {
+    state.cameraDiagnostics = telemetry->cameraAvailable == "true" ? "available" : "limited";
+  }
+
+  if ((telemetry &&
+       (telemetry->flightControllerBackend != "unknown" ||
+        telemetry->flightControllerAvailable != "unknown" ||
+        telemetry->flightControllerReason != "unknown")) ||
+      readiness.has_value()) {
+    state.flightControllerDiagnostics = readiness && readiness->readinessReason == "ok" ?
+                                        "available" : "limited";
+  }
+
+  return state;
+}
+
+Fields
+UavPracticalityState::toFields() const
+{
+  return {
+    {"practicality_preflight_summary", preflightSummary},
+    {"practicality_hardware_compatibility_notes", hardwareCompatibilityNotes},
+    {"practicality_camera_diagnostics", cameraDiagnostics},
+    {"practicality_flight_controller_diagnostics", flightControllerDiagnostics},
+    {"practicality_config_validation", configValidation},
+    {"practicality_identity_certificate_guidance", identityCertificateGuidance},
+    {"practicality_operator_workflow_guidance", operatorWorkflowGuidance},
+  };
+}
+
+size_t
+UavPracticalityState::practicalCapabilityCount() const
+{
+  const std::vector<std::string> values{
+    preflightSummary,
+    hardwareCompatibilityNotes,
+    cameraDiagnostics,
+    flightControllerDiagnostics,
+    configValidation,
+    identityCertificateGuidance,
+    operatorWorkflowGuidance,
+  };
+  return static_cast<size_t>(std::count_if(values.begin(), values.end(), [] (const std::string& value) {
+    return value != "missing";
+  }));
+}
+
+std::string
+UavPracticalityState::missingOrLimitedCapabilities() const
+{
+  std::vector<std::string> items;
+  auto appendIfWeak = [&items] (const std::string& label, const std::string& value) {
+    if (value == "missing" || value == "limited" || value == "documented") {
+      items.push_back(label + "=" + value);
+    }
+  };
+
+  appendIfWeak("preflight-summary", preflightSummary);
+  appendIfWeak("hardware-notes", hardwareCompatibilityNotes);
+  appendIfWeak("camera-diagnostics", cameraDiagnostics);
+  appendIfWeak("flight-controller-diagnostics", flightControllerDiagnostics);
+  appendIfWeak("config-validation", configValidation);
+  appendIfWeak("identity-guidance", identityCertificateGuidance);
+  appendIfWeak("operator-workflow", operatorWorkflowGuidance);
+
+  if (items.empty()) {
+    return "none";
+  }
+
+  std::ostringstream os;
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (i > 0) {
+      os << ",";
+    }
+    os << items[i];
+  }
+  return os.str();
+}
+
+std::string
+UavPracticalityState::statusLine() const
+{
+  return "UavPracticality preflight=" + preflightSummary +
+         " hardware_notes=" + hardwareCompatibilityNotes +
+         " camera_diagnostics=" + cameraDiagnostics +
+         " flight_controller_diagnostics=" + flightControllerDiagnostics +
+         " config_validation=" + configValidation +
+         " identity_guidance=" + identityCertificateGuidance +
+         " operator_workflow=" + operatorWorkflowGuidance +
+         " implemented=" + std::to_string(practicalCapabilityCount()) +
+         " weak=" + missingOrLimitedCapabilities();
+}
+
+UavStabilityState
+UavStabilityState::fromFields(const Fields& fields)
+{
+  UavStabilityState state;
+  state.commandTimeoutHandling = fieldOr(fields, "stability_command_timeout_handling",
+                                         state.commandTimeoutHandling);
+  state.stopVideoIdempotence = fieldOr(fields, "stability_stop_video_idempotence",
+                                       state.stopVideoIdempotence);
+  state.streamSessionGuard = fieldOr(fields, "stability_stream_session_guard",
+                                     state.streamSessionGuard);
+  state.frameSequenceGuard = fieldOr(fields, "stability_frame_sequence_guard",
+                                     state.frameSequenceGuard);
+  state.adaptiveVideoPressure = fieldOr(fields, "stability_adaptive_video_pressure",
+                                        state.adaptiveVideoPressure);
+  state.telemetryFreshness = fieldOr(fields, "stability_telemetry_freshness",
+                                     state.telemetryFreshness);
+  state.manualNeutralFallback = fieldOr(fields, "stability_manual_neutral_fallback",
+                                        state.manualNeutralFallback);
+  state.longDurationProfiles = fieldOr(fields, "stability_long_duration_profiles",
+                                       state.longDurationProfiles);
+  return state;
+}
+
+UavStabilityState
+UavStabilityState::fromStates(const std::optional<FlightCommandState>& command,
+                              const std::optional<VideoState>& video,
+                              const std::optional<VideoAdaptiveState>& videoAdaptive,
+                              const std::optional<TelemetryState>& telemetry,
+                              const std::optional<SafetyState>& safety,
+                              bool stopVideoGuardEnabled,
+                              bool longDurationProfilesDocumented)
+{
+  UavStabilityState state;
+  if (command) {
+    state.commandTimeoutHandling = command->isTimeout() ? "operator-decision" : "available";
+  }
+  if (stopVideoGuardEnabled) {
+    state.stopVideoIdempotence = "available";
+  }
+  if (video && (!video->streamId.empty() && video->streamId != "unknown")) {
+    state.streamSessionGuard = "available";
+  }
+  if (video && video->framesPublished > 0) {
+    state.frameSequenceGuard = "available";
+  }
+  if (videoAdaptive) {
+    state.adaptiveVideoPressure = videoAdaptive->maxPressure() > 0 ? "active" : "available";
+  }
+  if (telemetry) {
+    if (telemetry->telemetryIsFresh()) {
+      state.telemetryFreshness = "fresh";
+    }
+    else if (telemetry->telemetryIsStale()) {
+      state.telemetryFreshness = "stale";
+    }
+    else if (telemetry->telemetryIsMissing()) {
+      state.telemetryFreshness = "missing-runtime";
+    }
+    else {
+      state.telemetryFreshness = "available";
+    }
+  }
+  if (safety) {
+    state.manualNeutralFallback = safety->manualNeutralSent == "true" ? "available" : "armed";
+  }
+  state.longDurationProfiles = longDurationProfilesDocumented ? "documented" : "missing";
+  return state;
+}
+
+Fields
+UavStabilityState::toFields() const
+{
+  return {
+    {"stability_command_timeout_handling", commandTimeoutHandling},
+    {"stability_stop_video_idempotence", stopVideoIdempotence},
+    {"stability_stream_session_guard", streamSessionGuard},
+    {"stability_frame_sequence_guard", frameSequenceGuard},
+    {"stability_adaptive_video_pressure", adaptiveVideoPressure},
+    {"stability_telemetry_freshness", telemetryFreshness},
+    {"stability_manual_neutral_fallback", manualNeutralFallback},
+    {"stability_long_duration_profiles", longDurationProfiles},
+  };
+}
+
+size_t
+UavStabilityState::stableCapabilityCount() const
+{
+  const std::vector<std::string> values{
+    commandTimeoutHandling,
+    stopVideoIdempotence,
+    streamSessionGuard,
+    frameSequenceGuard,
+    adaptiveVideoPressure,
+    telemetryFreshness,
+    manualNeutralFallback,
+    longDurationProfiles,
+  };
+  return static_cast<size_t>(std::count_if(values.begin(), values.end(), [] (const std::string& value) {
+    return value != "missing";
+  }));
+}
+
+std::string
+UavStabilityState::missingOrLimitedCapabilities() const
+{
+  std::vector<std::string> items;
+  auto appendIfWeak = [&items] (const std::string& label, const std::string& value) {
+    if (value == "missing" || value == "documented" || value == "armed" ||
+        value == "stale" || value == "missing-runtime" || value == "operator-decision") {
+      items.push_back(label + "=" + value);
+    }
+  };
+
+  appendIfWeak("command-timeout", commandTimeoutHandling);
+  appendIfWeak("stop-video", stopVideoIdempotence);
+  appendIfWeak("stream-session", streamSessionGuard);
+  appendIfWeak("frame-sequence", frameSequenceGuard);
+  appendIfWeak("adaptive-video", adaptiveVideoPressure);
+  appendIfWeak("telemetry-freshness", telemetryFreshness);
+  appendIfWeak("manual-neutral", manualNeutralFallback);
+  appendIfWeak("long-duration", longDurationProfiles);
+
+  if (items.empty()) {
+    return "none";
+  }
+
+  std::ostringstream os;
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (i > 0) {
+      os << ",";
+    }
+    os << items[i];
+  }
+  return os.str();
+}
+
+std::string
+UavStabilityState::statusLine() const
+{
+  return "UavStability command_timeout=" + commandTimeoutHandling +
+         " stop_video=" + stopVideoIdempotence +
+         " stream_session=" + streamSessionGuard +
+         " frame_sequence=" + frameSequenceGuard +
+         " adaptive_video=" + adaptiveVideoPressure +
+         " telemetry_freshness=" + telemetryFreshness +
+         " manual_neutral=" + manualNeutralFallback +
+         " long_duration=" + longDurationProfiles +
+         " implemented=" + std::to_string(stableCapabilityCount()) +
+         " weak=" + missingOrLimitedCapabilities();
+}
+
 namespace {
 
 double

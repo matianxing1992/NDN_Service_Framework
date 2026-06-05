@@ -663,6 +663,76 @@ struct SelectedDroneSummaryState
   std::string statusLine() const;
 };
 
+struct UavFunctionalityState
+{
+  std::string missionEditor = "missing";
+  std::string perDroneMissionReview = "missing";
+  std::string persistentMissionFiles = "missing";
+  std::string recordingLogBrowsing = "missing";
+  std::string parameterStatusInspection = "missing";
+  std::string objectDetectionDisplay = "missing";
+  std::string multiDroneServiceSelection = "missing";
+
+  static UavFunctionalityState fromFields(const Fields& fields);
+  static UavFunctionalityState fromStates(const std::optional<MissionPlan>& missionPlan,
+                                          const std::optional<MissionPart>& selectedMissionPart,
+                                          const std::optional<RecordingDataProductState>& recording,
+                                          const std::optional<TelemetryState>& telemetry,
+                                          bool objectDetectionServiceAvailable,
+                                          size_t droneCount);
+  Fields toFields() const;
+  size_t implementedCapabilityCount() const;
+  std::string missingOrLimitedCapabilities() const;
+  std::string statusLine() const;
+};
+
+struct UavPracticalityState
+{
+  std::string preflightSummary = "missing";
+  std::string hardwareCompatibilityNotes = "missing";
+  std::string cameraDiagnostics = "missing";
+  std::string flightControllerDiagnostics = "missing";
+  std::string configValidation = "missing";
+  std::string identityCertificateGuidance = "missing";
+  std::string operatorWorkflowGuidance = "missing";
+
+  static UavPracticalityState fromFields(const Fields& fields);
+  static UavPracticalityState fromStates(const std::optional<TelemetryState>& telemetry,
+                                         const std::optional<ReadinessState>& readiness,
+                                         bool hasPreflightTool,
+                                         bool hasRuntimeConfig,
+                                         bool hasReleaseManual);
+  Fields toFields() const;
+  size_t practicalCapabilityCount() const;
+  std::string missingOrLimitedCapabilities() const;
+  std::string statusLine() const;
+};
+
+struct UavStabilityState
+{
+  std::string commandTimeoutHandling = "missing";
+  std::string stopVideoIdempotence = "missing";
+  std::string streamSessionGuard = "missing";
+  std::string frameSequenceGuard = "missing";
+  std::string adaptiveVideoPressure = "missing";
+  std::string telemetryFreshness = "missing";
+  std::string manualNeutralFallback = "missing";
+  std::string longDurationProfiles = "missing";
+
+  static UavStabilityState fromFields(const Fields& fields);
+  static UavStabilityState fromStates(const std::optional<FlightCommandState>& command,
+                                      const std::optional<VideoState>& video,
+                                      const std::optional<VideoAdaptiveState>& videoAdaptive,
+                                      const std::optional<TelemetryState>& telemetry,
+                                      const std::optional<SafetyState>& safety,
+                                      bool stopVideoGuardEnabled,
+                                      bool longDurationProfilesDocumented);
+  Fields toFields() const;
+  size_t stableCapabilityCount() const;
+  std::string missingOrLimitedCapabilities() const;
+  std::string statusLine() const;
+};
+
 MissionPlan
 buildPatrolMissionPlan(const std::string& taskId,
                        double centerLat,

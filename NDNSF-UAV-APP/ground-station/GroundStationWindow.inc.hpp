@@ -320,7 +320,8 @@ public:
     for (auto* label : {&m_status, &m_linkStatus, &m_services, &m_telemetry,
                          &m_flightInspector, &m_cameraInspector, &m_videoInspector,
                          &m_commandHistory, &m_telemetryInspector, &m_missionInspector,
-                         &m_missionDetail}) {
+                         &m_missionDetail, &m_functionalityInspector,
+                         &m_practicalityInspector, &m_stabilityInspector}) {
       label->set_size_request(264, -1);
       label->set_width_chars(32);
       label->set_max_width_chars(32);
@@ -342,6 +343,9 @@ public:
     addInspectorSection(m_videoInspectorFrame, m_videoInspector, "Video");
     addInspectorSection(m_missionInspectorFrame, m_missionInspector, "Mission / Safety");
     addInspectorSection(m_missionDetailFrame, m_missionDetail, "Mission Detail");
+    addInspectorSection(m_functionalityInspectorFrame, m_functionalityInspector, "Functionality");
+    addInspectorSection(m_practicalityInspectorFrame, m_practicalityInspector, "Practicality");
+    addInspectorSection(m_stabilityInspectorFrame, m_stabilityInspector, "Stability");
     addInspectorSection(m_commandHistoryFrame, m_commandHistory, "Command History");
     addInspectorSection(m_serviceInspectorFrame, m_services, "Services / Link");
     addInspectorSection(m_eventInspectorFrame, m_status, "Events");
@@ -1139,6 +1143,7 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
           logMissionControlState("final");
+          logAppQualityState("mission-controls-final");
           hide();
         });
       }).detach();
@@ -1218,6 +1223,7 @@ public:
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         Glib::signal_idle().connect_once([this] {
+          logAppQualityState("flight-controls-final");
           hide();
         });
       }).detach();
@@ -2249,6 +2255,49 @@ private:
     }
     m_missionDetail.set_text(missionDetail.str());
 
+    const auto functionality = m_runtime.functionalitySnapshotForSelectedDrone();
+    std::ostringstream functionalityText;
+    appendInspectorRow(functionalityText, "Mission editor", functionality.missionEditor);
+    appendInspectorRow(functionalityText, "Per-drone review", functionality.perDroneMissionReview);
+    appendInspectorRow(functionalityText, "Mission files", functionality.persistentMissionFiles);
+    appendInspectorRow(functionalityText, "Recording/logs", functionality.recordingLogBrowsing);
+    appendInspectorRow(functionalityText, "Parameter/status", functionality.parameterStatusInspection);
+    appendInspectorRow(functionalityText, "Detection display", functionality.objectDetectionDisplay);
+    appendInspectorRow(functionalityText, "Multi-drone select", functionality.multiDroneServiceSelection);
+    appendInspectorRow(functionalityText, "Implemented",
+                       std::to_string(functionality.implementedCapabilityCount()) + "/7");
+    appendInspectorRow(functionalityText, "Weak/missing", functionality.missingOrLimitedCapabilities());
+    m_functionalityInspector.set_text(functionalityText.str());
+
+    const auto practicality = m_runtime.practicalitySnapshotForSelectedDrone();
+    std::ostringstream practicalityText;
+    appendInspectorRow(practicalityText, "Preflight", practicality.preflightSummary);
+    appendInspectorRow(practicalityText, "Hardware notes", practicality.hardwareCompatibilityNotes);
+    appendInspectorRow(practicalityText, "Camera diagnostics", practicality.cameraDiagnostics);
+    appendInspectorRow(practicalityText, "FC diagnostics", practicality.flightControllerDiagnostics);
+    appendInspectorRow(practicalityText, "Config validation", practicality.configValidation);
+    appendInspectorRow(practicalityText, "Identity guidance", practicality.identityCertificateGuidance);
+    appendInspectorRow(practicalityText, "Operator workflow", practicality.operatorWorkflowGuidance);
+    appendInspectorRow(practicalityText, "Implemented",
+                       std::to_string(practicality.practicalCapabilityCount()) + "/7");
+    appendInspectorRow(practicalityText, "Weak/missing", practicality.missingOrLimitedCapabilities());
+    m_practicalityInspector.set_text(practicalityText.str());
+
+    const auto stability = m_runtime.stabilitySnapshotForSelectedDrone();
+    std::ostringstream stabilityText;
+    appendInspectorRow(stabilityText, "Command timeout", stability.commandTimeoutHandling);
+    appendInspectorRow(stabilityText, "Stop Video", stability.stopVideoIdempotence);
+    appendInspectorRow(stabilityText, "Stream session", stability.streamSessionGuard);
+    appendInspectorRow(stabilityText, "Frame sequence", stability.frameSequenceGuard);
+    appendInspectorRow(stabilityText, "Adaptive video", stability.adaptiveVideoPressure);
+    appendInspectorRow(stabilityText, "Telemetry", stability.telemetryFreshness);
+    appendInspectorRow(stabilityText, "Manual neutral", stability.manualNeutralFallback);
+    appendInspectorRow(stabilityText, "Long duration", stability.longDurationProfiles);
+    appendInspectorRow(stabilityText, "Implemented",
+                       std::to_string(stability.stableCapabilityCount()) + "/8");
+    appendInspectorRow(stabilityText, "Weak/missing", stability.missingOrLimitedCapabilities());
+    m_stabilityInspector.set_text(stabilityText.str());
+
     std::ostringstream commandHistory;
     if (droneRuntime && !droneRuntime->commandHistory.empty()) {
       size_t index = 1;
@@ -2465,6 +2514,21 @@ private:
        << " start_eligible=" << state.startEligible
        << " start_blocked=" << state.startBlocked
        << " phases=" << state.phases;
+    NDN_LOG_INFO(os.str());
+  }
+
+  void
+  logAppQualityState(const std::string& phase) const
+  {
+    const auto functionality = m_runtime.functionalitySnapshotForSelectedDrone();
+    const auto practicality = m_runtime.practicalitySnapshotForSelectedDrone();
+    const auto stability = m_runtime.stabilitySnapshotForSelectedDrone();
+    std::ostringstream os;
+    os << "UAV_APP_QUALITY_STATE phase=" << phase
+       << " selected=" << m_runtime.targetDroneId()
+       << " functionality={" << functionality.statusLine() << "}"
+       << " practicality={" << practicality.statusLine() << "}"
+       << " stability={" << stability.statusLine() << "}";
     NDN_LOG_INFO(os.str());
   }
 
@@ -3752,6 +3816,9 @@ private:
   Gtk::Frame m_videoInspectorFrame;
   Gtk::Frame m_missionInspectorFrame;
   Gtk::Frame m_missionDetailFrame;
+  Gtk::Frame m_functionalityInspectorFrame;
+  Gtk::Frame m_practicalityInspectorFrame;
+  Gtk::Frame m_stabilityInspectorFrame;
   Gtk::Frame m_commandHistoryFrame;
   Gtk::Frame m_serviceInspectorFrame;
   Gtk::Frame m_eventInspectorFrame;
@@ -3828,6 +3895,9 @@ private:
   Gtk::Label m_telemetryInspector;
   Gtk::Label m_missionInspector;
   Gtk::Label m_missionDetail;
+  Gtk::Label m_functionalityInspector;
+  Gtk::Label m_practicalityInspector;
+  Gtk::Label m_stabilityInspector;
   Gtk::Image m_image;
   Gtk::Label m_stats;
   Glib::Dispatcher m_statusDispatcher;

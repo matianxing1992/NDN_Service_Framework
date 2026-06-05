@@ -98,6 +98,128 @@ commands, as well as low-rate `MANUAL_CONTROL` updates from the keyboard, use
 request/response-only Targeted calls to `/UAV/MAVLink/Execute`, reducing command
 latency while still validating the provider and rejecting token replay.
 
+## Current Boundary
+
+This application is not yet a production-grade flight ground station. It is a
+research and validation workload for NDNSF that happens to exercise a realistic
+UAV service stack. The parts that are most mature are the NDNSF service
+composition, permission-controlled cross-node invocation, typed telemetry and
+mission state, adaptive video transport, recording discovery, and MiniNDN/SITL
+test paths. The parts that still require careful real-device hardening are
+flight-controller fail-safe policy, long-duration mission recovery, operator
+UX under abnormal hardware/network states, and repeated outdoor flight testing.
+
+The intended interpretation is therefore:
+
+```text
+NDNSF contribution:
+  service discovery, authorization, provider collaboration, Targeted command
+  paths, same-process helper composition, large-data references, and service
+  containers.
+
+UAV-APP contribution:
+  a high-pressure UAV workload that validates those NDNSF mechanisms with
+  command-sensitive control, telemetry, video, mission, recording, and
+  multi-drone workflows.
+
+Not claimed:
+  a drop-in replacement for a certified autopilot ground station.
+```
+
+## Comparison With QGroundControl
+
+QGroundControl is a mature operator-facing ground-control station for
+PX4/ArduPilot. It is optimized around direct vehicle operation: setup,
+calibration, parameter management, mission editing, map/video display, safety
+checks, and robust operator feedback. `NDNSF-UAV-APP` has a different purpose:
+it validates whether UAV functions can be expressed as named, permissioned,
+multi-provider NDNSF services. The useful comparison is therefore not "which
+ground station is more complete", but "which operator-facing capabilities are
+still needed before this NDNSF UAV workload can be trusted in harder tests".
+
+Current strengths relative to a conventional ground station:
+
+- UAV functions are exposed as named services rather than only as one vehicle
+  link.
+- Cross-node command, telemetry, video control, recording discovery, and
+  object-detection callbacks all use the same NDNSF authorization and naming
+  model.
+- Targeted invocation keeps known-drone commands low-latency while preserving
+  token and permission checks.
+- Multiple drones/providers can be selected or coordinated by service logic,
+  which is the main NDNSF-specific value.
+- Same-process helpers are separated from cross-node services through
+  `ServiceContainer.localRegistry()`, so local composition does not become a
+  new network protocol.
+
+Major gaps compared with a mature ground-control workflow:
+
+- **Vehicle setup and calibration.** QGroundControl provides rich sensor,
+  radio, motor, airframe, parameter, and firmware setup flows. UAV-APP assumes
+  the flight controller is already configured and only consumes MAVLink state.
+- **Mission editing.** UAV-APP has deterministic waypoint clustering and
+  mission state tracking, but it does not yet provide a full map-based mission
+  editor with survey patterns, altitude profiles, geofence editing, or reusable
+  mission files.
+- **Safety UX.** UAV-APP has typed readiness, command lifecycle, stale-link
+  detection, manual-control neutral fallback, and emergency stop. It still
+  needs more explicit pre-arm check presentation, persistent alerts,
+  operator-confirmed dangerous actions, and clearer lost-link behavior.
+- **Parameter and log workflow.** UAV-APP does not replace QGC-style parameter
+  inspection, tuning, MAVLink log download, or flight review. It should either
+  integrate only the pieces needed for NDNSF experiments or document that those
+  tasks remain external.
+- **Long-duration reliability.** The app has MiniNDN/SITL and local smoke
+  tests, but real deployments still need repeated long-run video, telemetry,
+  mission, recording, and multi-drone recovery tests.
+- **Hardware breadth.** The code supports mock, UDP, serial, USB/V4L2, and
+  auto camera paths, but it has not been validated across the hardware range
+  that a mature ground station normally sees.
+
+Near-term improvement priorities:
+
+1. Make the safety/readiness panel operator-grade: pre-arm checklist, reasoned
+   blocks, persistent warning history, and clear confirmation for dangerous
+   commands.
+2. Strengthen mission planning and recovery: richer waypoint editing,
+   persistent mission records, partial completion, compensation tasks, cancel,
+   and return-to-start policies.
+3. Keep improving video stability under real wireless pressure: adaptive
+   bitrate/request-window control, frame-order guards, stream-session guards,
+   and visible transport diagnostics.
+4. Expand regression coverage around the behaviors an operator cares about:
+   selected-drone stability, command lifecycle, stale telemetry, Start/Stop
+   Video idempotence, recording playback, mission cancel/recovery, and manual
+   neutral fallback.
+5. Treat real-device testing as a source of new NDNSF requirements. If UAV
+   deployment exposes missing framework mechanisms, those findings should feed
+   back into NDNSF rather than being patched only inside the app.
+
+The gaps above should be tracked as concrete engineering and evaluation items,
+not as open-ended UI wishes:
+
+| Area | Current implementation | Needed improvement | Validation path |
+| --- | --- | --- | --- |
+| Vehicle setup/calibration | Consumes MAVLink status from an already configured PX4/ArduPilot backend. | Add deployment diagnostics for required flight-controller state; keep full calibration/firmware setup external unless a NDNSF experiment needs it. | Preflight check plus SITL telemetry showing heartbeat, GPS/EKF, battery, armed, landed state, and command ACKs. |
+| Mission editor | Supports deterministic waypoint clustering, mission state, progress, partial recovery, cancel, and return-to-start targets. | Add richer map editing, reusable mission files, geofence/survey templates, and clearer per-drone segment review. | Unit tests for deterministic planning plus MiniNDN mission upload/start/stop/cancel smoke. |
+| Safety UX | Maintains typed readiness, safety, command lifecycle, stale telemetry, manual neutral fallback, and emergency stop. | Add persistent warning history, explicit pre-arm checklist, dangerous-action confirmation, and clearer lost-link policy display. | UI smoke at 1600x800 plus protocol tests for safety gates, stale/lost telemetry, command timeout, and manual neutral fallback. |
+| Parameter/log workflow | Does not manage autopilot parameters or flight log review. | Either integrate only the small parameter/log subset needed by NDNSF experiments or document use of external tools. | README/release manual regression that states the boundary and avoids claiming QGC replacement. |
+| Long-duration reliability | Has MiniNDN/SITL smoke paths and local video/mission/recording tests. | Add repeated long-run telemetry, video, recording, mission recovery, and multi-drone loss/reconnect scenarios. | Scheduled MiniNDN profiles with 0/5/15% loss plus real-device run logs when hardware is available. |
+| Hardware breadth | Supports mock, UDP, serial, `mavlink-router` alias, file video, USB/V4L2, and auto camera probing. | Build a hardware compatibility matrix for ODROID/PC, USB cameras, serial/UDP MAVLink, and flight-controller variants. | Preflight/device diagnostics, camera capability logs, and ODROID/GCP release smoke when explicitly requested. |
+
+The same work can be grouped by product quality axis:
+
+| Axis | What should improve | Concrete next items | Test evidence |
+| --- | --- | --- | --- |
+| Functionality | Add operator-visible capabilities that are currently missing or partial. | Mission editor, per-drone mission segment review, persistent mission files, recording/log browsing, limited parameter/status inspection, richer object-detection result display, and clearer multi-drone service selection. The ground-station state layer exposes these as `UavFunctionalityState` with `available`, `prototype`, `limited`, `metadata-only`, or `missing` values so incomplete features are not accidentally presented as finished. | Unit tests for mission planning/state and `UavFunctionalityState`, MiniNDN mission smoke, recording playback smoke, and documentation checks that each feature states its boundary. |
+| Practicality | Make the app easier to deploy, operate, and diagnose without knowing the internals. | Better preflight summaries, hardware compatibility notes, camera/flight-controller diagnostic panels, config validation, identity/certificate guidance, and readable operator workflows for GS and Drone windows. The GS inspector exposes these as `UavPracticalityState` so deployment usability is visible as structured state instead of being buried in docs. | Documentation regression, `UavPracticalityState` unit tests, preflight script runs, GUI smoke at 1600x800, and release/manual walkthroughs. |
+| Stability | Make runtime behavior predictable under loss, timeout, repeated clicks, old packets, stale telemetry, and long-running sessions. | Command lifecycle/timeout handling, Stop Video idempotence, stream-session and frame-sequence guards, adaptive video pressure control, stale/lost telemetry handling, manual neutral fallback, and long-duration loss profiles. The GS inspector exposes these as `UavStabilityState` so transport/control stability is visible to the operator instead of being only a log detail. | `UavProtocolState` and `UavStabilityState` unit tests, MiniNDN 0/5/15% loss profiles, Start/Stop Video smoke, stale telemetry smoke, and real-device run logs when explicitly requested. |
+
+Automated GS smoke paths also emit `UAV_APP_QUALITY_STATE`, which summarizes
+`UavFunctionalityState`, `UavPracticalityState`, and `UavStabilityState` in one
+log line. This gives MiniNDN regressions a single observable checkpoint for the
+application's functionality, practicality, and stability posture.
+
 ## Service Containers
 
 ```text

@@ -72,6 +72,104 @@ request/ACK/selection/response 认证流程，并拿到一批一次性 token pai
 和 `land` 命令，以及键盘手操产生的低频 `MANUAL_CONTROL` 更新，都会使用 request/response-only
 Targeted 调用 `/UAV/MAVLink/Execute`，减少命令延迟，同时仍然验证 provider 并拒绝 token replay。
 
+## 当前边界
+
+这个应用还不是生产级飞行地面站。它首先是一个用于验证 NDNSF 的研究 workload，只是这个
+workload 覆盖了比较真实的 UAV service stack。目前较成熟的部分是 NDNSF service composition、
+权限控制的跨节点调用、typed telemetry/mission state、自适应视频传输、录制发现，以及
+MiniNDN/SITL 测试路径。仍然需要真实设备持续强化的部分包括 flight-controller fail-safe policy、
+长时间 mission recovery、异常硬件/网络状态下的 operator UX，以及反复 outdoor flight testing。
+
+因此它的定位应该这样理解：
+
+```text
+NDNSF contribution:
+  service discovery、authorization、provider collaboration、Targeted command
+  path、同进程 helper composition、large-data reference，以及 service container。
+
+UAV-APP contribution:
+  一个高压力 UAV workload，用 command-sensitive control、telemetry、video、mission、
+  recording 和 multi-drone workflow 验证这些 NDNSF 机制。
+
+不声称:
+  它不是 certified autopilot ground station 的直接替代品。
+```
+
+## 与 QGroundControl 的对比
+
+QGroundControl 是面向 PX4/ArduPilot 的成熟 operator-facing ground-control station。
+它重点服务直接飞行操作：setup、calibration、parameter management、mission editing、
+map/video display、safety checks 和稳定的 operator feedback。`NDNSF-UAV-APP` 的目标不同：
+它验证 UAV 功能是否能够表达为命名、受权限控制、可多 provider 协同的 NDNSF services。
+因此有价值的对比不是“哪个地面站更完整”，而是“如果这个 NDNSF UAV workload 要进入更严格测试，
+还缺哪些 operator-facing 能力”。
+
+相对于传统地面站，当前已经体现出的优势：
+
+- UAV 功能暴露为 named services，而不是只绑定到单一 vehicle link。
+- 跨节点 command、telemetry、video control、recording discovery 和 object-detection callback
+  使用同一套 NDNSF authorization 和 naming model。
+- Targeted invocation 在保持 token/permission checks 的同时，降低已知 drone command latency。
+- 多架 drone/provider 可以由 service logic 选择或协同，这是 NDNSF 特有的主要价值。
+- 同进程 helper 通过 `ServiceContainer.localRegistry()` 与跨节点服务分离，因此本地组合不会变成
+  新的 network protocol。
+
+与成熟 ground-control workflow 相比的主要差距：
+
+- **Vehicle setup and calibration。** QGroundControl 提供 sensor、radio、motor、airframe、
+  parameter 和 firmware setup 流程。UAV-APP 假设 flight controller 已经配置完成，只消费
+  MAVLink state。
+- **Mission editing。** UAV-APP 已有确定性 waypoint clustering 和 mission state tracking，
+  但还没有完整 map-based mission editor，例如 survey pattern、altitude profile、geofence editing
+  和 reusable mission file。
+- **Safety UX。** UAV-APP 已有 typed readiness、command lifecycle、stale-link detection、
+  manual-control neutral fallback 和 emergency stop。它仍需要更明确的 pre-arm check 展示、
+  persistent alerts、危险操作确认，以及更清楚的 lost-link behavior。
+- **Parameter and log workflow。** UAV-APP 不替代 QGC 风格的 parameter inspection、tuning、
+  MAVLink log download 或 flight review。后续要么只集成 NDNSF 实验真正需要的部分，要么明确
+  这些任务仍由外部工具完成。
+- **Long-duration reliability。** 当前已有 MiniNDN/SITL 和本地 smoke tests，但真实部署仍需要
+  反复长时间测试 video、telemetry、mission、recording 和 multi-drone recovery。
+- **Hardware breadth。** 代码支持 mock、UDP、serial、USB/V4L2 和 auto camera 路径，但还没有
+  覆盖成熟地面站通常面对的硬件范围。
+
+近期改进优先级：
+
+1. 把 safety/readiness panel 做得更接近 operator-grade：pre-arm checklist、带原因的阻塞、
+   persistent warning history，以及危险命令的明确确认。
+2. 强化 mission planning 和 recovery：更完整的 waypoint editing、persistent mission records、
+   partial completion、compensation tasks、cancel 和 return-to-start policy。
+3. 继续提升真实无线压力下的视频稳定性：adaptive bitrate/request-window control、frame-order guard、
+   stream-session guard，以及可见 transport diagnostics。
+4. 扩展围绕 operator 关心行为的 regression coverage：selected-drone stability、command lifecycle、
+   stale telemetry、Start/Stop Video idempotence、recording playback、mission cancel/recovery、
+   manual neutral fallback。
+5. 把真实设备测试视为新的 NDNSF 需求来源。如果 UAV 部署暴露出 framework 机制缺口，这些发现应该
+   反向推动 NDNSF 演进，而不是只在 APP 内部打补丁。
+
+这些差距应该被跟踪为具体工程和 evaluation 条目，而不是开放式 UI 愿望：
+
+| Area | Current implementation | Needed improvement | Validation path |
+| --- | --- | --- | --- |
+| Vehicle setup/calibration | 从已经配置好的 PX4/ArduPilot backend 消费 MAVLink status。 | 增加 deployment diagnostics，检查必要 flight-controller state；完整 calibration/firmware setup 继续外置，除非 NDNSF 实验确实需要。 | Preflight check 加 SITL telemetry，确认 heartbeat、GPS/EKF、battery、armed、landed state 和 command ACK。 |
+| Mission editor | 支持确定性 waypoint clustering、mission state、progress、partial recovery、cancel 和 return-to-start targets。 | 增加更完整的 map editing、reusable mission files、geofence/survey templates，以及更清楚的 per-drone segment review。 | 确定性 planning unit tests，加 MiniNDN mission upload/start/stop/cancel smoke。 |
+| Safety UX | 维护 typed readiness、safety、command lifecycle、stale telemetry、manual neutral fallback 和 emergency stop。 | 增加 persistent warning history、明确 pre-arm checklist、危险操作确认，以及更清楚的 lost-link policy display。 | 1600x800 UI smoke，加 safety gates、stale/lost telemetry、command timeout、manual neutral fallback protocol tests。 |
+| Parameter/log workflow | 不管理 autopilot parameters，也不做 flight log review。 | 只集成 NDNSF 实验需要的小范围 parameter/log 能力，或明确这些任务由外部工具完成。 | README/release manual regression，确认边界清楚且没有声称替代 QGC。 |
+| Long-duration reliability | 有 MiniNDN/SITL smoke paths 和本地 video/mission/recording tests。 | 增加长时间 telemetry、video、recording、mission recovery 和 multi-drone loss/reconnect scenarios。 | 0/5/15% loss 的定期 MiniNDN profiles，以及硬件可用时的 real-device run logs。 |
+| Hardware breadth | 支持 mock、UDP、serial、`mavlink-router` alias、file video、USB/V4L2 和 auto camera probing。 | 建立 ODROID/PC、USB cameras、serial/UDP MAVLink 和不同 flight-controller variants 的 hardware compatibility matrix。 | Preflight/device diagnostics、camera capability logs，以及明确要求时的 ODROID/GCP release smoke。 |
+
+同一组工作也可以按产品质量维度重新归纳：
+
+| Axis | What should improve | Concrete next items | Test evidence |
+| --- | --- | --- | --- |
+| Functionality | 补齐目前缺失或仍然不完整的 operator-visible capabilities。 | Mission editor、per-drone mission segment review、persistent mission files、recording/log browsing、有限 parameter/status inspection、更丰富的 object-detection result display，以及更清楚的 multi-drone service selection。ground-station 状态层通过 `UavFunctionalityState` 暴露这些能力，并使用 `available`、`prototype`、`limited`、`metadata-only` 或 `missing` 表示状态，避免把未完成能力误显示成已完成。 | Mission planning/state 和 `UavFunctionalityState` unit tests、MiniNDN mission smoke、recording playback smoke，以及说明每个 feature 边界的 documentation checks。 |
+| Practicality | 让应用更容易部署、操作和诊断，而不要求用户理解内部实现。 | 更清楚的 preflight summaries、hardware compatibility notes、camera/flight-controller diagnostic panels、config validation、identity/certificate guidance，以及 GS/Drone 窗口的可读 operator workflows。GS inspector 通过 `UavPracticalityState` 暴露这些能力，因此部署实用性会成为结构化状态，而不是只埋在文档里。 | Documentation regression、`UavPracticalityState` unit tests、preflight script runs、1600x800 GUI smoke，以及 release/manual walkthroughs。 |
+| Stability | 让 runtime 在 loss、timeout、重复点击、旧包、stale telemetry 和长时间运行下行为可预测。 | Command lifecycle/timeout handling、Stop Video idempotence、stream-session 和 frame-sequence guards、adaptive video pressure control、stale/lost telemetry handling、manual neutral fallback，以及 long-duration loss profiles。GS inspector 通过 `UavStabilityState` 暴露这些状态，因此 transport/control stability 会直接对 operator 可见，而不只是日志细节。 | `UavProtocolState` 和 `UavStabilityState` unit tests、MiniNDN 0/5/15% loss profiles、Start/Stop Video smoke、stale telemetry smoke，以及明确要求时的 real-device run logs。 |
+
+自动化 GS smoke 路径也会输出 `UAV_APP_QUALITY_STATE`，在一条日志里汇总
+`UavFunctionalityState`、`UavPracticalityState` 和 `UavStabilityState`。这样 MiniNDN
+regression 可以用一个稳定 checkpoint 观察应用的 functionality、practicality 和 stability 状态。
+
 ## Service Containers
 
 ```text

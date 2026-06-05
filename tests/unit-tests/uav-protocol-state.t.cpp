@@ -23,6 +23,9 @@ using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::SelectedActionState;
 using ndnsf::examples::uav::SelectedDroneSummaryState;
 using ndnsf::examples::uav::TelemetryState;
+using ndnsf::examples::uav::UavFunctionalityState;
+using ndnsf::examples::uav::UavPracticalityState;
+using ndnsf::examples::uav::UavStabilityState;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
 using ndnsf::examples::uav::VideoControlState;
@@ -706,6 +709,155 @@ BOOST_AUTO_TEST_CASE(SelectedDroneSummaryStateUsesSharedModels)
   BOOST_CHECK_EQUAL(empty.missionPartId, "none");
   BOOST_CHECK(!empty.canArm);
   BOOST_CHECK_EQUAL(empty.armReason, "no-telemetry");
+}
+
+BOOST_AUTO_TEST_CASE(UavFunctionalityStateTracksImplementedAndMissingCapabilities)
+{
+  MissionPlan plan;
+  plan.taskId = "patrol-functionality";
+  MissionPart part;
+  part.id = "part-A";
+  part.assignedDrone = "A";
+  part.waypoints = {{35.1186, -89.9375}};
+  plan.parts.push_back(part);
+
+  RecordingDataProductState recording;
+  recording.droneId = "A";
+  recording.sessionId = "record-1";
+  recording.objectPrefix = "/example/uav/drone/A/repo/camera/recording";
+  recording.encryption = "hybrid-aes-256-gcm-at-rest";
+  recording.keyId = "/example/uav/drone/A/repo/key";
+  recording.contentKey = {0x01, 0x02, 0x03};
+  recording.chunks = 3;
+  recording.bytes = 1024;
+
+  TelemetryState telemetry;
+  telemetry.droneId = "A";
+  telemetry.flightControllerBackend = "udp";
+  telemetry.flightControllerState = "ready";
+  telemetry.systemStatusName = "active";
+  telemetry.batteryVoltageV = "12.1";
+
+  const auto functionality = UavFunctionalityState::fromStates(plan, part, recording,
+                                                               telemetry, true, 3);
+  BOOST_CHECK_EQUAL(functionality.missionEditor, "prototype");
+  BOOST_CHECK_EQUAL(functionality.perDroneMissionReview, "available");
+  BOOST_CHECK_EQUAL(functionality.persistentMissionFiles, "missing");
+  BOOST_CHECK_EQUAL(functionality.recordingLogBrowsing, "available");
+  BOOST_CHECK_EQUAL(functionality.parameterStatusInspection, "limited");
+  BOOST_CHECK_EQUAL(functionality.objectDetectionDisplay, "metadata-only");
+  BOOST_CHECK_EQUAL(functionality.multiDroneServiceSelection, "available");
+  BOOST_CHECK_EQUAL(functionality.implementedCapabilityCount(), 6);
+  BOOST_CHECK_NE(functionality.missingOrLimitedCapabilities().find("persistent-mission-files=missing"),
+                 std::string::npos);
+  BOOST_CHECK_NE(functionality.statusLine().find("mission_editor=prototype"), std::string::npos);
+
+  const auto roundTrip = UavFunctionalityState::fromFields(functionality.toFields());
+  BOOST_CHECK_EQUAL(roundTrip.recordingLogBrowsing, functionality.recordingLogBrowsing);
+  BOOST_CHECK_EQUAL(roundTrip.multiDroneServiceSelection, functionality.multiDroneServiceSelection);
+
+  const auto empty = UavFunctionalityState::fromStates(std::nullopt, std::nullopt,
+                                                       std::nullopt, std::nullopt, false, 1);
+  BOOST_CHECK_EQUAL(empty.implementedCapabilityCount(), 0);
+  BOOST_CHECK_NE(empty.missingOrLimitedCapabilities().find("mission-editor=missing"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(UavPracticalityStateTracksDeploymentUsability)
+{
+  TelemetryState telemetry;
+  telemetry.droneId = "A";
+  telemetry.cameraAvailable = "true";
+  telemetry.cameraSource = "/dev/video0";
+  telemetry.cameraReason = "ok";
+  telemetry.flightControllerBackend = "udp";
+  telemetry.flightControllerAvailable = "true";
+  telemetry.flightControllerReason = "ok";
+
+  const auto practicality = UavPracticalityState::fromStates(telemetry, makeReadyState(true),
+                                                             true, true, true);
+  BOOST_CHECK_EQUAL(practicality.preflightSummary, "available");
+  BOOST_CHECK_EQUAL(practicality.hardwareCompatibilityNotes, "documented");
+  BOOST_CHECK_EQUAL(practicality.cameraDiagnostics, "available");
+  BOOST_CHECK_EQUAL(practicality.flightControllerDiagnostics, "available");
+  BOOST_CHECK_EQUAL(practicality.configValidation, "available");
+  BOOST_CHECK_EQUAL(practicality.identityCertificateGuidance, "documented");
+  BOOST_CHECK_EQUAL(practicality.operatorWorkflowGuidance, "documented");
+  BOOST_CHECK_EQUAL(practicality.practicalCapabilityCount(), 7);
+  BOOST_CHECK_NE(practicality.missingOrLimitedCapabilities().find("hardware-notes=documented"),
+                 std::string::npos);
+  BOOST_CHECK_NE(practicality.statusLine().find("camera_diagnostics=available"), std::string::npos);
+
+  const auto roundTrip = UavPracticalityState::fromFields(practicality.toFields());
+  BOOST_CHECK_EQUAL(roundTrip.preflightSummary, practicality.preflightSummary);
+  BOOST_CHECK_EQUAL(roundTrip.operatorWorkflowGuidance, practicality.operatorWorkflowGuidance);
+
+  TelemetryState unavailableCamera;
+  unavailableCamera.cameraAvailable = "false";
+  unavailableCamera.cameraReason = "device-not-opened";
+  const auto weak = UavPracticalityState::fromStates(unavailableCamera, std::nullopt,
+                                                     false, false, false);
+  BOOST_CHECK_EQUAL(weak.preflightSummary, "missing");
+  BOOST_CHECK_EQUAL(weak.cameraDiagnostics, "limited");
+  BOOST_CHECK_EQUAL(weak.flightControllerDiagnostics, "missing");
+  BOOST_CHECK_NE(weak.missingOrLimitedCapabilities().find("preflight-summary=missing"),
+                 std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(UavStabilityStateTracksTransportAndControlGuards)
+{
+  FlightCommandState command;
+  command.droneId = "A";
+  command.command = "land";
+  command.accepted = "false";
+  command.ackResult = "timeout";
+  command.timeoutMs = 2500;
+
+  VideoState video;
+  video.droneId = "A";
+  video.status = "streaming";
+  video.streamId = "live|A|42";
+  video.framesPublished = 12;
+
+  VideoAdaptiveState adaptive;
+  adaptive.droneId = "A";
+  adaptive.timeoutPressure = 40;
+  adaptive.backlogPressure = 20;
+  adaptive.primaryPressure = "timeout";
+
+  TelemetryState telemetry;
+  telemetry.droneId = "A";
+  telemetry.telemetryFreshness = "stale";
+
+  SafetyState safety;
+  safety.droneId = "A";
+  safety.manualNeutralSent = "true";
+  safety.manualControlState = "stale-neutral";
+
+  const auto stability = UavStabilityState::fromStates(command, video, adaptive,
+                                                       telemetry, safety, true, true);
+  BOOST_CHECK_EQUAL(stability.commandTimeoutHandling, "operator-decision");
+  BOOST_CHECK_EQUAL(stability.stopVideoIdempotence, "available");
+  BOOST_CHECK_EQUAL(stability.streamSessionGuard, "available");
+  BOOST_CHECK_EQUAL(stability.frameSequenceGuard, "available");
+  BOOST_CHECK_EQUAL(stability.adaptiveVideoPressure, "active");
+  BOOST_CHECK_EQUAL(stability.telemetryFreshness, "stale");
+  BOOST_CHECK_EQUAL(stability.manualNeutralFallback, "available");
+  BOOST_CHECK_EQUAL(stability.longDurationProfiles, "documented");
+  BOOST_CHECK_EQUAL(stability.stableCapabilityCount(), 8);
+  BOOST_CHECK_NE(stability.missingOrLimitedCapabilities().find("command-timeout=operator-decision"),
+                 std::string::npos);
+  BOOST_CHECK_NE(stability.statusLine().find("adaptive_video=active"), std::string::npos);
+
+  const auto roundTrip = UavStabilityState::fromFields(stability.toFields());
+  BOOST_CHECK_EQUAL(roundTrip.streamSessionGuard, stability.streamSessionGuard);
+  BOOST_CHECK_EQUAL(roundTrip.telemetryFreshness, stability.telemetryFreshness);
+
+  const auto empty = UavStabilityState::fromStates(std::nullopt, std::nullopt,
+                                                   std::nullopt, std::nullopt,
+                                                   std::nullopt, false, false);
+  BOOST_CHECK_EQUAL(empty.stableCapabilityCount(), 0);
+  BOOST_CHECK_NE(empty.missingOrLimitedCapabilities().find("stop-video=missing"),
+                 std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)

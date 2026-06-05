@@ -701,6 +701,51 @@ public:
     return std::nullopt;
   }
 
+  UavFunctionalityState
+  functionalitySnapshotForSelectedDrone() const
+  {
+    const auto selectedDrone = targetDroneId();
+    std::optional<RecordingDataProductState> recording;
+    {
+      std::lock_guard<std::mutex> guard(m_recordingManifestMutex);
+      const auto found = m_recordingManifests.find(selectedDrone);
+      if (found != m_recordingManifests.end()) {
+        recording = found->second;
+      }
+    }
+
+    const auto missionPlan = missionPlanSnapshot();
+    const auto missionPart = missionPartForDrone(selectedDrone);
+    const auto telemetry = telemetryForDrone(selectedDrone);
+    const auto droneCount = std::max<size_t>(m_patrolDroneIds.size(), runtimeSnapshot().drones.size());
+    return UavFunctionalityState::fromStates(missionPlan, missionPart, recording, telemetry,
+                                             !m_config.serviceGsObjectDetection.empty(), droneCount);
+  }
+
+  UavPracticalityState
+  practicalitySnapshotForSelectedDrone() const
+  {
+    const auto selectedDrone = targetDroneId();
+    return UavPracticalityState::fromStates(telemetryForDrone(selectedDrone),
+                                            readinessForDrone(selectedDrone),
+                                            true,
+                                            true,
+                                            true);
+  }
+
+  UavStabilityState
+  stabilitySnapshotForSelectedDrone() const
+  {
+    const auto selectedDrone = targetDroneId();
+    return UavStabilityState::fromStates(commandForDrone(selectedDrone),
+                                         videoForDrone(selectedDrone),
+                                         videoAdaptiveForDrone(selectedDrone),
+                                         telemetryForDrone(selectedDrone),
+                                         safetyForDrone(selectedDrone),
+                                         true,
+                                         true);
+  }
+
   std::optional<ReadinessState>
   readinessForDrone(const std::string& droneId) const
   {
