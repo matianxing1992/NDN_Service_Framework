@@ -93,6 +93,10 @@ def main() -> int:
                         help="Also exercise deletion after store/fetch/catalog checks")
     parser.add_argument("--fsck-stale-repo-smoke", action="store_true",
                         help="Only verify that catalog lookup reports a stale/under-replicated object")
+    parser.add_argument("--catalog-snapshot-large-response-smoke", action="store_true",
+                        help="Fetch a full catalog snapshot so NDNSF core can exercise large response references")
+    parser.add_argument("--catalog-snapshot-repo-node",
+                        default="/example/repo/provider/repoA")
     parser.add_argument("--fsck-repo-node", default="/example/repo/provider/repoA")
     parser.add_argument("--fsck-stale-repo", default="/example/repo/provider/repoC")
     parser.add_argument("--fsck-object-suffix",
@@ -141,6 +145,36 @@ def main() -> int:
         if not isinstance(repair_plan, dict) or not repair_plan.get("needed"):
             raise RuntimeError(f"catalog fsck missing repair hint: {lookup}")
         print("GENERIC_DISTRIBUTED_REPO_FSCK_STALE_OK", flush=True)
+        return 0
+
+    if args.catalog_snapshot_large_response_smoke:
+        snapshot, raw_payload = repo.catalog_snapshot_with_payload(
+            args.catalog_snapshot_repo_node)
+        entries = snapshot.get("entries", [])
+        objects = snapshot.get("objects", [])
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError(f"catalog snapshot missing entries: {snapshot}")
+        if not isinstance(objects, list) or not objects:
+            raise RuntimeError(f"catalog snapshot missing object summaries: {snapshot}")
+        if not snapshot.get("repoStatus"):
+            raise RuntimeError(f"catalog snapshot missing repo status: {snapshot}")
+        if len(raw_payload) < 10 * 1024:
+            raise RuntimeError(
+                "catalog snapshot response did not exercise 10KB+ Core payload "
+                f"path: bytes={len(raw_payload)}"
+            )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_CATALOG_SNAPSHOT_LARGE_RESPONSE_OK "
+            f"repo={args.catalog_snapshot_repo_node} "
+            f"entries={len(entries)} objects={len(objects)} "
+            f"payloadBytes={len(raw_payload)}",
+            flush=True,
+        )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_CORE_10KB_RESPONSE_CALLBACK_OK "
+            f"payloadBytes={len(raw_payload)}",
+            flush=True,
+        )
         return 0
 
     capability = repo.wait_until_ready(15.0)
@@ -245,9 +279,27 @@ def main() -> int:
             )
     print("GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK", flush=True)
     if args.test_delete:
-        removed = repo.remove(manifests[0].object_name)
+        deleted_manifest = manifests[0]
+        removed = repo.remove(deleted_manifest.object_name)
         if not removed:
             raise RuntimeError("repo remove reported no deletion")
+        lookup_repo = (
+            deleted_manifest.replica_nodes[0]
+            if deleted_manifest.replica_nodes else
+            args.catalog_snapshot_repo_node
+        )
+        lookup = repo.catalog_lookup(deleted_manifest.object_name, lookup_repo)
+        states = {str(entry.get("state", "")) for entry in lookup.get("entries", [])}
+        if lookup.get("state") != "DELETED" and "DELETED" not in states:
+            raise RuntimeError(
+                "repo delete did not leave a catalog tombstone: "
+                f"repo={lookup_repo} lookup={lookup}"
+            )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_CATALOG_TOMBSTONE_OK "
+            f"repo={lookup_repo} object={deleted_manifest.object_name}",
+            flush=True,
+        )
 
     print("GENERIC_DISTRIBUTED_REPO_OK")
     print("first_capability:", capability)

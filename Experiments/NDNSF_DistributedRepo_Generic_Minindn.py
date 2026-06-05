@@ -291,6 +291,7 @@ def main() -> None:
             ]),
             "PYTHONUNBUFFERED": "1",
             "NDN_LOG": "ndn_service_framework.*=INFO",
+            "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
         }
         env.pop("NDN_CLIENT_TRANSPORT", None)
 
@@ -381,7 +382,7 @@ def main() -> None:
             ndn.net["memphis"],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
-            " --trust-schema {} --ack-timeout-ms 8000".format(
+            " --trust-schema {} --ack-timeout-ms 8000 --test-delete".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
             envDict=node_env("memphis"),
             shell=True,
@@ -394,10 +395,50 @@ def main() -> None:
         print(text)
         if (client.returncode != 0 or
                 "GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK" not in text or
+                "GENERIC_DISTRIBUTED_REPO_CATALOG_TOMBSTONE_OK" not in text or
                 "GENERIC_DISTRIBUTED_REPO_OK" not in text):
             raise RuntimeError(
                 f"generic DistributedRepo failed rc={client.returncode}; "
                 f"log={client_log}")
+        snapshot_log = OUT / "client-catalog-snapshot.log"
+        out = snapshot_log.open("wb")
+        snapshot_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--catalog-snapshot-large-response-smoke "
+            "--catalog-snapshot-repo-node /example/repo/provider/repoA".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((snapshot_client, out, snapshot_log))
+        snapshot_client.wait(timeout=180)
+        snapshot_text = snapshot_log.read_text(errors="replace")
+        print(snapshot_text)
+        repo_a_text = (OUT / "repoA.log").read_text(errors="replace")
+        if (snapshot_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_CATALOG_SNAPSHOT_LARGE_RESPONSE_OK"
+                not in snapshot_text):
+            raise RuntimeError(
+                f"generic DistributedRepo catalog snapshot failed "
+                f"rc={snapshot_client.returncode}; log={snapshot_log}")
+        if "GENERIC_DISTRIBUTED_REPO_CORE_10KB_RESPONSE_CALLBACK_OK" not in snapshot_text:
+            raise RuntimeError(
+                "snapshot client did not receive a 10KB+ original response payload "
+                f"through the user callback; log={snapshot_log}")
+        if "LARGE_RESPONSE_REFERENCE_PUBLISHED" not in repo_a_text:
+            raise RuntimeError(
+                "repoA did not publish catalog snapshot through Core "
+                f"large-response reference; log={OUT / 'repoA.log'}")
+        if "LARGE_RESPONSE_REFERENCE_RESOLVED" not in snapshot_text:
+            raise RuntimeError(
+                "snapshot client did not resolve Core large-response reference; "
+                f"log={snapshot_log}")
+        print("GENERIC_DISTRIBUTED_REPO_CORE_LARGE_RESPONSE_REFERENCE_OK")
         for proc in (repoC_proc, catalogC_proc):
             proc.terminate()
         log("Waiting 35s for repoC catalog entries to become stale")

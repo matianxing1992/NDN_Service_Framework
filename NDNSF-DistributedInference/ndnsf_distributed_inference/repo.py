@@ -883,6 +883,8 @@ class RepoNodeApp:
 
     @staticmethod
     def _catalog_manifest_summary(manifest: RepoObjectManifest) -> dict:
+        # Catalog entries keep object/repo control-plane semantics here. Payload
+        # transport sizing is handled by NDNSF core large-response references.
         return {
             "objectName": manifest.object_name,
             "objectType": manifest.object_type,
@@ -1680,7 +1682,10 @@ class RepoNodeApp:
                 since_epoch = self._peer_catalog_epochs.get(peer, 0)
                 try:
                     delta = self._request_peer_catalog_delta(peer, since_epoch)
-                    self._merge_catalog_entries(delta.get("entries", []))
+                    source_status = delta.get("repoStatus", {})
+                    if source_status is not None and not isinstance(source_status, dict):
+                        source_status = {}
+                    self._merge_catalog_entries(delta.get("entries", []), source_status)
                     self._peer_catalog_epochs[peer] = int(
                         delta.get("catalogEpoch", since_epoch))
                 except Exception as exc:  # noqa: BLE001
@@ -2598,6 +2603,10 @@ class NetworkDistributedRepoClient:
         return decoded
 
     def catalog_snapshot(self, repo_node: str) -> dict:
+        decoded, _ = self.catalog_snapshot_with_payload(repo_node)
+        return decoded
+
+    def catalog_snapshot_with_payload(self, repo_node: str) -> tuple[dict, bytes]:
         response = self._request_specific_repo(
             repo_node=repo_node,
             payload=encode_repo_request("CATALOG_SNAPSHOT"),
@@ -2607,9 +2616,32 @@ class NetworkDistributedRepoClient:
         decoded = json.loads(response.payload.decode())
         if not isinstance(decoded, dict):
             raise ValueError("repo catalog snapshot response must be a JSON object")
-        return decoded
+        return decoded, bytes(response.payload)
 
-    def delete(self, object_name: str) -> bool:
+    def delete(
+        self,
+        object_name: str,
+        replica_nodes: Iterable[str] = (),
+    ) -> bool:
+        selected_replicas = [str(repo) for repo in replica_nodes if str(repo)]
+        if selected_replicas:
+            removed = False
+            payload = encode_repo_request("DELETE", objectName=object_name)
+            for repo_node in selected_replicas:
+                response = self._request_specific_repo(
+                    repo_node=repo_node,
+                    payload=payload,
+                    timeout_ms=max(self.timeout_ms, 120000),
+                    isolated_runtime=True,
+                )
+                try:
+                    obj = json.loads(response.payload.decode())
+                    removed = removed or str(obj.get("status", "")) == "deleted"
+                except Exception:
+                    removed = removed or response.payload.decode(
+                        errors="replace") == "deleted"
+            return removed
+
         def selector(candidates: list[AckCandidate]) -> list[str]:
             selected = []
             for candidate in candidates:
@@ -2949,21 +2981,16 @@ class DistributedRepo:
     def catalog_snapshot(self, repo_node: str) -> dict:
         return self._client.catalog_snapshot(repo_node)
 
+    def catalog_snapshot_with_payload(self, repo_node: str) -> tuple[dict, bytes]:
+        return self._client.catalog_snapshot_with_payload(repo_node)
+
     def remove(self, object_name: str) -> bool:
         canonical_name = self._publisher_object_name(object_name)
         manifest = self._known_manifests.get(canonical_name)
-        if manifest is None or not manifest.replica_nodes:
-            removed = self._client.delete(canonical_name)
-        else:
-            payload = encode_repo_request("DELETE", objectName=canonical_name)
-            removed = False
-            for repo_node in manifest.replica_nodes:
-                self._client._request_specific_repo(
-                    repo_node=repo_node,
-                    payload=payload,
-                    timeout_ms=self._client.timeout_ms,
-                )
-                removed = True
+        removed = self._client.delete(
+            canonical_name,
+            manifest.replica_nodes if manifest is not None else (),
+        )
         if removed:
             self._known_manifests.pop(canonical_name, None)
         return removed
