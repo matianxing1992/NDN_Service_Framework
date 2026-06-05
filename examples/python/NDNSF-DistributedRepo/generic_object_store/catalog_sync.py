@@ -5,11 +5,16 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import time
 
 from ndnsf import AckCandidate, ServiceUser
 from ndnsf_distributed_inference import APPDeployment
-from ndnsf_distributed_inference.repo import encode_repo_request
+from ndnsf_distributed_inference.repo import (
+    DistributedRepo,
+    NetworkDistributedRepoClient,
+    encode_repo_request,
+)
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
@@ -56,6 +61,80 @@ def request_repo(
     return decoded
 
 
+def config_auto_repair(config_path: str) -> bool:
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return False
+    try:
+        loaded = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    control = loaded.get("repo_control_plane", {})
+    if not isinstance(control, dict):
+        return False
+    repair = control.get("repair", {})
+    if not isinstance(repair, dict):
+        return False
+    return bool(repair.get("auto_execute", False))
+
+
+def maybe_repair(
+    user: ServiceUser,
+    repo_node: str,
+    *,
+    auto_repair: bool,
+    repair_repo: DistributedRepo | None,
+    executed_actions: set[tuple[str, str, str]],
+) -> None:
+    snapshot = request_repo(
+        user,
+        repo_node,
+        encode_repo_request("CATALOG_SNAPSHOT"),
+        timeout_ms=30000,
+    )
+    for obj in snapshot.get("objects", []):
+        if not isinstance(obj, dict):
+            continue
+        repair_plan = obj.get("repairPlan", {})
+        if not isinstance(repair_plan, dict) or not repair_plan.get("needed"):
+            continue
+        actions = repair_plan.get("actions", [])
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            if str(action.get("targetRepo", "")) != repo_node:
+                continue
+            key = (
+                str(action.get("objectName", "")),
+                str(action.get("sourceRepo", "")),
+                str(action.get("targetRepo", "")),
+            )
+            if key in executed_actions:
+                continue
+            if not auto_repair:
+                print(
+                    f"catalog_sync repair warning repo={repo_node} "
+                    f"object={key[0]} source={key[1]} target={key[2]}",
+                    flush=True,
+                )
+                continue
+            if repair_repo is None:
+                raise RuntimeError("auto repair requested without repair client")
+            result = repair_repo.catalog_repair(repo_node, action)
+            executed_actions.add(key)
+            print(
+                f"catalog_sync repaired repo={repo_node} "
+                f"object={result.get('objectName', key[0])} "
+                f"source={result.get('sourceRepo', key[1])}",
+                flush=True,
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=CONFIG_FILE)
@@ -64,6 +143,10 @@ def main() -> int:
     parser.add_argument("--repo-node", required=True)
     parser.add_argument("--peer-repo-node", action="append", default=[])
     parser.add_argument("--interval-s", type=float, default=10.0)
+    parser.add_argument("--auto-repair", dest="auto_repair",
+                        action="store_true", default=None)
+    parser.add_argument("--no-auto-repair", dest="auto_repair",
+                        action="store_false")
     args = parser.parse_args()
 
     deployment = APPDeployment.from_config(
@@ -80,11 +163,27 @@ def main() -> int:
     )
     peer_epochs: dict[str, int] = {}
     interval = max(0.5, args.interval_s)
+    auto_repair = (
+        config_auto_repair(args.config)
+        if args.auto_repair is None else bool(args.auto_repair)
+    )
+    executed_actions: set[tuple[str, str, str]] = set()
+    repair_repo = None
+    if auto_repair:
+        repair_repo = DistributedRepo(NetworkDistributedRepoClient(
+            user=user,
+            service_name=REPO_SERVICE,
+            upload_prefix=f"{args.repo_node}/NDNSF-DISTRIBUTED-REPO/UPLOAD",
+            ack_timeout_ms=1000,
+            timeout_ms=60000,
+        ))
     print(
-        f"catalog_sync ready repo={args.repo_node} peers={args.peer_repo_node}",
+        f"catalog_sync ready repo={args.repo_node} peers={args.peer_repo_node} "
+        f"autoRepair={auto_repair}",
         flush=True,
     )
     while True:
+        merged_any = False
         for peer in args.peer_repo_node:
             since = peer_epochs.get(peer, 0)
             try:
@@ -105,6 +204,7 @@ def main() -> int:
                 )
                 peer_epochs[peer] = int(delta.get("catalogEpoch", since))
                 if entries:
+                    merged_any = True
                     print(
                         f"catalog_sync merged repo={args.repo_node} "
                         f"peer={peer} entries={len(entries)}",
@@ -113,6 +213,20 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 print(
                     f"catalog_sync warning repo={args.repo_node} peer={peer}: {exc}",
+                    flush=True,
+                )
+        if merged_any:
+            try:
+                maybe_repair(
+                    user,
+                    args.repo_node,
+                    auto_repair=auto_repair,
+                    repair_repo=repair_repo,
+                    executed_actions=executed_actions,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"catalog_sync repair-check warning repo={args.repo_node}: {exc}",
                     flush=True,
                 )
         time.sleep(interval)

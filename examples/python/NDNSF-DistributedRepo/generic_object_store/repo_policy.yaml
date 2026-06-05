@@ -21,6 +21,12 @@ artifact_security:
   sandbox:
     kind: ""
 
+repo_control_plane:
+  repair:
+    # false: catalog sync only prints repair warnings.
+    # true: catalog sync may execute repair actions whose target is this repo.
+    auto_execute: false
+
 services:
   - name: /NDNSF/DistributedRepo
     model: /NDNSF/DistributedRepo

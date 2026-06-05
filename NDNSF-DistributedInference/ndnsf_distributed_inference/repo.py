@@ -1059,6 +1059,8 @@ class RepoNodeApp:
                     "objectName": object_name,
                     "objectSha256": available[0].get("objectSha256", ""),
                     "manifestSha256": available[0].get("manifestSha256", ""),
+                    "minReplicationFactor": min_required,
+                    "maxReplicationFactor": max_allowed,
                     "sourceRepo": source_repo,
                     "targetRepo": target_repo,
                     "reason": "under-replicated",
@@ -1580,12 +1582,19 @@ class RepoNodeApp:
                 self._store.put_manifest(manifest)
                 self._persist_packets(manifest, packets)
                 self._serve_packets(source_name, packets)
+                self._remember_catalog_change(manifest, "AVAILABLE")
+                with self._catalog_lock:
+                    catalog_entry = dict(
+                        self._global_catalog[manifest.object_name][self.repo_node]
+                    )
                 return ServiceResponse(True, json.dumps({
                     "status": "stored-packet-pull",
                     "repoNode": self.repo_node,
                     "objectName": manifest.object_name,
                     "segmentCount": len(packets),
                     "dataName": source_name,
+                    "manifest": manifest.to_dict(),
+                    "catalogEntry": catalog_entry,
                 }, sort_keys=True).encode())
             if operation == "STORE_MANIFEST":
                 manifest = RepoObjectManifest.from_dict(request["manifest"])
@@ -1694,6 +1703,11 @@ class RepoNodeApp:
                     "repoNode": self.repo_node,
                     "entryCount": len(entries),
                 }, sort_keys=True).encode())
+            if operation == "CATALOG_REPAIR":
+                raise ValueError(
+                    "provider-side CATALOG_REPAIR is disabled; use the "
+                    "client/sidecar repair orchestrator"
+                )
             if operation == "DELETE":
                 object_name = str(request["objectName"])
                 removed = self._delete_object(object_name)
@@ -2687,6 +2701,164 @@ class NetworkDistributedRepoClient:
             raise ValueError("repo catalog merge response must be a JSON object")
         return decoded
 
+    def catalog_repair(self, target_repo_node: str, action: dict) -> dict:
+        action = dict(action)
+        object_name = str(action.get("objectName", ""))
+        source_repo = str(action.get("sourceRepo", ""))
+        target_repo = str(action.get("targetRepo", target_repo_node))
+        if not object_name:
+            raise ValueError("catalog repair action missing objectName")
+        if not source_repo:
+            raise ValueError("catalog repair action missing sourceRepo")
+        if target_repo != target_repo_node:
+            raise ValueError(
+                f"catalog repair target mismatch: action={target_repo} "
+                f"request={target_repo_node}"
+            )
+        if source_repo == target_repo:
+            raise ValueError("catalog repair sourceRepo and targetRepo must differ")
+
+        prepared_response = self._request_specific_repo(
+            repo_node=source_repo,
+            payload=encode_repo_request("FETCH_PREPARE", objectName=object_name),
+            timeout_ms=max(self.timeout_ms, 60000),
+            isolated_runtime=True,
+        )
+        prepared = json.loads(prepared_response.payload.decode())
+        if not isinstance(prepared, dict):
+            raise ValueError("repo repair source response must be a JSON object")
+        source_manifest = RepoObjectManifest.from_dict(prepared["manifest"])
+        if source_manifest.object_name != object_name:
+            raise ValueError(
+                f"catalog repair source object mismatch: {source_manifest.object_name}"
+            )
+        expected_hash = str(action.get("objectSha256", ""))
+        if expected_hash and expected_hash != source_manifest.sha256:
+            raise ValueError(
+                f"catalog repair object hash mismatch: action={expected_hash} "
+                f"source={source_manifest.sha256}"
+            )
+
+        data_name = str(prepared["dataName"])
+        payload = fetch_segmented_object(
+            data_name,
+            timeout_ms=_pull_fetch_timeout_ms(source_manifest.segment_count),
+            interest_lifetime_ms=2000,
+            init_cwnd=8.0,
+        )
+        actual_hash = hashlib.sha256(payload).hexdigest()
+        if actual_hash != source_manifest.sha256:
+            raise ValueError(
+                f"catalog repair fetched object hash mismatch: "
+                f"manifest={source_manifest.sha256} actual={actual_hash}"
+            )
+        packets = fetch_segmented_data_packets(
+            data_name,
+            timeout_ms=_pull_fetch_timeout_ms(source_manifest.segment_count),
+            interest_lifetime_ms=2000,
+        )
+        if len(packets) != source_manifest.segment_count:
+            raise ValueError(
+                f"catalog repair source segment count mismatch: "
+                f"expected={source_manifest.segment_count} actual={len(packets)}"
+            )
+
+        repair_manifest = RepoObjectManifest(
+            object_name=source_manifest.object_name,
+            object_type=source_manifest.object_type,
+            sha256=source_manifest.sha256,
+            size=source_manifest.size,
+            segment_count=source_manifest.segment_count,
+            replication_factor=max(
+                int(action.get("maxReplicationFactor",
+                               source_manifest.replication_factor) or 1),
+                int(action.get("minReplicationFactor", 1) or 1),
+            ),
+            replica_nodes=(target_repo,),
+            replica_data_names=(data_name,),
+            segment_locations=({
+                "start": 0,
+                "end": max(0, source_manifest.segment_count - 1),
+                "dataName": data_name,
+                "repoNode": target_repo,
+                "hints": [target_repo],
+                "routeStrategy": "hint-first",
+                "repairSourceRepo": source_repo,
+            },),
+            policy_epoch=source_manifest.policy_epoch,
+        )
+        packet_manifest = json.dumps({
+            "objectName": object_name,
+            "dataName": data_name,
+            "packets": [
+                {
+                    "name": packet.name,
+                    "segment": packet.segment,
+                    "wireSha256": hashlib.sha256(packet.wire).hexdigest(),
+                }
+                for packet in packets
+            ],
+        }, sort_keys=True).encode()
+        packet_manifest_name = self._packet_manifest_name(target_repo, object_name)
+        manifest_producer = SegmentedObjectProducer(
+            packet_manifest_name,
+            packet_manifest,
+            signing_identity=self.user.user,
+            max_segment_size=6000,
+            freshness_ms=60000,
+        ).start()
+        try:
+            time.sleep(0.2)
+            response = self._request_specific_repo(
+                repo_node=target_repo,
+                payload=encode_repo_request(
+                    "STORE_PACKET_PULL",
+                    manifest=repair_manifest.to_dict(),
+                    sourceName=data_name,
+                    packetManifestName=manifest_producer.versioned_name,
+                    packetManifestSha256=hashlib.sha256(packet_manifest).hexdigest(),
+                ),
+                timeout_ms=max(
+                    self.timeout_ms,
+                    _pull_fetch_timeout_ms(repair_manifest.segment_count) + 30000,
+                ),
+                isolated_runtime=True,
+            )
+        finally:
+            try:
+                manifest_producer.stop()
+            except Exception:
+                pass
+
+        decoded = json.loads(response.payload.decode())
+        if not isinstance(decoded, dict):
+            raise ValueError("repo catalog repair response must be a JSON object")
+        catalog_entry = dict(decoded.get("catalogEntry", {}))
+        if catalog_entry:
+            catalog_entry["minReplicationFactor"] = int(
+                action.get("minReplicationFactor", 1) or 1
+            )
+            catalog_entry["maxReplicationFactor"] = int(
+                action.get(
+                    "maxReplicationFactor",
+                    repair_manifest.replication_factor,
+                ) or repair_manifest.replication_factor
+            )
+            catalog_entry["desiredReplicationFactor"] = catalog_entry[
+                "minReplicationFactor"
+            ]
+            catalog_entry["repairSourceRepo"] = source_repo
+        return {
+            "status": "repaired",
+            "repoNode": target_repo,
+            "objectName": object_name,
+            "sourceRepo": source_repo,
+            "targetRepo": target_repo,
+            "segmentCount": repair_manifest.segment_count,
+            "catalogEntry": catalog_entry,
+            "storeResult": decoded,
+        }
+
     def catalog_snapshot(self, repo_node: str) -> dict:
         decoded, _ = self.catalog_snapshot_with_payload(repo_node)
         return decoded
@@ -3070,6 +3242,9 @@ class DistributedRepo:
         source_status: Optional[dict] = None,
     ) -> dict:
         return self._client.catalog_merge(repo_node, entries, source_status)
+
+    def catalog_repair(self, target_repo_node: str, action: dict) -> dict:
+        return self._client.catalog_repair(target_repo_node, action)
 
     def catalog_snapshot(self, repo_node: str) -> dict:
         return self._client.catalog_snapshot(repo_node)

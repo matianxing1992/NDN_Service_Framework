@@ -460,10 +460,11 @@ def main() -> None:
             stderr=subprocess.STDOUT,
         )
         processes.append((health_client, out, health_log))
-        health_client.wait(timeout=120)
+        health_client.wait(timeout=240)
         health_text = health_log.read_text(errors="replace")
         print(health_text)
         if (health_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK" not in health_text or
                 "GENERIC_DISTRIBUTED_REPO_CATALOG_HEALTH_OK" not in health_text):
             raise RuntimeError(
                 "generic DistributedRepo catalog health check failed "

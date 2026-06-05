@@ -204,6 +204,105 @@ def main() -> int:
             raise RuntimeError(f"catalog health repair source is wrong: {repair_lookup}")
         if first_action.get("targetRepo") == first_action.get("sourceRepo"):
             raise RuntimeError(f"catalog health repair target equals source: {repair_lookup}")
+
+        manual_payload = b"manual catalog repair object"
+        manual_suffix = str(int(time.time() * 1000))
+        manual_manifest = repo.put(
+            f"APP/CatalogHealth/ManualRepairObject/{manual_suffix}",
+            manual_payload,
+            object_type="catalog-health-manual-repair",
+            replication_factor=1,
+            replica_nodes=("/example/repo/provider/repoB",),
+            policy_epoch="/Policy/generic-repo/v1",
+        )
+        source_repo = manual_manifest.replica_nodes[0]
+        target_repo = "/example/repo/provider/repoA"
+        if target_repo == source_repo:
+            target_repo = "/example/repo/provider/repoB"
+        now_ms = int(time.time() * 1000)
+        manual_entry = {
+            "objectName": manual_manifest.object_name,
+            "objectSha256": manual_manifest.sha256,
+            "manifestSha256": hashlib.sha256(manual_manifest.to_bytes()).hexdigest(),
+            "objectType": manual_manifest.object_type,
+            "size": manual_manifest.size,
+            "segmentCount": manual_manifest.segment_count,
+            "sourceRepo": source_repo,
+            "repoMode": "persistent",
+            "state": "AVAILABLE",
+            "catalogEpoch": now_ms,
+            "lastSeenMs": now_ms,
+            "updatedAtMs": now_ms,
+            "minReplicationFactor": 2,
+            "maxReplicationFactor": 2,
+            "desiredReplicationFactor": 2,
+            "replicaNodes": [source_repo],
+            "manifest": {
+                **manual_manifest.to_dict(),
+                "minReplicationFactor": 2,
+                "maxReplicationFactor": 2,
+                "replicationFactor": 2,
+                "replicaNodes": [source_repo],
+            },
+        }
+        repo.catalog_merge(
+            args.catalog_health_repo_node,
+            [manual_entry],
+            {
+                "repoNode": source_repo,
+                "repoMode": "persistent",
+                "catalogEpoch": now_ms,
+                "acceptsBackupReplica": True,
+            },
+        )
+        repo.catalog_merge(
+            args.catalog_health_repo_node,
+            [],
+            {
+                "repoNode": target_repo,
+                "repoMode": "persistent",
+                "catalogEpoch": now_ms,
+                "acceptsBackupReplica": True,
+            },
+        )
+        manual_lookup = repo.catalog_lookup(
+            manual_manifest.object_name, args.catalog_health_repo_node)
+        manual_plan = manual_lookup.get("repairPlan", {})
+        manual_actions = manual_plan.get("actions", [])
+        if not isinstance(manual_actions, list) or not manual_actions:
+            raise RuntimeError(
+                f"manual catalog repair object missing repair actions: {manual_lookup}"
+            )
+        manual_action = dict(manual_actions[0])
+        if manual_action.get("sourceRepo") != source_repo:
+            raise RuntimeError(f"manual catalog repair source is wrong: {manual_lookup}")
+        if manual_action.get("targetRepo") != target_repo:
+            raise RuntimeError(f"manual catalog repair target is wrong: {manual_lookup}")
+        repair_result = repo.catalog_repair(target_repo, manual_action)
+        if str(repair_result.get("status", "")) != "repaired":
+            raise RuntimeError(f"manual catalog repair failed: {repair_result}")
+        repaired_entry = repair_result.get("catalogEntry", {})
+        if not isinstance(repaired_entry, dict):
+            raise RuntimeError(f"manual catalog repair missing catalog entry: {repair_result}")
+        repo.catalog_merge(
+            args.catalog_health_repo_node,
+            [repaired_entry],
+            {
+                "repoNode": target_repo,
+                "repoMode": "persistent",
+                "catalogEpoch": now_ms + 1,
+                "acceptsBackupReplica": True,
+            },
+        )
+        repaired_lookup = repo.catalog_lookup(
+            manual_manifest.object_name, args.catalog_health_repo_node)
+        if repaired_lookup.get("underReplicated"):
+            raise RuntimeError(f"manual catalog repair still under-replicated: {repaired_lookup}")
+        if int(repaired_lookup.get("availableReplicaCount", 0) or 0) < 2:
+            raise RuntimeError(f"manual catalog repair did not add a replica: {repaired_lookup}")
+        if repo.get(manual_manifest.object_name, manual_manifest) != manual_payload:
+            raise RuntimeError("manual catalog repair corrupted object payload")
+        print("GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK", flush=True)
         print("GENERIC_DISTRIBUTED_REPO_CATALOG_HEALTH_OK", flush=True)
         return 0
 

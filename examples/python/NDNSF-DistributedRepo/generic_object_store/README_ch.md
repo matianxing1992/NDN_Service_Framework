@@ -41,6 +41,45 @@ delta-based，而不是广播每个 segment 或完整目录的原因。
 之后，client 会等待 catalog 传播，并向每个 Persistent repo 请求
 `CATALOG_SNAPSHOT`。只有每个 snapshot 都包含所有已存对象时，smoke 才算通过。
 
+## Repair Plan 和手动 Repair Action
+
+Catalog lookup 和 snapshot response 会暴露每个 object 的控制面健康状态。当某个 object
+的 live replicas 少于配置的 `minReplicationFactor` 时，catalog 会把它标记为
+under-replicated，并附带一个 `repairPlan`。这个 plan 会列出保守的候选 action：
+
+- object name 和 object hash；
+- live source Persistent repo；
+- target Persistent repo；
+- 配置的 min/max replication factors。
+
+默认情况下，sidecar 不会执行这些 action。它只会在某个 repair action 的 target 是本地
+repo 时打印 warning。这样 catalog synchronization 在部署测试阶段更安全，也避免系统
+悄悄进行后台复制。
+
+如果希望某个 sidecar 执行指向自己的 repair actions，可以在配置中设置：
+
+```yaml
+repo_control_plane:
+  repair:
+    auto_execute: true
+```
+
+也可以启动 `catalog_sync.py` 时加入 `--auto-repair`。如果配置中启用了 repair，但本次
+运行希望强制只报警，可以使用 `--no-auto-repair`。
+
+Repair execution 由 client/sidecar path 编排，而不是让 provider 在处理请求时递归调用另一个
+repo provider。Sidecar 会先通过 `FETCH_PREPARE` 准备 source object，校验 object hash，
+发布 packet manifest，然后让 target repo 通过 `STORE_PACKET_PULL` 拉取并保存已签名的
+Data packets。Target repo 只保存 opaque signed Data packets 并更新 catalog entry；
+它不会解密或重新解释 object。
+
+MiniNDN health smoke 会用下面两个 marker 验证这条路径：
+
+```text
+GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
+GENERIC_DISTRIBUTED_REPO_CATALOG_HEALTH_OK
+```
+
 ## Namespace Design
 
 应用数据由发布者命名，而不是由 repo service 命名。Repo service name 保持共享和稳定：
@@ -106,6 +145,7 @@ sudo -E PYTHONPATH=pythonWrapper:NDNSF-DistributedInference \
 
 ```text
 GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_OK
 GENERIC_DISTRIBUTED_REPO_MININDN_OK
 ```

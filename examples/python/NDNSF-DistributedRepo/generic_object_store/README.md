@@ -64,6 +64,47 @@ packet objects, the client waits for catalog propagation and asks every
 Persistent repo for `CATALOG_SNAPSHOT`. The smoke succeeds only when every
 snapshot contains every stored object.
 
+## Repair Plan and Manual Repair Action
+
+Catalog lookup and snapshot responses expose control-plane health for each
+object. When an object has fewer live replicas than its configured
+`minReplicationFactor`, the catalog marks it as under-replicated and includes a
+`repairPlan`. The plan lists conservative candidate actions with:
+
+- the object name and object hash;
+- the live source Persistent repo;
+- the target Persistent repo;
+- the configured min/max replication factors.
+
+By default, the sidecar does not execute those actions. It only prints a warning
+when a repair action targets its local repo. This keeps catalog synchronization
+safe for deployment testing and avoids silent background copying.
+
+To allow a sidecar to execute repair actions that target its own repo, set:
+
+```yaml
+repo_control_plane:
+  repair:
+    auto_execute: true
+```
+
+or start `catalog_sync.py` with `--auto-repair`. Use `--no-auto-repair` to
+force warning-only behavior even when the config enables repair.
+
+Repair execution is orchestrated by the client/sidecar path rather than by a
+provider recursively calling another repo provider. The sidecar prepares the
+source object with `FETCH_PREPARE`, verifies the object hash, publishes a packet
+manifest, and asks the target repo to ingest the signed Data packets with
+`STORE_PACKET_PULL`. The target repo stores opaque signed Data packets and
+updates its catalog entry; it does not decrypt or reinterpret the object.
+
+The MiniNDN health smoke checks this path with:
+
+```text
+GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
+GENERIC_DISTRIBUTED_REPO_CATALOG_HEALTH_OK
+```
+
 ## Namespace Design
 
 Application data is named by the publisher, not by the repo service. The repo
@@ -141,6 +182,7 @@ Expected success marker:
 
 ```text
 GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_OK
 GENERIC_DISTRIBUTED_REPO_MININDN_OK
 ```
