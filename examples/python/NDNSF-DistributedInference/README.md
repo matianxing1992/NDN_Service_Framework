@@ -43,10 +43,14 @@ yolo_split/
   Stage 0 publishes an activation object; Stage 1 fetches it and finishes.
 
 yolo_2x2/
-  Four-role ONNX Runtime inference.
-  Stage 0 has two sequential shards and Stage 1 has two sequential shards.
-  The example uses repo-backed dynamic provisioning: providers can start
-  without local model/runtime files, then fetch the assigned role artifact.
+  Layout-driven ONNX Runtime inference over a real YOLO model. The historical
+  default is 2x2: Stage 0 has two sequential shards and Stage 1 has two
+  sequential shards. The same splitter now accepts custom layouts such as
+  1x3, 2x3, 3x2, and 3x3. It exports one ONNX chunk per role, writes
+  tensor-named dependencies from chunk IO, and verifies the local chunk
+  pipeline before writing the policy. The example uses repo-backed dynamic
+  provisioning: providers can start without local model/runtime files, then
+  fetch the assigned role artifact.
 
 pytorch_eager_2x2/
   Four-role fully connected ONNX inference generated from a PyTorch-defined
@@ -57,6 +61,8 @@ pytorch_eager_2x2/
 ```
 
 For a deployment-oriented ONNX path, use `yolo_split/` or `yolo_2x2/`.
+Use `yolo_2x2/split_model.py --layout 3x2` when the experiment needs a custom
+stage-by-shard YOLO ONNX layout.
 For a compact model-specific splitter that demonstrates horizontal splitting
 inside fully connected layers, use `pytorch_eager_2x2/`.
 

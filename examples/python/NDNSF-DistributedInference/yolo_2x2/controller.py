@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the NDNSF controller for the YOLO 2x2 + DistributedRepo example."""
+"""Run the NDNSF controller for the YOLO layout + DistributedRepo example."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from ndnsf_distributed_inference import (
     NetworkDistributedRepoClient,
     repo_artifact_reference,
 )
-from yolo_2x2_lib import REPO_SERVICE, ROLES, SERVICE, build_runner_script
+from yolo_2x2_lib import REPO_SERVICE, build_runner_script, yolo_inference_service
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml"
@@ -94,33 +94,34 @@ def _deploy_artifacts_to_repo(config: str, generated_policy_dir: str,
     print("YOLO_2X2_CONTROLLER_REPO_WAIT_READY", flush=True)
     repo.wait_until_ready(60.0)
     print("YOLO_2X2_CONTROLLER_REPO_READY", flush=True)
-    service = deployment.service_policy(SERVICE)
+    service = deployment.service_policy(yolo_inference_service(deployment))
     artifacts = {artifact.role: artifact for artifact in service.artifacts}
     runner_payload = build_runner_script()
     runner_hash = hashlib.sha256(runner_payload).hexdigest()[:16]
     manifests = {"roles": {}}
-    for role in ROLES:
+    layout = str(service.metadata.get("layout", "2x2"))
+    for role in service.roles:
         artifact = artifacts[role]
         model_payload = Path(artifact.path).read_bytes()
         model_object = repo.publisher_object_name(
-            "NDNSF-DI/ARTIFACT/AI/YOLO/2x2" + role + "/model"
+            "NDNSF-DI/ARTIFACT/AI/YOLO/" + layout + role + "/model"
         )
         runner_object = repo.publisher_object_name(
-            "NDNSF-DI/RUNTIME/AI/YOLO/2x2/runner/" + runner_hash
+            "NDNSF-DI/RUNTIME/AI/YOLO/" + layout + "/runner/" + runner_hash
         )
         model_manifest = repo.store_object(
             object_name=model_object,
             payload=model_payload,
             object_type=artifact.kind or "model",
             replication_factor=replication_factor,
-            policy_epoch="/Policy/yolo-2x2/v1",
+            policy_epoch="/Policy/yolo-" + layout + "/v1",
         )
         runner_manifest = repo.store_object(
             object_name=runner_object,
             payload=runner_payload,
             object_type="runtime-script",
             replication_factor=replication_factor,
-            policy_epoch="/Policy/yolo-2x2/v1",
+            policy_epoch="/Policy/yolo-" + layout + "/v1",
         )
         manifests["roles"][role] = {
             "model": repo_artifact_reference(

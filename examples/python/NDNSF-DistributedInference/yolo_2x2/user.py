@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""User for the real YOLO 2x2 distributed inference example."""
+"""User for the real YOLO layout distributed inference example."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 from yolo_2x2_lib import (
     DEFAULT_MODEL,
     DEFAULT_INPUT_SIZE,
-    SERVICE,
     decode_yolo_output,
     decode_image,
     full_forward,
@@ -18,6 +17,7 @@ from yolo_2x2_lib import (
     parse_args_with_common,
     run_local_onnx_pipeline,
     runtime_spec,
+    yolo_inference_service,
 )
 
 
@@ -54,10 +54,13 @@ def main() -> int:
             adaptive_admission=False,
             async_workers=max(1, args.async_requests),
         )
+        service = yolo_inference_service(client.deployment)
+        service_policy = client.deployment.service_policy(service)
+        layout = str((service_policy.metadata or {}).get("layout", "2x2"))
         image = make_input(args.input_size)
-        image_payload = client.encode_input(SERVICE, image)
+        image_payload = client.encode_input(service, image)
         payload = client.publish_large_payload_reference(
-            SERVICE,
+            service,
             image_payload,
             object_label="inference-input-image",
             object_type="application/x-ndnsf-di-input+npz",
@@ -66,11 +69,15 @@ def main() -> int:
         inference_image = decode_image(image_payload)
         artifact_paths = {
             artifact.role: artifact.path
-            for artifact in client.deployment.service_policy(SERVICE).artifacts
+            for artifact in service_policy.artifacts
             if getattr(artifact, "path", "")
         }
         if artifact_paths and all(Path(path).exists() for path in artifact_paths.values()):
-            expected = run_local_onnx_pipeline(artifact_paths, inference_image)
+            expected = run_local_onnx_pipeline(
+                artifact_paths,
+                inference_image,
+                service_policy.roles,
+            )
         else:
             expected = full_forward(args.model, inference_image)
         request_count = args.sequential_requests or args.async_requests
@@ -82,7 +89,7 @@ def main() -> int:
         if args.sequential_requests:
             futures = [
                 _ImmediateResult(client.distributed_inference(
-                    SERVICE,
+                    service,
                     payload,
                     ack_timeout_ms=args.ack_timeout_ms,
                     timeout_ms=args.timeout_ms,
@@ -95,7 +102,7 @@ def main() -> int:
         else:
             futures = [
                 client.async_distributed_inference(
-                    SERVICE,
+                    service,
                     payload,
                     ack_timeout_ms=args.ack_timeout_ms,
                     timeout_ms=args.timeout_ms,
@@ -109,7 +116,12 @@ def main() -> int:
         for index, future in enumerate(futures):
             result = future.result(timeout=args.timeout_ms / 1000 + 10)
             if not result.status:
-                print(f"YOLO_2X2_RESULT index={index} status=false error={result.error}")
+                print(
+                    f"YOLO_LAYOUT_RESULT layout={layout} index={index} "
+                    f"status=false error={result.error}"
+                )
+                if layout == "2x2":
+                    print(f"YOLO_2X2_RESULT index={index} status=false error={result.error}")
                 ok = False
                 continue
             _, actual = decode_yolo_output(result.payload)
@@ -119,11 +131,19 @@ def main() -> int:
             item_ok = max_diff < 1e-6
             ok = ok and item_ok
             print(
-                "YOLO_2X2_RESULT "
+                "YOLO_LAYOUT_RESULT "
+                f"layout={layout} "
                 f"index={index} status=true shape={actual.shape} "
                 f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
                 f"ok={str(item_ok).lower()}"
             )
+            if layout == "2x2":
+                print(
+                    "YOLO_2X2_RESULT "
+                    f"index={index} status=true shape={actual.shape} "
+                    f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
+                    f"ok={str(item_ok).lower()}"
+                )
         client.shutdown()
         return 0 if ok else 3
 

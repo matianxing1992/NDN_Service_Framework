@@ -127,6 +127,7 @@ class SplitServiceSpec:
             ],
             "input": dict(self.input_schema),
             "output": dict(self.output_schema),
+            "metadata": dict(self.metadata),
         }
 
     def artifact_for_role(self, role: str) -> SplitArtifact:

@@ -39,6 +39,7 @@ class ServicePolicy:
     artifacts: tuple[ArtifactPolicy, ...] = ()
     input_schema: dict[str, Any] = None
     output_schema: dict[str, Any] = None
+    metadata: dict[str, Any] = None
 
 
 @dataclass(frozen=True)
@@ -283,6 +284,7 @@ def parse_services(config: dict[str, Any]) -> tuple[ServicePolicy, ...]:
             artifacts=_parse_artifacts(item.get("artifacts")),
             input_schema=dict(item.get("input", item.get("input_schema", {})) or {}),
             output_schema=dict(item.get("output", item.get("output_schema", {})) or {}),
+            metadata=dict(item.get("metadata", {}) or {}),
         ))
     if not services:
         raise ValueError("policy config must define at least one service")

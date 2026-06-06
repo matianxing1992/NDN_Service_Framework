@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""MiniNDN smoke test for YOLO-style NDNSF-DI 2x2 split inference."""
+"""MiniNDN smoke test for YOLO-style NDNSF-DI layout split inference."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import signal
@@ -171,6 +172,19 @@ def initialize_di_keychains(ndn, output_dir: Path) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--layout", default="2x2",
+                        help="YOLO stage-by-shard layout, e.g. 1x3, 2x3, 3x2, 3x3")
+    args_cli = parser.parse_args()
+    layout = args_cli.layout.strip().lower().replace("*", "x")
+    sys.argv = [sys.argv[0]]
+    safe_layout = layout.replace("/", "-")
+    global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST
+    OUT = REPO / f"results/yolo_{safe_layout}_minindn_quick"
+    CONFIG = OUT / "yolo_policy.yaml"
+    GEN_POLICY = f"/tmp/ndnsf-di-yolo-{safe_layout}-policy"
+    REPO_MANIFEST = OUT / "repo-manifests.json"
+
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
     py_path = ":".join([
@@ -183,6 +197,8 @@ def main() -> None:
         "python3",
         str(PY_DIR / "split_model.py"),
         "--auto-split",
+        "--layout",
+        layout,
         "--out-dir",
         str(OUT / "model"),
         "--policy",
@@ -285,7 +301,7 @@ def main() -> None:
                 "--provider-id", "D",
                 "--repo-node", "/NDNSF-DistributeInference/example/provider/D",
                 "--failure-domain", "repo-rack",
-                "--storage-dir", "/tmp/yolo-2x2-repo-store",
+                "--storage-dir", f"/tmp/yolo-{safe_layout}-repo-store",
                 "--handler-threads", "1",
                 "--ack-threads", "1",
             ]),
@@ -312,10 +328,10 @@ def main() -> None:
         validate_repo_manifest_references(REPO_MANIFEST)
 
         providers = [
-            ("ucla", "provider-s00", ["--role", "/Stage/0/Shard/0"]),
-            ("wustl", "provider-s01", ["--provider-id", "A", "--role", "/Stage/0/Shard/1"]),
-            ("uiuc", "provider-s10", ["--provider-id", "B", "--role", "/Stage/1/Shard/0"]),
-            ("umich", "provider-s11", ["--provider-id", "C", "--role", "/Stage/1/Shard/1"]),
+            ("ucla", "provider-A", ["--provider-id", "", "--roles", "all"]),
+            ("wustl", "provider-B", ["--provider-id", "A", "--roles", "all"]),
+            ("uiuc", "provider-C", ["--provider-id", "B", "--roles", "all"]),
+            ("umich", "provider-D", ["--provider-id", "C", "--roles", "all"]),
         ]
         for node_name, name, argv in providers:
             _, lp = start(ndn.net[node_name], name,
@@ -347,8 +363,9 @@ def main() -> None:
         user_proc.wait(timeout=90)
         cold_text = user_log.read_text(errors="replace")
         print(cold_text)
-        if "YOLO_2X2_RESULT" not in cold_text or "ok=true" not in cold_text:
-            raise RuntimeError(f"YOLO 2x2 cold provisioning failed rc={user_proc.returncode}; log={user_log}")
+        if "YOLO_LAYOUT_RESULT" not in cold_text or "ok=true" not in cold_text:
+            raise RuntimeError(
+                f"YOLO {layout} cold provisioning failed rc={user_proc.returncode}; log={user_log}")
 
         warm_proc, warm_log = start(
             ndn.net["memphis"],
@@ -368,19 +385,24 @@ def main() -> None:
         print(warm_text)
         provider_text = "\n".join(
             (OUT / f"{name}.log").read_text(errors="replace")
-            for name in ("provider-s00", "provider-s01", "provider-s10", "provider-s11")
+            for _, name, _ in providers
         )
         success = (
-            "YOLO_2X2_RESULT" in warm_text and
+            "YOLO_LAYOUT_RESULT" in warm_text and
             "ok=true" in warm_text and
             "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS" in provider_text and
             "NDNSF_EXECUTION_ARTIFACT_CACHE_HIT" in provider_text
         )
         if not success:
             raise RuntimeError(
-                f"YOLO 2x2 dynamic provisioning/cache validation failed; "
+                f"YOLO {layout} dynamic provisioning/cache validation failed; "
                 f"cold={user_log} warm={warm_log}")
-        print(f"YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK cold={user_log} warm={warm_log}")
+        print(
+            f"YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK "
+            f"layout={layout} cold={user_log} warm={warm_log}"
+        )
+        if layout == "2x2":
+            print(f"YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK cold={user_log} warm={warm_log}")
     finally:
         stop(procs)
         ndn.stop()

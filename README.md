@@ -28,7 +28,7 @@ process composition, and a common large-data reference abstraction. The UAV and
 DistributedInference applications are application layers that validate and
 stress these framework mechanisms.
 
-1. Prerequisites
+## 1. Prerequisites
 
 To keep the stack version-consistent, use the following repositories:
 
@@ -45,7 +45,7 @@ are already installed. If a dependency is missing, it clones the corresponding
 repository from the list above, builds it, and installs it before building
 NDNSF.
 
-2. Installation
+## 2. Installation
 
 The recommended installer is the top-level stack script:
 
@@ -107,7 +107,7 @@ from freshly cloned repositories:
 sudo ./install_ndnsf_stack.sh --force-dependencies
 ```
 
-OpenABE and OpenSSL note:
+### OpenABE and OpenSSL note
 
 NAC-ABE depends on OpenABE. The upstream OpenABE code is sensitive to OpenSSL
 versions and is known to work most reliably with OpenSSL 1.1.x. Ubuntu 20.04
@@ -167,9 +167,9 @@ python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
 ```
 
-3. How-to
+## 3. How-to
 
-3.1 Generic dynamic API, preferred for new applications
+### 3.1 Generic dynamic API, preferred for new applications
 
 New applications should use the framework-core generic dynamic API directly.
 
@@ -449,7 +449,7 @@ The HELLO examples expose the same setting:
 ./build/examples/App_User --handler-threads 1
 ```
 
-3.2 Unified serviceName rule
+### 3.2 Unified serviceName rule
 
 Use one unified `serviceName` for the complete endpoint path:
 
@@ -461,7 +461,7 @@ Use one unified `serviceName` for the complete endpoint path:
 
 Do not design new code around separate `ServiceName + FunctionName` paths. The split form remains only for legacy compatibility.
 
-3.3 V2 naming note
+### 3.3 V2 naming note
 
 Generic runtime paths use V2 naming helpers with one unified variable-length
 `serviceName`. The service name is parsed by position: the trailing `requestId`
@@ -494,7 +494,7 @@ Selection:
 /<requester>/NDNSF/SELECTION/<provider-uri-component>/<serviceName...>/<requestId>
 ```
 
-3.4 Permission model
+### 3.4 Permission model
 
 Permissions are fetched directly from `ServiceController`.
 
@@ -513,7 +513,7 @@ This PermissionResponse encryption is not NAC-ABE.
 
 NAC-ABE remains the runtime encryption mechanism for NDNSF service request and response messages, future selection payloads, content keys, IMS, and SVS-backed runtime publication.
 
-3.5 Certificate publishing in distributed deployments
+### 3.5 Certificate publishing in distributed deployments
 
 NDN certificates are named Data packets. In a distributed deployment, user,
 provider, controller, and AA certificates must be reachable by their certificate
@@ -586,7 +586,7 @@ Do not export/import a safebag in this flow; the node private key never leaves
 the node. Use safebags only when a deployment intentionally generates keys on
 one machine and transfers private keys to another machine.
 
-3.6 Example:
+### 3.6 Examples
 
 `/examples/generic-dynamic-user-provider.cpp` is the minimal generic dynamic example. It uses `ServiceProvider::addHandler<RequestT, ResponseT>` and `ServiceUser::RequestService<RequestT, ResponseT>` directly, without generated service users, generated service providers, generated services, or stubs. It uses local/mock request publication so it can demonstrate the request/response flow without requiring real NFD/network.
 
@@ -609,7 +609,7 @@ Build it with:
 
 See `/examples/wscript` for how to compile the examples.
 
-3.7 How to run examples:
+### 3.7 How to run examples
 
 Before running examples on multiple machines, install identity certificates as
 described in the manual certificate bootstrap section above. Local regression
@@ -635,7 +635,7 @@ The current HELLO examples are exercised by the regression scripts below.
 
 `run_token_handshake_negative_regression.sh` verifies rejection of ACKs and responses with wrong `UserToken` values, selection messages with wrong `ProviderToken` values, and replayed ProviderTokens.
 
-3.8 Python wrapper and higher-level application packages
+### 3.8 Python wrapper and higher-level application packages
 
 The Python wrapper is a binding to the current C++ runtime, not a separate
 framework implementation. It supports ordinary service handlers,
@@ -662,7 +662,7 @@ remote/Targeted services. Same-process helpers may use
 `ServiceContainer::localRegistry()` through `container.addLocalService(...)`,
 but local helpers are not externally selectable services.
 
-3.9 Security-mechanism alignment for these regressions:
+### 3.9 Security-mechanism alignment for these regressions
 
 ```text
 Permission distribution:
@@ -692,7 +692,7 @@ Authorization:
   Service authorization is enforced by NAC-ABE attributes, provider permission checks, and token handshake validation.
 ```
 
-3.10 How to log to file:
+### 3.10 How to log to file
 For example, assuming your program is `./app` and you want to log everything, first set the log level in the command line using:
 
 ```bash
@@ -708,7 +708,7 @@ Then run:
 The output will be saved in the file `filename.log` in the current directory.
 If you're using MiniNDN, the output will be stored under `/tmp/minindn/<nodeName>`.
 
-3.11 MiniNDN latency reproduction profile
+### 3.11 MiniNDN latency reproduction profile
 
 The low-latency HELLO benchmark uses the dynamic API with one Memphis user, one
 UCLA provider, the CSU controller, no adaptive admission control, SVS maximum

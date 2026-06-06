@@ -81,8 +81,13 @@ result = client.distributed_inference("/AI/YOLO/SplitInference", image_tensor)
 
 ### 3. 创建或审查 Policy
 
-Policy 可以手写，可以由 model-specific splitter 生成，也可以由未来的 ONNX graph
+Policy 可以手写，可以由 model-specific splitter 生成，也可以由 ONNX-assisted
 planner 生成。当前 YOLO 示例已经带有可运行的 policy 文件和 splitter 脚本。
+YOLO layout splitter 可以把真实 Ultralytics YOLO 模型导出成用户指定的
+stage-by-shard layout，例如 `1x3`、`2x3`、`3x2` 或 `3x3`；生成出的 policy
+部署后仍由同一个 dependency executor 驱动执行。这是 YOLO ONNX 路径上的自定义
+layout 支持，还不是对所有 ONNX topology 和所有 partitioning strategy 的完全通用
+planner。
 
 两阶段 YOLO split：
 
@@ -95,6 +100,19 @@ python3 examples/python/NDNSF-DistributedInference/yolo_split/split_model.py
 ```bash
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py
 ```
+
+自定义 YOLO ONNX layout：
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 3x2 \
+  --out-dir /tmp/ndnsf-yolo-3x2 \
+  --policy /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
+```
+
+Splitter 会为每个生成 role 导出一个 ONNX chunk，根据 ONNX chunk 的实际
+input/output tensor 写入 chunk-level dependencies，并在成功输出前运行一次本地
+chunk pipeline 验证。
 
 部署前先审查 policy：
 
@@ -1049,13 +1067,16 @@ sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case auto-spli
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case onnx-executor
 ```
 
-## YOLO 2x2 Split API Example
+## YOLO Layout Split API Example
 
-`yolo_2x2` 示例展示同一套 APP API 如何表达更通用的 layout：两个 pipeline stages，每个 stage 内有两个顺序 shards。它现在包含真正的分布式推理路径，而不只是 repository smoke test：
+`yolo_2x2` 示例展示同一套 APP API 如何表达更通用的 layout。历史默认是
+2x2：两个 pipeline stages，每个 stage 内有两个顺序 shards。现在同一个
+splitter 也接受 `1x3`、`2x3`、`3x2`、`3x3` 等自定义 layout。它包含真正的
+分布式推理路径，而不只是 repository smoke test：
 
-`split_model.py` 会导出四个 ONNX chunks，并用 ONNX chunk 的实际 input/output
-名字生成 `yolo_policy.yaml` 中的 dependency edges。当前小型 YOLO split
-的跨 role tensor set 是：
+`split_model.py` 会为每个 role 导出一个 ONNX chunk，并用 ONNX chunk 的实际
+input/output 名字生成 `yolo_policy.yaml` 中的 dependency edges。以默认 2x2
+为例，当前小型 YOLO split 的跨 role tensor set 是：
 
 ```text
 /Stage/0/Shard/0 -> /Stage/0/Shard/1: x
@@ -1067,7 +1088,7 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case onnx-executor
 执行自己的 ONNX chunk 前先 fetch 这个对象。这是从真实模型 tensor boundary
 派生出的 chunk-level collaboration graph；YOLO 内部复杂 operator graph 仍然
 在每个 chunk 内本地执行。
-生成的 `*-2x2-onnx-graph-summary.json` 也会记录 full-model candidate split
+生成的 `*-<layout>-onnx-graph-summary.json` 也会记录 full-model candidate split
 points，因此后续 planner 可以比较不同 cut positions，而不需要改变
 NDNSF-DI policy interface。
 
@@ -1090,10 +1111,12 @@ Provider materialize artifact 时会优先读取这个 reference，然后再 fal
 对于 ONNX chunks，推荐的 provider-side 路径是
 `execute_onnx_dependency_chunk(...)`。它会使用当前 role 的 dependency view
 自动收集所有 input-edge tensor bundles，按 tensor name 合并，运行被分配的 ONNX
-chunk，然后为每条声明的 output edge 发布一个 tensor bundle。YOLO 2x2 provider
-现在已经使用这个 dependency-driven executor：YOLO-specific 代码只负责准备第一块的
-image input，以及编码最后的 prediction response。这样 runtime path 就不再把一条
-pipeline chain 写死在 provider 中，而是更适合未来 fan-in/fan-out ONNX DAG。
+chunk，然后为每条声明的 output edge 发布一个 tensor bundle。YOLO provider
+现在已经使用这个 dependency-driven executor：它根据 role-local dependency view
+判断当前 role 是首块、中间块还是终块。YOLO-specific 代码只负责准备第一块的
+image input，以及编码最后的 prediction response。这样 runtime path 不再把 2x2
+pipeline chain 写死在 provider 中，而是可以由 policy 驱动执行 `1x3`、`2x3`、
+`3x2`、`3x3` 等自定义 layout。
 
 executor 还有一个不依赖 MiniNDN 的小型 smoke test。它会构造一个 toy ONNX DAG，
 包含一条 fan-out edge 和一个 fan-in join：
@@ -1113,27 +1136,25 @@ ONNX_EXECUTOR_FANIN_FANOUT_OK
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --model yolo26n.pt \
   --input-size 32 \
+  --layout 3x2 \
   --auto-split \
-  --out-dir /tmp/ndnsf-yolo-2x2 \
-  --policy /tmp/ndnsf-yolo-2x2/yolo_policy.yaml
+  --out-dir /tmp/ndnsf-yolo-3x2 \
+  --policy /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-2x2/yolo_policy.yaml --role /Stage/0/Shard/0
+  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id A --roles all
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-2x2/yolo_policy.yaml --provider-id A \
-  --role /Stage/0/Shard/1
+  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id B --roles all
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-2x2/yolo_policy.yaml --provider-id B \
-  --role /Stage/1/Shard/0
+  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id C --roles all
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/provider.py \
-  --config /tmp/ndnsf-yolo-2x2/yolo_policy.yaml --provider-id C \
-  --role /Stage/1/Shard/1
+  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml --provider-id D --roles all
 python3 examples/python/NDNSF-DistributedInference/yolo_2x2/user.py \
-  --config /tmp/ndnsf-yolo-2x2/yolo_policy.yaml
+  --config /tmp/ndnsf-yolo-3x2/yolo_policy.yaml
 ```
 
-使用 `--auto-split` 时，2x2 splitter 会用 ONNX planner recommendation
-选择 pipeline stage boundary，然后把每个 stage 再切成两个顺序 chunks。不加这个
-参数时，示例保留原来的 YOLO-specific split 作为稳定 fallback。
+使用 `--auto-split` 时，splitter 会用 ONNX planner recommendation
+选择 pipeline boundary hint；layout 参数决定最终导出的 chunk 数量。不加这个
+参数时，示例保留原来的 YOLO-specific split hint 作为稳定 fallback。
 
 MiniNDN 中运行：
 

@@ -1,13 +1,17 @@
-"""Real YOLO 2x2 distributed-inference example helpers.
+"""Real YOLO layout distributed-inference example helpers.
 
-The example uses a real Ultralytics YOLO nano model and exports four ONNX
-chunks. The 2x2 layout means two pipeline stages and two sequential shards
-inside each stage:
+The example uses a real Ultralytics YOLO nano model and exports ONNX chunks
+according to a requested stage-by-shard layout. The historical default is
+2x2, meaning two pipeline stages and two sequential shards inside each stage:
 
 * Stage0/Shard0 runs the first quarter and publishes an internal activation.
 * Stage0/Shard1 fetches it, continues Stage0, and publishes a stage boundary.
 * Stage1/Shard0 fetches the stage-boundary activation and continues Stage1.
 * Stage1/Shard1 fetches the Stage1 internal activation and returns predictions.
+
+Other layouts such as 1x3, 2x3, 3x2, or 3x3 use the same role naming pattern
+and dependency-driven executor. The splitter keeps YOLO-specific module export
+logic here, while the generated policy/dependency graph remains generic.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import numpy as np
 import onnxruntime as ort
@@ -68,6 +72,7 @@ ROLE_S0_1 = "/Stage/0/Shard/1"
 ROLE_S1_0 = "/Stage/1/Shard/0"
 ROLE_S1_1 = "/Stage/1/Shard/1"
 ROLES = [ROLE_S0_0, ROLE_S0_1, ROLE_S1_0, ROLE_S1_1]
+DEFAULT_LAYOUT = "2x2"
 
 DEFAULT_MODEL = "yolo26n.pt"
 DEFAULT_INPUT_SIZE = 32
@@ -200,7 +205,87 @@ def _saved_indices(model, end: int) -> list[int]:
     return [int(index) for index in model.save if int(index) < end]
 
 
-def _chunk_splits(model, split: int) -> dict[str, tuple[int, int, bool]]:
+def normalize_layout(layout: str | None = None) -> str:
+    text = (layout or DEFAULT_LAYOUT).strip().lower().replace("*", "x")
+    match = re.fullmatch(r"(\d+)x(\d+)", text)
+    if not match:
+        raise ValueError(
+            f"invalid YOLO split layout {layout!r}; expected ROWSxCOLS, "
+            "for example 1x3, 2x3, 3x2, or 3x3"
+        )
+    stages = int(match.group(1))
+    shards = int(match.group(2))
+    if stages <= 0 or shards <= 0:
+        raise ValueError(f"layout dimensions must be positive: {layout!r}")
+    return f"{stages}x{shards}"
+
+
+def parse_layout(layout: str | None = None) -> tuple[int, int]:
+    normalized = normalize_layout(layout)
+    left, right = normalized.split("x", 1)
+    return int(left), int(right)
+
+
+def roles_for_layout(layout: str | None = None) -> list[str]:
+    stages, shards = parse_layout(layout)
+    return [
+        f"/Stage/{stage}/Shard/{shard}"
+        for stage in range(stages)
+        for shard in range(shards)
+    ]
+
+
+def service_name_for_layout(layout: str | None = None) -> str:
+    normalized = normalize_layout(layout)
+    if normalized == DEFAULT_LAYOUT:
+        return SERVICE
+    return f"/AI/YOLO/{normalized}Inference"
+
+
+def yolo_inference_service(deployment) -> str:
+    services = getattr(deployment, "services", None)
+    if services is None and hasattr(deployment, "deployment"):
+        services = getattr(deployment.deployment, "services", None)
+    for service in services or ():
+        name = getattr(service, "name", "")
+        if name and str(name) != REPO_SERVICE:
+            return str(name)
+    return SERVICE
+
+
+def layout_from_role_count(role_count: int) -> str:
+    if int(role_count) == len(ROLES):
+        return DEFAULT_LAYOUT
+    return f"1x{int(role_count)}"
+
+
+def is_first_role(role: str, roles: Sequence[str]) -> bool:
+    return bool(roles) and str(role) == str(roles[0])
+
+
+def is_final_role(role: str, roles: Sequence[str]) -> bool:
+    return bool(roles) and str(role) == str(roles[-1])
+
+
+def _even_module_boundaries(module_count: int, chunk_count: int) -> list[int]:
+    if chunk_count < 1:
+        raise ValueError("chunk_count must be positive")
+    if chunk_count > module_count:
+        raise ValueError(
+            f"layout requires {chunk_count} chunks but YOLO model only has "
+            f"{module_count} modules"
+        )
+    boundaries = [0]
+    for index in range(1, chunk_count):
+        raw = round(index * module_count / chunk_count)
+        lower = boundaries[-1] + 1
+        upper = module_count - (chunk_count - index)
+        boundaries.append(max(lower, min(upper, raw)))
+    boundaries.append(module_count)
+    return boundaries
+
+
+def _legacy_2x2_chunk_splits(model, split: int) -> dict[str, tuple[int, int, bool]]:
     module_count = len(model.model)
     stage0_mid = max(1, split // 2)
     stage1_mid = split + max(1, (module_count - split) // 2)
@@ -212,11 +297,24 @@ def _chunk_splits(model, split: int) -> dict[str, tuple[int, int, bool]]:
     }
 
 
+def _chunk_splits(model, *, layout: str, split: int) -> dict[str, tuple[int, int, bool]]:
+    normalized = normalize_layout(layout)
+    if normalized == DEFAULT_LAYOUT:
+        return _legacy_2x2_chunk_splits(model, split)
+    roles = roles_for_layout(normalized)
+    boundaries = _even_module_boundaries(len(model.model), len(roles))
+    return {
+        role: (boundaries[index], boundaries[index + 1], index == len(roles) - 1)
+        for index, role in enumerate(roles)
+    }
+
+
 def split_model(output_dir: str | Path,
                 model_name: str = DEFAULT_MODEL,
                 input_size: int = DEFAULT_INPUT_SIZE,
                 provider_profiles: list[ProviderProfile] | None = None,
-                auto_split: bool = False) -> dict:
+                auto_split: bool = False,
+                layout: str = DEFAULT_LAYOUT) -> dict:
     first_tensor, _, load_yolo_model, split_index = _load_yolo_split_helpers()
     import torch
     import torch.nn as nn
@@ -253,6 +351,8 @@ def split_model(output_dir: str | Path,
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    layout = normalize_layout(layout)
+    roles = roles_for_layout(layout)
     loaded_name, model = load_yolo_model(model_name)
     stem = Path(loaded_name).stem
     full_model_path = output / f"{stem}-full-{input_size}.onnx"
@@ -303,11 +403,11 @@ def split_model(output_dir: str | Path,
         }
     else:
         split = fallback_split
-    chunks = _chunk_splits(model, split)
+    chunks = _chunk_splits(model, layout=layout, split=split)
 
     current_values = (x,)
     current_saved = []
-    for role in ROLES:
+    for role in roles:
         start, end, final = chunks[role]
         input_saved = list(current_saved)
         output_saved = [] if final else _saved_indices(model, end)
@@ -336,6 +436,7 @@ def split_model(output_dir: str | Path,
         chunk_metadata[role] = {
             "source_model": loaded_name,
             "input_size": input_size,
+            "layout": layout,
             "split": split,
             "split_source": split_source,
             "start": start,
@@ -348,8 +449,8 @@ def split_model(output_dir: str | Path,
         current_values = next_values
         current_saved = output_saved
 
-    dependencies, chunk_graph = _build_yolo_onnx_dependencies(paths)
-    graph_summary = output / f"{stem}-2x2-onnx-graph-summary.json"
+    dependencies, chunk_graph = _build_yolo_onnx_dependencies(paths, roles=roles)
+    graph_summary = output / f"{stem}-{layout}-onnx-graph-summary.json"
     write_onnx_graph_summary(
         graph_summary,
         full_model_summary=full_summary,
@@ -363,6 +464,9 @@ def split_model(output_dir: str | Path,
         "full_model_path": full_model_path,
         "model": loaded_name,
         "input_size": input_size,
+        "layout": layout,
+        "service": service_name_for_layout(layout),
+        "roles": roles,
         "split": split,
         "split_source": split_source,
         **planner_selected,
@@ -398,27 +502,37 @@ def _module_split_from_cut(node_name: str, *, module_count: int, fallback: int) 
     return max(2, min(module_count - 2, module_index + 1))
 
 
-def _build_yolo_onnx_dependencies(paths: dict[str, Path]) -> tuple[list[InferenceDependency], dict]:
+def _role_indices(role: str) -> tuple[int, int]:
+    match = re.fullmatch(r"/?Stage/(\d+)/Shard/(\d+)/?", role)
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
+
+
+def _edge_scope_for_role(role: str, roles: Sequence[str]) -> str:
+    try:
+        index = list(roles).index(role)
+    except ValueError:
+        return role.strip("/").replace("/", "-")
+    if index >= len(roles) - 1:
+        return ""
+    stage, shard = _role_indices(role)
+    next_stage, next_shard = _role_indices(roles[index + 1])
+    if stage == next_stage:
+        return f"stage{stage}-internal-{shard}-to-{next_shard}"
+    return f"stage{stage}-to-stage{next_stage}"
+
+
+def _build_yolo_onnx_dependencies(paths: dict[str, Path],
+                                  *,
+                                  roles: Sequence[str]) -> tuple[list[InferenceDependency], dict]:
     return build_sequential_chunk_dependencies([
         OnnxChunkSpec(
-            role=ROLE_S0_0,
-            path=str(paths[ROLE_S0_0]),
-            key_scope="stage0-internal",
-        ),
-        OnnxChunkSpec(
-            role=ROLE_S0_1,
-            path=str(paths[ROLE_S0_1]),
-            key_scope="stage0-to-stage1",
-        ),
-        OnnxChunkSpec(
-            role=ROLE_S1_0,
-            path=str(paths[ROLE_S1_0]),
-            key_scope="stage1-internal",
-        ),
-        OnnxChunkSpec(
-            role=ROLE_S1_1,
-            path=str(paths[ROLE_S1_1]),
-        ),
+            role=role,
+            path=str(paths[role]),
+            key_scope=_edge_scope_for_role(role, roles),
+        )
+        for role in roles
     ])
 
 
@@ -446,20 +560,24 @@ def _manual_yolo_dependencies() -> list[InferenceDependency]:
 
 
 def yolo_splitter_output(split: dict) -> SplitterOutput:
+    layout = normalize_layout(str(split.get("layout", DEFAULT_LAYOUT)))
+    service_name = str(split.get("service", service_name_for_layout(layout)))
+    roles = list(split.get("roles") or roles_for_layout(layout))
+    artifact_prefix = f"/Model/Ultralytics/YOLO/{layout}"
     artifacts = []
     for role, path in split["paths"].items():
         artifacts.append(SplitArtifact(
             role=role,
             path=str(path),
-            artifact_name="/Model/Ultralytics/YOLO/2x2" + role,
+            artifact_name=artifact_prefix + role,
             kind="onnx-model",
             backend="onnxruntime",
             metadata=dict(split["chunks"][role], shard_role=role),
         ))
     service = SplitServiceSpec(
-        name=SERVICE,
-        model_name="/Model/Ultralytics/YOLO/2x2",
-        roles=list(ROLES),
+        name=service_name,
+        model_name=artifact_prefix,
+        roles=roles,
         dependencies=list(split.get("dependencies") or _manual_yolo_dependencies()),
         artifacts=artifacts,
         input_schema={
@@ -485,6 +603,10 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
         metadata={
             "source_model": str(split["model"]),
             "input_size": int(split["input_size"]),
+            "layout": layout,
+            "layout_stages": parse_layout(layout)[0],
+            "layout_shards_per_stage": parse_layout(layout)[1],
+            "chunk_count": len(roles),
             "split": int(split["split"]),
             "split_source": str(split.get("split_source", "yolo-fixed")),
             **({
@@ -497,7 +619,7 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
             **({
                 "planner_selected_score": float(split["planner_selected_score"])
             } if split.get("planner_selected_score") is not None else {}),
-            "sharding": "stage-internal-sequential-2x2",
+            "sharding": f"stage-internal-sequential-{layout}",
             "dependency_source": "onnx-chunk-io",
             "full_onnx_model": str(split.get("full_model_path", "")),
             "onnx_graph_summary": str(split.get("onnx_graph_summary", "")),
@@ -514,7 +636,7 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
         providers=[{"identity": REPO_PROVIDER, "roles": []}],
     )
     return SplitterOutput(
-        application="yolo-2x2-demo",
+        application=f"yolo-{layout}-demo",
         controller=CONTROLLER,
         group=GROUP,
         user=USER,
@@ -587,11 +709,12 @@ def runtime_spec() -> RuntimeSpec:
 
 
 def build_dynamic_plan(client):
-    service_policy = client.deployment.service_policy(SERVICE)
+    service_name = yolo_inference_service(client.deployment)
+    service_policy = client.deployment.service_policy(service_name)
     runtime = runtime_spec()
-    builder = client.plan_builder(SERVICE, runtime=runtime, backend="onnxruntime")
+    builder = client.plan_builder(service_name, runtime=runtime, backend="onnxruntime")
     artifacts = {artifact.role: artifact for artifact in service_policy.artifacts}
-    for role in ROLES:
+    for role in service_policy.roles:
         artifact = artifacts[role]
         builder.add_part(
             role=role,
@@ -613,11 +736,12 @@ def load_repo_manifests(path: str | Path) -> dict:
 
 def build_repo_plan(client, manifest_path: str | Path):
     manifests = load_repo_manifests(manifest_path)
-    service_policy = client.deployment.service_policy(SERVICE)
+    service_name = yolo_inference_service(client.deployment)
+    service_policy = client.deployment.service_policy(service_name)
     runtime = runtime_spec()
-    builder = client.plan_builder(SERVICE, runtime=runtime, backend="onnxruntime")
+    builder = client.plan_builder(service_name, runtime=runtime, backend="onnxruntime")
     artifacts = {artifact.role: artifact for artifact in service_policy.artifacts}
-    for role in ROLES:
+    for role in service_policy.roles:
         artifact = artifacts[role]
         role_manifests = manifests["roles"][role]
         runner_manifest = repo_manifest_from_large_data_reference(role_manifests["runner"])
@@ -763,11 +887,18 @@ def run_final_chunk(model_path: str | Path, input_payload: bytes) -> np.ndarray:
 
 
 def run_local_onnx_pipeline(model_paths: dict[str, str | Path],
-                            image: np.ndarray) -> np.ndarray:
-    payload = run_intermediate_chunk(model_paths[ROLE_S0_0], image, image_input=True)
-    payload = run_intermediate_chunk(model_paths[ROLE_S0_1], payload)
-    payload = run_intermediate_chunk(model_paths[ROLE_S1_0], payload)
-    return run_final_chunk(model_paths[ROLE_S1_1], payload)
+                            image: np.ndarray,
+                            roles: Sequence[str] | None = None) -> np.ndarray:
+    ordered_roles = list(roles or model_paths.keys())
+    if not ordered_roles:
+        raise ValueError("run_local_onnx_pipeline requires at least one role")
+    payload = run_intermediate_chunk(model_paths[ordered_roles[0]], image, image_input=True)
+    for role in ordered_roles[1:-1]:
+        payload = run_intermediate_chunk(model_paths[role], payload)
+    if len(ordered_roles) == 1:
+        values = load_npz_payload(payload)
+        return values.get("predictions", next(iter(values.values()))).astype(np.float32)
+    return run_final_chunk(model_paths[ordered_roles[-1]], payload)
 
 
 def parse_args_with_common(description: str):
