@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from ndnsf_distributed_inference import APPClient
 from pathlib import Path
+import time
 
 from yolo_2x2_lib import (
     DEFAULT_MODEL,
@@ -87,21 +88,10 @@ def main() -> int:
         elif args.dynamic_provisioning or args.repo_manifest_file:
             dynamic_provisioning = True
         if args.sequential_requests:
-            futures = [
-                _ImmediateResult(client.distributed_inference(
-                    service,
-                    payload,
-                    ack_timeout_ms=args.ack_timeout_ms,
-                    timeout_ms=args.timeout_ms,
-                    dynamic_provisioning=dynamic_provisioning,
-                    runtime=runtime_spec(),
-                    artifact_references=args.repo_manifest_file or None,
-                ))
-                for _ in range(request_count)
-            ]
-        else:
-            futures = [
-                client.async_distributed_inference(
+            futures = []
+            for _ in range(request_count):
+                started = time.perf_counter()
+                result = client.distributed_inference(
                     service,
                     payload,
                     ack_timeout_ms=args.ack_timeout_ms,
@@ -110,18 +100,36 @@ def main() -> int:
                     runtime=runtime_spec(),
                     artifact_references=args.repo_manifest_file or None,
                 )
-                for _ in range(request_count)
-            ]
+                futures.append(_TimedFuture(_ImmediateResult(result), started, time.perf_counter()))
+        else:
+            futures = []
+            for _ in range(request_count):
+                started = time.perf_counter()
+                future = client.async_distributed_inference(
+                    service,
+                    payload,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=args.timeout_ms,
+                    dynamic_provisioning=dynamic_provisioning,
+                    runtime=runtime_spec(),
+                    artifact_references=args.repo_manifest_file or None,
+                )
+                futures.append(_TimedFuture(future, started, None))
         ok = True
-        for index, future in enumerate(futures):
-            result = future.result(timeout=args.timeout_ms / 1000 + 10)
+        for index, timed in enumerate(futures):
+            result = timed.future.result(timeout=args.timeout_ms / 1000 + 10)
+            finished = timed.finished if timed.finished is not None else time.perf_counter()
+            elapsed_ms = (finished - timed.started) * 1000.0
             if not result.status:
                 print(
                     f"YOLO_LAYOUT_RESULT layout={layout} index={index} "
-                    f"status=false error={result.error}"
+                    f"status=false inference_elapsed_ms={elapsed_ms:.2f} error={result.error}"
                 )
                 if layout == "2x2":
-                    print(f"YOLO_2X2_RESULT index={index} status=false error={result.error}")
+                    print(
+                        f"YOLO_2X2_RESULT index={index} status=false "
+                        f"inference_elapsed_ms={elapsed_ms:.2f} error={result.error}"
+                    )
                 ok = False
                 continue
             _, actual = decode_yolo_output(result.payload)
@@ -135,6 +143,7 @@ def main() -> int:
                 f"layout={layout} "
                 f"index={index} status=true shape={actual.shape} "
                 f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
+                f"inference_elapsed_ms={elapsed_ms:.2f} "
                 f"ok={str(item_ok).lower()}"
             )
             if layout == "2x2":
@@ -142,6 +151,7 @@ def main() -> int:
                     "YOLO_2X2_RESULT "
                     f"index={index} status=true shape={actual.shape} "
                     f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
+                    f"inference_elapsed_ms={elapsed_ms:.2f} "
                     f"ok={str(item_ok).lower()}"
                 )
         client.shutdown()
@@ -154,6 +164,13 @@ class _ImmediateResult:
 
     def result(self, timeout=None):
         return self._value
+
+
+class _TimedFuture:
+    def __init__(self, future, started: float, finished: float | None):
+        self.future = future
+        self.started = started
+        self.finished = finished
 
 
 if __name__ == "__main__":

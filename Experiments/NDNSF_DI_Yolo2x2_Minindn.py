@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -105,6 +106,76 @@ def validate_repo_manifest_references(path: Path) -> None:
                 raise RuntimeError(
                     f"repo manifest role {role} {artifact_name} size mismatch")
     print(f"YOLO_2X2_REPO_MANIFEST_REFERENCES_OK path={path}")
+
+
+def read_node_traffic(node) -> dict[str, int]:
+    script = r"""
+rx=0
+tx=0
+for d in /sys/class/net/*; do
+  iface=$(basename "$d")
+  [ "$iface" = "lo" ] && continue
+  r=$(cat "$d/statistics/rx_bytes" 2>/dev/null || echo 0)
+  t=$(cat "$d/statistics/tx_bytes" 2>/dev/null || echo 0)
+  rx=$((rx + r))
+  tx=$((tx + t))
+done
+echo "$rx $tx"
+"""
+    output = node.cmd("sh -c {}".format(perf.shell_quote(script))).strip()
+    numbers = re.findall(r"\d+", output)
+    if len(numbers) < 2:
+        return {"rxBytes": 0, "txBytes": 0}
+    return {"rxBytes": int(numbers[-2]), "txBytes": int(numbers[-1])}
+
+
+def snapshot_traffic(ndn) -> dict[str, dict[str, int]]:
+    return {
+        node.name: read_node_traffic(node)
+        for node in ndn.net.hosts
+    }
+
+
+def write_traffic_delta(layout: str, phase: str,
+                        before: dict[str, dict[str, int]],
+                        after: dict[str, dict[str, int]]) -> dict:
+    nodes = {}
+    total_rx = 0
+    total_tx = 0
+    for name in sorted(set(before) | set(after)):
+        start = before.get(name, {"rxBytes": 0, "txBytes": 0})
+        end = after.get(name, {"rxBytes": 0, "txBytes": 0})
+        rx = max(0, int(end.get("rxBytes", 0)) - int(start.get("rxBytes", 0)))
+        tx = max(0, int(end.get("txBytes", 0)) - int(start.get("txBytes", 0)))
+        nodes[name] = {"rxBytes": rx, "txBytes": tx, "totalBytes": rx + tx}
+        total_rx += rx
+        total_tx += tx
+    summary = {
+        "layout": layout,
+        "phase": phase,
+        "rxBytes": total_rx,
+        "txBytes": total_tx,
+        "totalNodeBytes": total_rx + total_tx,
+        "nodes": nodes,
+    }
+    path = OUT / "traffic-stats.json"
+    history = []
+    if path.exists():
+        try:
+            history = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            history = []
+    if not isinstance(history, list):
+        history = []
+    history.append(summary)
+    path.write_text(json.dumps(history, indent=2, sort_keys=True), encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_TRAFFIC "
+        f"layout={layout} phase={phase} "
+        f"rx_bytes={total_rx} tx_bytes={total_tx} "
+        f"total_node_bytes={total_rx + total_tx} path={path}"
+    )
+    return summary
 
 
 def load_policy_roles(path: Path) -> list[str]:
@@ -389,6 +460,7 @@ def main() -> None:
             "--timeout-ms", "60000",
             "--sequential-requests", "1",
         ]
+        cold_traffic_start = snapshot_traffic(ndn)
         user_proc, user_log = start(
             ndn.net["memphis"],
             "user-cold",
@@ -397,12 +469,15 @@ def main() -> None:
             procs,
         )
         user_proc.wait(timeout=90)
+        cold_traffic_end = snapshot_traffic(ndn)
+        write_traffic_delta(layout, "cold", cold_traffic_start, cold_traffic_end)
         cold_text = user_log.read_text(errors="replace")
         print(cold_text)
         if "YOLO_LAYOUT_RESULT" not in cold_text or "ok=true" not in cold_text:
             raise RuntimeError(
                 f"YOLO {layout} cold provisioning failed rc={user_proc.returncode}; log={user_log}")
 
+        warm_traffic_start = snapshot_traffic(ndn)
         warm_proc, warm_log = start(
             ndn.net["memphis"],
             "user-warm",
@@ -417,6 +492,8 @@ def main() -> None:
             procs,
         )
         warm_proc.wait(timeout=90)
+        warm_traffic_end = snapshot_traffic(ndn)
+        write_traffic_delta(layout, "warm", warm_traffic_start, warm_traffic_end)
         warm_text = warm_log.read_text(errors="replace")
         print(warm_text)
         provider_text = "\n".join(
