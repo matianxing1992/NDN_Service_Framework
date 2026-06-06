@@ -217,6 +217,20 @@ sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layo
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
+当前已经验证的 YOLO layout 覆盖范围：
+
+```text
+2x2  历史默认网络级回归
+2x3  MiniNDN 网络级回归，每个生成 role 一个 provider
+3x2  MiniNDN 网络级回归，每个生成 role 一个 provider
+1x3  本地 export/policy/ONNX correctness smoke
+3x3  splitter 接口支持；作为 release baseline 前应先跑 yolo-layout
+```
+
+Layout 写作 `ROWSxCOLS`。`ROWS` 是 pipeline stages 数量，`COLS` 是每个
+stage 内顺序 shards 数量。当前 planner 仍生成 YOLO-specific chunk plan；
+它还不是“任意 ONNX graph 到任意 distributed layout”的完全通用 planner。
+
 ### 8. 常见部署错误
 
 如果部署失败，先检查这些问题：
@@ -1194,6 +1208,9 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local
 dependency prefetch、activation exchange 和 MiniNDN 中的最终结果返回。
 `yolo-layout-local` 仍可用于快速检查生成的 chunk graph 和本地 ONNX
 正确性。
+当前已经通过网络级回归验证的 custom layouts 是 `2x3` 和 `3x2`。`1x3`
+适合作为快速本地 export smoke；`3x3` 在作为部署 baseline 前应先通过
+`yolo-layout` 跑一轮。
 
 policy/repo inspection helper 仍然保留：
 

@@ -233,6 +233,21 @@ sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layo
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
+Current validated YOLO layout coverage:
+
+```text
+2x2  default historical network regression
+2x3  MiniNDN network regression with one provider per generated role
+3x2  MiniNDN network regression with one provider per generated role
+1x3  local export/policy/ONNX correctness smoke
+3x3  supported by the splitter interface; run yolo-layout before using it as a release baseline
+```
+
+Layouts are written as `ROWSxCOLS`. `ROWS` is the number of pipeline stages,
+and `COLS` is the number of sequential shards inside each stage. The planner
+still emits a YOLO-specific chunk plan; it is not yet a fully generic
+"arbitrary ONNX graph to arbitrary distributed layout" planner.
+
 ### 8. Common Deployment Mistakes
 
 If deployment fails, check these first:
@@ -1352,6 +1367,9 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local
 deployment, dependency prefetch, activation exchange, and final result delivery
 through MiniNDN. `yolo-layout-local` remains available when only the generated
 chunk graph and local ONNX correctness need to be checked quickly.
+The currently validated network-level custom layouts are `2x3` and `3x2`.
+`1x3` is useful as a fast local export smoke, while `3x3` should be run through
+`yolo-layout` before it is treated as a deployment baseline.
 
 The policy/repo inspection helper is still available:
 

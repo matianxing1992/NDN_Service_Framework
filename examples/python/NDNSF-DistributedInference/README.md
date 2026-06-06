@@ -50,7 +50,9 @@ yolo_2x2/
   tensor-named dependencies from chunk IO, and verifies the local chunk
   pipeline before writing the policy. The example uses repo-backed dynamic
   provisioning: providers can start without local model/runtime files, then
-  fetch the assigned role artifact.
+  fetch the assigned role artifact. The network regression has validated 2x3
+  and 3x2 with one provider per generated role; 1x3 is a fast local smoke, and
+  3x3 should be run through the `yolo-layout` MiniNDN case before relying on it.
 
 pytorch_eager_2x2/
   Four-role fully connected ONNX inference generated from a PyTorch-defined
@@ -261,6 +263,10 @@ sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
+
+`--layout ROWSxCOLS` means `ROWS` pipeline stages and `COLS` sequential shards
+inside each stage. The current custom-layout path is YOLO-specific but uses the
+generic dependency executor once the policy has been generated.
 
 ## Manual Multi-Process Run
 
