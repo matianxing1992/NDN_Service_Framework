@@ -282,7 +282,8 @@ class APPClient:
                               freshness_ms: int = 60000,
                               dynamic_provisioning: bool | None = None,
                               runtime: RuntimeSpec | None = None,
-                              repo_manifests: dict | str | Path | None = None) -> InferenceResult:
+                              repo_manifests: dict | str | Path | None = None,
+                              artifact_references: dict | str | Path | None = None) -> InferenceResult:
         """Run one distributed inference request for a deployed service.
 
         The normal application-facing path is service-level: the caller names
@@ -295,15 +296,17 @@ class APPClient:
         """
 
         service_policy = self.deployment.service_policy(service)
+        artifact_references = self._select_artifact_references(
+            repo_manifests, artifact_references)
         payload = self.encode_input(service, value)
         if dynamic_provisioning is None:
-            dynamic_provisioning = bool(service_policy.artifacts or repo_manifests)
+            dynamic_provisioning = bool(service_policy.artifacts or artifact_references)
         if dynamic_provisioning:
             return self.infer(
                 self.service_plan(
                     service,
                     runtime=runtime,
-                    repo_manifests=repo_manifests,
+                    artifact_references=artifact_references,
                 ),
                 payload,
                 ack_timeout_ms=ack_timeout_ms,
@@ -324,6 +327,7 @@ class APPClient:
         *,
         runtime: RuntimeSpec | None = None,
         repo_manifests: dict | str | Path | None = None,
+        artifact_references: dict | str | Path | None = None,
     ) -> DistributedInferencePlan:
         """Build a dynamic provisioning plan from a service policy.
 
@@ -334,11 +338,13 @@ class APPClient:
         """
 
         service_policy = self.deployment.service_policy(service)
+        artifact_references = self._select_artifact_references(
+            repo_manifests, artifact_references)
         if not service_policy.artifacts:
             raise ValueError(
                 f"service {service} has no artifact descriptions; "
                 "use dynamic_provisioning=False for pre-deployed providers")
-        manifests = self._load_repo_manifests(repo_manifests)
+        manifests = self._load_artifact_references(artifact_references)
         runtime = runtime or self._service_runtimes.get(service) or self._default_runtime(service)
         builder = self.plan_builder(
             service,
@@ -428,6 +434,24 @@ class APPClient:
             timeout_ms=timeout_ms,
             freshness_ms=freshness_ms,
         )
+
+    @staticmethod
+    def _select_artifact_references(
+        repo_manifests: dict | str | Path | None,
+        artifact_references: dict | str | Path | None,
+    ) -> dict | str | Path | None:
+        if artifact_references is None:
+            return repo_manifests
+        if repo_manifests is None:
+            return artifact_references
+        raise ValueError(
+            "pass either artifact_references or legacy repo_manifests, not both")
+
+    @staticmethod
+    def _load_artifact_references(
+        artifact_references: dict | str | Path | None,
+    ) -> dict:
+        return APPClient._load_repo_manifests(artifact_references)
 
     @staticmethod
     def _load_repo_manifests(
@@ -598,19 +622,22 @@ class APPClient:
         dynamic_provisioning: bool | None = None,
         runtime: RuntimeSpec | None = None,
         repo_manifests: dict | str | Path | None = None,
+        artifact_references: dict | str | Path | None = None,
         on_result: Callable[[InferenceResult], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> Future:
         service_policy = self.deployment.service_policy(service)
+        artifact_references = self._select_artifact_references(
+            repo_manifests, artifact_references)
         payload = self.encode_input(service, value)
         if dynamic_provisioning is None:
-            dynamic_provisioning = bool(service_policy.artifacts or repo_manifests)
+            dynamic_provisioning = bool(service_policy.artifacts or artifact_references)
         if dynamic_provisioning:
             return self.infer_async(
                 self.service_plan(
                     service,
                     runtime=runtime,
-                    repo_manifests=repo_manifests,
+                    artifact_references=artifact_references,
                 ),
                 payload,
                 ack_timeout_ms=ack_timeout_ms,

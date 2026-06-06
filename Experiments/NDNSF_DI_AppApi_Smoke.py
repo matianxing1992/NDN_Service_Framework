@@ -150,7 +150,7 @@ def main() -> int:
         repo_plan = client.service_plan(
             "/AI/Toy/Inference",
             runtime=runtime,
-            repo_manifests=manifests,
+            artifact_references=manifests,
         )
         role = repo_plan.roles[0]
         assert role.model_artifact.payload == b""

@@ -369,9 +369,12 @@ Splitter 或 deployment tool 应把 artifact paths 或 repo manifests 写入
 service policy。普通应用调用者不需要手工构造 `DistributedInferencePlan`；
 他们调用 `distributed_inference(...)`，APP 层会从 service policy 推导 plan。
 高级部署工具如果需要检查或复用生成的 plan，可以调用
-`client.service_plan(service, ...)`。`distributed_inference(...)` 的可选
-`repo_manifests` 参数指的是保存在 NDNSF-DistributedRepo 中的 model/runtime
-artifacts，而不是输入图片或 activation tensors。输入和中间 tensor 使用
+`client.service_plan(service, ...)`。`distributed_inference(...)`、
+`async_distributed_inference(...)` 和 `service_plan(...)` 的可选
+`artifact_references` 参数指的是保存在 NDNSF-DistributedRepo 中的 model/runtime
+artifacts，而不是输入图片或 activation tensors。旧名 `repo_manifests` 仍然为已有
+脚本保留兼容，但新代码应使用 `artifact_references`，因为同一个 entry 同时携带
+`repoManifest` 和 `largeDataReference` metadata。输入和中间 tensor 使用
 service payload contract，以及 NDNSF large-data 或 dependency-object helper。
 Repo-backed artifacts 实际取数仍走 manifest-aware repo path，但 execution spec
 也会携带与 input 和 activation 相同形状的 large-data reference metadata。新的

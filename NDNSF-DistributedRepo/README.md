@@ -455,6 +455,41 @@ AI-specific helpers such as `store_artifact(...)` belong in
 NDNSF-DistributedInference. NDNSF-DistributedRepo only stores opaque named
 objects.
 
+## Application Integration Status
+
+NDNSF-DistributedRepo is intended to support both UAV and distributed inference
+workloads, but it should remain a storage and catalog control-plane component
+rather than absorb either application's domain logic.
+
+For **NDNSF-UAV-APP**, the repo is the backing layer for recordings, telemetry
+logs, mission logs, and other durable data products. The current generic
+MiniNDN smoke already stores and looks up representative `uav-recording`,
+`telemetry-log`, and `mission-log` objects. The remaining UAV work is
+application integration: Ground Station browsing, replay/download UI, and the
+mapping from drone/mission identifiers to repo object names.
+
+For **NDNSF-DistributedInference**, the repo is the backing layer for model
+artifacts, runtime artifacts, and activation bundles that must outlive a single
+service packet. The DI planner/executor should consume a unified
+`largeDataReference` abstraction and then choose repo-backed fetch or direct
+NDN fetch according to the reference source. Model dependency planning, ONNX
+graph analysis, tensor naming, and role scheduling remain DI responsibilities,
+not repo responsibilities.
+
+The shared repo responsibilities are deliberately narrower:
+
+- store opaque application objects as segmented, signed Data products;
+- publish and merge object-level catalog entries and tombstones;
+- report liveness, stale replicas, object class, retention, and repair
+  eligibility;
+- produce conservative repair plans and optionally execute repair actions when
+  deployment policy allows it;
+- expose In-App and Persistent deployment modes without changing NDNSF remote
+  invocation semantics.
+
+This boundary keeps the repo useful to both applications without turning it
+into a UAV log browser or an AI artifact planner.
+
 ## Storage Backend
 
 Repo nodes are initialized with a logical capacity, for example the
@@ -494,11 +529,14 @@ storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
 Objects written through the SQLite backend remain fetchable after the repo app
 or embedding process restarts.
 
-This implementation stores reassembled object payloads. A future lower-level
-optimization can store the wire encoding of received `ndn::Data` segments and
-answer matching Interests by returning those Data packets unchanged. That would
-avoid re-segmenting objects on cache hits, but requires exposing a packet-level
-segmented-data API below the current object API.
+The object API treats stored bytes as opaque application objects or opaque
+segment records behind a manifest. Applications should not depend on SQLite row
+layout or cache internals. When an application already publishes signed
+segmented Data, the repo-facing reference path stores the fetched segment
+records as opaque bytes and reports their manifest/catalog metadata. Serving
+raw Data wire packets directly on matching Interests can be optimized below the
+object API, but it should not change the public `put/get/insert/fetch` object
+semantics.
 
 ## Python Binding
 

@@ -385,6 +385,34 @@ wire-protocol mode，也不能让 remote caller 绕过 NDNSF access control。
 
 `store_artifact(...)` 等 AI-specific helper 属于 NDNSF-DistributedInference。NDNSF-DistributedRepo 只存储 opaque named objects。
 
+## 应用集成状态
+
+NDNSF-DistributedRepo 目标上要同时支撑 UAV 和分布式推理 workload，但它应该保持为
+storage 与 catalog control-plane component，而不是把任一应用的 domain logic 吸收到
+repo 内部。
+
+对于 **NDNSF-UAV-APP**，repo 是 recording、telemetry log、mission log 和其它持久数据
+产品的 backing layer。当前 generic MiniNDN smoke 已经会存储并查询代表性的
+`uav-recording`、`telemetry-log` 和 `mission-log` objects。剩余 UAV 工作属于应用集成：
+Ground Station browsing、replay/download UI，以及 drone/mission identifier 到 repo
+object name 的映射。
+
+对于 **NDNSF-DistributedInference**，repo 是 model artifact、runtime artifact 和需要
+跨越单个 service packet 生命周期的 activation bundle 的 backing layer。DI planner/executor
+应该消费统一的 `largeDataReference` abstraction，再根据 reference source 选择
+repo-backed fetch 或 direct NDN fetch。Model dependency planning、ONNX graph analysis、
+tensor naming 和 role scheduling 仍然是 DI 的责任，不是 repo 的责任。
+
+Repo 共享职责有意保持更窄：
+
+- 把 opaque application objects 存成 segmented、signed Data products；
+- 发布并合并 object-level catalog entries 和 tombstones；
+- 报告 liveness、stale replicas、object class、retention 和 repair eligibility；
+- 生成保守的 repair plan，并且只在 deployment policy 允许时可选执行 repair action；
+- 暴露 In-App 和 Persistent deployment modes，但不改变 NDNSF remote invocation semantics。
+
+这个边界让 repo 能同时服务两个应用，而不会变成 UAV log browser 或 AI artifact planner。
+
 ## Storage Backend
 
 Repo node 初始化时带有逻辑容量，例如 Python `RepoNodeApp` 的 `free_bytes` 参数。Node 在 ACK metadata 中广播剩余容量，方便 client 选择 storage replicas：
@@ -417,7 +445,12 @@ storage-path /tmp/ndnsf-distributed-repo/repo-node-A.sqlite3
 
 通过 SQLite backend 写入的 object，在 repo app 或 embedding process 重启后仍然可以 fetch。
 
-当前实现存储的是重新组装后的 object payload。未来较低层优化可以存储收到的 `ndn::Data` segments 的 wire encoding，并在匹配 Interest 时原封不动返回这些 Data packets。这样可以在 cache hit 时避免重新分段，但需要在当前 object API 下方暴露 packet-level segmented-data API。
+Object API 会把 stored bytes 视为 manifest 后面的 opaque application object 或 opaque
+segment records。应用不应该依赖 SQLite row layout 或 cache internals。当应用已经发布
+signed segmented Data 时，repo-facing reference path 会把拉取到的 segment records 当作
+opaque bytes 保存，并报告对应 manifest/catalog metadata。直接按匹配 Interest 返回 raw
+Data wire packets 可以在 object API 下方继续优化，但不应该改变公开的
+`put/get/insert/fetch` object semantics。
 
 ## Python Binding
 
