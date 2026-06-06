@@ -10,7 +10,7 @@ import time
 
 from ndnsf import make_segmented_data_packets
 from ndnsf_distributed_inference import APPDeployment, DistributedRepo
-from ndnsf_distributed_inference.repo import RepoObjectManifest
+from ndnsf_distributed_inference.repo import RepoObjectManifest, RepoRepairAction
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
@@ -685,6 +685,15 @@ def main() -> int:
                 f"catalog health synthetic object missing repair actions: {repair_lookup}"
             )
         first_action = actions[0]
+        first_repair_action = RepoRepairAction.from_dict(first_action)
+        if first_repair_action.to_dict().get("schemaVersion") != 1:
+            raise RuntimeError(
+                f"catalog health repair action missing schema version: {repair_lookup}"
+            )
+        if first_repair_action.to_dict().get("actionType") != "copy-replica":
+            raise RuntimeError(
+                f"catalog health repair action type is wrong: {repair_lookup}"
+            )
         if not first_action.get("sourceRepo") or not first_action.get("targetRepo"):
             raise RuntimeError(
                 f"catalog health repair action is incomplete: {repair_lookup}"
@@ -763,6 +772,7 @@ def main() -> int:
                 f"manual catalog repair object missing repair actions: {manual_lookup}"
             )
         manual_action = dict(manual_actions[0])
+        RepoRepairAction.from_dict(manual_action, target_repo_node=target_repo)
         if manual_action.get("sourceRepo") != source_repo:
             raise RuntimeError(f"manual catalog repair source is wrong: {manual_lookup}")
         if manual_action.get("targetRepo") != target_repo:

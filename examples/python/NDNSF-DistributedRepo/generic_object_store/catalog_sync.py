@@ -13,6 +13,7 @@ from ndnsf_distributed_inference import APPDeployment
 from ndnsf_distributed_inference.repo import (
     DistributedRepo,
     NetworkDistributedRepoClient,
+    RepoRepairAction,
     encode_repo_request,
 )
 
@@ -148,18 +149,28 @@ def maybe_repair(
         for action in actions:
             if not isinstance(action, dict):
                 continue
-            if str(action.get("targetRepo", "")) != repo_node:
+            try:
+                repair_action = RepoRepairAction.from_dict(action)
+            except ValueError as exc:
+                print(
+                    f"catalog_sync repair action invalid repo={repo_node}: {exc}",
+                    flush=True,
+                )
+                continue
+            action = repair_action.to_dict()
+            if repair_action.target_repo != repo_node:
                 continue
             key = (
-                str(action.get("objectName", "")),
-                str(action.get("sourceRepo", "")),
-                str(action.get("targetRepo", "")),
+                repair_action.object_name,
+                repair_action.source_repo,
+                repair_action.target_repo,
             )
             if key in executed_actions:
                 continue
             if not auto_repair:
                 print(
                     f"catalog_sync repair warning repo={repo_node} "
+                    f"actionType={repair_action.action_type} "
                     f"object={key[0]} source={key[1]} target={key[2]}",
                     flush=True,
                 )

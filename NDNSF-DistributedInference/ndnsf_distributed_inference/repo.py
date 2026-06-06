@@ -217,6 +217,96 @@ class RepoObjectManifest:
         )
 
 
+@dataclass(frozen=True)
+class RepoRepairAction:
+    """Validated catalog repair action.
+
+    The wire/catalog shape remains a JSON object, but this class gives the
+    control plane a typed schema boundary before a sidecar executes repair.
+    """
+
+    object_name: str
+    object_sha256: str
+    manifest_sha256: str
+    source_repo: str
+    target_repo: str
+    min_replication_factor: int
+    max_replication_factor: int
+    reason: str = "under-replicated"
+    action_type: str = "copy-replica"
+    schema_version: int = 1
+
+    def to_dict(self) -> dict:
+        return {
+            "schemaVersion": self.schema_version,
+            "actionType": self.action_type,
+            "objectName": self.object_name,
+            "objectSha256": self.object_sha256,
+            "manifestSha256": self.manifest_sha256,
+            "minReplicationFactor": self.min_replication_factor,
+            "maxReplicationFactor": self.max_replication_factor,
+            "sourceRepo": self.source_repo,
+            "targetRepo": self.target_repo,
+            "reason": self.reason,
+        }
+
+    @staticmethod
+    def from_dict(obj: dict, *, target_repo_node: str = "") -> "RepoRepairAction":
+        if not isinstance(obj, dict):
+            raise ValueError("catalog repair action must be a mapping")
+        action_type = str(obj.get("actionType", "copy-replica"))
+        if action_type != "copy-replica":
+            raise ValueError(f"unsupported catalog repair actionType: {action_type}")
+        schema_version = int(obj.get("schemaVersion", 1) or 1)
+        if schema_version != 1:
+            raise ValueError(f"unsupported catalog repair schemaVersion: {schema_version}")
+        object_name = str(obj.get("objectName", ""))
+        object_sha256 = str(obj.get("objectSha256", ""))
+        manifest_sha256 = str(obj.get("manifestSha256", ""))
+        source_repo = str(obj.get("sourceRepo", ""))
+        target_repo = str(obj.get("targetRepo", target_repo_node))
+        if not object_name:
+            raise ValueError("catalog repair action missing objectName")
+        if not object_sha256:
+            raise ValueError("catalog repair action missing objectSha256")
+        if not manifest_sha256:
+            raise ValueError("catalog repair action missing manifestSha256")
+        if not source_repo:
+            raise ValueError("catalog repair action missing sourceRepo")
+        if not target_repo:
+            raise ValueError("catalog repair action missing targetRepo")
+        if target_repo_node and target_repo != target_repo_node:
+            raise ValueError(
+                f"catalog repair target mismatch: action={target_repo} "
+                f"request={target_repo_node}"
+            )
+        if source_repo == target_repo:
+            raise ValueError("catalog repair sourceRepo and targetRepo must differ")
+        min_replication_factor = int(obj.get("minReplicationFactor", 1) or 1)
+        max_replication_factor = int(
+            obj.get("maxReplicationFactor", min_replication_factor) or
+            min_replication_factor
+        )
+        if min_replication_factor < 1:
+            raise ValueError("catalog repair minReplicationFactor must be >= 1")
+        if max_replication_factor < min_replication_factor:
+            raise ValueError(
+                "catalog repair maxReplicationFactor must be >= minReplicationFactor"
+            )
+        return RepoRepairAction(
+            object_name=object_name,
+            object_sha256=object_sha256,
+            manifest_sha256=manifest_sha256,
+            source_repo=source_repo,
+            target_repo=target_repo,
+            min_replication_factor=min_replication_factor,
+            max_replication_factor=max_replication_factor,
+            reason=str(obj.get("reason", "under-replicated")),
+            action_type=action_type,
+            schema_version=schema_version,
+        )
+
+
 def large_data_reference_from_repo_manifest(
     manifest: RepoObjectManifest | dict,
     *,
@@ -1299,16 +1389,16 @@ class RepoNodeApp:
         source_repo = str(available[0].get("sourceRepo", "")) if available else ""
         if source_repo:
             for target_repo in target_candidates[:missing]:
-                repair_actions.append({
-                    "objectName": object_name,
-                    "objectSha256": available[0].get("objectSha256", ""),
-                    "manifestSha256": available[0].get("manifestSha256", ""),
-                    "minReplicationFactor": min_required,
-                    "maxReplicationFactor": max_allowed,
-                    "sourceRepo": source_repo,
-                    "targetRepo": target_repo,
-                    "reason": "under-replicated",
-                })
+                repair_actions.append(RepoRepairAction(
+                    object_name=object_name,
+                    object_sha256=str(available[0].get("objectSha256", "")),
+                    manifest_sha256=str(available[0].get("manifestSha256", "")),
+                    min_replication_factor=min_required,
+                    max_replication_factor=max_allowed,
+                    source_repo=source_repo,
+                    target_repo=target_repo,
+                    reason="under-replicated",
+                ).to_dict())
         if expired:
             repair_reason = "expired"
         elif not repair_allowed:
@@ -2989,21 +3079,12 @@ class NetworkDistributedRepoClient:
         return decoded
 
     def catalog_repair(self, target_repo_node: str, action: dict) -> dict:
-        action = dict(action)
-        object_name = str(action.get("objectName", ""))
-        source_repo = str(action.get("sourceRepo", ""))
-        target_repo = str(action.get("targetRepo", target_repo_node))
-        if not object_name:
-            raise ValueError("catalog repair action missing objectName")
-        if not source_repo:
-            raise ValueError("catalog repair action missing sourceRepo")
-        if target_repo != target_repo_node:
-            raise ValueError(
-                f"catalog repair target mismatch: action={target_repo} "
-                f"request={target_repo_node}"
-            )
-        if source_repo == target_repo:
-            raise ValueError("catalog repair sourceRepo and targetRepo must differ")
+        repair_action = RepoRepairAction.from_dict(
+            dict(action), target_repo_node=target_repo_node)
+        action = repair_action.to_dict()
+        object_name = repair_action.object_name
+        source_repo = repair_action.source_repo
+        target_repo = repair_action.target_repo
 
         prepared_response = self._request_specific_repo(
             repo_node=source_repo,

@@ -114,10 +114,18 @@ object. When an object has fewer live replicas than its configured
 `minReplicationFactor`, the catalog marks it as under-replicated and includes a
 `repairPlan`. The plan lists conservative candidate actions with:
 
-- the object name and object hash;
+- `schemaVersion: 1`;
+- `actionType: copy-replica`;
+- the object name, object hash, and manifest hash;
 - the live source Persistent repo;
 - the target Persistent repo;
 - the configured min/max replication factors.
+
+The Python control path validates this schema with `RepoRepairAction` before a
+sidecar can execute a repair. Older action dictionaries that omit
+`schemaVersion` and `actionType` are still accepted as version-1
+`copy-replica` actions, but newly generated catalog responses include both
+fields explicitly.
 
 By default, the sidecar does not execute those actions. It only prints a warning
 when a repair action targets its local repo. This keeps catalog synchronization
