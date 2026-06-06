@@ -155,9 +155,17 @@ def main() -> int:
         role = repo_plan.roles[0]
         assert role.model_artifact.payload == b""
         assert role.model_artifact.repo_manifest["objectName"] == "/repo/model/toy-stage0"
+        model_spec = role.model_artifact.to_ndnsf_artifact()
+        assert model_spec["repoManifest"]["objectName"] == "/repo/model/toy-stage0"
+        assert model_spec["largeDataReference"]["source"] == "repo-manifest"
+        assert model_spec["largeDataReference"]["dataName"] == "/repo/model/toy-stage0"
         assert role.runtime.artifact is not None
         assert role.runtime.artifact.payload == b""
         assert role.runtime.artifact.repo_manifest["objectName"] == "/repo/runtime/runner"
+        runner_spec = role.runtime.artifact.to_ndnsf_artifact()
+        assert runner_spec["repoManifest"]["objectName"] == "/repo/runtime/runner"
+        assert runner_spec["largeDataReference"]["source"] == "repo-manifest"
+        assert runner_spec["largeDataReference"]["dataName"] == "/repo/runtime/runner"
 
         summary = subprocess.run(
             [

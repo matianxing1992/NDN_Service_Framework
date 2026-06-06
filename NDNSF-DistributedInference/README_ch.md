@@ -385,7 +385,10 @@ manifest-aware object fetch path；`ndn-large-data` 表示 provider 可以直接
 抓取加密 large Data。
 生成的 repo deployment manifest 文件会为每个 artifact 显式写出两个字段：
 `repoManifest` 用于 manifest-aware fetch path，`largeDataReference` 便于人和
-planner 直接审查 source、Data name、hash 和 size。
+planner 直接审查 source、Data name、hash 和 size。Runtime execution spec 也会携带
+这些 camelCase 字段，同时保留旧 snake_case alias 兼容旧 provider。新的 provider
+代码应优先读取 `largeDataReference`，只在兼容场景下回退到 `repoManifest` 或
+`repo_manifest`。
 
 Provider 侧：
 

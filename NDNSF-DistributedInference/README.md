@@ -445,7 +445,10 @@ provider can fetch the named encrypted large Data directly.
 Generated repo deployment manifest files write both fields explicitly for each
 artifact: `repoManifest` for the manifest-aware fetch path and
 `largeDataReference` for human/planner inspection of source, Data name, hash,
-and size.
+and size. The runtime execution spec also carries these camelCase fields while
+keeping legacy snake_case aliases for older providers. New provider code should
+prefer `largeDataReference` and only fall back to `repoManifest` or
+`repo_manifest` for compatibility.
 
 Provider side:
 

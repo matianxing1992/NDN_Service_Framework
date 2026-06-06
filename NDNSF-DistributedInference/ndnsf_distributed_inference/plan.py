@@ -27,20 +27,24 @@ class ArtifactSpec:
     repo_manifest: dict = field(default_factory=dict)
 
     def to_ndnsf_artifact(self) -> dict:
+        repo_manifest = dict(self.repo_manifest or {})
         artifact = {
             "payload": self.payload,
             "filename": self.filename,
             "kind": self.kind,
             "executable": self.executable,
             "cache_name": self.cache_name,
-            "repo_manifest": dict(self.repo_manifest or {}),
+            "repo_manifest": repo_manifest,
+            "repoManifest": repo_manifest,
         }
-        if self.repo_manifest:
-            artifact["large_data_reference"] = large_data_reference_from_repo_manifest(
-                self.repo_manifest,
+        if repo_manifest:
+            large_data_reference = large_data_reference_from_repo_manifest(
+                repo_manifest,
                 object_type=self.kind,
                 object_id=self.name,
             )
+            artifact["large_data_reference"] = large_data_reference
+            artifact["largeDataReference"] = large_data_reference
         return artifact
 
 
