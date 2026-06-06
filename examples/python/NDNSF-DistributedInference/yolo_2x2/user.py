@@ -31,7 +31,11 @@ def main() -> int:
                         help="kept for older commands; service invocation now provisions dynamically by default")
     parser.add_argument("--deployed-models", action="store_true",
                         help="use providers that already have local model shards")
-    parser.add_argument("--repo-manifest-file", default="")
+    parser.add_argument(
+        "--repo-manifest-file",
+        default="",
+        help="artifact reference manifest produced by the repo-backed deployer",
+    )
     parser.add_argument("--sequential-requests", type=int, default=0)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE)
@@ -84,7 +88,7 @@ def main() -> int:
                     timeout_ms=args.timeout_ms,
                     dynamic_provisioning=dynamic_provisioning,
                     runtime=runtime_spec(),
-                    repo_manifests=args.repo_manifest_file or None,
+                    artifact_references=args.repo_manifest_file or None,
                 ))
                 for _ in range(request_count)
             ]
@@ -97,7 +101,7 @@ def main() -> int:
                     timeout_ms=args.timeout_ms,
                     dynamic_provisioning=dynamic_provisioning,
                     runtime=runtime_spec(),
-                    repo_manifests=args.repo_manifest_file or None,
+                    artifact_references=args.repo_manifest_file or None,
                 )
                 for _ in range(request_count)
             ]
