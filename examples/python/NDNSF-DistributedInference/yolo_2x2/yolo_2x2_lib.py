@@ -66,6 +66,7 @@ CONFIG_FILE = str(Path(__file__).with_name("yolo_policy.yaml"))
 RUNTIME_NAME = "/Runtime/NDNSF/YOLO2x2/OnnxRuntime/v1"
 REPO_SERVICE = "/NDNSF/DistributedRepo"
 REPO_PROVIDER = PROVIDER_PREFIX + "/D"
+COMPUTE_PROVIDER_IDS = ["", "A", "B", "C", "E", "F", "G", "H", "I"]
 
 ROLE_S0_0 = "/Stage/0/Shard/0"
 ROLE_S0_1 = "/Stage/0/Shard/1"
@@ -233,6 +234,20 @@ def roles_for_layout(layout: str | None = None) -> list[str]:
         for stage in range(stages)
         for shard in range(shards)
     ]
+
+
+def compute_provider_identities(count: int) -> list[str]:
+    if count > len(COMPUTE_PROVIDER_IDS):
+        raise ValueError(
+            f"layout requires {count} compute providers but the example "
+            f"defines only {len(COMPUTE_PROVIDER_IDS)} MiniNDN identities")
+    identities = []
+    for provider_id in COMPUTE_PROVIDER_IDS[:count]:
+        if provider_id:
+            identities.append(PROVIDER_PREFIX.rstrip("/") + "/" + provider_id)
+        else:
+            identities.append(PROVIDER_PREFIX)
+    return identities
 
 
 def service_name_for_layout(layout: str | None = None) -> str:
@@ -642,6 +657,7 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
         user=USER,
         provider_prefix=PROVIDER_PREFIX,
         services=[service, repo_service],
+        provider_identities=compute_provider_identities(len(roles)),
         trust_app_roots=["/example"],
         metadata=service.metadata,
     )
@@ -656,6 +672,7 @@ def yolo_dynamic_splitter_output(split: dict, *, trust_anchor_file: str = "") ->
         user=output.user,
         provider_prefix=output.provider_prefix,
         services=output.services,
+        provider_identities=output.provider_identities,
         trust_app_roots=output.trust_app_roots,
         trust_anchor_file=trust_anchor_file,
         artifact_allowlist=[RUNTIME_NAME],

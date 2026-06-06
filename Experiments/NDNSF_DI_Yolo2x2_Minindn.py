@@ -123,22 +123,20 @@ def load_policy_roles(path: Path) -> list[str]:
 
 
 def provider_role_assignments(roles: list[str]) -> list[tuple[str, str, list[str]]]:
-    providers = [
-        ("ucla", "provider-A", ""),
-        ("wustl", "provider-B", "A"),
-        ("uiuc", "provider-C", "B"),
-        ("umich", "provider-D", "C"),
-    ]
-    assigned = [[] for _ in providers]
-    for index, role in enumerate(roles):
-        assigned[index % len(providers)].append(role)
+    nodes = ["ucla", "wustl", "uiuc", "umich", "arizona", "caida", "pku", "neu", "csu"]
+    provider_ids = ["", "A", "B", "C", "E", "F", "G", "H", "I"]
+    if len(roles) > len(nodes):
+        raise RuntimeError(
+            f"layout needs {len(roles)} role providers but MiniNDN smoke "
+            f"defines only {len(nodes)} provider nodes")
     result = []
-    for (node_name, name, provider_id), provider_roles in zip(providers, assigned):
-        if not provider_roles:
-            continue
+    for index, role in enumerate(roles):
+        node_name = nodes[index]
+        provider_id = provider_ids[index]
+        name = "provider-root" if not provider_id else f"provider-{provider_id}"
         result.append((node_name, name, [
             "--provider-id", provider_id,
-            "--roles", ",".join(provider_roles),
+            "--roles", role,
         ]))
     return result
 
@@ -154,21 +152,22 @@ def stop(procs):
         f.close()
 
 
-def initialize_di_keychains(ndn, output_dir: Path) -> None:
+def provider_identity(provider_id: str) -> str:
+    return PROVIDER_PREFIX if not provider_id else PROVIDER_PREFIX + "/" + provider_id
+
+
+def initialize_di_keychains(ndn, output_dir: Path, provider_identities: list[str]) -> None:
     """Install root-signed keys that match the generated DI policy namespace."""
     log("Installing root-signed DI keychain material on MiniNDN nodes")
     security_dir = output_dir / "security"
     security_dir.mkdir(parents=True, exist_ok=True)
     identities = [
         CONTROLLER_IDENTITY,
-        PROVIDER_PREFIX,
-        PROVIDER_PREFIX + "/A",
-        PROVIDER_PREFIX + "/B",
-        PROVIDER_PREFIX + "/C",
         PROVIDER_PREFIX + "/D",
-        PROVIDER_PREFIX + "/E",
         USER_IDENTITY,
+        *provider_identities,
     ]
+    identities = list(dict.fromkeys(identities))
 
     for node in ndn.net.hosts:
         for identity in [APP_ROOT] + identities:
@@ -279,6 +278,12 @@ def main() -> None:
         AppManager(ndn, ndn.net.hosts, Nfd, logLevel="INFO")
         perf.wait_for_nfd_sockets(ndn, OUT)
 
+        providers = provider_role_assignments(load_policy_roles(CONFIG))
+        provider_identities = [
+            provider_identity(argv[argv.index("--provider-id") + 1])
+            for _, _, argv in providers
+        ]
+
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
         rh.addOrigin([ndn.net["csu"]], [
             "/NDNSF-DistributeInference/example/controller",
@@ -288,12 +293,13 @@ def main() -> None:
         ])
         rh.addOrigin([ndn.net["memphis"]], ["/NDNSF-DistributeInference/example/user", "/NDNSF-DistributeInference/example/group"])
         origins = [
-            ("ucla", "/NDNSF-DistributeInference/example/provider"),
-            ("wustl", "/NDNSF-DistributeInference/example/provider/A"),
-            ("uiuc", "/NDNSF-DistributeInference/example/provider/B"),
-            ("umich", "/NDNSF-DistributeInference/example/provider/C"),
-            ("neu", "/NDNSF-DistributeInference/example/provider/D"),
+            (
+                node_name,
+                provider_identity(argv[argv.index("--provider-id") + 1]),
+            )
+            for node_name, _, argv in providers
         ]
+        origins.append(("neu", "/NDNSF-DistributeInference/example/provider/D"))
         for node_name, prefix in origins:
             rh.addOrigin([ndn.net[node_name]], [prefix, prefix + "/KEY", "/NDNSF-DistributeInference/example/group"])
         rh.addOrigin([ndn.net["neu"]], ["/NDNSF/DistributedRepo/Object"])
@@ -303,7 +309,7 @@ def main() -> None:
             Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
 
-        initialize_di_keychains(ndn, OUT)
+        initialize_di_keychains(ndn, OUT, provider_identities)
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
@@ -363,7 +369,6 @@ def main() -> None:
                 f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
         validate_repo_manifest_references(REPO_MANIFEST)
 
-        providers = provider_role_assignments(load_policy_roles(CONFIG))
         for node_name, name, argv in providers:
             _, lp = start(ndn.net[node_name], name,
                           python_cmd("provider.py", common + argv + [

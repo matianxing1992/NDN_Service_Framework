@@ -101,7 +101,9 @@ export a real Ultralytics YOLO model into a requested stage-by-shard layout
 such as `1x3`, `2x3`, `3x2`, or `3x3`; the generated policy then drives the
 same dependency executor after deployment. This is custom layout support for
 the YOLO ONNX path, not yet a fully generic planner for every ONNX topology
-and every possible partitioning strategy.
+and every possible partitioning strategy. For network regression, the generated
+policy creates enough compute provider identities for the chunk roles while
+keeping the repo provider separate.
 
 For a two-stage YOLO split:
 
@@ -227,7 +229,7 @@ fast non-MiniNDN layout/policy smoke:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 1x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
@@ -1342,7 +1344,7 @@ MiniNDN split smokes through one entry point:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
-sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 1x3
+sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
