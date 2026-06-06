@@ -26,7 +26,7 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
 OUT = REPO / "results/yolo_2x2_minindn_quick"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 CONFIG = OUT / "yolo_policy.yaml"
@@ -138,7 +138,8 @@ def snapshot_traffic(ndn) -> dict[str, dict[str, int]]:
 
 def write_traffic_delta(layout: str, phase: str,
                         before: dict[str, dict[str, int]],
-                        after: dict[str, dict[str, int]]) -> dict:
+                        after: dict[str, dict[str, int]],
+                        request_count: int = 1) -> dict:
     nodes = {}
     total_rx = 0
     total_tx = 0
@@ -153,9 +154,11 @@ def write_traffic_delta(layout: str, phase: str,
     summary = {
         "layout": layout,
         "phase": phase,
+        "requestCount": max(1, request_count),
         "rxBytes": total_rx,
         "txBytes": total_tx,
         "totalNodeBytes": total_rx + total_tx,
+        "totalNodeBytesPerRequest": (total_rx + total_tx) / max(1, request_count),
         "nodes": nodes,
     }
     path = OUT / "traffic-stats.json"
@@ -172,10 +175,449 @@ def write_traffic_delta(layout: str, phase: str,
     print(
         "YOLO_LAYOUT_TRAFFIC "
         f"layout={layout} phase={phase} "
+        f"request_count={max(1, request_count)} "
         f"rx_bytes={total_rx} tx_bytes={total_tx} "
-        f"total_node_bytes={total_rx + total_tx} path={path}"
+        f"total_node_bytes={total_rx + total_tx} "
+        f"total_node_bytes_per_request={(total_rx + total_tx) / max(1, request_count):.1f} "
+        f"path={path}"
     )
     return summary
+
+
+def parse_nfd_face_list(output: str) -> list[dict]:
+    faces = []
+    current = None
+    for line in output.splitlines():
+        stripped = line.strip()
+        match = re.match(r"faceid=(\d+)\s+remote=([^\s]+)\s+local=([^\s]+)", stripped)
+        if match:
+            current = {
+                "faceid": match.group(1),
+                "remote": match.group(2),
+                "local": match.group(3),
+                "counters": {},
+            }
+            faces.append(current)
+        if current is None:
+            continue
+        counter_match = re.search(
+            r"counters=\{in=\{(\d+)i\s+(\d+)d\s+(\d+)n\s+(\d+)B\}\s+"
+            r"out=\{(\d+)i\s+(\d+)d\s+(\d+)n\s+(\d+)B\}\}",
+            stripped)
+        if counter_match:
+            (
+                in_interests, in_data, in_nacks, in_bytes,
+                out_interests, out_data, out_nacks, out_bytes,
+            ) = [int(value) for value in counter_match.groups()]
+            current["counters"].update({
+                "nInInterests": in_interests,
+                "nInData": in_data,
+                "nInNacks": in_nacks,
+                "nInBytes": in_bytes,
+                "nOutInterests": out_interests,
+                "nOutData": out_data,
+                "nOutNacks": out_nacks,
+                "nOutBytes": out_bytes,
+            })
+            continue
+        for key, value in re.findall(r"([a-zA-Z-]+)=([0-9]+)", stripped):
+            current["counters"][key] = int(value)
+    return faces
+
+
+def is_network_face(face: dict) -> bool:
+    remote = str(face.get("remote", ""))
+    return not (
+        remote.startswith("internal://") or
+        remote.startswith("fd://") or
+        remote.startswith("unix://")
+    )
+
+
+def read_node_nfd_data_counters(node) -> dict[str, int]:
+    output = perf.node_cmd(node, "nfdc face list 2>&1")
+    totals = {
+        "nInData": 0,
+        "nOutData": 0,
+        "nInBytes": 0,
+        "nOutBytes": 0,
+    }
+    for face in parse_nfd_face_list(output):
+        if not is_network_face(face):
+            continue
+        counters = face.get("counters", {})
+        for key in totals:
+            totals[key] += int(counters.get(key, 0))
+    return totals
+
+
+def snapshot_nfd_data_counters(ndn) -> dict[str, dict[str, int]]:
+    return {
+        node.name: read_node_nfd_data_counters(node)
+        for node in ndn.net.hosts
+    }
+
+
+def write_nfd_data_delta(layout: str, phase: str,
+                         before: dict[str, dict[str, int]],
+                         after: dict[str, dict[str, int]],
+                         request_count: int = 1) -> dict:
+    counter_names = ["nInData", "nOutData", "nInBytes", "nOutBytes"]
+    nodes = {}
+    totals = {name: 0 for name in counter_names}
+    for name in sorted(set(before) | set(after)):
+        start = before.get(name, {})
+        end = after.get(name, {})
+        delta = {
+            counter: max(0, int(end.get(counter, 0)) - int(start.get(counter, 0)))
+            for counter in counter_names
+        }
+        nodes[name] = delta
+        for counter in counter_names:
+            totals[counter] += delta[counter]
+    request_count = max(1, request_count)
+    out_data = totals["nOutData"]
+    in_data = totals["nInData"]
+    summary = {
+        "layout": layout,
+        "phase": phase,
+        "requestCount": request_count,
+        "nInData": in_data,
+        "nOutData": out_data,
+        "nInBytes": totals["nInBytes"],
+        "nOutBytes": totals["nOutBytes"],
+        "nOutDataPerRequest": out_data / request_count,
+        "nOutBytesPerRequest": totals["nOutBytes"] / request_count,
+        "avgNfdOutBytesPerOutData": (totals["nOutBytes"] / out_data) if out_data else 0.0,
+        "notes": [
+            "Data packet counts use NFD network-face nOutData/nInData counters.",
+            "NFD nOutBytes/nInBytes are face byte counters for all packet types, "
+            "so avgNfdOutBytesPerOutData is an approximate transport-size ratio, "
+            "not a Data-only wire-size measurement.",
+        ],
+        "nodes": nodes,
+    }
+    path = OUT / "nfd-data-stats.json"
+    history = []
+    if path.exists():
+        try:
+            history = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            history = []
+    if not isinstance(history, list):
+        history = []
+    history.append(summary)
+    path.write_text(json.dumps(history, indent=2, sort_keys=True), encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_NFD_DATA "
+        f"layout={layout} phase={phase} request_count={request_count} "
+        f"n_out_data={out_data} n_in_data={in_data} "
+        f"n_out_data_per_request={out_data / request_count:.2f} "
+        f"n_out_bytes={totals['nOutBytes']} "
+        f"n_out_bytes_per_request={totals['nOutBytes'] / request_count:.1f} "
+        f"avg_nfd_out_bytes_per_out_data={summary['avgNfdOutBytesPerOutData']:.1f} "
+        f"path={path}"
+    )
+    return summary
+
+
+def parse_inference_latencies(text: str) -> list[float]:
+    layout_matches = list(re.finditer(
+        r"YOLO_LAYOUT_RESULT[^\n]*inference_elapsed_ms=([0-9.]+)[^\n]*ok=true",
+        text))
+    if layout_matches:
+        return [float(match.group(1)) for match in layout_matches]
+    return [
+        float(match.group(1))
+        for match in re.finditer(
+            r"YOLO_2X2_RESULT[^\n]*inference_elapsed_ms=([0-9.]+)[^\n]*ok=true",
+            text)
+    ]
+
+
+def percentile(values: list[float], p: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * (p / 100.0)
+    lo = int(rank)
+    hi = min(lo + 1, len(ordered) - 1)
+    weight = rank - lo
+    return ordered[lo] * (1.0 - weight) + ordered[hi] * weight
+
+
+def write_latency_summary(layout: str, phase: str, text: str) -> list[float]:
+    latencies = parse_inference_latencies(text)
+    steady_latencies = latencies[1:] if phase == "warm" and len(latencies) > 1 else []
+    steady_under_1s = [value for value in steady_latencies if value < 1000.0]
+    summary = {
+        "layout": layout,
+        "phase": phase,
+        "count": len(latencies),
+        "minMs": min(latencies) if latencies else 0.0,
+        "p50Ms": percentile(latencies, 50),
+        "p95Ms": percentile(latencies, 95),
+        "maxMs": max(latencies) if latencies else 0.0,
+        "meanMs": (sum(latencies) / len(latencies)) if latencies else 0.0,
+        "samplesMs": latencies,
+    }
+    if steady_latencies:
+        summary["steadyAfterFirst"] = {
+            "discardedInitialSamples": 1,
+            "count": len(steady_latencies),
+            "minMs": min(steady_latencies),
+            "p50Ms": percentile(steady_latencies, 50),
+            "p95Ms": percentile(steady_latencies, 95),
+            "maxMs": max(steady_latencies),
+            "meanMs": sum(steady_latencies) / len(steady_latencies),
+        }
+        summary["steadyUnder1sAfterFirst"] = {
+            "discardedInitialSamples": 1,
+            "tailThresholdMs": 1000.0,
+            "count": len(steady_under_1s),
+            "minMs": min(steady_under_1s) if steady_under_1s else 0.0,
+            "p50Ms": percentile(steady_under_1s, 50),
+            "p95Ms": percentile(steady_under_1s, 95),
+            "maxMs": max(steady_under_1s) if steady_under_1s else 0.0,
+            "meanMs": (sum(steady_under_1s) / len(steady_under_1s)) if steady_under_1s else 0.0,
+        }
+    path = OUT / "inference-latency-stats.json"
+    history = []
+    if path.exists():
+        try:
+            history = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            history = []
+    if not isinstance(history, list):
+        history = []
+    history.append(summary)
+    path.write_text(json.dumps(history, indent=2, sort_keys=True), encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_LATENCY "
+        f"layout={layout} phase={phase} count={len(latencies)} "
+        f"min_ms={summary['minMs']:.2f} p50_ms={summary['p50Ms']:.2f} "
+        f"p95_ms={summary['p95Ms']:.2f} max_ms={summary['maxMs']:.2f} "
+        f"mean_ms={summary['meanMs']:.2f} path={path}"
+    )
+    if steady_latencies:
+        steady = summary["steadyAfterFirst"]
+        under = summary["steadyUnder1sAfterFirst"]
+        print(
+            "YOLO_LAYOUT_STEADY_LATENCY "
+            f"layout={layout} phase={phase} discard_first=1 "
+            f"count={steady['count']} min_ms={steady['minMs']:.2f} "
+            f"p50_ms={steady['p50Ms']:.2f} p95_ms={steady['p95Ms']:.2f} "
+            f"max_ms={steady['maxMs']:.2f} mean_ms={steady['meanMs']:.2f}"
+        )
+        print(
+            "YOLO_LAYOUT_STEADY_LATENCY_UNDER_1S "
+            f"layout={layout} phase={phase} discard_first=1 "
+            f"count={under['count']} min_ms={under['minMs']:.2f} "
+            f"p50_ms={under['p50Ms']:.2f} p95_ms={under['p95Ms']:.2f} "
+            f"max_ms={under['maxMs']:.2f} mean_ms={under['meanMs']:.2f}"
+        )
+    return latencies
+
+
+def summarize_numeric(values: list[float]) -> dict:
+    return {
+        "count": len(values),
+        "min": min(values) if values else 0.0,
+        "p50": percentile(values, 50),
+        "p95": percentile(values, 95),
+        "max": max(values) if values else 0.0,
+        "mean": (sum(values) / len(values)) if values else 0.0,
+    }
+
+
+def parse_key_value_line(line: str) -> dict[str, str]:
+    return dict(re.findall(r"(\w+)=([^ \n]+)", line))
+
+
+def write_provider_timing_summaries(layout: str,
+                                    providers: list[tuple[str, str, list[str]]]) -> None:
+    onnx_rows = []
+    dependency_rows = []
+    for _, name, _ in providers:
+        path = OUT / f"{name}.log"
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "NDNSF_DI_ONNX_TIMING" in line:
+                row = parse_key_value_line(line)
+                for key in ("collect_ms", "session_ms", "run_ms", "publish_ms"):
+                    row[key] = float(row.get(key, "0"))
+                row["providerLog"] = path.name
+                onnx_rows.append(row)
+            elif "NDNSF_DI_DEPENDENCY_INPUT_TIMING" in line:
+                row = parse_key_value_line(line)
+                for key in (
+                    "future_wait_ms",
+                    "ref_wait_ms",
+                    "fetch_ms",
+                    "decode_ms",
+                    "prefetch_total_ms",
+                ):
+                    row[key] = float(row.get(key, "0"))
+                row["bytes"] = int(row.get("bytes", "0"))
+                row["expected_segments"] = int(row.get("expected_segments", "0"))
+                row["providerLog"] = path.name
+                dependency_rows.append(row)
+
+    onnx_summary = {
+        "layout": layout,
+        "count": len(onnx_rows),
+        "sessionCache": {
+            "hit": sum(1 for row in onnx_rows if row.get("session_cache") == "hit"),
+            "miss": sum(1 for row in onnx_rows if row.get("session_cache") == "miss"),
+        },
+        "collectMs": summarize_numeric([row["collect_ms"] for row in onnx_rows]),
+        "sessionMs": summarize_numeric([row["session_ms"] for row in onnx_rows]),
+        "runMs": summarize_numeric([row["run_ms"] for row in onnx_rows]),
+        "publishMs": summarize_numeric([row["publish_ms"] for row in onnx_rows]),
+        "rows": onnx_rows,
+    }
+    onnx_path = OUT / "onnx-timing-stats.json"
+    onnx_path.write_text(json.dumps(onnx_summary, indent=2, sort_keys=True),
+                         encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_ONNX_TIMING "
+        f"layout={layout} count={onnx_summary['count']} "
+        f"session_hit={onnx_summary['sessionCache']['hit']} "
+        f"session_miss={onnx_summary['sessionCache']['miss']} "
+        f"run_p50_ms={onnx_summary['runMs']['p50']:.2f} "
+        f"session_p50_ms={onnx_summary['sessionMs']['p50']:.2f} "
+        f"path={onnx_path}"
+    )
+    onnx_by_role = {}
+    for row in onnx_rows:
+        onnx_by_role.setdefault(row.get("role", "-"), []).append(row)
+    for role, rows in sorted(onnx_by_role.items()):
+        collect = summarize_numeric([row["collect_ms"] for row in rows])
+        session = summarize_numeric([row["session_ms"] for row in rows])
+        run = summarize_numeric([row["run_ms"] for row in rows])
+        publish = summarize_numeric([row["publish_ms"] for row in rows])
+        print(
+            "YOLO_LAYOUT_ONNX_ROLE_TIMING "
+            f"layout={layout} role={role} count={len(rows)} "
+            f"collect_p50_ms={collect['p50']:.2f} "
+            f"session_p50_ms={session['p50']:.2f} "
+            f"run_p50_ms={run['p50']:.2f} "
+            f"publish_p50_ms={publish['p50']:.2f}"
+        )
+
+    dep_summary = {
+        "layout": layout,
+        "count": len(dependency_rows),
+        "totalBytes": sum(row["bytes"] for row in dependency_rows),
+        "totalExpectedSegments": sum(row["expected_segments"] for row in dependency_rows),
+        "bytes": summarize_numeric([float(row["bytes"]) for row in dependency_rows]),
+        "expectedSegments": summarize_numeric([
+            float(row["expected_segments"]) for row in dependency_rows
+        ]),
+        "futureWaitMs": summarize_numeric([row["future_wait_ms"] for row in dependency_rows]),
+        "referenceWaitMs": summarize_numeric([row["ref_wait_ms"] for row in dependency_rows]),
+        "fetchMs": summarize_numeric([row["fetch_ms"] for row in dependency_rows]),
+        "decodeMs": summarize_numeric([row["decode_ms"] for row in dependency_rows]),
+        "prefetchTotalMs": summarize_numeric([row["prefetch_total_ms"] for row in dependency_rows]),
+        "rows": dependency_rows,
+    }
+    dep_path = OUT / "dependency-input-timing-stats.json"
+    dep_path.write_text(json.dumps(dep_summary, indent=2, sort_keys=True),
+                        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_DEPENDENCY_TIMING "
+        f"layout={layout} count={dep_summary['count']} "
+        f"ref_wait_p50_ms={dep_summary['referenceWaitMs']['p50']:.2f} "
+        f"fetch_p50_ms={dep_summary['fetchMs']['p50']:.2f} "
+        f"decode_p50_ms={dep_summary['decodeMs']['p50']:.2f} "
+        f"total_bytes={dep_summary['totalBytes']} "
+        f"path={dep_path}"
+    )
+    dependency_by_consumer = {}
+    for row in dependency_rows:
+        consumer = row.get("providerLog", "-")
+        producer = row.get("producer", "-")
+        dependency_by_consumer.setdefault((consumer, producer), []).append(row)
+    edge_fetch_p50_sum = 0.0
+    edge_decode_p50_sum = 0.0
+    edge_count = 0
+    for (consumer, producer), rows in sorted(dependency_by_consumer.items()):
+        fetch = summarize_numeric([row["fetch_ms"] for row in rows])
+        prefetch = summarize_numeric([row["prefetch_total_ms"] for row in rows])
+        decode = summarize_numeric([row["decode_ms"] for row in rows])
+        bytes_summary = summarize_numeric([float(row["bytes"]) for row in rows])
+        edge_fetch_p50_sum += fetch["p50"]
+        edge_decode_p50_sum += decode["p50"]
+        edge_count += 1
+        print(
+            "YOLO_LAYOUT_DEPENDENCY_EDGE_TIMING "
+            f"layout={layout} consumer_log={consumer} producer={producer} "
+            f"count={len(rows)} bytes_p50={bytes_summary['p50']:.0f} "
+            f"fetch_p50_ms={fetch['p50']:.2f} fetch_p95_ms={fetch['p95']:.2f} "
+            f"prefetch_p50_ms={prefetch['p50']:.2f} "
+            f"decode_p50_ms={decode['p50']:.2f}"
+        )
+    role_run_p50_sum = 0.0
+    role_publish_p50_sum = 0.0
+    role_session_p50_sum = 0.0
+    for rows in onnx_by_role.values():
+        role_run_p50_sum += summarize_numeric([row["run_ms"] for row in rows])["p50"]
+        role_publish_p50_sum += summarize_numeric([row["publish_ms"] for row in rows])["p50"]
+        role_session_p50_sum += summarize_numeric([row["session_ms"] for row in rows])["p50"]
+    print(
+        "YOLO_LAYOUT_PIPELINE_ESTIMATE "
+        f"layout={layout} dependency_edges={edge_count} "
+        f"dependency_fetch_p50_sum_ms={edge_fetch_p50_sum:.2f} "
+        f"dependency_decode_p50_sum_ms={edge_decode_p50_sum:.2f} "
+        f"onnx_session_p50_sum_ms={role_session_p50_sum:.2f} "
+        f"onnx_run_p50_sum_ms={role_run_p50_sum:.2f} "
+        f"activation_publish_p50_sum_ms={role_publish_p50_sum:.2f}"
+    )
+
+
+def write_plan_cache_summary(layout: str,
+                             phases: list[tuple[str, Path]]) -> None:
+    rows = []
+    for phase, path in phases:
+        text = path.read_text(errors="replace") if path.exists() else ""
+        entries = [
+            parse_key_value_line(line)
+            for line in text.splitlines()
+            if "NDNSF_DI_PLAN_CACHE" in line
+        ]
+        rows.append({
+            "phase": phase,
+            "log": str(path),
+            "entries": entries,
+            "hits": sum(1 for entry in entries if entry.get("hit") == "true"),
+            "misses": sum(1 for entry in entries if entry.get("hit") == "false"),
+            "artifactPublishes": text.count("inference-artifact--"),
+            "scopeKeyPublishes": text.count("inference-scope-key-"),
+            "inputPublishes": text.count("inference-input-image"),
+        })
+    summary = {
+        "layout": layout,
+        "phases": rows,
+    }
+    path = OUT / "plan-cache-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_PLAN_CACHE "
+        f"layout={layout} "
+        f"hits={sum(row['hits'] for row in rows)} "
+        f"misses={sum(row['misses'] for row in rows)} "
+        f"path={path}"
+    )
+
+
+def user_wait_timeout(count: int, timeout_ms: int, duration_s: float = 0.0) -> int:
+    timeout_by_count = int((max(1, count) * max(1, timeout_ms)) / 1000) + 30
+    timeout_by_duration = int(max(0.0, duration_s)) + int(max(1, timeout_ms) / 1000) + 60
+    return max(90, timeout_by_count, timeout_by_duration)
 
 
 def load_policy_roles(path: Path) -> list[str]:
@@ -281,10 +723,32 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--layout", default="2x2",
                         help="YOLO stage-by-shard layout, e.g. 1x3, 2x3, 3x2, 3x3")
+    parser.add_argument("--cold-requests", type=int, default=1,
+                        help="Sequential requests in the cold user process")
+    parser.add_argument("--warm-requests", type=int, default=1,
+                        help="Sequential requests in the warm user process")
+    parser.add_argument("--warm-duration-s", type=float, default=0.0,
+                        help="Run the warm user for this many seconds instead of a fixed request count")
+    parser.add_argument("--warm-interval-ms", type=int, default=0,
+                        help="Minimum interval between warm sequential request starts")
+    parser.add_argument("--ack-timeout-ms", type=int, default=1500,
+                        help="ACK collection timeout passed to the DI user")
+    parser.add_argument("--timeout-ms", type=int, default=60000,
+                        help="End-to-end service timeout passed to the DI user")
+    parser.add_argument("--parallel-output-shards", action="store_true",
+                        help="Use the experimental true-NxM YOLO output-shard prototype")
     args_cli = parser.parse_args()
     layout = args_cli.layout.strip().lower().replace("*", "x")
+    cold_requests = max(1, args_cli.cold_requests)
+    warm_requests = max(1, args_cli.warm_requests)
+    warm_duration_s = max(0.0, float(args_cli.warm_duration_s or 0.0))
+    warm_interval_ms = max(0, args_cli.warm_interval_ms)
+    ack_timeout_ms = max(1, args_cli.ack_timeout_ms)
+    timeout_ms = max(1, args_cli.timeout_ms)
     sys.argv = [sys.argv[0]]
     safe_layout = layout.replace("/", "-")
+    if args_cli.parallel_output_shards:
+        safe_layout += "_parallel_output"
     global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST
     OUT = REPO / f"results/yolo_{safe_layout}_minindn_quick"
     CONFIG = OUT / "yolo_policy.yaml"
@@ -293,13 +757,21 @@ def main() -> None:
 
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
+    for stats_path in (
+            OUT / "traffic-stats.json",
+            OUT / "inference-latency-stats.json",
+            OUT / "nfd-data-stats.json"):
+        try:
+            stats_path.unlink()
+        except FileNotFoundError:
+            pass
     py_path = ":".join([
         str(REPO / "NDNSF-DistributedInference"),
         str(REPO / "pythonWrapper"),
         str(PY_DIR),
         os.environ.get("PYTHONPATH", ""),
     ])
-    subprocess.run([
+    split_command = [
         "python3",
         str(PY_DIR / "split_model.py"),
         "--auto-split",
@@ -312,7 +784,10 @@ def main() -> None:
         "--dynamic-provisioning",
         "--trust-anchor-file",
         str(OUT / "security/root.cert"),
-    ], cwd=str(REPO), env={**os.environ, "PYTHONPATH": py_path}, check=True)
+    ]
+    if args_cli.parallel_output_shards:
+        split_command.append("--parallel-output-shards")
+    subprocess.run(split_command, cwd=str(REPO), env={**os.environ, "PYTHONPATH": py_path}, check=True)
     Minindn.cleanUp()
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=str(TOPO))
@@ -456,11 +931,12 @@ def main() -> None:
         user_common = common + [
             "--repo-manifest-file",
             str(REPO_MANIFEST),
-            "--ack-timeout-ms", "1500",
-            "--timeout-ms", "60000",
-            "--sequential-requests", "1",
+            "--ack-timeout-ms", str(ack_timeout_ms),
+            "--timeout-ms", str(timeout_ms),
+            "--sequential-requests", str(cold_requests),
         ]
         cold_traffic_start = snapshot_traffic(ndn)
+        cold_nfd_start = snapshot_nfd_data_counters(ndn)
         user_proc, user_log = start(
             ndn.net["memphis"],
             "user-cold",
@@ -468,41 +944,67 @@ def main() -> None:
             env,
             procs,
         )
-        user_proc.wait(timeout=90)
+        user_proc.wait(timeout=user_wait_timeout(cold_requests, timeout_ms))
+        cold_nfd_end = snapshot_nfd_data_counters(ndn)
         cold_traffic_end = snapshot_traffic(ndn)
-        write_traffic_delta(layout, "cold", cold_traffic_start, cold_traffic_end)
+        write_traffic_delta(layout, "cold", cold_traffic_start, cold_traffic_end,
+                            cold_requests)
+        write_nfd_data_delta(layout, "cold", cold_nfd_start, cold_nfd_end,
+                             cold_requests)
         cold_text = user_log.read_text(errors="replace")
         print(cold_text)
-        if "YOLO_LAYOUT_RESULT" not in cold_text or "ok=true" not in cold_text:
+        cold_latencies = write_latency_summary(layout, "cold", cold_text)
+        if len(cold_latencies) < cold_requests or "ok=false" in cold_text:
             raise RuntimeError(
-                f"YOLO {layout} cold provisioning failed rc={user_proc.returncode}; log={user_log}")
+                f"YOLO {layout} cold provisioning failed or returned too few results "
+                f"count={len(cold_latencies)} expected={cold_requests} "
+                f"rc={user_proc.returncode}; log={user_log}")
 
         warm_traffic_start = snapshot_traffic(ndn)
+        warm_nfd_start = snapshot_nfd_data_counters(ndn)
+        warm_user_args = common + [
+            "--repo-manifest-file",
+            str(REPO_MANIFEST),
+            "--ack-timeout-ms", str(ack_timeout_ms),
+            "--timeout-ms", str(timeout_ms),
+        ]
+        if warm_duration_s > 0:
+            warm_user_args.extend([
+                "--sequential-duration-s", str(warm_duration_s),
+                "--sequential-interval-ms", str(warm_interval_ms),
+            ])
+        else:
+            warm_user_args.extend(["--sequential-requests", str(warm_requests)])
         warm_proc, warm_log = start(
             ndn.net["memphis"],
             "user-warm",
-            python_cmd("user.py", common + [
-                "--repo-manifest-file",
-                str(REPO_MANIFEST),
-                "--ack-timeout-ms", "1500",
-                "--timeout-ms", "60000",
-                "--sequential-requests", "1",
-            ]),
+            python_cmd("user.py", warm_user_args),
             env,
             procs,
         )
-        warm_proc.wait(timeout=90)
+        warm_proc.wait(timeout=user_wait_timeout(warm_requests, timeout_ms, warm_duration_s))
+        warm_nfd_end = snapshot_nfd_data_counters(ndn)
         warm_traffic_end = snapshot_traffic(ndn)
-        write_traffic_delta(layout, "warm", warm_traffic_start, warm_traffic_end)
         warm_text = warm_log.read_text(errors="replace")
+        warm_latencies = write_latency_summary(layout, "warm", warm_text)
+        warm_count = len(warm_latencies)
+        write_traffic_delta(layout, "warm", warm_traffic_start, warm_traffic_end,
+                            warm_count or warm_requests)
+        write_nfd_data_delta(layout, "warm", warm_nfd_start, warm_nfd_end,
+                             warm_count or warm_requests)
         print(warm_text)
+        write_plan_cache_summary(layout, [
+            ("cold", user_log),
+            ("warm", warm_log),
+        ])
+        write_provider_timing_summaries(layout, providers)
         provider_text = "\n".join(
             (OUT / f"{name}.log").read_text(errors="replace")
             for _, name, _ in providers
         )
         success = (
-            "YOLO_LAYOUT_RESULT" in warm_text and
-            "ok=true" in warm_text and
+            len(warm_latencies) >= (1 if warm_duration_s > 0 else warm_requests) and
+            "ok=false" not in warm_text and
             "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS" in provider_text and
             "NDNSF_EXECUTION_ARTIFACT_CACHE_HIT" in provider_text
         )

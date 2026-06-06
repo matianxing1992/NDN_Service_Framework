@@ -993,6 +993,22 @@ public:
                           std::move(assignmentPayload),
                           *best});
     }
+    std::string providerMap;
+    for (const auto& participant : selected) {
+      providerMap += "roleProvider." + participant.role + "=" +
+                     participant.provider.toUri() + ";";
+    }
+    if (!providerMap.empty()) {
+      for (auto& participant : selected) {
+        std::string assignment(
+          reinterpret_cast<const char*>(participant.assignmentPayload.data()),
+          participant.assignmentPayload.size());
+        assignment += providerMap;
+        participant.assignmentPayload =
+          ndn::Buffer(reinterpret_cast<const uint8_t*>(assignment.data()),
+                      assignment.size());
+      }
+    }
     return selected;
   }
 
@@ -1088,6 +1104,19 @@ public:
                                toBuffer(payload),
                                maxSegmentSize,
                                freshnessMs).toUri();
+  }
+
+  std::string publishLargeNamed(const std::string& keyScope,
+                                const std::string& dataName,
+                                const py::bytes& payload,
+                                size_t maxSegmentSize,
+                                int freshnessMs)
+  {
+    return m_ctx->publishLargeNamed(keyScope,
+                                    ndn::Name(dataName),
+                                    toBuffer(payload),
+                                    maxSegmentSize,
+                                    freshnessMs).toUri();
   }
 
   std::optional<py::bytes> fetchLarge(const std::string& dataName,
@@ -2303,6 +2332,12 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("publish_large", &PyCollaborationContext::publishLarge,
          py::arg("key_scope"),
          py::arg("topic"),
+         py::arg("payload"),
+         py::arg("max_segment_size") = 7000,
+         py::arg("freshness_ms") = 60000)
+    .def("publish_large_named", &PyCollaborationContext::publishLargeNamed,
+         py::arg("key_scope"),
+         py::arg("data_name"),
          py::arg("payload"),
          py::arg("max_segment_size") = 7000,
          py::arg("freshness_ms") = 60000)

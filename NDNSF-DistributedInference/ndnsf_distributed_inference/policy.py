@@ -235,6 +235,9 @@ def _parse_dependencies(raw: Any) -> tuple[InferenceDependency, ...]:
             topic_prefix=str(item["topic_prefix"]),
             required=bool(item.get("required", True)),
             tensors=list(_as_tuple(item.get("tensors"))),
+            object_name_template=str(item.get("object_name_template", "")),
+            expected_segments=int(item.get("expected_segments", 0) or 0),
+            expected_bytes=int(item.get("expected_bytes", 0) or 0),
         ))
     return tuple(dependencies)
 
@@ -753,6 +756,9 @@ def service_manifest(services: tuple[ServicePolicy, ...]) -> dict[str, Any]:
                         "topic_prefix": dep.topic_prefix,
                         "required": dep.required,
                         "tensors": list(dep.tensors),
+                        "object_name_template": dep.object_name_template,
+                        "expected_segments": dep.expected_segments,
+                        "expected_bytes": dep.expected_bytes,
                     }
                     for dep in service.dependencies
                 ],

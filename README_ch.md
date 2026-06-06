@@ -272,6 +272,13 @@ NAC-ABE 只在 message key 尚未缓存时用于包装这个很小的 message ke
 artifact、activation、recording 等 response body 上调用性能很差的 NAC-ABE
 `produce/consume`。
 
+NDNSF provider 还会为从 in-memory storage 服务的 Data 保留一个短期 pending
+Interest 队列。如果某个可预测 Data name 的 Interest 早于 Data 本身到达，
+provider 会在该 Interest 的正常 InterestLifetime 过期前保留它；当后续插入的
+Data 能匹配这个 Interest 时，provider 会立即回复。这是 large-data reference、
+repo object 和 distributed-inference activation object 的传输优化。它不改变
+Request/ACK/Selection/Response 协议、Data 名字、签名、加密或应用 callback。
+
 自动 response reference 的默认阈值是 6000 bytes，可以用环境变量调整或关闭：
 
 ```bash

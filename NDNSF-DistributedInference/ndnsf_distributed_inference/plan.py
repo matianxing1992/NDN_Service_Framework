@@ -14,6 +14,64 @@ from ndnsf import CollaborationDependency, CollaborationRole
 from .repo import large_data_reference_from_repo_manifest
 
 
+def stage_shard_role(stage: int, shard: int) -> str:
+    """Return the canonical role name for an NxM stage/shard layout."""
+
+    if stage < 0 or shard < 0:
+        raise ValueError("stage and shard indices must be non-negative")
+    return f"/Stage/{stage}/Shard/{shard}"
+
+
+def nxm_stage_roles(stages: int, shards_per_stage: int) -> list[str]:
+    """Return roles for true NxM semantics.
+
+    ``stages`` is the number of vertical model stages. ``shards_per_stage`` is
+    the number of parallel shards inside every stage.
+    """
+
+    if stages <= 0 or shards_per_stage <= 0:
+        raise ValueError("stages and shards_per_stage must be positive")
+    return [
+        stage_shard_role(stage, shard)
+        for stage in range(stages)
+        for shard in range(shards_per_stage)
+    ]
+
+
+def nxm_stage_frontier_dependencies(
+    stages: int,
+    shards_per_stage: int,
+    *,
+    topic_prefix: str = "/activation",
+    tensors_by_stage: dict[int, list[str]] | None = None,
+) -> list["InferenceDependency"]:
+    """Build stage-frontier dependencies for true NxM parallel sharding.
+
+    Each edge connects all shards in stage ``s`` to all shards in stage
+    ``s + 1``. A model-specific splitter still decides the actual tensor names,
+    tensor partitioning, merge operators, and ONNX artifacts.
+    """
+
+    if stages <= 0 or shards_per_stage <= 0:
+        raise ValueError("stages and shards_per_stage must be positive")
+    dependencies: list[InferenceDependency] = []
+    for stage in range(stages - 1):
+        dependencies.append(InferenceDependency(
+            producers=[
+                stage_shard_role(stage, shard)
+                for shard in range(shards_per_stage)
+            ],
+            consumers=[
+                stage_shard_role(stage + 1, shard)
+                for shard in range(shards_per_stage)
+            ],
+            key_scope=f"stage{stage}-to-stage{stage + 1}",
+            topic_prefix=topic_prefix,
+            tensors=list((tensors_by_stage or {}).get(stage, [])),
+        ))
+    return dependencies
+
+
 @dataclass(frozen=True)
 class ArtifactSpec:
     """A model, runtime, executable, config, or auxiliary artifact."""
@@ -111,6 +169,9 @@ class InferenceDependency:
     topic_prefix: str
     required: bool = True
     tensors: list[str] = field(default_factory=list)
+    object_name_template: str = ""
+    expected_segments: int = 0
+    expected_bytes: int = 0
 
     def ndnsf_dependency(self) -> CollaborationDependency:
         return CollaborationDependency(
@@ -132,6 +193,9 @@ class DependencyEdge:
     topic_prefix: str
     required: bool = True
     tensors: list[str] = field(default_factory=list)
+    object_name_template: str = ""
+    expected_segments: int = 0
+    expected_bytes: int = 0
 
     def topic(self, suffix: str = "") -> str:
         if not suffix:
@@ -201,6 +265,9 @@ class DependencyGraph:
                     topic_prefix=dep.topic_prefix,
                     required=dep.required,
                     tensors=list(dep.tensors),
+                    object_name_template=dep.object_name_template,
+                    expected_segments=dep.expected_segments,
+                    expected_bytes=dep.expected_bytes,
                 )
                 for dep in dependencies
             ],

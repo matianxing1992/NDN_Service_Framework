@@ -122,6 +122,21 @@ def main() -> int:
         default="1x3",
         help="Layout used by --case yolo-layout. Examples: 1x3, 2x3, 3x2, 3x3.",
     )
+    parser.add_argument("--parallel-output-shards", action="store_true",
+                        help="For --case yolo-layout-local, validate the experimental "
+                             "true-NxM YOLO output-shard prototype")
+    parser.add_argument("--cold-requests", type=int, default=1,
+                        help="Sequential cold requests for --case yolo-layout")
+    parser.add_argument("--warm-requests", type=int, default=1,
+                        help="Sequential warm requests for --case yolo-layout")
+    parser.add_argument("--warm-duration-s", type=float, default=0.0,
+                        help="Warm run duration for --case yolo-layout; 0 uses --warm-requests")
+    parser.add_argument("--warm-interval-ms", type=int, default=0,
+                        help="Minimum interval between warm request starts for --case yolo-layout")
+    parser.add_argument("--ack-timeout-ms", type=int, default=1500,
+                        help="ACK timeout forwarded to --case yolo-layout")
+    parser.add_argument("--timeout-ms", type=int, default=60000,
+                        help="Service timeout forwarded to --case yolo-layout")
     parser.add_argument("--list", action="store_true",
                         help="List available regression cases and exit")
     args = parser.parse_args()
@@ -133,6 +148,19 @@ def main() -> int:
 
     for case in selected_cases(args.case):
         extra_args = ["--layout", args.layout] if case.name.startswith("yolo-layout") else []
+        if case.name == "yolo-layout-local" and args.parallel_output_shards:
+            extra_args.append("--parallel-output-shards")
+        if case.name == "yolo-layout":
+            if args.parallel_output_shards:
+                extra_args.append("--parallel-output-shards")
+            extra_args.extend([
+                "--cold-requests", str(args.cold_requests),
+                "--warm-requests", str(args.warm_requests),
+                "--warm-duration-s", str(args.warm_duration_s),
+                "--warm-interval-ms", str(args.warm_interval_ms),
+                "--ack-timeout-ms", str(args.ack_timeout_ms),
+                "--timeout-ms", str(args.timeout_ms),
+            ])
         run_case(case, extra_args)
     print(f"NDNSF_DI_REGRESSION_SUITE_OK case={args.case}")
     return 0

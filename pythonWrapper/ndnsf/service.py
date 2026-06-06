@@ -9,7 +9,7 @@ framework rather than by Python.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
@@ -351,6 +351,7 @@ class CollaborationAssignment:
     requires_provisioning: bool = False
     provisioning_timeout_ms: int = 0
     assignment_payload: bytes = b""
+    role_providers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -362,6 +363,26 @@ class CollaborationData:
     producer_role: str
     sequence: int
     payload: bytes
+
+
+def _parse_assignment_fields(payload: bytes) -> dict[str, str]:
+    text = bytes(payload or b"").decode("utf-8", errors="replace")
+    fields: dict[str, str] = {}
+    for item in text.split(";"):
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        fields[key] = value
+    return fields
+
+
+def _parse_role_providers(payload: bytes) -> dict[str, str]:
+    prefix = "roleProvider."
+    return {
+        key[len(prefix):]: value
+        for key, value in _parse_assignment_fields(payload).items()
+        if key.startswith(prefix) and value
+    }
 
 
 @dataclass(frozen=True)
@@ -487,6 +508,7 @@ class CollaborationContext:
     @property
     def assignment(self) -> CollaborationAssignment:
         native = self._native.assignment
+        assignment_payload = bytes(native.assignment_payload)
         return CollaborationAssignment(
             role=str(native.role),
             service=str(native.service),
@@ -494,7 +516,8 @@ class CollaborationContext:
             artifact_data_name=str(native.artifact_data_name),
             requires_provisioning=bool(native.requires_provisioning),
             provisioning_timeout_ms=int(native.provisioning_timeout_ms),
-            assignment_payload=bytes(native.assignment_payload),
+            assignment_payload=assignment_payload,
+            role_providers=_parse_role_providers(assignment_payload),
         )
 
     def fetch_artifact(self, artifact_name: str, timeout_ms: int = 5000) -> bool:
@@ -683,6 +706,30 @@ class CollaborationContext:
             freshness_ms,
         ))
 
+    def publish_large_named(
+        self,
+        key_scope: str,
+        data_name: str,
+        payload: bytes,
+        *,
+        max_segment_size: int = 7000,
+        freshness_ms: int = 60000,
+    ) -> str:
+        """Publish large collaboration data at a deterministic Data name.
+
+        This keeps the same request-scoped hybrid encryption and segment
+        retrieval semantics as :meth:`publish_large`, but lets a distributed
+        plan make object names predictable for dataflow prefetch.
+        """
+
+        return str(self._native.publish_large_named(
+            key_scope,
+            data_name,
+            bytes(payload),
+            max_segment_size,
+            freshness_ms,
+        ))
+
     def publish_large_reference(
         self,
         key_scope: str,
@@ -693,18 +740,29 @@ class CollaborationContext:
         object_type: str = "",
         object_id: str = "",
         digest: str = "",
+        data_name: str = "",
         max_segment_size: int = 7000,
         freshness_ms: int = 60000,
     ) -> str:
         """Publish a large collaboration object and advertise a standard reference."""
 
         payload_bytes = bytes(payload)
-        data_name = self.publish_large(
-            key_scope,
-            data_topic,
-            payload_bytes,
-            max_segment_size=max_segment_size,
-            freshness_ms=freshness_ms,
+        data_name = (
+            self.publish_large_named(
+                key_scope,
+                data_name,
+                payload_bytes,
+                max_segment_size=max_segment_size,
+                freshness_ms=freshness_ms,
+            )
+            if data_name else
+            self.publish_large(
+                key_scope,
+                data_topic,
+                payload_bytes,
+                max_segment_size=max_segment_size,
+                freshness_ms=freshness_ms,
+            )
         )
         effective_digest = digest or ("sha256:" + hashlib.sha256(payload_bytes).hexdigest())
         reference = encode_large_data_reference_payload(LargeDataReference(

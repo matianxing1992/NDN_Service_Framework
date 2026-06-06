@@ -297,6 +297,15 @@ message key when that key is not already cached. This preserves normal
 NAC-ABE `produce/consume` on large catalog snapshots, model artifacts,
 activations, recordings, and other large response bodies.
 
+NDNSF providers also keep a short pending-Interest queue for Data served from
+their in-memory storage. If an Interest for a predictable Data name arrives
+before the corresponding Data has been produced, the provider retains that
+Interest until its normal InterestLifetime expires; when matching Data is later
+inserted, the provider replies immediately. This is a transport optimization
+for large-data references, repo objects, and distributed-inference activation
+objects. It does not change the Request/ACK/Selection/Response protocol, Data
+names, signatures, encryption, or application callbacks.
+
 The default automatic response threshold is 6000 bytes and can be changed or
 disabled with environment variables:
 

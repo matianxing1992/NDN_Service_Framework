@@ -79,16 +79,33 @@ result = client.distributed_inference("/AI/YOLO/SplitInference", image_tensor)
 剩下的由 policy 决定：provider 选择、role 分配、artifact 获取、activation 交换和
 最终 response 收集。
 
+`NxM` layout 这个术语在 NDNSF-DI 中固定表示真正的分布式推理目标：
+`N` 个纵向 model stages，每个 stage 内有 `M` 个并行 shards。同一 stage
+内的 shards 应运行在不同 providers 上并发执行，然后交换或 merge 下一 stage
+需要的 tensors。换句话说，真正的 NxM 需要 model-specific splitter 输出
+水平/tensor-sharded ONNX chunks 和 fan-in/fan-out dependency graph；把模型切成
+一条 sequential chunk chain 不能算真正的 NxM parallel sharding。Splitter 可以使用
+`nxm_stage_roles(...)` 和 `nxm_stage_frontier_dependencies(...)` 生成通用
+stage-frontier skeleton，然后填入模型特定的 tensor 名称、merge 语义和 artifacts。
+
 ### 3. 创建或审查 Policy
 
 Policy 可以手写，可以由 model-specific splitter 生成，也可以由 ONNX-assisted
 planner 生成。当前 YOLO 示例已经带有可运行的 policy 文件和 splitter 脚本。
-YOLO layout splitter 可以把真实 Ultralytics YOLO 模型导出成用户指定的
-stage-by-shard layout，例如 `1x3`、`2x3`、`3x2` 或 `3x3`；生成出的 policy
-部署后仍由同一个 dependency executor 驱动执行。这是 YOLO ONNX 路径上的自定义
-layout 支持，还不是对所有 ONNX topology 和所有 partitioning strategy 的完全通用
-planner。网络级回归中，生成的 policy 会按 chunk role 数量生成足够的计算
-provider identities，并把 repo provider 单独保留。
+当前 YOLO layout splitter 会把真实 Ultralytics YOLO 模型导出成 sequential
+ONNX chunks，并在部署后由同一个 dependency executor 驱动执行。它适合验证
+NDNSF-DI 的 role assignment、artifact provisioning、large-data activation
+exchange 和 deterministic dependency names，但它还不是真正的 NxM tensor-parallel
+splitter。真正的 NxM splitter 必须生成同一 stage 内多个并行 shards，以及明确的
+merge/fan-in dependency edges。网络级回归中，生成的 policy 会按 chunk role 数量
+生成足够的计算 provider identities，并把 repo provider 单独保留。
+
+`yolo_2x2` splitter 也提供实验性的 `--parallel-output-shards` 模式。这个模式会
+导出一个可验证的 true-NxM 执行形态：同一 stage 内的 shards 独立运行，发布
+prediction tensor slices，最后由 `/Merge` role 把 slices concat 回完整 YOLO 输出。
+它是 parallel dependency execution 和 fan-in merge 的 correctness prototype；当前
+Stage-0 shards 会重复上游 YOLO backbone 计算，所以它还不是性能优化后的 YOLO
+横向 splitter。
 
 两阶段 YOLO split：
 
@@ -227,9 +244,21 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local
 3x3  本地 export/policy/ONNX correctness smoke；作为 release baseline 前应先跑 yolo-layout
 ```
 
-Layout 写作 `ROWSxCOLS`。`ROWS` 是 pipeline stages 数量，`COLS` 是每个
-stage 内顺序 shards 数量。当前 planner 仍生成 YOLO-specific chunk plan；
-它还不是“任意 ONNX graph 到任意 distributed layout”的完全通用 planner。
+历史 YOLO 回归里的 layout 写作 `ROWSxCOLS`，但生成 metadata 会明确标注
+`layout_semantics: pipeline-sequential-chunks` 和
+`stage_shards_parallel: false`。不要把这些 YOLO sequential chunk 数字作为真正
+NxM parallel sharding 的性能证据。当前 planner 仍生成 YOLO-specific sequential
+chunk plan；它还不是“任意 ONNX graph 到任意 parallel distributed layout”的完全
+通用 planner。
+
+生成实验性 parallel-output prototype：
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x2 \
+  --parallel-output-shards \
+  --out-dir /tmp/ndnsf-yolo-parallel-2x2
+```
 
 ### 8. 常见部署错误
 
@@ -1088,10 +1117,17 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case onnx-executor
 
 ## YOLO Layout Split API Example
 
-`yolo_2x2` 示例展示同一套 APP API 如何表达更通用的 layout。历史默认是
-2x2：两个 pipeline stages，每个 stage 内有两个顺序 shards。现在同一个
-splitter 也接受 `1x3`、`2x3`、`3x2`、`3x3` 等自定义 layout。它包含真正的
-分布式推理路径，而不只是 repository smoke test：
+`yolo_2x2` 示例现在明确是 YOLO sequential-chunk regression。历史默认是
+2x2：两个 pipeline stages，每个 stage 用两个顺序 chunks 表示。现在同一个
+splitter 也接受 `1x3`、`2x3`、`3x2`、`3x3` 等自定义 chunk layout。它包含真实的
+NDNSF-DI distributed execution path，而不只是 repository smoke test；但它还没有实现
+同一 stage 内多个 shards 并行运行的 tensor-parallel YOLO split。
+
+如果要实验 true-NxM 形态，可以使用
+`split_model.py --parallel-output-shards`。它会生成同一 stage 内并行 shard roles，
+并通过最终 `/Merge` role 合并 shard 输出。这个模式用于证明通用 executor 能承载
+parallel stage shards 和 fan-in dependencies；在实现更高效的 detection-head/channel
+或 spatial tile YOLO splitter 之前，它应被视为 correctness scaffold。
 
 `split_model.py` 会为每个 role 导出一个 ONNX chunk，并用 ONNX chunk 的实际
 input/output 名字生成 `yolo_policy.yaml` 中的 dependency edges。以默认 2x2
@@ -1117,15 +1153,38 @@ prefix、producer role 和 consumer role 都变得可预测，provider 也可以
 获取某个 role-local dependency reference 指向的 large object；
 `wait_prefetched_input_large(...)` 则在 handler 真正需要时返回已经取到的
 activation object。这个优化是泛化的：它只依赖声明好的 dependency edge 和 topic
-suffix，不依赖 YOLO。只有当 plan 能给出确定的 dependency name 时才应该使用；
+suffix，不依赖 YOLO。只有当 plan 能给出确定的 dependency topic 时才应该使用；
 否则 handler 仍然可以继续显式调用 `wait_one(...)` 和
 `fetch_large_reference(...)`。新代码应该用标准 NDNSF large-data reference
 payload 发布 dependency reference，而不是在 collaboration message 中放裸 Data name。
+
+当前 prefetch 路径在 provider handler 开始时启动，因此可以把本地准备工作和
+等待上游 activation object 的过程重叠起来。对于计划内 ONNX dependencies，
+policy 可以包含 `object_name_template`、`expected_segments` 和 `expected_bytes`。
+运行时会用当前 run/session id、key scope、producer role、producer provider 和
+bundle sequence 填充这个 template。Producer 会把 activation object 发布到这个
+确定性名字；consumer 会先尝试 fetch 这个名字，失败时再 fallback 到发布出来的
+reference。这是预期的数据流优化：dependency traffic 仍然是 NDN large Data，
+不是 provider 之间互相发 service invocation。
+NDNSF core 的 provider 数据服务路径也会为 IMS-served Data 保留 pending
+Interests。因此下游 role 可以在上游 role 完成发布前，对确定性 activation name
+先发 Interest；如果该 Interest 还没有超过自己的 InterestLifetime，上游 provider
+会在 activation segments 插入后立即回复。这就是 DI 在 policy 中正式写入
+`object_name_template` 和 segment-count hint 的原因，而不是让应用私下猜一个
+碰巧可 fetch 的 Data name。
+
 同样的 reference metadata 也会附加到 execution spec 里的 repo-backed
 model/runtime artifacts 上，尽管这些 artifact 的 bytes 仍通过 repo 的
 manifest-aware object API 获取。
 Provider materialize artifact 时会优先读取这个 reference，然后再 fallback 到旧的
 `repoManifest`、chunk-list 或单个 Data-name 字段。
+
+在同一次 distributed-inference run 内，provider 之间不会再通过新的 NDNSF
+service invocation 互相调用。外层 user request 负责启动 run 并完成 role
+assignment；之后每个 provider 只根据 dependency graph 等待自己的 input edges，
+在 activation reference 出现后 fetch 对应 large-data object，运行本地 ONNX
+chunk，并为下游 role 发布 output-edge activation reference。因此 provider 之间的
+协作是 dataflow-driven，不是 Request/ACK/Selection 服务调用链。
 
 对于 ONNX chunks，推荐的 provider-side 路径是
 `execute_onnx_dependency_chunk(...)`。它会使用当前 role 的 dependency view
@@ -1136,6 +1195,29 @@ chunk，然后为每条声明的 output edge 发布一个 tensor bundle。YOLO p
 image input，以及编码最后的 prediction response。这样 runtime path 不再把 2x2
 pipeline chain 写死在 provider 中，而是可以由 policy 驱动执行 `1x3`、`2x3`、
 `3x2`、`3x3` 等自定义 layout。
+
+executor 会在每个 provider 进程内按 model 文件大小和 SHA-256 digest 缓存 ONNX
+Runtime session。即使 artifact 被 materialize 到新的临时路径，只要模型内容相同，
+连续执行同一个 role 时仍然可以复用 session；如果模型文件重新生成，digest 会变化。
+这个优化不改变 APP API，只减少重复 request 中的 session 初始化开销。
+
+client 也会在同一进程内缓存 plan-level references。对于同一个 plan fingerprint，
+重复 inference request 会复用 artifact spec 和 scope key 的 large-data reference，
+不会每次都重新发布相同的 model/runtime metadata；每次 inference 只发布新的输入
+reference。长期运行的服务后续应增加显式 plan-session rotation，但默认 APP API
+不需要变化。
+
+为了做性能分析，executor 会输出：
+
+```text
+NDNSF_DI_ONNX_TIMING
+NDNSF_DI_DEPENDENCY_INPUT_TIMING
+NDNSF_DI_PLAN_CACHE
+```
+
+这些日志把 latency 拆成 input collection、activation reference wait、large-object
+fetch、tensor decode、ONNX session lookup、ONNX run 和 output publish。它们的目的
+是指导泛化的数据流优化，而不是针对某一个 YOLO layout 手工调参。
 
 executor 还有一个不依赖 MiniNDN 的小型 smoke test。它会构造一个 toy ONNX DAG，
 包含一条 fan-out edge 和一个 fan-in join：
@@ -1188,6 +1270,22 @@ YOLO_2X2_RESULT ... ok=true
 YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK ...
 ```
 
+同一个脚本还会在 `results/yolo_<layout>_minindn_quick/` 下写入回归统计：
+
+```text
+inference-latency-stats.json
+traffic-stats.json
+nfd-data-stats.json
+plan-cache-stats.json
+onnx-timing-stats.json
+dependency-input-timing-stats.json
+```
+
+这些文件记录端到端 latency、节点流量计数、NFD Data 计数、plan cache 命中、
+ONNX session/run 时间，以及每条 activation edge 的 reference wait/fetch timing。
+后续分析瓶颈时，应根据这些统计判断问题是在 ACK/selection、artifact 发布、
+ONNX 执行、activation reference wait、segmented fetch，还是 tensor decode。
+
 MiniNDN 脚本会在第一个 command 前清空 provider artifact cache。它在 `neu`
 启动 repo node，在 `csu` 启动 controller，然后运行 controller-side deployer
 把 model shards 和 runner 写入 repo。Provider logs 随后会在 cold command 中
@@ -1236,11 +1334,12 @@ stage1-internal   activation transfer inside stage 1
 ```
 
 `split_model.py` 会把 per-role ONNX artifacts 写入生成的 deployment policy。
-每个 role 都有自己的 ONNX chunk。因此这个 sharding 是真实 YOLO layers 上的
-execution plan，而不是 synthetic NumPy model：每个 provider fetch 前一个
-shard 的 activation reference，继续 ONNX computation，然后发布下一个
-activation reference。最后一个 Stage1 shard 发布 response。User 会把这个
-response 与本地完整 YOLO forward pass 比较，只有数值一致时才打印 `ok=true`。
+每个 role 都有自己的 ONNX chunk。因此这是建立在真实 YOLO layers 上的 execution
+plan，而不是 synthetic NumPy model；但当前 YOLO chunks 形成的是
+pipeline-sequential dependency graph：每个 provider fetch 前一个 chunk 的
+activation reference，继续 ONNX computation，然后发布下一个 activation reference。
+最后一个 chunk 发布 response。User 会把这个 response 与本地完整 YOLO forward pass
+比较，只有数值一致时才打印 `ok=true`。
 
 Provider 可以在不理解 NDN internals 的情况下 advertise 四个 roles：
 

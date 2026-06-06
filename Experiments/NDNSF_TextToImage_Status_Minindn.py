@@ -31,7 +31,7 @@ from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
 
-DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/AI_testbed.conf"
 
 
 def log(message: str) -> None:

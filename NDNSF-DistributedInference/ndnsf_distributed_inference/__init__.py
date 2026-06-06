@@ -19,6 +19,9 @@ from .plan import (
     InferenceRole,
     RoleDependencyView,
     RuntimeSpec,
+    nxm_stage_frontier_dependencies,
+    nxm_stage_roles,
+    stage_shard_role,
 )
 from .provider import DistributedInferenceProvider, ProviderRuntimeContext
 from .repo import (
@@ -162,11 +165,14 @@ __all__ = [
     "load_config",
     "load_or_generate_deployment",
     "npz_payload",
+    "nxm_stage_frontier_dependencies",
+    "nxm_stage_roles",
     "prefetch_dependency_inputs",
     "recommend_sequential_splits",
     "role_topic_token",
     "select_replicas",
     "select_tensor_payload",
+    "stage_shard_role",
     "verify_tensor_payload",
     "write_onnx_graph_summary",
     "write_policy_bundle",

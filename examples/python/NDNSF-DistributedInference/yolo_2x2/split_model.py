@@ -7,11 +7,13 @@ from pathlib import Path
 
 from yolo_2x2_lib import (
     DEFAULT_LAYOUT,
+    YOLO_PARALLEL_OUTPUT_SEMANTICS,
     load_provider_profiles,
     make_input,
     parse_args_with_common,
     roles_for_layout,
     run_local_onnx_pipeline,
+    run_local_parallel_output_pipeline,
     split_model,
     full_forward,
     yolo_dynamic_splitter_output,
@@ -33,6 +35,9 @@ def main() -> int:
                              "default assumes homogeneous providers")
     parser.add_argument("--auto-split", action="store_true",
                         help="select the pipeline stage boundary from ONNX planner output")
+    parser.add_argument("--parallel-output-shards", action="store_true",
+                        help="export a verifiable true-NxM output-channel shard "
+                             "prototype with parallel stage shards and a merge role")
     parser.add_argument("--dynamic-provisioning", action="store_true")
     parser.add_argument("--trust-anchor-file", default="")
     args = parser.parse_args()
@@ -45,6 +50,7 @@ def main() -> int:
         provider_profiles=profiles,
         auto_split=args.auto_split,
         layout=args.layout,
+        parallel_output_shards=args.parallel_output_shards,
     )
     if args.dynamic_provisioning:
         output = yolo_dynamic_splitter_output(
@@ -84,13 +90,23 @@ def main() -> int:
             f"score={item.score:.3f}",
         )
     service_name = service_name_for_layout(layout)
+    service = output.service(service_name)
+    print(
+        "YOLO_LAYOUT_SEMANTICS",
+        f"layout={layout}",
+        f"semantics={service.metadata.get('layout_semantics', '')}",
+        f"stage_shards_parallel={str(service.metadata.get('stage_shards_parallel', False)).lower()}",
+    )
     for artifact in output.service(service_name).artifacts:
         print("YOLO_LAYOUT_ARTIFACT", f"layout={layout}", artifact.role, artifact.path)
         if layout == "2x2":
             print("YOLO_2X2_ARTIFACT", artifact.role, artifact.path)
     image = make_input(args.input_size)
     expected = full_forward(args.model, image)
-    actual = run_local_onnx_pipeline(split["paths"], image, roles_for_layout(layout))
+    if split.get("layout_semantics") == YOLO_PARALLEL_OUTPUT_SEMANTICS:
+        actual = run_local_parallel_output_pipeline(split["paths"], image, layout)
+    else:
+        actual = run_local_onnx_pipeline(split["paths"], image, roles_for_layout(layout))
     diff = abs(actual - expected)
     max_diff = float(diff.max())
     mean_diff = float(diff.mean())

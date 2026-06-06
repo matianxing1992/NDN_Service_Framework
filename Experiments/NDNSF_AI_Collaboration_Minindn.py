@@ -22,7 +22,7 @@ from minindn.util import getPopen
 APP_CONTROLLER = REPO / "build/examples/App_ServiceController"
 APP_PROVIDER = REPO / "build/examples/AI_DistributedCollaborationProvider"
 APP_USER = REPO / "build/examples/AI_User"
-TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
 OUT = REPO / "results/ai_collaboration_minindn_quick"
 
 

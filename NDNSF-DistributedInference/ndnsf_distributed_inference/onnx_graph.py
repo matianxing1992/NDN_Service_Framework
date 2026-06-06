@@ -155,12 +155,27 @@ class OnnxChunkDependency:
     unknown_size_tensors: tuple[str, ...] = ()
 
     def to_inference_dependency(self) -> InferenceDependency:
+        expected_bytes = int(self.known_boundary_bytes or 0)
+        # Tensor bundles are NPZ-encoded and then encrypted into a collaboration
+        # large-data envelope. Keep this estimate conservative; it is a prefetch
+        # hint, not an integrity boundary.
+        estimated_wire_bytes = int(expected_bytes * 1.5) + 4096 if expected_bytes else 0
+        expected_segments = (
+            max(1, (estimated_wire_bytes + 6999) // 7000)
+            if estimated_wire_bytes else 0
+        )
         return InferenceDependency(
             producers=[self.producer],
             consumers=[self.consumer],
             key_scope=self.key_scope,
             topic_prefix=self.topic_prefix,
             tensors=list(self.tensors),
+            object_name_template=(
+                "{producerProvider}/NDNSF/DI/ACTIVATION/"
+                "{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
+            ),
+            expected_segments=expected_segments,
+            expected_bytes=expected_bytes,
         )
 
     def to_dict(self) -> dict[str, Any]:

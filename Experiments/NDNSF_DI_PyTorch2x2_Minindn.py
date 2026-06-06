@@ -23,7 +23,7 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
 OUT = REPO / "results/pytorch_eager_2x2_minindn_quick"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2"
 CONFIG = OUT / "pytorch_policy.yaml"

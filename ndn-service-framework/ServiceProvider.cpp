@@ -1222,6 +1222,21 @@ namespace ndn_service_framework
                                                         freshnessMs);
     }
 
+    ndn::Name ServiceProvider::CollaborationContext::publishLargeNamed(
+        KeyScope keyScope,
+        const ndn::Name& dataName,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs)
+    {
+        return m_provider.publishCollaborationLargeDataNamed(m_requestId,
+                                                             std::move(keyScope),
+                                                             dataName,
+                                                             payload,
+                                                             maxSegmentSize,
+                                                             freshnessMs);
+    }
+
     std::optional<ndn::Buffer>
     ServiceProvider::CollaborationContext::fetchLarge(const ndn::Name& dataName,
                                                       KeyScope keyScope,
@@ -2325,11 +2340,8 @@ namespace ndn_service_framework
                 encryptedDataName,
                 7000,
                 freshness);
-            {
-                std::lock_guard<std::mutex> lock(_cache_mutex);
-                for (const auto& data : segments) {
-                    m_IMS.insert(*data, freshness);
-                }
+            for (const auto& data : segments) {
+                insertDataIntoIMS(*data, freshness);
             }
             result.largeData.encryptedDataName = encryptedDataName;
             result.largeData.digest = sha256DigestString(payload);
@@ -2667,16 +2679,82 @@ namespace ndn_service_framework
             maxSegmentSize == 0 ? 7000 : maxSegmentSize,
             ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
 
-        {
-            std::lock_guard<std::mutex> lock(_cache_mutex);
-            for (const auto& data : segments) {
-                m_IMS.insert(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
-            }
+        for (const auto& data : segments) {
+            insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
         }
         NDN_LOG_DEBUG("COLLAB_LARGE_PUBLISHED name=" << name.toUri()
                       << " plaintextBytes=" << payload.size()
                       << " segments=" << segments.size());
         return name;
+    }
+
+    ndn::Name ServiceProvider::publishCollaborationLargeDataNamed(
+        const ndn::Name& requestId,
+        const std::string& keyScope,
+        const ndn::Name& dataName,
+        const ndn::Buffer& payload,
+        size_t maxSegmentSize,
+        int freshnessMs)
+    {
+        if (dataName.empty()) {
+            NDN_LOG_ERROR("Cannot publish collaboration large Data with empty name");
+            return {};
+        }
+        if (!identity.isPrefixOf(dataName)) {
+            NDN_LOG_ERROR("Collaboration large Data name " << dataName.toUri()
+                          << " is outside provider identity " << identity.toUri());
+            return {};
+        }
+
+        ndn::Buffer scopeKey;
+        {
+            std::lock_guard<std::mutex> lock(m_collaborationMutex);
+            auto requestIt = m_collaborationScopeKeysByRequest.find(requestId);
+            if (requestIt != m_collaborationScopeKeysByRequest.end()) {
+                auto keyIt = requestIt->second.find(keyScope);
+                if (keyIt != requestIt->second.end()) {
+                    scopeKey = keyIt->second;
+                }
+            }
+        }
+        if (scopeKey.size() != HybridMessageCrypto::MESSAGE_KEY_SIZE) {
+            NDN_LOG_ERROR("Missing collaboration scope key for named large Data "
+                          << requestId.toUri() << " scope=" << keyScope);
+            return {};
+        }
+
+        HybridMessageEnvelope envelope;
+        const std::string keyId = "collab-large|" + requestId.toUri() + "|" + keyScope;
+        envelope.setKeyId(keyId);
+        envelope.setEpochId("session");
+        envelope.setMessageType("COLLAB-LARGE");
+        const std::string adText = dataName.toUri() + "|COLLAB-LARGE|" +
+                                   requestId.toUri() + "|" + keyScope;
+        const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()), adText.size());
+        auto encrypted = hybridAesGcmEncrypt(
+            scopeKey,
+            ndn::span<const uint8_t>(payload.data(), payload.size()),
+            ndn::span<const uint8_t>(ad.data(), ad.size()));
+        envelope.setNonce(encrypted.nonce);
+        envelope.setCipherText(encrypted.ciphertext);
+        envelope.setAuthTag(encrypted.tag);
+        auto block = envelope.WireEncode();
+        ndn::Buffer encoded(block.begin(), block.end());
+
+        ndn::Segmenter segmenter(m_keyChain, m_signingInfo);
+        auto segments = segmenter.segment(
+            ndn::span<const uint8_t>(encoded.data(), encoded.size()),
+            dataName,
+            maxSegmentSize == 0 ? 7000 : maxSegmentSize,
+            ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+
+        for (const auto& data : segments) {
+            insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+        }
+        NDN_LOG_DEBUG("COLLAB_LARGE_NAMED_PUBLISHED name=" << dataName.toUri()
+                      << " plaintextBytes=" << payload.size()
+                      << " segments=" << segments.size());
+        return dataName;
     }
 
     std::optional<ndn::Buffer>
@@ -2709,16 +2787,22 @@ namespace ndn_service_framework
         auto error = std::make_shared<std::string>();
         auto encoded = std::make_shared<ndn::Buffer>();
 
-        boost::asio::post(m_face.getIoContext(), [this, dataName, completed, mutex, cv, error, encoded] {
+        const int fetchTimeoutMs = timeoutMs <= 0 ? 5000 : timeoutMs;
+        const int interestLifetimeMs =
+            std::max(50, intEnvOrDefault("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS", 250));
+
+        boost::asio::post(m_face.getIoContext(), [this, dataName, completed, mutex, cv, error,
+                                                  encoded, fetchTimeoutMs, interestLifetimeMs] {
             ndn::Interest interest(dataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
-            interest.setInterestLifetime(ndn::time::seconds(4));
+            interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
             ndn::SegmentFetcher::Options options;
             options.probeLatestVersion = false;
             options.useConstantCwnd = true;
             options.initCwnd = 4.0;
-            options.maxTimeout = ndn::time::seconds(10);
+            options.maxTimeout = ndn::time::milliseconds(fetchTimeoutMs);
+            options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
             auto fetcher = ndn::SegmentFetcher::start(m_face, interest, nac_validator, options);
             fetcher->onComplete.connect(
                 [completed, mutex, cv, encoded](ndn::ConstBufferPtr buffer) {
@@ -2741,7 +2825,7 @@ namespace ndn_service_framework
         });
 
         const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(timeoutMs <= 0 ? 5000 : timeoutMs);
+                              std::chrono::milliseconds(fetchTimeoutMs);
         std::unique_lock<std::mutex> lock(*mutex);
         cv->wait_until(lock, deadline, [&completed] { return completed->load(); });
         if (!completed->load()) {
@@ -4577,9 +4661,9 @@ namespace ndn_service_framework
 
             // serve data
             for (auto data : contentData)
-                m_IMS.insert(*data);
+                insertDataIntoIMS(*data);
             for (auto data : ckData)
-                m_IMS.insert(*data);
+                insertDataIntoIMS(*data);
 
         }
     }
@@ -5302,6 +5386,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         {
             NDN_LOG_TRACE("Reply from IMS: " << interest.getName().toUri());
             m_face.put(*dataToSend);
+            return true;
         }else{
             NDN_LOG_TRACE("Not Found In IMS: " << interest.getName().toUri());
             // for(auto d:m_IMS)
@@ -5310,6 +5395,73 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             // }
         }
         return false;
+    }
+
+    void ServiceProvider::pruneExpiredPendingImsInterestsLocked()
+    {
+        const auto now = ndn::time::steady_clock::now();
+        m_pendingImsInterests.erase(
+            std::remove_if(m_pendingImsInterests.begin(),
+                           m_pendingImsInterests.end(),
+                           [now](const PendingImsInterest& item) {
+                               return item.expiresAt <= now;
+                           }),
+            m_pendingImsInterests.end());
+    }
+
+    void ServiceProvider::rememberPendingImsInterest(const ndn::Interest& interest)
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        pruneExpiredPendingImsInterestsLocked();
+        const size_t maxPending =
+            static_cast<size_t>(std::max(0, intEnvOrDefault("NDNSF_PENDING_IMS_INTEREST_MAX", 4096)));
+        if (maxPending == 0) {
+            return;
+        }
+        if (m_pendingImsInterests.size() >= maxPending) {
+            m_pendingImsInterests.erase(m_pendingImsInterests.begin());
+        }
+        m_pendingImsInterests.push_back(PendingImsInterest{
+            interest,
+            ndn::time::steady_clock::now() + interest.getInterestLifetime()
+        });
+        NDN_LOG_TRACE("Pending IMS Interest: " << interest.getName().toUri()
+                      << " pending=" << m_pendingImsInterests.size());
+    }
+
+    void ServiceProvider::satisfyPendingImsInterestsLocked()
+    {
+        pruneExpiredPendingImsInterestsLocked();
+        std::vector<PendingImsInterest> pending;
+        pending.reserve(m_pendingImsInterests.size());
+        std::vector<ndn::Data> toSend;
+        for (const auto& item : m_pendingImsInterests) {
+            if (auto data = m_IMS.find(item.interest)) {
+                toSend.emplace_back(*data);
+            }
+            else {
+                pending.push_back(item);
+            }
+        }
+        m_pendingImsInterests = std::move(pending);
+        for (const auto& data : toSend) {
+            m_face.put(data);
+        }
+    }
+
+    void ServiceProvider::insertDataIntoIMS(const ndn::Data& data)
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        m_IMS.insert(data);
+        satisfyPendingImsInterestsLocked();
+    }
+
+    void ServiceProvider::insertDataIntoIMS(const ndn::Data& data,
+                                            const ndn::time::milliseconds& freshness)
+    {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        m_IMS.insert(data, freshness);
+        satisfyPendingImsInterestsLocked();
     }
 
     void ServiceProvider::onPrefixRegisterFailure(const ndn::Name &prefix, const std::string &reason)
@@ -5324,7 +5476,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if (replySelectionExecutionStatus(interest)) {
             return;
         }
-        replyFromIMS(interest);
+        if (!replyFromIMS(interest)) {
+            rememberPendingImsInterest(interest);
+        }
 
     }
 
@@ -5332,14 +5486,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         //log data
         NDN_LOG_DEBUG("serveDataWithIMS: " << contentData.size() << " " << ckData.size());
-        std::lock_guard<std::mutex> lock(_cache_mutex);
         for (auto data : contentData)
         {
-            m_IMS.insert(*data);
+            insertDataIntoIMS(*data);
         }
         for (auto data : ckData)
         {
-            m_IMS.insert(*data);
+            insertDataIntoIMS(*data);
         }
     }
 

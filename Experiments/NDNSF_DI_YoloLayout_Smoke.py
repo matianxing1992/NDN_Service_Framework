@@ -7,6 +7,10 @@ layout, the exported ONNX chunks reproduce full-model output locally, and the
 generated policy passes DI validation. Full network-level custom-layout
 execution is still experimental; use the 2x2 MiniNDN case for the stable network
 regression.
+
+With --parallel-output-shards, the same smoke verifies the experimental true-NxM
+YOLO output-shard prototype: same-stage shards are parallel roles and a /Merge
+role restores the full prediction tensor.
 """
 
 from __future__ import annotations
@@ -43,11 +47,14 @@ def main() -> int:
                         help="YOLO stage-by-shard layout, e.g. 1x3, 2x3, 3x2, 3x3")
     parser.add_argument("--out-dir", default="",
                         help="Output directory. Defaults to /tmp/ndnsf-di-yolo-layout-<layout>.")
+    parser.add_argument("--parallel-output-shards", action="store_true",
+                        help="Validate the experimental true-NxM YOLO output-shard prototype")
     args = parser.parse_args()
 
     layout = args.layout.strip().lower().replace("*", "x")
     safe_layout = layout.replace("/", "-")
-    out_dir = Path(args.out_dir or f"/tmp/ndnsf-di-yolo-layout-{safe_layout}")
+    mode_suffix = "-parallel-output" if args.parallel_output_shards else ""
+    out_dir = Path(args.out_dir or f"/tmp/ndnsf-di-yolo-layout-{safe_layout}{mode_suffix}")
     policy = out_dir / "yolo_policy.yaml"
     generated_policy_dir = out_dir / "generated-policy"
     env = dict(os.environ)
@@ -58,7 +65,7 @@ def main() -> int:
         env.get("PYTHONPATH", ""),
     ])
 
-    split_output = run([
+    split_command = [
         sys.executable,
         "examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py",
         "--auto-split",
@@ -68,9 +75,17 @@ def main() -> int:
         str(out_dir / "model"),
         "--policy",
         str(policy),
-    ], env)
+    ]
+    if args.parallel_output_shards:
+        split_command.append("--parallel-output-shards")
+    split_output = run(split_command, env)
     if "YOLO_LAYOUT_LOCAL_VERIFY" not in split_output or "ok=true" not in split_output:
         raise SystemExit(f"YOLO layout local verification failed for layout={layout}")
+    if args.parallel_output_shards:
+        if "semantics=parallel-output-channel-shards" not in split_output:
+            raise SystemExit("parallel-output smoke did not generate parallel-output semantics")
+        if "stage_shards_parallel=true" not in split_output:
+            raise SystemExit("parallel-output smoke did not mark stage shards parallel")
 
     run([
         sys.executable,
@@ -85,7 +100,8 @@ def main() -> int:
 
     print(
         "YOLO_LAYOUT_SMOKE_OK "
-        f"layout={layout} policy={policy} generated_policy_dir={generated_policy_dir}"
+        f"layout={layout} parallel_output_shards={str(args.parallel_output_shards).lower()} "
+        f"policy={policy} generated_policy_dir={generated_policy_dir}"
     )
     return 0
 

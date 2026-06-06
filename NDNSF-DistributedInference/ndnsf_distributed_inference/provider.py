@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import tempfile
+from time import perf_counter
 from typing import Callable, Sequence
 
 from ndnsf import (
@@ -18,6 +19,15 @@ from ndnsf import (
 )
 
 from .plan import RoleDependencyView
+
+
+@dataclass(frozen=True)
+class LargePrefetchResult:
+    payload: bytes
+    ref_wait_ms: float
+    fetch_ms: float
+    total_ms: float
+    expected_segments: int = 0
 
 
 class DependencyPrefetcher:
@@ -38,25 +48,54 @@ class DependencyPrefetcher:
 
     def prefetch_large(self, edge, topic_suffix: str = "", *,
                        ref_timeout_ms: int = 10000,
-                       fetch_timeout_ms: int = 10000) -> Future:
+                       fetch_timeout_ms: int = 10000,
+                       data_name: str = "",
+                       expected_segments: int = 0) -> Future:
         topic = edge.topic(topic_suffix)
 
-        def fetch() -> bytes:
+        def fetch() -> LargePrefetchResult:
+            total_start = perf_counter()
+            if data_name:
+                fetch_start = perf_counter()
+                payload = self._ndnsf.fetch_large(
+                    data_name,
+                    edge.key_scope,
+                    fetch_timeout_ms,
+                )
+                fetch_ms = _elapsed_ms(fetch_start)
+                if payload is not None:
+                    return LargePrefetchResult(
+                        payload=payload,
+                        ref_wait_ms=0.0,
+                        fetch_ms=fetch_ms,
+                        total_ms=_elapsed_ms(total_start),
+                        expected_segments=expected_segments,
+                    )
+            ref_start = perf_counter()
             ref = self._ndnsf.wait_one(edge.key_scope, topic, ref_timeout_ms)
+            ref_wait_ms = _elapsed_ms(ref_start)
             if ref is None:
                 raise TimeoutError(
                     f"timed out waiting for dependency ref "
                     f"scope={edge.key_scope} topic={topic}")
+            fetch_start = perf_counter()
             payload = self._ndnsf.fetch_large_reference(
                 ref.payload,
                 edge.key_scope,
                 fetch_timeout_ms,
             )
+            fetch_ms = _elapsed_ms(fetch_start)
             if payload is None:
                 raise TimeoutError(
                     f"timed out fetching dependency object "
                     f"scope={edge.key_scope} topic={topic}")
-            return payload
+            return LargePrefetchResult(
+                payload=payload,
+                ref_wait_ms=ref_wait_ms,
+                fetch_ms=fetch_ms,
+                total_ms=_elapsed_ms(total_start),
+                expected_segments=expected_segments,
+            )
 
         return self._executor.submit(fetch)
 
@@ -73,6 +112,33 @@ class ProviderRuntimeContext:
     dependencies: RoleDependencyView = field(
         default_factory=lambda: RoleDependencyView(role=""))
     prefetcher: DependencyPrefetcher | None = None
+
+    def planned_large_data_name(self, edge, producer_role: str) -> str:
+        template = str(getattr(edge, "object_name_template", "") or "")
+        if not template:
+            return ""
+        assignment = self.ndnsf.assignment
+        role_providers = getattr(assignment, "role_providers", {}) or {}
+        producer_provider = (
+            self.ndnsf.local_provider
+            if producer_role == self.role else
+            str(role_providers.get(producer_role, ""))
+        )
+        if not producer_provider:
+            return ""
+        values = {
+            "producerProvider": producer_provider.rstrip("/"),
+            "sessionId": self.ndnsf.session_id.strip("/"),
+            "keyScope": str(getattr(edge, "key_scope", "")),
+            "producerRole": str(producer_role).strip("/"),
+            "role": str(self.role).strip("/"),
+            "topicPrefix": str(getattr(edge, "topic_prefix", "")).strip("/"),
+            "sequence": "0",
+        }
+        try:
+            return template.format(**values)
+        except Exception:
+            return ""
 
     def publish_output(self, payload: bytes, *, key_scope: str = "",
                        topic_suffix: str = "") -> None:
@@ -98,6 +164,7 @@ class ProviderRuntimeContext:
                                        ref_topic_suffix: str = "",
                                        object_type: str = "",
                                        object_id: str = "",
+                                       data_name: str = "",
                                        max_segment_size: int = 7000,
                                        freshness_ms: int = 60000) -> str:
         edge = self.dependencies.output(key_scope)
@@ -108,6 +175,7 @@ class ProviderRuntimeContext:
             payload,
             object_type=object_type,
             object_id=object_id,
+            data_name=data_name,
             max_segment_size=max_segment_size,
             freshness_ms=freshness_ms,
         )
@@ -120,7 +188,8 @@ class ProviderRuntimeContext:
     def prefetch_input_large(self, *, key_scope: str = "",
                              topic_suffix: str = "",
                              ref_timeout_ms: int = 10000,
-                             fetch_timeout_ms: int = 10000) -> Future:
+                             fetch_timeout_ms: int = 10000,
+                             producer_role: str = "") -> Future:
         """Start fetching a planned input dependency in the background.
 
         This is useful when a distributed plan makes dependency names
@@ -132,16 +201,35 @@ class ProviderRuntimeContext:
         if self.prefetcher is None:
             raise RuntimeError("dependency prefetcher is not available")
         edge = self.dependencies.input(key_scope)
-        return self.prefetcher.prefetch_large(
-            edge,
-            topic_suffix,
-            ref_timeout_ms=ref_timeout_ms,
-            fetch_timeout_ms=fetch_timeout_ms,
-        )
+        data_name = self.planned_large_data_name(edge, producer_role) if producer_role else ""
+        try:
+            return self.prefetcher.prefetch_large(
+                edge,
+                topic_suffix,
+                ref_timeout_ms=ref_timeout_ms,
+                fetch_timeout_ms=fetch_timeout_ms,
+                data_name=data_name,
+                expected_segments=int(getattr(edge, "expected_segments", 0) or 0),
+            )
+        except TypeError:
+            return self.prefetcher.prefetch_large(
+                edge,
+                topic_suffix,
+                ref_timeout_ms=ref_timeout_ms,
+                fetch_timeout_ms=fetch_timeout_ms,
+            )
 
     @staticmethod
     def wait_prefetched_input_large(future: Future, *,
                                     timeout_ms: int | None = None) -> bytes:
+        return ProviderRuntimeContext.wait_prefetched_input_large_result(
+            future,
+            timeout_ms=timeout_ms,
+        ).payload
+
+    @staticmethod
+    def wait_prefetched_input_large_result(future: Future, *,
+                                           timeout_ms: int | None = None) -> LargePrefetchResult:
         timeout_s = None if timeout_ms is None else max(0, timeout_ms) / 1000.0
         return future.result(timeout=timeout_s)
 
@@ -157,6 +245,10 @@ class ProviderRuntimeContext:
 
 
 InferenceHandler = Callable[[ProviderRuntimeContext], None]
+
+
+def _elapsed_ms(start: float) -> float:
+    return (perf_counter() - start) * 1000.0
 
 
 def _validate_metadata_token(value: str, field: str) -> str:

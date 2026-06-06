@@ -24,7 +24,7 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
 OUT = REPO / "results/yolo_2x2_distributed_repo_minindn"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 MININDN_ROOT = Path("/tmp/minindn")

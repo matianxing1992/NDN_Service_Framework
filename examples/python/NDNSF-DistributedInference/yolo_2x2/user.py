@@ -10,6 +10,7 @@ import time
 from yolo_2x2_lib import (
     DEFAULT_MODEL,
     DEFAULT_INPUT_SIZE,
+    YOLO_PARALLEL_OUTPUT_SEMANTICS,
     decode_yolo_output,
     decode_image,
     full_forward,
@@ -17,6 +18,7 @@ from yolo_2x2_lib import (
     optional_local_nfd,
     parse_args_with_common,
     run_local_onnx_pipeline,
+    run_local_parallel_output_pipeline,
     runtime_spec,
     yolo_inference_service,
 )
@@ -38,6 +40,10 @@ def main() -> int:
         help="artifact reference manifest produced by the repo-backed deployer",
     )
     parser.add_argument("--sequential-requests", type=int, default=0)
+    parser.add_argument("--sequential-duration-s", type=float, default=0.0,
+                        help="Run sequential requests for this many seconds; 0 disables duration mode")
+    parser.add_argument("--sequential-interval-ms", type=int, default=0,
+                        help="Minimum interval between sequential request starts")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE)
     args = parser.parse_args()
@@ -57,7 +63,9 @@ def main() -> int:
         )
         service = yolo_inference_service(client.deployment)
         service_policy = client.deployment.service_policy(service)
-        layout = str((service_policy.metadata or {}).get("layout", "2x2"))
+        metadata = service_policy.metadata or {}
+        layout = str(metadata.get("layout", "2x2"))
+        layout_semantics = str(metadata.get("layout_semantics", ""))
         image = make_input(args.input_size)
         image_payload = client.encode_input(service, image)
         payload = client.publish_large_payload_reference(
@@ -74,22 +82,39 @@ def main() -> int:
             if getattr(artifact, "path", "")
         }
         if artifact_paths and all(Path(path).exists() for path in artifact_paths.values()):
-            expected = run_local_onnx_pipeline(
-                artifact_paths,
-                inference_image,
-                service_policy.roles,
-            )
+            if layout_semantics == YOLO_PARALLEL_OUTPUT_SEMANTICS:
+                expected = run_local_parallel_output_pipeline(
+                    artifact_paths,
+                    inference_image,
+                    layout,
+                )
+            else:
+                expected = run_local_onnx_pipeline(
+                    artifact_paths,
+                    inference_image,
+                    service_policy.roles,
+                )
         else:
             expected = full_forward(args.model, inference_image)
+        duration_s = max(0.0, float(args.sequential_duration_s or 0.0))
+        interval_s = max(0.0, float(args.sequential_interval_ms or 0) / 1000.0)
         request_count = args.sequential_requests or args.async_requests
+        if duration_s > 0:
+            request_count = max(1, int(duration_s / max(interval_s, 0.001)))
         dynamic_provisioning = None
         if args.deployed_models:
             dynamic_provisioning = False
         elif args.dynamic_provisioning or args.repo_manifest_file:
             dynamic_provisioning = True
-        if args.sequential_requests:
+        if args.sequential_requests or duration_s > 0:
             futures = []
-            for _ in range(request_count):
+            run_deadline = time.perf_counter() + duration_s if duration_s > 0 else None
+            index = 0
+            while True:
+                if run_deadline is not None and time.perf_counter() >= run_deadline:
+                    break
+                if run_deadline is None and index >= request_count:
+                    break
                 started = time.perf_counter()
                 result = client.distributed_inference(
                     service,
@@ -101,6 +126,14 @@ def main() -> int:
                     artifact_references=args.repo_manifest_file or None,
                 )
                 futures.append(_TimedFuture(_ImmediateResult(result), started, time.perf_counter()))
+                index += 1
+                if interval_s > 0:
+                    next_start = started + interval_s
+                    delay = next_start - time.perf_counter()
+                    if delay > 0:
+                        if run_deadline is not None:
+                            delay = min(delay, max(0.0, run_deadline - time.perf_counter()))
+                        time.sleep(delay)
         else:
             futures = []
             for _ in range(request_count):

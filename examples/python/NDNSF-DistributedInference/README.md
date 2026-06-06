@@ -43,17 +43,19 @@ yolo_split/
   Stage 0 publishes an activation object; Stage 1 fetches it and finishes.
 
 yolo_2x2/
-  Layout-driven ONNX Runtime inference over a real YOLO model. The historical
-  default is 2x2: Stage 0 has two sequential shards and Stage 1 has two
-  sequential shards. The same splitter now accepts custom layouts such as
-  1x3, 2x3, 3x2, and 3x3. It exports one ONNX chunk per role, writes
-  tensor-named dependencies from chunk IO, and verifies the local chunk
-  pipeline before writing the policy. The example uses repo-backed dynamic
-  provisioning: providers can start without local model/runtime files, then
-  fetch the assigned role artifact. The network regression has validated 2x3
-  and 3x2 with one provider per generated role; 1x3 and 3x3 are fast local
-  smokes, and 3x3 should be run through the `yolo-layout` MiniNDN case before
-  relying on it as a deployment baseline.
+  Layout-driven ONNX Runtime inference over a real YOLO model. This is a
+  pipeline-sequential chunk regression, not a true NxM tensor-parallel
+  sharding example. The historical default is 2x2: Stage 0 is represented by
+  two sequential chunks and Stage 1 is represented by two sequential chunks.
+  The same splitter accepts custom chunk layouts such as 1x3, 2x3, 3x2, and
+  3x3. It exports one ONNX chunk per role, writes tensor-named dependencies
+  from chunk IO, and verifies the local chunk pipeline before writing the
+  policy. The example uses repo-backed dynamic provisioning: providers can
+  start without local model/runtime files, then fetch the assigned role
+  artifact. The network regression has validated 2x3 and 3x2 with one provider
+  per generated role; 1x3 and 3x3 are fast local smokes, and 3x3 should be run
+  through the `yolo-layout` MiniNDN case before relying on it as a deployment
+  baseline.
 
 pytorch_eager_2x2/
   Four-role fully connected ONNX inference generated from a PyTorch-defined
@@ -65,7 +67,7 @@ pytorch_eager_2x2/
 
 For a deployment-oriented ONNX path, use `yolo_split/` or `yolo_2x2/`.
 Use `yolo_2x2/split_model.py --layout 3x2` when the experiment needs a custom
-stage-by-shard YOLO ONNX layout.
+YOLO sequential chunk layout.
 For a compact model-specific splitter that demonstrates horizontal splitting
 inside fully connected layers, use `pytorch_eager_2x2/`.
 
@@ -265,9 +267,26 @@ sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layo
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
 ```
 
-`--layout ROWSxCOLS` means `ROWS` pipeline stages and `COLS` sequential shards
-inside each stage. The current custom-layout path is YOLO-specific but uses the
-generic dependency executor once the policy has been generated.
+True NDNSF-DI `NxM` means `N` pipeline stages with `M` parallel shards inside
+each stage. The current YOLO `--layout ROWSxCOLS` path is explicitly marked as
+`pipeline-sequential-chunks` with `stage_shards_parallel=false`; it is
+YOLO-specific but still uses the generic dependency executor once the policy
+has been generated.
+
+For a first verifiable true-NxM graph shape, the YOLO splitter can export an
+experimental parallel-output prototype:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x2 \
+  --parallel-output-shards \
+  --out-dir /tmp/ndnsf-yolo-parallel-2x2
+```
+
+This produces parallel shard roles inside each stage plus a `/Merge` role.
+It proves parallel activation exchange and fan-in merge correctness, but Stage0
+currently duplicates YOLO backbone compute and should not be used as a
+performance claim.
 
 ## Manual Multi-Process Run
 

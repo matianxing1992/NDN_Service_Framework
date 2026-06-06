@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from threading import Lock
 from typing import Callable, Iterable
 
 from ndnsf import CollaborationDependency, CollaborationRole, ServiceResponse, ServiceUser
@@ -19,12 +22,94 @@ class InferenceResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class PublishedPlanReferences:
+    artifact_data_names: dict[str, str]
+    scope_key_data_names: dict[str, str]
+
+
 def _to_collaboration_dependency(
     dep: CollaborationDependency | InferenceDependency | dict,
 ) -> CollaborationDependency | dict:
     if isinstance(dep, InferenceDependency):
         return dep.ndnsf_dependency()
     return dep
+
+
+def _plan_fingerprint(plan: DistributedInferencePlan) -> str:
+    payload = {
+        "service": plan.service,
+        "model": plan.model_name,
+        "roles": [
+            {
+                "role": role.role,
+                "artifact": role.artifact_name,
+                "backend": role.backend,
+                "service": role.service,
+                "allowDynamicProvisioning": role.allow_dynamic_provisioning,
+                "modelArtifact": _artifact_fingerprint(role.model_artifact),
+                "runtime": {
+                    "name": role.runtime.name,
+                    "backend": role.runtime.backend,
+                    "entrypoint": role.runtime.entrypoint,
+                    "artifact": (
+                        _artifact_fingerprint(role.runtime.artifact)
+                        if role.runtime.artifact is not None else None
+                    ),
+                },
+                "metadata": _jsonable(role.metadata),
+            }
+            for role in plan.roles
+        ],
+        "dependencies": [
+            {
+                "producers": list(dep.producers),
+                "consumers": list(dep.consumers),
+                "keyScope": dep.key_scope,
+                "topicPrefix": dep.topic_prefix,
+                "required": dep.required,
+                "tensors": list(dep.tensors),
+                "objectNameTemplate": dep.object_name_template,
+                "expectedSegments": dep.expected_segments,
+                "expectedBytes": dep.expected_bytes,
+            }
+            for dep in plan.dependencies
+        ],
+        "metadata": _jsonable(plan.metadata),
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _artifact_fingerprint(artifact) -> dict:
+    payload = bytes(artifact.payload or b"")
+    return {
+        "name": artifact.name,
+        "filename": artifact.filename,
+        "kind": artifact.kind,
+        "executable": artifact.executable,
+        "cacheName": artifact.cache_name,
+        "payloadSha256": hashlib.sha256(payload).hexdigest() if payload else "",
+        "payloadSize": len(payload),
+        "largeDataReference": _jsonable(artifact.large_data_reference),
+        "repoManifest": _jsonable(artifact.repo_manifest),
+    }
+
+
+def _jsonable(value):
+    try:
+        json.dumps(value, sort_keys=True)
+        return value
+    except TypeError:
+        if isinstance(value, dict):
+            return {str(key): _jsonable(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_jsonable(item) for item in value]
+        return repr(value)
 
 
 class DistributedInferenceClient:
@@ -37,6 +122,8 @@ class DistributedInferenceClient:
             max_workers=max(1, int(async_workers)),
             thread_name_prefix="ndnsf-di-client",
         )
+        self._published_plan_lock = Lock()
+        self._published_plans: dict[str, PublishedPlanReferences] = {}
 
     @classmethod
     def connect(
@@ -154,14 +241,8 @@ class DistributedInferenceClient:
         timeout_ms: int = 30000,
         freshness_ms: int = 60000,
     ) -> InferenceResult:
-        artifact_data_names = self.publish_plan_artifacts(
+        published = self._published_plan_references(
             plan,
-            object_label_prefix="inference-artifact",
-            freshness_ms=freshness_ms,
-        )
-        scope_key_data_names = self.publish_scope_keys(
-            plan,
-            object_label_prefix="inference-scope-key",
             freshness_ms=freshness_ms,
         )
         response: ServiceResponse = self.user.request_collaboration(
@@ -170,8 +251,8 @@ class DistributedInferenceClient:
             roles=plan.ndnsf_roles(),
             key_scopes=plan.key_scopes(),
             dependencies=plan.ndnsf_dependencies(),
-            artifact_data_names=artifact_data_names,
-            scope_key_data_names=scope_key_data_names,
+            artifact_data_names=published.artifact_data_names,
+            scope_key_data_names=published.scope_key_data_names,
             role_scopes=plan.role_scopes(),
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
@@ -181,6 +262,45 @@ class DistributedInferenceClient:
             payload=response.payload,
             error=response.error,
         )
+
+    def _published_plan_references(
+        self,
+        plan: DistributedInferencePlan,
+        *,
+        freshness_ms: int,
+    ) -> PublishedPlanReferences:
+        fingerprint = _plan_fingerprint(plan)
+        with self._published_plan_lock:
+            cached = self._published_plans.get(fingerprint)
+            if cached is not None:
+                print(
+                    "NDNSF_DI_PLAN_CACHE "
+                    f"service={plan.service} fingerprint={fingerprint[:16]} hit=true",
+                    flush=True,
+                )
+                return cached
+            artifact_data_names = self.publish_plan_artifacts(
+                plan,
+                object_label_prefix="inference-artifact",
+                freshness_ms=freshness_ms,
+            )
+            scope_key_data_names = self.publish_scope_keys(
+                plan,
+                object_label_prefix="inference-scope-key",
+                freshness_ms=freshness_ms,
+            )
+            published = PublishedPlanReferences(
+                artifact_data_names=artifact_data_names,
+                scope_key_data_names=scope_key_data_names,
+            )
+            self._published_plans[fingerprint] = published
+            print(
+                "NDNSF_DI_PLAN_CACHE "
+                f"service={plan.service} fingerprint={fingerprint[:16]} hit=false "
+                f"artifacts={len(artifact_data_names)} scopes={len(scope_key_data_names)}",
+                flush=True,
+            )
+            return published
 
     def infer_deployed_service(
         self,

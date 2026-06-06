@@ -163,6 +163,11 @@ namespace ndn_service_framework{
                                        const ndn::Buffer& payload,
                                        size_t maxSegmentSize = 7000,
                                        int freshnessMs = 60000);
+                ndn::Name publishLargeNamed(KeyScope keyScope,
+                                            const ndn::Name& dataName,
+                                            const ndn::Buffer& payload,
+                                            size_t maxSegmentSize = 7000,
+                                            int freshnessMs = 60000);
                 std::optional<ndn::Buffer> fetchLarge(const ndn::Name& dataName,
                                                       KeyScope keyScope,
                                                       int timeoutMs);
@@ -477,6 +482,12 @@ namespace ndn_service_framework{
             // void PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer& buffer);
 
             bool replyFromIMS(const ndn::Interest &interest);
+            void rememberPendingImsInterest(const ndn::Interest& interest);
+            void insertDataIntoIMS(const ndn::Data& data);
+            void insertDataIntoIMS(const ndn::Data& data,
+                                   const ndn::time::milliseconds& freshness);
+            void satisfyPendingImsInterestsLocked();
+            void pruneExpiredPendingImsInterestsLocked();
 
             void onPrefixRegisterFailure(const ndn::Name& prefix, const std::string& reason);
 
@@ -701,6 +712,13 @@ namespace ndn_service_framework{
                 const ndn::Buffer& payload,
                 size_t maxSegmentSize,
                 int freshnessMs);
+            ndn::Name publishCollaborationLargeDataNamed(
+                const ndn::Name& requestId,
+                const std::string& keyScope,
+                const ndn::Name& dataName,
+                const ndn::Buffer& payload,
+                size_t maxSegmentSize,
+                int freshnessMs);
             std::optional<ndn::Buffer> fetchCollaborationLargeData(
                 const ndn::Name& requestId,
                 const std::string& keyScope,
@@ -828,6 +846,12 @@ namespace ndn_service_framework{
 
             ndn::InMemoryStorageFifo m_IMS;
             std::mutex _cache_mutex;
+            struct PendingImsInterest
+            {
+                ndn::Interest interest;
+                ndn::time::steady_clock::time_point expiresAt;
+            };
+            std::vector<PendingImsInterest> m_pendingImsInterests;
 
             OptionalServiceDiscovery m_ServiceDiscovery;
 

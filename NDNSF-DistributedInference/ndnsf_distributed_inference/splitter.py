@@ -110,6 +110,12 @@ class SplitServiceSpec:
                     "topic_prefix": dep.topic_prefix,
                     "required": dep.required,
                     **({"tensors": list(dep.tensors)} if dep.tensors else {}),
+                    **({"object_name_template": dep.object_name_template}
+                       if dep.object_name_template else {}),
+                    **({"expected_segments": dep.expected_segments}
+                       if dep.expected_segments else {}),
+                    **({"expected_bytes": dep.expected_bytes}
+                       if dep.expected_bytes else {}),
                 }
                 for dep in self.dependencies
             ],
