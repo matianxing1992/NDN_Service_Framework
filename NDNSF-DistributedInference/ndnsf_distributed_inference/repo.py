@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
@@ -104,6 +104,76 @@ REPO_OBJECT_CLASS_DEFAULTS: dict[str, dict[str, object]] = {
         "repairAllowed": True,
     },
 }
+REPO_OBJECT_CLASS_POLICIES: dict[str, dict[str, object]] = {
+    name: dict(policy)
+    for name, policy in REPO_OBJECT_CLASS_DEFAULTS.items()
+}
+
+
+def _normalize_object_class_policy(name: str, raw_policy: dict) -> dict[str, object]:
+    policy = dict(raw_policy)
+    if "minReplica" in policy and "minReplicationFactor" not in policy:
+        policy["minReplicationFactor"] = policy["minReplica"]
+    if "minReplicas" in policy and "minReplicationFactor" not in policy:
+        policy["minReplicationFactor"] = policy["minReplicas"]
+    if "maxReplica" in policy and "maxReplicationFactor" not in policy:
+        policy["maxReplicationFactor"] = policy["maxReplica"]
+    if "maxReplicas" in policy and "maxReplicationFactor" not in policy:
+        policy["maxReplicationFactor"] = policy["maxReplicas"]
+    if "ttl" in policy and "ttlMs" not in policy:
+        policy["ttlMs"] = policy["ttl"]
+    if "repair" in policy and "repairAllowed" not in policy:
+        policy["repairAllowed"] = policy["repair"]
+    if "repair_allowed" in policy and "repairAllowed" not in policy:
+        policy["repairAllowed"] = policy["repair_allowed"]
+    if "auto_delete" in policy and "autoDelete" not in policy:
+        policy["autoDelete"] = policy["auto_delete"]
+    return {
+        "objectClass": str(policy.get("objectClass", name)),
+        "minReplicationFactor": int(policy.get("minReplicationFactor", 1) or 1),
+        "maxReplicationFactor": int(policy.get("maxReplicationFactor", 0) or 0),
+        "ttlMs": int(policy.get("ttlMs", 0) or 0),
+        "repairAllowed": _boolish(policy.get("repairAllowed", True), True),
+        "autoDelete": _boolish(policy.get("autoDelete", False), False),
+        "deletePolicy": str(policy.get("deletePolicy", "")),
+        "priority": int(policy.get("priority", 0) or 0),
+    }
+
+
+def configure_repo_object_class_policies(config: dict) -> None:
+    """Install deployment-specific object class policies for this process."""
+
+    control = config.get("repo_control_plane", {})
+    if not isinstance(control, dict):
+        return
+    configured = control.get("object_classes", control.get("objectClasses", {}))
+    if not configured:
+        return
+    policies = {
+        name: dict(policy)
+        for name, policy in REPO_OBJECT_CLASS_DEFAULTS.items()
+    }
+    if isinstance(configured, dict):
+        items = configured.items()
+    elif isinstance(configured, list):
+        items = [
+            (str(item.get("name", item.get("objectClass", ""))), item)
+            for item in configured
+            if isinstance(item, dict)
+        ]
+    else:
+        raise ValueError("repo_control_plane.object_classes must be a mapping or list")
+    for name, raw_policy in items:
+        class_name = str(name).strip()
+        if not class_name:
+            continue
+        if not isinstance(raw_policy, dict):
+            raise ValueError(f"object class policy must be a mapping: {class_name}")
+        base = dict(policies.get(class_name, {}))
+        base.update(raw_policy)
+        policies[class_name] = _normalize_object_class_policy(class_name, base)
+    REPO_OBJECT_CLASS_POLICIES.clear()
+    REPO_OBJECT_CLASS_POLICIES.update(policies)
 
 
 def repo_object_class_policy(object_type: str, object_class: str = "") -> dict[str, object]:
@@ -124,11 +194,14 @@ def repo_object_class_policy(object_type: str, object_class: str = "") -> dict[s
             normalized_class = "mission-log"
         else:
             normalized_class = normalized_type or "generic"
-    defaults = dict(REPO_OBJECT_CLASS_DEFAULTS.get(normalized_class, {}))
+    defaults = dict(REPO_OBJECT_CLASS_POLICIES.get(normalized_class, {}))
     defaults.setdefault("minReplicationFactor", 1)
     defaults.setdefault("maxReplicationFactor", 0)
     defaults.setdefault("ttlMs", 0)
     defaults.setdefault("repairAllowed", True)
+    defaults.setdefault("autoDelete", False)
+    defaults.setdefault("deletePolicy", "")
+    defaults.setdefault("priority", 0)
     defaults["objectClass"] = normalized_class
     return defaults
 
@@ -150,6 +223,10 @@ class RepoObjectManifest:
     object_class: str = ""
     ttl_ms: int = 0
     repair_allowed: bool = True
+    auto_delete: bool = False
+    delete_policy: str = ""
+    priority: int = 0
+    metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         class_policy = repo_object_class_policy(self.object_type, self.object_class)
@@ -172,6 +249,18 @@ class RepoObjectManifest:
             if self.ttl_ms > 0 else
             int(class_policy.get("ttlMs", 0) or 0)
         )
+        auto_delete = (
+            self.auto_delete or
+            _boolish(class_policy.get("autoDelete", False), False)
+        )
+        delete_policy = self.delete_policy or str(class_policy.get("deletePolicy", ""))
+        priority = self.priority or int(class_policy.get("priority", 0) or 0)
+        metadata = dict(self.metadata or {})
+        query_tags = [
+            str(value) for value in
+            metadata.get("queryTags", metadata.get("tags", []))
+            if str(value)
+        ] if isinstance(metadata.get("queryTags", metadata.get("tags", [])), list) else []
         return {
             "objectName": self.object_name,
             "objectType": self.object_type,
@@ -184,10 +273,15 @@ class RepoObjectManifest:
             "maxReplicationFactor": max_replication_factor,
             "ttlMs": ttl_ms,
             "repairAllowed": bool(self.repair_allowed and class_policy.get("repairAllowed", True)),
+            "autoDelete": auto_delete,
+            "deletePolicy": delete_policy,
+            "priority": priority,
             "replicaNodes": list(self.replica_nodes),
             "replicaDataNames": list(self.replica_data_names),
             "segmentLocations": list(self.segment_locations),
             "policyEpoch": self.policy_epoch,
+            "metadata": metadata,
+            "queryTags": query_tags,
         }
 
     def to_bytes(self) -> bytes:
@@ -214,6 +308,11 @@ class RepoObjectManifest:
             object_class=str(obj.get("objectClass", "")),
             ttl_ms=int(obj.get("ttlMs", 0) or 0),
             repair_allowed=_boolish(obj.get("repairAllowed", True), True),
+            auto_delete=_boolish(obj.get("autoDelete", False), False),
+            delete_policy=str(obj.get("deletePolicy", "")),
+            priority=int(obj.get("priority", 0) or 0),
+            metadata=dict(obj.get("metadata", {}))
+            if isinstance(obj.get("metadata", {}), dict) else {},
         )
 
 
@@ -1134,6 +1233,14 @@ class RepoNodeApp:
         return hashlib.sha256(manifest.to_bytes()).hexdigest()
 
     @staticmethod
+    def _publisher_from_object_name(object_name: str) -> str:
+        marker = "/NDNSF-DISTRIBUTED-REPO/"
+        if marker in object_name:
+            return object_name.split(marker, 1)[0]
+        parts = object_name.strip("/").split("/")
+        return "/" + "/".join(parts[:3]) if len(parts) >= 3 else object_name
+
+    @staticmethod
     def _catalog_manifest_summary(manifest: RepoObjectManifest) -> dict:
         # Catalog entries keep object/repo control-plane semantics here. Payload
         # transport sizing is handled by NDNSF core large-response references.
@@ -1142,6 +1249,7 @@ class RepoNodeApp:
             "objectName": manifest.object_name,
             "objectType": manifest.object_type,
             "objectClass": manifest_dict.get("objectClass", ""),
+            "publisher": RepoNodeApp._publisher_from_object_name(manifest.object_name),
             "sha256": manifest.sha256,
             "size": manifest.size,
             "segmentCount": manifest.segment_count,
@@ -1149,11 +1257,16 @@ class RepoNodeApp:
             "maxReplicationFactor": manifest_dict.get("maxReplicationFactor", 1),
             "ttlMs": manifest_dict.get("ttlMs", 0),
             "repairAllowed": manifest_dict.get("repairAllowed", True),
+            "autoDelete": manifest_dict.get("autoDelete", False),
+            "deletePolicy": manifest_dict.get("deletePolicy", ""),
+            "priority": manifest_dict.get("priority", 0),
             "replicationFactor": manifest.replication_factor,
             "replicaNodes": list(manifest.replica_nodes),
             "replicaDataNames": list(manifest.replica_data_names),
             "segmentLocations": list(manifest.segment_locations),
             "policyEpoch": manifest.policy_epoch,
+            "metadata": dict(manifest_dict.get("metadata", {})),
+            "queryTags": list(manifest_dict.get("queryTags", [])),
         }
 
     def _catalog_entry(self, manifest: RepoObjectManifest, state: str) -> dict:
@@ -1165,6 +1278,7 @@ class RepoNodeApp:
             "manifestSha256": self._manifest_sha256(manifest),
             "objectType": manifest.object_type,
             "objectClass": manifest_dict.get("objectClass", ""),
+            "publisher": self._publisher_from_object_name(manifest.object_name),
             "size": manifest.size,
             "segmentCount": manifest.segment_count,
             "sourceRepo": self.repo_node,
@@ -1178,7 +1292,12 @@ class RepoNodeApp:
             "desiredReplicationFactor": manifest_dict.get("minReplicationFactor", 1),
             "ttlMs": manifest_dict.get("ttlMs", 0),
             "repairAllowed": manifest_dict.get("repairAllowed", True),
+            "autoDelete": manifest_dict.get("autoDelete", False),
+            "deletePolicy": manifest_dict.get("deletePolicy", ""),
+            "priority": manifest_dict.get("priority", 0),
             "replicaNodes": list(manifest.replica_nodes),
+            "metadata": dict(manifest_dict.get("metadata", {})),
+            "queryTags": list(manifest_dict.get("queryTags", [])),
             "manifest": self._catalog_manifest_summary(manifest),
         }
 
@@ -1420,14 +1539,43 @@ class RepoNodeApp:
             "reason": repair_reason,
         }
         best = (available or entries)[0]
+        manifest_dict = (
+            dict(best.get("manifest", {}))
+            if isinstance(best.get("manifest", {}), dict) else {}
+        )
+        metadata = (
+            dict(best.get("metadata", {}))
+            if isinstance(best.get("metadata", {}), dict) else
+            dict(manifest_dict.get("metadata", {}))
+            if isinstance(manifest_dict.get("metadata", {}), dict) else {}
+        )
+        query_tags = (
+            [str(value) for value in best.get("queryTags", [])]
+            if isinstance(best.get("queryTags", []), list) else
+            [str(value) for value in manifest_dict.get("queryTags", [])]
+            if isinstance(manifest_dict.get("queryTags", []), list) else []
+        )
+        created_at_ms = int(best.get(
+            "createdAtMs",
+            manifest_dict.get("createdAtMs", best.get("updatedAtMs", 0)),
+        ) or 0)
+        updated_at_ms = int(best.get(
+            "updatedAtMs",
+            manifest_dict.get("updatedAtMs", 0),
+        ) or 0)
         return {
             "objectName": object_name,
             "objectSha256": best.get("objectSha256", ""),
             "manifestSha256": best.get("manifestSha256", ""),
             "objectType": best.get("objectType", ""),
             "objectClass": best.get("objectClass", best.get("manifest", {}).get("objectClass", "")),
+            "publisher": best.get("publisher", self._publisher_from_object_name(object_name)),
+            "createdAtMs": created_at_ms,
+            "updatedAtMs": updated_at_ms,
             "size": best.get("size", 0),
             "segmentCount": best.get("segmentCount", 0),
+            "metadata": metadata,
+            "queryTags": query_tags,
             "state": ("DELETED" if deleted else
                       "EXPIRED" if expired else
                       "UNDER_REPLICATED" if missing else "AVAILABLE"),
@@ -1436,6 +1584,18 @@ class RepoNodeApp:
             "desiredReplicationFactor": min_required,
             "ttlMs": best.get("ttlMs", best.get("manifest", {}).get("ttlMs", 0)),
             "repairAllowed": repair_allowed,
+            "autoDelete": best.get(
+                "autoDelete",
+                best.get("manifest", {}).get("autoDelete", False),
+            ),
+            "deletePolicy": best.get(
+                "deletePolicy",
+                best.get("manifest", {}).get("deletePolicy", ""),
+            ),
+            "priority": best.get(
+                "priority",
+                best.get("manifest", {}).get("priority", 0),
+            ),
             "expired": expired,
             "expiredRepos": expired_repos,
             "eligibleForRepair": eligible_for_repair,
@@ -1529,6 +1689,91 @@ class RepoNodeApp:
             except KeyError:
                 pass
         return self._object_catalog_summary(object_name)
+
+    @staticmethod
+    def _metadata_matches(metadata: dict, required: dict) -> bool:
+        for key, expected in required.items():
+            actual = metadata.get(key)
+            if isinstance(expected, list):
+                if actual not in expected:
+                    return False
+            elif actual != expected:
+                return False
+        return True
+
+    @staticmethod
+    def _tags_match(tags: list[str], required_tags: list[str]) -> bool:
+        if not required_tags:
+            return True
+        tag_set = {str(tag) for tag in tags}
+        return all(str(tag) in tag_set for tag in required_tags)
+
+    def _catalog_query(self, query: dict) -> dict:
+        if not isinstance(query, dict):
+            raise ValueError("CATALOG_QUERY query must be an object")
+        with self._catalog_lock:
+            self._refresh_local_catalog_liveness_locked()
+            object_names = sorted(self._global_catalog)
+        object_class = str(query.get("objectClass", ""))
+        object_type = str(query.get("objectType", ""))
+        publisher = str(query.get("publisher", ""))
+        state = str(query.get("state", ""))
+        required_tags = [
+            str(value) for value in query.get("tags", query.get("queryTags", []))
+        ] if isinstance(query.get("tags", query.get("queryTags", [])), list) else []
+        required_metadata = (
+            dict(query.get("metadata", {}))
+            if isinstance(query.get("metadata", {}), dict) else {}
+        )
+        created_after_ms = int(query.get("createdAfterMs", 0) or 0)
+        created_before_ms = int(query.get("createdBeforeMs", 0) or 0)
+        updated_after_ms = int(query.get("updatedAfterMs", 0) or 0)
+        updated_before_ms = int(query.get("updatedBeforeMs", 0) or 0)
+        limit = int(query.get("limit", 0) or 0)
+        results = []
+        for object_name in object_names:
+            try:
+                summary = self._object_catalog_summary(object_name)
+            except KeyError:
+                continue
+            metadata = (
+                dict(summary.get("metadata", {}))
+                if isinstance(summary.get("metadata", {}), dict) else {}
+            )
+            tags = [
+                str(value) for value in summary.get("queryTags", [])
+            ] if isinstance(summary.get("queryTags", []), list) else []
+            if object_class and str(summary.get("objectClass", "")) != object_class:
+                continue
+            if object_type and str(summary.get("objectType", "")) != object_type:
+                continue
+            if publisher and str(summary.get("publisher", "")) != publisher:
+                continue
+            if state and str(summary.get("state", "")) != state:
+                continue
+            if not self._tags_match(tags, required_tags):
+                continue
+            if required_metadata and not self._metadata_matches(metadata, required_metadata):
+                continue
+            created_at_ms = int(summary.get("createdAtMs", summary.get("updatedAtMs", 0)) or 0)
+            updated_at_ms = int(summary.get("updatedAtMs", 0) or 0)
+            if created_after_ms and created_at_ms < created_after_ms:
+                continue
+            if created_before_ms and created_at_ms > created_before_ms:
+                continue
+            if updated_after_ms and updated_at_ms < updated_after_ms:
+                continue
+            if updated_before_ms and updated_at_ms > updated_before_ms:
+                continue
+            results.append(summary)
+            if limit > 0 and len(results) >= limit:
+                break
+        return {
+            "repoNode": self.repo_node,
+            "query": dict(query),
+            "count": len(results),
+            "objects": results,
+        }
 
     def _sqlite_payload_bytes(self, object_name: str) -> bytes:
         _, payload = self._load_persisted_object(object_name)
@@ -2053,6 +2298,14 @@ class RepoNodeApp:
                     True,
                     json.dumps(self._catalog_lookup(object_name), sort_keys=True).encode(),
                 )
+            if operation == "CATALOG_QUERY":
+                query = request.get("query", {})
+                if not isinstance(query, dict):
+                    raise ValueError("CATALOG_QUERY query must be an object")
+                return ServiceResponse(
+                    True,
+                    json.dumps(self._catalog_query(query), sort_keys=True).encode(),
+                )
             if operation == "CATALOG_MERGE":
                 entries = request.get("entries", [])
                 if not isinstance(entries, list):
@@ -2501,6 +2754,7 @@ class NetworkDistributedRepoClient:
         operation: str = "STORE_PACKETS",
         manifest_override: RepoObjectManifest | None = None,
         packet_data_name: str = "",
+        metadata: Optional[dict] = None,
     ) -> RepoObjectManifest:
         selected_repo_nodes: list[str] = []
 
@@ -2538,14 +2792,15 @@ class NetworkDistributedRepoClient:
             object_type=object_type,
             sha256=hashlib.sha256(payload).hexdigest(),
             size=len(payload),
-                segment_count=len(packets) if packets else 1,
-                replication_factor=replication_factor,
-                replica_nodes=tuple(replica_nodes),
-                replica_data_names=(
-                    (packet_data_name,) if packet_data_name else ()
-                ),
-                policy_epoch=policy_epoch,
-            )
+            segment_count=len(packets) if packets else 1,
+            replication_factor=replication_factor,
+            replica_nodes=tuple(replica_nodes),
+            replica_data_names=(
+                (packet_data_name,) if packet_data_name else ()
+            ),
+            policy_epoch=policy_epoch,
+            metadata=dict(metadata or {}),
+        )
         packet_fields = {}
         if operation == "STORE_PACKETS":
             packet_fields["packets"] = [
@@ -2586,6 +2841,10 @@ class NetworkDistributedRepoClient:
                 replica_nodes=tuple(selected_repo_nodes),
                 replica_data_names=manifest.replica_data_names,
                 policy_epoch=manifest.policy_epoch,
+                object_class=manifest.object_class,
+                ttl_ms=manifest.ttl_ms,
+                repair_allowed=manifest.repair_allowed,
+                metadata=dict(manifest.metadata or {}),
             )
         return manifest
 
@@ -2598,6 +2857,7 @@ class NetworkDistributedRepoClient:
         replication_factor: int = 1,
         replica_nodes: tuple[str, ...] = (),
         policy_epoch: str,
+        metadata: Optional[dict] = None,
     ) -> RepoObjectManifest:
         if len(payload) <= self.max_segment_payload:
             return self._store_once(
@@ -2607,6 +2867,7 @@ class NetworkDistributedRepoClient:
                 replication_factor=replication_factor,
                 replica_nodes=replica_nodes,
                 policy_epoch=policy_epoch,
+                metadata=metadata,
             )
 
         segment_manifests: list[RepoObjectManifest] = []
@@ -2620,6 +2881,7 @@ class NetworkDistributedRepoClient:
                 replication_factor=replication_factor,
                 replica_nodes=replica_nodes,
                 policy_epoch=policy_epoch,
+                metadata=metadata,
             )
             segment_manifests.append(segment_manifest)
 
@@ -2637,6 +2899,7 @@ class NetworkDistributedRepoClient:
             replication_factor=replication_factor,
             replica_nodes=tuple(replica_set),
             policy_epoch=policy_epoch,
+            metadata=dict(metadata or {}),
         )
         return self._store_once(
             object_name=object_name,
@@ -2647,6 +2910,7 @@ class NetworkDistributedRepoClient:
             policy_epoch=policy_epoch,
             operation="STORE_MANIFEST",
             manifest_override=manifest,
+            metadata=metadata,
         )
 
     def store_object(
@@ -2658,6 +2922,7 @@ class NetworkDistributedRepoClient:
         replication_factor: int = 1,
         replica_nodes: tuple[str, ...] = (),
         policy_epoch: str,
+        metadata: Optional[dict] = None,
     ) -> RepoObjectManifest:
         object_name = self._require_publisher_object_name(object_name)
 
@@ -2756,6 +3021,7 @@ class NetworkDistributedRepoClient:
                     replica_nodes=tuple(selected),
                     replica_data_names=data_names,
                     policy_epoch=policy_epoch,
+                    metadata=dict(metadata or {}),
                 )
                 segment_count = 0
                 producers: list[object] = []
@@ -2782,6 +3048,7 @@ class NetworkDistributedRepoClient:
                         replica_nodes=(repo_node,),
                         replica_data_names=(data_name,),
                         policy_epoch=policy_epoch,
+                        metadata=dict(metadata or {}),
                     )
                     location_hints = [] if data_name.startswith(
                         repo_node.rstrip("/") + "/"
@@ -2886,6 +3153,10 @@ class NetworkDistributedRepoClient:
                     replica_data_names=final_manifest.replica_data_names,
                     segment_locations=tuple(segment_locations),
                     policy_epoch=final_manifest.policy_epoch,
+                    object_class=final_manifest.object_class,
+                    ttl_ms=final_manifest.ttl_ms,
+                    repair_allowed=final_manifest.repair_allowed,
+                    metadata=dict(final_manifest.metadata or {}),
                 )
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
@@ -2906,6 +3177,7 @@ class NetworkDistributedRepoClient:
         replica_nodes: tuple[str, ...] = (),
         policy_epoch: str,
         data_name: str = "",
+        metadata: Optional[dict] = None,
     ) -> RepoObjectManifest:
         """Store app-produced signed NDN Data packets without re-signing them.
 
@@ -2956,6 +3228,7 @@ class NetworkDistributedRepoClient:
                 "routeStrategy": "direct-first",
             },),
             policy_epoch=policy_epoch,
+            metadata=dict(metadata or {}),
         )
 
         for repo_node in selected:
@@ -2970,6 +3243,7 @@ class NetworkDistributedRepoClient:
                 replica_data_names=(data_name,),
                 segment_locations=manifest.segment_locations,
                 policy_epoch=policy_epoch,
+                metadata=dict(metadata or {}),
             )
             for batch in self._packet_batches(packets):
                 self._request_specific_repo(
@@ -3043,6 +3317,18 @@ class NetworkDistributedRepoClient:
         decoded = json.loads(response.payload.decode())
         if not isinstance(decoded, dict):
             raise ValueError("repo catalog lookup response must be a JSON object")
+        return decoded
+
+    def catalog_query(self, repo_node: str, query: dict) -> dict:
+        response = self._request_specific_repo(
+            repo_node=repo_node,
+            payload=encode_repo_request("CATALOG_QUERY", query=dict(query)),
+            timeout_ms=self.timeout_ms,
+            isolated_runtime=True,
+        )
+        decoded = json.loads(response.payload.decode())
+        if not isinstance(decoded, dict):
+            raise ValueError("repo catalog query response must be a JSON object")
         return decoded
 
     def catalog_status(self, repo_node: str) -> dict:
@@ -3481,6 +3767,9 @@ class DistributedRepo:
         verbose: bool = False,
     ) -> "DistributedRepo":
         from .app import APPDeployment
+        from .policy import load_config
+
+        configure_repo_object_class_policies(load_config(config))
 
         deployment = APPDeployment.from_config(
             config,
@@ -3564,6 +3853,7 @@ class DistributedRepo:
         replication_factor: int = 1,
         replica_nodes: Iterable[str] = (),
         policy_epoch: str = "",
+        metadata: Optional[dict] = None,
     ) -> RepoObjectManifest:
         if isinstance(payload, str):
             payload_bytes = payload.encode()
@@ -3577,6 +3867,7 @@ class DistributedRepo:
             replication_factor=replication_factor,
             replica_nodes=tuple(replica_nodes),
             policy_epoch=policy_epoch,
+            metadata=metadata,
         )
         self._known_manifests[manifest.object_name] = manifest
         return manifest
@@ -3607,6 +3898,9 @@ class DistributedRepo:
 
     def catalog_lookup(self, object_name: str, repo_node: str) -> dict:
         return self._client.catalog_lookup(object_name, repo_node)
+
+    def catalog_query(self, repo_node: str, query: dict) -> dict:
+        return self._client.catalog_query(repo_node, query)
 
     def catalog_status(self, repo_node: str) -> dict:
         return self._client.catalog_status(repo_node)

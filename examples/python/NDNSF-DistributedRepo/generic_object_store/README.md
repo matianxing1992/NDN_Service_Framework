@@ -94,6 +94,11 @@ objects are not eligible for repair even if their class normally allows repair.
 This prevents short-lived activations or temporary products from being copied
 after their useful lifetime has passed.
 
+The example policy also defines a deployment-specific `configured-demo` class
+under `repo_control_plane.object_classes`. The object policy smoke checks that
+configured min/max replicas, TTL, repair flag, `autoDelete`, and `deletePolicy`
+are carried into catalog lookup responses.
+
 The generic MiniNDN regression also stores UAV-style data products:
 
 ```text
@@ -103,9 +108,13 @@ mission-log
 ```
 
 It verifies that they enter the catalog with the expected object class metadata
-and that clients can look them up and fetch the original payload. This is a
-repo-level browsing prototype for UAV recording/log products; the full GS UI is
-kept separate from this repo control-plane test.
+and that clients can look them up and fetch the original payload. It also sends
+`CATALOG_QUERY` requests by object class, publisher, tags, and mission metadata.
+This is a repo-level browsing prototype for UAV recording/log products; the
+full GS UI is kept separate from this repo control-plane test.
+The `--uav-browse-smoke` command is the command-line browsing prototype: it
+queries matching UAV objects from a Persistent repo catalog and fetches each
+matching recording/log object through the normal manifest-based repo path.
 
 ## Repair Plan and Manual Repair Action
 
@@ -238,6 +247,8 @@ GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK
 GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK
 GENERIC_DISTRIBUTED_REPO_TOMBSTONE_EPOCH_CONFLICT_OK
 GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK
+GENERIC_DISTRIBUTED_REPO_CATALOG_QUERY_OK
+GENERIC_DISTRIBUTED_REPO_UAV_BROWSE_OK
 GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_OK

@@ -439,6 +439,9 @@ Repo-backed artifacts still fetch through the manifest-aware repo path, but the
 execution spec also carries the same large-data reference metadata shape used
 by inputs and activations. New planner or executor code should consume that
 reference metadata instead of passing naked Data-name strings.
+The APP plan builder now carries the reference in each artifact spec first; the
+embedded repo manifest remains as fetch metadata for repo-backed providers and
+as a compatibility fallback for older scripts.
 The metadata has a `source` field: `repo-manifest` means the provider should
 use the repo manifest-aware object fetch path, while `ndn-large-data` means the
 provider can fetch the named encrypted large Data directly.

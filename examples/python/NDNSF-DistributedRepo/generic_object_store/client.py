@@ -122,6 +122,13 @@ def main() -> int:
                         help="Verify default object class and retention metadata")
     parser.add_argument("--uav-data-product-smoke", action="store_true",
                         help="Verify UAV recording/log store, catalog lookup, and fetch")
+    parser.add_argument("--uav-browse-smoke", action="store_true",
+                        help="Query and fetch UAV recording/log objects from the catalog")
+    parser.add_argument("--uav-browse-repo-node",
+                        default="/example/repo/provider/repoA")
+    parser.add_argument("--uav-browse-object-class", default="",
+                        help="Optional objectClass filter for UAV browsing")
+    parser.add_argument("--uav-browse-mission-id", default="mission-demo")
     args = parser.parse_args()
 
     if args.use_local_config:
@@ -458,6 +465,7 @@ def main() -> int:
             ("UAV/Recording/session-0001", "uav-recording", 2, 3, True),
             ("UAV/Telemetry/window-0001", "telemetry-log", 1, 2, True),
             ("UAV/Mission/mission-0001", "mission-log", 2, 3, True),
+            ("Configured/object-0001", "configured-demo", 2, 2, False),
         ]
         for suffix, object_type, expected_min, expected_max, expected_repair in cases:
             manifest = repo.put(
@@ -491,6 +499,19 @@ def main() -> int:
                 raise RuntimeError(
                     f"object policy ttl invalid type={object_type} lookup={lookup}"
                 )
+            if object_type == "configured-demo":
+                if int(lookup.get("ttlMs", 0) or 0) != 12345:
+                    raise RuntimeError(
+                        f"configured object policy ttl mismatch lookup={lookup}"
+                    )
+                if not bool(lookup.get("autoDelete", False)):
+                    raise RuntimeError(
+                        f"configured object policy autoDelete missing lookup={lookup}"
+                    )
+                if str(lookup.get("deletePolicy", "")) != "ttl-expiry":
+                    raise RuntimeError(
+                        f"configured object policy deletePolicy mismatch lookup={lookup}"
+                    )
         expiring_manifest = repo.put(
             f"APP/ObjectPolicy/TTL/expire/{int(time.time() * 1000)}",
             b"short lived object",
@@ -582,12 +603,18 @@ def main() -> int:
         ]
         fetched = 0
         for suffix, object_type, payload, replicas in objects:
+            metadata = {
+                "tags": ["uav", object_type, "mission-demo"],
+                "missionId": "mission-demo",
+                "droneId": "drone-A",
+            }
             manifest = repo.put(
                 f"APP/{suffix}",
                 payload,
                 object_type=object_type,
                 replication_factor=replicas,
                 policy_epoch="/Policy/generic-repo/v1",
+                metadata=metadata,
             )
             deadline = time.time() + 60.0
             lookup = {}
@@ -610,10 +637,75 @@ def main() -> int:
                     f"UAV data product payload mismatch: "
                     f"type={object_type} object={manifest.object_name}"
                 )
+            query = repo.catalog_query(
+                manifest.replica_nodes[0],
+                {
+                    "objectClass": object_type,
+                    "publisher": "/example/repo/user",
+                    "tags": ["uav", object_type],
+                    "metadata": {"missionId": "mission-demo"},
+                },
+            )
+            query_names = {
+                str(item.get("objectName", ""))
+                for item in query.get("objects", [])
+            }
+            if manifest.object_name not in query_names:
+                raise RuntimeError(
+                    f"UAV data product catalog query missed object: "
+                    f"type={object_type} object={manifest.object_name} query={query}"
+                )
             fetched += 1
         print(
             "GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK "
             f"objects={fetched}",
+            flush=True,
+        )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_CATALOG_QUERY_OK "
+            f"objects={fetched}",
+            flush=True,
+        )
+        return 0
+
+    if args.uav_browse_smoke:
+        query = {
+            "tags": ["uav"],
+            "metadata": {"missionId": args.uav_browse_mission_id},
+        }
+        if args.uav_browse_object_class:
+            query["objectClass"] = args.uav_browse_object_class
+        result = repo.catalog_query(args.uav_browse_repo_node, query)
+        objects = [
+            item for item in result.get("objects", [])
+            if isinstance(item, dict)
+        ]
+        if not objects:
+            raise RuntimeError(f"UAV browse query returned no objects: {result}")
+        fetched = 0
+        for item in objects:
+            object_name = str(item.get("objectName", ""))
+            if not object_name:
+                continue
+            lookup = repo.catalog_lookup(object_name, args.uav_browse_repo_node)
+            candidates = [
+                candidate for candidate in lookup.get("candidateReplicas", [])
+                if isinstance(candidate, dict) and
+                str(candidate.get("state", "")) == "AVAILABLE"
+            ]
+            if not candidates:
+                raise RuntimeError(f"UAV browse object has no available replica: {lookup}")
+            manifest_dict = candidates[0].get("manifest", {})
+            if not isinstance(manifest_dict, dict):
+                raise RuntimeError(f"UAV browse object has no manifest: {lookup}")
+            manifest = RepoObjectManifest.from_dict(manifest_dict)
+            payload = repo.get(manifest.object_name, manifest)
+            if not payload:
+                raise RuntimeError(f"UAV browse fetched empty object: {manifest.object_name}")
+            fetched += 1
+        print(
+            "GENERIC_DISTRIBUTED_REPO_UAV_BROWSE_OK "
+            f"objects={len(objects)} fetched={fetched}",
             flush=True,
         )
         return 0

@@ -51,6 +51,7 @@ class ModelPart:
     kind: str = "model"
     backend: str = ""
     cache_name: str = ""
+    large_data_reference: dict = field(default_factory=dict)
     repo_manifest: dict = field(default_factory=dict)
     runtime: RuntimeSpec | None = None
     service: str = ""
@@ -123,6 +124,7 @@ class InferencePlanBuilder:
         kind: str = "model",
         backend: str = "",
         cache_name: str = "",
+        large_data_reference: dict | None = None,
         repo_manifest: dict | None = None,
         runtime: RuntimeSpec | None = None,
         service: str = "",
@@ -140,6 +142,7 @@ class InferencePlanBuilder:
             kind=kind,
             backend=backend or self.runtime.backend,
             cache_name=cache_name,
+            large_data_reference=dict(large_data_reference or {}),
             repo_manifest=dict(repo_manifest or {}),
             runtime=runtime or self.runtime,
             service=service,
@@ -202,6 +205,7 @@ class InferencePlanBuilder:
                     filename=part.inferred_filename(),
                     kind=part.kind,
                     cache_name=part.cache_name,
+                    large_data_reference=dict(part.large_data_reference or {}),
                     repo_manifest=dict(part.repo_manifest or {}),
                 ),
                 runtime=part.runtime or self.runtime,
@@ -355,6 +359,7 @@ class APPClient:
             role_manifests = self._repo_manifests_for_role(manifests, artifact.role)
             role_runtime = runtime
             if role_manifests and runtime.artifact is not None and "runner" in role_manifests:
+                runner_reference = self._large_data_reference_for_entry(role_manifests["runner"])
                 runner_manifest = repo_manifest_from_large_data_reference(role_manifests["runner"])
                 role_runtime = RuntimeSpec(
                     name=runtime.name,
@@ -367,9 +372,14 @@ class APPClient:
                         kind=runtime.artifact.kind,
                         executable=runtime.artifact.executable,
                         cache_name=runtime.artifact.cache_name,
+                        large_data_reference=runner_reference,
                         repo_manifest=runner_manifest,
                     ),
                 )
+            model_reference = (
+                self._large_data_reference_for_entry(role_manifests["model"])
+                if role_manifests and "model" in role_manifests else {}
+            )
             model_manifest = (
                 repo_manifest_from_large_data_reference(role_manifests["model"])
                 if role_manifests and "model" in role_manifests else {}
@@ -382,6 +392,7 @@ class APPClient:
                 kind=artifact.kind,
                 backend=artifact.backend or runtime.backend,
                 cache_name=artifact.artifact_name,
+                large_data_reference=model_reference,
                 repo_manifest=model_manifest,
                 runtime=role_runtime,
                 metadata=dict(artifact.metadata or {}),
@@ -472,6 +483,17 @@ class APPClient:
         if not isinstance(value, dict):
             raise ValueError(f"repo manifest entry for role {role} must be a mapping")
         return dict(value)
+
+    @staticmethod
+    def _large_data_reference_for_entry(entry: dict) -> dict:
+        if not isinstance(entry, dict):
+            raise ValueError("artifact reference entry must be a mapping")
+        reference = entry.get("largeDataReference", entry.get("large_data_reference", {}))
+        if not reference:
+            return {}
+        if not isinstance(reference, dict):
+            raise ValueError("largeDataReference must be a mapping")
+        return dict(reference)
 
     def _default_backend(self, service: str) -> str:
         service_policy = self.deployment.service_policy(service)

@@ -43,6 +43,7 @@ CATALOG_STATUS
 CATALOG_SNAPSHOT
 CATALOG_DELTA
 CATALOG_LOOKUP
+CATALOG_QUERY
 DELETE
 ```
 
@@ -125,12 +126,16 @@ manifest
 /NDNSF/DistributedRepo/CATALOG_SNAPSHOT
 /NDNSF/DistributedRepo/CATALOG_DELTA
 /NDNSF/DistributedRepo/CATALOG_LOOKUP
+/NDNSF/DistributedRepo/CATALOG_QUERY
 ```
 
 `CATALOG_STATUS` 返回 repo node、mode、当前 catalog epoch、object count，以及该 repo
 是否接受 backup replicas。`CATALOG_SNAPSHOT` 返回用于恢复的完整 object-level
 snapshot。`CATALOG_DELTA` 返回 caller 指定 epoch 之后的变化。`CATALOG_LOOKUP` 返回
-某个 object name 的 catalog entry。
+某个 object name 的 catalog entry。`CATALOG_QUERY` 返回按 object class、object type、
+publisher、state、metadata tags、精确 metadata 字段以及 created/updated time range
+过滤后的 object summaries。这些过滤只作用于 manifest/catalog metadata；repo node
+仍然把 payload bytes 和已签名的 NDN Data packets 当作 opaque application data。
 
 Catalog 不应该周期性广播完整目录，也不应该广播每个 segment 的完整列表。可扩展部署应
 周期性发布很小的 delta，例如每 10 秒一次；当 Persistent Repo 迟到加入或落后太多时，
@@ -144,7 +149,20 @@ object 的更新时间和删除语义。
 
 Retention 也属于 catalog-level metadata。Object 可以携带 `ttlMs` 和 `repairAllowed`
 字段。一旦 object 过期，lookup 会报告 `EXPIRED`，并且即使它副本不足，也不会把它放进
-repair planning。
+repair planning。部署可以在 `repo_control_plane.object_classes` 中覆盖 object class
+默认值；repo 会把这些生命周期字段记录到 object manifest 中，但 payload bytes 仍然是
+opaque application data：
+
+```yaml
+repo_control_plane:
+  object_classes:
+    uav-recording:
+      minReplicationFactor: 2
+      maxReplicationFactor: 3
+      ttlMs: 604800000
+      repairAllowed: true
+      autoDelete: false
+```
 
 推荐的 Python-facing generic object API 会隐藏大部分 NDNSF setup 细节。在运行中的部署里，repo nodes 可以把部署配置作为普通 repo object 预加载。应用用户从 repo service bootstrap 参数开始，通过 repo 获取配置，然后执行普通 `put/get` 操作：
 
@@ -164,9 +182,14 @@ manifest = repo.put(
     object_type="binary-blob",
     replication_factor=2,
     policy_epoch="/Policy/example/v1",
+    metadata={"tags": ["demo", "binary"], "workflow": "example"},
 )
 payload = repo.get(manifest.object_name, manifest)
 objects = repo.list()
+matches = repo.catalog_query(
+    manifest.replica_nodes[0],
+    {"objectClass": "binary-blob", "tags": ["demo"]},
+)
 repo.remove(manifest.object_name)
 ```
 

@@ -52,6 +52,7 @@ CATALOG_STATUS
 CATALOG_SNAPSHOT
 CATALOG_DELTA
 CATALOG_LOOKUP
+CATALOG_QUERY
 DELETE
 ```
 
@@ -148,13 +149,18 @@ The current service/API surface is:
 /NDNSF/DistributedRepo/CATALOG_SNAPSHOT
 /NDNSF/DistributedRepo/CATALOG_DELTA
 /NDNSF/DistributedRepo/CATALOG_LOOKUP
+/NDNSF/DistributedRepo/CATALOG_QUERY
 ```
 
 `CATALOG_STATUS` returns the repo node, mode, current catalog epoch, object
 count, and whether the repo accepts backup replicas. `CATALOG_SNAPSHOT` returns
 a full object-level snapshot for recovery. `CATALOG_DELTA` returns only changes
 after a caller-provided epoch. `CATALOG_LOOKUP` returns the catalog entry for
-one object name.
+one object name. `CATALOG_QUERY` returns matching object summaries filtered by
+object class, object type, publisher, state, metadata tags, exact metadata
+fields, and created/updated time ranges. These filters operate only on object
+manifest/catalog metadata; repo nodes still treat payload bytes and signed NDN
+Data packets as opaque application data.
 
 The catalog should not periodically broadcast full directories or per-segment
 lists. A scalable deployment should publish small periodic deltas, for example
@@ -172,7 +178,20 @@ time and delete semantics in addition to a peer's local catalog sequence.
 Retention is also catalog-level metadata. Objects may carry `ttlMs` and
 `repairAllowed` fields. Once an object expires, lookup reports it as `EXPIRED`
 and excludes it from repair planning, even if it would otherwise be
-under-replicated.
+under-replicated. Deployments may override object-class defaults in
+`repo_control_plane.object_classes`; the repo records these lifecycle fields in
+the object manifest while keeping payload bytes opaque:
+
+```yaml
+repo_control_plane:
+  object_classes:
+    uav-recording:
+      minReplicationFactor: 2
+      maxReplicationFactor: 3
+      ttlMs: 604800000
+      repairAllowed: true
+      autoDelete: false
+```
 
 The recommended Python-facing generic object API hides most NDNSF setup
 details. In a running deployment, repo nodes can preload the deployment config
@@ -196,9 +215,14 @@ manifest = repo.put(
     object_type="binary-blob",
     replication_factor=2,
     policy_epoch="/Policy/example/v1",
+    metadata={"tags": ["demo", "binary"], "workflow": "example"},
 )
 payload = repo.get(manifest.object_name, manifest)
 objects = repo.list()
+matches = repo.catalog_query(
+    manifest.replica_nodes[0],
+    {"objectClass": "binary-blob", "tags": ["demo"]},
+)
 repo.remove(manifest.object_name)
 ```
 

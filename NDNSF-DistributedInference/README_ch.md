@@ -380,6 +380,8 @@ Repo-backed artifacts 实际取数仍走 manifest-aware repo path，但 executio
 也会携带与 input 和 activation 相同形状的 large-data reference metadata。新的
 planner 或 executor 代码应该读取这类 reference metadata，而不是继续传裸 Data name
 字符串。
+APP plan builder 现在也会优先把 reference 放进每个 artifact spec；内嵌的 repo
+manifest 只作为 repo-backed provider 的 fetch metadata 和旧脚本兼容 fallback。
 metadata 中包含 `source` 字段：`repo-manifest` 表示 provider 应该走 repo
 manifest-aware object fetch path；`ndn-large-data` 表示 provider 可以直接按名字
 抓取加密 large Data。

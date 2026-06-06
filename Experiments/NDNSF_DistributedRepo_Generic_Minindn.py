@@ -499,10 +499,36 @@ def main() -> None:
         print(uav_data_text)
         if (uav_data_client.returncode != 0 or
                 "GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK"
+                not in uav_data_text or
+                "GENERIC_DISTRIBUTED_REPO_CATALOG_QUERY_OK"
                 not in uav_data_text):
             raise RuntimeError(
                 f"generic DistributedRepo UAV data product failed "
                 f"rc={uav_data_client.returncode}; log={uav_data_log}")
+        uav_browse_log = OUT / "client-uav-browse.log"
+        out = uav_browse_log.open("wb")
+        uav_browse_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--uav-browse-smoke --uav-browse-repo-node /example/repo/provider/repoA".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((uav_browse_client, out, uav_browse_log))
+        uav_browse_client.wait(timeout=180)
+        uav_browse_text = uav_browse_log.read_text(errors="replace")
+        print(uav_browse_text)
+        if (uav_browse_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_UAV_BROWSE_OK"
+                not in uav_browse_text):
+            raise RuntimeError(
+                f"generic DistributedRepo UAV browse failed "
+                f"rc={uav_browse_client.returncode}; log={uav_browse_log}")
         snapshot_log = OUT / "client-catalog-snapshot.log"
         out = snapshot_log.open("wb")
         snapshot_client = getPopen(

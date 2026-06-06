@@ -24,10 +24,12 @@ class ArtifactSpec:
     kind: str = "model"
     executable: bool = False
     cache_name: str = ""
+    large_data_reference: dict = field(default_factory=dict)
     repo_manifest: dict = field(default_factory=dict)
 
     def to_ndnsf_artifact(self) -> dict:
         repo_manifest = dict(self.repo_manifest or {})
+        large_data_reference = dict(self.large_data_reference or {})
         artifact = {
             "payload": self.payload,
             "filename": self.filename,
@@ -36,8 +38,10 @@ class ArtifactSpec:
             "cache_name": self.cache_name,
             "repo_manifest": repo_manifest,
             "repoManifest": repo_manifest,
+            "large_data_reference": large_data_reference,
+            "largeDataReference": large_data_reference,
         }
-        if repo_manifest:
+        if not large_data_reference and repo_manifest:
             large_data_reference = large_data_reference_from_repo_manifest(
                 repo_manifest,
                 object_type=self.kind,

@@ -22,6 +22,14 @@ artifact_security:
     kind: ""
 
 repo_control_plane:
+  object_classes:
+    configured-demo:
+      minReplicationFactor: 2
+      maxReplicationFactor: 2
+      ttlMs: 12345
+      repairAllowed: false
+      autoDelete: true
+      deletePolicy: ttl-expiry
   repair:
     # false: catalog sync only prints repair warnings.
     # true: catalog sync may execute repair actions whose target is this repo.
