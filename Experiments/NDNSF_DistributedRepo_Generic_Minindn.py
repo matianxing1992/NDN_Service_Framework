@@ -469,6 +469,80 @@ def main() -> None:
             raise RuntimeError(
                 "generic DistributedRepo catalog health check failed "
                 f"rc={health_client.returncode}; log={health_log}")
+        catalog_auto_proc, catalog_auto_log = start(
+            "ucla",
+            "catalogA-auto",
+            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
+            " --repo-node /example/repo/provider/repoA "
+            "--peer-repo-node /example/repo/provider/repoB "
+            "--interval-s 2 --auto-repair",
+        )
+        time.sleep(5.0)
+        seed_log = OUT / "client-catalog-auto-repair-seed.log"
+        out = seed_log.open("wb")
+        seed_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--catalog-auto-repair-seed-smoke "
+            "--catalog-auto-source-repo-node /example/repo/provider/repoB "
+            "--catalog-auto-target-repo-node /example/repo/provider/repoA".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((seed_client, out, seed_log))
+        seed_client.wait(timeout=180)
+        seed_text = seed_log.read_text(errors="replace")
+        print(seed_text)
+        seed_match = re.search(
+            r"GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_SEED_OK object=(\S+)",
+            seed_text,
+        )
+        if seed_client.returncode != 0 or seed_match is None:
+            raise RuntimeError(
+                f"generic DistributedRepo auto repair seed failed "
+                f"rc={seed_client.returncode}; log={seed_log}")
+        auto_repair_object = seed_match.group(1)
+        deadline = time.time() + 90.0
+        while time.time() < deadline:
+            auto_text = catalog_auto_log.read_text(errors="replace")
+            if ("catalog_sync repaired repo=/example/repo/provider/repoA" in auto_text and
+                    auto_repair_object in auto_text):
+                break
+            time.sleep(2.0)
+        else:
+            raise RuntimeError(
+                "catalog auto-repair sidecar did not repair seeded object; "
+                f"log={catalog_auto_log} object={auto_repair_object}")
+        verify_log = OUT / "client-catalog-auto-repair-verify.log"
+        out = verify_log.open("wb")
+        verify_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--catalog-auto-repair-verify-object {}".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
+                perf.shell_quote(auto_repair_object),
+            ),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((verify_client, out, verify_log))
+        verify_client.wait(timeout=180)
+        verify_text = verify_log.read_text(errors="replace")
+        print(verify_text)
+        if (verify_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK" not in verify_text):
+            raise RuntimeError(
+                "generic DistributedRepo auto repair verification failed "
+                f"rc={verify_client.returncode}; log={verify_log}")
         print(f"GENERIC_DISTRIBUTED_REPO_MININDN_OK log={client_log}")
     finally:
         for proc, out, _ in processes:

@@ -53,12 +53,18 @@ class RepoObjectManifest:
     size: int
     segment_count: int = 1
     replication_factor: int = 1
+    min_replication_factor: int = 1
+    max_replication_factor: int = 0
     replica_nodes: tuple[str, ...] = ()
     replica_data_names: tuple[str, ...] = ()
     segment_locations: tuple[dict, ...] = ()
     policy_epoch: str = ""
 
     def to_dict(self) -> dict:
+        max_replication_factor = (
+            self.max_replication_factor
+            if self.max_replication_factor > 0 else self.replication_factor
+        )
         return {
             "objectName": self.object_name,
             "objectType": self.object_type,
@@ -66,6 +72,8 @@ class RepoObjectManifest:
             "size": self.size,
             "segmentCount": self.segment_count,
             "replicationFactor": self.replication_factor,
+            "minReplicationFactor": self.min_replication_factor,
+            "maxReplicationFactor": max_replication_factor,
             "replicaNodes": list(self.replica_nodes),
             "replicaDataNames": list(self.replica_data_names),
             "segmentLocations": list(self.segment_locations),
@@ -84,6 +92,11 @@ class RepoObjectManifest:
             size=int(obj["size"]),
             segment_count=int(obj.get("segmentCount", 1)),
             replication_factor=int(obj.get("replicationFactor", 1)),
+            min_replication_factor=int(obj.get("minReplicationFactor", 1)),
+            max_replication_factor=int(obj.get(
+                "maxReplicationFactor",
+                obj.get("replicationFactor", 1),
+            )),
             replica_nodes=tuple(str(value) for value in obj.get("replicaNodes", [])),
             replica_data_names=tuple(str(value) for value in obj.get("replicaDataNames", [])),
             segment_locations=tuple(dict(value) for value in obj.get("segmentLocations", [])),
@@ -885,21 +898,31 @@ class RepoNodeApp:
     def _catalog_manifest_summary(manifest: RepoObjectManifest) -> dict:
         # Catalog entries keep object/repo control-plane semantics here. Payload
         # transport sizing is handled by NDNSF core large-response references.
+        max_replication_factor = (
+            manifest.max_replication_factor
+            if manifest.max_replication_factor > 0 else manifest.replication_factor
+        )
         return {
             "objectName": manifest.object_name,
             "objectType": manifest.object_type,
             "sha256": manifest.sha256,
             "size": manifest.size,
             "segmentCount": manifest.segment_count,
-            "minReplicationFactor": 1,
-            "maxReplicationFactor": manifest.replication_factor,
+            "minReplicationFactor": manifest.min_replication_factor,
+            "maxReplicationFactor": max_replication_factor,
             "replicationFactor": manifest.replication_factor,
             "replicaNodes": list(manifest.replica_nodes),
+            "replicaDataNames": list(manifest.replica_data_names),
+            "segmentLocations": list(manifest.segment_locations),
             "policyEpoch": manifest.policy_epoch,
         }
 
     def _catalog_entry(self, manifest: RepoObjectManifest, state: str) -> dict:
         now_ms = self._now_ms()
+        max_replication_factor = (
+            manifest.max_replication_factor
+            if manifest.max_replication_factor > 0 else manifest.replication_factor
+        )
         return {
             "objectName": manifest.object_name,
             "objectSha256": manifest.sha256,
@@ -913,9 +936,9 @@ class RepoNodeApp:
             "catalogEpoch": self._catalog_epoch,
             "lastSeenMs": now_ms,
             "updatedAtMs": now_ms,
-            "minReplicationFactor": 1,
-            "maxReplicationFactor": manifest.replication_factor,
-            "desiredReplicationFactor": 1,
+            "minReplicationFactor": manifest.min_replication_factor,
+            "maxReplicationFactor": max_replication_factor,
+            "desiredReplicationFactor": manifest.min_replication_factor,
             "replicaNodes": list(manifest.replica_nodes),
             "manifest": self._catalog_manifest_summary(manifest),
         }
@@ -1157,10 +1180,18 @@ class RepoNodeApp:
     def _merge_catalog_entries(self, entries: Iterable[dict],
                                source_status: Optional[dict] = None) -> None:
         with self._catalog_lock:
+            source_repo = ""
             if source_status:
                 self._merge_repo_status(source_status)
+                source_repo = str(source_status.get("repoNode", ""))
             for raw_entry in entries:
-                self._upsert_catalog_entry(dict(raw_entry))
+                entry = dict(raw_entry)
+                if source_repo == self.repo_node:
+                    self._catalog_epoch += 1
+                    entry["catalogEpoch"] = self._catalog_epoch
+                    entry.setdefault("updatedAtMs", self._now_ms())
+                    self._catalog_changes.append(dict(entry))
+                self._upsert_catalog_entry(entry)
 
     def _catalog_lookup(self, object_name: str) -> dict:
         try:
@@ -1448,6 +1479,8 @@ class RepoNodeApp:
                     size=manifest.size,
                     segment_count=len(packets),
                     replication_factor=manifest.replication_factor,
+                    min_replication_factor=manifest.min_replication_factor,
+                    max_replication_factor=manifest.max_replication_factor,
                     replica_nodes=manifest.replica_nodes,
                     replica_data_names=manifest.replica_data_names,
                     policy_epoch=manifest.policy_epoch,
@@ -2680,6 +2713,18 @@ class NetworkDistributedRepoClient:
             raise ValueError("repo catalog lookup response must be a JSON object")
         return decoded
 
+    def catalog_status(self, repo_node: str) -> dict:
+        response = self._request_specific_repo(
+            repo_node=repo_node,
+            payload=encode_repo_request("CATALOG_STATUS"),
+            timeout_ms=self.timeout_ms,
+            isolated_runtime=True,
+        )
+        decoded = json.loads(response.payload.decode())
+        if not isinstance(decoded, dict):
+            raise ValueError("repo catalog status response must be a JSON object")
+        return decoded
+
     def catalog_merge(
         self,
         repo_node: str,
@@ -2774,6 +2819,11 @@ class NetworkDistributedRepoClient:
                                source_manifest.replication_factor) or 1),
                 int(action.get("minReplicationFactor", 1) or 1),
             ),
+            min_replication_factor=int(action.get("minReplicationFactor", 1) or 1),
+            max_replication_factor=int(action.get(
+                "maxReplicationFactor",
+                source_manifest.max_replication_factor or source_manifest.replication_factor,
+            ) or source_manifest.replication_factor),
             replica_nodes=(target_repo,),
             replica_data_names=(data_name,),
             segment_locations=({
@@ -3234,6 +3284,9 @@ class DistributedRepo:
 
     def catalog_lookup(self, object_name: str, repo_node: str) -> dict:
         return self._client.catalog_lookup(object_name, repo_node)
+
+    def catalog_status(self, repo_node: str) -> dict:
+        return self._client.catalog_status(repo_node)
 
     def catalog_merge(
         self,

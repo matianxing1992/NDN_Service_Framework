@@ -10,6 +10,7 @@ import time
 
 from ndnsf import make_segmented_data_packets
 from ndnsf_distributed_inference import APPDeployment, DistributedRepo
+from ndnsf_distributed_inference.repo import RepoObjectManifest
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
@@ -101,6 +102,14 @@ def main() -> int:
     parser.add_argument("--catalog-health-stale-repo", default="/example/repo/provider/repoC")
     parser.add_argument("--catalog-health-object-suffix",
                         default="APP/UAV/TelemetryLog/window-0007")
+    parser.add_argument("--catalog-auto-repair-seed-smoke", action="store_true",
+                        help="Seed an under-replicated object for sidecar auto-repair")
+    parser.add_argument("--catalog-auto-repair-verify-object", default="",
+                        help="Verify that sidecar auto-repair fixed this object")
+    parser.add_argument("--catalog-auto-source-repo-node",
+                        default="/example/repo/provider/repoB")
+    parser.add_argument("--catalog-auto-target-repo-node",
+                        default="/example/repo/provider/repoA")
     args = parser.parse_args()
 
     if args.use_local_config:
@@ -129,6 +138,104 @@ def main() -> int:
             timeout_ms=args.timeout_ms,
         )
         user_name = args.user
+
+    if args.catalog_auto_repair_seed_smoke:
+        payload = b"auto catalog repair object"
+        suffix = str(int(time.time() * 1000))
+        manifest = repo.put(
+            f"APP/CatalogHealth/AutoRepairObject/{suffix}",
+            payload,
+            object_type="catalog-health-auto-repair",
+            replication_factor=1,
+            replica_nodes=(args.catalog_auto_source_repo_node,),
+            policy_epoch="/Policy/generic-repo/v1",
+        )
+        if manifest.replica_nodes[0] != args.catalog_auto_source_repo_node:
+            raise RuntimeError(f"auto repair seed stored on wrong repo: {manifest}")
+        now_ms = int(time.time() * 1000)
+        entry = {
+            "objectName": manifest.object_name,
+            "objectSha256": manifest.sha256,
+            "manifestSha256": hashlib.sha256(manifest.to_bytes()).hexdigest(),
+            "objectType": manifest.object_type,
+            "size": manifest.size,
+            "segmentCount": manifest.segment_count,
+            "sourceRepo": args.catalog_auto_source_repo_node,
+            "repoMode": "persistent",
+            "state": "AVAILABLE",
+            "catalogEpoch": now_ms,
+            "lastSeenMs": now_ms,
+            "updatedAtMs": now_ms,
+            "minReplicationFactor": 2,
+            "maxReplicationFactor": 2,
+            "desiredReplicationFactor": 2,
+            "replicaNodes": [args.catalog_auto_source_repo_node],
+            "manifest": {
+                **manifest.to_dict(),
+                "minReplicationFactor": 2,
+                "maxReplicationFactor": 2,
+                "replicationFactor": 2,
+                "replicaNodes": [args.catalog_auto_source_repo_node],
+            },
+        }
+        repo.catalog_merge(
+            args.catalog_auto_source_repo_node,
+            [entry],
+            {
+                "repoNode": args.catalog_auto_source_repo_node,
+                "repoMode": "persistent",
+                "catalogEpoch": now_ms,
+                "acceptsBackupReplica": True,
+            },
+        )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_SEED_OK "
+            f"object={manifest.object_name} source={args.catalog_auto_source_repo_node} "
+            f"target={args.catalog_auto_target_repo_node}",
+            flush=True,
+        )
+        return 0
+
+    if args.catalog_auto_repair_verify_object:
+        object_name = args.catalog_auto_repair_verify_object
+        source_status = repo.catalog_status(args.catalog_auto_source_repo_node)
+        repo.catalog_merge(
+            args.catalog_auto_target_repo_node,
+            [],
+            source_status,
+        )
+        lookup = repo.catalog_lookup(object_name, args.catalog_auto_target_repo_node)
+        if lookup.get("underReplicated"):
+            raise RuntimeError(f"auto repair object is still under-replicated: {lookup}")
+        if int(lookup.get("availableReplicaCount", 0) or 0) < 2:
+            raise RuntimeError(f"auto repair object has too few replicas: {lookup}")
+        target_replicas = {
+            str(candidate.get("sourceRepo", candidate.get("repoNode", "")))
+            for candidate in lookup.get("candidateReplicas", [])
+            if isinstance(candidate, dict)
+        }
+        if args.catalog_auto_target_repo_node not in target_replicas:
+            raise RuntimeError(f"auto repair target repo missing from lookup: {lookup}")
+        target_manifest = None
+        for candidate in lookup.get("candidateReplicas", []):
+            if not isinstance(candidate, dict):
+                continue
+            if str(candidate.get("sourceRepo", "")) != args.catalog_auto_target_repo_node:
+                continue
+            manifest_obj = candidate.get("manifest", {})
+            if isinstance(manifest_obj, dict):
+                target_manifest = RepoObjectManifest.from_dict(manifest_obj)
+                break
+        if target_manifest is None:
+            raise RuntimeError(f"auto repair target manifest missing from lookup: {lookup}")
+        if repo.get(object_name, target_manifest) != b"auto catalog repair object":
+            raise RuntimeError("auto repair object payload mismatch")
+        print(
+            "GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK "
+            f"object={object_name} target={args.catalog_auto_target_repo_node}",
+            flush=True,
+        )
+        return 0
 
     if args.catalog_health_smoke:
         object_name = repo.object_name(args.catalog_health_object_suffix)

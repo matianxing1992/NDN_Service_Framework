@@ -88,14 +88,30 @@ def maybe_repair(
     auto_repair: bool,
     repair_repo: DistributedRepo | None,
     executed_actions: set[tuple[str, str, str]],
+    object_names: set[str] | None = None,
 ) -> None:
-    snapshot = request_repo(
-        user,
-        repo_node,
-        encode_repo_request("CATALOG_SNAPSHOT"),
-        timeout_ms=30000,
-    )
-    for obj in snapshot.get("objects", []):
+    objects: list[dict] = []
+    if object_names:
+        for object_name in sorted(object_names):
+            lookup = request_repo(
+                user,
+                repo_node,
+                encode_repo_request("CATALOG_LOOKUP", objectName=object_name),
+                timeout_ms=30000,
+            )
+            objects.append(lookup)
+    else:
+        snapshot = request_repo(
+            user,
+            repo_node,
+            encode_repo_request("CATALOG_SNAPSHOT"),
+            timeout_ms=30000,
+        )
+        objects = [
+            obj for obj in snapshot.get("objects", [])
+            if isinstance(obj, dict)
+        ]
+    for obj in objects:
         if not isinstance(obj, dict):
             continue
         repair_plan = obj.get("repairPlan", {})
@@ -184,6 +200,7 @@ def main() -> int:
     )
     while True:
         merged_any = False
+        merged_object_names: set[str] = set()
         for peer in args.peer_repo_node:
             since = peer_epochs.get(peer, 0)
             try:
@@ -205,6 +222,11 @@ def main() -> int:
                 peer_epochs[peer] = int(delta.get("catalogEpoch", since))
                 if entries:
                     merged_any = True
+                    for entry in entries:
+                        if isinstance(entry, dict):
+                            object_name = str(entry.get("objectName", ""))
+                            if object_name:
+                                merged_object_names.add(object_name)
                     print(
                         f"catalog_sync merged repo={args.repo_node} "
                         f"peer={peer} entries={len(entries)}",
@@ -223,6 +245,7 @@ def main() -> int:
                     auto_repair=auto_repair,
                     repair_repo=repair_repo,
                     executed_actions=executed_actions,
+                    object_names=merged_object_names,
                 )
             except Exception as exc:  # noqa: BLE001
                 print(
