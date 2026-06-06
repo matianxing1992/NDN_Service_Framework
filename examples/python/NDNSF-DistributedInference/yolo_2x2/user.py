@@ -10,6 +10,7 @@ import time
 from yolo_2x2_lib import (
     DEFAULT_MODEL,
     DEFAULT_INPUT_SIZE,
+    YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
     YOLO_PARALLEL_OUTPUT_SEMANTICS,
     decode_yolo_output,
     decode_image,
@@ -18,6 +19,7 @@ from yolo_2x2_lib import (
     optional_local_nfd,
     parse_args_with_common,
     run_local_onnx_pipeline,
+    run_local_parallel_detect_scale_pipeline,
     run_local_parallel_output_pipeline,
     runtime_spec,
     yolo_inference_service,
@@ -82,7 +84,13 @@ def main() -> int:
             if getattr(artifact, "path", "")
         }
         if artifact_paths and all(Path(path).exists() for path in artifact_paths.values()):
-            if layout_semantics == YOLO_PARALLEL_OUTPUT_SEMANTICS:
+            if layout_semantics == YOLO_PARALLEL_DETECT_SCALE_SEMANTICS:
+                expected = run_local_parallel_detect_scale_pipeline(
+                    artifact_paths,
+                    inference_image,
+                    layout,
+                )
+            elif layout_semantics == YOLO_PARALLEL_OUTPUT_SEMANTICS:
                 expected = run_local_parallel_output_pipeline(
                     artifact_paths,
                     inference_image,

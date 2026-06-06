@@ -100,12 +100,14 @@ splitter。真正的 NxM splitter 必须生成同一 stage 内多个并行 shard
 merge/fan-in dependency edges。网络级回归中，生成的 policy 会按 chunk role 数量
 生成足够的计算 provider identities，并把 repo provider 单独保留。
 
-`yolo_2x2` splitter 也提供实验性的 `--parallel-output-shards` 模式。这个模式会
-导出一个可验证的 true-NxM 执行形态：同一 stage 内的 shards 独立运行，发布
-prediction tensor slices，最后由 `/Merge` role 把 slices concat 回完整 YOLO 输出。
-它是 parallel dependency execution 和 fan-in merge 的 correctness prototype；当前
-Stage-0 shards 会重复上游 YOLO backbone 计算，所以它还不是性能优化后的 YOLO
-横向 splitter。
+`yolo_2x2` splitter 现在提供两种实验性 parallel 模式。较早的
+`--parallel-output-shards` 是一个小型正确性脚手架：同一 stage 内的 roles 独立
+运行，最后由 `/Merge` role concat 输出 slices，但 Stage-0 shards 会重复上游
+YOLO backbone 计算。新的 `--parallel-detect-scale-shards` 更接近真实 YOLO
+切割：一个共享 `/Backbone` chunk 只计算一次 backbone/neck，多个并行
+`/Head/Shard/*` chunks 运行 YOLO Detect scale 分支，最后由 `/Merge` 解码最终
+predictions。它仍然是 model-specific splitter，但已经能验证目标 fan-out/fan-in
+dependency executor，而不是假设所有 ONNX 模型都有矩形 shard layout。
 
 两阶段 YOLO split：
 
@@ -242,6 +244,8 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local
 3x2  MiniNDN 网络级回归，每个生成 role 一个 provider
 1x3  本地 export/policy/ONNX correctness smoke
 3x3  本地 export/policy/ONNX correctness smoke；作为 release baseline 前应先跑 yolo-layout
+2x2 parallel-detect-scale  本地 ONNX correctness smoke，角色为 /Backbone、/Head/*、/Merge
+2x3 parallel-detect-scale  本地 policy/ONNX smoke；MiniNDN smoke 是网络级 baseline
 ```
 
 历史 YOLO 回归里的 layout 写作 `ROWSxCOLS`，但生成 metadata 会明确标注
@@ -258,6 +262,15 @@ python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --layout 2x2 \
   --parallel-output-shards \
   --out-dir /tmp/ndnsf-yolo-parallel-2x2
+```
+
+生成 YOLO Detect-scale DAG splitter：
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x3 \
+  --parallel-detect-scale-shards \
+  --out-dir /tmp/ndnsf-yolo-detect-scale-2x3
 ```
 
 ### 8. 常见部署错误
@@ -1123,11 +1136,14 @@ splitter 也接受 `1x3`、`2x3`、`3x2`、`3x3` 等自定义 chunk layout。它
 NDNSF-DI distributed execution path，而不只是 repository smoke test；但它还没有实现
 同一 stage 内多个 shards 并行运行的 tensor-parallel YOLO split。
 
-如果要实验 true-NxM 形态，可以使用
-`split_model.py --parallel-output-shards`。它会生成同一 stage 内并行 shard roles，
-并通过最终 `/Merge` role 合并 shard 输出。这个模式用于证明通用 executor 能承载
-parallel stage shards 和 fan-in dependencies；在实现更高效的 detection-head/channel
-或 spatial tile YOLO splitter 之前，它应被视为 correctness scaffold。
+如果要实验真实 parallel graph，优先使用
+`split_model.py --parallel-detect-scale-shards`。它会生成共享 `/Backbone` role、
+并行 YOLO Detect scale head roles，以及 `/Merge` decode role。这是
+model-specific YOLO DAG，不是完全通用的矩形 `N x M` mapper，但它避免重复
+backbone 计算，是当前 NDNSF-DI 中最接近真实并行模型执行的 YOLO 示例。
+
+较早的 `split_model.py --parallel-output-shards` 仍保留为最小 fan-in correctness
+脚手架。由于它的 Stage-0 shards 会重复上游 YOLO 计算，不应把它作为性能论证。
 
 `split_model.py` 会为每个 role 导出一个 ONNX chunk，并用 ONNX chunk 的实际
 input/output 名字生成 `yolo_policy.yaml` 中的 dependency edges。以默认 2x2

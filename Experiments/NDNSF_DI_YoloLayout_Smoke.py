@@ -49,11 +49,20 @@ def main() -> int:
                         help="Output directory. Defaults to /tmp/ndnsf-di-yolo-layout-<layout>.")
     parser.add_argument("--parallel-output-shards", action="store_true",
                         help="Validate the experimental true-NxM YOLO output-shard prototype")
+    parser.add_argument("--parallel-detect-scale-shards", action="store_true",
+                        help="Validate the YOLO Detect-scale DAG splitter")
     args = parser.parse_args()
 
     layout = args.layout.strip().lower().replace("*", "x")
     safe_layout = layout.replace("/", "-")
-    mode_suffix = "-parallel-output" if args.parallel_output_shards else ""
+    if args.parallel_detect_scale_shards and args.parallel_output_shards:
+        raise SystemExit("--parallel-detect-scale-shards and --parallel-output-shards are mutually exclusive")
+    if args.parallel_detect_scale_shards:
+        mode_suffix = "-parallel-detect-scale"
+    elif args.parallel_output_shards:
+        mode_suffix = "-parallel-output"
+    else:
+        mode_suffix = ""
     out_dir = Path(args.out_dir or f"/tmp/ndnsf-di-yolo-layout-{safe_layout}{mode_suffix}")
     policy = out_dir / "yolo_policy.yaml"
     generated_policy_dir = out_dir / "generated-policy"
@@ -78,6 +87,8 @@ def main() -> int:
     ]
     if args.parallel_output_shards:
         split_command.append("--parallel-output-shards")
+    if args.parallel_detect_scale_shards:
+        split_command.append("--parallel-detect-scale-shards")
     split_output = run(split_command, env)
     if "YOLO_LAYOUT_LOCAL_VERIFY" not in split_output or "ok=true" not in split_output:
         raise SystemExit(f"YOLO layout local verification failed for layout={layout}")
@@ -86,6 +97,11 @@ def main() -> int:
             raise SystemExit("parallel-output smoke did not generate parallel-output semantics")
         if "stage_shards_parallel=true" not in split_output:
             raise SystemExit("parallel-output smoke did not mark stage shards parallel")
+    if args.parallel_detect_scale_shards:
+        if "semantics=parallel-detect-scale-shards" not in split_output:
+            raise SystemExit("parallel-detect-scale smoke did not generate detect-scale semantics")
+        if "stage_shards_parallel=true" not in split_output:
+            raise SystemExit("parallel-detect-scale smoke did not mark stage shards parallel")
 
     run([
         sys.executable,
@@ -100,7 +116,9 @@ def main() -> int:
 
     print(
         "YOLO_LAYOUT_SMOKE_OK "
-        f"layout={layout} parallel_output_shards={str(args.parallel_output_shards).lower()} "
+        f"layout={layout} "
+        f"parallel_output_shards={str(args.parallel_output_shards).lower()} "
+        f"parallel_detect_scale_shards={str(args.parallel_detect_scale_shards).lower()} "
         f"policy={policy} generated_policy_dir={generated_policy_dir}"
     )
     return 0

@@ -7,12 +7,14 @@ from pathlib import Path
 
 from yolo_2x2_lib import (
     DEFAULT_LAYOUT,
+    YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
     YOLO_PARALLEL_OUTPUT_SEMANTICS,
     load_provider_profiles,
     make_input,
     parse_args_with_common,
     roles_for_layout,
     run_local_onnx_pipeline,
+    run_local_parallel_detect_scale_pipeline,
     run_local_parallel_output_pipeline,
     split_model,
     full_forward,
@@ -38,9 +40,15 @@ def main() -> int:
     parser.add_argument("--parallel-output-shards", action="store_true",
                         help="export a verifiable true-NxM output-channel shard "
                              "prototype with parallel stage shards and a merge role")
+    parser.add_argument("--parallel-detect-scale-shards", action="store_true",
+                        help="export a YOLO Detect-scale DAG with one shared "
+                             "backbone, parallel Detect-head scale shards, and a "
+                             "merge/decode role")
     parser.add_argument("--dynamic-provisioning", action="store_true")
     parser.add_argument("--trust-anchor-file", default="")
     args = parser.parse_args()
+    if args.parallel_output_shards and args.parallel_detect_scale_shards:
+        raise SystemExit("--parallel-output-shards and --parallel-detect-scale-shards are mutually exclusive")
 
     profiles = load_provider_profiles(args.provider_profile) if args.provider_profile else None
     split = split_model(
@@ -51,6 +59,7 @@ def main() -> int:
         auto_split=args.auto_split,
         layout=args.layout,
         parallel_output_shards=args.parallel_output_shards,
+        parallel_detect_scale_shards=args.parallel_detect_scale_shards,
     )
     if args.dynamic_provisioning:
         output = yolo_dynamic_splitter_output(
@@ -103,7 +112,9 @@ def main() -> int:
             print("YOLO_2X2_ARTIFACT", artifact.role, artifact.path)
     image = make_input(args.input_size)
     expected = full_forward(args.model, image)
-    if split.get("layout_semantics") == YOLO_PARALLEL_OUTPUT_SEMANTICS:
+    if split.get("layout_semantics") == YOLO_PARALLEL_DETECT_SCALE_SEMANTICS:
+        actual = run_local_parallel_detect_scale_pipeline(split["paths"], image, layout)
+    elif split.get("layout_semantics") == YOLO_PARALLEL_OUTPUT_SEMANTICS:
         actual = run_local_parallel_output_pipeline(split["paths"], image, layout)
     else:
         actual = run_local_onnx_pipeline(split["paths"], image, roles_for_layout(layout))

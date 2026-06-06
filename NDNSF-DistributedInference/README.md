@@ -116,13 +116,16 @@ stage and explicit merge/fan-in edges. For network regression, the generated
 policy creates enough compute provider identities for the generated roles while
 keeping the repo provider separate.
 
-The `yolo_2x2` splitter also provides an experimental
-`--parallel-output-shards` mode. This mode exports a verifiable true-NxM
-execution shape: shards in the same stage run independently, publish prediction
-tensor slices, and a `/Merge` role concatenates the slices back into the full
-YOLO output. It is a correctness prototype for parallel dependency execution
-and fan-in merge; Stage-0 shards currently duplicate the upstream YOLO backbone,
-so it is not yet a performance-optimized YOLO horizontal splitter.
+The `yolo_2x2` splitter now exposes two experimental parallel modes. The older
+`--parallel-output-shards` mode is a small correctness scaffold: same-stage
+roles run independently and a `/Merge` role concatenates output slices, but
+Stage-0 shards duplicate the upstream YOLO backbone. The newer
+`--parallel-detect-scale-shards` mode is closer to a real YOLO partition: one
+shared `/Backbone` chunk computes the backbone/neck once, parallel
+`/Head/Shard/*` chunks run YOLO Detect scale branches, and `/Merge` decodes the
+final predictions. It is still model-specific, but it exercises the intended
+fan-out/fan-in dependency executor without pretending that every ONNX model has
+a rectangular shard layout.
 
 For a two-stage YOLO split:
 
@@ -260,6 +263,8 @@ Current validated YOLO layout coverage:
 3x2  MiniNDN network regression with one provider per generated role
 1x3  local export/policy/ONNX correctness smoke
 3x3  local export/policy/ONNX correctness smoke; run yolo-layout before using it as a release baseline
+2x2 parallel-detect-scale  local ONNX correctness smoke with /Backbone, /Head/*, /Merge
+2x3 parallel-detect-scale  local policy/ONNX smoke; MiniNDN smoke is the network baseline
 ```
 
 Layouts in the historical YOLO regression are written as `ROWSxCOLS`, but their
@@ -276,6 +281,15 @@ python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --layout 2x2 \
   --parallel-output-shards \
   --out-dir /tmp/ndnsf-yolo-parallel-2x2
+```
+
+To generate the YOLO Detect-scale DAG splitter:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x3 \
+  --parallel-detect-scale-shards \
+  --out-dir /tmp/ndnsf-yolo-detect-scale-2x3
 ```
 
 ### 8. Common Deployment Mistakes
@@ -1280,12 +1294,16 @@ such as `1x3`, `2x3`, `3x2`, and `3x3`. It uses the real Ultralytics YOLO nano
 model and exports one ONNX chunk per generated role, but it does not implement
 parallel shards within the same stage.
 
-For true-NxM experimentation, `split_model.py --parallel-output-shards` changes
-the generated graph shape: each stage has parallel shard roles and the final
-`/Merge` role combines shard outputs. This proves that the generic executor can
-carry parallel stage shards and fan-in dependencies. It should be treated as a
-correctness scaffold before a more efficient detection-head/channel or spatial
-tile YOLO splitter is implemented.
+For true parallel-graph experimentation, prefer
+`split_model.py --parallel-detect-scale-shards`. It generates a shared
+`/Backbone` role, parallel YOLO Detect scale head roles, and a `/Merge` decode
+role. This is a model-specific YOLO DAG rather than a generic rectangular
+`N x M` mapper, but it avoids duplicating backbone compute and is the current
+closest example of real parallel model execution in NDNSF-DI.
+
+The older `split_model.py --parallel-output-shards` mode remains available as a
+minimal fan-in correctness scaffold. It should not be used as a performance
+claim because its Stage-0 shards duplicate upstream YOLO compute.
 
 The dependency edges in `yolo_policy.yaml` are generated from the exported ONNX
 chunk IO, not from hardcoded topic names alone. For the default 2x2 split, the

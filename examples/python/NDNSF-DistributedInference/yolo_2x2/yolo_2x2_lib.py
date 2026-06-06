@@ -11,11 +11,14 @@ two pipeline stages represented by two sequential chunks per stage:
 
 Other layouts such as 1x3, 2x3, 3x2, or 3x3 use the same role naming pattern
 and dependency-driven executor. In this YOLO example, shards inside a stage are
-sequential ONNX chunks, not tensor-parallel shards. True NxM DI semantics means
-N vertical stages and M parallel shards per stage; that requires a splitter that
-emits horizontal/tensor-sharded ONNX chunks plus fan-in/fan-out dependencies.
-The generic policy/executor can carry such a graph, but this YOLO module-list
-splitter does not yet produce it.
+sequential ONNX chunks, not tensor-parallel shards.
+
+The module also contains experimental parallel YOLO splitters. The
+parallel-output mode is a fan-in correctness scaffold that duplicates upstream
+YOLO compute. The parallel Detect-scale mode is closer to the real model graph:
+one shared backbone/neck chunk fans out feature maps to parallel Detect-head
+scale shards and a merge chunk decodes final predictions. It is model-specific,
+but it uses the same NDNSF-DI dependency executor and ONNX artifact policy.
 """
 
 from __future__ import annotations
@@ -78,10 +81,12 @@ ROLE_S0_1 = "/Stage/0/Shard/1"
 ROLE_S1_0 = "/Stage/1/Shard/0"
 ROLE_S1_1 = "/Stage/1/Shard/1"
 ROLE_MERGE = "/Merge"
+ROLE_BACKBONE = "/Backbone"
 ROLES = [ROLE_S0_0, ROLE_S0_1, ROLE_S1_0, ROLE_S1_1]
 DEFAULT_LAYOUT = "2x2"
 YOLO_LAYOUT_SEMANTICS = "pipeline-sequential-chunks"
 YOLO_PARALLEL_OUTPUT_SEMANTICS = "parallel-output-channel-shards"
+YOLO_PARALLEL_DETECT_SCALE_SEMANTICS = "parallel-detect-scale-shards"
 
 DEFAULT_MODEL = "yolo26n.pt"
 DEFAULT_INPUT_SIZE = 32
@@ -273,6 +278,27 @@ def parallel_output_layout_metadata(layout: str | None = None) -> dict:
     }
 
 
+def parallel_detect_scale_layout_metadata(layout: str | None = None) -> dict:
+    stages, shards = parse_layout(layout)
+    return {
+        "layout_notation": "graph-backed NxM",
+        "layout_rows": stages,
+        "layout_cols": shards,
+        "layout_stages": stages,
+        "layout_shards_per_stage": shards,
+        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "stage_shards_parallel": True,
+        "merge_role": ROLE_MERGE,
+        "shared_backbone_role": ROLE_BACKBONE,
+        "duplicates_backbone_compute": False,
+        "prototype_note": (
+            "YOLO-specific parallel detection-scale splitter: one shared "
+            "backbone/neck chunk fans out feature maps to parallel Detect-head "
+            "scale shards, then a merge chunk decodes the final predictions"
+        ),
+    }
+
+
 def roles_for_layout(layout: str | None = None) -> list[str]:
     stages, shards = parse_layout(layout)
     return [
@@ -285,6 +311,15 @@ def roles_for_layout(layout: str | None = None) -> list[str]:
 def parallel_output_roles_for_layout(layout: str | None = None) -> list[str]:
     stages, shards = parse_layout(layout)
     return nxm_stage_roles(stages, shards) + [ROLE_MERGE]
+
+
+def parallel_detect_scale_roles_for_layout(layout: str | None = None) -> list[str]:
+    _, shards = parse_layout(layout)
+    return (
+        [ROLE_BACKBONE] +
+        [f"/Head/Shard/{shard}" for shard in range(shards)] +
+        [ROLE_MERGE]
+    )
 
 
 def compute_provider_identities(count: int) -> list[str]:
@@ -413,7 +448,17 @@ def split_model(output_dir: str | Path,
                 provider_profiles: list[ProviderProfile] | None = None,
                 auto_split: bool = False,
                 layout: str = DEFAULT_LAYOUT,
-                parallel_output_shards: bool = False) -> dict:
+                parallel_output_shards: bool = False,
+                parallel_detect_scale_shards: bool = False) -> dict:
+    if parallel_detect_scale_shards:
+        return split_parallel_detect_scale_model(
+            output_dir,
+            model_name=model_name,
+            input_size=input_size,
+            provider_profiles=provider_profiles,
+            auto_split=auto_split,
+            layout=layout,
+        )
     if parallel_output_shards:
         return split_parallel_output_model(
             output_dir,
@@ -857,6 +902,306 @@ def split_parallel_output_model(output_dir: str | Path,
     }
 
 
+def split_parallel_detect_scale_model(output_dir: str | Path,
+                                      model_name: str = DEFAULT_MODEL,
+                                      input_size: int = DEFAULT_INPUT_SIZE,
+                                      provider_profiles: list[ProviderProfile] | None = None,
+                                      auto_split: bool = False,
+                                      layout: str = DEFAULT_LAYOUT) -> dict:
+    """Export a YOLO DAG splitter with shared backbone and parallel Detect shards."""
+
+    del auto_split  # Detect-scale split points are fixed by the YOLO Detect head.
+    first_tensor, _, load_yolo_model, _ = _load_yolo_split_helpers()
+    import torch
+    import torch.nn as nn
+
+    class YoloFull(nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, x):
+            return first_tensor(self.model(x))
+
+    class YoloBackboneFeatures(nn.Module):
+        def __init__(self, model, feature_indices: Sequence[int]):
+            super().__init__()
+            self.model = model
+            self.end = len(model.model) - 1
+            self.feature_indices = [int(index) for index in feature_indices]
+
+        def forward(self, x):
+            saved = []
+            _, saved = _run_chunk(self.model, 0, self.end, x, saved)
+            return tuple(saved[index] for index in self.feature_indices)
+
+    class YoloDetectHeadShard(nn.Module):
+        def __init__(self, detect, scale_indices: Sequence[int]):
+            super().__init__()
+            heads = detect.one2one if getattr(detect, "end2end", False) else detect.one2many
+            self.box_head = heads["box_head"]
+            self.cls_head = heads["cls_head"]
+            self.scale_indices = [int(index) for index in scale_indices]
+            self.reg_max = int(detect.reg_max)
+            self.nc = int(detect.nc)
+
+        def forward(self, *features):
+            outputs = []
+            for scale, feature in zip(self.scale_indices, features):
+                batch = feature.shape[0]
+                boxes = self.box_head[scale](feature).view(batch, 4 * self.reg_max, -1)
+                scores = self.cls_head[scale](feature).view(batch, self.nc, -1)
+                outputs.extend([boxes, scores])
+            return tuple(outputs)
+
+    class YoloDetectMerge(nn.Module):
+        def __init__(self, detect):
+            super().__init__()
+            self.detect = detect
+            self.register_buffer("anchors_const", detect.anchors.detach().clone())
+            self.register_buffer("strides_const", detect.strides.detach().clone())
+
+        def forward(self, *values):
+            boxes = torch.cat(tuple(values[0::2]), dim=-1)
+            scores = torch.cat(tuple(values[1::2]), dim=-1)
+            dbox = self.detect.decode_bboxes(
+                self.detect.dfl(boxes),
+                self.anchors_const.unsqueeze(0),
+            ) * self.strides_const
+            y = torch.cat((dbox, scores.sigmoid()), 1)
+            if getattr(self.detect, "end2end", False):
+                return self.detect.postprocess(y.permute(0, 2, 1))
+            return y
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    layout = normalize_layout(layout)
+    _, shards = parse_layout(layout)
+    loaded_name, model = load_yolo_model(model_name)
+    detect = model.model[-1]
+    feature_indices = [int(index) for index in detect.f]
+    if shards > len(feature_indices):
+        raise ValueError(
+            f"YOLO Detect has {len(feature_indices)} scale features; "
+            f"parallel-detect-scale-shards cannot create {shards} non-empty shards")
+    scale_ranges = _split_ranges(len(feature_indices), shards)
+    scale_groups = [
+        list(range(start, end))
+        for start, end in scale_ranges
+        if end > start
+    ]
+    roles = parallel_detect_scale_roles_for_layout(layout)
+    head_roles = [f"/Head/Shard/{index}" for index in range(len(scale_groups))]
+    roles = [ROLE_BACKBONE, *head_roles, ROLE_MERGE]
+    stem = Path(loaded_name).stem
+    full_model_path = output / f"{stem}-full-{input_size}.onnx"
+    paths: dict[str, Path] = {}
+    chunk_metadata: dict[str, dict] = {}
+
+    x = torch.from_numpy(make_input(input_size)).float()
+    with torch.no_grad():
+        expected = YoloFull(model).eval()(x)
+        feature_values = YoloBackboneFeatures(model, feature_indices).eval()(x)
+
+    if not full_model_path.exists():
+        torch.onnx.export(
+            YoloFull(model).eval(),
+            x,
+            str(full_model_path),
+            input_names=["images"],
+            output_names=["predictions"],
+            opset_version=17,
+            do_constant_folding=True,
+        )
+
+    backbone_path = output / f"{stem}-Backbone-{input_size}.onnx"
+    feature_tensor_names = [
+        f"detect_feature_{index}"
+        for index in range(len(feature_indices))
+    ]
+    if not backbone_path.exists():
+        torch.onnx.export(
+            YoloBackboneFeatures(model, feature_indices).eval(),
+            x,
+            str(backbone_path),
+            input_names=["images"],
+            output_names=feature_tensor_names,
+            opset_version=17,
+            do_constant_folding=True,
+        )
+    paths[ROLE_BACKBONE] = backbone_path
+    chunk_metadata[ROLE_BACKBONE] = {
+        "source_model": loaded_name,
+        "input_size": input_size,
+        "layout": layout,
+        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "role_type": "shared-backbone-neck",
+        "feature_indices": feature_indices,
+        "output_tensors": feature_tensor_names,
+        "final": False,
+    }
+
+    head_outputs: dict[str, torch.Tensor] = {}
+    for shard, group in enumerate(scale_groups):
+        role = f"/Head/Shard/{shard}"
+        input_names = [feature_tensor_names[index] for index in group]
+        output_names = [
+            name
+            for scale in group
+            for name in (f"boxes_scale_{scale}", f"scores_scale_{scale}")
+        ]
+        input_values = tuple(feature_values[index] for index in group)
+        with torch.no_grad():
+            outputs = YoloDetectHeadShard(detect, group).eval()(*input_values)
+        for name, value in zip(output_names, outputs):
+            head_outputs[name] = value
+        path = output / f"{stem}-{role.strip('/').replace('/', '-')}-{input_size}.onnx"
+        if not path.exists():
+            torch.onnx.export(
+                YoloDetectHeadShard(detect, group).eval(),
+                input_values,
+                str(path),
+                input_names=input_names,
+                output_names=output_names,
+                opset_version=17,
+                do_constant_folding=True,
+            )
+        paths[role] = path
+        chunk_metadata[role] = {
+            "source_model": loaded_name,
+            "input_size": input_size,
+            "layout": layout,
+            "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+            "role_type": "detect-head-scale-shard",
+            "shard": shard,
+            "scale_indices": group,
+            "input_tensors": input_names,
+            "output_tensors": output_names,
+            "final": False,
+        }
+
+    merge_inputs = [
+        name
+        for scale in range(len(feature_indices))
+        for name in (f"boxes_scale_{scale}", f"scores_scale_{scale}")
+    ]
+    merge_values = tuple(head_outputs[name] for name in merge_inputs)
+    merge_path = output / f"{stem}-DetectMerge-{layout}-{input_size}.onnx"
+    if not merge_path.exists():
+        torch.onnx.export(
+            YoloDetectMerge(detect).eval(),
+            merge_values,
+            str(merge_path),
+            input_names=merge_inputs,
+            output_names=["predictions"],
+            opset_version=17,
+            do_constant_folding=True,
+        )
+    paths[ROLE_MERGE] = merge_path
+    chunk_metadata[ROLE_MERGE] = {
+        "source_model": loaded_name,
+        "input_size": input_size,
+        "layout": layout,
+        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "role_type": "detect-merge-decode",
+        "input_tensors": merge_inputs,
+        "output_tensor": "predictions",
+        "final": True,
+    }
+
+    full_summary = analyze_onnx_graph(full_model_path)
+    split_candidates = estimate_split_candidates(full_summary, max_candidates=200)
+    planner_recommendations = recommend_sequential_splits(
+        [
+            SequentialSplitCandidate.from_onnx_candidate(candidate)
+            for candidate in split_candidates
+        ],
+        total_nodes=len(full_summary.nodes),
+        providers=provider_profiles or default_planner_provider_profiles(),
+        max_recommendations=10,
+    )
+
+    dependencies: list[InferenceDependency] = []
+    chunk_graph = {
+        "layout": layout,
+        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "stage_shards_parallel": True,
+        "dependencies": [],
+    }
+    for shard, group in enumerate(scale_groups):
+        tensors = [feature_tensor_names[index] for index in group]
+        expected_bytes = sum(_tensor_nbytes(feature_values[index]) for index in group)
+        dep = InferenceDependency(
+            producers=[ROLE_BACKBONE],
+            consumers=[f"/Head/Shard/{shard}"],
+            key_scope=f"backbone-to-head-shard{shard}",
+            topic_prefix="/activation",
+            tensors=tensors,
+            object_name_template=_activation_name_template(),
+            expected_bytes=expected_bytes,
+            expected_segments=_estimated_segments(expected_bytes),
+        )
+        dependencies.append(dep)
+        chunk_graph["dependencies"].append({
+            "producers": dep.producers,
+            "consumers": dep.consumers,
+            "keyScope": dep.key_scope,
+            "tensors": dep.tensors,
+            "expectedBytes": dep.expected_bytes,
+            "expectedSegments": dep.expected_segments,
+        })
+
+    merge_bytes = sum(_tensor_nbytes(value) for value in head_outputs.values())
+    merge_dep = InferenceDependency(
+        producers=head_roles,
+        consumers=[ROLE_MERGE],
+        key_scope="detect-heads-to-merge",
+        topic_prefix="/activation",
+        tensors=merge_inputs,
+        object_name_template=_activation_name_template(),
+        expected_bytes=merge_bytes,
+        expected_segments=_estimated_segments(merge_bytes),
+    )
+    dependencies.append(merge_dep)
+    chunk_graph["dependencies"].append({
+        "producers": merge_dep.producers,
+        "consumers": merge_dep.consumers,
+        "keyScope": merge_dep.key_scope,
+        "tensors": merge_dep.tensors,
+        "expectedBytes": merge_dep.expected_bytes,
+        "expectedSegments": merge_dep.expected_segments,
+    })
+
+    graph_summary = output / f"{stem}-{layout}-parallel-detect-scale-onnx-graph-summary.json"
+    write_onnx_graph_summary(
+        graph_summary,
+        full_model_summary=full_summary,
+        split_candidates=split_candidates,
+        planner_recommendations=planner_recommendations,
+        chunk_summary=chunk_graph,
+    )
+
+    return {
+        "paths": paths,
+        "full_model_path": full_model_path,
+        "model": loaded_name,
+        "input_size": input_size,
+        "layout": layout,
+        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "service": service_name_for_layout(layout),
+        "roles": roles,
+        "stage_roles": head_roles,
+        "split": 0,
+        "split_source": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "chunks": chunk_metadata,
+        "dependencies": dependencies,
+        "onnx_graph_summary": graph_summary,
+        "onnx_split_candidates": split_candidates,
+        "planner_recommendations": planner_recommendations,
+        "reference_output_shape": list(expected.shape),
+    }
+
+
 def default_planner_provider_profiles() -> list[ProviderProfile]:
     return homogeneous_provider_profiles([
         "/NDNSF-DistributeInference/example/provider/A",
@@ -944,7 +1289,9 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
     roles = list(split.get("roles") or roles_for_layout(layout))
     artifact_prefix = f"/Model/Ultralytics/YOLO/{layout}"
     layout_semantics = str(split.get("layout_semantics", YOLO_LAYOUT_SEMANTICS))
-    if layout_semantics == YOLO_PARALLEL_OUTPUT_SEMANTICS:
+    if layout_semantics == YOLO_PARALLEL_DETECT_SCALE_SEMANTICS:
+        layout_metadata = parallel_detect_scale_layout_metadata(layout)
+    elif layout_semantics == YOLO_PARALLEL_OUTPUT_SEMANTICS:
         layout_metadata = parallel_output_layout_metadata(layout)
     else:
         layout_metadata = layout_semantics_metadata(layout)
@@ -1311,6 +1658,39 @@ def run_local_parallel_output_pipeline(model_paths: dict[str, str | Path],
     }
     payload = _run_onnx_to_npz(model_paths[ROLE_MERGE], merge_inputs)
     merged = load_npz_payload(payload)
+    return merged.get("predictions", next(iter(merged.values()))).astype(np.float32)
+
+
+def run_local_parallel_detect_scale_pipeline(model_paths: dict[str, str | Path],
+                                             image: np.ndarray,
+                                             layout: str = DEFAULT_LAYOUT) -> np.ndarray:
+    layout = normalize_layout(layout)
+    _, shards = parse_layout(layout)
+    values: dict[str, np.ndarray] = {}
+    payload = run_intermediate_chunk(model_paths[ROLE_BACKBONE], image, image_input=True)
+    values.update(load_npz_payload(payload))
+    for shard in range(shards):
+        role = f"/Head/Shard/{shard}"
+        session = make_ort_session(model_paths[role])
+        feed = {
+            input_info.name: _value_for_input(values, input_info.name).astype(np.float32)
+            for input_info in session.get_inputs()
+        }
+        outputs = session.run(None, feed)
+        values.update({
+            output.name: np.asarray(value, dtype=np.float32)
+            for output, value in zip(session.get_outputs(), outputs)
+        })
+    merge_session = make_ort_session(model_paths[ROLE_MERGE])
+    merge_feed = {
+        input_info.name: _value_for_input(values, input_info.name).astype(np.float32)
+        for input_info in merge_session.get_inputs()
+    }
+    outputs = merge_session.run(None, merge_feed)
+    merged = {
+        output.name: np.asarray(value, dtype=np.float32)
+        for output, value in zip(merge_session.get_outputs(), outputs)
+    }
     return merged.get("predictions", next(iter(merged.values()))).astype(np.float32)
 
 

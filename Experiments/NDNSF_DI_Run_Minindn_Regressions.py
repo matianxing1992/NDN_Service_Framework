@@ -125,6 +125,9 @@ def main() -> int:
     parser.add_argument("--parallel-output-shards", action="store_true",
                         help="For --case yolo-layout-local, validate the experimental "
                              "true-NxM YOLO output-shard prototype")
+    parser.add_argument("--parallel-detect-scale-shards", action="store_true",
+                        help="For --case yolo-layout-local/yolo-layout, validate "
+                             "the YOLO Detect-scale DAG splitter")
     parser.add_argument("--cold-requests", type=int, default=1,
                         help="Sequential cold requests for --case yolo-layout")
     parser.add_argument("--warm-requests", type=int, default=1,
@@ -150,9 +153,13 @@ def main() -> int:
         extra_args = ["--layout", args.layout] if case.name.startswith("yolo-layout") else []
         if case.name == "yolo-layout-local" and args.parallel_output_shards:
             extra_args.append("--parallel-output-shards")
+        if case.name == "yolo-layout-local" and args.parallel_detect_scale_shards:
+            extra_args.append("--parallel-detect-scale-shards")
         if case.name == "yolo-layout":
             if args.parallel_output_shards:
                 extra_args.append("--parallel-output-shards")
+            if args.parallel_detect_scale_shards:
+                extra_args.append("--parallel-detect-scale-shards")
             extra_args.extend([
                 "--cold-requests", str(args.cold_requests),
                 "--warm-requests", str(args.warm_requests),

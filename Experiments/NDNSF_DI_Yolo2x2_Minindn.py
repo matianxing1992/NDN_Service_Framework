@@ -737,7 +737,11 @@ def main() -> None:
                         help="End-to-end service timeout passed to the DI user")
     parser.add_argument("--parallel-output-shards", action="store_true",
                         help="Use the experimental true-NxM YOLO output-shard prototype")
+    parser.add_argument("--parallel-detect-scale-shards", action="store_true",
+                        help="Use the YOLO Detect-scale DAG splitter")
     args_cli = parser.parse_args()
+    if args_cli.parallel_output_shards and args_cli.parallel_detect_scale_shards:
+        raise SystemExit("--parallel-output-shards and --parallel-detect-scale-shards are mutually exclusive")
     layout = args_cli.layout.strip().lower().replace("*", "x")
     cold_requests = max(1, args_cli.cold_requests)
     warm_requests = max(1, args_cli.warm_requests)
@@ -749,6 +753,8 @@ def main() -> None:
     safe_layout = layout.replace("/", "-")
     if args_cli.parallel_output_shards:
         safe_layout += "_parallel_output"
+    if args_cli.parallel_detect_scale_shards:
+        safe_layout += "_parallel_detect_scale"
     global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST
     OUT = REPO / f"results/yolo_{safe_layout}_minindn_quick"
     CONFIG = OUT / "yolo_policy.yaml"
@@ -787,6 +793,8 @@ def main() -> None:
     ]
     if args_cli.parallel_output_shards:
         split_command.append("--parallel-output-shards")
+    if args_cli.parallel_detect_scale_shards:
+        split_command.append("--parallel-detect-scale-shards")
     subprocess.run(split_command, cwd=str(REPO), env={**os.environ, "PYTHONPATH": py_path}, check=True)
     Minindn.cleanUp()
     Minindn.verifyDependencies()
