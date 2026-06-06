@@ -107,6 +107,42 @@ def validate_repo_manifest_references(path: Path) -> None:
     print(f"YOLO_2X2_REPO_MANIFEST_REFERENCES_OK path={path}")
 
 
+def load_policy_roles(path: Path) -> list[str]:
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to read generated DI policies") from exc
+    config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    for service in config.get("services", []):
+        name = str(service.get("name", ""))
+        if name != "/NDNSF/DistributedRepo":
+            roles = [str(role) for role in service.get("roles", []) if str(role)]
+            if roles:
+                return roles
+    raise RuntimeError(f"no inference service roles found in {path}")
+
+
+def provider_role_assignments(roles: list[str]) -> list[tuple[str, str, list[str]]]:
+    providers = [
+        ("ucla", "provider-A", ""),
+        ("wustl", "provider-B", "A"),
+        ("uiuc", "provider-C", "B"),
+        ("umich", "provider-D", "C"),
+    ]
+    assigned = [[] for _ in providers]
+    for index, role in enumerate(roles):
+        assigned[index % len(providers)].append(role)
+    result = []
+    for (node_name, name, provider_id), provider_roles in zip(providers, assigned):
+        if not provider_roles:
+            continue
+        result.append((node_name, name, [
+            "--provider-id", provider_id,
+            "--roles", ",".join(provider_roles),
+        ]))
+    return result
+
+
 def stop(procs):
     for p, f, _ in reversed(procs):
         if p.poll() is None:
@@ -327,12 +363,7 @@ def main() -> None:
                 f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
         validate_repo_manifest_references(REPO_MANIFEST)
 
-        providers = [
-            ("ucla", "provider-A", ["--provider-id", "", "--roles", "all"]),
-            ("wustl", "provider-B", ["--provider-id", "A", "--roles", "all"]),
-            ("uiuc", "provider-C", ["--provider-id", "B", "--roles", "all"]),
-            ("umich", "provider-D", ["--provider-id", "C", "--roles", "all"]),
-        ]
+        providers = provider_role_assignments(load_policy_roles(CONFIG))
         for node_name, name, argv in providers:
             _, lp = start(ndn.net[node_name], name,
                           python_cmd("provider.py", common + argv + [

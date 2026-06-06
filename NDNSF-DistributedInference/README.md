@@ -221,10 +221,13 @@ YOLO_2X2_RESULT ... ok=true
 PYTORCH_2X2_RESULT ... ok=true
 ```
 
-The unified runner can also launch selected cases:
+The unified runner can also launch selected cases. The `yolo-layout` case is a
+fast non-MiniNDN layout/policy smoke for custom YOLO layouts; the stable
+network-level YOLO regression remains `yolo-2x2`:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 3x2
 ```
 
 ### 8. Common Deployment Mistakes
@@ -1333,12 +1336,17 @@ Provider logs then show `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`
 for each role's `model` and `runner` artifacts during the cold command,
 followed by `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT` for the warm command.
 
-To run the APP API smoke, the local ONNX executor smoke, and both MiniNDN split
-smokes through one entry point:
+To run the APP API smoke, the local ONNX executor smoke, and both stable
+MiniNDN split smokes through one entry point:
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 3x2
 ```
+
+`yolo-layout` validates custom YOLO layout export, local ONNX chunk correctness,
+and policy generation. It does not claim network-level custom-layout stability;
+use `yolo-2x2` for the current repo-backed MiniNDN network regression.
 
 The policy/repo inspection helper is still available:
 

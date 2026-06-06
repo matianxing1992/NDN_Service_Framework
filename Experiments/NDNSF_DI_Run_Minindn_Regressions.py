@@ -21,6 +21,7 @@ class RegressionCase:
     success_marker: str
     description: str
     use_sudo: bool = True
+    extra_args: tuple[str, ...] = ()
 
 
 CASES = {
@@ -50,6 +51,13 @@ CASES = {
         success_marker="YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK",
         description="YOLO 2x2 chunk graph, repo-backed artifacts, and cache reuse",
     ),
+    "yolo-layout": RegressionCase(
+        name="yolo-layout",
+        script=REPO / "Experiments/NDNSF_DI_YoloLayout_Smoke.py",
+        success_marker="YOLO_LAYOUT_SMOKE_OK",
+        description="YOLO custom layout export, local ONNX correctness, and policy validation",
+        use_sudo=False,
+    ),
 }
 
 
@@ -64,10 +72,10 @@ def selected_cases(selection: str) -> list[RegressionCase]:
     return [CASES[selection]]
 
 
-def run_case(case: RegressionCase) -> None:
+def run_case(case: RegressionCase, extra_args: list[str] | None = None) -> None:
     start = time.time()
     print(f"NDNSF_DI_REGRESSION_START case={case.name} script={case.script}")
-    command = ["python3", str(case.script)]
+    command = ["python3", str(case.script), *case.extra_args, *(extra_args or [])]
     if case.use_sudo:
         command = ["sudo", "-E", *command]
     proc = subprocess.run(
@@ -96,9 +104,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--case",
-        choices=["app-api", "onnx-executor", "auto-split", "yolo-2x2", "all"],
+        choices=["app-api", "onnx-executor", "auto-split", "yolo-2x2", "yolo-layout", "all"],
         default="auto-split",
         help="Regression case to run. Default keeps the smoke test short.",
+    )
+    parser.add_argument(
+        "--layout",
+        default="1x3",
+        help="Layout used by --case yolo-layout. Examples: 1x3, 2x3, 3x2, 3x3.",
     )
     parser.add_argument("--list", action="store_true",
                         help="List available regression cases and exit")
@@ -110,7 +123,8 @@ def main() -> int:
         return 0
 
     for case in selected_cases(args.case):
-        run_case(case)
+        extra_args = ["--layout", args.layout] if case.name == "yolo-layout" else []
+        run_case(case, extra_args)
     print(f"NDNSF_DI_REGRESSION_SUITE_OK case={args.case}")
     return 0
 

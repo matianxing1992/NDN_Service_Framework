@@ -544,6 +544,7 @@ class DeploymentRunnerTab(ttk.Frame):
     REGRESSION_CASES = {
         "auto-split": ("YOLO_SPLIT_RESULT", "ok=true"),
         "yolo-2x2": ("YOLO_2X2_RESULT", "ok=true"),
+        "yolo-layout": ("YOLO_LAYOUT_SMOKE_OK", ""),
         "onnx-executor": ("ONNX_EXECUTOR_FANIN_FANOUT_OK", ""),
         "app-api": ("APP_API_SERVICE_PLAN_OK", ""),
         "all": ("NDNSF_DI_REGRESSION_SUITE_OK", ""),

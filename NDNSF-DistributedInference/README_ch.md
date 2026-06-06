@@ -206,10 +206,13 @@ YOLO_2X2_RESULT ... ok=true
 PYTORCH_2X2_RESULT ... ok=true
 ```
 
-统一 runner 也可以运行指定 cases：
+统一 runner 也可以运行指定 cases。`yolo-layout` 是快速的非 MiniNDN
+layout/policy smoke，用来检查自定义 YOLO layout；当前稳定的网络级 YOLO
+回归仍然是 `yolo-2x2`：
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 3x2
 ```
 
 ### 8. 常见部署错误
@@ -1176,12 +1179,17 @@ MiniNDN 脚本会在第一个 command 前清空 provider artifact cache。它在
 `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`，并在 warm command 中
 打印 `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT`。
 
-如果要用一个入口运行 APP API smoke、本地 ONNX executor smoke，以及两个
+如果要用一个入口运行 APP API smoke、本地 ONNX executor smoke，以及两个稳定的
 MiniNDN split smokes：
 
 ```bash
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 3x2
 ```
+
+`yolo-layout` 验证自定义 YOLO layout 导出、本地 ONNX chunk 正确性和
+policy 生成。它不表示自定义 layout 的网络级执行已经稳定；当前 repo-backed
+MiniNDN 网络回归仍以 `yolo-2x2` 为准。
 
 policy/repo inspection helper 仍然保留：
 

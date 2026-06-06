@@ -86,9 +86,9 @@ def main() -> int:
         description="Verify and launch the NDNSF-DI GUI, optionally after a MiniNDN smoke test.")
     parser.add_argument(
         "--case",
-        choices=["app-api", "onnx-executor", "auto-split", "yolo-2x2", "all"],
+        choices=["app-api", "onnx-executor", "auto-split", "yolo-2x2", "yolo-layout", "all"],
         default="app-api",
-        help="Regression case used with --run-minindn. Default: app-api; use yolo-2x2 for full MiniNDN.",
+        help="Regression case used with --run-minindn. Default: app-api; use yolo-2x2 or yolo-layout for full MiniNDN.",
     )
     parser.add_argument("--run-minindn", action="store_true",
                         help="Run the selected regression before launching the GUI.")
