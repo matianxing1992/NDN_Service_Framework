@@ -451,6 +451,34 @@ def main() -> None:
                 f"generic DistributedRepo tombstone gossip failed "
                 f"rc={tombstone_gossip_client.returncode}; "
                 f"log={tombstone_gossip_log}")
+        tombstone_epoch_log = OUT / "client-tombstone-epoch-conflict.log"
+        out = tombstone_epoch_log.open("wb")
+        tombstone_epoch_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--catalog-tombstone-epoch-conflict-smoke "
+            "--catalog-tombstone-source-repo-node /example/repo/provider/repoA "
+            "--catalog-tombstone-peer-repo-node /example/repo/provider/repoB "
+            "--catalog-tombstone-peer-repo-node /example/repo/provider/repoC".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((tombstone_epoch_client, out, tombstone_epoch_log))
+        tombstone_epoch_client.wait(timeout=240)
+        tombstone_epoch_text = tombstone_epoch_log.read_text(errors="replace")
+        print(tombstone_epoch_text)
+        if (tombstone_epoch_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_TOMBSTONE_EPOCH_CONFLICT_OK"
+                not in tombstone_epoch_text):
+            raise RuntimeError(
+                f"generic DistributedRepo tombstone epoch conflict failed "
+                f"rc={tombstone_epoch_client.returncode}; "
+                f"log={tombstone_epoch_log}")
         uav_data_log = OUT / "client-uav-data-product.log"
         out = uav_data_log.open("wb")
         uav_data_client = getPopen(

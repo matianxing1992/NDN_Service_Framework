@@ -163,6 +163,12 @@ late or falls too far behind. Large Data packets remain signed/encrypted NDN
 segments; catalog metadata only helps a client decide which repo can serve or
 replicate the object.
 
+Deletion is represented as catalog metadata, not as a silent local file
+removal. A repo publishes a `DELETED` tombstone entry for the object, and peer
+repos must keep that tombstone so older `AVAILABLE` catalog entries cannot
+resurrect the object. Conflict handling therefore considers the object's update
+time and delete semantics in addition to a peer's local catalog sequence.
+
 The recommended Python-facing generic object API hides most NDNSF setup
 details. In a running deployment, repo nodes can preload the deployment config
 as a normal repo object. The application user starts with the repo service

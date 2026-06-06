@@ -68,7 +68,10 @@ Tombstones are part of the same catalog control plane. When a repo deletes an
 object, it publishes a `DELETED` entry with a newer catalog epoch. Peer repos
 must keep that tombstone and shadow older `AVAILABLE` entries, so stale catalog
 deltas cannot resurrect deleted objects. The MiniNDN smoke includes a dedicated
-tombstone gossip check for this behavior.
+tombstone gossip check for this behavior. It also injects a deliberately stale
+`AVAILABLE` entry with a higher catalog epoch after the tombstone has propagated;
+the object must remain deleted because tombstone ordering is based on object
+update time and delete semantics, not only on the peer's catalog sequence.
 
 ## Object Classes and Retention Policy
 
@@ -222,6 +225,7 @@ Expected success marker:
 GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
 GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK
 GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_TOMBSTONE_EPOCH_CONFLICT_OK
 GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK
 GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK

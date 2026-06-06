@@ -116,6 +116,8 @@ def main() -> int:
                         default="/example/repo/provider/repoA")
     parser.add_argument("--catalog-tombstone-peer-repo-node", action="append",
                         default=[])
+    parser.add_argument("--catalog-tombstone-epoch-conflict-smoke", action="store_true",
+                        help="Verify that stale AVAILABLE entries with higher catalog epochs cannot revive tombstoned objects")
     parser.add_argument("--object-policy-smoke", action="store_true",
                         help="Verify default object class and retention metadata")
     parser.add_argument("--uav-data-product-smoke", action="store_true",
@@ -335,6 +337,115 @@ def main() -> int:
             )
         print(
             "GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK "
+            f"object={manifest.object_name} peers={','.join(peer_repos)}",
+            flush=True,
+        )
+        return 0
+
+    if args.catalog_tombstone_epoch_conflict_smoke:
+        source_repo = args.catalog_tombstone_source_repo_node
+        peer_repos = (
+            args.catalog_tombstone_peer_repo_node or
+            ["/example/repo/provider/repoB", "/example/repo/provider/repoC"]
+        )
+        payload = b"tombstone epoch conflict object"
+        suffix = str(int(time.time() * 1000))
+        manifest = repo.put(
+            f"APP/CatalogHealth/TombstoneEpochConflict/{suffix}",
+            payload,
+            object_type="mission-log",
+            replication_factor=1,
+            replica_nodes=(source_repo,),
+            policy_epoch="/Policy/generic-repo/v1",
+        )
+        stale_updated_ms = max(1, int(time.time() * 1000) - 120000)
+        stale_available_entry = {
+            "objectName": manifest.object_name,
+            "objectSha256": manifest.sha256,
+            "manifestSha256": hashlib.sha256(manifest.to_bytes()).hexdigest(),
+            "objectType": manifest.object_type,
+            "objectClass": manifest.to_dict().get("objectClass", manifest.object_type),
+            "size": manifest.size,
+            "segmentCount": manifest.segment_count,
+            "sourceRepo": source_repo,
+            "repoMode": "persistent",
+            "state": "AVAILABLE",
+            "catalogEpoch": 999999999,
+            "lastSeenMs": int(time.time() * 1000),
+            "updatedAtMs": stale_updated_ms,
+            "minReplicationFactor": manifest.to_dict().get("minReplicationFactor", 1),
+            "maxReplicationFactor": manifest.to_dict().get("maxReplicationFactor", 1),
+            "desiredReplicationFactor": manifest.replication_factor,
+            "repairAllowed": manifest.to_dict().get("repairAllowed", True),
+            "replicaNodes": [source_repo],
+            "manifest": manifest.to_dict(),
+        }
+        if not repo.remove(manifest.object_name):
+            raise RuntimeError("tombstone epoch conflict remove reported no deletion")
+
+        deadline = time.time() + 80.0
+        deleted_peers: set[str] = set()
+        while time.time() < deadline and len(deleted_peers) < len(peer_repos):
+            for peer_repo in peer_repos:
+                if peer_repo in deleted_peers:
+                    continue
+                try:
+                    lookup = repo.catalog_lookup(manifest.object_name, peer_repo)
+                    if lookup.get("state") == "DELETED":
+                        deleted_peers.add(peer_repo)
+                except Exception:
+                    pass
+            if len(deleted_peers) == len(peer_repos):
+                break
+            time.sleep(2.0)
+        if len(deleted_peers) != len(peer_repos):
+            lookups = {}
+            for peer_repo in peer_repos:
+                try:
+                    lookups[peer_repo] = repo.catalog_lookup(manifest.object_name, peer_repo)
+                except Exception as exc:
+                    lookups[peer_repo] = {"error": str(exc)}
+            raise RuntimeError(
+                "tombstone did not reach all peers before epoch conflict check: "
+                f"object={manifest.object_name} lookups={lookups}"
+            )
+
+        final_lookups: dict[str, dict] = {}
+        for peer_repo in peer_repos:
+            repo.catalog_merge(
+                peer_repo,
+                [stale_available_entry],
+                {
+                    "repoNode": source_repo,
+                    "repoMode": "persistent",
+                    "catalogEpoch": stale_available_entry["catalogEpoch"],
+                    "acceptsBackupReplica": True,
+                },
+            )
+            lookup = repo.catalog_lookup(manifest.object_name, peer_repo)
+            final_lookups[peer_repo] = lookup
+            if lookup.get("state") != "DELETED":
+                raise RuntimeError(
+                    "stale high-epoch AVAILABLE entry revived tombstoned object: "
+                    f"peer={peer_repo} lookup={lookup}"
+                )
+            if int(lookup.get("availableReplicaCount", 0) or 0) != 0:
+                raise RuntimeError(
+                    "stale high-epoch AVAILABLE entry left visible replicas: "
+                    f"peer={peer_repo} lookup={lookup}"
+                )
+            unshadowed_available = [
+                entry for entry in lookup.get("entries", [])
+                if (str(entry.get("state", "")) == "AVAILABLE" and
+                    not entry.get("shadowedByTombstone"))
+            ]
+            if unshadowed_available:
+                raise RuntimeError(
+                    "stale high-epoch AVAILABLE entry was not shadowed by tombstone: "
+                    f"peer={peer_repo} entries={unshadowed_available}"
+                )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_TOMBSTONE_EPOCH_CONFLICT_OK "
             f"object={manifest.object_name} peers={','.join(peer_repos)}",
             flush=True,
         )

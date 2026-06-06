@@ -137,6 +137,11 @@ Catalog 不应该周期性广播完整目录，也不应该广播每个 segment 
 再通过 snapshot/diff 主动恢复。大数据本身仍然是已签名、可选已加密的 NDN segments；
 catalog metadata 只帮助 client 判断哪个 repo 可以服务或复制该 object。
 
+删除也应该体现为 catalog metadata，而不是静默删除本地文件。Repo 会为 object 发布
+`DELETED` tombstone entry，peer repos 必须保存这个 tombstone，使更旧的 `AVAILABLE`
+catalog entries 不能把对象复活。因此冲突处理除了 peer 本地 catalog sequence，还要考虑
+object 的更新时间和删除语义。
+
 推荐的 Python-facing generic object API 会隐藏大部分 NDNSF setup 细节。在运行中的部署里，repo nodes 可以把部署配置作为普通 repo object 预加载。应用用户从 repo service bootstrap 参数开始，通过 repo 获取配置，然后执行普通 `put/get` 操作：
 
 ```python

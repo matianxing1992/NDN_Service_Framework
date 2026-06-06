@@ -44,7 +44,10 @@ delta-based，而不是广播每个 segment 或完整目录的原因。
 Tombstone 也是同一个 catalog control plane 的一部分。当某个 repo 删除 object 时，它会发布
 带有更新 catalog epoch 的 `DELETED` entry。Peer repos 必须保存这个 tombstone，并让它
 shadow 更旧的 `AVAILABLE` entries，这样旧 catalog delta 不会把已删除对象复活。MiniNDN
-smoke 包含一个专门的 tombstone gossip 检查来验证这件事。
+smoke 包含一个专门的 tombstone gossip 检查来验证这件事。它还会在 tombstone 传播后
+故意注入一个 catalog epoch 更高、但 object update time 更旧的 `AVAILABLE` entry；对象
+必须继续保持删除状态，因为 tombstone 排序依赖 object 更新时间和删除语义，而不只是
+peer catalog sequence。
 
 ## Object Classes 和 Retention Policy
 
@@ -182,6 +185,7 @@ sudo -E PYTHONPATH=pythonWrapper:NDNSF-DistributedInference \
 GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
 GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK
 GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_TOMBSTONE_EPOCH_CONFLICT_OK
 GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK
 GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK
