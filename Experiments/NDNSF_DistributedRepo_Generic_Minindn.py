@@ -400,6 +400,81 @@ def main() -> None:
             raise RuntimeError(
                 f"generic DistributedRepo failed rc={client.returncode}; "
                 f"log={client_log}")
+        policy_log = OUT / "client-object-policy.log"
+        out = policy_log.open("wb")
+        policy_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--object-policy-smoke".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((policy_client, out, policy_log))
+        policy_client.wait(timeout=240)
+        policy_text = policy_log.read_text(errors="replace")
+        print(policy_text)
+        if (policy_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK" not in policy_text):
+            raise RuntimeError(
+                f"generic DistributedRepo object policy failed "
+                f"rc={policy_client.returncode}; log={policy_log}")
+        tombstone_gossip_log = OUT / "client-tombstone-gossip.log"
+        out = tombstone_gossip_log.open("wb")
+        tombstone_gossip_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--catalog-tombstone-gossip-smoke "
+            "--catalog-tombstone-source-repo-node /example/repo/provider/repoA "
+            "--catalog-tombstone-peer-repo-node /example/repo/provider/repoB "
+            "--catalog-tombstone-peer-repo-node /example/repo/provider/repoC".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((tombstone_gossip_client, out, tombstone_gossip_log))
+        tombstone_gossip_client.wait(timeout=240)
+        tombstone_gossip_text = tombstone_gossip_log.read_text(errors="replace")
+        print(tombstone_gossip_text)
+        if (tombstone_gossip_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK"
+                not in tombstone_gossip_text):
+            raise RuntimeError(
+                f"generic DistributedRepo tombstone gossip failed "
+                f"rc={tombstone_gossip_client.returncode}; "
+                f"log={tombstone_gossip_log}")
+        uav_data_log = OUT / "client-uav-data-product.log"
+        out = uav_data_log.open("wb")
+        uav_data_client = getPopen(
+            ndn.net["memphis"],
+            base + perf.shell_quote(PY_DIR / "client.py") +
+            common +
+            " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+            "--uav-data-product-smoke".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
+            envDict=node_env("memphis"),
+            shell=True,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        processes.append((uav_data_client, out, uav_data_log))
+        uav_data_client.wait(timeout=240)
+        uav_data_text = uav_data_log.read_text(errors="replace")
+        print(uav_data_text)
+        if (uav_data_client.returncode != 0 or
+                "GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK"
+                not in uav_data_text):
+            raise RuntimeError(
+                f"generic DistributedRepo UAV data product failed "
+                f"rc={uav_data_client.returncode}; log={uav_data_log}")
         snapshot_log = OUT / "client-catalog-snapshot.log"
         out = snapshot_log.open("wb")
         snapshot_client = getPopen(
@@ -469,15 +544,6 @@ def main() -> None:
             raise RuntimeError(
                 "generic DistributedRepo catalog health check failed "
                 f"rc={health_client.returncode}; log={health_log}")
-        catalog_auto_proc, catalog_auto_log = start(
-            "ucla",
-            "catalogA-auto",
-            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
-            " --repo-node /example/repo/provider/repoA "
-            "--peer-repo-node /example/repo/provider/repoB "
-            "--interval-s 2 --auto-repair",
-        )
-        time.sleep(5.0)
         seed_log = OUT / "client-catalog-auto-repair-seed.log"
         out = seed_log.open("wb")
         seed_client = getPopen(
@@ -507,6 +573,16 @@ def main() -> None:
                 f"generic DistributedRepo auto repair seed failed "
                 f"rc={seed_client.returncode}; log={seed_log}")
         auto_repair_object = seed_match.group(1)
+        catalog_auto_proc, catalog_auto_log = start(
+            "ucla",
+            "catalogA-auto",
+            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
+            " --repo-node /example/repo/provider/repoA "
+            "--peer-repo-node /example/repo/provider/repoB "
+            "--interval-s 2 --auto-repair "
+            "--repair-object-name {}".format(
+                perf.shell_quote(auto_repair_object)),
+        )
         deadline = time.time() + 90.0
         while time.time() < deadline:
             auto_text = catalog_auto_log.read_text(errors="replace")

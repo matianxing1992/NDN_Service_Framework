@@ -33,6 +33,7 @@ from .repo import (
     large_data_reference_from_repo_manifest,
     repo_artifact_reference,
     repo_manifest_from_artifact_reference,
+    repo_manifest_from_large_data_reference,
     select_replicas,
 )
 from .onnx_graph import (
@@ -136,6 +137,7 @@ __all__ = [
     "large_data_reference_from_repo_manifest",
     "repo_artifact_reference",
     "repo_manifest_from_artifact_reference",
+    "repo_manifest_from_large_data_reference",
     "RoleDependencyView",
     "RuntimeSpec",
     "SandboxPolicy",

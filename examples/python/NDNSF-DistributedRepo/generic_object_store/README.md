@@ -64,6 +64,43 @@ packet objects, the client waits for catalog propagation and asks every
 Persistent repo for `CATALOG_SNAPSHOT`. The smoke succeeds only when every
 snapshot contains every stored object.
 
+Tombstones are part of the same catalog control plane. When a repo deletes an
+object, it publishes a `DELETED` entry with a newer catalog epoch. Peer repos
+must keep that tombstone and shadow older `AVAILABLE` entries, so stale catalog
+deltas cannot resurrect deleted objects. The MiniNDN smoke includes a dedicated
+tombstone gossip check for this behavior.
+
+## Object Classes and Retention Policy
+
+Repo objects carry an `objectClass` and lifecycle metadata in addition to the
+application `objectType`. The current default classes are:
+
+```text
+temporary-activation  min=1 max=1 repair=false ttl=10min
+model-artifact        min=2 max=3 repair=true  ttl=none
+uav-recording         min=2 max=3 repair=true  ttl=7d
+telemetry-log         min=1 max=2 repair=true  ttl=7d
+mission-log           min=2 max=3 repair=true  ttl=30d
+```
+
+These defaults only describe catalog and repair behavior. They do not change
+NDN object naming, signing, encryption, or segmented Data storage. A generic
+object can still use explicit replication settings when an application needs a
+different policy.
+
+The generic MiniNDN regression also stores UAV-style data products:
+
+```text
+uav-recording
+telemetry-log
+mission-log
+```
+
+It verifies that they enter the catalog with the expected object class metadata
+and that clients can look them up and fetch the original payload. This is a
+repo-level browsing prototype for UAV recording/log products; the full GS UI is
+kept separate from this repo control-plane test.
+
 ## Repair Plan and Manual Repair Action
 
 Catalog lookup and snapshot responses expose control-plane health for each
@@ -183,6 +220,9 @@ Expected success marker:
 
 ```text
 GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK
+GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK
 GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_OK

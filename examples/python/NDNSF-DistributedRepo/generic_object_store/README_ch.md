@@ -41,6 +41,40 @@ delta-based，而不是广播每个 segment 或完整目录的原因。
 之后，client 会等待 catalog 传播，并向每个 Persistent repo 请求
 `CATALOG_SNAPSHOT`。只有每个 snapshot 都包含所有已存对象时，smoke 才算通过。
 
+Tombstone 也是同一个 catalog control plane 的一部分。当某个 repo 删除 object 时，它会发布
+带有更新 catalog epoch 的 `DELETED` entry。Peer repos 必须保存这个 tombstone，并让它
+shadow 更旧的 `AVAILABLE` entries，这样旧 catalog delta 不会把已删除对象复活。MiniNDN
+smoke 包含一个专门的 tombstone gossip 检查来验证这件事。
+
+## Object Classes 和 Retention Policy
+
+Repo object 除了 application `objectType` 之外，还携带 `objectClass` 和生命周期元数据。
+当前默认 class 是：
+
+```text
+temporary-activation  min=1 max=1 repair=false ttl=10min
+model-artifact        min=2 max=3 repair=true  ttl=none
+uav-recording         min=2 max=3 repair=true  ttl=7d
+telemetry-log         min=1 max=2 repair=true  ttl=7d
+mission-log           min=2 max=3 repair=true  ttl=30d
+```
+
+这些默认值只描述 catalog 和 repair 行为，不改变 NDN object name、签名、加密或
+segmented Data 存储方式。应用需要不同策略时，仍然可以给 generic object 显式设置
+replication 参数。
+
+Generic MiniNDN regression 还会存储 UAV 风格的数据产品：
+
+```text
+uav-recording
+telemetry-log
+mission-log
+```
+
+测试会确认它们以预期 object class metadata 进入 catalog，并且 client 能 lookup 和 fetch
+回原始 payload。这是 UAV recording/log 产品的 repo-level browsing prototype；完整 GS UI
+仍然和这个 repo control-plane 测试分开。
+
 ## Repair Plan 和手动 Repair Action
 
 Catalog lookup 和 snapshot response 会暴露每个 object 的控制面健康状态。当某个 object
@@ -146,6 +180,9 @@ sudo -E PYTHONPATH=pythonWrapper:NDNSF-DistributedInference \
 
 ```text
 GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK
+GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK
+GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK
 GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK
 GENERIC_DISTRIBUTED_REPO_OK

@@ -981,6 +981,11 @@ ground station 针对当前选中的 drone 提供 `Find Recordings` 和 `Play Re
 chunk name helper；这是第一个具体 repo-backed UAV data product model，后续 mission image、
 telemetry log、detection event 和 report 会沿用这个方向。chunk 路径故意不是 NDNSF service：
 
+Repo control-plane 原型也把 UAV recording、telemetry log 和 mission log 作为带有
+object-class metadata 的命名数据产品处理。在 MiniNDN 中，DistributedRepo regression 会存储这些
+objects，让 catalog gossip 传播它们，从 Persistent repo 做 lookup，并 fetch 回原始 payload。
+这验证了未来 recording/log browsing 的 repo 层路径；它还不是完整的 GS catalog browser UI。
+
 ```text
 /<drone>/repo/camera/recording/<session-id>/chunk/<index>
 ```

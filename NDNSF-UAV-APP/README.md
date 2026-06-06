@@ -1083,6 +1083,13 @@ predictable chunk-name helpers; this is the first concrete repo-backed UAV data
 product model and will be reused for mission images, telemetry logs, detection
 events, and reports. The chunk path is intentionally not an NDNSF service:
 
+The repo control-plane prototype also treats UAV recordings, telemetry logs,
+and mission logs as named data products with object-class metadata. In MiniNDN,
+the DistributedRepo regression stores these objects, lets catalog gossip
+propagate them, performs lookup from a Persistent repo, and fetches the original
+payload. This validates the future recording/log browsing path at the repo
+layer; it is not yet a full GS catalog browser UI.
+
 ```text
 /<drone>/repo/camera/recording/<session-id>/chunk/<index>
 ```

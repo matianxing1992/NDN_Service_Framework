@@ -45,6 +45,94 @@ def _pull_fetch_timeout_ms(segment_count: int) -> int:
     return max(60000, min(600000, segment_count * 150))
 
 
+def _boolish(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _packet_manifest_versioned_data_name(packet_manifest: dict) -> str:
+    packets = list(packet_manifest.get("packets", []))
+    if not packets:
+        raise ValueError("packet manifest contains no packets")
+    first_name = str(packets[0].get("name", ""))
+    if not first_name:
+        raise ValueError("packet manifest first packet has no Data name")
+    if "/seg=" not in first_name:
+        return first_name
+    return first_name.rsplit("/seg=", 1)[0]
+
+
+REPO_OBJECT_CLASS_DEFAULTS: dict[str, dict[str, object]] = {
+    "temporary-activation": {
+        "minReplicationFactor": 1,
+        "maxReplicationFactor": 1,
+        "ttlMs": 10 * 60 * 1000,
+        "repairAllowed": False,
+    },
+    "model-artifact": {
+        "minReplicationFactor": 2,
+        "maxReplicationFactor": 3,
+        "ttlMs": 0,
+        "repairAllowed": True,
+    },
+    "uav-recording": {
+        "minReplicationFactor": 2,
+        "maxReplicationFactor": 3,
+        "ttlMs": 7 * 24 * 60 * 60 * 1000,
+        "repairAllowed": True,
+    },
+    "telemetry-log": {
+        "minReplicationFactor": 1,
+        "maxReplicationFactor": 2,
+        "ttlMs": 7 * 24 * 60 * 60 * 1000,
+        "repairAllowed": True,
+    },
+    "mission-log": {
+        "minReplicationFactor": 2,
+        "maxReplicationFactor": 3,
+        "ttlMs": 30 * 24 * 60 * 60 * 1000,
+        "repairAllowed": True,
+    },
+}
+
+
+def repo_object_class_policy(object_type: str, object_class: str = "") -> dict[str, object]:
+    """Return default lifecycle/replication metadata for a repo object class."""
+
+    normalized_class = object_class.strip() if object_class else ""
+    normalized_type = object_type.strip().lower()
+    if not normalized_class:
+        if "activation" in normalized_type:
+            normalized_class = "temporary-activation"
+        elif "model" in normalized_type or "artifact" in normalized_type:
+            normalized_class = "model-artifact"
+        elif "recording" in normalized_type or "video" in normalized_type:
+            normalized_class = "uav-recording"
+        elif "telemetry" in normalized_type:
+            normalized_class = "telemetry-log"
+        elif "mission" in normalized_type:
+            normalized_class = "mission-log"
+        else:
+            normalized_class = normalized_type or "generic"
+    defaults = dict(REPO_OBJECT_CLASS_DEFAULTS.get(normalized_class, {}))
+    defaults.setdefault("minReplicationFactor", 1)
+    defaults.setdefault("maxReplicationFactor", 0)
+    defaults.setdefault("ttlMs", 0)
+    defaults.setdefault("repairAllowed", True)
+    defaults["objectClass"] = normalized_class
+    return defaults
+
+
 @dataclass(frozen=True)
 class RepoObjectManifest:
     object_name: str
@@ -59,21 +147,43 @@ class RepoObjectManifest:
     replica_data_names: tuple[str, ...] = ()
     segment_locations: tuple[dict, ...] = ()
     policy_epoch: str = ""
+    object_class: str = ""
+    ttl_ms: int = 0
+    repair_allowed: bool = True
 
     def to_dict(self) -> dict:
+        class_policy = repo_object_class_policy(self.object_type, self.object_class)
+        object_class = str(class_policy.get("objectClass", self.object_class))
+        class_min_replication_factor = int(
+            class_policy.get("minReplicationFactor", 1) or 1)
+        min_replication_factor = (
+            max(self.min_replication_factor, class_min_replication_factor)
+            if self.min_replication_factor > 0 else
+            class_min_replication_factor
+        )
         max_replication_factor = (
             self.max_replication_factor
-            if self.max_replication_factor > 0 else self.replication_factor
+            if self.max_replication_factor > 0 else
+            int(class_policy.get("maxReplicationFactor", 0) or 0) or
+            self.replication_factor
+        )
+        ttl_ms = (
+            self.ttl_ms
+            if self.ttl_ms > 0 else
+            int(class_policy.get("ttlMs", 0) or 0)
         )
         return {
             "objectName": self.object_name,
             "objectType": self.object_type,
+            "objectClass": object_class,
             "sha256": self.sha256,
             "size": self.size,
             "segmentCount": self.segment_count,
             "replicationFactor": self.replication_factor,
-            "minReplicationFactor": self.min_replication_factor,
+            "minReplicationFactor": min_replication_factor,
             "maxReplicationFactor": max_replication_factor,
+            "ttlMs": ttl_ms,
+            "repairAllowed": bool(self.repair_allowed and class_policy.get("repairAllowed", True)),
             "replicaNodes": list(self.replica_nodes),
             "replicaDataNames": list(self.replica_data_names),
             "segmentLocations": list(self.segment_locations),
@@ -101,6 +211,9 @@ class RepoObjectManifest:
             replica_data_names=tuple(str(value) for value in obj.get("replicaDataNames", [])),
             segment_locations=tuple(dict(value) for value in obj.get("segmentLocations", [])),
             policy_epoch=str(obj.get("policyEpoch", "")),
+            object_class=str(obj.get("objectClass", "")),
+            ttl_ms=int(obj.get("ttlMs", 0) or 0),
+            repair_allowed=_boolish(obj.get("repairAllowed", True), True),
         )
 
 
@@ -119,7 +232,7 @@ def large_data_reference_from_repo_manifest(
         "objectType": object_type or str(manifest_dict.get("objectType", "")),
         "objectId": object_id or str(manifest_dict.get("objectName", "")),
         "plaintextSize": int(manifest_dict.get("size", 0)),
-        "encrypted": bool(manifest_dict.get("encrypted", False)),
+        "encrypted": _boolish(manifest_dict.get("encrypted", False), False),
         "digest": "sha256:" + str(manifest_dict.get("sha256", "")),
     }
 
@@ -148,11 +261,47 @@ def repo_manifest_from_artifact_reference(entry: dict) -> dict:
 
     if not isinstance(entry, dict):
         raise ValueError("repo artifact entry must be a mapping")
+    if "largeDataReference" in entry:
+        reference = entry.get("largeDataReference", {})
+        if not isinstance(reference, dict):
+            raise ValueError("largeDataReference must be a mapping")
+        source = str(reference.get("source", ""))
+        if source and source != "repo-manifest":
+            raise ValueError(
+                "unsupported artifact largeDataReference source: "
+                f"{source}"
+            )
+        manifest = dict(entry.get("repoManifest", entry.get("repo_manifest", {})))
+        if not manifest:
+            raise ValueError(
+                "repo-backed artifact largeDataReference missing repoManifest"
+            )
+        digest = str(reference.get("digest", ""))
+        if digest.startswith("sha256:"):
+            expected = digest.split(":", 1)[1]
+            actual = str(manifest.get("sha256", ""))
+            if expected and actual and expected != actual:
+                raise ValueError(
+                    "largeDataReference digest does not match repoManifest: "
+                    f"reference={expected} manifest={actual}"
+                )
+        return manifest
     if "repoManifest" in entry:
         return dict(entry["repoManifest"])
     if "repo_manifest" in entry:
         return dict(entry["repo_manifest"])
     return dict(entry)
+
+
+def repo_manifest_from_large_data_reference(entry: dict) -> dict:
+    """Resolve a repo-backed artifact through the large-data reference layer.
+
+    New planner/executor code should call this helper instead of directly
+    reading ``repoManifest``. The implementation still accepts legacy manifest
+    shapes so older generated policies keep working during migration.
+    """
+
+    return repo_manifest_from_artifact_reference(entry)
 
 
 @dataclass(frozen=True)
@@ -898,18 +1047,18 @@ class RepoNodeApp:
     def _catalog_manifest_summary(manifest: RepoObjectManifest) -> dict:
         # Catalog entries keep object/repo control-plane semantics here. Payload
         # transport sizing is handled by NDNSF core large-response references.
-        max_replication_factor = (
-            manifest.max_replication_factor
-            if manifest.max_replication_factor > 0 else manifest.replication_factor
-        )
+        manifest_dict = manifest.to_dict()
         return {
             "objectName": manifest.object_name,
             "objectType": manifest.object_type,
+            "objectClass": manifest_dict.get("objectClass", ""),
             "sha256": manifest.sha256,
             "size": manifest.size,
             "segmentCount": manifest.segment_count,
-            "minReplicationFactor": manifest.min_replication_factor,
-            "maxReplicationFactor": max_replication_factor,
+            "minReplicationFactor": manifest_dict.get("minReplicationFactor", 1),
+            "maxReplicationFactor": manifest_dict.get("maxReplicationFactor", 1),
+            "ttlMs": manifest_dict.get("ttlMs", 0),
+            "repairAllowed": manifest_dict.get("repairAllowed", True),
             "replicationFactor": manifest.replication_factor,
             "replicaNodes": list(manifest.replica_nodes),
             "replicaDataNames": list(manifest.replica_data_names),
@@ -919,15 +1068,13 @@ class RepoNodeApp:
 
     def _catalog_entry(self, manifest: RepoObjectManifest, state: str) -> dict:
         now_ms = self._now_ms()
-        max_replication_factor = (
-            manifest.max_replication_factor
-            if manifest.max_replication_factor > 0 else manifest.replication_factor
-        )
+        manifest_dict = manifest.to_dict()
         return {
             "objectName": manifest.object_name,
             "objectSha256": manifest.sha256,
             "manifestSha256": self._manifest_sha256(manifest),
             "objectType": manifest.object_type,
+            "objectClass": manifest_dict.get("objectClass", ""),
             "size": manifest.size,
             "segmentCount": manifest.segment_count,
             "sourceRepo": self.repo_node,
@@ -936,9 +1083,11 @@ class RepoNodeApp:
             "catalogEpoch": self._catalog_epoch,
             "lastSeenMs": now_ms,
             "updatedAtMs": now_ms,
-            "minReplicationFactor": manifest.min_replication_factor,
-            "maxReplicationFactor": max_replication_factor,
-            "desiredReplicationFactor": manifest.min_replication_factor,
+            "minReplicationFactor": manifest_dict.get("minReplicationFactor", 1),
+            "maxReplicationFactor": manifest_dict.get("maxReplicationFactor", 1),
+            "desiredReplicationFactor": manifest_dict.get("minReplicationFactor", 1),
+            "ttlMs": manifest_dict.get("ttlMs", 0),
+            "repairAllowed": manifest_dict.get("repairAllowed", True),
             "replicaNodes": list(manifest.replica_nodes),
             "manifest": self._catalog_manifest_summary(manifest),
         }
@@ -986,14 +1135,20 @@ class RepoNodeApp:
             entry_epoch = int(normalized.get("catalogEpoch", 0))
             current_updated_ms = int(current.get("updatedAtMs", 0) or 0)
             entry_updated_ms = int(normalized.get("updatedAtMs", 0) or 0)
+            incoming_tombstone_overrides_available = (
+                str(current.get("state", "")) == "AVAILABLE" and
+                str(normalized.get("state", "")) == "DELETED" and
+                entry_updated_ms >= current_updated_ms
+            )
             if (str(current.get("state", "")) == "DELETED" and
                     str(normalized.get("state", "")) == "AVAILABLE" and
                     current_updated_ms >= entry_updated_ms):
                 return
-            if current_epoch > entry_epoch:
+            if current_epoch > entry_epoch and not incoming_tombstone_overrides_available:
                 return
             if (current_epoch == entry_epoch and
-                    current_updated_ms > entry_updated_ms):
+                    current_updated_ms > entry_updated_ms and
+                    not incoming_tombstone_overrides_available):
                 return
         by_source[source_repo] = normalized
         self._merge_repo_status({
@@ -1082,6 +1237,13 @@ class RepoNodeApp:
             ] or [min_required]
         )
         source_repos = {str(entry.get("sourceRepo", "")) for entry in entries}
+        repair_allowed = any(
+            bool(entry.get(
+                "repairAllowed",
+                entry.get("manifest", {}).get("repairAllowed", True),
+            ))
+            for entry in entries
+        )
         stale_repos = [
             str(entry.get("sourceRepo", ""))
             for entry in entries
@@ -1094,7 +1256,10 @@ class RepoNodeApp:
             bool(status.get("acceptsBackupReplica", True)) and
             not self._is_repo_status_stale(status)
         ]
-        missing = 0 if deleted else max(0, min_required - len(available))
+        missing = (
+            0 if deleted or not repair_allowed else
+            max(0, min_required - len(available))
+        )
         repair_actions = []
         source_repo = str(available[0].get("sourceRepo", "")) if available else ""
         if source_repo:
@@ -1109,7 +1274,9 @@ class RepoNodeApp:
                     "targetRepo": target_repo,
                     "reason": "under-replicated",
                 })
-        if missing and not source_repo:
+        if not repair_allowed:
+            repair_reason = "repair-disabled"
+        elif missing and not source_repo:
             repair_reason = "no-live-source"
         elif missing and len(repair_actions) < missing:
             repair_reason = "insufficient-live-targets"
@@ -1131,6 +1298,7 @@ class RepoNodeApp:
             "objectSha256": best.get("objectSha256", ""),
             "manifestSha256": best.get("manifestSha256", ""),
             "objectType": best.get("objectType", ""),
+            "objectClass": best.get("objectClass", best.get("manifest", {}).get("objectClass", "")),
             "size": best.get("size", 0),
             "segmentCount": best.get("segmentCount", 0),
             "state": ("DELETED" if deleted else
@@ -1138,6 +1306,8 @@ class RepoNodeApp:
             "minReplicationFactor": min_required,
             "maxReplicationFactor": max_allowed,
             "desiredReplicationFactor": min_required,
+            "ttlMs": best.get("ttlMs", best.get("manifest", {}).get("ttlMs", 0)),
+            "repairAllowed": repair_allowed,
             "availableReplicaCount": len(available),
             "underReplicated": missing > 0,
             "staleRepos": stale_repos,
@@ -1604,8 +1774,9 @@ class RepoNodeApp:
                     for packet in packet_manifest.get("packets", [])
                 }
                 source_name = str(request["sourceName"])
+                fetch_name = _packet_manifest_versioned_data_name(packet_manifest)
                 packets = fetch_segmented_data_packets(
-                    source_name,
+                    fetch_name or source_name,
                     timeout_ms=_pull_fetch_timeout_ms(manifest.segment_count),
                     interest_lifetime_ms=2000,
                 )

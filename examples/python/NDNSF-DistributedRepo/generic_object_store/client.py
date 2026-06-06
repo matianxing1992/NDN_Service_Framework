@@ -110,6 +110,16 @@ def main() -> int:
                         default="/example/repo/provider/repoB")
     parser.add_argument("--catalog-auto-target-repo-node",
                         default="/example/repo/provider/repoA")
+    parser.add_argument("--catalog-tombstone-gossip-smoke", action="store_true",
+                        help="Verify that tombstones gossip to peer repo catalogs")
+    parser.add_argument("--catalog-tombstone-source-repo-node",
+                        default="/example/repo/provider/repoA")
+    parser.add_argument("--catalog-tombstone-peer-repo-node", action="append",
+                        default=[])
+    parser.add_argument("--object-policy-smoke", action="store_true",
+                        help="Verify default object class and retention metadata")
+    parser.add_argument("--uav-data-product-smoke", action="store_true",
+                        help="Verify UAV recording/log store, catalog lookup, and fetch")
     args = parser.parse_args()
 
     if args.use_local_config:
@@ -233,6 +243,202 @@ def main() -> int:
         print(
             "GENERIC_DISTRIBUTED_REPO_AUTO_REPAIR_OK "
             f"object={object_name} target={args.catalog_auto_target_repo_node}",
+            flush=True,
+        )
+        return 0
+
+    if args.catalog_tombstone_gossip_smoke:
+        source_repo = args.catalog_tombstone_source_repo_node
+        peer_repos = (
+            args.catalog_tombstone_peer_repo_node or
+            ["/example/repo/provider/repoB", "/example/repo/provider/repoC"]
+        )
+        payload = b"tombstone gossip object"
+        suffix = str(int(time.time() * 1000))
+        manifest = repo.put(
+            f"APP/CatalogHealth/TombstoneGossip/{suffix}",
+            payload,
+            object_type="mission-log",
+            replication_factor=1,
+            replica_nodes=(source_repo,),
+            policy_epoch="/Policy/generic-repo/v1",
+        )
+        now_ms = int(time.time() * 1000)
+        old_updated_ms = max(1, now_ms - 60000)
+        stale_available_entry = {
+            "objectName": manifest.object_name,
+            "objectSha256": manifest.sha256,
+            "manifestSha256": hashlib.sha256(manifest.to_bytes()).hexdigest(),
+            "objectType": manifest.object_type,
+            "objectClass": manifest.to_dict().get("objectClass", manifest.object_type),
+            "size": manifest.size,
+            "segmentCount": manifest.segment_count,
+            "sourceRepo": source_repo,
+            "repoMode": "persistent",
+            "state": "AVAILABLE",
+            "catalogEpoch": 1,
+            "lastSeenMs": now_ms,
+            "updatedAtMs": old_updated_ms,
+            "minReplicationFactor": manifest.to_dict().get("minReplicationFactor", 1),
+            "maxReplicationFactor": manifest.to_dict().get("maxReplicationFactor", 1),
+            "desiredReplicationFactor": manifest.replication_factor,
+            "repairAllowed": manifest.to_dict().get("repairAllowed", True),
+            "replicaNodes": [source_repo],
+            "manifest": manifest.to_dict(),
+        }
+        for peer_repo in peer_repos:
+            repo.catalog_merge(
+                peer_repo,
+                [stale_available_entry],
+                {
+                    "repoNode": source_repo,
+                    "repoMode": "persistent",
+                    "catalogEpoch": 1,
+                    "acceptsBackupReplica": True,
+                },
+            )
+        if not repo.remove(manifest.object_name):
+            raise RuntimeError("tombstone gossip remove reported no deletion")
+        deadline = time.time() + 80.0
+        final_lookups: dict[str, dict] = {}
+        while time.time() < deadline:
+            deleted_everywhere = True
+            final_lookups.clear()
+            for peer_repo in peer_repos:
+                try:
+                    lookup = repo.catalog_lookup(manifest.object_name, peer_repo)
+                    final_lookups[peer_repo] = lookup
+                    if lookup.get("state") != "DELETED":
+                        deleted_everywhere = False
+                        break
+                    if int(lookup.get("availableReplicaCount", 0) or 0) != 0:
+                        deleted_everywhere = False
+                        break
+                    unshadowed_available = [
+                        entry for entry in lookup.get("entries", [])
+                        if (str(entry.get("state", "")) == "AVAILABLE" and
+                            not entry.get("shadowedByTombstone"))
+                    ]
+                    if unshadowed_available:
+                        deleted_everywhere = False
+                        break
+                except Exception:
+                    deleted_everywhere = False
+                    break
+            if deleted_everywhere:
+                break
+            time.sleep(2.0)
+        else:
+            raise RuntimeError(
+                "tombstone did not gossip cleanly to peer catalogs: "
+                f"object={manifest.object_name} lookups={final_lookups}"
+            )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_TOMBSTONE_GOSSIP_OK "
+            f"object={manifest.object_name} peers={','.join(peer_repos)}",
+            flush=True,
+        )
+        return 0
+
+    if args.object_policy_smoke:
+        cases = [
+            ("DI/Activation/tmp", "temporary-activation", 1, 1, False),
+            ("DI/Model/yolo-shard", "model-artifact", 2, 3, True),
+            ("UAV/Recording/session-0001", "uav-recording", 2, 3, True),
+            ("UAV/Telemetry/window-0001", "telemetry-log", 1, 2, True),
+            ("UAV/Mission/mission-0001", "mission-log", 2, 3, True),
+        ]
+        for suffix, object_type, expected_min, expected_max, expected_repair in cases:
+            manifest = repo.put(
+                f"APP/ObjectPolicy/{suffix}/{int(time.time() * 1000)}",
+                f"policy object {object_type}".encode(),
+                object_type=object_type,
+                replication_factor=max(1, expected_min),
+                policy_epoch="/Policy/generic-repo/v1",
+            )
+            lookup = repo.catalog_lookup(
+                manifest.object_name,
+                manifest.replica_nodes[0],
+            )
+            if lookup.get("objectClass") != object_type:
+                raise RuntimeError(
+                    f"object policy class mismatch type={object_type} lookup={lookup}"
+                )
+            if int(lookup.get("minReplicationFactor", 0) or 0) != expected_min:
+                raise RuntimeError(
+                    f"object policy min replica mismatch type={object_type} lookup={lookup}"
+                )
+            if int(lookup.get("maxReplicationFactor", 0) or 0) != expected_max:
+                raise RuntimeError(
+                    f"object policy max replica mismatch type={object_type} lookup={lookup}"
+                )
+            if bool(lookup.get("repairAllowed", True)) != expected_repair:
+                raise RuntimeError(
+                    f"object policy repair flag mismatch type={object_type} lookup={lookup}"
+                )
+            if int(lookup.get("ttlMs", 0) or 0) < 0:
+                raise RuntimeError(
+                    f"object policy ttl invalid type={object_type} lookup={lookup}"
+                )
+        print("GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK", flush=True)
+        return 0
+
+    if args.uav_data_product_smoke:
+        timestamp = int(time.time() * 1000)
+        objects = [
+            (
+                f"UAV/Drone/A/Recording/session-{timestamp}",
+                "uav-recording",
+                b"ndnsf-uav-recording-manifest\nframe=0\nframe=1\n",
+                2,
+            ),
+            (
+                f"UAV/Drone/A/TelemetryLog/mission-{timestamp}",
+                "telemetry-log",
+                b"lat=35.118 lon=-89.937 alt=61.0 battery=11.8\n",
+                1,
+            ),
+            (
+                f"UAV/Drone/A/MissionLog/mission-{timestamp}",
+                "mission-log",
+                b"mission=survey state=DONE completed=4 total=4\n",
+                2,
+            ),
+        ]
+        fetched = 0
+        for suffix, object_type, payload, replicas in objects:
+            manifest = repo.put(
+                f"APP/{suffix}",
+                payload,
+                object_type=object_type,
+                replication_factor=replicas,
+                policy_epoch="/Policy/generic-repo/v1",
+            )
+            deadline = time.time() + 60.0
+            lookup = {}
+            while time.time() < deadline:
+                lookup = repo.catalog_lookup(
+                    manifest.object_name,
+                    manifest.replica_nodes[0],
+                )
+                if (lookup.get("objectClass") == object_type and
+                        int(lookup.get("availableReplicaCount", 0) or 0) >= 1):
+                    break
+                time.sleep(2.0)
+            else:
+                raise RuntimeError(
+                    f"UAV data product did not enter catalog: "
+                    f"type={object_type} object={manifest.object_name} lookup={lookup}"
+                )
+            if repo.get(manifest.object_name, manifest) != payload:
+                raise RuntimeError(
+                    f"UAV data product payload mismatch: "
+                    f"type={object_type} object={manifest.object_name}"
+                )
+            fetched += 1
+        print(
+            "GENERIC_DISTRIBUTED_REPO_UAV_DATA_PRODUCT_OK "
+            f"objects={fetched}",
             flush=True,
         )
         return 0
@@ -403,10 +609,20 @@ def main() -> int:
         )
         repaired_lookup = repo.catalog_lookup(
             manual_manifest.object_name, args.catalog_health_repo_node)
-        if repaired_lookup.get("underReplicated"):
-            raise RuntimeError(f"manual catalog repair still under-replicated: {repaired_lookup}")
-        if int(repaired_lookup.get("availableReplicaCount", 0) or 0) < 2:
-            raise RuntimeError(f"manual catalog repair did not add a replica: {repaired_lookup}")
+        repaired_candidates = repaired_lookup.get("candidateReplicas", [])
+        if not isinstance(repaired_candidates, list):
+            raise RuntimeError(
+                f"manual catalog repair candidates malformed: {repaired_lookup}"
+            )
+        has_target_replica = any(
+            isinstance(candidate, dict) and
+            str(candidate.get("sourceRepo", "")) == target_repo
+            for candidate in repaired_candidates
+        )
+        if not has_target_replica:
+            raise RuntimeError(
+                f"manual catalog repair did not add target replica: {repaired_lookup}"
+            )
         if repo.get(manual_manifest.object_name, manual_manifest) != manual_payload:
             raise RuntimeError("manual catalog repair corrupted object payload")
         print("GENERIC_DISTRIBUTED_REPO_CATALOG_REPAIR_OK", flush=True)

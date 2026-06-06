@@ -42,7 +42,7 @@ from ndnsf_distributed_inference import (
     estimate_split_candidates,
     homogeneous_provider_profiles,
     recommend_sequential_splits,
-    repo_manifest_from_artifact_reference,
+    repo_manifest_from_large_data_reference,
     write_onnx_graph_summary,
 )
 from ndnsf_distributed_inference.plan import ArtifactSpec, RuntimeSpec
@@ -620,8 +620,8 @@ def build_repo_plan(client, manifest_path: str | Path):
     for role in ROLES:
         artifact = artifacts[role]
         role_manifests = manifests["roles"][role]
-        runner_manifest = repo_manifest_from_artifact_reference(role_manifests["runner"])
-        model_manifest = repo_manifest_from_artifact_reference(role_manifests["model"])
+        runner_manifest = repo_manifest_from_large_data_reference(role_manifests["runner"])
+        model_manifest = repo_manifest_from_large_data_reference(role_manifests["model"])
         builder.add_part(
             role=role,
             model=b"",

@@ -19,6 +19,7 @@ from ndnsf_distributed_inference.repo import (
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
 REPO_SERVICE = "/NDNSF/DistributedRepo"
+CATALOG_MERGE_MAX_REQUEST_BYTES = 6000
 
 
 def parse_ack_payload(payload: bytes) -> dict[str, str]:
@@ -59,6 +60,30 @@ def request_repo(
     if not isinstance(decoded, dict):
         raise ValueError("repo catalog response must be a JSON object")
     return decoded
+
+
+def catalog_merge_batches(
+    entries: list[dict],
+    source_status: dict,
+    max_request_bytes: int,
+) -> list[list[dict]]:
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    for entry in entries:
+        tentative = current + [entry]
+        encoded = encode_repo_request(
+            "CATALOG_MERGE",
+            entries=tentative,
+            sourceStatus=source_status,
+        )
+        if current and len(encoded) > max_request_bytes:
+            batches.append(current)
+            current = [entry]
+        else:
+            current = tentative
+    if current:
+        batches.append(current)
+    return batches
 
 
 def config_auto_repair(config_path: str) -> bool:
@@ -163,6 +188,8 @@ def main() -> int:
                         action="store_true", default=None)
     parser.add_argument("--no-auto-repair", dest="auto_repair",
                         action="store_false")
+    parser.add_argument("--repair-object-name", action="append", default=[],
+                        help="If set, only check/execute repair for this object")
     args = parser.parse_args()
 
     deployment = APPDeployment.from_config(
@@ -198,6 +225,10 @@ def main() -> int:
         f"autoRepair={auto_repair}",
         flush=True,
     )
+    repair_filter = {
+        str(name) for name in args.repair_object_name
+        if str(name)
+    }
     while True:
         merged_any = False
         merged_object_names: set[str] = set()
@@ -210,15 +241,27 @@ def main() -> int:
                     encode_repo_request("CATALOG_DELTA", sinceEpoch=since),
                 )
                 entries = delta.get("entries", [])
-                request_repo(
-                    user,
-                    args.repo_node,
-                    encode_repo_request(
-                        "CATALOG_MERGE",
-                        entries=entries,
-                        sourceStatus=delta.get("repoStatus", {}),
-                    ),
-                )
+                merge_entries = [
+                    entry for entry in entries
+                    if isinstance(entry, dict)
+                ]
+                source_status = delta.get("repoStatus", {})
+                if not isinstance(source_status, dict):
+                    source_status = {}
+                for batch in catalog_merge_batches(
+                    merge_entries,
+                    source_status,
+                    CATALOG_MERGE_MAX_REQUEST_BYTES,
+                ):
+                    request_repo(
+                        user,
+                        args.repo_node,
+                        encode_repo_request(
+                            "CATALOG_MERGE",
+                            entries=batch,
+                            sourceStatus=source_status,
+                        ),
+                    )
                 peer_epochs[peer] = int(delta.get("catalogEpoch", since))
                 if entries:
                     merged_any = True
@@ -245,7 +288,7 @@ def main() -> int:
                     auto_repair=auto_repair,
                     repair_repo=repair_repo,
                     executed_actions=executed_actions,
-                    object_names=merged_object_names,
+                    object_names=(repair_filter or merged_object_names),
                 )
             except Exception as exc:  # noqa: BLE001
                 print(

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ndnsf import CollaborationDependency, CollaborationRole
+from .repo import large_data_reference_from_repo_manifest
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class ArtifactSpec:
     repo_manifest: dict = field(default_factory=dict)
 
     def to_ndnsf_artifact(self) -> dict:
-        return {
+        artifact = {
             "payload": self.payload,
             "filename": self.filename,
             "kind": self.kind,
@@ -34,6 +35,13 @@ class ArtifactSpec:
             "cache_name": self.cache_name,
             "repo_manifest": dict(self.repo_manifest or {}),
         }
+        if self.repo_manifest:
+            artifact["large_data_reference"] = large_data_reference_from_repo_manifest(
+                self.repo_manifest,
+                object_type=self.kind,
+                object_id=self.name,
+            )
+        return artifact
 
 
 @dataclass(frozen=True)
