@@ -1395,13 +1395,16 @@ For performance analysis, the executor logs:
 ```text
 NDNSF_DI_ONNX_TIMING
 NDNSF_DI_DEPENDENCY_INPUT_TIMING
+NDNSF_DI_DEPENDENCY_OUTPUT_TIMING
 NDNSF_DI_PLAN_CACHE
 ```
 
 These lines split latency into input collection, activation reference wait,
 large-object fetch, tensor decode, ONNX session lookup, ONNX run, and output
-publish time. They are meant to guide generic dataflow optimizations instead
-of tuning a single YOLO layout by hand.
+publish time. The dependency input/output timing lines include the DI session
+identifier, so a long run can be grouped by individual inference request rather
+than mixing cold and warm paths. They are meant to guide generic dataflow
+optimizations instead of tuning a single YOLO layout by hand.
 
 The executor also has a small non-MiniNDN smoke test that builds a toy ONNX DAG
 with one fan-out edge and one fan-in join:
@@ -1465,13 +1468,21 @@ nfd-data-stats.json
 plan-cache-stats.json
 onnx-timing-stats.json
 dependency-input-timing-stats.json
+dependency-output-timing-stats.json
 ```
 
 These files record end-to-end latency, node traffic counters, NFD Data counters,
-plan-cache hits, ONNX session/run time, and per-edge activation reference/fetch
-timing. Use them to decide whether the next bottleneck is ACK/selection,
-artifact publication, ONNX execution, activation reference wait, segmented
-fetch, or tensor decoding.
+plan-cache hits, ONNX session/run time, per-edge activation reference/fetch
+timing, and per-edge activation publish timing. Use them to decide whether the
+next bottleneck is ACK/selection, artifact publication, ONNX execution,
+activation reference wait, segmented fetch, activation publish, or tensor
+decoding.
+
+When comparing cold and warm inference, keep the user process model in mind.
+If a script launches cold and warm as separate user processes, in-memory plan
+cache state and recent-responder history cannot carry across the boundary.
+Stable P95 measurements should use multiple sequential requests in the same
+user process, or the 60-second warm window supported by the MiniNDN runner.
 
 The MiniNDN script clears the provider artifact cache before the first command.
 It starts a repo node on `neu`, starts the controller on `csu`, and then runs a

@@ -178,6 +178,7 @@ def execute_onnx_dependency_chunk(
                 "ONNX output missing dependency tensor(s) for output edge "
                 f"{edge.key_scope}: " + ", ".join(edge.tensors)
             )
+        edge_publish_start = perf_counter()
         edge_payload = encode_tensor_bundle(
             select_tensor_payload(output_payload, edge_tensors)
         )
@@ -191,10 +192,25 @@ def execute_onnx_dependency_chunk(
             object_id=role_topic_token(ctx.role),
             data_name=data_name,
         )
+        edge_publish_ms = _elapsed_ms(edge_publish_start)
+        print(
+            "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING "
+            f"session={_session_token(ctx)} "
+            f"role={ctx.role} "
+            f"scope={edge.key_scope} "
+            f"consumers={','.join(edge.consumers)} "
+            f"tensors={','.join(edge_tensors)} "
+            f"bytes={len(edge_payload)} "
+            f"expected_segments={int(getattr(edge, 'expected_segments', 0) or 0)} "
+            f"planned_name={'true' if data_name else 'false'} "
+            f"publish_ms={edge_publish_ms:.2f}",
+            flush=True,
+        )
         published.append(edge.key_scope)
     publish_ms = _elapsed_ms(publish_start)
     print(
         "NDNSF_DI_ONNX_TIMING "
+        f"session={_session_token(ctx)} "
         f"role={ctx.role} "
         f"model={Path(model_path).name} "
         f"input_edges={len(ctx.dependencies.inputs)} "
@@ -263,6 +279,7 @@ def _collect_input_values(
         decode_ms = _elapsed_ms(decode_start)
         print(
             "NDNSF_DI_DEPENDENCY_INPUT_TIMING "
+            f"session={_session_token(ctx)} "
             f"role={ctx.role} "
             f"producer={item.producer} "
             f"scope={item.key_scope} "
@@ -360,6 +377,10 @@ def _model_digest(path: Path, size: int, mtime_ns: int) -> str:
 
 def _elapsed_ms(start: float) -> float:
     return (perf_counter() - start) * 1000.0
+
+
+def _session_token(ctx: ProviderRuntimeContext) -> str:
+    return str(getattr(ctx.ndnsf, "session_id", "") or "-").strip("/") or "-"
 
 
 def _value_for_input(values: Mapping[str, np.ndarray], name: str) -> np.ndarray:

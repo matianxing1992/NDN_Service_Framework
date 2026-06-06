@@ -440,6 +440,7 @@ def write_provider_timing_summaries(layout: str,
                                     providers: list[tuple[str, str, list[str]]]) -> None:
     onnx_rows = []
     dependency_rows = []
+    output_rows = []
     for _, name, _ in providers:
         path = OUT / f"{name}.log"
         if not path.exists():
@@ -465,6 +466,13 @@ def write_provider_timing_summaries(layout: str,
                 row["expected_segments"] = int(row.get("expected_segments", "0"))
                 row["providerLog"] = path.name
                 dependency_rows.append(row)
+            elif "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING" in line:
+                row = parse_key_value_line(line)
+                row["publish_ms"] = float(row.get("publish_ms", "0"))
+                row["bytes"] = int(row.get("bytes", "0"))
+                row["expected_segments"] = int(row.get("expected_segments", "0"))
+                row["providerLog"] = path.name
+                output_rows.append(row)
 
     onnx_summary = {
         "layout": layout,
@@ -504,6 +512,26 @@ def write_provider_timing_summaries(layout: str,
             f"layout={layout} role={role} count={len(rows)} "
             f"collect_p50_ms={collect['p50']:.2f} "
             f"session_p50_ms={session['p50']:.2f} "
+            f"run_p50_ms={run['p50']:.2f} "
+            f"publish_p50_ms={publish['p50']:.2f}"
+        )
+    onnx_by_session = {}
+    for row in onnx_rows:
+        onnx_by_session.setdefault(row.get("session", "-"), []).append(row)
+    for session, rows in sorted(onnx_by_session.items()):
+        collect = summarize_numeric([row["collect_ms"] for row in rows])
+        session_ms = summarize_numeric([row["session_ms"] for row in rows])
+        run = summarize_numeric([row["run_ms"] for row in rows])
+        publish = summarize_numeric([row["publish_ms"] for row in rows])
+        print(
+            "YOLO_LAYOUT_ONNX_SESSION_TIMING "
+            f"layout={layout} session={session} count={len(rows)} "
+            f"collect_sum_ms={sum(row['collect_ms'] for row in rows):.2f} "
+            f"session_sum_ms={sum(row['session_ms'] for row in rows):.2f} "
+            f"run_sum_ms={sum(row['run_ms'] for row in rows):.2f} "
+            f"publish_sum_ms={sum(row['publish_ms'] for row in rows):.2f} "
+            f"collect_p50_ms={collect['p50']:.2f} "
+            f"session_p50_ms={session_ms['p50']:.2f} "
             f"run_p50_ms={run['p50']:.2f} "
             f"publish_p50_ms={publish['p50']:.2f}"
         )
@@ -559,6 +587,66 @@ def write_provider_timing_summaries(layout: str,
             f"fetch_p50_ms={fetch['p50']:.2f} fetch_p95_ms={fetch['p95']:.2f} "
             f"prefetch_p50_ms={prefetch['p50']:.2f} "
             f"decode_p50_ms={decode['p50']:.2f}"
+        )
+    dependency_by_session = {}
+    for row in dependency_rows:
+        dependency_by_session.setdefault(row.get("session", "-"), []).append(row)
+    for session, rows in sorted(dependency_by_session.items()):
+        fetch_sum = sum(row["fetch_ms"] for row in rows)
+        decode_sum = sum(row["decode_ms"] for row in rows)
+        bytes_sum = sum(row["bytes"] for row in rows)
+        print(
+            "YOLO_LAYOUT_DEPENDENCY_SESSION_TIMING "
+            f"layout={layout} session={session} count={len(rows)} "
+            f"bytes={bytes_sum} "
+            f"fetch_sum_ms={fetch_sum:.2f} "
+            f"decode_sum_ms={decode_sum:.2f}"
+        )
+
+    output_summary = {
+        "layout": layout,
+        "count": len(output_rows),
+        "totalBytes": sum(row["bytes"] for row in output_rows),
+        "totalExpectedSegments": sum(row["expected_segments"] for row in output_rows),
+        "bytes": summarize_numeric([float(row["bytes"]) for row in output_rows]),
+        "expectedSegments": summarize_numeric([
+            float(row["expected_segments"]) for row in output_rows
+        ]),
+        "publishMs": summarize_numeric([row["publish_ms"] for row in output_rows]),
+        "rows": output_rows,
+    }
+    output_path = OUT / "dependency-output-timing-stats.json"
+    output_path.write_text(json.dumps(output_summary, indent=2, sort_keys=True),
+                           encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_DEPENDENCY_OUTPUT_TIMING "
+        f"layout={layout} count={output_summary['count']} "
+        f"publish_p50_ms={output_summary['publishMs']['p50']:.2f} "
+        f"total_bytes={output_summary['totalBytes']} "
+        f"path={output_path}"
+    )
+    output_by_scope = {}
+    for row in output_rows:
+        output_by_scope.setdefault((row.get("role", "-"), row.get("scope", "-")), []).append(row)
+    for (role, scope), rows in sorted(output_by_scope.items()):
+        publish = summarize_numeric([row["publish_ms"] for row in rows])
+        bytes_summary = summarize_numeric([float(row["bytes"]) for row in rows])
+        print(
+            "YOLO_LAYOUT_DEPENDENCY_OUTPUT_EDGE_TIMING "
+            f"layout={layout} role={role} scope={scope} "
+            f"count={len(rows)} bytes_p50={bytes_summary['p50']:.0f} "
+            f"publish_p50_ms={publish['p50']:.2f} "
+            f"publish_p95_ms={publish['p95']:.2f}"
+        )
+    output_by_session = {}
+    for row in output_rows:
+        output_by_session.setdefault(row.get("session", "-"), []).append(row)
+    for session, rows in sorted(output_by_session.items()):
+        print(
+            "YOLO_LAYOUT_DEPENDENCY_OUTPUT_SESSION_TIMING "
+            f"layout={layout} session={session} count={len(rows)} "
+            f"bytes={sum(row['bytes'] for row in rows)} "
+            f"publish_sum_ms={sum(row['publish_ms'] for row in rows):.2f}"
         )
     role_run_p50_sum = 0.0
     role_publish_p50_sum = 0.0
