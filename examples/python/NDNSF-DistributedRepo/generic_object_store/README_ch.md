@@ -64,7 +64,9 @@ mission-log           min=2 max=3 repair=true  ttl=30d
 
 这些默认值只描述 catalog 和 repair 行为，不改变 NDN object name、签名、加密或
 segmented Data 存储方式。应用需要不同策略时，仍然可以给 generic object 显式设置
-replication 参数。
+replication 参数。Catalog lookup 会把过期对象标记为 `EXPIRED`；过期对象即使所在
+class 默认允许 repair，也不会进入 repair plan。这样短生命周期 activation 或临时数据
+产品不会在有效期结束后又被复制。
 
 Generic MiniNDN regression 还会存储 UAV 风格的数据产品：
 

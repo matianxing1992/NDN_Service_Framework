@@ -142,6 +142,10 @@ catalog metadata 只帮助 client 判断哪个 repo 可以服务或复制该 obj
 catalog entries 不能把对象复活。因此冲突处理除了 peer 本地 catalog sequence，还要考虑
 object 的更新时间和删除语义。
 
+Retention 也属于 catalog-level metadata。Object 可以携带 `ttlMs` 和 `repairAllowed`
+字段。一旦 object 过期，lookup 会报告 `EXPIRED`，并且即使它副本不足，也不会把它放进
+repair planning。
+
 推荐的 Python-facing generic object API 会隐藏大部分 NDNSF setup 细节。在运行中的部署里，repo nodes 可以把部署配置作为普通 repo object 预加载。应用用户从 repo service bootstrap 参数开始，通过 repo 获取配置，然后执行普通 `put/get` 操作：
 
 ```python

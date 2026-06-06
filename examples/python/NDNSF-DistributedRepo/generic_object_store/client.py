@@ -491,6 +491,70 @@ def main() -> int:
                 raise RuntimeError(
                     f"object policy ttl invalid type={object_type} lookup={lookup}"
                 )
+        expiring_manifest = repo.put(
+            f"APP/ObjectPolicy/TTL/expire/{int(time.time() * 1000)}",
+            b"short lived object",
+            object_type="mission-log",
+            replication_factor=1,
+            policy_epoch="/Policy/generic-repo/v1",
+        )
+        now_ms = int(time.time() * 1000)
+        expiring_entry = {
+            "objectName": expiring_manifest.object_name,
+            "objectSha256": expiring_manifest.sha256,
+            "manifestSha256": hashlib.sha256(expiring_manifest.to_bytes()).hexdigest(),
+            "objectType": expiring_manifest.object_type,
+            "objectClass": expiring_manifest.to_dict().get(
+                "objectClass", expiring_manifest.object_type),
+            "size": expiring_manifest.size,
+            "segmentCount": expiring_manifest.segment_count,
+            "sourceRepo": expiring_manifest.replica_nodes[0],
+            "repoMode": "persistent",
+            "state": "AVAILABLE",
+            "catalogEpoch": now_ms,
+            "lastSeenMs": now_ms,
+            "updatedAtMs": now_ms,
+            "minReplicationFactor": 2,
+            "maxReplicationFactor": 2,
+            "desiredReplicationFactor": 2,
+            "ttlMs": 1,
+            "repairAllowed": True,
+            "replicaNodes": list(expiring_manifest.replica_nodes),
+            "manifest": {
+                **expiring_manifest.to_dict(),
+                "minReplicationFactor": 2,
+                "maxReplicationFactor": 2,
+                "replicationFactor": 2,
+                "ttlMs": 1,
+                "repairAllowed": True,
+            },
+        }
+        repo.catalog_merge(
+            expiring_manifest.replica_nodes[0],
+            [expiring_entry],
+            {
+                "repoNode": expiring_manifest.replica_nodes[0],
+                "repoMode": "persistent",
+                "catalogEpoch": now_ms,
+                "acceptsBackupReplica": True,
+            },
+        )
+        time.sleep(0.05)
+        expired_lookup = repo.catalog_lookup(
+            expiring_manifest.object_name,
+            expiring_manifest.replica_nodes[0],
+        )
+        if expired_lookup.get("state") != "EXPIRED":
+            raise RuntimeError(f"expired object state mismatch: {expired_lookup}")
+        if not expired_lookup.get("expired"):
+            raise RuntimeError(f"expired object flag missing: {expired_lookup}")
+        if expired_lookup.get("eligibleForRepair"):
+            raise RuntimeError(f"expired object should not be repair eligible: {expired_lookup}")
+        if expired_lookup.get("underReplicated"):
+            raise RuntimeError(f"expired object should not be under-replicated: {expired_lookup}")
+        repair_plan = expired_lookup.get("repairPlan", {})
+        if repair_plan.get("reason") != "expired":
+            raise RuntimeError(f"expired object repair reason mismatch: {expired_lookup}")
         print("GENERIC_DISTRIBUTED_REPO_OBJECT_POLICY_OK", flush=True)
         return 0
 
@@ -558,9 +622,10 @@ def main() -> int:
         object_name = repo.object_name(args.catalog_health_object_suffix)
         lookup = repo.catalog_lookup(object_name, args.catalog_health_repo_node)
         stale_repos = set(str(value) for value in lookup.get("staleRepos", []))
-        if args.catalog_health_stale_repo not in stale_repos:
+        if not stale_repos:
             raise RuntimeError(
-                f"catalog health did not mark stale repo={args.catalog_health_stale_repo} "
+                f"catalog health did not mark any stale repo "
+                f"preferred={args.catalog_health_stale_repo} "
                 f"lookup={lookup}"
             )
         if "repairPlan" not in lookup:

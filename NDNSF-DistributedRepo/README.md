@@ -169,6 +169,11 @@ repos must keep that tombstone so older `AVAILABLE` catalog entries cannot
 resurrect the object. Conflict handling therefore considers the object's update
 time and delete semantics in addition to a peer's local catalog sequence.
 
+Retention is also catalog-level metadata. Objects may carry `ttlMs` and
+`repairAllowed` fields. Once an object expires, lookup reports it as `EXPIRED`
+and excludes it from repair planning, even if it would otherwise be
+under-replicated.
+
 The recommended Python-facing generic object API hides most NDNSF setup
 details. In a running deployment, repo nodes can preload the deployment config
 as a normal repo object. The application user starts with the repo service

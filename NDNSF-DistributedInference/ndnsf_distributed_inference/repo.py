@@ -1163,6 +1163,22 @@ class RepoNodeApp:
             entries.extend(dict(entry) for entry in by_source.values())
         return entries
 
+    def _refresh_local_catalog_liveness_locked(self) -> None:
+        """Refresh this repo's liveness without changing object semantics.
+
+        Catalog metadata such as updatedAtMs, ttlMs, repairAllowed, and
+        replication factors describes the object/control-plane policy.  A repo
+        heartbeat should only prove that this source is still live; it must not
+        silently extend object TTLs or overwrite policy imported from catalog
+        gossip.
+        """
+        now_ms = self._now_ms()
+        for by_source in self._global_catalog.values():
+            entry = by_source.get(self.repo_node)
+            if entry is not None:
+                entry["lastSeenMs"] = now_ms
+        self._repo_status[self.repo_node] = self._catalog_status_entry()
+
     def _is_entry_stale(self, entry: dict) -> bool:
         source_repo = str(entry.get("sourceRepo", ""))
         status = self._repo_status.get(source_repo, {})
@@ -1188,6 +1204,17 @@ class RepoNodeApp:
             raise KeyError(object_name)
         for entry in entries:
             entry["stale"] = self._is_entry_stale(entry)
+            ttl_ms = int(entry.get(
+                "ttlMs",
+                entry.get("manifest", {}).get("ttlMs", 0),
+            ) or 0)
+            updated_ms = int(entry.get("updatedAtMs", 0) or 0)
+            entry["expired"] = (
+                str(entry.get("state", "")) == "AVAILABLE" and
+                ttl_ms > 0 and
+                updated_ms > 0 and
+                self._now_ms() - updated_ms > ttl_ms
+            )
         tombstone_cutoff_ms = max(
             [
                 int(entry.get("updatedAtMs", 0) or 0)
@@ -1206,6 +1233,7 @@ class RepoNodeApp:
             entry for entry in entries
             if (str(entry.get("state", "")) == "AVAILABLE" and
                 not entry.get("stale") and
+                not entry.get("expired") and
                 not entry.get("shadowedByTombstone"))
         ]
         tombstones = [
@@ -1249,6 +1277,13 @@ class RepoNodeApp:
             for entry in entries
             if entry.get("stale")
         ]
+        expired_repos = [
+            str(entry.get("sourceRepo", ""))
+            for entry in entries
+            if entry.get("expired")
+        ]
+        expired = bool(expired_repos and not available)
+        eligible_for_repair = bool(repair_allowed and not expired and not deleted)
         target_candidates = [
             repo for repo, status in repo_status.items()
             if repo not in source_repos and
@@ -1257,7 +1292,7 @@ class RepoNodeApp:
             not self._is_repo_status_stale(status)
         ]
         missing = (
-            0 if deleted or not repair_allowed else
+            0 if not eligible_for_repair else
             max(0, min_required - len(available))
         )
         repair_actions = []
@@ -1274,7 +1309,9 @@ class RepoNodeApp:
                     "targetRepo": target_repo,
                     "reason": "under-replicated",
                 })
-        if not repair_allowed:
+        if expired:
+            repair_reason = "expired"
+        elif not repair_allowed:
             repair_reason = "repair-disabled"
         elif missing and not source_repo:
             repair_reason = "no-live-source"
@@ -1302,12 +1339,16 @@ class RepoNodeApp:
             "size": best.get("size", 0),
             "segmentCount": best.get("segmentCount", 0),
             "state": ("DELETED" if deleted else
+                      "EXPIRED" if expired else
                       "UNDER_REPLICATED" if missing else "AVAILABLE"),
             "minReplicationFactor": min_required,
             "maxReplicationFactor": max_allowed,
             "desiredReplicationFactor": min_required,
             "ttlMs": best.get("ttlMs", best.get("manifest", {}).get("ttlMs", 0)),
             "repairAllowed": repair_allowed,
+            "expired": expired,
+            "expiredRepos": expired_repos,
+            "eligibleForRepair": eligible_for_repair,
             "availableReplicaCount": len(available),
             "underReplicated": missing > 0,
             "staleRepos": stale_repos,
@@ -1330,6 +1371,7 @@ class RepoNodeApp:
         with self._catalog_lock:
             for manifest in inventory.values():
                 self._upsert_catalog_entry(self._catalog_entry(manifest, "AVAILABLE"))
+            self._refresh_local_catalog_liveness_locked()
             entries = self._flatten_catalog_entries()
             object_names = sorted({str(entry.get("objectName", "")) for entry in entries})
             objects = []
@@ -1354,6 +1396,7 @@ class RepoNodeApp:
 
     def _catalog_delta(self, since_epoch: int) -> dict:
         with self._catalog_lock:
+            self._refresh_local_catalog_liveness_locked()
             return {
                 "repoNode": self.repo_node,
                 "repoMode": self.capability.repo_mode,
@@ -1385,11 +1428,16 @@ class RepoNodeApp:
                 self._upsert_catalog_entry(entry)
 
     def _catalog_lookup(self, object_name: str) -> dict:
-        try:
-            manifest = self._load_manifest(object_name)
-            self._upsert_catalog_entry(self._catalog_entry(manifest, "AVAILABLE"))
-        except KeyError:
-            pass
+        with self._catalog_lock:
+            has_local_entry = self.repo_node in self._global_catalog.get(object_name, {})
+            if has_local_entry:
+                self._refresh_local_catalog_liveness_locked()
+        if not has_local_entry:
+            try:
+                manifest = self._load_manifest(object_name)
+                self._upsert_catalog_entry(self._catalog_entry(manifest, "AVAILABLE"))
+            except KeyError:
+                pass
         return self._object_catalog_summary(object_name)
 
     def _sqlite_payload_bytes(self, object_name: str) -> bytes:
@@ -2305,7 +2353,7 @@ class NetworkDistributedRepoClient:
         )
         if not response.status:
             raise RuntimeError(response.error)
-        if selected_repo_nodes:
+        if len(selected_repo_nodes) >= replication_factor:
             self._placement_cache = list(selected_repo_nodes)
         return selected_repo_nodes[:replication_factor]
 
@@ -2577,7 +2625,7 @@ class NetworkDistributedRepoClient:
             self._log(
                 f"repo select done object={object_name} selected={selected_repo_nodes}",
             )
-            if selected_repo_nodes:
+            if len(selected_repo_nodes) >= replication_factor:
                 self._placement_cache = list(selected_repo_nodes)
             return selected_repo_nodes
 
@@ -2586,6 +2634,8 @@ class NetworkDistributedRepoClient:
             try:
                 selected = list(replica_nodes) if replica_nodes else select_replicas_once()
                 if len(selected) < replication_factor:
+                    if not replica_nodes:
+                        self._placement_cache = []
                     raise RuntimeError(
                         f"repo store selected {len(selected)} replicas, "
                         f"need {replication_factor}")

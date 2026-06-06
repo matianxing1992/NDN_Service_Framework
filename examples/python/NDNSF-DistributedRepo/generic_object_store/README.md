@@ -89,7 +89,10 @@ mission-log           min=2 max=3 repair=true  ttl=30d
 These defaults only describe catalog and repair behavior. They do not change
 NDN object naming, signing, encryption, or segmented Data storage. A generic
 object can still use explicit replication settings when an application needs a
-different policy.
+different policy. Catalog lookup marks expired objects as `EXPIRED`; expired
+objects are not eligible for repair even if their class normally allows repair.
+This prevents short-lived activations or temporary products from being copied
+after their useful lifetime has passed.
 
 The generic MiniNDN regression also stores UAV-style data products:
 
