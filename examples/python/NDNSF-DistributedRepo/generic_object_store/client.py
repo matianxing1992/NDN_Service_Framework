@@ -556,20 +556,60 @@ def main() -> int:
     print("GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK", flush=True)
     if args.test_delete:
         deleted_manifest = manifests[0]
-        removed = repo.remove(deleted_manifest.object_name)
-        if not removed:
-            raise RuntimeError("repo remove reported no deletion")
         lookup_repo = (
             deleted_manifest.replica_nodes[0]
             if deleted_manifest.replica_nodes else
             args.catalog_snapshot_repo_node
         )
+        pre_delete_lookup = repo.catalog_lookup(deleted_manifest.object_name, lookup_repo)
+        old_available_entries = [
+            dict(entry)
+            for entry in pre_delete_lookup.get("entries", [])
+            if str(entry.get("state", "")) == "AVAILABLE"
+        ]
+        if not old_available_entries:
+            raise RuntimeError(
+                "repo delete regression could not find pre-delete catalog replicas: "
+                f"repo={lookup_repo} lookup={pre_delete_lookup}"
+            )
+        removed = repo.remove(deleted_manifest.object_name)
+        if not removed:
+            raise RuntimeError("repo remove reported no deletion")
         lookup = repo.catalog_lookup(deleted_manifest.object_name, lookup_repo)
         states = {str(entry.get("state", "")) for entry in lookup.get("entries", [])}
         if lookup.get("state") != "DELETED" and "DELETED" not in states:
             raise RuntimeError(
                 "repo delete did not leave a catalog tombstone: "
                 f"repo={lookup_repo} lookup={lookup}"
+            )
+        repo.catalog_merge(
+            lookup_repo,
+            old_available_entries,
+            {
+                "repoNode": str(old_available_entries[0].get("sourceRepo", "")),
+                "repoMode": "persistent",
+            },
+        )
+        revived_lookup = repo.catalog_lookup(deleted_manifest.object_name, lookup_repo)
+        if revived_lookup.get("state") != "DELETED":
+            raise RuntimeError(
+                "repo tombstone allowed old catalog entries to revive object: "
+                f"repo={lookup_repo} lookup={revived_lookup}"
+            )
+        if int(revived_lookup.get("availableReplicaCount", 0) or 0) != 0:
+            raise RuntimeError(
+                "repo tombstone left old replicas available after stale merge: "
+                f"repo={lookup_repo} lookup={revived_lookup}"
+            )
+        unshadowed_available = [
+            entry for entry in revived_lookup.get("entries", [])
+            if (str(entry.get("state", "")) == "AVAILABLE" and
+                not entry.get("shadowedByTombstone"))
+        ]
+        if unshadowed_available:
+            raise RuntimeError(
+                "repo tombstone left unshadowed AVAILABLE entries after stale merge: "
+                f"repo={lookup_repo} lookup={revived_lookup}"
             )
         print(
             "GENERIC_DISTRIBUTED_REPO_CATALOG_TOMBSTONE_OK "

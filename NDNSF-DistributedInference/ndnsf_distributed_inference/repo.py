@@ -984,11 +984,16 @@ class RepoNodeApp:
         if current is not None:
             current_epoch = int(current.get("catalogEpoch", 0))
             entry_epoch = int(normalized.get("catalogEpoch", 0))
+            current_updated_ms = int(current.get("updatedAtMs", 0) or 0)
+            entry_updated_ms = int(normalized.get("updatedAtMs", 0) or 0)
+            if (str(current.get("state", "")) == "DELETED" and
+                    str(normalized.get("state", "")) == "AVAILABLE" and
+                    current_updated_ms >= entry_updated_ms):
+                return
             if current_epoch > entry_epoch:
                 return
             if (current_epoch == entry_epoch and
-                    int(current.get("updatedAtMs", 0)) >
-                    int(normalized.get("updatedAtMs", 0))):
+                    current_updated_ms > entry_updated_ms):
                 return
         by_source[source_repo] = normalized
         self._merge_repo_status({
@@ -1028,9 +1033,25 @@ class RepoNodeApp:
             raise KeyError(object_name)
         for entry in entries:
             entry["stale"] = self._is_entry_stale(entry)
+        tombstone_cutoff_ms = max(
+            [
+                int(entry.get("updatedAtMs", 0) or 0)
+                for entry in entries
+                if str(entry.get("state", "")) == "DELETED"
+            ] or [0]
+        )
+        for entry in entries:
+            entry_updated_ms = int(entry.get("updatedAtMs", 0) or 0)
+            entry["shadowedByTombstone"] = (
+                str(entry.get("state", "")) == "AVAILABLE" and
+                tombstone_cutoff_ms > 0 and
+                entry_updated_ms <= tombstone_cutoff_ms
+            )
         available = [
             entry for entry in entries
-            if str(entry.get("state", "")) == "AVAILABLE" and not entry.get("stale")
+            if (str(entry.get("state", "")) == "AVAILABLE" and
+                not entry.get("stale") and
+                not entry.get("shadowedByTombstone"))
         ]
         tombstones = [
             entry for entry in entries
