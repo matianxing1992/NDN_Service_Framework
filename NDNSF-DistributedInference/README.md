@@ -240,7 +240,7 @@ Current validated YOLO layout coverage:
 2x3  MiniNDN network regression with one provider per generated role
 3x2  MiniNDN network regression with one provider per generated role
 1x3  local export/policy/ONNX correctness smoke
-3x3  supported by the splitter interface; run yolo-layout before using it as a release baseline
+3x3  local export/policy/ONNX correctness smoke; run yolo-layout before using it as a release baseline
 ```
 
 Layouts are written as `ROWSxCOLS`. `ROWS` is the number of pipeline stages,
@@ -1368,8 +1368,8 @@ deployment, dependency prefetch, activation exchange, and final result delivery
 through MiniNDN. `yolo-layout-local` remains available when only the generated
 chunk graph and local ONNX correctness need to be checked quickly.
 The currently validated network-level custom layouts are `2x3` and `3x2`.
-`1x3` is useful as a fast local export smoke, while `3x3` should be run through
-`yolo-layout` before it is treated as a deployment baseline.
+`1x3` and `3x3` are useful as fast local export smokes, while `3x3` should be
+run through `yolo-layout` before it is treated as a deployment baseline.
 
 The policy/repo inspection helper is still available:
 

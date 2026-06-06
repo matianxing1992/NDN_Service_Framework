@@ -51,8 +51,9 @@ yolo_2x2/
   pipeline before writing the policy. The example uses repo-backed dynamic
   provisioning: providers can start without local model/runtime files, then
   fetch the assigned role artifact. The network regression has validated 2x3
-  and 3x2 with one provider per generated role; 1x3 is a fast local smoke, and
-  3x3 should be run through the `yolo-layout` MiniNDN case before relying on it.
+  and 3x2 with one provider per generated role; 1x3 and 3x3 are fast local
+  smokes, and 3x3 should be run through the `yolo-layout` MiniNDN case before
+  relying on it as a deployment baseline.
 
 pytorch_eager_2x2/
   Four-role fully connected ONNX inference generated from a PyTorch-defined
