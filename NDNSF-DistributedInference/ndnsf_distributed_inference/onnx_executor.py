@@ -102,8 +102,8 @@ def verify_tensor_payload(payload: bytes,
 def prefetch_dependency_inputs(
     ctx: ProviderRuntimeContext,
     *,
-    ref_timeout_ms: int = 10000,
-    fetch_timeout_ms: int = 10000,
+    ref_timeout_ms: int = 60000,
+    fetch_timeout_ms: int = 60000,
 ) -> list[PrefetchedDependency]:
     """Prefetch all planned large-object inputs for the current role."""
 
@@ -130,8 +130,8 @@ def execute_onnx_dependency_chunk(
     *,
     initial_values: Mapping[str, np.ndarray] | None = None,
     input_prefetches: Sequence[PrefetchedDependency] | None = None,
-    ref_timeout_ms: int = 10000,
-    fetch_timeout_ms: int = 10000,
+    ref_timeout_ms: int = 60000,
+    fetch_timeout_ms: int = 60000,
 ) -> OnnxExecutionResult:
     """Run one ONNX chunk and publish declared output-edge tensor bundles."""
 
@@ -174,8 +174,8 @@ def _collect_input_values(
     ctx: ProviderRuntimeContext,
     *,
     input_prefetches: Sequence[PrefetchedDependency] | None = None,
-    ref_timeout_ms: int = 10000,
-    fetch_timeout_ms: int = 10000,
+    ref_timeout_ms: int = 60000,
+    fetch_timeout_ms: int = 60000,
 ) -> dict[str, np.ndarray]:
     prefetches = list(input_prefetches or prefetch_dependency_inputs(
         ctx,

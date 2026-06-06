@@ -27,8 +27,8 @@ ACTIVE_SERVICE = ""
 
 
 def handle_role(ctx: ProviderRuntimeContext) -> None:
-    model_path = ctx.execution.path("model")
     input_prefetches = prefetch_dependency_inputs(ctx)
+    model_path = ctx.execution.path("model")
     _probe_downloaded_runner(ctx, model_path)
 
     is_first_chunk = not ctx.dependencies.inputs

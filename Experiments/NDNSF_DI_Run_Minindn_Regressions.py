@@ -53,6 +53,12 @@ CASES = {
     ),
     "yolo-layout": RegressionCase(
         name="yolo-layout",
+        script=REPO / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py",
+        success_marker="YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK",
+        description="YOLO custom layout chunk graph, repo-backed artifacts, and cache reuse",
+    ),
+    "yolo-layout-local": RegressionCase(
+        name="yolo-layout-local",
         script=REPO / "Experiments/NDNSF_DI_YoloLayout_Smoke.py",
         success_marker="YOLO_LAYOUT_SMOKE_OK",
         description="YOLO custom layout export, local ONNX correctness, and policy validation",
@@ -104,7 +110,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--case",
-        choices=["app-api", "onnx-executor", "auto-split", "yolo-2x2", "yolo-layout", "all"],
+        choices=[
+            "app-api", "onnx-executor", "auto-split", "yolo-2x2",
+            "yolo-layout", "yolo-layout-local", "all",
+        ],
         default="auto-split",
         help="Regression case to run. Default keeps the smoke test short.",
     )
@@ -123,7 +132,7 @@ def main() -> int:
         return 0
 
     for case in selected_cases(args.case):
-        extra_args = ["--layout", args.layout] if case.name == "yolo-layout" else []
+        extra_args = ["--layout", args.layout] if case.name.startswith("yolo-layout") else []
         run_case(case, extra_args)
     print(f"NDNSF_DI_REGRESSION_SUITE_OK case={args.case}")
     return 0
