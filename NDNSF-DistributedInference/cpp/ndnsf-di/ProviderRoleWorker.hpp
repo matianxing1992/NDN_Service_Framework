@@ -3,6 +3,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -85,19 +86,22 @@ public:
   executeAsync(std::string sessionId,
                RoleSpec role,
                std::shared_ptr<DependencyIo> io,
-               RoleRunner runner)
+               RoleRunner runner,
+               std::map<std::string, TensorBundle> initialInputsByScope = {})
   {
     return executeAsync(std::move(sessionId),
                         std::move(role),
                         std::move(io),
-                        makeNativeModelRunner(std::move(runner)));
+                        makeNativeModelRunner(std::move(runner)),
+                        std::move(initialInputsByScope));
   }
 
   std::future<ProviderRoleResult>
   executeAsync(std::string sessionId,
                RoleSpec role,
                std::shared_ptr<DependencyIo> io,
-               std::shared_ptr<NativeModelRunner> runner)
+               std::shared_ptr<NativeModelRunner> runner,
+               std::map<std::string, TensorBundle> initialInputsByScope = {})
   {
     if (role.role.empty()) {
       throw std::invalid_argument("ProviderRoleWorker requires a non-empty role");
@@ -116,6 +120,7 @@ public:
       std::move(role),
       std::move(io),
       std::move(runner),
+      std::move(initialInputsByScope),
       promise,
       std::chrono::steady_clock::now(),
     };
@@ -137,6 +142,7 @@ private:
     RoleSpec role;
     std::shared_ptr<DependencyIo> io;
     std::shared_ptr<NativeModelRunner> runner;
+    std::map<std::string, TensorBundle> initialInputsByScope;
     std::shared_ptr<std::promise<ProviderRoleResult>> promise;
     std::chrono::steady_clock::time_point queuedAt;
   };
@@ -189,11 +195,11 @@ private:
       inputTimings.push_back(timing);
     }
 
-    std::map<std::string, TensorBundle> inputsByScope;
+    std::map<std::string, TensorBundle> inputsByScope = item.initialInputsByScope;
     for (std::size_t i = 0; i < futures.size(); ++i) {
       auto bundle = futures[i].get();
       inputTimings[i].fetchCompletedAt = std::chrono::steady_clock::now();
-      inputsByScope.emplace(item.role.inputs[i].scope, std::move(bundle));
+      inputsByScope[item.role.inputs[i].scope] = std::move(bundle);
     }
 
     ProviderRoleResult result;
@@ -209,15 +215,46 @@ private:
     result.outputsByScope = item.runner->run(ctx);
 
     for (const auto& edge : item.role.outputs) {
-      const auto found = result.outputsByScope.find(edge.scope);
-      if (found == result.outputsByScope.end()) {
-        throw std::logic_error("runner did not publish output scope: " + edge.scope);
-      }
-      item.io->publishOutput(item.sessionId, edge, found->second);
+      auto bundle = outputForEdge(result.outputsByScope, edge);
+      result.outputsByScope[edge.scope] = bundle;
+      item.io->publishOutput(item.sessionId, edge, bundle);
     }
 
     result.timing.finishedAt = std::chrono::steady_clock::now();
     return result;
+  }
+
+  static TensorBundle
+  outputForEdge(const std::map<std::string, TensorBundle>& outputsByScope,
+                const DependencyEdge& edge)
+  {
+    const auto found = outputsByScope.find(edge.scope);
+    if (found != outputsByScope.end()) {
+      if (!edge.tensors.empty() && isEncodedTensorBundle(found->second.payload)) {
+        return selectTensorBundle(edge.scope, found->second, edge.tensors);
+      }
+      TensorBundle bundle = found->second;
+      bundle.name = edge.scope;
+      return bundle;
+    }
+
+    if (edge.tensors.empty() && outputsByScope.size() == 1) {
+      return selectTensorBundle(edge.scope, outputsByScope.begin()->second, edge.tensors);
+    }
+
+    if (!edge.tensors.empty()) {
+      for (const auto& item : outputsByScope) {
+        if (isEncodedTensorBundle(item.second.payload)) {
+          try {
+            return selectTensorBundle(edge.scope, item.second, edge.tensors);
+          }
+          catch (const std::out_of_range&) {
+          }
+        }
+      }
+    }
+
+    throw std::logic_error("runner did not publish output scope: " + edge.scope);
   }
 
 private:

@@ -809,6 +809,7 @@ def native_execution_plan_spec(services: tuple[ServicePolicy, ...]) -> dict[str,
                         "objectNameTemplate": dep.object_name_template,
                         "expectedSegments": dep.expected_segments,
                         "expectedBytes": dep.expected_bytes,
+                        "tensors": list(dep.tensors),
                         "required": dep.required,
                     }
                     for dep in service.dependencies

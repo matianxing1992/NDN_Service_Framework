@@ -138,6 +138,8 @@ def configure(conf):
 
     conf.define_cond('HAVE_TESTS', conf.env.WITH_TESTS)
     conf.define_cond('HAVE_ONNXRUNTIME_CPP', conf.env.HAVE_ONNXRUNTIME_CPP)
+    if conf.env.HAVE_ONNXRUNTIME_CPP:
+        conf.env.append_value('DEFINES', ['NDNSF_DI_ENABLE_ONNXRUNTIME_CPP'])
     # The config header will contain all defines that were added using conf.define()
     # or conf.define_cond().  Everything that was added directly to conf.env.DEFINES
     # will not appear in the config header, but will instead be passed directly to the

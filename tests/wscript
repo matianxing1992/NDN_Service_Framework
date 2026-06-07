@@ -19,9 +19,10 @@ def build(bld):
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
                             'NDNSF-UAV-APP/shared/UavProtocol.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL',
+                use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME',
                 cxxflags=['-fPIC'],
                 install_path=None)

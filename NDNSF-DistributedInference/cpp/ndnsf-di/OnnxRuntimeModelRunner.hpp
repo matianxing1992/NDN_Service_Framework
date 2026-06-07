@@ -48,12 +48,15 @@ class OnnxRuntimeModelRunner final : public NativeModelRunner
 {
 public:
   explicit OnnxRuntimeModelRunner(NativeModelRunnerSpec spec);
+  ~OnnxRuntimeModelRunner() final;
 
   std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) final;
 
 private:
+  class Impl;
   NativeModelRunnerSpec m_spec;
+  std::unique_ptr<Impl> m_impl;
 };
 
 void

@@ -200,4 +200,24 @@ def build(bld):
                 cxxflags=['-fPIC'],
                 install_path=None)
 
+    bld.program(name='di-native-plan-manifest-smoke',
+                target='di-native-plan-manifest-smoke',
+                source=["DI_NativePlanManifestSmoke.cpp"],
+                includes=['..', '../ndn-service-framework'],
+                use='BOOST',
+                cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread'],
+                install_path=None)
+
+    bld.program(name='di-native-onnxruntime-smoke',
+                target='di-native-onnxruntime-smoke',
+                source=(["DI_NativeOnnxRuntimeSmoke.cpp"] +
+                        bld.path.parent.ant_glob([
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                        ])),
+                includes=['..', '../ndn-service-framework'],
+                use='ONNXRUNTIME',
+                cxxflags=['-fPIC'],
+                install_path=None)
+
     bld.install_files('/usr/local/bin', ['trust-schema.conf', 'trust-any.conf', 'example_muas.policies'])

@@ -50,13 +50,15 @@ public:
   std::future<ProviderRoleResult>
   executeRoleAsync(std::string sessionId,
                    RoleSpec role,
-                   std::shared_ptr<DependencyIo> io)
+                   std::shared_ptr<DependencyIo> io,
+                   std::map<std::string, TensorBundle> initialInputsByScope = {})
   {
     auto runner = findRunner(role.role);
     return m_worker.executeAsync(std::move(sessionId),
                                  std::move(role),
                                  std::move(io),
-                                 std::move(runner));
+                                 std::move(runner),
+                                 std::move(initialInputsByScope));
   }
 
 private:

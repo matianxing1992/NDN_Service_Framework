@@ -140,8 +140,9 @@ Step 2: C++ NDNSF integration
   Python wrapper for every role callback.
 
 Step 3: C++ backend runners
-  Add ONNX Runtime and other backend adapters as role runners. Python can still
-  create policies and submit jobs, but provider execution should stay native.
+  ONNX Runtime CPU execution is now available as a minimal native role runner.
+  Python can still create policies and submit jobs, but provider execution
+  should move toward native runners.
 ```
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp` is the first
@@ -154,20 +155,39 @@ readiness and parallel execution semantics.
 provider-side hot-path boundary. When a provider receives an assigned role, the
 worker starts prefetch for all planned input edges immediately, waits until all
 required inputs are available, runs the native role runner, and publishes every
-declared output edge. Its `DependencyIo` interface is the place where future
-C++ NDNSF large-data fetch/publish and pending-Interest support should be
-attached. This keeps Python out of the per-edge execution loop while preserving
-the existing Python-facing API.
+declared output edge. Source roles can also receive request-level initial input
+bundles directly through the native session/runtime API, so the first stage no
+longer has to fake a dependency edge just to get the user's input tensor. Its
+`DependencyIo` interface is the place where C++ NDNSF large-data fetch/publish
+and pending-Interest support attaches. This keeps Python out of the per-edge
+execution loop while preserving the existing Python-facing API.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp` defines the
-backend boundary. A future C++ ONNX Runtime backend should implement
-`NativeModelRunner`; provider scheduling and dependency I/O should not need to
-change when switching from a test runner to an ONNX chunk runner.
-It also defines `NativeModelRunnerSpec` and
-`RegistryNativeModelRunnerFactory`, so deployment/artifact metadata can be
-converted into a role runner through a narrow backend registry. The current
-factory tests use a fake backend; a real ONNX Runtime C++ adapter is still a
-planned backend implementation rather than an assumed dependency.
+backend boundary. Provider scheduling and dependency I/O do not need to change
+when switching from a test runner to an ONNX chunk runner. It also defines
+`NativeModelRunnerSpec` and `RegistryNativeModelRunnerFactory`, so
+deployment/artifact metadata can be converted into a role runner through a
+narrow backend registry.
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp` defines the
+native multi-tensor activation format. It stores tensor name, dtype, shape, and
+payload for each tensor, so C++ providers can exchange a YOLO-style bundle with
+multiple backbone/head tensors instead of assuming every activation is a single
+raw byte vector. Provider workers can also use tensor names carried by
+dependency edges to publish an edge-specific subset from a larger ONNX output
+bundle.
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp` and
+`OnnxRuntimeModelRunner.cpp` provide the first real native backend. The current
+adapter supports CPU ONNX Runtime execution for float32 raw tensor bundles and
+the native multi-tensor bundle codec. It reads ONNX input/output names and
+optional shape/scope metadata from `NativeModelRunnerSpec`, runs the ONNX chunk
+in C++, and returns output `TensorBundle`s for the dependency executor. This is
+enough to prove that the native hot path can execute an actual ONNX model
+without crossing the Python wrapper for the role computation. It is still
+intentionally narrow: Python NPZ-to-native-bundle bridging, non-float tensors,
+richer shape negotiation, and full service-level provider executables remain
+follow-up work.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` is the
 provider process facade. It owns the worker pool and the role-to-runner
@@ -180,7 +200,9 @@ native provider skeleton boundary. It combines a generated execution plan,
 provider assignment, `DependencyIo`, runner factory, and provider runtime. A
 future provider executable should load the generated plan, register role
 runners from artifact metadata, then execute assigned roles through this
-session instead of wiring those pieces by hand.
+session instead of wiring those pieces by hand. It already supports source-role
+initial inputs, dependency-driven intermediate roles, and final role result
+publication.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp` adapts that
 session shape to `ServiceProvider::CollaborationContext`. It constructs the
@@ -198,12 +220,40 @@ for this boundary. It uses a fake backend and in-memory dependency I/O to run a
 build/examples/di-native-provider-session-smoke
 ```
 
-`NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp` reserves the
-C++ ONNX Runtime backend slot. The top-level `wscript` checks for an optional
-`onnxruntime` pkg-config package and records `HAVE_ONNXRUNTIME_CPP`, but the
-actual adapter is still disabled until the C++ headers/libs and implementation
-are wired together. When disabled, registering the `onnxruntime` backend gives a
-clear runtime error instead of silently falling back to Python.
+`examples/DI_NativeOnnxRuntimeSmoke.cpp` is the corresponding real-backend
+smoke. It loads a small ONNX model, runs it through
+`OnnxRuntimeModelRunner`, and verifies the float32 output entirely in C++:
+
+```bash
+./waf configure --with-examples --with-tests
+./waf build --targets=di-native-onnxruntime-smoke
+build/examples/di-native-onnxruntime-smoke /tmp/ndnsf-di-add-one.onnx
+```
+
+The expected success line is:
+
+```text
+NDNSF_DI_NATIVE_ONNXRUNTIME_SMOKE_OK 2,3,4
+```
+
+`examples/DI_NativePlanManifestSmoke.cpp` checks the generated-plan handoff. It
+loads `native-execution-plan.json` and `service-manifest.json`, creates fake
+role runners from the manifest, runs the `/Backbone -> /Head/* -> /Merge`
+frontier through in-memory dependency I/O, and verifies that tensor-level edge
+metadata can drive C++ bundle selection:
+
+```bash
+./waf build --targets=di-native-plan-manifest-smoke
+build/examples/di-native-plan-manifest-smoke \
+  /tmp/ndnsf-di-yolo-policy/native-execution-plan.json \
+  /tmp/ndnsf-di-yolo-policy/service-manifest.json \
+  /AI/YOLO/2x2Inference
+```
+
+The top-level `wscript` checks for an optional `onnxruntime` pkg-config package.
+When the C++ development package is present, the unit-test target links the
+native adapter. When it is not present, registering the `onnxruntime` backend
+still gives a clear runtime error instead of silently falling back to Python.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
 deployment plan in C++. It converts role/dependency metadata plus a
@@ -216,7 +266,17 @@ runtime.
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp` loads the
 generated `native-execution-plan.json` file into those C++ plan objects. The
 JSON loader is intentionally narrow and only reads the native hot-path fields,
-so C++ providers do not need to parse the full deployment YAML.
+including tensor names on dependency edges, so C++ providers do not need to
+parse the full deployment YAML.
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp` loads the
+generated `service-manifest.json` artifact metadata into `NativeModelRunnerSpec`
+objects. It preserves each role's backend, kind, local artifact path, and scalar
+metadata such as `input_tensors` and `output_tensors`. This lets the C++ runtime
+consume planner/deployment output directly instead of hand-writing runner specs
+in tests. The first implementation intentionally materializes local artifact
+paths only; repo/largeDataReference artifact fetching remains the next native
+provider phase.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 is the first Core-facing adapter. It maps `DependencyIo` to
@@ -229,6 +289,35 @@ large data, pending Interests, encryption, permissions, and wire behavior.
 
 These native components do not change NDNSF Request/ACK/Selection/Response
 semantics and do not add AI-specific behavior to NDNSF Core.
+
+Current distance to the target architecture:
+
+```text
+Done:
+  C++ async frontier runtime
+  C++ provider role worker pool
+  C++ native execution-plan loader
+  C++ provider session skeleton
+  C++ NDNSF CollaborationContext adapter
+  C++ ONNX Runtime CPU runner for float32 raw tensors
+  C++ multi-tensor bundle codec for native activation exchange
+  tensor-level dependency metadata in native-execution-plan.json
+  C++ service-manifest loader to NativeModelRunnerSpec
+  C++ generated plan + service manifest smoke
+  request initial-input injection for source roles
+
+Still missing:
+  native provider executable that loads plan + manifest specs and serves NDNSF requests
+  C++ artifact materialization from repo/largeDataReference
+  Python NPZ activation bridge to the native tensor-bundle codec
+  direct MiniNDN replacement of the current Python provider processes
+  service-level Python API wrapper around the native executable
+```
+
+Therefore the project is past the "headers only" stage: the native C++ runtime
+can execute real ONNX computation locally and can validate generated plans. It
+is not yet fully C++-first at the network level because the current MiniNDN
+end-to-end providers still run Python executor logic.
 
 ### 3. Create or Inspect a Policy
 
@@ -1676,6 +1765,14 @@ itself was not the p50 bottleneck for this tiny model: ONNX run p50 was
 The remaining latency is currently dominated by NDNSF/large-data fetch,
 activation publication, and distributed-control overhead rather than local
 ONNX execution.
+
+The minimal C++ ONNX Runtime runner is a local role-computation milestone, not
+yet a replacement for the Python MiniNDN providers used by the current
+end-to-end scripts. Until a native provider executable loads the generated
+plan, materializes artifacts, registers `OnnxRuntimeModelRunner` instances, and
+handles NDNSF collaboration requests directly, the published MiniNDN latency
+numbers should be interpreted as Python-provider performance with native plan
+and timing scaffolding, not as final C++ hot-path performance.
 
 The same script also enables `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` and writes
 `collab-large-fetch-stats.json`. That file records Core-level SegmentFetcher

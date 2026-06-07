@@ -7,6 +7,7 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -26,6 +27,22 @@ struct NativeProviderHandlerConfig
   int freshnessMs = 60000;
   std::size_t workerCount = 1;
 };
+
+inline std::optional<std::vector<uint8_t>>
+nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
+                                   const ProviderRoleResult& result,
+                                   const std::string& finalResponseScope)
+{
+  if (!roleSpec.outputs.empty() || finalResponseScope.empty()) {
+    return std::nullopt;
+  }
+
+  const auto found = result.outputsByScope.find(finalResponseScope);
+  if (found == result.outputsByScope.end()) {
+    return std::nullopt;
+  }
+  return found->second.payload;
+}
 
 inline ndn_service_framework::ServiceProvider::CollaborationHandler
 makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
@@ -59,12 +76,12 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
       const auto roleSpec = session.roleSpec(role, ctx.sessionId());
       auto result = session.executeRoleAsync(ctx.sessionId(), role).get();
 
-      if (roleSpec.outputs.empty() && !config.finalResponseScope.empty()) {
-        const auto found = result.outputsByScope.find(config.finalResponseScope);
-        if (found != result.outputsByScope.end()) {
-          const auto& payload = found->second.payload;
-          ctx.publishFinalResponse(ndn::Buffer(payload.data(), payload.size()));
-        }
+      const auto finalPayload = nativeProviderFinalResponsePayload(
+        roleSpec,
+        result,
+        config.finalResponseScope);
+      if (finalPayload) {
+        ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
       }
     }
     catch (const std::exception& exc) {

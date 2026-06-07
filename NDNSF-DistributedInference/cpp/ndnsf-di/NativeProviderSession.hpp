@@ -61,6 +61,17 @@ public:
     return m_runtime.executeRoleAsync(sessionId, roleSpec(role, sessionId), m_dependencyIo);
   }
 
+  std::future<ProviderRoleResult>
+  executeRoleAsync(const std::string& sessionId,
+                   const std::string& role,
+                   std::map<std::string, TensorBundle> initialInputsByScope)
+  {
+    return m_runtime.executeRoleAsync(sessionId,
+                                      roleSpec(role, sessionId),
+                                      m_dependencyIo,
+                                      std::move(initialInputsByScope));
+  }
+
 private:
   void
   ensureKnownRole(const std::string& role) const

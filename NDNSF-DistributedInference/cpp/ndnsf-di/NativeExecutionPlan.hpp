@@ -14,6 +14,27 @@ namespace ndnsf::di {
 
 struct NativeDependencySpec
 {
+  NativeDependencySpec() = default;
+
+  NativeDependencySpec(std::vector<std::string> producers,
+                       std::vector<std::string> consumers,
+                       std::string keyScope,
+                       std::string topicPrefix,
+                       std::string objectNameTemplate,
+                       std::size_t expectedSegments = 0,
+                       std::size_t expectedBytes = 0,
+                       std::vector<std::string> tensors = {})
+    : producers(std::move(producers))
+    , consumers(std::move(consumers))
+    , keyScope(std::move(keyScope))
+    , topicPrefix(std::move(topicPrefix))
+    , objectNameTemplate(std::move(objectNameTemplate))
+    , expectedSegments(expectedSegments)
+    , expectedBytes(expectedBytes)
+    , tensors(std::move(tensors))
+  {
+  }
+
   std::vector<std::string> producers;
   std::vector<std::string> consumers;
   std::string keyScope;
@@ -21,6 +42,7 @@ struct NativeDependencySpec
   std::string objectNameTemplate;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
+  std::vector<std::string> tensors;
 };
 
 struct NativeExecutionPlan
@@ -136,6 +158,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       producerProvider),
           dep.expectedSegments,
           dep.expectedBytes,
+          dep.tensors,
         });
       }
     }
@@ -158,6 +181,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       producerProvider),
           dep.expectedSegments,
           dep.expectedBytes,
+          dep.tensors,
         });
       }
     }

@@ -30,12 +30,32 @@ struct TensorBundle
 
 struct DependencyEdge
 {
+  DependencyEdge() = default;
+
+  DependencyEdge(std::string scope,
+                 std::string producerRole,
+                 std::string consumerRole,
+                 std::string plannedDataName,
+                 std::size_t expectedSegments = 0,
+                 std::size_t expectedBytes = 0,
+                 std::vector<std::string> tensors = {})
+    : scope(std::move(scope))
+    , producerRole(std::move(producerRole))
+    , consumerRole(std::move(consumerRole))
+    , plannedDataName(std::move(plannedDataName))
+    , expectedSegments(expectedSegments)
+    , expectedBytes(expectedBytes)
+    , tensors(std::move(tensors))
+  {
+  }
+
   std::string scope;
   std::string producerRole;
   std::string consumerRole;
   std::string plannedDataName;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
+  std::vector<std::string> tensors;
 };
 
 struct RoleSpec

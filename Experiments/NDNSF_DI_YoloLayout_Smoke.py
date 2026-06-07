@@ -66,6 +66,8 @@ def validate_parallel_detect_native_plan(policy: Path,
         raise SystemExit("parallel-detect policy merge role does not have per-head input scopes")
     if any(len(dep.get("producers", [])) != 1 for dep in merge_inputs):
         raise SystemExit("parallel-detect policy merge input must have exactly one producer per edge")
+    if any(not dep.get("tensors") for dep in dependencies):
+        raise SystemExit("parallel-detect policy dependency is missing tensors metadata")
 
     native_doc = json.loads(native_plan.read_text(encoding="utf-8"))
     native_services = [
@@ -82,6 +84,8 @@ def validate_parallel_detect_native_plan(policy: Path,
         dep for dep in native_dependencies
         if dep.get("consumers") == ["/Merge"]
     ]
+    if any(not dep.get("tensors") for dep in native_dependencies):
+        raise SystemExit("parallel-detect native plan dependency is missing tensors metadata")
     native_merge_scopes = {str(dep.get("keyScope", "")) for dep in native_merge_inputs}
     if native_merge_scopes != merge_scopes:
         raise SystemExit(
@@ -174,10 +178,16 @@ def main() -> int:
         )
     if args.cpp_native_plan_smoke:
         unit_tests = REPO / "build" / "unit-tests"
+        plan_manifest_smoke = REPO / "build" / "examples" / "di-native-plan-manifest-smoke"
         if not unit_tests.exists():
             raise SystemExit(
                 "build/unit-tests is required for --cpp-native-plan-smoke; "
                 "run ./waf build --targets=unit-tests first")
+        if not plan_manifest_smoke.exists():
+            raise SystemExit(
+                "build/examples/di-native-plan-manifest-smoke is required for "
+                "--cpp-native-plan-smoke; run "
+                "./waf build --targets=di-native-plan-manifest-smoke first")
         cpp_env = dict(env)
         cpp_env["NDNSF_DI_NATIVE_PLAN_JSON"] = str(
             generated_policy_dir / "native-execution-plan.json")
@@ -192,6 +202,12 @@ def main() -> int:
                 f"--run_test={test_case}",
                 "--log_level=test_suite",
             ], cpp_env)
+        run([
+            str(plan_manifest_smoke),
+            str(generated_policy_dir / "native-execution-plan.json"),
+            str(generated_policy_dir / "service-manifest.json"),
+            "/AI/YOLO/2x2Inference",
+        ], cpp_env)
 
     print(
         "YOLO_LAYOUT_SMOKE_OK "

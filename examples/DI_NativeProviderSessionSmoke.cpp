@@ -101,6 +101,7 @@ makePlan()
       "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
       1,
       1024,
+      {"features0"},
     },
     NativeDependencySpec{
       {"/Backbone"},
@@ -110,6 +111,7 @@ makePlan()
       "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
       1,
       1024,
+      {"features1"},
     },
     NativeDependencySpec{
       {"/Head/Shard/0"},
@@ -119,6 +121,7 @@ makePlan()
       "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
       1,
       512,
+      {"head0"},
     },
     NativeDependencySpec{
       {"/Head/Shard/1"},
@@ -128,6 +131,7 @@ makePlan()
       "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
       1,
       512,
+      {"head1"},
     },
   };
   return plan;

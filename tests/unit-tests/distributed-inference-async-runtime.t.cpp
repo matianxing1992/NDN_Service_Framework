@@ -7,12 +7,15 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <future>
 #include <sstream>
@@ -39,6 +42,24 @@ std::string
 payloadText(const TensorBundle& value)
 {
   return std::string(value.payload.begin(), value.payload.end());
+}
+
+std::vector<uint8_t>
+floatPayload(std::initializer_list<float> values)
+{
+  std::vector<float> floats(values);
+  std::vector<uint8_t> payload(floats.size() * sizeof(float));
+  std::memcpy(payload.data(), floats.data(), payload.size());
+  return payload;
+}
+
+std::vector<float>
+payloadFloats(const TensorBundle& value)
+{
+  BOOST_REQUIRE(value.payload.size() % sizeof(float) == 0);
+  std::vector<float> floats(value.payload.size() / sizeof(float));
+  std::memcpy(floats.data(), value.payload.data(), value.payload.size());
+  return floats;
 }
 
 class FakeDependencyIo : public DependencyIo
@@ -420,6 +441,42 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
                     "native:input:input-to-native");
 }
 
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPassesInitialInputsToSourceRole)
+{
+  RoleSpec role{
+    "/Source",
+    {},
+    {DependencyEdge{"source-to-next", "/Source", "/Next",
+                    "/run/source/output/bundle/0", 1}},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(1);
+  std::map<std::string, TensorBundle> initialInputs;
+  initialInputs.emplace("images", bundle("images", "image-bytes"));
+
+  const auto result = worker.executeAsync(
+    "initial-input-run",
+    role,
+    io,
+    [] (const RoleExecutionContext& ctx) {
+      BOOST_REQUIRE(ctx.inputsByScope.count("images") == 1);
+      return std::map<std::string, TensorBundle>{
+        {"source-to-next", bundle("source-to-next",
+                                  "features:" + payloadText(ctx.inputsByScope.at("images")))},
+      };
+    },
+    std::move(initialInputs)).get();
+
+  BOOST_REQUIRE(result.outputsByScope.count("source-to-next") == 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("source-to-next")),
+                    "features:image-bytes");
+  std::lock_guard<std::mutex> lock(io->mutex);
+  BOOST_REQUIRE(io->publishedByScope.count("source-to-next") == 1);
+  BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("source-to-next")),
+                    "features:image-bytes");
+}
+
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPreservesFinalResponseBundle)
 {
   RoleSpec role{
@@ -455,6 +512,54 @@ BOOST_AUTO_TEST_CASE(NativeProviderHandlerRejectsMissingRunnerFactory)
   NativeProviderHandlerConfig config;
   BOOST_CHECK_THROW(makeNativeProviderCollaborationHandler(std::move(config)),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderHandlerExtractsOnlyFinalRoleResponse)
+{
+  RoleSpec finalRole{
+    "/Merge",
+    {},
+    {},
+  };
+  ProviderRoleResult finalResult;
+  finalResult.outputsByScope.emplace(
+    "final-response",
+    bundle("final-response", "predictions"));
+
+  const auto finalPayload = nativeProviderFinalResponsePayload(
+    finalRole,
+    finalResult,
+    "final-response");
+  BOOST_REQUIRE(finalPayload.has_value());
+  BOOST_CHECK_EQUAL(std::string(finalPayload->begin(), finalPayload->end()),
+                    "predictions");
+
+  RoleSpec intermediateRole{
+    "/Backbone",
+    {},
+    {DependencyEdge{"backbone-to-head", "/Backbone", "/Head/Shard/0", "", 0, 0}},
+  };
+  const auto intermediatePayload = nativeProviderFinalResponsePayload(
+    intermediateRole,
+    finalResult,
+    "final-response");
+  BOOST_CHECK(!intermediatePayload.has_value());
+
+  ProviderRoleResult missingFinalResult;
+  missingFinalResult.outputsByScope.emplace(
+    "merge-debug",
+    bundle("merge-debug", "not-final"));
+  const auto missingPayload = nativeProviderFinalResponsePayload(
+    finalRole,
+    missingFinalResult,
+    "final-response");
+  BOOST_CHECK(!missingPayload.has_value());
+
+  const auto disabledPayload = nativeProviderFinalResponsePayload(
+    finalRole,
+    finalResult,
+    "");
+  BOOST_CHECK(!disabledPayload.has_value());
 }
 
 BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
@@ -510,7 +615,7 @@ BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
     std::out_of_range);
 }
 
-BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendReportsDisabledWhenNotCompiled)
+BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRegistersAndReportsBuildState)
 {
   RegistryNativeModelRunnerFactory factory;
   registerOnnxRuntimeBackend(factory);
@@ -526,6 +631,254 @@ BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendReportsDisabledWhenNotCompiled)
       {},
     }),
     std::runtime_error);
+#else
+  BOOST_CHECK_THROW(
+    factory.create(NativeModelRunnerSpec{
+      "/OnnxRole",
+      "onnx-model",
+      "onnxruntime",
+      "/tmp/ndnsf-di-missing-model.onnx",
+      {},
+    }),
+    std::exception);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRunsFloat32ModelWhenFixtureProvided)
+{
+  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MODEL");
+  if (modelPath == nullptr || std::string(modelPath).empty()) {
+    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_MODEL not set; skipping real ONNX Runtime model smoke");
+    BOOST_CHECK(true);
+    return;
+  }
+
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  BOOST_FAIL("NDNSF_DI_TEST_ONNX_MODEL requires C++ ONNX Runtime backend");
+#else
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(NativeModelRunnerSpec{
+    "/OnnxRole",
+    "onnx-model",
+    "onnxruntime",
+    modelPath,
+    {
+      {"inputNames", "x"},
+      {"inputShape", "1,3"},
+      {"outputNames", "y"},
+      {"outputScope", "onnx-to-user"},
+    },
+  });
+
+  RoleExecutionContext ctx;
+  ctx.sessionId = "onnx-runtime-smoke";
+  ctx.role = "/OnnxRole";
+  TensorBundle input;
+  input.name = "x";
+  input.payload = floatPayload({1.0f, 2.0f, 3.0f});
+  input.expectedBytes = input.payload.size();
+  ctx.inputsByScope.emplace("x", std::move(input));
+
+  const auto outputs = runner->run(ctx);
+  BOOST_REQUIRE(outputs.count("onnx-to-user") == 1);
+  const auto floats = payloadFloats(outputs.at("onnx-to-user"));
+  BOOST_REQUIRE_EQUAL(floats.size(), 3);
+  BOOST_CHECK_CLOSE(floats[0], 2.0f, 0.001);
+  BOOST_CHECK_CLOSE(floats[1], 3.0f, 0.001);
+  BOOST_CHECK_CLOSE(floats[2], 4.0f, 0.001);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecRoundTripsMultipleFloat32Tensors)
+{
+  const auto payload = encodeTensorBundle({
+    makeFloat32Tensor("x", {1, 2}, floatPayload({1.0f, 2.0f})),
+    makeFloat32Tensor("y", {1, 2}, floatPayload({3.0f, 4.0f})),
+  });
+  BOOST_CHECK(isEncodedTensorBundle(payload));
+
+  const auto tensors = decodeTensorBundle(payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 2);
+  BOOST_CHECK_EQUAL(findTensor(tensors, "x").name, "x");
+  BOOST_CHECK_EQUAL(findTensor(tensors, "y").name, "y");
+  BOOST_CHECK_EQUAL(findTensor(tensors, "x").shape.size(), 2);
+  BOOST_CHECK_EQUAL(findTensor(tensors, "x").shape[0], 1);
+  BOOST_CHECK_EQUAL(findTensor(tensors, "x").shape[1], 2);
+
+  TensorBundle xBundle;
+  xBundle.name = "x";
+  xBundle.payload = findTensor(tensors, "x").payload;
+  const auto values = payloadFloats(xBundle);
+  BOOST_REQUIRE_EQUAL(values.size(), 2);
+  BOOST_CHECK_CLOSE(values[0], 1.0f, 0.001);
+  BOOST_CHECK_CLOSE(values[1], 2.0f, 0.001);
+  BOOST_CHECK_THROW(findTensor(tensors, "missing"), std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecSelectsNamedTensorSubset)
+{
+  const auto bundle = makeEncodedTensorBundle(
+    "all-tensors",
+    {
+      makeFloat32Tensor("x", {1, 1}, floatPayload({1.0f})),
+      makeFloat32Tensor("y", {1, 1}, floatPayload({2.0f})),
+      makeFloat32Tensor("z", {1, 1}, floatPayload({3.0f})),
+    });
+
+  const auto subset = selectTensorBundle("edge-yz", bundle, {"y", "z"});
+  BOOST_CHECK_EQUAL(subset.name, "edge-yz");
+  const auto tensors = decodeTensorBundle(subset.payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 2);
+  BOOST_CHECK_EQUAL(tensors[0].name, "y");
+  BOOST_CHECK_EQUAL(tensors[1].name, "z");
+  BOOST_CHECK_THROW(selectTensorBundle("missing", bundle, {"missing"}),
+                    std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPublishesEdgeTensorSubsetFromBundle)
+{
+  RoleSpec role;
+  role.role = "/Backbone";
+  role.outputs = {
+    DependencyEdge{"backbone-to-head0", "/Backbone", "/Head/0", "/run/backbone/h0", 1, 4, {"y0"}},
+    DependencyEdge{"backbone-to-head1", "/Backbone", "/Head/1", "/run/backbone/h1", 1, 4, {"y1"}},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(1);
+  auto future = worker.executeAsync(
+    "tensor-subset-run",
+    role,
+    io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{
+        {"onnx-output-bundle",
+         makeEncodedTensorBundle(
+           "onnx-output-bundle",
+           {
+             makeFloat32Tensor("y0", {1, 1}, floatPayload({10.0f})),
+             makeFloat32Tensor("y1", {1, 1}, floatPayload({20.0f})),
+           })},
+      };
+    });
+
+  const auto result = future.get();
+  BOOST_REQUIRE(result.outputsByScope.count("backbone-to-head0") == 1);
+  BOOST_REQUIRE(result.outputsByScope.count("backbone-to-head1") == 1);
+  BOOST_CHECK_EQUAL(
+    decodeTensorBundle(result.outputsByScope.at("backbone-to-head0").payload)[0].name,
+    "y0");
+  BOOST_CHECK_EQUAL(
+    decodeTensorBundle(result.outputsByScope.at("backbone-to-head1").payload)[0].name,
+    "y1");
+
+  {
+    std::lock_guard<std::mutex> lock(io->mutex);
+    BOOST_REQUIRE_EQUAL(io->publishedByScope.size(), 2);
+    BOOST_CHECK(io->publishedByScope.count("backbone-to-head0") == 1);
+    BOOST_CHECK(io->publishedByScope.count("backbone-to-head1") == 1);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendAcceptsEncodedTensorBundleInput)
+{
+  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MODEL");
+  if (modelPath == nullptr || std::string(modelPath).empty()) {
+    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_MODEL not set; skipping encoded-input ONNX smoke");
+    BOOST_CHECK(true);
+    return;
+  }
+
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  BOOST_FAIL("NDNSF_DI_TEST_ONNX_MODEL requires C++ ONNX Runtime backend");
+#else
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(NativeModelRunnerSpec{
+    "/OnnxRole",
+    "onnx-model",
+    "onnxruntime",
+    modelPath,
+    {
+      {"inputNames", "x"},
+      {"outputNames", "y"},
+      {"outputScope", "onnx-to-user"},
+    },
+  });
+
+  RoleExecutionContext ctx;
+  ctx.sessionId = "onnx-runtime-encoded-smoke";
+  ctx.role = "/OnnxRole";
+  ctx.inputsByScope.emplace(
+    "activation",
+    makeEncodedTensorBundle(
+      "activation",
+      {makeFloat32Tensor("x", {1, 3}, floatPayload({1.0f, 2.0f, 3.0f}))}));
+
+  const auto outputs = runner->run(ctx);
+  BOOST_REQUIRE(outputs.count("onnx-to-user") == 1);
+  const auto floats = payloadFloats(outputs.at("onnx-to-user"));
+  BOOST_REQUIRE_EQUAL(floats.size(), 3);
+  BOOST_CHECK_CLOSE(floats[0], 2.0f, 0.001);
+  BOOST_CHECK_CLOSE(floats[1], 3.0f, 0.001);
+  BOOST_CHECK_CLOSE(floats[2], 4.0f, 0.001);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendProducesEncodedMultiOutputBundle)
+{
+  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MULTI_MODEL");
+  if (modelPath == nullptr || std::string(modelPath).empty()) {
+    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_MULTI_MODEL not set; skipping multi-output ONNX smoke");
+    BOOST_CHECK(true);
+    return;
+  }
+
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  BOOST_FAIL("NDNSF_DI_TEST_ONNX_MULTI_MODEL requires C++ ONNX Runtime backend");
+#else
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(NativeModelRunnerSpec{
+    "/OnnxRole",
+    "onnx-model",
+    "onnxruntime",
+    modelPath,
+    {
+      {"inputNames", "x"},
+      {"inputShape", "1,3"},
+      {"outputNames", "y,z"},
+      {"outputBundleScope", "multi-output"},
+    },
+  });
+
+  RoleExecutionContext ctx;
+  ctx.sessionId = "onnx-runtime-multi-output-smoke";
+  ctx.role = "/OnnxRole";
+  TensorBundle input;
+  input.name = "x";
+  input.payload = floatPayload({1.0f, 2.0f, 3.0f});
+  input.expectedBytes = input.payload.size();
+  ctx.inputsByScope.emplace("x", std::move(input));
+
+  const auto outputs = runner->run(ctx);
+  BOOST_REQUIRE(outputs.count("multi-output") == 1);
+  BOOST_CHECK(isEncodedTensorBundle(outputs.at("multi-output").payload));
+  const auto tensors = decodeTensorBundle(outputs.at("multi-output").payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 2);
+  TensorBundle y;
+  y.name = "y";
+  y.payload = findTensor(tensors, "y").payload;
+  TensorBundle z;
+  z.name = "z";
+  z.payload = findTensor(tensors, "z").payload;
+  const auto yValues = payloadFloats(y);
+  const auto zValues = payloadFloats(z);
+  BOOST_REQUIRE_EQUAL(yValues.size(), 3);
+  BOOST_REQUIRE_EQUAL(zValues.size(), 3);
+  BOOST_CHECK_CLOSE(yValues[0], 2.0f, 0.001);
+  BOOST_CHECK_CLOSE(zValues[0], 3.0f, 0.001);
 #endif
 }
 
@@ -654,6 +1007,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
             "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
             "expectedSegments": 3,
             "expectedBytes": 17000,
+            "tensors": ["features"],
             "required": true
           }
         ]
@@ -667,6 +1021,8 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   BOOST_CHECK_EQUAL(plan.dependencies[0].keyScope, "stage0-to-stage1");
   BOOST_CHECK_EQUAL(plan.dependencies[0].expectedSegments, 3);
   BOOST_CHECK_EQUAL(plan.dependencies[0].expectedBytes, 17000);
+  BOOST_REQUIRE_EQUAL(plan.dependencies[0].tensors.size(), 1);
+  BOOST_CHECK_EQUAL(plan.dependencies[0].tensors[0], "features");
 
   NativeProviderAssignment assignment;
   assignment.providerByRole["/Stage/0"] = "/example/provider/stage0";
@@ -674,9 +1030,63 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   const auto stage1 = roleSpecFor(plan, "/Stage/1", "/run-json", assignment);
   BOOST_REQUIRE_EQUAL(stage1.inputs.size(), 1);
   BOOST_CHECK_EQUAL(stage1.inputs[0].expectedBytes, 17000);
+  BOOST_REQUIRE_EQUAL(stage1.inputs[0].tensors.size(), 1);
+  BOOST_CHECK_EQUAL(stage1.inputs[0].tensors[0], "features");
   BOOST_CHECK_EQUAL(
     stage1.inputs[0].plannedDataName,
                     "/example/provider/stage0/NDNSF/DI/ACTIVATION/run-json/stage0-to-stage1/Stage/0/bundle/0");
+}
+
+BOOST_AUTO_TEST_CASE(NativeServiceManifestBuildsRunnerSpecsByRole)
+{
+  std::istringstream input(R"JSON({
+    "services": [
+      {
+        "name": "/AI/YOLO/2x2Inference",
+        "model": "/Model/YOLO/v1",
+        "roles": ["/Backbone", "/Head/Shard/0"],
+        "artifacts": [
+          {
+            "role": "/Backbone",
+            "path": "/tmp/backbone.onnx",
+            "artifact": "backbone.onnx",
+            "filename": "backbone.onnx",
+            "kind": "onnx-model",
+            "backend": "onnxruntime",
+            "metadata": {
+              "input_tensors": ["images"],
+              "output_tensors": ["feat0", "feat1"],
+              "layout": "2x2",
+              "role_type": "backbone"
+            }
+          },
+          {
+            "role": "/Head/Shard/0",
+            "path": "/tmp/head0.onnx",
+            "artifact": "head0.onnx",
+            "filename": "head0.onnx",
+            "kind": "onnx-model",
+            "backend": "onnxruntime",
+            "metadata": {
+              "input_tensors": ["feat0"],
+              "output_tensors": ["pred0"]
+            }
+          }
+        ]
+      }
+    ]
+  })JSON");
+
+  const auto specs = nativeModelRunnerSpecsByRoleForServiceManifestFromJson(
+    input, "/AI/YOLO/2x2Inference");
+  BOOST_REQUIRE_EQUAL(specs.size(), 2);
+  BOOST_REQUIRE(specs.count("/Backbone") == 1);
+  const auto& backbone = specs.at("/Backbone");
+  BOOST_CHECK_EQUAL(backbone.backend, "onnxruntime");
+  BOOST_CHECK_EQUAL(backbone.path, "/tmp/backbone.onnx");
+  BOOST_CHECK_EQUAL(backbone.metadata.at("input_tensors"), "images");
+  BOOST_CHECK_EQUAL(backbone.metadata.at("output_tensors"), "feat0,feat1");
+  BOOST_CHECK_EQUAL(backbone.metadata.at("kind"), "onnx-model");
 }
 
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonDrivesAsyncFrontierRuntime)

@@ -64,6 +64,7 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
         spec.objectNameTemplate = dep.get<std::string>("objectNameTemplate", "");
         spec.expectedSegments = dep.get<std::size_t>("expectedSegments", 0);
         spec.expectedBytes = dep.get<std::size_t>("expectedBytes", 0);
+        spec.tensors = stringArrayFromJson(dep, "tensors");
         if (spec.keyScope.empty()) {
           throw std::invalid_argument(
             "native execution plan dependency missing keyScope");
