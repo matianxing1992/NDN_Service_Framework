@@ -3663,6 +3663,11 @@ namespace ndn_service_framework
                 assignment.scopeKeyDataNames[field.first.substr(keyDataPrefix.size())] =
                     ndn::Name(field.second);
             }
+            static const std::string roleProviderPrefix = "roleProvider.";
+            if (field.first.rfind(roleProviderPrefix, 0) == 0 && !field.second.empty()) {
+                assignment.roleProviders[field.first.substr(roleProviderPrefix.size())] =
+                    ndn::Name(field.second);
+            }
         }
         const auto artifactData = readField("artifactData");
         if (!artifactData.empty()) {

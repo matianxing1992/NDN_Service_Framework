@@ -246,11 +246,23 @@ def build(bld):
                 target='di-native-provider',
                 source=(["DI_NativeProviderExecutable.cpp"] +
                         di_native_session_sources +
+                        di_native_collaboration_sources +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                            'ndn-service-framework/NDNSFMessages.cpp',
+                            'ndn-service-framework/BloomFilter.cpp',
+                            'ndn-service-framework/ConfigManager.cpp',
+                            'ndn-service-framework/Service.cpp',
+                            'ndn-service-framework/ServiceProvider.cpp',
+                            'ndn-service-framework/ServiceUser.cpp',
+                            'ndn-service-framework/HybridMessageCrypto.cpp',
+                            'ndn-service-framework/TimelineTrace.cpp',
+                            'ndn-service-framework/common.cpp',
+                            'ndn-service-framework/utils.cpp',
+                            'ndn-service-framework/CertificatePublisher.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST ONNXRUNTIME',
+                use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)

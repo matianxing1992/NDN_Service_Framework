@@ -4769,6 +4769,11 @@ namespace ndn_service_framework
                               << ": " << validationError);
                 return false;
             }
+            std::string roleProviderFields;
+            for (const auto& participant : selectedParticipants) {
+                roleProviderFields += "roleProvider." + participant.role + "=" +
+                                      participant.provider.toUri() + ";";
+            }
             for (const auto& participant : selectedParticipants) {
                 for (const auto& storedAck : pendingCall.requestAcks) {
                     if (!storedAck.providerName.equals(participant.provider) ||
@@ -4795,7 +4800,7 @@ namespace ndn_service_framework
                             (participant.requiresProvisioning ? "1" : "0") +
                             ";provisioningTimeoutMs=" +
                             std::to_string(participant.provisioningTimeoutMs) +
-                            ";";
+                            ";" + roleProviderFields;
                         assignment = ndn::Buffer(
                             reinterpret_cast<const uint8_t*>(text.data()),
                             text.size());

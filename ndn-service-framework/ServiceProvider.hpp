@@ -119,6 +119,7 @@ namespace ndn_service_framework{
                 ndn::Buffer assignmentPayload;
                 std::map<KeyScope, ndn::Buffer> scopeKeys;
                 std::map<KeyScope, ndn::Name> scopeKeyDataNames;
+                std::map<CollaborationRole, ndn::Name> roleProviders;
                 ndn::Buffer artifactPayload;
             };
 

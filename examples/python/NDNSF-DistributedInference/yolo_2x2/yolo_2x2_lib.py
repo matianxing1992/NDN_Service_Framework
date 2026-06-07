@@ -29,6 +29,7 @@ import io
 import json
 import re
 import shutil
+import struct
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -137,6 +138,64 @@ def _npz_payload(values: dict) -> bytes:
 def _load_npz_payload(payload: bytes) -> dict[str, np.ndarray]:
     with np.load(io.BytesIO(payload), allow_pickle=False) as npz:
         return {key: npz[key] for key in npz.files}
+
+
+def _decode_native_tensor_bundle(payload: bytes) -> dict[str, np.ndarray]:
+    magic = b"NDITB001"
+    if not payload.startswith(magic):
+        raise ValueError("payload is not an NDNSF-DI native tensor bundle")
+    offset = len(magic)
+
+    def read(fmt: str):
+        nonlocal offset
+        size = struct.calcsize(fmt)
+        if offset + size > len(payload):
+            raise ValueError("truncated NDNSF-DI native tensor bundle")
+        value = struct.unpack_from(fmt, payload, offset)[0]
+        offset += size
+        return value
+
+    tensors: dict[str, np.ndarray] = {}
+    count = read("<I")
+    for _ in range(count):
+        name_size = read("<I")
+        if offset + name_size > len(payload):
+            raise ValueError("truncated NDNSF-DI native tensor name")
+        name = payload[offset:offset + name_size].decode("utf-8")
+        offset += name_size
+        element_type = read("<I")
+        rank = read("<I")
+        shape = [read("<q") for _ in range(rank)]
+        data_size = read("<Q")
+        if offset + data_size > len(payload):
+            raise ValueError("truncated NDNSF-DI native tensor payload")
+        data = payload[offset:offset + data_size]
+        offset += data_size
+        if element_type != 1:
+            raise ValueError(f"unsupported NDNSF-DI native tensor element type {element_type}")
+        array = np.frombuffer(data, dtype="<f4").astype(np.float32, copy=True)
+        if shape:
+            array = array.reshape(tuple(shape))
+        tensors[name] = array
+    if offset != len(payload):
+        raise ValueError("NDNSF-DI native tensor bundle has trailing bytes")
+    return tensors
+
+
+def encode_native_tensor_bundle(values: dict[str, np.ndarray]) -> bytes:
+    payload = bytearray(b"NDITB001")
+    payload += struct.pack("<I", len(values))
+    for name, value in values.items():
+        name_bytes = str(name).encode("utf-8")
+        array = np.asarray(value, dtype=np.float32)
+        payload += struct.pack("<I", len(name_bytes)) + name_bytes
+        payload += struct.pack("<I", 1)
+        payload += struct.pack("<I", array.ndim)
+        for dim in array.shape:
+            payload += struct.pack("<q", int(dim))
+        data = array.astype("<f4", copy=False).tobytes()
+        payload += struct.pack("<Q", len(data)) + data
+    return bytes(payload)
 
 
 def npz_payload(values: dict[str, np.ndarray]) -> bytes:
@@ -1680,6 +1739,15 @@ def encode_yolo_output(offset: int, value: np.ndarray) -> bytes:
 
 
 def decode_yolo_output(payload: bytes) -> tuple[int, np.ndarray]:
+    if payload.startswith(b"NDITB001"):
+        tensors = _decode_native_tensor_bundle(payload)
+        if "output" in tensors:
+            return 0, tensors["output"]
+        if "predictions" in tensors:
+            return 0, tensors["predictions"]
+        if len(tensors) == 1:
+            return 0, next(iter(tensors.values()))
+        raise KeyError("native YOLO output bundle does not contain output/predictions")
     obj = _load_npz_payload(payload)
     return int(obj["offset"]), obj["output"].astype(np.float32)
 

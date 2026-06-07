@@ -52,6 +52,33 @@ def python_cmd(script: str, argv: list[str]) -> str:
     return f"cd {perf.shell_quote(REPO)} && exec python3 {args}"
 
 
+def native_provider_cmd(argv: list[str],
+                        service_name: str,
+                        workers: int,
+                        handler_threads: int,
+                        ack_threads: int) -> str:
+    exe = REPO / "build/examples/di-native-provider"
+    provider_id = argv[argv.index("--provider-id") + 1]
+    roles = argv[argv.index("--roles") + 1]
+    args = [
+        str(exe),
+        "--serve",
+        "--plan", str(Path(GEN_POLICY) / "native-execution-plan.json"),
+        "--manifest", str(Path(GEN_POLICY) / "service-manifest.json"),
+        "--service", service_name,
+        "--provider", provider_identity(provider_id),
+        "--group", APP_ROOT + "/group",
+        "--controller", CONTROLLER_IDENTITY,
+        "--trust-schema", "examples/trust-schema.conf",
+        "--roles", roles,
+        "--workers", str(workers),
+        "--handler-threads", str(handler_threads),
+        "--ack-threads", str(ack_threads),
+    ]
+    quoted = " ".join(perf.shell_quote(item) for item in args)
+    return f"cd {perf.shell_quote(REPO)} && exec {quoted}"
+
+
 def start(node, name, cmd, env, procs):
     path = OUT / f"{name}.log"
     f = path.open("wb")
@@ -1292,6 +1319,19 @@ def load_policy_roles(path: Path) -> list[str]:
     raise RuntimeError(f"no inference service roles found in {path}")
 
 
+def load_policy_service_name(path: Path) -> str:
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to read generated DI policies") from exc
+    config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    for service in config.get("services", []):
+        name = str(service.get("name", ""))
+        if name and name != "/NDNSF/DistributedRepo":
+            return name
+    raise RuntimeError(f"no inference service found in {path}")
+
+
 def provider_role_assignments(roles: list[str]) -> list[tuple[str, str, list[str]]]:
     nodes = ["ucla", "wustl", "uiuc", "umich", "arizona", "caida", "pku", "neu", "csu"]
     provider_ids = ["", "A", "B", "C", "E", "F", "G", "H", "I"]
@@ -1394,6 +1434,8 @@ def main() -> None:
                         help="End-to-end service timeout passed to the DI user")
     parser.add_argument("--provider-handler-workers", type=int, default=2,
                         help="Python worker count passed to each DI provider")
+    parser.add_argument("--native-providers", action="store_true",
+                        help="replace Python compute providers with build/examples/di-native-provider")
     parser.add_argument("--user-async-workers", type=int, default=1,
                         help="Async worker count passed to the DI user process")
     parser.add_argument("--parallel-output-shards", action="store_true",
@@ -1459,6 +1501,13 @@ def main() -> None:
     if args_cli.parallel_detect_scale_shards:
         split_command.append("--parallel-detect-scale-shards")
     subprocess.run(split_command, cwd=str(REPO), env={**os.environ, "PYTHONPATH": py_path}, check=True)
+    service_name = load_policy_service_name(CONFIG)
+    if args_cli.native_providers:
+        native_exe = REPO / "build/examples/di-native-provider"
+        if not native_exe.exists():
+            raise RuntimeError(
+                f"{native_exe} does not exist; build it with "
+                "./waf build --targets=di-native-provider")
     Minindn.cleanUp()
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=str(TOPO))
@@ -1590,16 +1639,25 @@ def main() -> None:
         validate_repo_manifest_references(REPO_MANIFEST)
 
         for node_name, name, argv in providers:
-            _, lp = start(ndn.net[node_name], name,
-                          python_cmd("provider.py", common + argv + [
-                              "--dynamic-provisioning",
-                              "--temp-dir",
-                              f"/tmp/{name}",
-                              "--handler-workers",
-                              str(provider_handler_workers),
-                          ]),
-                          env, procs)
-            if not wait_log(lp, "Installed provider permission", 20):
+            if args_cli.native_providers:
+                cmd = native_provider_cmd(
+                    argv,
+                    service_name=service_name,
+                    workers=provider_handler_workers,
+                    handler_threads=1,
+                    ack_threads=1)
+                ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
+            else:
+                cmd = python_cmd("provider.py", common + argv + [
+                    "--dynamic-provisioning",
+                    "--temp-dir",
+                    f"/tmp/{name}",
+                    "--handler-workers",
+                    str(provider_handler_workers),
+                ])
+                ready = "Installed provider permission"
+            _, lp = start(ndn.net[node_name], name, cmd, env, procs)
+            if not wait_log(lp, ready, 30):
                 raise RuntimeError(f"{name} did not install permissions; see {lp}")
             time.sleep(0.5)
 
@@ -1612,6 +1670,8 @@ def main() -> None:
             "--async-requests", str(user_async_workers),
             "--sequential-requests", str(cold_requests),
         ]
+        if args_cli.native_providers:
+            user_common.append("--native-tensor-input")
         cold_traffic_start = snapshot_traffic(ndn)
         cold_nfd_start = snapshot_nfd_data_counters(ndn)
         user_proc, user_log = start(
@@ -1646,6 +1706,8 @@ def main() -> None:
             "--timeout-ms", str(timeout_ms),
             "--async-requests", str(user_async_workers),
         ]
+        if args_cli.native_providers:
+            warm_user_args.append("--native-tensor-input")
         if warm_duration_s > 0:
             warm_user_args.extend([
                 "--sequential-duration-s", str(warm_duration_s),
@@ -1684,22 +1746,39 @@ def main() -> None:
             (OUT / f"{name}.log").read_text(errors="replace")
             for _, name, _ in providers
         )
-        success = (
+        common_success = (
             len(warm_latencies) >= (1 if warm_duration_s > 0 else warm_requests) and
-            "ok=false" not in warm_text and
-            "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS" in provider_text and
-            "NDNSF_EXECUTION_ARTIFACT_CACHE_HIT" in provider_text
+            "ok=false" not in warm_text
         )
+        if args_cli.native_providers:
+            success = (
+                common_success and
+                "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY" in provider_text
+            )
+        else:
+            success = (
+                common_success and
+                "NDNSF_EXECUTION_ARTIFACT_CACHE_MISS" in provider_text and
+                "NDNSF_EXECUTION_ARTIFACT_CACHE_HIT" in provider_text
+            )
         if not success:
             raise RuntimeError(
                 f"YOLO {layout} dynamic provisioning/cache validation failed; "
                 f"cold={user_log} warm={warm_log}")
-        print(
-            f"YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK "
-            f"layout={layout} cold={user_log} warm={warm_log}"
-        )
-        if layout == "2x2":
-            print(f"YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK cold={user_log} warm={warm_log}")
+        if args_cli.native_providers:
+            print(
+                f"YOLO_LAYOUT_NATIVE_PROVIDERS_MININDN_OK "
+                f"layout={layout} cold={user_log} warm={warm_log}"
+            )
+            if layout == "2x2":
+                print(f"YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK cold={user_log} warm={warm_log}")
+        else:
+            print(
+                f"YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK "
+                f"layout={layout} cold={user_log} warm={warm_log}"
+            )
+            if layout == "2x2":
+                print(f"YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK cold={user_log} warm={warm_log}")
     finally:
         stop(procs)
         ndn.stop()

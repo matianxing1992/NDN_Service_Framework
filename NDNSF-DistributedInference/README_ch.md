@@ -163,9 +163,9 @@ CPU ONNX Runtime 执行 float32 raw tensor bundle，也支持 native multi-tenso
 codec。它从 `NativeModelRunnerSpec` 读取 ONNX input/output 名称和可选 shape/scope
 metadata，在 C++ 中运行 ONNX chunk，并把输出作为 `TensorBundle` 返回给 dependency
 executor。这已经能证明 native hot path 可以在不穿过 Python wrapper 的情况下执行
-真实 ONNX 模型。不过它仍然是窄实现：Python NPZ 到 native bundle 的 bridge、
-非 float tensor、更完整的 shape 协商，以及完整 service-level provider executable
-仍是后续工作。
+真实 ONNX 模型。不过它仍然是窄实现：native tensor-bundle input/output 目前主要
+支持 float32 tensor，非 float tensor、更完整的 shape/type 协商，以及从
+repo/largeDataReference materialize artifact 的 C++ 路径仍是后续工作。
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` 是 provider
 进程 facade，具体实现在 `NativeProviderRuntime.cpp`。它持有 worker pool 和
@@ -231,8 +231,8 @@ build/examples/di-native-plan-manifest-smoke \
   /AI/YOLO/2x2Inference
 ```
 
-`examples/DI_NativeProviderExecutable.cpp` 是第一版 native provider executable 边界。
-当前 `--check-only` 模式会加载 `native-execution-plan.json`，加载
+`examples/DI_NativeProviderExecutable.cpp` 是第一版 native provider executable。
+`--check-only` 模式会加载 `native-execution-plan.json`，加载
 `service-manifest.json`，通过构造 `OnnxRuntimeModelRunner` materialize 本地 ONNX
 artifact path，并把每个 role 注册进 `NativeProviderSession`：
 
@@ -247,9 +247,23 @@ build/examples/di-native-provider \
   --check-only
 ```
 
-这个 executable 还没有真正服务 NDNSF network requests。它现在的意义是证明 generated
-deployment artifacts 可以创建一个带真实 ONNX runners 的 native C++ provider
-session。
+`--serve` 模式会把同一个 native session 注册为 NDNSF collaboration provider。
+它仍然使用普通 NDNSF permissions、tokens、ACK/Selection/Response、planned
+large-data activation names 和 `ServiceProvider::CollaborationContext`；只有
+provider execution hot path 变成 native C++：
+
+```bash
+build/examples/di-native-provider \
+  --serve \
+  --plan /tmp/ndnsf-di-yolo-policy/native-execution-plan.json \
+  --manifest /tmp/ndnsf-di-yolo-policy/service-manifest.json \
+  --service /AI/YOLO/2x2Inference \
+  --provider /NDNSF-DistributeInference/example/provider/A \
+  --group /NDNSF-DistributeInference/example/group \
+  --controller /NDNSF-DistributeInference/example/controller \
+  --roles /Head/Shard/0 \
+  --workers 4
+```
 
 顶层 `wscript` 会检查可选的 `onnxruntime` pkg-config package。存在 C++ dev 包时，
 unit-test target 会链接 native adapter；不存在时，注册 `onnxruntime` backend 仍会
@@ -300,19 +314,20 @@ wire behavior。
   C++ service-manifest loader to NativeModelRunnerSpec
   C++ generated plan + service manifest smoke
   native provider executable check-only path for local artifacts
+  native provider executable 的 NDNSF serving path for local artifacts
+  MiniNDN YOLO 2x2 parallel-detect smoke with native compute providers
   source role 的 request initial-input injection
 
 仍缺：
-  native provider executable 的 NDNSF network serving mode
   从 repo/largeDataReference materialize artifact 的 C++ 路径
-  Python NPZ activation bridge to native tensor-bundle codec
-  用 native provider 直接替换当前 MiniNDN Python provider processes
   面向用户的薄 Python API wrapper 调用 native executable
 ```
 
 所以项目已经越过 “headers only” 阶段：native C++ runtime 可以本地执行真实 ONNX
-计算，也能验证 generated plan。它还没有在网络级完全 C++-first，因为当前 MiniNDN
-end-to-end providers 仍然运行 Python executor logic。
+计算，也能验证 generated plan，并且可以在 MiniNDN smoke 中替换 YOLO 2x2
+parallel-detect compute providers。它还没有完全 C++-first，因为 controller/user
+编排和 artifact deployment 仍然是 Python-facing，native providers 当前也只直接消费
+本地 artifact paths，还没有直接从 repo-backed artifact references materialize。
 
 ### 3. 创建或审查 Policy
 
@@ -446,6 +461,18 @@ result = client.distributed_inference(service, image_tensor)
 sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
+```
+
+YOLO layout smoke 也可以在 parallel-detect layout 下用 native C++ provider
+executable 替换 Python compute providers：
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --layout 2x2 \
+  --parallel-detect-scale-shards \
+  --native-providers \
+  --cold-requests 1 \
+  --warm-requests 1
 ```
 
 成功输出应包含：

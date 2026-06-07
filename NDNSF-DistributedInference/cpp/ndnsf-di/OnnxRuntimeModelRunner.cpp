@@ -376,7 +376,11 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   }
 
   std::map<std::string, TensorBundle> result;
-  if (namedOutputs.size() == 1) {
+  const bool forceEncodedOutput =
+    !metadataValue(m_spec, {"output_tensor", "outputTensor", "forceOutputBundle",
+                            "force_output_bundle"}).empty() ||
+    metadataValue(m_spec, {"final", "is_final"}) == "true";
+  if (namedOutputs.size() == 1 && !forceEncodedOutput) {
     const auto scope = outputScopeFor(m_spec, namedOutputs.front().name, 0);
     TensorBundle bundle;
     bundle.name = namedOutputs.front().name;

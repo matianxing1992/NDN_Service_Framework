@@ -185,9 +185,9 @@ optional shape/scope metadata from `NativeModelRunnerSpec`, runs the ONNX chunk
 in C++, and returns output `TensorBundle`s for the dependency executor. This is
 enough to prove that the native hot path can execute an actual ONNX model
 without crossing the Python wrapper for the role computation. It is still
-intentionally narrow: Python NPZ-to-native-bundle bridging, non-float tensors,
-richer shape negotiation, and full service-level provider executables remain
-follow-up work.
+intentionally narrow: native tensor-bundle input/output is currently limited to
+float32 tensors, richer shape/type negotiation is future work, and
+repo/largeDataReference artifact materialization is not yet native.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` is the
 provider process facade, with implementation in `NativeProviderRuntime.cpp`.
@@ -259,7 +259,7 @@ build/examples/di-native-plan-manifest-smoke \
 ```
 
 `examples/DI_NativeProviderExecutable.cpp` is the first native provider
-executable boundary. Its current `--check-only` mode loads
+executable. Its `--check-only` mode loads
 `native-execution-plan.json`, loads `service-manifest.json`, materializes local
 ONNX artifact paths by constructing `OnnxRuntimeModelRunner` instances, and
 registers every role in a `NativeProviderSession`:
@@ -275,9 +275,23 @@ build/examples/di-native-provider \
   --check-only
 ```
 
-This executable does not yet serve NDNSF network requests. It is the checkpoint
-that proves generated deployment artifacts can create a native C++ provider
-session with real ONNX runners.
+Its `--serve` mode registers the same native session as an NDNSF collaboration
+provider. It still uses normal NDNSF permissions, tokens, ACK/Selection/Response,
+planned large-data activation names, and `ServiceProvider::CollaborationContext`;
+only the provider execution hot path is native C++:
+
+```bash
+build/examples/di-native-provider \
+  --serve \
+  --plan /tmp/ndnsf-di-yolo-policy/native-execution-plan.json \
+  --manifest /tmp/ndnsf-di-yolo-policy/service-manifest.json \
+  --service /AI/YOLO/2x2Inference \
+  --provider /NDNSF-DistributeInference/example/provider/A \
+  --group /NDNSF-DistributeInference/example/group \
+  --controller /NDNSF-DistributeInference/example/controller \
+  --roles /Head/Shard/0 \
+  --workers 4
+```
 
 The top-level `wscript` checks for an optional `onnxruntime` pkg-config package.
 When the C++ development package is present, the unit-test target links the
@@ -334,20 +348,21 @@ Done:
   C++ service-manifest loader to NativeModelRunnerSpec
   C++ generated plan + service manifest smoke
   native provider executable check-only path for local artifacts
+  native provider executable NDNSF serving path for local artifacts
+  MiniNDN YOLO 2x2 parallel-detect smoke with native compute providers
   request initial-input injection for source roles
 
 Still missing:
-  native provider executable NDNSF network serving mode
   C++ artifact materialization from repo/largeDataReference
-  Python NPZ activation bridge to the native tensor-bundle codec
-  direct MiniNDN replacement of the current Python provider processes
   service-level Python API wrapper around the native executable
 ```
 
 Therefore the project is past the "headers only" stage: the native C++ runtime
-can execute real ONNX computation locally and can validate generated plans. It
-is not yet fully C++-first at the network level because the current MiniNDN
-end-to-end providers still run Python executor logic.
+can execute real ONNX computation locally, validate generated plans, and replace
+YOLO 2x2 parallel-detect compute providers in a MiniNDN smoke. It is not yet
+fully C++-first because controller/user orchestration and artifact deployment
+remain Python-facing, and native providers currently consume local artifact
+paths rather than repo-backed artifact references directly.
 
 ### 3. Create or Inspect a Policy
 
@@ -485,6 +500,18 @@ The easiest way to exercise the whole network path is MiniNDN:
 sudo -E python3 Experiments/NDNSF_DI_YoloSplit_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py
 sudo -E python3 Experiments/NDNSF_DI_PyTorch2x2_Minindn.py
+```
+
+The YOLO layout smoke can replace the Python compute providers with the native
+C++ provider executable for the parallel-detect layout:
+
+```bash
+sudo -E python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --layout 2x2 \
+  --parallel-detect-scale-shards \
+  --native-providers \
+  --cold-requests 1 \
+  --warm-requests 1
 ```
 
 Expected success markers include:

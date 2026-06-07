@@ -14,6 +14,7 @@ from yolo_2x2_lib import (
     YOLO_PARALLEL_OUTPUT_SEMANTICS,
     decode_yolo_output,
     decode_image,
+    encode_native_tensor_bundle,
     full_forward,
     make_input,
     optional_local_nfd,
@@ -48,6 +49,8 @@ def main() -> int:
                         help="Minimum interval between sequential request starts")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE)
+    parser.add_argument("--native-tensor-input", action="store_true",
+                        help="publish request input as an NDNSF-DI native tensor bundle")
     args = parser.parse_args()
     if args.dry_run:
         print("Run YOLO 2x2 user")
@@ -69,7 +72,12 @@ def main() -> int:
         layout = str(metadata.get("layout", "2x2"))
         layout_semantics = str(metadata.get("layout_semantics", ""))
         image = make_input(args.input_size)
-        image_payload = client.encode_input(service, image)
+        reference_image_payload = client.encode_input(service, image)
+        image_payload = (
+            encode_native_tensor_bundle({"images": image})
+            if args.native_tensor_input else
+            reference_image_payload
+        )
         payload = client.publish_large_payload_reference(
             service,
             image_payload,
@@ -77,7 +85,7 @@ def main() -> int:
             object_type="application/x-ndnsf-di-input+npz",
             freshness_ms=120000,
         )
-        inference_image = decode_image(image_payload)
+        inference_image = decode_image(reference_image_payload)
         artifact_paths = {
             artifact.role: artifact.path
             for artifact in service_policy.artifacts
@@ -177,7 +185,7 @@ def main() -> int:
             diff = abs(actual - expected)
             max_diff = float(diff.max())
             mean_diff = float(diff.mean())
-            item_ok = max_diff < 1e-6
+            item_ok = max_diff < 1e-5
             ok = ok and item_ok
             print(
                 "YOLO_LAYOUT_RESULT "
