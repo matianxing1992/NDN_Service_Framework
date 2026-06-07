@@ -182,6 +182,13 @@ future provider executable should load the generated plan, register role
 runners from artifact metadata, then execute assigned roles through this
 session instead of wiring those pieces by hand.
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp` adapts that
+session shape to `ServiceProvider::CollaborationContext`. It constructs the
+per-request `NdnsfCollaborationDependencyIo`, executes the assigned native
+role, publishes inter-role activation outputs through planned dependency edges,
+and keeps the final role's user-visible result on the normal NDNSF response
+path with `publishFinalResponse(...)`.
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
 deployment plan in C++. It converts role/dependency metadata plus a
 session/provider assignment into role-local `RoleSpec` objects with

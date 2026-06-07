@@ -162,6 +162,12 @@ provider skeleton 边界。它把 generated execution plan、provider assignment
 executable 应加载 generated plan，根据 artifact metadata 注册 role runners，再通过
 这个 session 执行被分配的 roles，而不是在应用里手写这些组合逻辑。
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp` 把这个
+session 形态适配到 `ServiceProvider::CollaborationContext`。它会为每次请求构造
+`NdnsfCollaborationDependencyIo`，执行被分配的 native role，通过 planned
+dependency edges 发布 inter-role activation outputs，并让最终 role 的用户可见结果
+继续走普通 NDNSF response path，也就是 `publishFinalResponse(...)`。
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` 是 deployment
 plan 的 C++ 镜像。它把 role/dependency metadata、session/provider assignment
 转换成 role-local `RoleSpec`，其中包含 deterministic planned data names 和

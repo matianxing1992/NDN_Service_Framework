@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
@@ -416,6 +417,43 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
   BOOST_REQUIRE(io->publishedByScope.count("native-to-user") == 1);
   BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("native-to-user")),
                     "native:input:input-to-native");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPreservesFinalResponseBundle)
+{
+  RoleSpec role{
+    "/Merge",
+    {},
+    {},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(1);
+
+  const auto result = worker.executeAsync(
+    "final-response-run",
+    role,
+    io,
+    [] (const RoleExecutionContext& ctx) {
+      BOOST_CHECK_EQUAL(ctx.role, "/Merge");
+      return std::map<std::string, TensorBundle>{
+        {"final-response", bundle("final-response", "predictions")},
+      };
+    }).get();
+
+  BOOST_REQUIRE(result.outputsByScope.count("final-response") == 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("final-response")),
+                    "predictions");
+
+  std::lock_guard<std::mutex> lock(io->mutex);
+  BOOST_CHECK(io->publishedByScope.empty());
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderHandlerRejectsMissingRunnerFactory)
+{
+  NativeProviderHandlerConfig config;
+  BOOST_CHECK_THROW(makeNativeProviderCollaborationHandler(std::move(config)),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
