@@ -435,6 +435,21 @@ def _tensor_nbytes(value) -> int:
         return int(np.asarray(value).nbytes)
 
 
+def _canonical_onnx_io_name(name: str) -> str:
+    base, dot, suffix = str(name).rpartition(".")
+    if dot and suffix.isdigit():
+        return base
+    return str(name)
+
+
+def _encoded_tensor_bundle_nbytes(payload: bytes,
+                                  tensors: list[str] | tuple[str, ...]) -> int:
+    return len(_npz_payload({
+        "payload": np.frombuffer(select_tensor_payload(payload, tensors),
+                                 dtype=np.uint8),
+    }))
+
+
 def _estimated_segments(byte_count: int) -> int:
     if byte_count <= 0:
         return 0
@@ -512,8 +527,12 @@ def split_model(output_dir: str | Path,
     full_model_path = output / f"{stem}-full-{input_size}.onnx"
     paths = {}
     chunk_metadata = {}
+    chunk_output_payloads: dict[str, bytes] = {}
 
     x = torch.from_numpy(make_input(input_size)).float()
+    current_ort_values_by_name = {
+        "images": x.detach().cpu().numpy().astype(np.float32),
+    }
     if not full_model_path.exists():
         torch.onnx.export(
             YoloFull(model).eval(),
@@ -586,6 +605,29 @@ def split_model(output_dir: str | Path,
                 opset_version=17,
                 do_constant_folding=True,
             )
+        session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        ort_input_names = [item.name for item in session.get_inputs()]
+        ort_output_names = [item.name for item in session.get_outputs()]
+        ort_inputs = {}
+        canonical_values = {
+            _canonical_onnx_io_name(name): value
+            for name, value in current_ort_values_by_name.items()
+        }
+        for input_name in ort_input_names:
+            if input_name in current_ort_values_by_name:
+                ort_inputs[input_name] = current_ort_values_by_name[input_name]
+                continue
+            canonical = _canonical_onnx_io_name(input_name)
+            if canonical in canonical_values:
+                ort_inputs[input_name] = canonical_values[canonical]
+                continue
+            raise KeyError(f"missing ONNX calibration input {input_name}")
+        ort_outputs = tuple(
+            np.asarray(value, dtype=np.float32)
+            for value in session.run(ort_output_names, ort_inputs)
+        )
+        ort_output_values = dict(zip(ort_output_names, ort_outputs))
+        chunk_output_payloads[role] = npz_payload(ort_output_values)
         paths[role] = path
         chunk_metadata[role] = {
             "source_model": loaded_name,
@@ -601,9 +643,15 @@ def split_model(output_dir: str | Path,
             **planner_selected,
         }
         current_values = next_values
+        current_ort_values_by_name = ort_output_values
         current_saved = output_saved
 
     dependencies, chunk_graph = _build_yolo_onnx_dependencies(paths, roles=roles)
+    dependencies = _calibrate_yolo_dependency_payload_sizes(
+        dependencies,
+        chunk_graph,
+        chunk_output_payloads,
+    )
     graph_summary = output / f"{stem}-{layout}-onnx-graph-summary.json"
     write_onnx_graph_summary(
         graph_summary,
@@ -1258,6 +1306,60 @@ def _build_yolo_onnx_dependencies(paths: dict[str, Path],
         )
         for role in roles
     ])
+
+
+def _calibrate_yolo_dependency_payload_sizes(
+    dependencies: list[InferenceDependency],
+    chunk_graph: dict,
+    chunk_output_payloads: dict[str, bytes],
+) -> list[InferenceDependency]:
+    """Use the sample YOLO chunk run to estimate actual encoded bundle size.
+
+    The generic ONNX graph analyzer only sees tensor shapes, so its
+    ``expected_bytes`` is raw tensor payload. The runtime publishes selected
+    tensors as an NPZ payload and then wraps that payload in a tensor-bundle NPZ.
+    For this model-specific splitter we can do better because the chunk export
+    path already ran one deterministic sample forward pass.
+    """
+
+    calibrated: list[InferenceDependency] = []
+    encoded_bytes_by_edge: dict[tuple[str, str, str], int] = {}
+    for dep in dependencies:
+        producer = dep.producers[0] if dep.producers else ""
+        consumer = dep.consumers[0] if dep.consumers else ""
+        payload = chunk_output_payloads.get(producer)
+        encoded_bytes = 0
+        if payload is not None:
+            encoded_bytes = _encoded_tensor_bundle_nbytes(payload, dep.tensors)
+        if encoded_bytes <= 0:
+            encoded_bytes = dep.expected_bytes
+        calibrated_dep = InferenceDependency(
+            producers=list(dep.producers),
+            consumers=list(dep.consumers),
+            key_scope=dep.key_scope,
+            topic_prefix=dep.topic_prefix,
+            required=dep.required,
+            tensors=list(dep.tensors),
+            object_name_template=dep.object_name_template,
+            expected_segments=_estimated_segments(encoded_bytes),
+            expected_bytes=encoded_bytes,
+        )
+        calibrated.append(calibrated_dep)
+        encoded_bytes_by_edge[(producer, consumer, dep.key_scope)] = encoded_bytes
+
+    for item in chunk_graph.get("dependencies", []):
+        producer = str(item.get("producer", item.get("producers", [""])[0]
+                       if item.get("producers") else ""))
+        consumer = str(item.get("consumer", item.get("consumers", [""])[0]
+                       if item.get("consumers") else ""))
+        key_scope = str(item.get("keyScope", item.get("key_scope", "")))
+        encoded_bytes = encoded_bytes_by_edge.get((producer, consumer, key_scope), 0)
+        if encoded_bytes <= 0:
+            continue
+        item["encodedBundleBytes"] = encoded_bytes
+        item["expectedBytes"] = encoded_bytes
+        item["expectedSegments"] = _estimated_segments(encoded_bytes)
+    return calibrated
 
 
 def _manual_yolo_dependencies() -> list[InferenceDependency]:

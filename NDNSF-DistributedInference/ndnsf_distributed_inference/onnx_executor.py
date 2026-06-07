@@ -76,9 +76,9 @@ def load_npz_payload(payload: bytes) -> dict[str, np.ndarray]:
 
 
 def encode_tensor_bundle(payload: bytes) -> bytes:
-    return npz_payload({
-        "payload": np.frombuffer(payload, dtype=np.uint8),
-    })
+    buffer = BytesIO()
+    np.savez(buffer, payload=np.frombuffer(payload, dtype=np.uint8))
+    return buffer.getvalue()
 
 
 def decode_tensor_bundle(payload: bytes) -> bytes:
