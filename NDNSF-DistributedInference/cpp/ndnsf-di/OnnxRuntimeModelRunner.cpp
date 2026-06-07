@@ -13,8 +13,11 @@
 #pragma GCC diagnostic pop
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstring>
+#include <iomanip>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -80,6 +83,13 @@ splitNames(const std::string& value)
     }
   }
   return names;
+}
+
+double
+elapsedMs(std::chrono::steady_clock::time_point start,
+          std::chrono::steady_clock::time_point end)
+{
+  return std::chrono::duration<double, std::milli>(end - start).count();
 }
 
 std::string
@@ -275,6 +285,7 @@ OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
 std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 {
+  const auto collectStart = std::chrono::steady_clock::now();
   Ort::AllocatorWithDefaultOptions allocator;
   Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(
     OrtAllocatorType::OrtArenaAllocator,
@@ -346,6 +357,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     outputNamePtrs.push_back(name.c_str());
   }
 
+  const auto runStart = std::chrono::steady_clock::now();
   auto outputs = m_impl->session.Run(
     Ort::RunOptions{nullptr},
     inputNamePtrs.data(),
@@ -353,6 +365,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     inputValues.size(),
     outputNamePtrs.data(),
     outputNamePtrs.size());
+  const auto runDone = std::chrono::steady_clock::now();
 
   std::vector<NamedTensor> namedOutputs;
   namedOutputs.reserve(outputs.size());
@@ -396,6 +409,17 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     result.emplace(bundleScope.empty() ? "onnx-output-bundle" : bundleScope,
                    std::move(bundle));
   }
+  const auto packageDone = std::chrono::steady_clock::now();
+  std::cout << std::fixed << std::setprecision(3)
+            << "\nNDNSF_DI_ONNX_TIMING"
+            << " session=" << ctx.sessionId
+            << " role=" << ctx.role
+            << " collect_ms=" << elapsedMs(collectStart, runStart)
+            << " session_ms=0"
+            << " run_ms=" << elapsedMs(runStart, runDone)
+            << " publish_ms=" << elapsedMs(runDone, packageDone)
+            << " session_cache=hit"
+            << std::endl;
   return result;
 }
 

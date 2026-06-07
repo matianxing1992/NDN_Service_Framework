@@ -124,6 +124,7 @@ ProviderRoleWorker::runRole(const WorkItem& item)
 
   for (const auto& edge : item.role.inputs) {
     InputFetchTiming timing;
+    timing.producerRole = edge.producerRole;
     timing.scope = edge.scope;
     timing.plannedDataName = edge.plannedDataName;
     timing.expectedSegments = edge.expectedSegments;
@@ -137,6 +138,7 @@ ProviderRoleWorker::runRole(const WorkItem& item)
   for (std::size_t i = 0; i < futures.size(); ++i) {
     auto bundle = futures[i].get();
     inputTimings[i].fetchCompletedAt = std::chrono::steady_clock::now();
+    inputTimings[i].bytes = bundle.payload.size();
     inputsByScope[item.role.inputs[i].scope] = std::move(bundle);
   }
 
@@ -152,10 +154,23 @@ ProviderRoleWorker::runRole(const WorkItem& item)
   ctx.inputsByScope = std::move(inputsByScope);
   result.outputsByScope = item.runner->run(ctx);
 
+  const auto outputReadyAt = std::chrono::steady_clock::now();
+  result.outputTimings.reserve(item.role.outputs.size());
   for (const auto& edge : item.role.outputs) {
     auto bundle = outputForEdge(result.outputsByScope, edge);
     result.outputsByScope[edge.scope] = bundle;
     item.io->publishOutput(item.sessionId, edge, bundle);
+
+    OutputPublishTiming timing;
+    timing.producerRole = edge.producerRole;
+    timing.scope = edge.scope;
+    timing.plannedDataName = edge.plannedDataName;
+    timing.expectedSegments = edge.expectedSegments;
+    timing.expectedBytes = edge.expectedBytes;
+    timing.bytes = bundle.payload.size();
+    timing.outputReadyAt = outputReadyAt;
+    timing.publishDoneAt = std::chrono::steady_clock::now();
+    result.outputTimings.push_back(std::move(timing));
   }
 
   result.timing.finishedAt = std::chrono::steady_clock::now();

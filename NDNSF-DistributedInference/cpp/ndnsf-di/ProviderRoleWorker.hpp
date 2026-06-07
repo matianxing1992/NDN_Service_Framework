@@ -19,12 +19,26 @@ namespace ndnsf::di {
 
 struct InputFetchTiming
 {
+  std::string producerRole;
   std::string scope;
   std::string plannedDataName;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
+  std::size_t bytes = 0;
   std::chrono::steady_clock::time_point prefetchStartedAt;
   std::chrono::steady_clock::time_point fetchCompletedAt;
+};
+
+struct OutputPublishTiming
+{
+  std::string producerRole;
+  std::string scope;
+  std::string plannedDataName;
+  std::size_t expectedSegments = 0;
+  std::size_t expectedBytes = 0;
+  std::size_t bytes = 0;
+  std::chrono::steady_clock::time_point outputReadyAt;
+  std::chrono::steady_clock::time_point publishDoneAt;
 };
 
 struct ProviderRoleResult
@@ -32,6 +46,7 @@ struct ProviderRoleResult
   std::map<std::string, TensorBundle> outputsByScope;
   RoleTiming timing;
   std::vector<InputFetchTiming> inputTimings;
+  std::vector<OutputPublishTiming> outputTimings;
 };
 
 class DependencyIo
