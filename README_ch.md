@@ -284,8 +284,10 @@ Provider collaboration large-data fetch 默认使用 10 秒 Interest lifetime
 timeout 更长，因为 distributed-inference role 可能会在上游 role 完成 segments
 发布前，就预取一个确定性 activation name。实验仍然可以通过这个环境变量显式调低
 或调高该值。
-设置 `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` 时，Core 会为这些 collaboration
-large-data fetch 输出 SegmentFetcher 级 timing 日志。DI MiniNDN 回归会把这些日志解析到
+设置 `NDNSF_COLLAB_LARGE_FETCH_INIT_CWND` 可以调节 collaboration large-data fetch
+的 SegmentFetcher 初始 pipeline window，默认值是 `8`。设置
+`NDNSF_COLLAB_LARGE_FETCH_TIMING=1` 时，Core 会为这些 collaboration large-data
+fetch 输出 SegmentFetcher 级 timing 日志。DI MiniNDN 回归会把这些日志解析到
 `collab-large-fetch-stats.json`，这样可以把应用层 dependency wait 和 native segmented
 fetch 时间分开比较。
 
@@ -295,6 +297,12 @@ fetch 时间分开比较。
 NDNSF_RESPONSE_LARGE_DATA_THRESHOLD=4096 ./your-app
 NDNSF_DISABLE_RESPONSE_LARGE_DATA_REFERENCE=1 ./your-app
 ```
+
+User 侧解析自动 large response reference 时也走同样的 segmented-fetch 纪律。
+`NDNSF_RESPONSE_LARGE_INTEREST_LIFETIME_MS` 控制 Interest lifetime，
+`NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND` 控制 SegmentFetcher 初始窗口，
+`NDNSF_RESPONSE_LARGE_FETCH_TIMING=1` 会输出 timing 日志。当 distributed inference
+这类应用故意让较大的最终输出走 response-reference path 时，这些配置可以用于调试和调优。
 
 对于同一个进程内部的可信服务组合，NDNSF 也提供 `LocalServiceRegistry`。
 这不是一种网络调用模式，远程 caller 看不到也不能选择它。只有 container 显式把某个

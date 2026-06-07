@@ -312,6 +312,8 @@ longer than a normal low-latency command timeout because distributed-inference
 roles may prefetch a deterministic activation name before the upstream role has
 finished publishing the segments. Experiments can still lower or raise this
 value explicitly with the environment variable.
+Set `NDNSF_COLLAB_LARGE_FETCH_INIT_CWND` to tune the initial SegmentFetcher
+pipeline window for collaboration large-data fetches; the default is `8`.
 Set `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` to emit Core-level SegmentFetcher
 timing lines for these collaboration large-data fetches. The DI MiniNDN
 regression parses those lines into `collab-large-fetch-stats.json` so the
@@ -325,6 +327,14 @@ disabled with environment variables:
 NDNSF_RESPONSE_LARGE_DATA_THRESHOLD=4096 ./your-app
 NDNSF_DISABLE_RESPONSE_LARGE_DATA_REFERENCE=1 ./your-app
 ```
+
+User-side resolution of automatic large response references uses the same
+segmented-fetch discipline. `NDNSF_RESPONSE_LARGE_INTEREST_LIFETIME_MS`
+controls the Interest lifetime, `NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND`
+controls the initial SegmentFetcher window, and
+`NDNSF_RESPONSE_LARGE_FETCH_TIMING=1` emits timing logs. These settings are
+useful when an application, such as distributed inference, intentionally returns
+large final outputs through the response-reference path.
 
 For trusted composition inside one process, NDNSF also provides
 `LocalServiceRegistry`. This is not a network invocation mode and is not

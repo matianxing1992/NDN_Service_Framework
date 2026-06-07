@@ -3689,40 +3689,104 @@ namespace ndn_service_framework
         auto cv = std::make_shared<std::condition_variable>();
         auto error = std::make_shared<std::string>();
         auto encodedEnvelope = std::make_shared<ndn::Buffer>();
+        const int interestLifetimeMs =
+            std::max(50, intEnvOrDefault("NDNSF_RESPONSE_LARGE_INTEREST_LIFETIME_MS", 4000));
+        const double fetchInitCwnd = static_cast<double>(
+            std::max(1, intEnvOrDefault("NDNSF_RESPONSE_LARGE_FETCH_INIT_CWND", 8)));
+        const bool fetchTimingEnabled = isTruthyEnv("NDNSF_RESPONSE_LARGE_FETCH_TIMING");
+        const auto fetchStart = std::chrono::steady_clock::now();
 
         boost::asio::post(m_face.getIoContext(),
-            [this, dataName = reference->dataName, completed, mutex, cv, error, encodedEnvelope] {
+            [this,
+             dataName = reference->dataName,
+             completed,
+             mutex,
+             cv,
+             error,
+             encodedEnvelope,
+             interestLifetimeMs,
+             fetchInitCwnd,
+             fetchTimingEnabled,
+             fetchStart] {
                 ndn::Interest interest(dataName);
                 interest.setCanBePrefix(true);
                 interest.setMustBeFresh(true);
-                interest.setInterestLifetime(ndn::time::seconds(4));
+                interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
 
                 try {
                     ndn::SegmentFetcher::Options options;
                     options.probeLatestVersion = false;
                     options.useConstantCwnd = true;
-                    options.initCwnd = 4.0;
+                    options.initCwnd = fetchInitCwnd;
                     options.maxTimeout = ndn::time::seconds(10);
+                    options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
+                    if (fetchTimingEnabled) {
+                        NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=start"
+                                     << " dataName=" << dataName.toUri()
+                                     << " interest_lifetime_ms=" << interestLifetimeMs
+                                     << " init_cwnd=" << fetchInitCwnd);
+                    }
                     auto fetcher = ndn::SegmentFetcher::start(m_face,
                                                                interest,
                                                                nac_validator,
                                                                options);
                     fetcher->onComplete.connect(
-                        [completed, mutex, cv, encodedEnvelope](ndn::ConstBufferPtr buffer) {
+                        [completed,
+                         mutex,
+                         cv,
+                         encodedEnvelope,
+                         dataName,
+                         fetchTimingEnabled,
+                         fetchStart,
+                         interestLifetimeMs,
+                         fetchInitCwnd](ndn::ConstBufferPtr buffer) {
                             {
                                 std::lock_guard<std::mutex> lock(*mutex);
                                 encodedEnvelope->assign(buffer->begin(), buffer->end());
                                 completed->store(true);
                             }
+                            if (fetchTimingEnabled) {
+                                const auto elapsedMs =
+                                    std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - fetchStart).count() /
+                                    1000.0;
+                                NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=complete"
+                                             << " dataName=" << dataName.toUri()
+                                             << " elapsed_ms=" << elapsedMs
+                                             << " encoded_bytes=" << buffer->size()
+                                             << " interest_lifetime_ms=" << interestLifetimeMs
+                                             << " init_cwnd=" << fetchInitCwnd);
+                            }
                             cv->notify_one();
                         });
                     fetcher->onError.connect(
-                        [completed, mutex, cv, error](uint32_t code, const std::string& msg) {
+                        [completed,
+                         mutex,
+                         cv,
+                         error,
+                         dataName,
+                         fetchTimingEnabled,
+                         fetchStart,
+                         interestLifetimeMs,
+                         fetchInitCwnd](uint32_t code, const std::string& msg) {
                             {
                                 std::lock_guard<std::mutex> lock(*mutex);
                                 *error = "SegmentFetcher error " + std::to_string(code) +
                                          ": " + msg;
                                 completed->store(true);
+                            }
+                            if (fetchTimingEnabled) {
+                                const auto elapsedMs =
+                                    std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - fetchStart).count() /
+                                    1000.0;
+                                NDN_LOG_INFO("NDNSF_RESPONSE_LARGE_FETCH_TIMING event=error"
+                                             << " dataName=" << dataName.toUri()
+                                             << " elapsed_ms=" << elapsedMs
+                                             << " code=" << code
+                                             << " message=" << msg
+                                             << " interest_lifetime_ms=" << interestLifetimeMs
+                                             << " init_cwnd=" << fetchInitCwnd);
                             }
                             cv->notify_one();
                         });
