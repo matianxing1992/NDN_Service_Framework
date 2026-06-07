@@ -189,6 +189,15 @@ role, publishes inter-role activation outputs through planned dependency edges,
 and keeps the final role's user-visible result on the normal NDNSF response
 path with `publishFinalResponse(...)`.
 
+`examples/DI_NativeProviderSessionSmoke.cpp` is a small native executable smoke
+for this boundary. It uses a fake backend and in-memory dependency I/O to run a
+`/Backbone -> /Head/* -> /Merge` plan without MiniNDN or NFD:
+
+```bash
+./waf build --targets=di-native-provider-session-smoke
+build/examples/di-native-provider-session-smoke
+```
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
 deployment plan in C++. It converts role/dependency metadata plus a
 session/provider assignment into role-local `RoleSpec` objects with
