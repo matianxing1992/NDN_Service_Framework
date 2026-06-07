@@ -1328,8 +1328,9 @@ NDNSF_DI_PLAN_CACHE
 这些日志把 latency 拆成 input collection、activation reference wait、large-object
 fetch、tensor decode、ONNX session lookup、ONNX run 和 output publish。
 dependency input/output timing 会带上 DI session identifier，因此长时间运行时可以
-按单次 inference request 分组，而不是把 cold path 和 warm path 混在一起。它们的
-目的是指导泛化的数据流优化，而不是针对某一个 YOLO layout 手工调参。
+按单次 inference request 分组，而不是把 cold path 和 warm path 混在一起。当
+splitter 能估计时，这些日志也会记录实际 payload bytes 以及 planned segment/byte
+counts。它们的目的是指导泛化的数据流优化，而不是针对某一个 YOLO layout 手工调参。
 
 executor 还有一个不依赖 MiniNDN 的小型 smoke test。它会构造一个 toy ONNX DAG，
 包含一条 fan-out edge 和一个 fan-in join：
@@ -1392,13 +1393,14 @@ plan-cache-stats.json
 onnx-timing-stats.json
 dependency-input-timing-stats.json
 dependency-output-timing-stats.json
+dependency-volume-stats.json
 dependency-frontier-timing-stats.json
 ```
 
 这些文件记录端到端 latency、节点流量计数、NFD Data 计数、plan cache 命中、
 ONNX session/run 时间、每条 activation edge 的 reference wait/fetch timing，以及
-每条 activation edge 的 publish timing，以及 producer-output-ready 到
-consumer-first-segment 的 frontier timing。
+每条 activation edge 的 publish timing、planned-vs-actual activation 数据量，以及
+producer-output-ready 到 consumer-first-segment 的 frontier timing。
 后续分析瓶颈时，应根据这些统计判断问题是在 ACK/selection、artifact 发布、
 ONNX 执行、activation reference wait、segmented fetch、activation publish、
 frontier scheduling，还是 tensor decode。

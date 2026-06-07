@@ -1506,8 +1506,10 @@ These lines split latency into input collection, activation reference wait,
 large-object fetch, tensor decode, ONNX session lookup, ONNX run, and output
 publish time. The dependency input/output timing lines include the DI session
 identifier, so a long run can be grouped by individual inference request rather
-than mixing cold and warm paths. They are meant to guide generic dataflow
-optimizations instead of tuning a single YOLO layout by hand.
+than mixing cold and warm paths. They also report actual payload bytes plus
+planned segment and byte counts when the splitter can estimate them. They are
+meant to guide generic dataflow optimizations instead of tuning a single YOLO
+layout by hand.
 
 The executor also has a small non-MiniNDN smoke test that builds a toy ONNX DAG
 with one fan-out edge and one fan-in join:
@@ -1572,13 +1574,15 @@ plan-cache-stats.json
 onnx-timing-stats.json
 dependency-input-timing-stats.json
 dependency-output-timing-stats.json
+dependency-volume-stats.json
 dependency-frontier-timing-stats.json
 ```
 
 These files record end-to-end latency, node traffic counters, NFD Data counters,
 plan-cache hits, ONNX session/run time, per-edge activation reference/fetch
-timing, per-edge activation publish timing, and producer-output-ready to
-consumer-first-segment frontier timing. Use them to decide whether the next
+timing, per-edge activation publish timing, planned-vs-actual activation
+volume, and producer-output-ready to consumer-first-segment frontier timing.
+Use them to decide whether the next
 bottleneck is ACK/selection, artifact publication, ONNX execution, activation
 reference wait, segmented fetch, activation publish, frontier scheduling, or
 tensor decoding.

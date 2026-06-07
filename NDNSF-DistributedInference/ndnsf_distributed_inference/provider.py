@@ -28,6 +28,7 @@ class LargePrefetchResult:
     fetch_ms: float
     total_ms: float
     expected_segments: int = 0
+    expected_bytes: int = 0
     used_planned_name: bool = False
 
 
@@ -51,7 +52,8 @@ class DependencyPrefetcher:
                        ref_timeout_ms: int = 10000,
                        fetch_timeout_ms: int = 10000,
                        data_name: str = "",
-                       expected_segments: int = 0) -> Future:
+                       expected_segments: int = 0,
+                       expected_bytes: int = 0) -> Future:
         topic = edge.topic(topic_suffix)
 
         def fetch() -> LargePrefetchResult:
@@ -71,6 +73,7 @@ class DependencyPrefetcher:
                         fetch_ms=fetch_ms,
                         total_ms=_elapsed_ms(total_start),
                         expected_segments=expected_segments,
+                        expected_bytes=expected_bytes,
                         used_planned_name=True,
                     )
             ref_start = perf_counter()
@@ -97,6 +100,7 @@ class DependencyPrefetcher:
                 fetch_ms=fetch_ms,
                 total_ms=_elapsed_ms(total_start),
                 expected_segments=expected_segments,
+                expected_bytes=expected_bytes,
                 used_planned_name=False,
             )
 
@@ -211,9 +215,10 @@ class ProviderRuntimeContext:
                 topic_suffix,
                 ref_timeout_ms=ref_timeout_ms,
                 fetch_timeout_ms=fetch_timeout_ms,
-                data_name=data_name,
-                expected_segments=int(getattr(edge, "expected_segments", 0) or 0),
-            )
+            data_name=data_name,
+            expected_segments=int(getattr(edge, "expected_segments", 0) or 0),
+            expected_bytes=int(getattr(edge, "expected_bytes", 0) or 0),
+        )
         except TypeError:
             return self.prefetcher.prefetch_large(
                 edge,

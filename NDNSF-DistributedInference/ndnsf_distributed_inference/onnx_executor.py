@@ -204,6 +204,7 @@ def execute_onnx_dependency_chunk(
             f"tensors={','.join(edge_tensors)} "
             f"bytes={len(edge_payload)} "
             f"expected_segments={int(getattr(edge, 'expected_segments', 0) or 0)} "
+            f"expected_bytes={int(getattr(edge, 'expected_bytes', 0) or 0)} "
             f"planned_name={'true' if data_name else 'false'} "
             f"data_name={data_name or '-'} "
             f"output_ready_epoch_ms={output_ready_epoch_ms} "
@@ -267,6 +268,7 @@ def _collect_input_values(
             fetch_ms = 0.0
             prefetch_total_ms = wait_ms
             expected_segments = int(getattr(edge, "expected_segments", 0) or 0)
+            expected_bytes = int(getattr(edge, "expected_bytes", 0) or 0)
             used_planned_name = False
         else:
             payload = result.payload
@@ -274,6 +276,7 @@ def _collect_input_values(
             fetch_ms = result.fetch_ms
             prefetch_total_ms = result.total_ms
             expected_segments = result.expected_segments
+            expected_bytes = result.expected_bytes
             used_planned_name = bool(result.used_planned_name)
         tensor_payload = decode_tensor_bundle(payload)
         tensor_values = load_npz_payload(tensor_payload)
@@ -298,6 +301,7 @@ def _collect_input_values(
             f"prefetch_total_ms={prefetch_total_ms:.2f} "
             f"prefetch_overlap_ms={max(0.0, prefetch_total_ms - wait_ms):.2f} "
             f"expected_segments={expected_segments}",
+            f"expected_bytes={expected_bytes}",
             f"planned_name={'true' if used_planned_name else 'false'}",
             f"data_name={ctx.planned_large_data_name(edge, item.producer) or '-'}",
             flush=True,

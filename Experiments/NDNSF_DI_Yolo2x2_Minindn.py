@@ -511,6 +511,7 @@ def write_provider_timing_summaries(layout: str,
                     row[key] = parse_numeric_prefix(row.get(key, "0"))
                 row["bytes"] = parse_int_prefix(row.get("bytes", "0"))
                 row["expected_segments"] = parse_int_prefix(row.get("expected_segments", "0"))
+                row["expected_bytes"] = parse_int_prefix(row.get("expected_bytes", "0"))
                 row["planned_name"] = str(row.get("planned_name", "false"))
                 row["providerLog"] = path.name
                 dependency_rows.append(row)
@@ -519,8 +520,10 @@ def write_provider_timing_summaries(layout: str,
                 row["publish_ms"] = parse_numeric_prefix(row.get("publish_ms", "0"))
                 row["bytes"] = parse_int_prefix(row.get("bytes", "0"))
                 row["expected_segments"] = parse_int_prefix(row.get("expected_segments", "0"))
+                row["expected_bytes"] = parse_int_prefix(row.get("expected_bytes", "0"))
                 row["output_ready_epoch_ms"] = parse_int_prefix(row.get("output_ready_epoch_ms", "0"))
                 row["publish_done_epoch_ms"] = parse_int_prefix(row.get("publish_done_epoch_ms", "0"))
+                row["planned_name"] = str(row.get("planned_name", "false"))
                 row["providerLog"] = path.name
                 output_rows.append(row)
             elif "NDNSF_COLLAB_LARGE_FETCH_TIMING" in line:
@@ -638,9 +641,13 @@ def write_provider_timing_summaries(layout: str,
         "count": len(dependency_rows),
         "totalBytes": sum(row["bytes"] for row in dependency_rows),
         "totalExpectedSegments": sum(row["expected_segments"] for row in dependency_rows),
+        "totalExpectedBytes": sum(row["expected_bytes"] for row in dependency_rows),
         "bytes": summarize_numeric([float(row["bytes"]) for row in dependency_rows]),
         "expectedSegments": summarize_numeric([
             float(row["expected_segments"]) for row in dependency_rows
+        ]),
+        "expectedBytes": summarize_numeric([
+            float(row["expected_bytes"]) for row in dependency_rows
         ]),
         "futureWaitMs": summarize_numeric([row["future_wait_ms"] for row in dependency_rows]),
         "referenceWaitMs": summarize_numeric([row["ref_wait_ms"] for row in dependency_rows]),
@@ -666,6 +673,7 @@ def write_provider_timing_summaries(layout: str,
         f"prefetch_overlap_p50_ms={dep_summary['prefetchOverlapMs']['p50']:.2f} "
         f"planned_name_fetches={dep_summary['plannedNameFetches']} "
         f"total_bytes={dep_summary['totalBytes']} "
+        f"total_expected_bytes={dep_summary['totalExpectedBytes']} "
         f"path={dep_path}"
     )
     dependency_by_consumer = {}
@@ -732,9 +740,13 @@ def write_provider_timing_summaries(layout: str,
         "count": len(output_rows),
         "totalBytes": sum(row["bytes"] for row in output_rows),
         "totalExpectedSegments": sum(row["expected_segments"] for row in output_rows),
+        "totalExpectedBytes": sum(row["expected_bytes"] for row in output_rows),
         "bytes": summarize_numeric([float(row["bytes"]) for row in output_rows]),
         "expectedSegments": summarize_numeric([
             float(row["expected_segments"]) for row in output_rows
+        ]),
+        "expectedBytes": summarize_numeric([
+            float(row["expected_bytes"]) for row in output_rows
         ]),
         "publishMs": summarize_numeric([row["publish_ms"] for row in output_rows]),
         "rows": output_rows,
@@ -747,6 +759,7 @@ def write_provider_timing_summaries(layout: str,
         f"layout={layout} count={output_summary['count']} "
         f"publish_p50_ms={output_summary['publishMs']['p50']:.2f} "
         f"total_bytes={output_summary['totalBytes']} "
+        f"total_expected_bytes={output_summary['totalExpectedBytes']} "
         f"path={output_path}"
     )
     output_by_scope = {}
@@ -772,6 +785,87 @@ def write_provider_timing_summaries(layout: str,
             f"bytes={sum(row['bytes'] for row in rows)} "
             f"publish_sum_ms={sum(row['publish_ms'] for row in rows):.2f}"
         )
+    input_volume_by_scope = {
+        scope: {
+            "count": len(rows),
+            "actualBytes": sum(row["bytes"] for row in rows),
+            "expectedBytes": sum(row["expected_bytes"] for row in rows),
+            "expectedSegments": sum(row["expected_segments"] for row in rows),
+            "plannedNameFetches": sum(1 for row in rows if row.get("planned_name") == "true"),
+        }
+        for scope, rows in sorted(dependency_by_scope.items())
+    }
+    output_volume_by_scope = {}
+    for row in output_rows:
+        scope = row.get("scope", "-")
+        item = output_volume_by_scope.setdefault(scope, {
+            "count": 0,
+            "actualBytes": 0,
+            "expectedBytes": 0,
+            "expectedSegments": 0,
+            "plannedNamePublishes": 0,
+        })
+        item["count"] += 1
+        item["actualBytes"] += row["bytes"]
+        item["expectedBytes"] += row["expected_bytes"]
+        item["expectedSegments"] += row["expected_segments"]
+        if row.get("planned_name") == "true":
+            item["plannedNamePublishes"] += 1
+    input_volume_by_session = {
+        session: {
+            "count": len(rows),
+            "actualBytes": sum(row["bytes"] for row in rows),
+            "expectedBytes": sum(row["expected_bytes"] for row in rows),
+            "expectedSegments": sum(row["expected_segments"] for row in rows),
+            "plannedNameFetches": sum(1 for row in rows if row.get("planned_name") == "true"),
+        }
+        for session, rows in sorted(dependency_by_session.items())
+    }
+    output_volume_by_session = {}
+    for session, rows in sorted(output_by_session.items()):
+        output_volume_by_session[session] = {
+            "count": len(rows),
+            "actualBytes": sum(row["bytes"] for row in rows),
+            "expectedBytes": sum(row["expected_bytes"] for row in rows),
+            "expectedSegments": sum(row["expected_segments"] for row in rows),
+            "plannedNamePublishes": sum(1 for row in rows if row.get("planned_name") == "true"),
+        }
+    volume_summary = {
+        "layout": layout,
+        "inputs": {
+            "count": len(dependency_rows),
+            "actualBytes": dep_summary["totalBytes"],
+            "expectedBytes": dep_summary["totalExpectedBytes"],
+            "expectedSegments": dep_summary["totalExpectedSegments"],
+            "byScope": input_volume_by_scope,
+            "bySession": input_volume_by_session,
+        },
+        "outputs": {
+            "count": len(output_rows),
+            "actualBytes": output_summary["totalBytes"],
+            "expectedBytes": output_summary["totalExpectedBytes"],
+            "expectedSegments": output_summary["totalExpectedSegments"],
+            "byScope": output_volume_by_scope,
+            "bySession": output_volume_by_session,
+        },
+    }
+    volume_path = OUT / "dependency-volume-stats.json"
+    volume_path.write_text(
+        json.dumps(volume_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_DEPENDENCY_VOLUME "
+        f"layout={layout} "
+        f"input_count={volume_summary['inputs']['count']} "
+        f"input_actual_bytes={volume_summary['inputs']['actualBytes']} "
+        f"input_expected_bytes={volume_summary['inputs']['expectedBytes']} "
+        f"input_expected_segments={volume_summary['inputs']['expectedSegments']} "
+        f"output_count={volume_summary['outputs']['count']} "
+        f"output_actual_bytes={volume_summary['outputs']['actualBytes']} "
+        f"output_expected_bytes={volume_summary['outputs']['expectedBytes']} "
+        f"output_expected_segments={volume_summary['outputs']['expectedSegments']} "
+        f"path={volume_path}"
+    )
     role_run_p50_sum = 0.0
     role_publish_p50_sum = 0.0
     role_session_p50_sum = 0.0
