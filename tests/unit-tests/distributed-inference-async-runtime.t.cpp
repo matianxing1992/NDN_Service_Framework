@@ -184,11 +184,11 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
   RoleSpec role{
     "/Merge",
     {DependencyEdge{"head0-to-merge", "/Head/0", "/Merge",
-                    "/run/3/head0/bundle/0", 2},
+                    "/run/3/head0/bundle/0", 2, 14000},
      DependencyEdge{"head1-to-merge", "/Head/1", "/Merge",
-                    "/run/3/head1/bundle/0", 1}},
+                    "/run/3/head1/bundle/0", 1, 7000}},
     {DependencyEdge{"merge-to-user", "/Merge", "",
-                    "/run/3/merge/bundle/0", 1}},
+                    "/run/3/merge/bundle/0", 1, 4000}},
   };
 
   auto io = std::make_shared<FakeDependencyIo>();
@@ -217,6 +217,7 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
   BOOST_REQUIRE_EQUAL(result.inputTimings.size(), 2);
   BOOST_CHECK_EQUAL(result.inputTimings[0].plannedDataName, "/run/3/head0/bundle/0");
   BOOST_CHECK_EQUAL(result.inputTimings[1].expectedSegments, 1);
+  BOOST_CHECK_EQUAL(result.inputTimings[1].expectedBytes, 7000);
   BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("merge-to-user")),
                     "input:head0-to-merge|input:head1-to-merge");
 
@@ -311,6 +312,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
       "/activation",
       "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
       3,
+      17000,
     },
     NativeDependencySpec{
       {"/Head/Shard/0", "/Head/Shard/1"},
@@ -319,6 +321,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
       "/activation",
       "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
       2,
+      9000,
     },
   };
 
@@ -335,6 +338,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
   BOOST_CHECK_EQUAL(head0.inputs[0].producerRole, "/Backbone");
   BOOST_CHECK_EQUAL(head0.inputs[0].consumerRole, "/Head/Shard/0");
   BOOST_CHECK_EQUAL(head0.inputs[0].expectedSegments, 3);
+  BOOST_CHECK_EQUAL(head0.inputs[0].expectedBytes, 17000);
   BOOST_CHECK_EQUAL(
     head0.inputs[0].plannedDataName,
     "/example/provider/backbone/NDNSF/DI/ACTIVATION/run-7/backbone-to-head/Backbone/bundle/0");
@@ -389,12 +393,14 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   BOOST_REQUIRE_EQUAL(plan.dependencies.size(), 1);
   BOOST_CHECK_EQUAL(plan.dependencies[0].keyScope, "stage0-to-stage1");
   BOOST_CHECK_EQUAL(plan.dependencies[0].expectedSegments, 3);
+  BOOST_CHECK_EQUAL(plan.dependencies[0].expectedBytes, 17000);
 
   NativeProviderAssignment assignment;
   assignment.providerByRole["/Stage/0"] = "/example/provider/stage0";
   assignment.providerByRole["/Stage/1"] = "/example/provider/stage1";
   const auto stage1 = roleSpecFor(plan, "/Stage/1", "/run-json", assignment);
   BOOST_REQUIRE_EQUAL(stage1.inputs.size(), 1);
+  BOOST_CHECK_EQUAL(stage1.inputs[0].expectedBytes, 17000);
   BOOST_CHECK_EQUAL(
     stage1.inputs[0].plannedDataName,
     "/example/provider/stage0/NDNSF/DI/ACTIVATION/run-json/stage0-to-stage1/Stage/0/bundle/0");

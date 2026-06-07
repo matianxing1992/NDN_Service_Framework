@@ -20,6 +20,7 @@ struct NativeDependencySpec
   std::string topicPrefix;
   std::string objectNameTemplate;
   std::size_t expectedSegments = 0;
+  std::size_t expectedBytes = 0;
 };
 
 struct NativeExecutionPlan
@@ -134,6 +135,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       dep.topicPrefix,
                                       producerProvider),
           dep.expectedSegments,
+          dep.expectedBytes,
         });
       }
     }
@@ -155,6 +157,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       dep.topicPrefix,
                                       producerProvider),
           dep.expectedSegments,
+          dep.expectedBytes,
         });
       }
     }

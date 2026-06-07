@@ -25,6 +25,7 @@ struct TensorBundle
   std::string name;
   std::vector<uint8_t> payload;
   std::size_t expectedSegments = 0;
+  std::size_t expectedBytes = 0;
 };
 
 struct DependencyEdge
@@ -34,6 +35,7 @@ struct DependencyEdge
   std::string consumerRole;
   std::string plannedDataName;
   std::size_t expectedSegments = 0;
+  std::size_t expectedBytes = 0;
 };
 
 struct RoleSpec

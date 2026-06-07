@@ -27,6 +27,7 @@ struct InputFetchTiming
   std::string scope;
   std::string plannedDataName;
   std::size_t expectedSegments = 0;
+  std::size_t expectedBytes = 0;
   std::chrono::steady_clock::time_point prefetchStartedAt;
   std::chrono::steady_clock::time_point fetchCompletedAt;
 };
@@ -182,6 +183,7 @@ private:
       timing.scope = edge.scope;
       timing.plannedDataName = edge.plannedDataName;
       timing.expectedSegments = edge.expectedSegments;
+      timing.expectedBytes = edge.expectedBytes;
       timing.prefetchStartedAt = std::chrono::steady_clock::now();
       futures.push_back(item.io->prefetchInput(item.sessionId, edge));
       inputTimings.push_back(timing);

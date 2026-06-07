@@ -48,6 +48,7 @@ public:
       bundle.name = edge.plannedDataName;
       bundle.payload.assign(payload->data(), payload->data() + payload->size());
       bundle.expectedSegments = edge.expectedSegments;
+      bundle.expectedBytes = edge.expectedBytes;
       return bundle;
     });
   }
