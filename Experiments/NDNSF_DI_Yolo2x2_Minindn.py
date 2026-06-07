@@ -506,6 +506,11 @@ def parse_int_prefix(value, default: int = 0) -> int:
     return int(parse_numeric_prefix(value, float(default)))
 
 
+def has_planned_name(row: dict) -> bool:
+    value = str(row.get("planned_name", "")).strip()
+    return bool(value and value.lower() not in {"false", "0", "none", "-"})
+
+
 def write_provider_timing_summaries(layout: str,
                                     providers: list[tuple[str, str, list[str]]]) -> None:
     onnx_rows = []
@@ -684,8 +689,7 @@ def write_provider_timing_summaries(layout: str,
         "prefetchOverlapMs": summarize_numeric([
             row["prefetch_overlap_ms"] for row in dependency_rows
         ]),
-        "plannedNameFetches": sum(1 for row in dependency_rows
-                                  if row.get("planned_name") == "true"),
+        "plannedNameFetches": sum(1 for row in dependency_rows if has_planned_name(row)),
         "rows": dependency_rows,
     }
     dep_path = OUT / "dependency-input-timing-stats.json"
@@ -727,7 +731,7 @@ def write_provider_timing_summaries(layout: str,
             f"fetch_p50_ms={fetch['p50']:.2f} fetch_p95_ms={fetch['p95']:.2f} "
             f"prefetch_p50_ms={prefetch['p50']:.2f} "
             f"prefetch_overlap_p50_ms={overlap['p50']:.2f} "
-            f"planned_name_fetches={sum(1 for row in rows if row.get('planned_name') == 'true')} "
+            f"planned_name_fetches={sum(1 for row in rows if has_planned_name(row))} "
             f"decode_p50_ms={decode['p50']:.2f}"
         )
     dependency_by_scope = {}
@@ -758,7 +762,7 @@ def write_provider_timing_summaries(layout: str,
             f"bytes={bytes_sum} "
             f"fetch_sum_ms={fetch_sum:.2f} "
             f"prefetch_overlap_sum_ms={overlap_sum:.2f} "
-            f"planned_name_fetches={sum(1 for row in rows if row.get('planned_name') == 'true')} "
+            f"planned_name_fetches={sum(1 for row in rows if has_planned_name(row))} "
             f"decode_sum_ms={decode_sum:.2f}"
         )
 
@@ -818,7 +822,7 @@ def write_provider_timing_summaries(layout: str,
             "actualBytes": sum(row["bytes"] for row in rows),
             "expectedBytes": sum(row["expected_bytes"] for row in rows),
             "expectedSegments": sum(row["expected_segments"] for row in rows),
-            "plannedNameFetches": sum(1 for row in rows if row.get("planned_name") == "true"),
+            "plannedNameFetches": sum(1 for row in rows if has_planned_name(row)),
         }
         for scope, rows in sorted(dependency_by_scope.items())
     }
@@ -836,7 +840,7 @@ def write_provider_timing_summaries(layout: str,
         item["actualBytes"] += row["bytes"]
         item["expectedBytes"] += row["expected_bytes"]
         item["expectedSegments"] += row["expected_segments"]
-        if row.get("planned_name") == "true":
+        if has_planned_name(row):
             item["plannedNamePublishes"] += 1
     input_volume_by_session = {
         session: {
@@ -844,7 +848,7 @@ def write_provider_timing_summaries(layout: str,
             "actualBytes": sum(row["bytes"] for row in rows),
             "expectedBytes": sum(row["expected_bytes"] for row in rows),
             "expectedSegments": sum(row["expected_segments"] for row in rows),
-            "plannedNameFetches": sum(1 for row in rows if row.get("planned_name") == "true"),
+            "plannedNameFetches": sum(1 for row in rows if has_planned_name(row)),
         }
         for session, rows in sorted(dependency_by_session.items())
     }
@@ -855,7 +859,7 @@ def write_provider_timing_summaries(layout: str,
             "actualBytes": sum(row["bytes"] for row in rows),
             "expectedBytes": sum(row["expected_bytes"] for row in rows),
             "expectedSegments": sum(row["expected_segments"] for row in rows),
-            "plannedNamePublishes": sum(1 for row in rows if row.get("planned_name") == "true"),
+            "plannedNamePublishes": sum(1 for row in rows if has_planned_name(row)),
         }
     volume_summary = {
         "layout": layout,
@@ -1166,6 +1170,10 @@ def write_provider_timing_summaries(layout: str,
             parse_int_prefix(row.get("start_epoch_ms", 0)) for row in rows
             if row.get("event") == "start" and parse_int_prefix(row.get("start_epoch_ms", 0)) > 0
         ]
+        submitted = [
+            parse_int_prefix(row.get("submitted_epoch_ms", 0)) for row in rows
+            if parse_int_prefix(row.get("submitted_epoch_ms", 0)) > 0
+        ]
         ends = [
             parse_int_prefix(row.get("end_epoch_ms", 0)) for row in rows
             if row.get("event") == "end" and parse_int_prefix(row.get("end_epoch_ms", 0)) > 0
@@ -1177,18 +1185,24 @@ def write_provider_timing_summaries(layout: str,
             for row in rows
             if row.get("role")
         })
+        submitted_start = min(submitted) if submitted else min(starts)
         dataflow_rows.append({
             "session": session,
             "roleCount": len(roles),
             "roles": roles,
+            "submittedStartEpochMs": submitted_start,
             "startEpochMs": min(starts),
             "endEpochMs": max(ends),
             "dataflowMs": max(ends) - min(starts),
+            "submittedDataflowMs": max(ends) - submitted_start,
         })
     handler_summary["dataflow"] = {
         "count": len(dataflow_rows),
         "dataflowMs": summarize_numeric([
             float(row["dataflowMs"]) for row in dataflow_rows
+        ]),
+        "submittedDataflowMs": summarize_numeric([
+            float(row["submittedDataflowMs"]) for row in dataflow_rows
         ]),
         "rows": dataflow_rows,
     }
@@ -1203,6 +1217,8 @@ def write_provider_timing_summaries(layout: str,
         f"queue_wait_p50_ms={handler_summary['queueWaitMs']['p50']:.2f} "
         f"handler_p50_ms={handler_summary['handlerMs']['p50']:.2f} "
         f"dataflow_p50_ms={handler_summary['dataflow']['dataflowMs']['p50']:.2f} "
+        f"submitted_dataflow_p50_ms="
+        f"{handler_summary['dataflow']['submittedDataflowMs']['p50']:.2f} "
         f"path={handler_path}"
     )
 
@@ -1260,6 +1276,179 @@ def write_client_timing_summaries(layout: str,
         f"scope_key_p50_ms={summary['scopeKeyMs']['p50']:.2f} "
         f"path={path}"
     )
+
+
+def _load_json_file(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def write_end_to_end_breakdown(layout: str) -> None:
+    client = _load_json_file(OUT / "client-inference-timing-stats.json", {})
+    handler = _load_json_file(OUT / "provider-handler-timing-stats.json", {})
+    onnx = _load_json_file(OUT / "onnx-timing-stats.json", {})
+    dep_in = _load_json_file(OUT / "dependency-input-timing-stats.json", {})
+    dep_out = _load_json_file(OUT / "dependency-output-timing-stats.json", {})
+
+    client_rows = sorted(
+        client.get("rows", []),
+        key=lambda row: (str(row.get("phase", "")), str(row.get("log", ""))),
+    )
+    # Preserve cold -> warm order when both phases are present.
+    phase_order = {"cold": 0, "warm": 1}
+    client_rows = sorted(
+        client_rows,
+        key=lambda row: (phase_order.get(str(row.get("phase", "")), 99),
+                         str(row.get("log", ""))),
+    )
+
+    dataflow_rows = sorted(
+        handler.get("dataflow", {}).get("rows", []),
+        key=lambda row: int(row.get("startEpochMs", 0)),
+    )
+
+    def rows_by_session(summary: dict, key: str = "rows") -> dict[str, list[dict]]:
+        grouped: dict[str, list[dict]] = {}
+        for row in summary.get(key, []):
+            session = str(row.get("session", ""))
+            if session:
+                grouped.setdefault(session, []).append(row)
+        return grouped
+
+    onnx_by_session = rows_by_session(onnx)
+    dep_in_by_session = rows_by_session(dep_in)
+    dep_out_by_session = rows_by_session(dep_out)
+    handler_by_session = rows_by_session(handler)
+
+    rows = []
+    for index, client_row in enumerate(client_rows):
+        dataflow = dataflow_rows[index] if index < len(dataflow_rows) else {}
+        session = str(dataflow.get("session", ""))
+        onnx_rows = onnx_by_session.get(session, [])
+        input_rows = dep_in_by_session.get(session, [])
+        output_rows = dep_out_by_session.get(session, [])
+        handler_rows = handler_by_session.get(session, [])
+        handler_end_rows = [
+            row for row in handler_rows
+            if row.get("event") == "end"
+        ]
+        handler_start_rows = [
+            row for row in handler_rows
+            if row.get("event") == "start"
+        ]
+        request_ms = float(client_row.get("request_ms", 0.0))
+        total_ms = float(client_row.get("total_ms", 0.0))
+        plan_ms = float(client_row.get("plan_ms", client_row.get("scope_key_ms", 0.0)))
+        role_run_window_ms = float(dataflow.get("dataflowMs", 0.0))
+        dataflow_ms = float(dataflow.get("submittedDataflowMs", role_run_window_ms))
+        dependency_fetch_sum = sum(float(row.get("fetch_ms", 0.0)) for row in input_rows)
+        dependency_fetch_max = max(
+            [float(row.get("fetch_ms", 0.0)) for row in input_rows] or [0.0])
+        dependency_publish_sum = sum(float(row.get("publish_ms", 0.0)) for row in output_rows)
+        dependency_publish_max = max(
+            [float(row.get("publish_ms", 0.0)) for row in output_rows] or [0.0])
+        onnx_run_sum = sum(float(row.get("run_ms", 0.0)) for row in onnx_rows)
+        onnx_collect_sum = sum(float(row.get("collect_ms", 0.0)) for row in onnx_rows)
+        onnx_package_sum = sum(float(row.get("publish_ms", 0.0)) for row in onnx_rows)
+        pre_run_wait_max = max(
+            [float(row.get("queue_wait_ms", 0.0)) for row in handler_start_rows] or [0.0])
+        handler_max = max(
+            [float(row.get("handler_ms", 0.0)) for row in handler_end_rows] or [0.0])
+        rows.append({
+            "index": index,
+            "phase": client_row.get("phase", ""),
+            "session": session,
+            "totalMs": total_ms,
+            "planOrScopeKeyMs": plan_ms,
+            "requestMs": request_ms,
+            "providerDataflowMs": dataflow_ms,
+            "roleRunWindowMs": role_run_window_ms,
+            "outerControlResidualMs": max(0.0, request_ms - dataflow_ms),
+            "nativeHotPathApproxMs": dataflow_ms,
+            "preRunDependencyWaitMaxMs": pre_run_wait_max,
+            "handlerMaxMs": handler_max,
+            "dependencyFetchSumMs": dependency_fetch_sum,
+            "dependencyFetchMaxMs": dependency_fetch_max,
+            "dependencyPublishSumMs": dependency_publish_sum,
+            "dependencyPublishMaxMs": dependency_publish_max,
+            "onnxCollectSumMs": onnx_collect_sum,
+            "onnxRunSumMs": onnx_run_sum,
+            "onnxPackageSumMs": onnx_package_sum,
+            "dependencyInputBytes": sum(int(row.get("bytes", 0)) for row in input_rows),
+            "dependencyOutputBytes": sum(int(row.get("bytes", 0)) for row in output_rows),
+            "roleCount": int(dataflow.get("roleCount", 0)),
+            "dependencyInputCount": len(input_rows),
+            "dependencyOutputCount": len(output_rows),
+            "onnxRoleCount": len(onnx_rows),
+        })
+
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "requestMs": summarize_numeric([row["requestMs"] for row in rows]),
+        "providerDataflowMs": summarize_numeric([
+            row["providerDataflowMs"] for row in rows
+        ]),
+        "roleRunWindowMs": summarize_numeric([
+            row["roleRunWindowMs"] for row in rows
+        ]),
+        "outerControlResidualMs": summarize_numeric([
+            row["outerControlResidualMs"] for row in rows
+        ]),
+        "preRunDependencyWaitMaxMs": summarize_numeric([
+            row["preRunDependencyWaitMaxMs"] for row in rows
+        ]),
+        "dependencyFetchSumMs": summarize_numeric([
+            row["dependencyFetchSumMs"] for row in rows
+        ]),
+        "dependencyFetchMaxMs": summarize_numeric([
+            row["dependencyFetchMaxMs"] for row in rows
+        ]),
+        "dependencyPublishSumMs": summarize_numeric([
+            row["dependencyPublishSumMs"] for row in rows
+        ]),
+        "onnxRunSumMs": summarize_numeric([
+            row["onnxRunSumMs"] for row in rows
+        ]),
+        "rows": rows,
+    }
+    path = OUT / "end-to-end-breakdown-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_E2E_BREAKDOWN "
+        f"layout={layout} count={summary['count']} "
+        f"request_p50_ms={summary['requestMs']['p50']:.2f} "
+        f"provider_dataflow_p50_ms={summary['providerDataflowMs']['p50']:.2f} "
+        f"role_run_window_p50_ms={summary['roleRunWindowMs']['p50']:.2f} "
+        f"outer_control_residual_p50_ms={summary['outerControlResidualMs']['p50']:.2f} "
+        f"pre_run_dependency_wait_max_p50_ms="
+        f"{summary['preRunDependencyWaitMaxMs']['p50']:.2f} "
+        f"dependency_fetch_sum_p50_ms={summary['dependencyFetchSumMs']['p50']:.2f} "
+        f"dependency_fetch_max_p50_ms={summary['dependencyFetchMaxMs']['p50']:.2f} "
+        f"dependency_publish_sum_p50_ms={summary['dependencyPublishSumMs']['p50']:.2f} "
+        f"onnx_run_sum_p50_ms={summary['onnxRunSumMs']['p50']:.2f} "
+        f"path={path}"
+    )
+    for row in rows:
+        print(
+            "YOLO_LAYOUT_E2E_BREAKDOWN_ROW "
+            f"layout={layout} index={row['index']} phase={row['phase']} "
+            f"session={row['session']} "
+            f"request_ms={row['requestMs']:.2f} "
+            f"provider_dataflow_ms={row['providerDataflowMs']:.2f} "
+            f"role_run_window_ms={row['roleRunWindowMs']:.2f} "
+            f"outer_control_residual_ms={row['outerControlResidualMs']:.2f} "
+            f"dependency_fetch_sum_ms={row['dependencyFetchSumMs']:.2f} "
+            f"dependency_fetch_max_ms={row['dependencyFetchMaxMs']:.2f} "
+            f"onnx_run_sum_ms={row['onnxRunSumMs']:.2f} "
+            f"input_bytes={row['dependencyInputBytes']} "
+            f"output_bytes={row['dependencyOutputBytes']}"
+        )
 
 
 def write_plan_cache_summary(layout: str,
@@ -1742,6 +1931,7 @@ def main() -> None:
             ("warm", warm_log),
         ])
         write_provider_timing_summaries(layout, providers)
+        write_end_to_end_breakdown(layout)
         provider_text = "\n".join(
             (OUT / f"{name}.log").read_text(errors="replace")
             for _, name, _ in providers

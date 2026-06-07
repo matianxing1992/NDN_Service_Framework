@@ -101,6 +101,7 @@ logProviderTiming(const std::string& sessionId,
               << " bytes=" << timing.bytes
               << " expected_segments=" << timing.expectedSegments
               << " expected_bytes=" << timing.expectedBytes
+              << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
               << " planned_name=" << plannedNameOrFalse(timing.plannedDataName)
               << std::endl;
   }
@@ -117,6 +118,7 @@ logProviderTiming(const std::string& sessionId,
               << " bytes=" << timing.bytes
               << " expected_segments=" << timing.expectedSegments
               << " expected_bytes=" << timing.expectedBytes
+              << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
               << " output_ready_epoch_ms="
               << approxEpochMs(baseSteady, baseEpochMs, timing.outputReadyAt)
               << " publish_done_epoch_ms="
