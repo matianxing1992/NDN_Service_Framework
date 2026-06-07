@@ -5,9 +5,7 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <future>
-#include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace ndnsf::di {
 
@@ -18,61 +16,15 @@ public:
     ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
     int fetchTimeoutMs = 10000,
     std::size_t maxSegmentSize = 7000,
-    int freshnessMs = 60000)
-    : m_ctx(ctx)
-    , m_fetchTimeoutMs(fetchTimeoutMs)
-    , m_maxSegmentSize(maxSegmentSize)
-    , m_freshnessMs(freshnessMs)
-  {
-  }
+    int freshnessMs = 60000);
 
   std::future<TensorBundle>
-  prefetchInput(const std::string&, const DependencyEdge& edge) override
-  {
-    if (edge.plannedDataName.empty()) {
-      throw std::invalid_argument(
-        "NdnsfCollaborationDependencyIo requires plannedDataName for input " +
-        edge.scope);
-    }
-    return std::async(std::launch::async, [this, edge] {
-      auto payload = m_ctx.fetchLarge(
-        ndn::Name(edge.plannedDataName),
-        edge.scope,
-        m_fetchTimeoutMs);
-      if (!payload) {
-        throw std::runtime_error(
-          "failed to fetch planned dependency object: " +
-          edge.plannedDataName);
-      }
-      TensorBundle bundle;
-      bundle.name = edge.plannedDataName;
-      bundle.payload.assign(payload->data(), payload->data() + payload->size());
-      bundle.expectedSegments = edge.expectedSegments;
-      bundle.expectedBytes = edge.expectedBytes;
-      return bundle;
-    });
-  }
+  prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override;
 
   void
-  publishOutput(const std::string&, const DependencyEdge& edge, const TensorBundle& bundle) override
-  {
-    const auto payload = ndn::Buffer(bundle.payload.data(), bundle.payload.size());
-    if (edge.plannedDataName.empty()) {
-      m_ctx.publishLarge(
-        edge.scope,
-        edge.producerRole.empty() ? ndn::Name("/output") : ndn::Name(edge.producerRole),
-        payload,
-        m_maxSegmentSize,
-        m_freshnessMs);
-      return;
-    }
-    m_ctx.publishLargeNamed(
-      edge.scope,
-      ndn::Name(edge.plannedDataName),
-      payload,
-      m_maxSegmentSize,
-      m_freshnessMs);
-  }
+  publishOutput(const std::string& sessionId,
+                const DependencyEdge& edge,
+                const TensorBundle& bundle) override;
 
 private:
   ndn_service_framework::ServiceProvider::CollaborationContext& m_ctx;

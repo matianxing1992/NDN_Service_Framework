@@ -152,6 +152,11 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
     ])
 
+    di_native_collaboration_sources = bld.path.parent.ant_glob([
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp',
+    ])
+
     bld.program(name='generic-dynamic-user-provider',
                 target='generic-dynamic-user-provider',
                 source=(["generic-dynamic-user-provider.cpp"] +
@@ -196,6 +201,7 @@ def build(bld):
                 target='di-native-provider-session-smoke',
                 source=(["DI_NativeProviderSessionSmoke.cpp"] +
                         di_native_session_sources +
+                        di_native_collaboration_sources +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/BloomFilter.cpp',

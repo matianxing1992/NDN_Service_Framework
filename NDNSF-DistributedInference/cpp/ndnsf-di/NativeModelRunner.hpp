@@ -6,9 +6,7 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <stdexcept>
 #include <string>
-#include <utility>
 
 namespace ndnsf::di {
 
@@ -33,29 +31,17 @@ public:
 class LambdaModelRunner final : public NativeModelRunner
 {
 public:
-  explicit LambdaModelRunner(RoleRunner runner)
-    : m_runner(std::move(runner))
-  {
-    if (!m_runner) {
-      throw std::invalid_argument("LambdaModelRunner requires a runner");
-    }
-  }
+  explicit LambdaModelRunner(RoleRunner runner);
 
   std::map<std::string, TensorBundle>
-  run(const RoleExecutionContext& ctx) final
-  {
-    return m_runner(ctx);
-  }
+  run(const RoleExecutionContext& ctx) final;
 
 private:
   RoleRunner m_runner;
 };
 
-inline std::shared_ptr<NativeModelRunner>
-makeNativeModelRunner(RoleRunner runner)
-{
-  return std::make_shared<LambdaModelRunner>(std::move(runner));
-}
+std::shared_ptr<NativeModelRunner>
+makeNativeModelRunner(RoleRunner runner);
 
 class NativeModelRunnerFactory
 {
@@ -73,41 +59,13 @@ public:
     const NativeModelRunnerSpec&)>;
 
   void
-  registerBackend(std::string backend, Creator creator)
-  {
-    if (backend.empty()) {
-      throw std::invalid_argument("NativeModelRunner backend must not be empty");
-    }
-    if (!creator) {
-      throw std::invalid_argument("NativeModelRunner creator must not be empty");
-    }
-    m_creators[std::move(backend)] = std::move(creator);
-  }
+  registerBackend(std::string backend, Creator creator);
 
   bool
-  hasBackend(const std::string& backend) const
-  {
-    return m_creators.find(backend) != m_creators.end();
-  }
+  hasBackend(const std::string& backend) const;
 
   std::shared_ptr<NativeModelRunner>
-  create(const NativeModelRunnerSpec& spec) const final
-  {
-    if (spec.backend.empty()) {
-      throw std::invalid_argument("NativeModelRunnerSpec.backend must not be empty");
-    }
-    const auto found = m_creators.find(spec.backend);
-    if (found == m_creators.end()) {
-      throw std::out_of_range("no NativeModelRunner backend registered: " +
-                              spec.backend);
-    }
-    auto runner = found->second(spec);
-    if (!runner) {
-      throw std::logic_error("NativeModelRunner backend returned null: " +
-                             spec.backend);
-    }
-    return runner;
-  }
+  create(const NativeModelRunnerSpec& spec) const final;
 
 private:
   std::map<std::string, Creator> m_creators;

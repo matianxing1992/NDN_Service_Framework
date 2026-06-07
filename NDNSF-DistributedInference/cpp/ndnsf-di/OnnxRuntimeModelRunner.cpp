@@ -1,6 +1,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
+#include <stdexcept>
+#include <utility>
+
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
 
 #pragma GCC diagnostic push
@@ -390,6 +393,38 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
                    std::move(bundle));
   }
   return result;
+}
+
+void
+registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory)
+{
+  factory.registerBackend(
+    "onnxruntime",
+    [] (const NativeModelRunnerSpec& spec) -> std::shared_ptr<NativeModelRunner> {
+      return std::make_shared<OnnxRuntimeModelRunner>(spec);
+    });
+}
+
+} // namespace ndnsf::di
+
+#else
+
+namespace ndnsf::di {
+
+OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
+  : m_spec(std::move(spec))
+{
+  throw std::runtime_error(
+    "C++ ONNX Runtime backend is not enabled; install the ONNX Runtime "
+    "C++ development package and build with NDNSF_DI_ENABLE_ONNXRUNTIME_CPP");
+}
+
+OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
+
+std::map<std::string, TensorBundle>
+OnnxRuntimeModelRunner::run(const RoleExecutionContext&)
+{
+  throw std::runtime_error("C++ ONNX Runtime backend is not enabled");
 }
 
 void
