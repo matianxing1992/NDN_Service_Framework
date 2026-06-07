@@ -157,6 +157,11 @@ plan 的 C++ 镜像。它把 role/dependency metadata、session/provider assignm
 expected segment counts。这是 Python policy/deployment code 进入 native provider
 runtime 的交接点。
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp` 会把生成的
+`native-execution-plan.json` 加载成这些 C++ plan objects。这个 JSON loader
+刻意保持很窄，只读取 native hot-path 字段，因此 C++ providers 不需要解析完整
+deployment YAML。
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 是第一块面向 Core 的 adapter。它把 `DependencyIo` 映射到
 `ServiceProvider::CollaborationContext`：planned input names 用 `fetchLarge(...)`

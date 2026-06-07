@@ -3,11 +3,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <chrono>
 #include <future>
+#include <sstream>
 #include <map>
 #include <mutex>
 #include <set>
@@ -355,6 +357,47 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
     "/example/provider/head1/NDNSF/DI/ACTIVATION/run-7/heads-to-merge/Head/Shard/1/bundle/0");
 
   BOOST_CHECK_THROW(roleSpecFor(plan, "/Missing", "/run-7", assignment), std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
+{
+  std::istringstream input(R"JSON({
+    "version": 1,
+    "services": [
+      {
+        "service": "/AI/Toy/Inference",
+        "model": "/Model/Toy/v1",
+        "roles": ["/Stage/0", "/Stage/1"],
+        "dependencies": [
+          {
+            "producers": ["/Stage/0"],
+            "consumers": ["/Stage/1"],
+            "keyScope": "stage0-to-stage1",
+            "topicPrefix": "/activation",
+            "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+            "expectedSegments": 3,
+            "expectedBytes": 17000,
+            "required": true
+          }
+        ]
+      }
+    ]
+  })JSON");
+
+  const auto plan = nativeExecutionPlanForServiceFromJson(input, "/AI/Toy/Inference");
+  BOOST_REQUIRE_EQUAL(plan.roles.size(), 2);
+  BOOST_REQUIRE_EQUAL(plan.dependencies.size(), 1);
+  BOOST_CHECK_EQUAL(plan.dependencies[0].keyScope, "stage0-to-stage1");
+  BOOST_CHECK_EQUAL(plan.dependencies[0].expectedSegments, 3);
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole["/Stage/0"] = "/example/provider/stage0";
+  assignment.providerByRole["/Stage/1"] = "/example/provider/stage1";
+  const auto stage1 = roleSpecFor(plan, "/Stage/1", "/run-json", assignment);
+  BOOST_REQUIRE_EQUAL(stage1.inputs.size(), 1);
+  BOOST_CHECK_EQUAL(
+    stage1.inputs[0].plannedDataName,
+    "/example/provider/stage0/NDNSF/DI/ACTIVATION/run-json/stage0-to-stage1/Stage/0/bundle/0");
 }
 
 } // namespace ndnsf::di::test

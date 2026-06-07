@@ -177,6 +177,11 @@ deterministic planned data names and expected segment counts. This is the
 handoff point from Python policy/deployment code into the native provider
 runtime.
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp` loads the
+generated `native-execution-plan.json` file into those C++ plan objects. The
+JSON loader is intentionally narrow and only reads the native hot-path fields,
+so C++ providers do not need to parse the full deployment YAML.
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 is the first Core-facing adapter. It maps `DependencyIo` to
 `ServiceProvider::CollaborationContext`: planned input names are fetched with
