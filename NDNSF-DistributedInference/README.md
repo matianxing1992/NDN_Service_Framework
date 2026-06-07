@@ -173,7 +173,8 @@ this runtime. That is the intended "C++ core, thin Python API" shape.
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
 deployment plan in C++. It converts role/dependency metadata plus a
 session/provider assignment into role-local `RoleSpec` objects with
-deterministic planned data names and expected segment counts. This is the
+deterministic planned data names, expected segment counts, and expected byte
+counts. This is the
 handoff point from Python policy/deployment code into the native provider
 runtime.
 

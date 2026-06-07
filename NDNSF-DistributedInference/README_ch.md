@@ -154,8 +154,8 @@ Python 从 per-edge execution loop 中移出去，同时保留现有 Python-faci
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` 是 deployment
 plan 的 C++ 镜像。它把 role/dependency metadata、session/provider assignment
 转换成 role-local `RoleSpec`，其中包含 deterministic planned data names 和
-expected segment counts。这是 Python policy/deployment code 进入 native provider
-runtime 的交接点。
+expected segment counts / expected byte counts。这是 Python policy/deployment code
+进入 native provider runtime 的交接点。
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp` 会把生成的
 `native-execution-plan.json` 加载成这些 C++ plan objects。这个 JSON loader
