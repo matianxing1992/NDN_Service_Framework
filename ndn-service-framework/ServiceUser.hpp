@@ -790,6 +790,7 @@ namespace ndn_service_framework{
                 std::vector<ndn::Name> selectionPublishedProviders;
                 std::vector<ndn::Name> expectedResponseProviders;
                 std::vector<ndn::Name> responseProviders;
+                std::vector<ndn::Name> largeResponseReferenceProvidersInFlight;
                 ndn::Name selectedProvider;
                 std::map<std::string, std::string> providerTokens;
                 bool isCollaboration = false;

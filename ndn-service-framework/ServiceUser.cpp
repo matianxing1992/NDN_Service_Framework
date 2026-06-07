@@ -4009,22 +4009,63 @@ namespace ndn_service_framework
         ndn_service_framework::ResponseMessage responseMessage)
     {
         ndn::Name serviceName;
+        ndn::Name requestId;
+        ndn::Name providerName;
         if (auto parsedV2 = ndn_service_framework::parseResponseNameV2(responseName)) {
             serviceName = parsedV2->serviceName;
+            requestId = parsedV2->requestId;
+            providerName = parsedV2->providerName;
         }
         else if (auto parsed = ndn_service_framework::parseResponseName(responseName)) {
             ndn::Name requesterIdentity;
-            ndn::Name providerName;
             ndn::Name legacyServiceName;
             ndn::Name functionName;
-            ndn::Name requestId;
             std::tie(requesterIdentity, providerName, legacyServiceName, functionName, requestId) =
                 parsed.value();
             serviceName = makeUnifiedServiceName(legacyServiceName, functionName);
         }
         if (parseLargeDataReferencePayload(responseMessage.getPayload())) {
+            auto pendingIt = m_pendingCalls.find(requestId);
+            if (pendingIt == m_pendingCalls.end()) {
+                ++m_runtimeDiagnostics.callbackSkippedNoPending;
+                ++m_runtimeDiagnostics.responseAfterPendingTimeout;
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_LARGE_REFERENCE_SKIPPED"
+                              << " timestamp_us=" << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " reason=no_pending_call"
+                              << " responseName=" << responseName.toUri());
+                return;
+            }
+
+            const bool expectMultipleResponses =
+                pendingIt->second.expectedResponseProviders.size() > 1;
+            if ((pendingIt->second.hasResponse && !expectMultipleResponses) ||
+                (expectMultipleResponses &&
+                 containsName(pendingIt->second.responseProviders, providerName)) ||
+                containsName(pendingIt->second.largeResponseReferenceProvidersInFlight,
+                             providerName)) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_LARGE_REFERENCE_SKIPPED"
+                              << " timestamp_us=" << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " providerName=" << providerName.toUri()
+                              << " reason=duplicate_or_completed"
+                              << " responseName=" << responseName.toUri());
+                return;
+            }
+            if (expectMultipleResponses &&
+                !containsName(pendingIt->second.expectedResponseProviders, providerName)) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_LARGE_REFERENCE_SKIPPED"
+                              << " timestamp_us=" << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " providerName=" << providerName.toUri()
+                              << " reason=unexpected_provider"
+                              << " responseName=" << responseName.toUri());
+                return;
+            }
+            addUniqueName(pendingIt->second.largeResponseReferenceProvidersInFlight,
+                          providerName);
             auto resolveAndFinish =
-                [this, responseName, serviceName,
+                [this, responseName, serviceName, requestId, providerName,
                  responseMessage = std::move(responseMessage)]() mutable {
                     std::string error;
                     auto resolved =
@@ -4033,10 +4074,23 @@ namespace ndn_service_framework
                                                              serviceName,
                                                              error);
                     boost::asio::post(m_face.getIoContext(),
-                        [this, responseName, resolved = std::move(resolved),
+                        [this, responseName, requestId, providerName,
+                         resolved = std::move(resolved),
                          responseMessage = std::move(responseMessage),
                          error = std::move(error)]() mutable {
                             if (!resolved) {
+                                auto pending = m_pendingCalls.find(requestId);
+                                if (pending != m_pendingCalls.end()) {
+                                    auto& inFlight =
+                                        pending->second.largeResponseReferenceProvidersInFlight;
+                                    inFlight.erase(std::remove_if(
+                                                       inFlight.begin(),
+                                                       inFlight.end(),
+                                                       [&providerName](const ndn::Name& item) {
+                                                           return item.equals(providerName);
+                                                       }),
+                                                   inFlight.end());
+                                }
                                 NDN_LOG_ERROR("Failed to resolve large response reference: "
                                               << error);
                                 ResponseMessage failure(responseMessage);
