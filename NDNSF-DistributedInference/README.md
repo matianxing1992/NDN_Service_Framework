@@ -159,6 +159,15 @@ C++ NDNSF large-data fetch/publish and pending-Interest support should be
 attached. This keeps Python out of the per-edge execution loop while preserving
 the existing Python-facing API.
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
+is the first Core-facing adapter. It maps `DependencyIo` to
+`ServiceProvider::CollaborationContext`: planned input names are fetched with
+`fetchLarge(...)`, and planned output names are published with
+`publishLargeNamed(...)`. This is still a building block rather than a complete
+C++ ONNX provider, but it fixes the intended ownership boundary: DI execution
+logic can be native C++, while NDNSF Core remains responsible for segmented
+large data, pending Interests, encryption, permissions, and wire behavior.
+
 These native components do not change NDNSF Request/ACK/Selection/Response
 semantics and do not add AI-specific behavior to NDNSF Core.
 

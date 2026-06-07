@@ -142,6 +142,14 @@ planned input edges 发起 prefetch，等齐 required inputs 后运行 native ro
 NDNSF large-data fetch/publish 和 pending-Interest support 的位置。这样可以把
 Python 从 per-edge execution loop 中移出去，同时保留现有 Python-facing API。
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
+是第一块面向 Core 的 adapter。它把 `DependencyIo` 映射到
+`ServiceProvider::CollaborationContext`：planned input names 用 `fetchLarge(...)`
+获取，planned output names 用 `publishLargeNamed(...)` 发布。这还不是完整的
+C++ ONNX provider，但它明确了边界：DI 执行逻辑可以是 native C++，而 NDNSF Core
+继续负责 segmented large data、pending Interests、encryption、permissions 和
+wire behavior。
+
 这些 native components 不改变 NDNSF Request/ACK/Selection/Response 语义，也不会
 把 AI-specific behavior 加进 NDNSF Core。
 
