@@ -142,6 +142,10 @@ planned input edges 发起 prefetch，等齐 required inputs 后运行 native ro
 NDNSF large-data fetch/publish 和 pending-Interest support 的位置。这样可以把
 Python 从 per-edge execution loop 中移出去，同时保留现有 Python-facing API。
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp` 定义 backend
+边界。后续 C++ ONNX Runtime backend 应实现 `NativeModelRunner`；从测试 runner
+切换到 ONNX chunk runner 时，不应该再改 provider scheduling 和 dependency I/O。
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 是第一块面向 Core 的 adapter。它把 `DependencyIo` 映射到
 `ServiceProvider::CollaborationContext`：planned input names 用 `fetchLarge(...)`

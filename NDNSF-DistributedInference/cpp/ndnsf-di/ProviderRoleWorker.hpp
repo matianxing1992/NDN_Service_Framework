@@ -2,6 +2,7 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_PROVIDER_ROLE_WORKER_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -85,6 +86,18 @@ public:
                std::shared_ptr<DependencyIo> io,
                RoleRunner runner)
   {
+    return executeAsync(std::move(sessionId),
+                        std::move(role),
+                        std::move(io),
+                        makeNativeModelRunner(std::move(runner)));
+  }
+
+  std::future<ProviderRoleResult>
+  executeAsync(std::string sessionId,
+               RoleSpec role,
+               std::shared_ptr<DependencyIo> io,
+               std::shared_ptr<NativeModelRunner> runner)
+  {
     if (role.role.empty()) {
       throw std::invalid_argument("ProviderRoleWorker requires a non-empty role");
     }
@@ -92,7 +105,7 @@ public:
       throw std::invalid_argument("ProviderRoleWorker requires DependencyIo");
     }
     if (!runner) {
-      throw std::invalid_argument("ProviderRoleWorker requires a role runner");
+      throw std::invalid_argument("ProviderRoleWorker requires NativeModelRunner");
     }
 
     auto promise = std::make_shared<std::promise<ProviderRoleResult>>();
@@ -122,7 +135,7 @@ private:
     std::string sessionId;
     RoleSpec role;
     std::shared_ptr<DependencyIo> io;
-    RoleRunner runner;
+    std::shared_ptr<NativeModelRunner> runner;
     std::shared_ptr<std::promise<ProviderRoleResult>> promise;
     std::chrono::steady_clock::time_point queuedAt;
   };
@@ -191,7 +204,7 @@ private:
     ctx.sessionId = item.sessionId;
     ctx.role = item.role.role;
     ctx.inputsByScope = std::move(inputsByScope);
-    result.outputsByScope = item.runner(ctx);
+    result.outputsByScope = item.runner->run(ctx);
 
     for (const auto& edge : item.role.outputs) {
       const auto found = result.outputsByScope.find(edge.scope);

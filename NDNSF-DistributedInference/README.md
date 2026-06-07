@@ -159,6 +159,11 @@ C++ NDNSF large-data fetch/publish and pending-Interest support should be
 attached. This keeps Python out of the per-edge execution loop while preserving
 the existing Python-facing API.
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp` defines the
+backend boundary. A future C++ ONNX Runtime backend should implement
+`NativeModelRunner`; provider scheduling and dependency I/O should not need to
+change when switching from a test runner to an ONNX chunk runner.
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 is the first Core-facing adapter. It maps `DependencyIo` to
 `ServiceProvider::CollaborationContext`: planned input names are fetched with

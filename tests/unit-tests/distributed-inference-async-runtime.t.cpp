@@ -65,6 +65,20 @@ public:
   std::map<std::string, TensorBundle> publishedByScope;
 };
 
+class EchoNativeRunner : public NativeModelRunner
+{
+public:
+  std::map<std::string, TensorBundle>
+  run(const RoleExecutionContext& ctx) final
+  {
+    BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+    return {
+      {"native-to-user", bundle("native-result",
+                                "native:" + payloadText(ctx.inputsByScope.begin()->second))},
+    };
+  }
+};
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRunsStageShardsInParallelAndBatchesMergeInputs)
@@ -209,6 +223,32 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
   BOOST_REQUIRE(io->publishedByScope.count("merge-to-user") == 1);
   BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("merge-to-user")),
                     "input:head0-to-merge|input:head1-to-merge");
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
+{
+  RoleSpec role{
+    "/NativeRole",
+    {DependencyEdge{"input-to-native", "/Input", "/NativeRole",
+                    "/run/4/input/bundle/0", 1}},
+    {DependencyEdge{"native-to-user", "/NativeRole", "",
+                    "/run/4/native/bundle/0", 1}},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  auto runner = std::make_shared<EchoNativeRunner>();
+  ProviderRoleWorker worker(1);
+
+  const auto result = worker.executeAsync("run-4", role, io, runner).get();
+
+  BOOST_REQUIRE(result.outputsByScope.count("native-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("native-to-user")),
+                    "native:input:input-to-native");
+
+  std::lock_guard<std::mutex> lock(io->mutex);
+  BOOST_REQUIRE(io->publishedByScope.count("native-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("native-to-user")),
+                    "native:input:input-to-native");
 }
 
 } // namespace ndnsf::di::test
