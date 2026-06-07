@@ -502,7 +502,146 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   BOOST_CHECK_EQUAL(stage1.inputs[0].expectedBytes, 17000);
   BOOST_CHECK_EQUAL(
     stage1.inputs[0].plannedDataName,
-    "/example/provider/stage0/NDNSF/DI/ACTIVATION/run-json/stage0-to-stage1/Stage/0/bundle/0");
+                    "/example/provider/stage0/NDNSF/DI/ACTIVATION/run-json/stage0-to-stage1/Stage/0/bundle/0");
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonDrivesAsyncFrontierRuntime)
+{
+  std::istringstream input(R"JSON({
+    "version": 1,
+    "services": [
+      {
+        "service": "/AI/YOLO/ParallelDetectScale",
+        "model": "/Model/YOLO/v1",
+        "roles": ["/Backbone", "/Head/0", "/Head/1", "/Merge"],
+        "dependencies": [
+          {
+            "producers": ["/Backbone"],
+            "consumers": ["/Head/0", "/Head/1"],
+            "keyScope": "backbone-to-heads",
+            "topicPrefix": "/activation",
+            "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+            "expectedSegments": 4,
+            "expectedBytes": 24000,
+            "required": true
+          },
+          {
+            "producers": ["/Head/0"],
+            "consumers": ["/Merge"],
+            "keyScope": "head0-to-merge",
+            "topicPrefix": "/activation",
+            "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+            "expectedSegments": 2,
+            "expectedBytes": 9000,
+            "required": true
+          },
+          {
+            "producers": ["/Head/1"],
+            "consumers": ["/Merge"],
+            "keyScope": "head1-to-merge",
+            "topicPrefix": "/activation",
+            "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+            "expectedSegments": 2,
+            "expectedBytes": 9000,
+            "required": true
+          },
+          {
+            "producers": ["/Merge"],
+            "consumers": [""],
+            "keyScope": "merge-to-user",
+            "topicPrefix": "/activation",
+            "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+            "expectedSegments": 1,
+            "expectedBytes": 3000,
+            "required": true
+          }
+        ]
+      }
+    ]
+  })JSON");
+
+  const auto plan = nativeExecutionPlanForServiceFromJson(
+    input, "/AI/YOLO/ParallelDetectScale");
+  NativeProviderAssignment assignment;
+  assignment.providerByRole["/Backbone"] = "/example/provider/backbone";
+  assignment.providerByRole["/Head/0"] = "/example/provider/head0";
+  assignment.providerByRole["/Head/1"] = "/example/provider/head1";
+  assignment.providerByRole["/Merge"] = "/example/provider/merge";
+
+  std::vector<RoleSpec> roles;
+  roles.reserve(plan.roles.size());
+  for (const auto& role : plan.roles) {
+    roles.push_back(roleSpecFor(plan, role, "/run-json-frontier", assignment));
+  }
+
+  const auto merge = roleSpecFor(plan, "/Merge", "/run-json-frontier", assignment);
+  BOOST_REQUIRE_EQUAL(merge.inputs.size(), 2);
+  BOOST_CHECK_EQUAL(merge.inputs[0].scope, "head0-to-merge");
+  BOOST_CHECK_EQUAL(merge.inputs[1].scope, "head1-to-merge");
+  BOOST_CHECK_EQUAL(
+    merge.inputs[0].plannedDataName,
+    "/example/provider/head0/NDNSF/DI/ACTIVATION/run-json-frontier/head0-to-merge/Head/0/bundle/0");
+  BOOST_CHECK_EQUAL(
+    merge.inputs[1].plannedDataName,
+    "/example/provider/head1/NDNSF/DI/ACTIVATION/run-json-frontier/head1-to-merge/Head/1/bundle/0");
+
+  AsyncDataflowRuntime runtime(4);
+  const auto started = std::chrono::steady_clock::now();
+  const auto result = runtime.run(
+    "run-json-frontier",
+    roles,
+    {},
+    [] (const RoleExecutionContext& ctx) {
+      if (ctx.role == "/Backbone") {
+        BOOST_CHECK(ctx.inputsByScope.empty());
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return std::map<std::string, TensorBundle>{
+          {"backbone-to-heads", bundle("backbone", "features")},
+        };
+      }
+      if (ctx.role == "/Head/0" || ctx.role == "/Head/1") {
+        BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+        BOOST_CHECK_EQUAL(payloadText(ctx.inputsByScope.at("backbone-to-heads")),
+                          "features");
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        const auto scope = ctx.role == "/Head/0" ? "head0-to-merge" : "head1-to-merge";
+        const auto value = ctx.role == "/Head/0" ? "h0" : "h1";
+        return std::map<std::string, TensorBundle>{
+          {scope, bundle(scope, value)},
+        };
+      }
+
+      BOOST_CHECK_EQUAL(ctx.role, "/Merge");
+      BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 2);
+      return std::map<std::string, TensorBundle>{
+        {"merge-to-user", bundle("result",
+                                 payloadText(ctx.inputsByScope.at("head0-to-merge")) +
+                                 "+" +
+                                 payloadText(ctx.inputsByScope.at("head1-to-merge")))},
+      };
+    });
+  const auto elapsed = durationMs(started, std::chrono::steady_clock::now());
+
+  BOOST_REQUIRE(result.outputsByScope.count("merge-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("merge-to-user")), "h0+h1");
+  BOOST_CHECK_LT(elapsed, 170.0);
+
+  std::map<std::string, RoleTiming> timingByRole;
+  for (const auto& timing : result.roleTimings) {
+    timingByRole.emplace(timing.role, timing);
+  }
+  BOOST_REQUIRE(timingByRole.count("/Head/0") == 1);
+  BOOST_REQUIRE(timingByRole.count("/Head/1") == 1);
+  BOOST_REQUIRE(timingByRole.count("/Merge") == 1);
+  BOOST_CHECK_LT(durationMs(timingByRole.at("/Head/0").startedAt,
+                            timingByRole.at("/Head/1").finishedAt),
+                 90.0);
+  BOOST_CHECK_GE(durationMs(timingByRole.at("/Head/0").finishedAt,
+                            timingByRole.at("/Merge").startedAt),
+                 0.0);
+  BOOST_CHECK_GE(durationMs(timingByRole.at("/Head/1").finishedAt,
+                            timingByRole.at("/Merge").startedAt),
+                 0.0);
 }
 
 } // namespace ndnsf::di::test
