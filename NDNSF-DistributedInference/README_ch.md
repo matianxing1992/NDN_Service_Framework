@@ -131,11 +131,19 @@ Step 3: C++ backend runners
 ```
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp` 是第一块
-native 基座。它刻意保持 model-agnostic：role runner 可以是 ONNX chunk、
-PyTorch 导出的 native runner、containerized function，或未来的 accelerator
-backend。这个 runtime 只负责 dependency readiness 和并行执行语义；它不改变
-NDNSF Request/ACK/Selection/Response 语义，也不会把 AI-specific behavior 加进
-NDNSF Core。
+native graph-level 基座。它刻意保持 model-agnostic：role runner 可以是 ONNX
+chunk、PyTorch 导出的 native runner、containerized function，或未来的
+accelerator backend。这个 runtime 只负责 dependency readiness 和并行执行语义。
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp` 是 provider-side
+hot-path 边界。当 provider 收到某个 role assignment 后，worker 会立刻对所有
+planned input edges 发起 prefetch，等齐 required inputs 后运行 native role runner，
+再发布每个 declared output edge。它的 `DependencyIo` 接口就是后续接入 C++
+NDNSF large-data fetch/publish 和 pending-Interest support 的位置。这样可以把
+Python 从 per-edge execution loop 中移出去，同时保留现有 Python-facing API。
+
+这些 native components 不改变 NDNSF Request/ACK/Selection/Response 语义，也不会
+把 AI-specific behavior 加进 NDNSF Core。
 
 ### 3. 创建或审查 Policy
 

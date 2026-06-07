@@ -1,8 +1,11 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <chrono>
+#include <future>
+#include <map>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -26,6 +29,40 @@ payloadText(const TensorBundle& value)
 {
   return std::string(value.payload.begin(), value.payload.end());
 }
+
+class FakeDependencyIo : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      sessions.push_back(sessionId);
+      prefetchedScopes.push_back(edge.scope);
+    }
+    return std::async(std::launch::async, [edge] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(80));
+      return bundle(edge.scope, "input:" + edge.scope);
+    });
+  }
+
+  void
+  publishOutput(const std::string& sessionId,
+                const DependencyEdge& edge,
+                const TensorBundle& value) override
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    sessions.push_back(sessionId);
+    publishedByScope[edge.scope] = value;
+  }
+
+public:
+  std::mutex mutex;
+  std::vector<std::string> sessions;
+  std::vector<std::string> prefetchedScopes;
+  std::map<std::string, TensorBundle> publishedByScope;
+};
 
 } // namespace
 
@@ -121,6 +158,56 @@ BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRejectsMissingDeclaredOutput)
       return std::map<std::string, TensorBundle>{};
     }),
     std::logic_error);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
+{
+  RoleSpec role{
+    "/Merge",
+    {DependencyEdge{"head0-to-merge", "/Head/0", "/Merge",
+                    "/run/3/head0/bundle/0", 2},
+     DependencyEdge{"head1-to-merge", "/Head/1", "/Merge",
+                    "/run/3/head1/bundle/0", 1}},
+    {DependencyEdge{"merge-to-user", "/Merge", "",
+                    "/run/3/merge/bundle/0", 1}},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(2);
+
+  const auto started = std::chrono::steady_clock::now();
+  auto future = worker.executeAsync(
+    "run-3",
+    role,
+    io,
+    [] (const RoleExecutionContext& ctx) {
+      BOOST_CHECK_EQUAL(ctx.role, "/Merge");
+      BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 2);
+      const auto merged =
+        payloadText(ctx.inputsByScope.at("head0-to-merge")) + "|" +
+        payloadText(ctx.inputsByScope.at("head1-to-merge"));
+      return std::map<std::string, TensorBundle>{
+        {"merge-to-user", bundle("result", merged)},
+      };
+    });
+
+  const auto result = future.get();
+  const auto elapsed = durationMs(started, std::chrono::steady_clock::now());
+
+  BOOST_CHECK_LT(elapsed, 150.0);
+  BOOST_REQUIRE_EQUAL(result.inputTimings.size(), 2);
+  BOOST_CHECK_EQUAL(result.inputTimings[0].plannedDataName, "/run/3/head0/bundle/0");
+  BOOST_CHECK_EQUAL(result.inputTimings[1].expectedSegments, 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("merge-to-user")),
+                    "input:head0-to-merge|input:head1-to-merge");
+
+  std::lock_guard<std::mutex> lock(io->mutex);
+  BOOST_REQUIRE_EQUAL(io->prefetchedScopes.size(), 2);
+  BOOST_CHECK_EQUAL(io->prefetchedScopes[0], "head0-to-merge");
+  BOOST_CHECK_EQUAL(io->prefetchedScopes[1], "head1-to-merge");
+  BOOST_REQUIRE(io->publishedByScope.count("merge-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("merge-to-user")),
+                    "input:head0-to-merge|input:head1-to-merge");
 }
 
 } // namespace ndnsf::di::test

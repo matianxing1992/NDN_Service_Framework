@@ -145,11 +145,22 @@ Step 3: C++ backend runners
 ```
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp` is the first
-native building block. It is intentionally model-agnostic: a role runner can be
-an ONNX chunk, a PyTorch-exported native runner, a containerized function, or a
-future accelerator backend. The runtime only enforces dependency readiness and
-parallel execution semantics. It does not change NDNSF Request/ACK/Selection/
-Response semantics and does not add AI-specific behavior to NDNSF Core.
+native graph-level building block. It is intentionally model-agnostic: a role
+runner can be an ONNX chunk, a PyTorch-exported native runner, a containerized
+function, or a future accelerator backend. The runtime only enforces dependency
+readiness and parallel execution semantics.
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp` is the
+provider-side hot-path boundary. When a provider receives an assigned role, the
+worker starts prefetch for all planned input edges immediately, waits until all
+required inputs are available, runs the native role runner, and publishes every
+declared output edge. Its `DependencyIo` interface is the place where future
+C++ NDNSF large-data fetch/publish and pending-Interest support should be
+attached. This keeps Python out of the per-edge execution loop while preserving
+the existing Python-facing API.
+
+These native components do not change NDNSF Request/ACK/Selection/Response
+semantics and do not add AI-specific behavior to NDNSF Core.
 
 ### 3. Create or Inspect a Policy
 
