@@ -512,8 +512,14 @@ def _encoded_tensor_bundle_nbytes(payload: bytes,
 def _estimated_segments(byte_count: int) -> int:
     if byte_count <= 0:
         return 0
-    estimated_wire_bytes = int(byte_count * 1.5) + 4096
-    return max(1, (estimated_wire_bytes + 6999) // 7000)
+    # Collaboration publish_large_named uses a 7000-byte segment by default.
+    # Deterministic prefetch should be close to the encrypted segmented object
+    # size: pure payload bytes are too tight near the segment boundary, while
+    # older wire-size guesses left many impossible extra Interests pending.
+    payload_segment_size = 7000
+    encrypted_envelope_overhead = 512
+    estimated_bytes = byte_count + encrypted_envelope_overhead
+    return max(1, (estimated_bytes + payload_segment_size - 1) // payload_segment_size)
 
 
 def split_model(output_dir: str | Path,
