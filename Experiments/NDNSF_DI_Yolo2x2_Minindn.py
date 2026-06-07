@@ -1240,11 +1240,25 @@ def write_provider_timing_summaries(layout: str,
     }
     merge_sessions = {}
     for row in frontier_rows:
-        if row.get("scope") != "detect-heads-to-merge":
+        scope = str(row.get("scope", ""))
+        producer_role = str(row.get("producerRole", ""))
+        is_merge_input = (
+            scope.endswith("-to-merge")
+            or producer_role.startswith("/Head/")
+        )
+        if not is_merge_input:
             continue
         session = _session_from_data_name(str(row.get("dataName", "")))
         if session:
             merge_sessions.setdefault(session, []).append(row)
+    expected_merge_inputs = max(
+        1,
+        len({
+            str(row.get("scope", ""))
+            for row in frontier_rows
+            if str(row.get("scope", "")).endswith("-to-merge")
+        }),
+    )
     merge_batch_rows = []
     for session, rows in sorted(merge_sessions.items()):
         first_values = [float(row["readyToFirstSegmentMs"]) for row in rows]
@@ -1252,7 +1266,8 @@ def write_provider_timing_summaries(layout: str,
         merge_batch_rows.append({
             "session": session,
             "inputCount": len(rows),
-            "completeInputSet": len(rows) >= 3,
+            "expectedInputCount": expected_merge_inputs,
+            "completeInputSet": len(rows) >= expected_merge_inputs,
             "firstSegmentSpreadMs": max(first_values) - min(first_values)
                 if first_values else 0.0,
             "completeSpreadMs": max(complete_values) - min(complete_values)
