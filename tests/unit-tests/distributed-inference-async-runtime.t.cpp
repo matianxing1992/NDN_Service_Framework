@@ -401,6 +401,11 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
   BOOST_CHECK_LT(elapsed, 150.0);
   BOOST_REQUIRE_EQUAL(result.inputTimings.size(), 2);
   BOOST_CHECK_EQUAL(result.inputTimings[0].plannedDataName, "/run/3/head0/bundle/0");
+  BOOST_REQUIRE_EQUAL(result.inputTimings[0].plannedSegmentNames.size(), 2);
+  BOOST_CHECK_EQUAL(result.inputTimings[0].plannedSegmentNames[0],
+                    plannedSegmentName("/run/3/head0/bundle/0", 0));
+  BOOST_CHECK_EQUAL(result.inputTimings[0].plannedSegmentNames[1],
+                    plannedSegmentName("/run/3/head0/bundle/0", 1));
   BOOST_CHECK_EQUAL(result.inputTimings[1].expectedSegments, 1);
   BOOST_CHECK_EQUAL(result.inputTimings[1].expectedBytes, 7000);
   BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("merge-to-user")),
@@ -413,6 +418,10 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
   BOOST_REQUIRE(io->publishedByScope.count("merge-to-user") == 1);
   BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("merge-to-user")),
                     "input:head0-to-merge|input:head1-to-merge");
+  BOOST_REQUIRE_EQUAL(result.outputTimings.size(), 1);
+  BOOST_REQUIRE_EQUAL(result.outputTimings[0].plannedSegmentNames.size(), 1);
+  BOOST_CHECK_EQUAL(result.outputTimings[0].plannedSegmentNames[0],
+                    plannedSegmentName("/run/3/merge/bundle/0", 0));
 }
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
@@ -968,6 +977,18 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
   BOOST_CHECK_EQUAL(
     head0.inputs[0].plannedDataName,
     "/example/provider/backbone/NDNSF/DI/ACTIVATION/run-7/backbone-to-head/Backbone/bundle/0");
+  const auto head0Segments = plannedSegmentNamesForEdge(head0.inputs[0]);
+  BOOST_REQUIRE_EQUAL(head0Segments.size(), 3);
+  BOOST_CHECK_EQUAL(
+    head0Segments[0],
+    plannedSegmentName(
+      "/example/provider/backbone/NDNSF/DI/ACTIVATION/run-7/backbone-to-head/Backbone/bundle/0",
+      0));
+  BOOST_CHECK_EQUAL(
+    head0Segments[2],
+    plannedSegmentName(
+      "/example/provider/backbone/NDNSF/DI/ACTIVATION/run-7/backbone-to-head/Backbone/bundle/0",
+      2));
 
   const auto backbone = roleSpecFor(plan, "/Backbone", "/run-7", assignment);
   BOOST_REQUIRE_EQUAL(backbone.outputs.size(), 2);
@@ -989,6 +1010,22 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
   BOOST_CHECK_THROW(roleSpecFor(plan, "/Missing", "/run-7", assignment), std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanReturnsNoStaticSegmentsForDynamicEdges)
+{
+  DependencyEdge dynamicEdge{
+    "dynamic-edge",
+    "/Producer",
+    "/Consumer",
+    "/example/provider/NDNSF/DI/ACTIVATION/run-dynamic/dynamic-edge/Producer/bundle/0",
+    0,
+    0,
+  };
+  BOOST_CHECK(plannedSegmentNamesForEdge(dynamicEdge).empty());
+  BOOST_CHECK_EQUAL(
+    plannedSegmentName(dynamicEdge.plannedDataName, 0),
+    dynamicEdge.plannedDataName + "/seg=0");
+}
+
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
 {
   std::istringstream input(R"JSON({
@@ -1007,6 +1044,11 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
             "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
             "expectedSegments": 3,
             "expectedBytes": 17000,
+            "segmentNaming": {
+              "mode": "ndn-segment-component",
+              "staticSegmentCount": 3,
+              "dynamicFallback": false
+            },
             "tensors": ["features"],
             "required": true
           }
@@ -1021,20 +1063,75 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   BOOST_CHECK_EQUAL(plan.dependencies[0].keyScope, "stage0-to-stage1");
   BOOST_CHECK_EQUAL(plan.dependencies[0].expectedSegments, 3);
   BOOST_CHECK_EQUAL(plan.dependencies[0].expectedBytes, 17000);
+  BOOST_CHECK_EQUAL(plan.dependencies[0].segmentNaming.mode, "ndn-segment-component");
+  BOOST_CHECK_EQUAL(plan.dependencies[0].segmentNaming.staticSegmentCount, 3);
+  BOOST_CHECK(!plan.dependencies[0].segmentNaming.dynamicFallback);
+  BOOST_CHECK(hasStaticSegmentPlan(plan.dependencies[0]));
   BOOST_REQUIRE_EQUAL(plan.dependencies[0].tensors.size(), 1);
   BOOST_CHECK_EQUAL(plan.dependencies[0].tensors[0], "features");
 
   NativeProviderAssignment assignment;
   assignment.providerByRole["/Stage/0"] = "/example/provider/stage0";
   assignment.providerByRole["/Stage/1"] = "/example/provider/stage1";
-  const auto stage1 = roleSpecFor(plan, "/Stage/1", "/run-json", assignment);
+  const auto session = deployNativePlanSession(plan, "/run-json", assignment);
+  BOOST_CHECK_EQUAL(session.sessionId, "/run-json");
+  BOOST_REQUIRE(session.rolesByName.count("/Stage/1") == 1);
+  const auto& stage1 = session.rolesByName.at("/Stage/1");
   BOOST_REQUIRE_EQUAL(stage1.inputs.size(), 1);
   BOOST_CHECK_EQUAL(stage1.inputs[0].expectedBytes, 17000);
+  BOOST_CHECK_EQUAL(stage1.inputs[0].expectedSegments, 3);
+  BOOST_REQUIRE_EQUAL(plannedSegmentNamesForEdge(stage1.inputs[0]).size(), 3);
   BOOST_REQUIRE_EQUAL(stage1.inputs[0].tensors.size(), 1);
   BOOST_CHECK_EQUAL(stage1.inputs[0].tensors[0], "features");
   BOOST_CHECK_EQUAL(
     stage1.inputs[0].plannedDataName,
                     "/example/provider/stage0/NDNSF/DI/ACTIVATION/run-json/stage0-to-stage1/Stage/0/bundle/0");
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonSupportsDynamicSegmentFallback)
+{
+  std::istringstream input(R"JSON({
+    "version": 1,
+    "services": [
+      {
+        "service": "/AI/Toy/DynamicInference",
+        "roles": ["/Stage/0", "/Stage/1"],
+        "dependencies": [
+          {
+            "producers": ["/Stage/0"],
+            "consumers": ["/Stage/1"],
+            "keyScope": "dynamic-edge",
+            "topicPrefix": "/activation",
+            "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+            "expectedSegments": 0,
+            "expectedBytes": 0,
+            "segmentNaming": {
+              "mode": "ndn-segment-component",
+              "staticSegmentCount": 0,
+              "dynamicFallback": true
+            },
+            "required": true
+          }
+        ]
+      }
+    ]
+  })JSON");
+
+  const auto plan = nativeExecutionPlanForServiceFromJson(input, "/AI/Toy/DynamicInference");
+  BOOST_REQUIRE_EQUAL(plan.dependencies.size(), 1);
+  BOOST_CHECK_EQUAL(plan.dependencies[0].segmentNaming.mode, "ndn-segment-component");
+  BOOST_CHECK_EQUAL(plan.dependencies[0].segmentNaming.staticSegmentCount, 0);
+  BOOST_CHECK(plan.dependencies[0].segmentNaming.dynamicFallback);
+  BOOST_CHECK(!hasStaticSegmentPlan(plan.dependencies[0]));
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole["/Stage/0"] = "/example/provider/stage0";
+  assignment.providerByRole["/Stage/1"] = "/example/provider/stage1";
+  const auto session = deployNativePlanSession(plan, "/run-dynamic-json", assignment);
+  const auto& stage1 = session.rolesByName.at("/Stage/1");
+  BOOST_REQUIRE_EQUAL(stage1.inputs.size(), 1);
+  BOOST_CHECK_EQUAL(stage1.inputs[0].expectedSegments, 0);
+  BOOST_CHECK(plannedSegmentNamesForEdge(stage1.inputs[0]).empty());
 }
 
 BOOST_AUTO_TEST_CASE(NativeServiceManifestBuildsRunnerSpecsByRole)

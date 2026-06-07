@@ -53,6 +53,7 @@ namespace tlv {
         ProducerRoleType = 182,
         SequenceType = 183,
         AssignmentPayloadType = 184,
+        SelectionProviderEntryType = 0xF503,
         PolicyManifestType = 185,
         ValidFromType = 186,
         GracePeriodMsType = 187,
@@ -208,6 +209,13 @@ private:
     mutable std::shared_ptr<const ndn::Block> m_wire;
 };
 
+struct SelectionProviderEntry
+{
+    ndn::Name providerName;
+    std::string providerTokenHash;
+    ndn::Buffer assignmentPayload;
+};
+
 class ServiceSelectionMessage : public AbstractMessage {
 public:
     ServiceSelectionMessage();
@@ -218,10 +226,12 @@ public:
     void setProviderToken(const std::string& providerToken);
     void setAssignmentPayload(const ndn::Buffer& payload);
     void setPolicyEpoch(size_t policyEpoch);
+    void addProviderEntry(const SelectionProviderEntry& entry);
     const std::vector<std::string>& getRequestIDs() const;
     const std::string& getProviderToken() const;
     const ndn::Buffer& getAssignmentPayload() const;
     size_t getPolicyEpoch() const;
+    const std::vector<SelectionProviderEntry>& getProviderEntries() const;
     void Clear() override;
     ndn::Block WireEncode() const override;
     bool WireDecode(const ndn::Block& block) override;
@@ -231,6 +241,7 @@ private:
     std::string providerToken_;
     ndn::Buffer assignmentPayload_;
     size_t policyEpoch_ = 0;
+    std::vector<SelectionProviderEntry> providerEntries_;
     mutable ndn::Block m_wire;
 };
 

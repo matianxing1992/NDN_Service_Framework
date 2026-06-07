@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -252,7 +253,9 @@ def snapshot_traffic(ndn) -> dict[str, dict[str, int]]:
 def write_traffic_delta(layout: str, phase: str,
                         before: dict[str, dict[str, int]],
                         after: dict[str, dict[str, int]],
-                        request_count: int = 1) -> dict:
+                        request_count: int = 1,
+                        measured_request_count: int | None = None,
+                        preflight_request_count: int = 0) -> dict:
     nodes = {}
     total_rx = 0
     total_tx = 0
@@ -264,14 +267,23 @@ def write_traffic_delta(layout: str, phase: str,
         nodes[name] = {"rxBytes": rx, "txBytes": tx, "totalBytes": rx + tx}
         total_rx += rx
         total_tx += tx
+    observed_request_count = max(1, request_count)
+    measured_count = max(1, measured_request_count if measured_request_count is not None else request_count)
+    preflight_count = max(0, preflight_request_count)
+    total_bytes = total_rx + total_tx
     summary = {
         "layout": layout,
         "phase": phase,
-        "requestCount": max(1, request_count),
+        "requestCount": observed_request_count,
+        "observedRequestCount": observed_request_count,
+        "measuredRequestCount": measured_count,
+        "preflightRequestCount": preflight_count,
         "rxBytes": total_rx,
         "txBytes": total_tx,
-        "totalNodeBytes": total_rx + total_tx,
-        "totalNodeBytesPerRequest": (total_rx + total_tx) / max(1, request_count),
+        "totalNodeBytes": total_bytes,
+        "totalNodeBytesPerRequest": total_bytes / observed_request_count,
+        "totalNodeBytesPerObservedRequest": total_bytes / observed_request_count,
+        "totalNodeBytesPerMeasuredInference": total_bytes / measured_count,
         "nodes": nodes,
     }
     path = OUT / "traffic-stats.json"
@@ -288,11 +300,16 @@ def write_traffic_delta(layout: str, phase: str,
     print(
         "YOLO_LAYOUT_TRAFFIC "
         f"layout={layout} phase={phase} "
-        f"request_count={max(1, request_count)} "
+        f"request_count={observed_request_count} "
+        f"observed_request_count={observed_request_count} "
+        f"measured_request_count={measured_count} "
+        f"preflight_request_count={preflight_count} "
         f"rx_bytes={total_rx} tx_bytes={total_tx} "
-        f"total_node_bytes={total_rx + total_tx} "
-        f"total_node_bytes_per_inference={(total_rx + total_tx) / max(1, request_count):.1f} "
-        f"total_node_bytes_per_request={(total_rx + total_tx) / max(1, request_count):.1f} "
+        f"total_node_bytes={total_bytes} "
+        f"total_node_bytes_per_inference={total_bytes / observed_request_count:.1f} "
+        f"total_node_bytes_per_request={total_bytes / observed_request_count:.1f} "
+        f"total_node_bytes_per_observed_request={total_bytes / observed_request_count:.1f} "
+        f"total_node_bytes_per_measured_inference={total_bytes / measured_count:.1f} "
         f"path={path}"
     )
     return summary
@@ -375,7 +392,9 @@ def snapshot_nfd_data_counters(ndn) -> dict[str, dict[str, int]]:
 def write_nfd_data_delta(layout: str, phase: str,
                          before: dict[str, dict[str, int]],
                          after: dict[str, dict[str, int]],
-                         request_count: int = 1) -> dict:
+                         request_count: int = 1,
+                         measured_request_count: int | None = None,
+                         preflight_request_count: int = 0) -> dict:
     counter_names = ["nInData", "nOutData", "nInBytes", "nOutBytes"]
     nodes = {}
     totals = {name: 0 for name in counter_names}
@@ -390,18 +409,27 @@ def write_nfd_data_delta(layout: str, phase: str,
         for counter in counter_names:
             totals[counter] += delta[counter]
     request_count = max(1, request_count)
+    measured_count = max(1, measured_request_count if measured_request_count is not None else request_count)
+    preflight_count = max(0, preflight_request_count)
     out_data = totals["nOutData"]
     in_data = totals["nInData"]
     summary = {
         "layout": layout,
         "phase": phase,
         "requestCount": request_count,
+        "observedRequestCount": request_count,
+        "measuredRequestCount": measured_count,
+        "preflightRequestCount": preflight_count,
         "nInData": in_data,
         "nOutData": out_data,
         "nInBytes": totals["nInBytes"],
         "nOutBytes": totals["nOutBytes"],
         "nOutDataPerRequest": out_data / request_count,
+        "nOutDataPerObservedRequest": out_data / request_count,
+        "nOutDataPerMeasuredInference": out_data / measured_count,
         "nOutBytesPerRequest": totals["nOutBytes"] / request_count,
+        "nOutBytesPerObservedRequest": totals["nOutBytes"] / request_count,
+        "nOutBytesPerMeasuredInference": totals["nOutBytes"] / measured_count,
         "avgNfdOutBytesPerOutData": (totals["nOutBytes"] / out_data) if out_data else 0.0,
         "notes": [
             "Data packet counts use NFD network-face nOutData/nInData counters.",
@@ -425,11 +453,18 @@ def write_nfd_data_delta(layout: str, phase: str,
     print(
         "YOLO_LAYOUT_NFD_DATA "
         f"layout={layout} phase={phase} request_count={request_count} "
+        f"observed_request_count={request_count} "
+        f"measured_request_count={measured_count} "
+        f"preflight_request_count={preflight_count} "
         f"n_out_data={out_data} n_in_data={in_data} "
         f"n_out_data_per_request={out_data / request_count:.2f} "
         f"data_packets_per_inference={out_data / request_count:.2f} "
+        f"n_out_data_per_observed_request={out_data / request_count:.2f} "
+        f"n_out_data_per_measured_inference={out_data / measured_count:.2f} "
         f"n_out_bytes={totals['nOutBytes']} "
         f"n_out_bytes_per_request={totals['nOutBytes'] / request_count:.1f} "
+        f"n_out_bytes_per_observed_request={totals['nOutBytes'] / request_count:.1f} "
+        f"n_out_bytes_per_measured_inference={totals['nOutBytes'] / measured_count:.1f} "
         f"avg_nfd_out_bytes_per_out_data={summary['avgNfdOutBytesPerOutData']:.1f} "
         f"avg_data_packet_bytes={summary['avgNfdOutBytesPerOutData']:.1f} "
         f"path={path}"
@@ -579,6 +614,15 @@ def request_id_from_message_name(name: str) -> str:
             tail = name.rsplit("/", 1)[-1]
             return "/" + tail if tail else ""
     return ""
+
+
+def selection_provider_from_message_name(name: str) -> str:
+    marker = "/NDNSF/SELECTION/"
+    if not name or marker not in name:
+        return ""
+    tail = name.split(marker, 1)[1]
+    provider_component = tail.split("/", 1)[0]
+    return urllib.parse.unquote(provider_component)
 
 
 def has_planned_name(row: dict) -> bool:
@@ -1590,6 +1634,22 @@ def write_hybrid_crypto_timing_summaries(layout: str,
         row["aesDoneToCallbackUs"] for row in user_ack
         if row.get("event") == "hybrid_decrypt_callback_dispatch" and "aesDoneToCallbackUs" in row
     ])
+
+    def cache_counts(role: str, message_type: str) -> tuple[int, int]:
+        cache_rows = [
+            row for row in rows
+            if row.get("event") == "hybrid_decrypt_key_cache" and
+            row.get("role") == role and
+            row.get("messageType") == message_type
+        ]
+        hits = sum(1 for row in cache_rows if row.get("hit") == "true")
+        misses = sum(1 for row in cache_rows if row.get("hit") == "false")
+        return hits, misses
+
+    provider_request_hits, provider_request_misses = cache_counts("provider", "REQUEST")
+    provider_selection_hits, provider_selection_misses = cache_counts("provider", "SELECTION")
+    user_ack_hits, user_ack_misses = cache_counts("user", "ACK")
+    user_response_hits, user_response_misses = cache_counts("user", "RESPONSE")
     print(
         "YOLO_LAYOUT_HYBRID_CRYPTO_TIMING "
         f"layout={layout} count={summary['count']} "
@@ -1597,6 +1657,14 @@ def write_hybrid_crypto_timing_summaries(layout: str,
         f"provider_request_aes_p50_us={provider_request_aes['p50']:.0f} "
         f"user_ack_aes_p50_us={user_ack_aes['p50']:.0f} "
         f"user_ack_callback_p50_us={user_ack_callback['p50']:.0f} "
+        f"provider_request_cache_hit={provider_request_hits} "
+        f"provider_request_cache_miss={provider_request_misses} "
+        f"provider_selection_cache_hit={provider_selection_hits} "
+        f"provider_selection_cache_miss={provider_selection_misses} "
+        f"user_ack_cache_hit={user_ack_hits} "
+        f"user_ack_cache_miss={user_ack_misses} "
+        f"user_response_cache_hit={user_response_hits} "
+        f"user_response_cache_miss={user_response_misses} "
         f"path={path}"
     )
 
@@ -2426,6 +2494,222 @@ def write_control_path_timing_summaries(
     )
 
 
+def write_svs_control_propagation_summaries(
+        layout: str,
+        phases: list[tuple[str, Path]],
+        providers: list[tuple[str, str, list[str]]]) -> None:
+    provider_names = {
+        name: provider_identity(argv[argv.index("--provider-id") + 1])
+        for _, name, argv in providers
+        if "--provider-id" in argv
+    }
+    user_events: dict[str, dict] = {}
+    for phase, path in phases:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "[NDNSF_TRACE]" not in line:
+                continue
+            row = parse_trace_row(line)
+            event = row.get("event", "")
+            message_name = row.get("messageName", "")
+            request_id = row.get("requestId", "")
+            if event == "SVS_PUBLISH_BEGIN":
+                request_id = request_id_from_message_name(message_name)
+            if not request_id:
+                continue
+            item = user_events.setdefault(request_id, {
+                "phase": phase,
+                "requestId": request_id,
+                "requestSvsBeginUs": 0,
+                "selectionSvsBeginByProvider": {},
+                "ackPreDecryptByProvider": {},
+                "responseObservedByProvider": {},
+            })
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            if event == "SVS_PUBLISH_BEGIN" and "/NDNSF/REQUEST/" in message_name:
+                current = int(item.get("requestSvsBeginUs", 0) or 0)
+                item["requestSvsBeginUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            elif event == "SVS_PUBLISH_BEGIN" and "/NDNSF/SELECTION/" in message_name:
+                provider = selection_provider_from_message_name(message_name)
+                if provider:
+                    current = int(item["selectionSvsBeginByProvider"].get(provider, 0) or 0)
+                    item["selectionSvsBeginByProvider"][provider] = min(
+                        [value for value in (current, timestamp_us) if value > 0]
+                        or [timestamp_us])
+            elif event == "ACK_MATCH_ATTEMPT" and row.get("phase") == "pre_decrypt":
+                provider = row.get("providerName", "")
+                if provider:
+                    current = int(item["ackPreDecryptByProvider"].get(provider, 0) or 0)
+                    item["ackPreDecryptByProvider"][provider] = min(
+                        [value for value in (current, timestamp_us) if value > 0]
+                        or [timestamp_us])
+            elif event == "RESPONSE_OBSERVED":
+                provider = row.get("providerName", "")
+                if provider:
+                    current = int(item["responseObservedByProvider"].get(provider, 0) or 0)
+                    item["responseObservedByProvider"][provider] = min(
+                        [value for value in (current, timestamp_us) if value > 0]
+                        or [timestamp_us])
+
+    provider_events: dict[tuple[str, str], dict] = {}
+    for _, name, _ in providers:
+        path = OUT / f"{name}.log"
+        if not path.exists():
+            continue
+        default_provider = provider_names.get(name, name)
+        for line in path.read_text(errors="replace").splitlines():
+            if "[NDNSF_TRACE]" not in line:
+                continue
+            row = parse_trace_row(line)
+            event = row.get("event", "")
+            message_name = row.get("messageName", "")
+            request_id = row.get("requestId", "")
+            if event == "SVS_PUBLISH_BEGIN":
+                request_id = request_id_from_message_name(message_name)
+            if not request_id:
+                continue
+            provider = row.get("providerName", "") or default_provider
+            item = provider_events.setdefault((request_id, provider), {
+                "requestId": request_id,
+                "providerName": provider,
+                "providerLog": path.name,
+                "requestReceivedUs": 0,
+                "ackSvsBeginUs": 0,
+                "selectionReceivedUs": 0,
+                "responseSvsBeginUs": 0,
+            })
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            if event == "REQUEST_RECEIVED":
+                current = int(item.get("requestReceivedUs", 0) or 0)
+                item["requestReceivedUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            elif event == "SVS_PUBLISH_BEGIN" and "/NDNSF/ACK/" in message_name:
+                current = int(item.get("ackSvsBeginUs", 0) or 0)
+                item["ackSvsBeginUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            elif event == "SELECTION_RECEIVED":
+                current = int(item.get("selectionReceivedUs", 0) or 0)
+                item["selectionReceivedUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            elif event == "SVS_PUBLISH_BEGIN" and "/NDNSF/RESPONSE/" in message_name:
+                current = int(item.get("responseSvsBeginUs", 0) or 0)
+                item["responseSvsBeginUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+
+    def delta_ms(end_us: int, start_us: int) -> float:
+        if end_us <= 0 or start_us <= 0 or end_us < start_us:
+            return 0.0
+        return (end_us - start_us) / 1000.0
+
+    rows = []
+    for (request_id, provider), pitem in sorted(provider_events.items()):
+        uitem = user_events.get(request_id, {})
+        request_svs_us = int(uitem.get("requestSvsBeginUs", 0) or 0)
+        selection_svs_us = int(
+            uitem.get("selectionSvsBeginByProvider", {}).get(provider, 0) or 0)
+        ack_pre_us = int(
+            uitem.get("ackPreDecryptByProvider", {}).get(provider, 0) or 0)
+        response_observed_us = int(
+            uitem.get("responseObservedByProvider", {}).get(provider, 0) or 0)
+        row = {
+            "phase": uitem.get("phase", ""),
+            "requestId": request_id,
+            "providerName": provider,
+            "providerLog": pitem.get("providerLog", ""),
+            "requestSvsBeginUs": request_svs_us,
+            "requestReceivedUs": int(pitem.get("requestReceivedUs", 0) or 0),
+            "ackSvsBeginUs": int(pitem.get("ackSvsBeginUs", 0) or 0),
+            "ackPreDecryptUs": ack_pre_us,
+            "selectionSvsBeginUs": selection_svs_us,
+            "selectionReceivedUs": int(pitem.get("selectionReceivedUs", 0) or 0),
+            "responseSvsBeginUs": int(pitem.get("responseSvsBeginUs", 0) or 0),
+            "responseObservedUs": response_observed_us,
+        }
+        row["requestSvsToProviderRequestReceivedMs"] = delta_ms(
+            row["requestReceivedUs"], row["requestSvsBeginUs"])
+        row["ackSvsToUserPreDecryptMs"] = delta_ms(
+            row["ackPreDecryptUs"], row["ackSvsBeginUs"])
+        row["selectionSvsToProviderSelectionReceivedMs"] = delta_ms(
+            row["selectionReceivedUs"], row["selectionSvsBeginUs"])
+        row["responseSvsToUserObservedMs"] = delta_ms(
+            row["responseObservedUs"], row["responseSvsBeginUs"])
+        rows.append(row)
+
+    final_response_rows = [row for row in rows if row["responseSvsToUserObservedMs"] > 0]
+
+    def summarize_rows(group_rows: list[dict]) -> dict:
+        return {
+            "count": len(group_rows),
+            "requestSvsToProviderRequestReceivedMs": summarize_numeric([
+                row["requestSvsToProviderRequestReceivedMs"]
+                for row in group_rows if row["requestSvsToProviderRequestReceivedMs"] > 0
+            ]),
+            "ackSvsToUserPreDecryptMs": summarize_numeric([
+                row["ackSvsToUserPreDecryptMs"]
+                for row in group_rows if row["ackSvsToUserPreDecryptMs"] > 0
+            ]),
+            "selectionSvsToProviderSelectionReceivedMs": summarize_numeric([
+                row["selectionSvsToProviderSelectionReceivedMs"]
+                for row in group_rows if row["selectionSvsToProviderSelectionReceivedMs"] > 0
+            ]),
+            "responseSvsToUserObservedMs": summarize_numeric([
+                row["responseSvsToUserObservedMs"]
+                for row in group_rows if row["responseSvsToUserObservedMs"] > 0
+            ]),
+        }
+
+    phase_summaries = {
+        phase: summarize_rows([row for row in rows if row.get("phase") == phase])
+        for phase in sorted({str(row.get("phase", "")) for row in rows if row.get("phase")})
+    }
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "finalResponseCount": len(final_response_rows),
+        "requestSvsToProviderRequestReceivedMs": summarize_numeric([
+            row["requestSvsToProviderRequestReceivedMs"]
+            for row in rows if row["requestSvsToProviderRequestReceivedMs"] > 0
+        ]),
+        "ackSvsToUserPreDecryptMs": summarize_numeric([
+            row["ackSvsToUserPreDecryptMs"]
+            for row in rows if row["ackSvsToUserPreDecryptMs"] > 0
+        ]),
+        "selectionSvsToProviderSelectionReceivedMs": summarize_numeric([
+            row["selectionSvsToProviderSelectionReceivedMs"]
+            for row in rows if row["selectionSvsToProviderSelectionReceivedMs"] > 0
+        ]),
+        "responseSvsToUserObservedMs": summarize_numeric([
+            row["responseSvsToUserObservedMs"]
+            for row in final_response_rows
+        ]),
+        "phases": phase_summaries,
+        "rows": rows,
+    }
+    path = OUT / "svs-control-propagation-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_SVS_CONTROL_PROPAGATION "
+        f"layout={layout} count={summary['count']} "
+        f"request_svs_to_provider_p50_ms="
+        f"{summary['requestSvsToProviderRequestReceivedMs']['p50']:.2f} "
+        f"ack_svs_to_user_p50_ms="
+        f"{summary['ackSvsToUserPreDecryptMs']['p50']:.2f} "
+        f"selection_svs_to_provider_p50_ms="
+        f"{summary['selectionSvsToProviderSelectionReceivedMs']['p50']:.2f} "
+        f"response_svs_to_user_p50_ms="
+        f"{summary['responseSvsToUserObservedMs']['p50']:.2f} "
+        f"path={path}"
+    )
+
+
 def _load_json_file(path: Path, default):
     if not path.exists():
         return default
@@ -2611,12 +2895,33 @@ def write_plan_cache_summary(layout: str,
             for line in text.splitlines()
             if "NDNSF_DI_PLAN_CACHE" in line
         ]
+        client_timing_entries = [
+            parse_key_value_line(line)
+            for line in text.splitlines()
+            if "NDNSF_DI_CLIENT_INFERENCE_TIMING" in line
+        ]
+        preflight_timing_entries = [
+            parse_key_value_line(line)
+            for line in text.splitlines()
+            if "NDNSF_DI_CLIENT_PREFLIGHT_TIMING" in line
+        ]
+        plan_session_invocations = sum(
+            1 for entry in client_timing_entries
+            if entry.get("mode") == "plan-session")
+        plan_session_preflights = sum(
+            1 for entry in preflight_timing_entries
+            if entry.get("mode") == "plan-session")
         rows.append({
             "phase": phase,
             "log": str(path),
             "entries": entries,
+            "clientTimingEntries": client_timing_entries,
+            "preflightTimingEntries": preflight_timing_entries,
             "hits": sum(1 for entry in entries if entry.get("hit") == "true"),
             "misses": sum(1 for entry in entries if entry.get("hit") == "false"),
+            "planSessionInvocations": plan_session_invocations,
+            "planSessionPreflights": plan_session_preflights,
+            "planSessionObservedInvocations": plan_session_invocations + plan_session_preflights,
             "artifactPublishes": text.count("inference-artifact--"),
             "scopeKeyPublishes": text.count("inference-scope-key-"),
             "inputPublishes": text.count("inference-input-image"),
@@ -2633,6 +2938,12 @@ def write_plan_cache_summary(layout: str,
         f"layout={layout} "
         f"hits={sum(row['hits'] for row in rows)} "
         f"misses={sum(row['misses'] for row in rows)} "
+        f"plan_session_invocations="
+        f"{sum(row['planSessionInvocations'] for row in rows)} "
+        f"plan_session_preflights="
+        f"{sum(row['planSessionPreflights'] for row in rows)} "
+        f"plan_session_observed_invocations="
+        f"{sum(row['planSessionObservedInvocations'] for row in rows)} "
         f"path={path}"
     )
     for row in rows:
@@ -2642,6 +2953,9 @@ def write_plan_cache_summary(layout: str,
             f"entries={len(row['entries'])} "
             f"hits={row['hits']} "
             f"misses={row['misses']} "
+            f"plan_session_invocations={row['planSessionInvocations']} "
+            f"plan_session_preflights={row['planSessionPreflights']} "
+            f"plan_session_observed_invocations={row['planSessionObservedInvocations']} "
             f"artifact_publishes={row['artifactPublishes']} "
             f"scope_key_publishes={row['scopeKeyPublishes']} "
             f"input_publishes={row['inputPublishes']} "
@@ -2781,6 +3095,8 @@ def main() -> None:
                         help="Run the warm user for this many seconds instead of a fixed request count")
     parser.add_argument("--warm-interval-ms", type=int, default=0,
                         help="Minimum interval between warm sequential request starts")
+    parser.add_argument("--preflight-requests", type=int, default=0,
+                        help="Warm the warm user plan session before measured warm requests")
     parser.add_argument("--ack-timeout-ms", type=int, default=1500,
                         help="ACK collection timeout passed to the DI user")
     parser.add_argument("--timeout-ms", type=int, default=60000,
@@ -2802,7 +3118,7 @@ def main() -> None:
     parser.add_argument("--crypto-timing", action="store_true",
                         help="enable narrow hybrid decrypt cache/unwrap/AES/callback timing logs")
     parser.add_argument("--control-timing", action="store_true",
-                        help="enable narrow NDNSF request/provider lifecycle timing logs")
+                        help="enable NDNSF request/provider lifecycle timing plus ACK/selection/control-path summaries")
     parser.add_argument("--dependency-timing", action="store_true",
                         help="enable dependency fetch and pending IMS timing logs")
     parser.add_argument("--disable-exact-segment-fetch", action="store_true",
@@ -2825,6 +3141,7 @@ def main() -> None:
     warm_requests = max(1, args_cli.warm_requests)
     warm_duration_s = max(0.0, float(args_cli.warm_duration_s or 0.0))
     warm_interval_ms = max(0, args_cli.warm_interval_ms)
+    preflight_requests = max(0, args_cli.preflight_requests)
     ack_timeout_ms = max(1, args_cli.ack_timeout_ms)
     timeout_ms = max(1, args_cli.timeout_ms)
     provider_handler_workers = max(1, args_cli.provider_handler_workers)
@@ -2894,13 +3211,18 @@ def main() -> None:
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=str(TOPO))
     procs = []
+    control_detail_trace = args_cli.control_trace or args_cli.control_timing
     args = Args(
         controller_node="csu",
         user_node="memphis",
         providers=5,
         provider_nodes="ucla,wustl,uiuc,umich,neu",
         serve_provider_certs=False,
-        debug_ack=args_cli.control_trace,
+        debug_ack=control_detail_trace,
+        # Keep app_env() on the debug_ack log profile so ServiceUser and
+        # ServiceProvider [NDNSF_TRACE] rows remain visible. We set
+        # NDNSF_TIMELINE_TRACE explicitly below for sampled timing, because
+        # app_env(timeline_trace=True) narrows NDN_LOG to TimelineTrace only.
         timeline_trace=False,
         dk_bootstrap_check=False,
         crypto_diagnostics=False,
@@ -3017,6 +3339,7 @@ def main() -> None:
         if args_cli.control_timing:
             env["NDNSF_CONTROL_TIMING"] = "1"
             env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"
+            env["NDNSF_TIMELINE_TRACE"] = "1"
         env["PYTHONPATH"] = ":".join([
             str(REPO / "NDNSF-DistributedInference"),
             str(REPO / "pythonWrapper"),
@@ -3142,6 +3465,8 @@ def main() -> None:
             "--timeout-ms", str(timeout_ms),
             "--async-requests", str(user_async_workers),
         ]
+        if preflight_requests > 0:
+            warm_user_args.extend(["--preflight-requests", str(preflight_requests)])
         if args_cli.native_providers:
             warm_user_args.append("--native-tensor-input")
         if warm_duration_s > 0:
@@ -3164,10 +3489,16 @@ def main() -> None:
         warm_text = warm_log.read_text(errors="replace")
         warm_latencies = write_latency_summary(layout, "warm", warm_text)
         warm_count = len(warm_latencies)
+        measured_warm_count = warm_count or warm_requests
+        observed_warm_count = measured_warm_count + preflight_requests
         write_traffic_delta(layout, "warm", warm_traffic_start, warm_traffic_end,
-                            warm_count or warm_requests)
+                            observed_warm_count,
+                            measured_request_count=measured_warm_count,
+                            preflight_request_count=preflight_requests)
         write_nfd_data_delta(layout, "warm", warm_nfd_start, warm_nfd_end,
-                             warm_count or warm_requests)
+                             observed_warm_count,
+                             measured_request_count=measured_warm_count,
+                             preflight_request_count=preflight_requests)
         print_user_workload_output(warm_text, args_cli.quiet_perf_logs)
         write_plan_cache_summary(layout, [
             ("cold", user_log),
@@ -3187,7 +3518,7 @@ def main() -> None:
                 ("cold", user_log),
                 ("warm", warm_log),
             ], providers)
-        if args_cli.control_trace:
+        if args_cli.control_timing or args_cli.control_trace:
             write_ack_selection_timing_summaries(layout, [
                 ("cold", user_log),
                 ("warm", warm_log),
@@ -3195,6 +3526,10 @@ def main() -> None:
             write_provider_selection_timing_summaries(layout, providers)
             write_provider_request_ack_timing_summaries(layout, providers)
             write_control_path_timing_summaries(layout, [
+                ("cold", user_log),
+                ("warm", warm_log),
+            ], providers)
+            write_svs_control_propagation_summaries(layout, [
                 ("cold", user_log),
                 ("warm", warm_log),
             ], providers)

@@ -132,6 +132,89 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
   BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
 }
 
+BOOST_AUTO_TEST_CASE(CompactSelectionUsesProviderBoundTokenProof)
+{
+  ndn::Face face;
+  ndn::security::KeyChain keyChain("pib-memory:compact-selection-token",
+                                   "tpm-memory:compact-selection-token");
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name providerName("/test/provider/camera");
+  const ndn::Name otherProviderName("/test/provider/other");
+  const ndn::Name serviceName("/HELLO");
+  const ndn::Name requestId("/request-compact-selection");
+
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-compact-selection"));
+
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+
+  int providerHandlerCallCount = 0;
+  provider.addService(
+    serviceName,
+    ServiceProvider::RequestHandler(
+      [&] (const ndn::Name&,
+           const ndn::Name&,
+           const ndn::Name&,
+           const ndn::Name&,
+           const RequestMessage&) {
+        ++providerHandlerCallCount;
+        ResponseMessage response;
+        response.setStatus(true);
+        return response;
+      }));
+
+  RequestMessage requestMessage;
+  requestMessage.setUserToken("user-token");
+  provider.addPendingRequestForTokenTest(requesterName,
+                                         serviceName,
+                                         requestId,
+                                         requestMessage,
+                                         "provider-token");
+
+  ServiceSelectionMessage compactSelection;
+  compactSelection.setRequestIDs({requestId.toUri()});
+  SelectionProviderEntry localEntry;
+  localEntry.providerName = providerName;
+  localEntry.providerTokenHash =
+    computeSelectionProviderTokenProofHash(requesterName,
+                                           providerName,
+                                           serviceName,
+                                           "provider-token");
+  ndn::Buffer assignment(reinterpret_cast<const uint8_t*>("role=head"), 9);
+  localEntry.assignmentPayload = assignment;
+  compactSelection.addProviderEntry(localEntry);
+  SelectionProviderEntry otherEntry;
+  otherEntry.providerName = otherProviderName;
+  otherEntry.providerTokenHash =
+    computeSelectionProviderTokenProofHash(requesterName,
+                                           otherProviderName,
+                                           serviceName,
+                                           "other-provider-token");
+  compactSelection.addProviderEntry(otherEntry);
+
+  auto compactBlock = compactSelection.WireEncode();
+  ServiceSelectionMessage decodedCompact;
+  BOOST_CHECK(decodedCompact.WireDecode(compactBlock));
+  BOOST_REQUIRE_EQUAL(decodedCompact.getProviderEntries().size(), 2);
+  BOOST_CHECK(decodedCompact.getProviderToken().empty());
+  BOOST_CHECK(decodedCompact.getProviderEntries().front().providerName.equals(providerName));
+  BOOST_CHECK_EQUAL(decodedCompact.getProviderEntries().front().providerTokenHash,
+                    localEntry.providerTokenHash);
+
+  ndn::Buffer compactBuffer(compactBlock.data(), compactBlock.size());
+  provider.OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+    requesterName,
+    providerName,
+    serviceName,
+    requestId,
+    compactBuffer);
+  BOOST_CHECK_EQUAL(providerHandlerCallCount, 1);
+}
+
 BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
 {
   ndn::Face face;

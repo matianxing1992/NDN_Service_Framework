@@ -7,6 +7,7 @@
 #include <optional>
 #include <set>
 #include <cstddef>
+#include <vector>
 
 #include <boost/format.hpp>
 #include <ndn-cxx/encoding/buffer-stream.hpp>
@@ -76,6 +77,13 @@ namespace ndn_service_framework
     {
         ndn::Name requesterName;
         ndn::Name providerName;
+        ndn::Name serviceName;
+        ndn::Name requestId;
+    };
+
+    struct CompactServiceSelectionNameV2
+    {
+        ndn::Name requesterName;
         ndn::Name serviceName;
         ndn::Name requestId;
     };
@@ -152,6 +160,17 @@ namespace ndn_service_framework
                                                          const ndn::Name& requestId);
     std::optional<ServiceSelectionNameV2>
     parseServiceSelectionNameV2(const ndn::Name& serviceSelectionName);
+    ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
+                                                const ndn::Name& serviceName,
+                                                const ndn::Name& requestId);
+    ndn::Name makeCompactServiceSelectionNameWithoutPrefixV2(const ndn::Name& serviceName,
+                                                             const ndn::Name& requestId);
+    std::optional<CompactServiceSelectionNameV2>
+    parseCompactServiceSelectionNameV2(const ndn::Name& serviceSelectionName);
+    std::string computeSelectionProviderTokenProofHash(const ndn::Name& requesterName,
+                                                       const ndn::Name& providerName,
+                                                       const ndn::Name& serviceName,
+                                                       const std::string& providerToken);
 
     ndn::Name makeSelectionStatusQueryName(const ndn::Name& providerName,
                                            const ndn::Name& serviceName,

@@ -29,6 +29,21 @@ class PublishedPlanReferences:
     scope_key_data_names: dict[str, str]
 
 
+@dataclass(frozen=True)
+class DeploymentSession:
+    """Client-side handle for a deployed DI plan.
+
+    The session separates deployment/static metadata from per-inference input:
+    model artifacts, role mapping, dependency tensor lists, object-name
+    templates, and scope keys are published or cached when the session is
+    created; ``invoke_plan`` then only submits the changing input payload.
+    """
+
+    plan: DistributedInferencePlan
+    fingerprint: str
+    references: PublishedPlanReferences
+
+
 def _to_collaboration_dependency(
     dep: CollaborationDependency | InferenceDependency | dict,
 ) -> CollaborationDependency | dict:
@@ -248,21 +263,12 @@ class DistributedInferenceClient:
     ) -> InferenceResult:
         total_start = perf_counter()
         plan_start = perf_counter()
-        published = self._published_plan_references(
-            plan,
-            freshness_ms=freshness_ms,
-        )
+        session = self.deploy_plan(plan, freshness_ms=freshness_ms)
         plan_ms = _elapsed_ms(plan_start)
         request_start = perf_counter()
-        response: ServiceResponse = self.user.request_collaboration(
-            plan.service,
+        response = self._request_plan_session(
+            session,
             payload,
-            roles=plan.ndnsf_roles(),
-            key_scopes=plan.key_scopes(),
-            dependencies=plan.ndnsf_dependencies(),
-            artifact_data_names=published.artifact_data_names,
-            scope_key_data_names=published.scope_key_data_names,
-            role_scopes=plan.role_scopes(),
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
         )
@@ -284,13 +290,170 @@ class DistributedInferenceClient:
             error=response.error,
         )
 
+    def deploy_plan(
+        self,
+        plan: DistributedInferencePlan,
+        *,
+        freshness_ms: int = 60000,
+    ) -> DeploymentSession:
+        """Install/cache static plan metadata and return a session handle.
+
+        This is the explicit high-level form of the DI deployment/session
+        boundary.  It does not execute inference.  It only ensures that static
+        model/runtime metadata and key-scope material referenced by the plan are
+        available to providers.  Reusing the returned session avoids
+        republishing those static references for each inference request.
+        """
+
+        fingerprint = _plan_fingerprint(plan)
+        references = self._published_plan_references(
+            plan,
+            fingerprint=fingerprint,
+            freshness_ms=freshness_ms,
+        )
+        return DeploymentSession(
+            plan=plan,
+            fingerprint=fingerprint,
+            references=references,
+        )
+
+    def invoke_plan(
+        self,
+        session: DeploymentSession,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+    ) -> InferenceResult:
+        """Invoke one inference against an already deployed plan session."""
+
+        request_start = perf_counter()
+        response = self._request_plan_session(
+            session,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+        request_ms = _elapsed_ms(request_start)
+        print(
+            "NDNSF_DI_CLIENT_INFERENCE_TIMING "
+            f"service={session.plan.service} "
+            f"mode=plan-session "
+            f"fingerprint={session.fingerprint[:16]} "
+            f"request_ms={request_ms:.2f} "
+            f"total_ms={request_ms:.2f} "
+            f"status={'true' if response.status else 'false'}",
+            flush=True,
+        )
+        return InferenceResult(
+            status=response.status,
+            payload=response.payload,
+            error=response.error,
+        )
+
+    def preflight_plan(
+        self,
+        session: DeploymentSession,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+    ) -> InferenceResult:
+        """Warm a deployed plan session without counting it as measured inference.
+
+        The request uses the normal NDNSF collaboration path.  It is intended
+        for deployment/session preflight so provider/user hybrid message keys,
+        role assignment, and artifact/session caches are hot before the first
+        measured inference.  The method deliberately logs
+        NDNSF_DI_CLIENT_PREFLIGHT_TIMING instead of
+        NDNSF_DI_CLIENT_INFERENCE_TIMING so benchmark summaries can keep
+        preflight separate from measured requests.
+        """
+
+        request_start = perf_counter()
+        response = self._request_plan_session(
+            session,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+        request_ms = _elapsed_ms(request_start)
+        print(
+            "NDNSF_DI_CLIENT_PREFLIGHT_TIMING "
+            f"service={session.plan.service} "
+            f"mode=plan-session "
+            f"fingerprint={session.fingerprint[:16]} "
+            f"request_ms={request_ms:.2f} "
+            f"status={'true' if response.status else 'false'}",
+            flush=True,
+        )
+        return InferenceResult(
+            status=response.status,
+            payload=response.payload,
+            error=response.error,
+        )
+
+    def invoke_plan_async(
+        self,
+        session: DeploymentSession,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+        on_result: Callable[[InferenceResult], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> Future:
+        """Submit one inference against an already deployed plan session."""
+
+        future = self._executor.submit(
+            self.invoke_plan,
+            session,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+        if on_result is not None or on_error is not None:
+            def _done(done: Future) -> None:
+                try:
+                    result = done.result()
+                except BaseException as exc:  # noqa: BLE001
+                    if on_error is not None:
+                        on_error(exc)
+                    return
+                if on_result is not None:
+                    on_result(result)
+            future.add_done_callback(_done)
+        return future
+
+    def _request_plan_session(
+        self,
+        session: DeploymentSession,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int,
+        timeout_ms: int,
+    ) -> ServiceResponse:
+        return self.user.request_collaboration(
+            session.plan.service,
+            payload,
+            roles=session.plan.ndnsf_roles(),
+            key_scopes=session.plan.key_scopes(),
+            dependencies=session.plan.ndnsf_dependencies(),
+            artifact_data_names=session.references.artifact_data_names,
+            scope_key_data_names=session.references.scope_key_data_names,
+            role_scopes=session.plan.role_scopes(),
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+
     def _published_plan_references(
         self,
         plan: DistributedInferencePlan,
         *,
+        fingerprint: str | None = None,
         freshness_ms: int,
     ) -> PublishedPlanReferences:
-        fingerprint = _plan_fingerprint(plan)
+        fingerprint = fingerprint or _plan_fingerprint(plan)
         with self._published_plan_lock:
             cached = self._published_plans.get(fingerprint)
             if cached is not None:

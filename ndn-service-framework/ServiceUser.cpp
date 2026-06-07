@@ -5065,17 +5065,22 @@ namespace ndn_service_framework
             }
         }
 
-        for (const auto& selectedAck : pendingCall.customSelectedAcks) {
-            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
-                      << nowMicroseconds()
-                      << " requestId=" << selectedAck.requestId.toUri()
-                      << " providerName=" << selectedAck.providerName.toUri()
-                      << " serviceName=" << selectedAck.serviceName.toUri()
-                      << " providerTokenPresent="
-                      << !selectedAck.message.getProviderToken().empty());
-            PublishServiceSelectionMessageV2(selectedAck.providerName,
-                                                selectedAck.serviceName,
-                                                selectedAck.requestId);
+        if (pendingCall.customSelectedAcks.size() > 1) {
+            PublishCompactServiceSelectionMessageV2(pendingCall.customSelectedAcks);
+        }
+        else {
+            for (const auto& selectedAck : pendingCall.customSelectedAcks) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << selectedAck.requestId.toUri()
+                          << " providerName=" << selectedAck.providerName.toUri()
+                          << " serviceName=" << selectedAck.serviceName.toUri()
+                          << " providerTokenPresent="
+                          << !selectedAck.message.getProviderToken().empty());
+                PublishServiceSelectionMessageV2(selectedAck.providerName,
+                                                    selectedAck.serviceName,
+                                                    selectedAck.requestId);
+            }
         }
 
         return !pendingCall.customSelectedAcks.empty();
@@ -5120,9 +5125,16 @@ namespace ndn_service_framework
                 if (pendingCall.selectedProvider.empty()) {
                     pendingCall.selectedProvider = storedAck.providerName;
                 }
-                PublishServiceSelectionMessageV2(storedAck.providerName,
-                                                    storedAck.serviceName,
-                                                    storedAck.requestId);
+            }
+            if (pendingCall.customSelectedAcks.size() > 1) {
+                PublishCompactServiceSelectionMessageV2(pendingCall.customSelectedAcks);
+            }
+            else {
+                for (const auto& selectedAck : pendingCall.customSelectedAcks) {
+                    PublishServiceSelectionMessageV2(selectedAck.providerName,
+                                                        selectedAck.serviceName,
+                                                        selectedAck.requestId);
+                }
             }
             return !pendingCall.expectedResponseProviders.empty();
         }
@@ -6261,6 +6273,132 @@ void ServiceUser::finishRequestAckOnEventLoop(
                   << " requestId=" << requestId.toUri()
                   << " providerName=" << providerName.toUri()
                   << " serviceName=" << serviceName.toUri());
+    }
+
+    void ServiceUser::PublishCompactServiceSelectionMessageV2(
+        const std::vector<StoredAck>& selectedAcks)
+    {
+        if (selectedAcks.empty()) {
+            return;
+        }
+        if (selectedAcks.size() == 1) {
+            const auto& ack = selectedAcks.front();
+            PublishServiceSelectionMessageV2(ack.providerName,
+                                             ack.serviceName,
+                                             ack.requestId);
+            return;
+        }
+
+        const ndn::Name requestId = selectedAcks.front().requestId;
+        const ndn::Name serviceName = selectedAcks.front().serviceName;
+        for (const auto& ack : selectedAcks) {
+            if (!ack.requestId.equals(requestId) ||
+                !ack.serviceName.equals(serviceName)) {
+                for (const auto& fallbackAck : selectedAcks) {
+                    PublishServiceSelectionMessageV2(fallbackAck.providerName,
+                                                     fallbackAck.serviceName,
+                                                     fallbackAck.requestId);
+                }
+                return;
+            }
+        }
+
+        auto pendingIt = m_pendingCalls.find(requestId);
+        if (pendingIt == m_pendingCalls.end()) {
+            for (const auto& fallbackAck : selectedAcks) {
+                PublishServiceSelectionMessageV2(fallbackAck.providerName,
+                                                 fallbackAck.serviceName,
+                                                 fallbackAck.requestId);
+            }
+            return;
+        }
+
+        ServiceSelectionMessage selectionMessage;
+        selectionMessage.setRequestIDs({requestId.toUri()});
+        selectionMessage.setPolicyEpoch(m_currentPolicyEpoch);
+        for (const auto& selectedAck : selectedAcks) {
+            SelectionProviderEntry entry;
+            entry.providerName = selectedAck.providerName;
+            auto tokenIt =
+                pendingIt->second.providerTokens.find(selectedAck.providerName.toUri());
+            if (m_useTokens && tokenIt == pendingIt->second.providerTokens.end()) {
+                for (const auto& fallbackAck : selectedAcks) {
+                    PublishServiceSelectionMessageV2(fallbackAck.providerName,
+                                                     fallbackAck.serviceName,
+                                                     fallbackAck.requestId);
+                }
+                return;
+            }
+            if (m_useTokens) {
+                entry.providerTokenHash =
+                    computeSelectionProviderTokenProofHash(identity,
+                                                           selectedAck.providerName,
+                                                           serviceName,
+                                                           tokenIt->second);
+            }
+            auto assignmentIt =
+                pendingIt->second.collaborationAssignments.find(
+                    selectedAck.providerName.toUri());
+            if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
+                entry.assignmentPayload = assignmentIt->second;
+            }
+            selectionMessage.addProviderEntry(entry);
+        }
+
+        const auto selectionName =
+            makeCompactServiceSelectionNameV2(identity, serviceName, requestId);
+        const auto selectionNameWithoutPrefix =
+            makeCompactServiceSelectionNameWithoutPrefixV2(serviceName, requestId);
+        const std::string selectionDigest = computeSelectionDigest(selectionMessage);
+
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COMPACT_SELECTION_PUBLISH_ATTEMPT timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " serviceName=" << serviceName.toUri()
+                  << " selectedCount=" << selectedAcks.size()
+                  << " messageName=" << selectionName.toUri());
+        PublishMessage(selectionName, selectionNameWithoutPrefix, selectionMessage);
+
+        pendingIt->second.selectionPublishedAtUs = nowMicroseconds();
+        for (const auto& selectedAck : selectedAcks) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=CUSTOM_ACK_SELECTED timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << selectedAck.requestId.toUri()
+                      << " providerName=" << selectedAck.providerName.toUri()
+                      << " serviceName=" << selectedAck.serviceName.toUri()
+                      << " providerTokenPresent="
+                      << (pendingIt->second.providerTokens.find(
+                              selectedAck.providerName.toUri()) !=
+                          pendingIt->second.providerTokens.end())
+                      << " compactSelection=1");
+            addUniqueName(pendingIt->second.selectionPublishedProviders,
+                          selectedAck.providerName);
+            pendingIt->second.selectionDigestsByProvider[selectedAck.providerName.toUri()] =
+                selectionDigest;
+            SelectionExecutionStatus status;
+            status.providerName = selectedAck.providerName;
+            status.serviceName = serviceName;
+            status.requestId = requestId;
+            status.selectionDigest = selectionDigest;
+            status.state = SelectionExecutionState::Unknown;
+            status.message = "compact selection published; awaiting provider status";
+            status.updatedAtUs = nowMicroseconds();
+            pendingIt->second.selectionStatusesByProvider[selectedAck.providerName.toUri()] =
+                status;
+            if (pendingIt->second.trackSelectionStatus &&
+                pendingIt->second.selectionStatusOptions.enabled) {
+                scheduleSelectionStatusQuery(requestId,
+                                             selectedAck.providerName,
+                                             selectionDigest);
+            }
+        }
+        updateRequestLifecycleState(requestId, RequestLifecycleState::SELECTION_PUBLISHED);
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=COMPACT_SELECTION_PUBLISHED timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " serviceName=" << serviceName.toUri()
+                  << " selectedCount=" << selectedAcks.size()
+                  << " messageName=" << selectionName.toUri());
     }
 
     void ServiceUser::onMissingData(const std::vector<ndn::svs::MissingDataInfo>& infoVector)

@@ -21,6 +21,12 @@ public:
   std::future<TensorBundle>
   prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override;
 
+  /**
+   * Publish a role output under the deterministic Data name assigned by the
+   * native execution plan.  This path intentionally does not publish a
+   * separate activation-ready notification: consumers discover dependencies by
+   * prefetching the planned object/segment names.
+   */
   void
   publishOutput(const std::string& sessionId,
                 const DependencyEdge& edge,

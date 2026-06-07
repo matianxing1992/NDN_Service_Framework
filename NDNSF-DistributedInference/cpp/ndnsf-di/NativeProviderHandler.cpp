@@ -47,6 +47,16 @@ plannedNameOrFalse(const std::string& plannedDataName)
   return plannedDataName.empty() ? "false" : plannedDataName;
 }
 
+std::string
+plannedSegmentOrFalse(const std::vector<std::string>& plannedSegmentNames,
+                      bool last = false)
+{
+  if (plannedSegmentNames.empty()) {
+    return "false";
+  }
+  return last ? plannedSegmentNames.back() : plannedSegmentNames.front();
+}
+
 bool
 runtimeTimingEnabled()
 {
@@ -165,6 +175,11 @@ logProviderTiming(const std::string& sessionId,
               << " bytes=" << timing.bytes
               << " expected_segments=" << timing.expectedSegments
               << " expected_bytes=" << timing.expectedBytes
+              << " planned_segment_count=" << timing.plannedSegmentNames.size()
+              << " first_planned_segment="
+              << plannedSegmentOrFalse(timing.plannedSegmentNames)
+              << " last_planned_segment="
+              << plannedSegmentOrFalse(timing.plannedSegmentNames, true)
               << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
               << " planned_name=" << plannedNameOrFalse(timing.plannedDataName)
               << std::endl;
@@ -182,6 +197,11 @@ logProviderTiming(const std::string& sessionId,
               << " bytes=" << timing.bytes
               << " expected_segments=" << timing.expectedSegments
               << " expected_bytes=" << timing.expectedBytes
+              << " planned_segment_count=" << timing.plannedSegmentNames.size()
+              << " first_planned_segment="
+              << plannedSegmentOrFalse(timing.plannedSegmentNames)
+              << " last_planned_segment="
+              << plannedSegmentOrFalse(timing.plannedSegmentNames, true)
               << " data_name=" << plannedNameOrFalse(timing.plannedDataName)
               << " output_ready_epoch_ms="
               << approxEpochMs(baseSteady, baseEpochMs, timing.outputReadyAt)

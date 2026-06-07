@@ -22,6 +22,7 @@ from ndnsf import (
 )
 
 from .client import DistributedInferenceClient, InferenceResult
+from .client import DeploymentSession
 from .controller import DistributedInferenceController
 from .plan import (
     ArtifactSpec,
@@ -278,6 +279,55 @@ class APPClient:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             freshness_ms=freshness_ms,
+        )
+
+    def deploy_plan(self, plan: DistributedInferencePlan, *,
+                    freshness_ms: int = 60000) -> DeploymentSession:
+        """Install/cache static plan metadata and return a reusable session."""
+
+        return self._client.deploy_plan(
+            self._with_service_dependencies(plan),
+            freshness_ms=freshness_ms,
+        )
+
+    def invoke_plan(self, session: DeploymentSession, payload: bytes, *,
+                    ack_timeout_ms: int = 500,
+                    timeout_ms: int = 30000) -> InferenceResult:
+        """Invoke one inference against a previously deployed plan session."""
+
+        return self._client.invoke_plan(
+            session,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+
+    def preflight_plan(self, session: DeploymentSession, payload: bytes, *,
+                       ack_timeout_ms: int = 500,
+                       timeout_ms: int = 30000) -> InferenceResult:
+        """Warm one deployed plan session without marking it as measured inference."""
+
+        return self._client.preflight_plan(
+            session,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+
+    def invoke_plan_async(self, session: DeploymentSession, payload: bytes, *,
+                          ack_timeout_ms: int = 500,
+                          timeout_ms: int = 30000,
+                          on_result: Callable[[InferenceResult], None] | None = None,
+                          on_error: Callable[[BaseException], None] | None = None) -> Future:
+        """Submit one inference against a previously deployed plan session."""
+
+        return self._client.invoke_plan_async(
+            session,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            on_result=on_result,
+            on_error=on_error,
         )
 
     def distributed_inference(self, service: str, value: Any, *,

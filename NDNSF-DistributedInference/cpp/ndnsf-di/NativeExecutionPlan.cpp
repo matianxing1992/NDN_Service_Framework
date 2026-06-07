@@ -75,6 +75,37 @@ plannedDataNameFromTemplate(const std::string& objectNameTemplate,
 }
 
 std::string
+plannedSegmentName(const std::string& plannedDataName, std::size_t segmentNo)
+{
+  if (plannedDataName.empty()) {
+    return "";
+  }
+  return plannedDataName + "/seg=" + std::to_string(segmentNo);
+}
+
+std::vector<std::string>
+plannedSegmentNamesForEdge(const DependencyEdge& edge)
+{
+  std::vector<std::string> names;
+  if (edge.plannedDataName.empty() || edge.expectedSegments == 0) {
+    return names;
+  }
+  names.reserve(edge.expectedSegments);
+  for (std::size_t segmentNo = 0; segmentNo < edge.expectedSegments; ++segmentNo) {
+    names.push_back(plannedSegmentName(edge.plannedDataName, segmentNo));
+  }
+  return names;
+}
+
+bool
+hasStaticSegmentPlan(const NativeDependencySpec& dependency)
+{
+  return dependency.segmentNaming.mode == "ndn-segment-component" &&
+         dependency.segmentNaming.staticSegmentCount > 0 &&
+         !dependency.segmentNaming.dynamicFallback;
+}
+
+std::string
 providerForRole(const NativeProviderAssignment& assignment,
                 const std::string& role,
                 const std::string& fallbackProvider)
@@ -85,6 +116,19 @@ providerForRole(const NativeProviderAssignment& assignment,
   }
   return fallbackProvider;
 }
+
+namespace {
+
+std::size_t
+effectiveExpectedSegments(const NativeDependencySpec& dependency)
+{
+  if (hasStaticSegmentPlan(dependency)) {
+    return dependency.segmentNaming.staticSegmentCount;
+  }
+  return dependency.expectedSegments;
+}
+
+} // namespace
 
 RoleSpec
 roleSpecFor(const NativeExecutionPlan& plan,
@@ -113,6 +157,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
       }
       for (const auto& producer : dep.producers) {
         const auto producerProvider = providerForRole(assignment, producer, localProvider);
+        const auto expectedSegments = effectiveExpectedSegments(dep);
         spec.inputs.push_back(DependencyEdge{
           dep.keyScope,
           producer,
@@ -124,7 +169,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       producer,
                                       dep.topicPrefix,
                                       producerProvider),
-          dep.expectedSegments,
+          expectedSegments,
           dep.expectedBytes,
           dep.tensors,
         });
@@ -136,6 +181,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
       }
       for (const auto& consumer : dep.consumers) {
         const auto producerProvider = providerForRole(assignment, producer, localProvider);
+        const auto expectedSegments = effectiveExpectedSegments(dep);
         spec.outputs.push_back(DependencyEdge{
           dep.keyScope,
           producer,
@@ -147,7 +193,7 @@ roleSpecFor(const NativeExecutionPlan& plan,
                                       consumer,
                                       dep.topicPrefix,
                                       producerProvider),
-          dep.expectedSegments,
+          expectedSegments,
           dep.expectedBytes,
           dep.tensors,
         });
@@ -155,6 +201,27 @@ roleSpecFor(const NativeExecutionPlan& plan,
     }
   }
   return spec;
+}
+
+NativePlanSession
+deployNativePlanSession(NativeExecutionPlan plan,
+                        std::string sessionId,
+                        NativeProviderAssignment assignment)
+{
+  if (sessionId.empty()) {
+    throw std::invalid_argument("NativePlanSession requires a non-empty sessionId");
+  }
+
+  NativePlanSession session;
+  session.sessionId = std::move(sessionId);
+  session.assignment = std::move(assignment);
+  session.plan = std::move(plan);
+  for (const auto& role : session.plan.roles) {
+    session.rolesByName.emplace(
+      role,
+      roleSpecFor(session.plan, role, session.sessionId, session.assignment));
+  }
+  return session;
 }
 
 } // namespace ndnsf::di

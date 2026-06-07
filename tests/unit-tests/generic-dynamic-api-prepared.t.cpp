@@ -496,6 +496,27 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
   BOOST_CHECK_EQUAL(parsedResponse->requesterName, requester);
   BOOST_CHECK_EQUAL(parsedResponse->serviceName, serviceName);
   BOOST_CHECK_EQUAL(parsedResponse->requestId, requestId);
+
+  const auto compactSelectionName =
+    makeCompactServiceSelectionNameV2(requester, serviceName, requestId);
+  const auto parsedCompactSelection =
+    parseCompactServiceSelectionNameV2(compactSelectionName);
+  BOOST_REQUIRE(parsedCompactSelection);
+  BOOST_CHECK_EQUAL(parsedCompactSelection->requesterName, requester);
+  BOOST_CHECK_EQUAL(parsedCompactSelection->serviceName, serviceName);
+  BOOST_CHECK_EQUAL(parsedCompactSelection->requestId, requestId);
+
+  const auto compactSelectionAttributes = GetAttributesByName(compactSelectionName);
+  BOOST_REQUIRE(compactSelectionAttributes);
+  BOOST_REQUIRE_EQUAL(compactSelectionAttributes->size(), 1);
+  BOOST_CHECK_EQUAL(compactSelectionAttributes->at(0), "/SERVICE/ObjectDetection/YOLOv8");
+
+  const auto legacySelectionName =
+    makeServiceSelectionNameV2(requester, provider, serviceName, requestId);
+  const auto parsedLegacySelection = parseServiceSelectionNameV2(legacySelectionName);
+  BOOST_REQUIRE(parsedLegacySelection);
+  BOOST_CHECK_EQUAL(parsedLegacySelection->providerName, provider);
+  BOOST_CHECK_EQUAL(parsedLegacySelection->serviceName, serviceName);
 }
 
 BOOST_AUTO_TEST_CASE(AddHandlerRequestServiceDispatchResponseAndAck)

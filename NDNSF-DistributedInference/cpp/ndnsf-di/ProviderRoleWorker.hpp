@@ -22,6 +22,7 @@ struct InputFetchTiming
   std::string producerRole;
   std::string scope;
   std::string plannedDataName;
+  std::vector<std::string> plannedSegmentNames;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::size_t bytes = 0;
@@ -34,6 +35,7 @@ struct OutputPublishTiming
   std::string producerRole;
   std::string scope;
   std::string plannedDataName;
+  std::vector<std::string> plannedSegmentNames;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::size_t bytes = 0;

@@ -22,6 +22,34 @@ stringArrayFromJson(const boost::property_tree::ptree& node, const std::string& 
   return values;
 }
 
+namespace {
+
+SegmentNamingSpec
+segmentNamingFromJson(const boost::property_tree::ptree& dependency,
+                      std::size_t expectedSegments)
+{
+  SegmentNamingSpec spec;
+  spec.staticSegmentCount = expectedSegments;
+  spec.dynamicFallback = expectedSegments == 0;
+
+  const auto segmentNaming = dependency.get_child_optional("segmentNaming");
+  if (!segmentNaming) {
+    return spec;
+  }
+
+  spec.mode = segmentNaming->get<std::string>("mode", spec.mode);
+  spec.staticSegmentCount =
+    segmentNaming->get<std::size_t>("staticSegmentCount", spec.staticSegmentCount);
+  spec.dynamicFallback =
+    segmentNaming->get<bool>("dynamicFallback", spec.dynamicFallback);
+  if (spec.staticSegmentCount == 0) {
+    spec.dynamicFallback = true;
+  }
+  return spec;
+}
+
+} // namespace
+
 std::map<std::string, NativeExecutionPlan>
 nativeExecutionPlansByServiceFromJson(std::istream& input)
 {
@@ -60,6 +88,7 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
         spec.expectedSegments = dep.get<std::size_t>("expectedSegments", 0);
         spec.expectedBytes = dep.get<std::size_t>("expectedBytes", 0);
         spec.tensors = stringArrayFromJson(dep, "tensors");
+        spec.segmentNaming = segmentNamingFromJson(dep, spec.expectedSegments);
         if (spec.keyScope.empty()) {
           throw std::invalid_argument(
             "native execution plan dependency missing keyScope");

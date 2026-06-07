@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <exception>
@@ -128,6 +129,7 @@ ProviderRoleWorker::runRole(const WorkItem& item)
     timing.producerRole = edge.producerRole;
     timing.scope = edge.scope;
     timing.plannedDataName = edge.plannedDataName;
+    timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
     timing.expectedSegments = edge.expectedSegments;
     timing.expectedBytes = edge.expectedBytes;
     timing.prefetchStartedAt = std::chrono::steady_clock::now();
@@ -167,6 +169,7 @@ ProviderRoleWorker::runRole(const WorkItem& item)
     timing.producerRole = edge.producerRole;
     timing.scope = edge.scope;
     timing.plannedDataName = edge.plannedDataName;
+    timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
     timing.expectedSegments = edge.expectedSegments;
     timing.expectedBytes = edge.expectedBytes;
     timing.bytes = bundle.payload.size();

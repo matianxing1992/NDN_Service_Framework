@@ -47,6 +47,8 @@ def main() -> int:
                         help="Run sequential requests for this many seconds; 0 disables duration mode")
     parser.add_argument("--sequential-interval-ms", type=int, default=0,
                         help="Minimum interval between sequential request starts")
+    parser.add_argument("--preflight-requests", type=int, default=0,
+                        help="Warm the deployed plan/session before measured requests")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--input-size", type=int, default=DEFAULT_INPUT_SIZE)
     parser.add_argument("--native-tensor-input", action="store_true",
@@ -122,6 +124,65 @@ def main() -> int:
             dynamic_provisioning = False
         elif args.dynamic_provisioning or args.repo_manifest_file:
             dynamic_provisioning = True
+        plan_session = None
+        if dynamic_provisioning:
+            plan = client.service_plan(
+                service,
+                runtime=runtime_spec(),
+                artifact_references=args.repo_manifest_file or None,
+            )
+            plan_session = client.deploy_plan(plan, freshness_ms=120000)
+
+        def invoke_once():
+            if plan_session is not None:
+                return client.invoke_plan(
+                    plan_session,
+                    payload,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=args.timeout_ms,
+                )
+            return client.distributed_inference(
+                service,
+                payload,
+                ack_timeout_ms=args.ack_timeout_ms,
+                timeout_ms=args.timeout_ms,
+                dynamic_provisioning=False,
+                runtime=runtime_spec(),
+                artifact_references=args.repo_manifest_file or None,
+            )
+
+        preflight_requests = max(0, int(args.preflight_requests or 0))
+        for index in range(preflight_requests):
+            started = time.perf_counter()
+            if plan_session is not None:
+                preflight = client.preflight_plan(
+                    plan_session,
+                    payload,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=args.timeout_ms,
+                )
+            else:
+                preflight = client.distributed_inference(
+                    service,
+                    payload,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=args.timeout_ms,
+                    dynamic_provisioning=False,
+                    runtime=runtime_spec(),
+                    artifact_references=args.repo_manifest_file or None,
+                )
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            print(
+                "YOLO_LAYOUT_PREFLIGHT "
+                f"layout={layout} index={index} "
+                f"status={str(preflight.status).lower()} "
+                f"elapsed_ms={elapsed_ms:.2f} "
+                f"error={preflight.error}"
+            )
+            if not preflight.status:
+                client.shutdown()
+                return 4
+
         if args.sequential_requests or duration_s > 0:
             futures = []
             run_deadline = time.perf_counter() + duration_s if duration_s > 0 else None
@@ -132,15 +193,7 @@ def main() -> int:
                 if run_deadline is None and index >= request_count:
                     break
                 started = time.perf_counter()
-                result = client.distributed_inference(
-                    service,
-                    payload,
-                    ack_timeout_ms=args.ack_timeout_ms,
-                    timeout_ms=args.timeout_ms,
-                    dynamic_provisioning=dynamic_provisioning,
-                    runtime=runtime_spec(),
-                    artifact_references=args.repo_manifest_file or None,
-                )
+                result = invoke_once()
                 futures.append(_TimedFuture(_ImmediateResult(result), started, time.perf_counter()))
                 index += 1
                 if interval_s > 0:
@@ -154,15 +207,23 @@ def main() -> int:
             futures = []
             for _ in range(request_count):
                 started = time.perf_counter()
-                future = client.async_distributed_inference(
-                    service,
-                    payload,
-                    ack_timeout_ms=args.ack_timeout_ms,
-                    timeout_ms=args.timeout_ms,
-                    dynamic_provisioning=dynamic_provisioning,
-                    runtime=runtime_spec(),
-                    artifact_references=args.repo_manifest_file or None,
-                )
+                if plan_session is not None:
+                    future = client.invoke_plan_async(
+                        plan_session,
+                        payload,
+                        ack_timeout_ms=args.ack_timeout_ms,
+                        timeout_ms=args.timeout_ms,
+                    )
+                else:
+                    future = client.async_distributed_inference(
+                        service,
+                        payload,
+                        ack_timeout_ms=args.ack_timeout_ms,
+                        timeout_ms=args.timeout_ms,
+                        dynamic_provisioning=False,
+                        runtime=runtime_spec(),
+                        artifact_references=args.repo_manifest_file or None,
+                    )
                 futures.append(_TimedFuture(future, started, None))
         ok = True
         for index, timed in enumerate(futures):

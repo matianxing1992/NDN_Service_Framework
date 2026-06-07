@@ -809,6 +809,11 @@ def native_execution_plan_spec(services: tuple[ServicePolicy, ...]) -> dict[str,
                         "objectNameTemplate": dep.object_name_template,
                         "expectedSegments": dep.expected_segments,
                         "expectedBytes": dep.expected_bytes,
+                        "segmentNaming": {
+                            "mode": "ndn-segment-component",
+                            "staticSegmentCount": dep.expected_segments,
+                            "dynamicFallback": dep.expected_segments <= 0,
+                        },
                         "tensors": list(dep.tensors),
                         "required": dep.required,
                     }

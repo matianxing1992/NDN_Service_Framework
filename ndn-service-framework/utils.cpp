@@ -510,6 +510,70 @@ namespace ndn_service_framework
             getSubNameByComponentCount(serviceSelectionName, serviceSelectionName.size() - 1, 1)};
     }
 
+    ndn::Name makeCompactServiceSelectionNameV2(const ndn::Name& requesterName,
+                                                const ndn::Name& serviceName,
+                                                const ndn::Name& requestId)
+    {
+        ndn::Name serviceSelectionName;
+        serviceSelectionName.append(requesterName).append(ndn::Name("/NDNSF/SELECTION"));
+        appendNameUriComponent(serviceSelectionName, ndn::Name("/NDNSF/COMPACT"));
+        serviceSelectionName.append(serviceName);
+        serviceSelectionName.append(requestId);
+        return serviceSelectionName;
+    }
+
+    ndn::Name makeCompactServiceSelectionNameWithoutPrefixV2(const ndn::Name& serviceName,
+                                                             const ndn::Name& requestId)
+    {
+        ndn::Name serviceSelectionName;
+        serviceSelectionName.append(ndn::Name("/NDNSF/SELECTION"));
+        appendNameUriComponent(serviceSelectionName, ndn::Name("/NDNSF/COMPACT"));
+        serviceSelectionName.append(serviceName);
+        serviceSelectionName.append(requestId);
+        return serviceSelectionName;
+    }
+
+    std::optional<CompactServiceSelectionNameV2>
+    parseCompactServiceSelectionNameV2(const ndn::Name& serviceSelectionName)
+    {
+        auto marker = findNdnsfMessageMarker(serviceSelectionName, "SELECTION");
+        if (!marker) {
+            return std::nullopt;
+        }
+        const size_t compactIndex = *marker + 2;
+        if (compactIndex + 3 > serviceSelectionName.size()) {
+            return std::nullopt;
+        }
+        const auto compactMarker = parseNameUriComponent(serviceSelectionName, compactIndex);
+        if (!compactMarker || *compactMarker != ndn::Name("/NDNSF/COMPACT")) {
+            return std::nullopt;
+        }
+
+        const size_t serviceIndex = compactIndex + 1;
+        const size_t serviceComponentCount = serviceSelectionName.size() - serviceIndex - 1;
+        return CompactServiceSelectionNameV2{
+            getSubNameByComponentCount(serviceSelectionName, 0, *marker),
+            getSubNameByComponentCount(serviceSelectionName, serviceIndex, serviceComponentCount),
+            getSubNameByComponentCount(serviceSelectionName, serviceSelectionName.size() - 1, 1)};
+    }
+
+    std::string computeSelectionProviderTokenProofHash(const ndn::Name& requesterName,
+                                                       const ndn::Name& providerName,
+                                                       const ndn::Name& serviceName,
+                                                       const std::string& providerToken)
+    {
+        if (providerToken.empty()) {
+            return "";
+        }
+        ndn::util::Sha256 digest;
+        digest << "SELECTION";
+        digest << requesterName.toUri();
+        digest << providerName.toUri();
+        digest << serviceName.toUri();
+        digest << providerToken;
+        return digest.toString();
+    }
+
     ndn::Name
     makeSelectionStatusQueryName(const ndn::Name& providerName,
                                  const ndn::Name& serviceName,
@@ -775,6 +839,9 @@ namespace ndn_service_framework
         }
         if (auto ackV2 = parseRequestAckNameV2(name)) {
             return std::vector<std::string>{"/PERMISSION" + ackV2->serviceName.toUri()};
+        }
+        if (auto compactSelectionV2 = parseCompactServiceSelectionNameV2(name)) {
+            return std::vector<std::string>{"/SERVICE" + compactSelectionV2->serviceName.toUri()};
         }
         if (auto selectionV2 = parseServiceSelectionNameV2(name)) {
             return std::vector<std::string>{"/SERVICE" + selectionV2->serviceName.toUri()};

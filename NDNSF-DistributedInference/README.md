@@ -301,16 +301,32 @@ still gives a clear runtime error instead of silently falling back to Python.
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
 deployment plan in C++. It converts role/dependency metadata plus a
 session/provider assignment into role-local `RoleSpec` objects with
-deterministic planned data names, expected segment counts, and expected byte
-counts. This is the
-handoff point from Python policy/deployment code into the native provider
-runtime.
+deterministic planned activation object names, deterministic segment Data names
+when the segment count is static, expected segment counts, and expected byte
+counts. This is the handoff point from Python policy/deployment code into the
+native provider runtime.  The intended API boundary is:
+
+```text
+deployPlan(nativeExecutionPlan, serviceManifest, providerAssignment)
+  -> planSessionId + role-local deterministic edge plan
+
+invoke(planSessionId, inputReference, inferenceId)
+  -> source role receives only the new input reference; providers reuse the
+     already installed runner specs, role mapping, tensor edge list, object
+     name templates, and static segment counts.
+```
+
+In other words, model artifacts, runner metadata, role assignments, edge tensor
+lists, object-name templates, and static segment counts are deployment/session
+state.  They should not be republished for every inference.  Per-inference
+messages should carry only the changing input reference, inference/session id,
+and security context needed for that run.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp` loads the
 generated `native-execution-plan.json` file into those C++ plan objects. The
 JSON loader is intentionally narrow and only reads the native hot-path fields,
-including tensor names on dependency edges, so C++ providers do not need to
-parse the full deployment YAML.
+including tensor names and `segmentNaming` on dependency edges, so C++
+providers do not need to parse the full deployment YAML.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp` loads the
 generated `service-manifest.json` artifact metadata into `NativeModelRunnerSpec`
@@ -325,10 +341,17 @@ provider phase.
 is the first Core-facing adapter. It maps `DependencyIo` to
 `ServiceProvider::CollaborationContext`: planned input names are fetched with
 `fetchLarge(...)`, and planned output names are published with
-`publishLargeNamed(...)`. This is still a building block rather than a complete
-C++ ONNX provider, but it fixes the intended ownership boundary: DI execution
-logic can be native C++, while NDNSF Core remains responsible for segmented
-large data, pending Interests, encryption, permissions, and wire behavior.
+`publishLargeNamed(...)`. If an edge has a static `expectedSegments` value, the
+Core fetch path expands the planned activation object name into exact segment
+Interests (`segment=0..N-1`) immediately; if an edge is dynamic, the runtime
+starts from the planned object name and follows the object's final block. This
+exact-segment mode is the default whenever `expectedSegments > 0`; set
+`NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH=0` only for comparison experiments.
+This
+is still a building block rather than a complete C++ ONNX provider, but it
+fixes the intended ownership boundary: DI execution logic can be native C++,
+while NDNSF Core remains responsible for segmented large data, pending
+Interests, encryption, permissions, and wire behavior.
 
 These native components do not change NDNSF Request/ACK/Selection/Response
 semantics and do not add AI-specific behavior to NDNSF Core.
@@ -999,6 +1022,26 @@ result = client.infer_deployed_service(
 )
 ```
 
+For a generated `DistributedInferencePlan`, prefer the explicit plan-session
+API when running repeated inference against the same deployed layout:
+
+```python
+session = client.deploy_plan(plan)
+
+for image in images:
+    result = client.invoke_plan(
+        session,
+        encode_image_for_yolo(image),
+        ack_timeout_ms=300,
+        timeout_ms=10000,
+    )
+```
+
+`deploy_plan(...)` installs or reuses static model/runtime artifacts, key-scope
+material, role metadata, dependency tensor lists, object-name templates, and
+static segment-count hints. `invoke_plan(...)` sends only the changing input
+payload/reference plus the normal NDNSF collaboration request.
+
 Provider side:
 
 ```python
@@ -1639,17 +1682,28 @@ overlap local preparation with waiting for upstream activation objects. For
 planned ONNX dependencies, the policy may include `object_name_template`,
 `expected_segments`, and `expected_bytes`. The template is filled with the
 current run/session id, key scope, producer role, producer provider, and bundle
-sequence. Producers publish activation objects at that deterministic name, and
-consumers try that name first before falling back to the advertised reference.
-This is the intended dataflow optimization: dependency traffic remains NDN
-large Data, not provider-to-provider service invocation.
+sequence. Producers publish activation objects at that deterministic name. For
+static-shape edges, DI treats the segment count as part of the execution plan:
+consumers expand the object name into planned segment Data names and pre-issue
+all segment Interests as soon as the role starts. For dynamic-shape edges, the
+consumer starts with segment 0 and follows the final block id. This is the
+intended dataflow optimization: dependency traffic remains NDN large Data, not
+provider-to-provider service invocation, and the application no longer waits
+for a separate activation-reference control message before fetching planned
+inputs.
 The NDNSF core provider path also keeps pending Interests for IMS-served Data.
 Therefore a downstream role may issue an Interest for a deterministic
 activation name before the upstream role has finished publishing it; if the
 Interest is still within its lifetime, the upstream provider replies as soon as
 the activation segments are inserted. This is why DI uses a formal
 `object_name_template` and segment-count hint in the policy instead of letting
-applications privately guess Data names.
+applications privately guess Data names. The generated `native-execution-plan`
+also records `segmentNaming` metadata so deployment artifacts can be reviewed
+without reading runtime code.
+There is no separate activation-ready notification in the native dependency
+I/O path.  A consumer learns that an upstream activation exists by having an
+already pending Interest satisfied, or by retrying/falling back through normal
+NDN segmented retrieval when the edge is dynamic.
 The same reference metadata is attached to repo-backed model/runtime artifacts
 inside execution specs, even though their bytes are fetched through the repo's
 manifest-aware object API.

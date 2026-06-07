@@ -83,6 +83,22 @@ namespace ndn_service_framework
                      text == "no" || text == "off");
         }
 
+        bool
+        boolEnvOrDefault(const char* name, bool fallback)
+        {
+            const char* value = std::getenv(name);
+            if (value == nullptr) {
+                return fallback;
+            }
+            std::string text(value);
+            std::transform(text.begin(), text.end(), text.begin(),
+                           [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (text.empty()) {
+                return fallback;
+            }
+            return !(text == "0" || text == "false" || text == "no" || text == "off");
+        }
+
         std::string
         replayTokenHash(const std::string& scope,
                         const ndn::Name& peer,
@@ -1268,6 +1284,14 @@ namespace ndn_service_framework
                                                              payload,
                                                              maxSegmentSize,
                                                              freshnessMs);
+    }
+
+    std::optional<ndn::Buffer>
+    ServiceProvider::CollaborationContext::fetchLarge(const ndn::Name& dataName,
+                                                      KeyScope keyScope,
+                                                      int timeoutMs)
+    {
+        return fetchLarge(dataName, std::move(keyScope), timeoutMs, 0);
     }
 
     std::optional<ndn::Buffer>
@@ -2845,7 +2869,7 @@ namespace ndn_service_framework
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
         const bool exactSegmentFetch =
             expectedSegments > 0 &&
-            isTruthyEnv("NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH");
+            boolEnvOrDefault("NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH", true);
         const auto fetchStart = std::chrono::steady_clock::now();
         auto fetchStats = std::make_shared<CollaborationLargeFetchTiming>();
         fetchStats->start = fetchStart;
@@ -6239,6 +6263,119 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         if(!isFresh(subscription)) return;
 
+        auto compactSelectionV2 =
+            ndn_service_framework::parseCompactServiceSelectionNameV2(subscription.name);
+        if (compactSelectionV2) {
+            NDN_LOG_DEBUG("Received compact Service Selection Message: "
+                          << subscription.name.toUri());
+            if (m_timelineTrace) {
+                logTimelineTrace("provider", "compact_selection_observed",
+                                 compactSelectionV2->requestId,
+                                 {{"serviceName", compactSelectionV2->serviceName.toUri()},
+                                  {"requesterName", compactSelectionV2->requesterName.toUri()},
+                                  {"providerName", identity.toUri()},
+                                  {"selectionName", subscription.name.toUri()}});
+            }
+
+            const auto selectionKey = ndn::Name(compactSelectionV2->requesterName.toUri())
+                                          .append(compactSelectionV2->serviceName)
+                                          .append(compactSelectionV2->requestId);
+            {
+                std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                if (m_selectedProviderRequests.find(selectionKey) !=
+                        m_selectedProviderRequests.end() ||
+                    m_selectionDecryptsInFlight.find(selectionKey) !=
+                        m_selectionDecryptsInFlight.end()) {
+                    NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COMPACT_SELECTION_DUPLICATE_DROPPED timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << compactSelectionV2->requestId.toUri()
+                              << " serviceName=" << compactSelectionV2->serviceName.toUri()
+                              << " requesterName=" << compactSelectionV2->requesterName.toUri()
+                              << " providerName=" << identity.toUri()
+                              << " pendingKey=" << selectionKey.toUri());
+                    return;
+                }
+                m_selectionDecryptsInFlight.insert(selectionKey);
+            }
+
+            if (subscription.data.size() == 0) {
+                OnServiceSelectionMessageDecryptionErrorCallback(
+                    compactSelectionV2->requesterName,
+                    identity,
+                    compactSelectionV2->serviceName,
+                    ndn::Name(),
+                    compactSelectionV2->requestId,
+                    "compact selection missing payload");
+                return;
+            }
+
+            const auto decryptStartUs = nowMicroseconds();
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_START timestamp_us="
+                      << decryptStartUs
+                      << " requestId=" << compactSelectionV2->requestId.toUri()
+                      << " requesterName=" << compactSelectionV2->requesterName.toUri()
+                      << " providerName=" << identity.toUri()
+                      << " serviceName=" << compactSelectionV2->serviceName.toUri()
+                      << " selectionName=" << subscription.name.toUri()
+                      << " compactSelection=1");
+            if (decryptHybridMessage(
+                    subscription.name,
+                    ndn::Block(subscription.data),
+                    [this, requesterName = compactSelectionV2->requesterName,
+                     serviceName = compactSelectionV2->serviceName,
+                     requestId = compactSelectionV2->requestId,
+                     subscriptionName = ndn::Name(subscription.name),
+                     decryptStartUs](const ndn::Buffer& buffer) {
+                        const auto decryptEndUs = nowMicroseconds();
+                        logCryptoDiag("provider", "selection",
+                                      "decrypt", "hybrid", "success",
+                                      decryptStartUs, decryptEndUs,
+                                      subscriptionName, buffer.size());
+                        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_DONE timestamp_us="
+                                  << decryptEndUs
+                                  << " requestId=" << requestId.toUri()
+                                  << " requesterName=" << requesterName.toUri()
+                                  << " providerName=" << identity.toUri()
+                                  << " serviceName=" << serviceName.toUri()
+                                  << " selectionName=" << subscriptionName.toUri()
+                                  << " payloadBytes=" << buffer.size()
+                                  << " durationUs=" << (decryptEndUs >= decryptStartUs ?
+                                                        decryptEndUs - decryptStartUs : 0)
+                                  << " compactSelection=1");
+                        OnServiceSelectionMessageDecryptionSuccessCallbackV2(
+                            requesterName, identity, serviceName, requestId, buffer);
+                    },
+                    [this, requesterName = compactSelectionV2->requesterName,
+                     serviceName = compactSelectionV2->serviceName,
+                     requestId = compactSelectionV2->requestId,
+                     decryptStartUs](const std::string& error) {
+                        const auto decryptEndUs = nowMicroseconds();
+                        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_FAILED timestamp_us="
+                                  << decryptEndUs
+                                  << " requestId=" << requestId.toUri()
+                                  << " requesterName=" << requesterName.toUri()
+                                  << " providerName=" << identity.toUri()
+                                  << " serviceName=" << serviceName.toUri()
+                                  << " durationUs=" << (decryptEndUs >= decryptStartUs ?
+                                                        decryptEndUs - decryptStartUs : 0)
+                                  << " error=" << error
+                                  << " compactSelection=1");
+                        OnServiceSelectionMessageDecryptionErrorCallback(
+                            requesterName, identity, serviceName, ndn::Name(),
+                            requestId, error);
+                    })) {
+                return;
+            }
+            OnServiceSelectionMessageDecryptionErrorCallback(
+                compactSelectionV2->requesterName,
+                identity,
+                compactSelectionV2->serviceName,
+                ndn::Name(),
+                compactSelectionV2->requestId,
+                "invalid hybrid compact selection envelope");
+            return;
+        }
+
         auto selectionV2 =
             ndn_service_framework::parseServiceSelectionNameV2(subscription.name);
         if (selectionV2) {
@@ -6699,6 +6836,37 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         ServiceSelectionMessage message;
         message.WireDecode(block);
         const std::string selectionDigest = computeSelectionDigest(message);
+        ndn::Buffer effectiveAssignmentPayload = message.getAssignmentPayload();
+        std::string receivedProviderToken = message.getProviderToken();
+        std::string receivedProviderTokenProofHash;
+        if (!message.getProviderEntries().empty()) {
+            bool hasLocalProviderEntry = false;
+            for (const auto& entry : message.getProviderEntries()) {
+                if (!entry.providerName.equals(providerName)) {
+                    continue;
+                }
+                hasLocalProviderEntry = true;
+                receivedProviderTokenProofHash = entry.providerTokenHash;
+                effectiveAssignmentPayload = entry.assignmentPayload;
+                break;
+            }
+            if (!hasLocalProviderEntry) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=COMPACT_SELECTION_NOT_FOR_PROVIDER timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << msgId.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " requesterName=" << requesterName.toUri()
+                          << " providerName=" << providerName.toUri());
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName,
+                                               serviceName,
+                                               msgId,
+                                               "compact selection has no local provider entry");
+                clearSelectionDecryptInFlight();
+                return;
+            }
+        }
         updateSelectionExecutionStatus(selectionDigest,
                                        SelectionExecutionState::Received,
                                        providerName,
@@ -6726,8 +6894,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         RequestMessage selectedRequest;
         const std::string providerTokenHash =
-            m_useTokens ? replayTokenHash("SELECTION", requesterName,
-                                          serviceName, message.getProviderToken()) : "";
+            m_useTokens ? (!receivedProviderTokenProofHash.empty() ?
+                           receivedProviderTokenProofHash :
+                           replayTokenHash("SELECTION", requesterName,
+                                           serviceName, receivedProviderToken)) : "";
         {
             std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
             if (m_selectedProviderRequests.find(key) !=
@@ -6766,9 +6936,26 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
 
             auto providerTokenIt = pendingProviderTokens.find(key);
-            if (m_useTokens &&
-                (providerTokenIt == pendingProviderTokens.end() ||
-                 message.getProviderToken() != providerTokenIt->second)) {
+            bool providerTokenAccepted = true;
+            if (m_useTokens) {
+                providerTokenAccepted = false;
+                if (providerTokenIt != pendingProviderTokens.end()) {
+                    if (!receivedProviderToken.empty() &&
+                        receivedProviderToken == providerTokenIt->second) {
+                        providerTokenAccepted = true;
+                    }
+                    else if (!receivedProviderTokenProofHash.empty()) {
+                        const auto expectedProofHash =
+                            computeSelectionProviderTokenProofHash(requesterName,
+                                                                   providerName,
+                                                                   serviceName,
+                                                                   providerTokenIt->second);
+                        providerTokenAccepted =
+                            receivedProviderTokenProofHash == expectedProofHash;
+                    }
+                }
+            }
+            if (!providerTokenAccepted) {
                 NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_REJECTED_PROVIDER_TOKEN timestamp_us="
                           << nowMicroseconds()
                           << " requestId=" << msgId.toUri()
@@ -6779,7 +6966,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << " expectedTokenPresent="
                           << (providerTokenIt != pendingProviderTokens.end())
                           << " receivedTokenPresent="
-                          << !message.getProviderToken().empty());
+                          << (!receivedProviderToken.empty() ||
+                              !receivedProviderTokenProofHash.empty()));
                 NDN_LOG_ERROR("Reject V2 selection with mismatched ProviderToken for "
                               << key.toUri());
                 updateSelectionExecutionStatus(selectionDigest,
@@ -6858,7 +7046,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             if (collabService != m_collaborationServices.end()) {
                 auto assignment =
                     parseCollaborationAssignment(serviceName,
-                                                 message.getAssignmentPayload());
+                                                 effectiveAssignmentPayload);
                 if (dispatchCollaborationExecutionAsync(requesterName,
                                                         providerName,
                                                         serviceName,

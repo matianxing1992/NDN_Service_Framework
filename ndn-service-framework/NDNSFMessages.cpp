@@ -588,6 +588,7 @@ ServiceSelectionMessage::operator=(const ServiceSelectionMessage& other)
         providerToken_ = other.providerToken_;
         assignmentPayload_ = other.assignmentPayload_;
         policyEpoch_ = other.policyEpoch_;
+        providerEntries_ = other.providerEntries_;
         m_wire.reset();
     }
     return *this;
@@ -609,6 +610,10 @@ void ServiceSelectionMessage::setPolicyEpoch(size_t policyEpoch) {
     policyEpoch_ = policyEpoch;
 }
 
+void ServiceSelectionMessage::addProviderEntry(const SelectionProviderEntry& entry) {
+    providerEntries_.push_back(entry);
+}
+
 const std::vector<std::string>& ServiceSelectionMessage::getRequestIDs() const {
     return requestIDs_;
 }
@@ -625,11 +630,16 @@ size_t ServiceSelectionMessage::getPolicyEpoch() const {
     return policyEpoch_;
 }
 
+const std::vector<SelectionProviderEntry>& ServiceSelectionMessage::getProviderEntries() const {
+    return providerEntries_;
+}
+
 void ServiceSelectionMessage::Clear() {
     requestIDs_.clear();
     providerToken_.clear();
     assignmentPayload_.clear();
     policyEpoch_ = 0;
+    providerEntries_.clear();
     m_wire.reset();
 }
 
@@ -651,6 +661,22 @@ ndn::Block ServiceSelectionMessage::WireEncode() const {
     }
     if (policyEpoch_ > 0) {
         block.push_back(ndn::makeNonNegativeIntegerBlock(tlv::VersionType, policyEpoch_));
+    }
+    for (const auto& entry : providerEntries_) {
+        ndn::Block entryBlock(tlv::SelectionProviderEntryType);
+        entryBlock.push_back(ndn::makeStringBlock(tlv::ProviderNameType,
+                                                  entry.providerName.toUri()));
+        if (!entry.providerTokenHash.empty()) {
+            entryBlock.push_back(ndn::makeStringBlock(tlv::ProviderTokenType,
+                                                      entry.providerTokenHash));
+        }
+        if (!entry.assignmentPayload.empty()) {
+            entryBlock.push_back(ndn::makeBinaryBlock(tlv::AssignmentPayloadType,
+                                                      entry.assignmentPayload.begin(),
+                                                      entry.assignmentPayload.end()));
+        }
+        entryBlock.encode();
+        block.push_back(entryBlock);
     }
     block.encode();
     m_wire = block;
@@ -677,6 +703,24 @@ bool ServiceSelectionMessage::WireDecode(const ndn::Block& block) {
         }
         else if (b.type() == tlv::VersionType) {
             policyEpoch_ = ndn::readNonNegativeInteger(b);
+        }
+        else if (b.type() == tlv::SelectionProviderEntryType) {
+            SelectionProviderEntry entry;
+            b.parse();
+            for (auto e : b.elements()) {
+                if (e.type() == tlv::ProviderNameType) {
+                    entry.providerName = ndn::Name(ndn::readString(e));
+                }
+                else if (e.type() == tlv::ProviderTokenType) {
+                    entry.providerTokenHash = ndn::readString(e);
+                }
+                else if (e.type() == tlv::AssignmentPayloadType) {
+                    entry.assignmentPayload = ndn::Buffer(e.value(), e.value_size());
+                }
+            }
+            if (!entry.providerName.empty()) {
+                providerEntries_.push_back(entry);
+            }
         }
     }
 

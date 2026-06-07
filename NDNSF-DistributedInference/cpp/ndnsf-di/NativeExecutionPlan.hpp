@@ -10,6 +10,13 @@
 
 namespace ndnsf::di {
 
+struct SegmentNamingSpec
+{
+  std::string mode = "ndn-segment-component";
+  std::size_t staticSegmentCount = 0;
+  bool dynamicFallback = true;
+};
+
 struct NativeDependencySpec
 {
   NativeDependencySpec() = default;
@@ -31,6 +38,7 @@ struct NativeDependencySpec
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::vector<std::string> tensors;
+  SegmentNamingSpec segmentNaming;
 };
 
 struct NativeExecutionPlan
@@ -42,6 +50,14 @@ struct NativeExecutionPlan
 struct NativeProviderAssignment
 {
   std::map<std::string, std::string> providerByRole;
+};
+
+struct NativePlanSession
+{
+  std::string sessionId;
+  NativeExecutionPlan plan;
+  NativeProviderAssignment assignment;
+  std::map<std::string, RoleSpec> rolesByName;
 };
 
 std::string
@@ -61,6 +77,15 @@ plannedDataNameFromTemplate(const std::string& objectNameTemplate,
                             std::size_t sequence = 0);
 
 std::string
+plannedSegmentName(const std::string& plannedDataName, std::size_t segmentNo);
+
+std::vector<std::string>
+plannedSegmentNamesForEdge(const DependencyEdge& edge);
+
+bool
+hasStaticSegmentPlan(const NativeDependencySpec& dependency);
+
+std::string
 providerForRole(const NativeProviderAssignment& assignment,
                 const std::string& role,
                 const std::string& fallbackProvider = "");
@@ -71,6 +96,11 @@ roleSpecFor(const NativeExecutionPlan& plan,
             const std::string& sessionId,
             const NativeProviderAssignment& assignment,
             const std::string& localProvider = "");
+
+NativePlanSession
+deployNativePlanSession(NativeExecutionPlan plan,
+                        std::string sessionId,
+                        NativeProviderAssignment assignment);
 
 } // namespace ndnsf::di
 

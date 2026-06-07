@@ -8,7 +8,7 @@ from .app import (
     InferencePlanBuilder,
     ModelPart,
 )
-from .client import DistributedInferenceClient, InferenceResult
+from .client import DeploymentSession, DistributedInferenceClient, InferenceResult
 from .controller import DistributedInferenceController
 from .plan import (
     ArtifactSpec,
@@ -119,6 +119,7 @@ __all__ = [
     "DistributedInferenceProvider",
     "DistributedRepo",
     "DistributedInferenceDeployment",
+    "DeploymentSession",
     "DependencyGraph",
     "DependencyEdge",
     "InferenceDependency",

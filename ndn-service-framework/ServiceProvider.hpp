@@ -172,8 +172,11 @@ namespace ndn_service_framework{
                                             int freshnessMs = 60000);
                 std::optional<ndn::Buffer> fetchLarge(const ndn::Name& dataName,
                                                       KeyScope keyScope,
+                                                      int timeoutMs);
+                std::optional<ndn::Buffer> fetchLarge(const ndn::Name& dataName,
+                                                      KeyScope keyScope,
                                                       int timeoutMs,
-                                                      std::size_t expectedSegments = 0);
+                                                      std::size_t expectedSegments);
                 void subscribe(KeyScope keyScope,
                                Topic topicPrefix,
                                std::function<void(const CollaborationData&)> onData);

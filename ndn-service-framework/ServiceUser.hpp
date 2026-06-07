@@ -744,6 +744,8 @@ namespace ndn_service_framework{
                 ndn_service_framework::RequestAckMessage message;
             };
 
+            void PublishCompactServiceSelectionMessageV2(const std::vector<StoredAck>& selectedAcks);
+
             struct PendingCall
             {
                 std::vector<ndn::Name> providers;
