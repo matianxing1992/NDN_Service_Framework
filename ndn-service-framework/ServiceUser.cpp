@@ -3552,6 +3552,10 @@ namespace ndn_service_framework
         }
 
         auto pendingCall = m_pendingCalls.find(requestId);
+        auto releaseResponseDecryptInFlight = [&] {
+            removeName(pendingCall->second.responseDecryptProvidersInFlight,
+                       providerName);
+        };
         const auto& expectedUserToken = pendingCall->second.requestMessage.getUserToken();
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_VALIDATION_START timestamp_us="
                   << nowMicroseconds()
@@ -3567,6 +3571,7 @@ namespace ndn_service_framework
                       << " expectedTokenPresent=" << !expectedUserToken.empty());
             NDN_LOG_ERROR("Reject response with mismatched UserToken for requestId="
                           << requestId.toUri());
+            releaseResponseDecryptInFlight();
             return false;
         }
         if (!isAcceptablePolicyEpoch(responseMessage.getPolicyEpoch())) {
@@ -3574,6 +3579,7 @@ namespace ndn_service_framework
                           << requestId.toUri()
                           << " receivedEpoch=" << responseMessage.getPolicyEpoch()
                           << " currentEpoch=" << m_currentPolicyEpoch);
+            releaseResponseDecryptInFlight();
             return false;
         }
         if (pendingCall->second.directMode &&
@@ -3582,6 +3588,7 @@ namespace ndn_service_framework
             NDN_LOG_ERROR("Reject targeted response from unexpected provider requestId="
                           << requestId.toUri()
                           << " provider=" << providerName.toUri());
+            releaseResponseDecryptInFlight();
             return false;
         }
         if (pendingCall->second.directMode &&
@@ -3590,6 +3597,7 @@ namespace ndn_service_framework
                           << requestId.toUri()
                           << " provider=" << providerName.toUri()
                           << " serviceName=" << pendingCall->second.serviceName.toUri());
+            releaseResponseDecryptInFlight();
             return false;
         }
 
@@ -4081,15 +4089,9 @@ namespace ndn_service_framework
                             if (!resolved) {
                                 auto pending = m_pendingCalls.find(requestId);
                                 if (pending != m_pendingCalls.end()) {
-                                    auto& inFlight =
-                                        pending->second.largeResponseReferenceProvidersInFlight;
-                                    inFlight.erase(std::remove_if(
-                                                       inFlight.begin(),
-                                                       inFlight.end(),
-                                                       [&providerName](const ndn::Name& item) {
-                                                           return item.equals(providerName);
-                                                       }),
-                                                   inFlight.end());
+                                    removeName(
+                                        pending->second.largeResponseReferenceProvidersInFlight,
+                                        providerName);
                                 }
                                 NDN_LOG_ERROR("Failed to resolve large response reference: "
                                               << error);
@@ -5138,6 +5140,17 @@ namespace ndn_service_framework
         }
     }
 
+    void ServiceUser::removeName(std::vector<ndn::Name>& names,
+                                 const ndn::Name& name)
+    {
+        names.erase(std::remove_if(names.begin(),
+                                   names.end(),
+                                   [&name](const ndn::Name& item) {
+                                       return item.equals(name);
+                                   }),
+                    names.end());
+    }
+
     ndn::Name ServiceUser::selectRandomProvider(
         const std::vector<ndn::Name>& providers)
     {
@@ -5685,6 +5698,41 @@ namespace ndn_service_framework
 
         const ndn::Name responseName(subscription.name);
         auto responsePending = m_pendingCalls.find(RequestId);
+        if (responsePending == m_pendingCalls.end()) {
+            ++m_runtimeDiagnostics.callbackSkippedNoPending;
+            ++m_runtimeDiagnostics.responseAfterPendingTimeout;
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_SKIPPED_NO_PENDING timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << RequestId.toUri()
+                      << " providerName=" << providerName.toUri()
+                      << " responseName=" << responseName.toUri());
+            return;
+        }
+        const bool expectMultipleResponses =
+            responsePending->second.expectedResponseProviders.size() > 1;
+        if ((responsePending->second.hasResponse && !expectMultipleResponses) ||
+            (expectMultipleResponses &&
+             containsName(responsePending->second.responseProviders, providerName)) ||
+            containsName(responsePending->second.responseDecryptProvidersInFlight,
+                         providerName)) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_DUPLICATE_SKIPPED timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << RequestId.toUri()
+                      << " providerName=" << providerName.toUri()
+                      << " responseName=" << responseName.toUri());
+            return;
+        }
+        if (expectMultipleResponses &&
+            !containsName(responsePending->second.expectedResponseProviders, providerName)) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=RESPONSE_REJECTED_UNSELECTED_PROVIDER timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << RequestId.toUri()
+                      << " providerName=" << providerName.toUri()
+                      << " responseName=" << responseName.toUri());
+            return;
+        }
+        addUniqueName(responsePending->second.responseDecryptProvidersInFlight,
+                      providerName);
         if (responsePending != m_pendingCalls.end() &&
             responsePending->second.responseObservedAtUs == 0) {
             responsePending->second.responseObservedAtUs = nowMicroseconds();
@@ -5745,6 +5793,11 @@ namespace ndn_service_framework
         };
         auto onError = [this, providerName, ServiceName, FunctionName, RequestId,
                         responseName, decryptStartUs](const std::string& error) {
+            auto pendingIt = m_pendingCalls.find(RequestId);
+            if (pendingIt != m_pendingCalls.end()) {
+                removeName(pendingIt->second.responseDecryptProvidersInFlight,
+                           providerName);
+            }
             const auto decryptEndUs = nowMicroseconds();
             logCryptoDiag("user", "response", "decrypt", "normal",
                           "failure", decryptStartUs, decryptEndUs,

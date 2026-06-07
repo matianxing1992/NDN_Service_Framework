@@ -1503,6 +1503,125 @@ def write_ack_selection_timing_summaries(layout: str,
     )
 
 
+def write_provider_selection_timing_summaries(layout: str,
+                                              providers: list[tuple[str, str, list[str]]]) -> None:
+    events_of_interest = {
+        "SELECTION_DECRYPT_START",
+        "SELECTION_DECRYPT_DONE",
+        "SELECTION_RECEIVED",
+        "PROVIDER_EXECUTE_START",
+        "SELECTION_NO_PENDING",
+        "SELECTION_REJECTED_PROVIDER_TOKEN",
+        "SELECTION_DUPLICATE_DROPPED",
+    }
+    by_request_provider: dict[tuple[str, str], dict] = {}
+    for _, name, _ in providers:
+        path = OUT / f"{name}.log"
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "[NDNSF_TRACE]" not in line:
+                continue
+            row = parse_trace_row(line)
+            event = row.get("event", "")
+            request_id = row.get("requestId", "")
+            provider = row.get("providerName", "")
+            if event not in events_of_interest or not request_id:
+                continue
+            if not provider:
+                provider = name
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            row["timestamp_us"] = timestamp_us
+            row["providerLog"] = path.name
+            key = (request_id, provider)
+            item = by_request_provider.setdefault(key, {
+                "requestId": request_id,
+                "providerName": provider,
+                "providerLog": path.name,
+                "events": [],
+            })
+            item["events"].append(row)
+
+    rows = []
+    for item in by_request_provider.values():
+        events = item["events"]
+
+        def first_event(name: str):
+            found = [row for row in events if row.get("event") == name]
+            return min(found, key=lambda row: row.get("timestamp_us", 0)) if found else None
+
+        def event_time(name: str) -> int:
+            row = first_event(name)
+            return int(row.get("timestamp_us", 0)) if row else 0
+
+        def delta_ms(end_us: int, start_us: int) -> float:
+            if end_us <= 0 or start_us <= 0 or end_us < start_us:
+                return 0.0
+            return (end_us - start_us) / 1000.0
+
+        decrypt_start_us = event_time("SELECTION_DECRYPT_START")
+        decrypt_done_us = event_time("SELECTION_DECRYPT_DONE")
+        selection_received_us = event_time("SELECTION_RECEIVED")
+        execute_start_us = event_time("PROVIDER_EXECUTE_START")
+        rows.append({
+            "requestId": item["requestId"],
+            "providerName": item["providerName"],
+            "providerLog": item["providerLog"],
+            "decryptStartUs": decrypt_start_us,
+            "decryptDoneUs": decrypt_done_us,
+            "selectionReceivedUs": selection_received_us,
+            "executeStartUs": execute_start_us,
+            "decryptMs": delta_ms(decrypt_done_us, decrypt_start_us),
+            "decryptDoneToSelectionReceivedMs": delta_ms(selection_received_us, decrypt_done_us),
+            "selectionReceivedToExecuteStartMs": delta_ms(execute_start_us, selection_received_us),
+            "decryptStartToExecuteStartMs": delta_ms(execute_start_us, decrypt_start_us),
+            "duplicateDropped": any(row.get("event") == "SELECTION_DUPLICATE_DROPPED"
+                                    for row in events),
+            "noPending": any(row.get("event") == "SELECTION_NO_PENDING"
+                             for row in events),
+            "providerTokenRejected": any(
+                row.get("event") == "SELECTION_REJECTED_PROVIDER_TOKEN"
+                for row in events),
+            "events": events,
+        })
+
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "decryptMs": summarize_numeric([row["decryptMs"] for row in rows]),
+        "decryptDoneToSelectionReceivedMs": summarize_numeric([
+            row["decryptDoneToSelectionReceivedMs"] for row in rows
+        ]),
+        "selectionReceivedToExecuteStartMs": summarize_numeric([
+            row["selectionReceivedToExecuteStartMs"] for row in rows
+        ]),
+        "decryptStartToExecuteStartMs": summarize_numeric([
+            row["decryptStartToExecuteStartMs"] for row in rows
+        ]),
+        "duplicateDropped": sum(1 for row in rows if row["duplicateDropped"]),
+        "noPending": sum(1 for row in rows if row["noPending"]),
+        "providerTokenRejected": sum(1 for row in rows if row["providerTokenRejected"]),
+        "rows": rows,
+    }
+    path = OUT / "provider-selection-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_PROVIDER_SELECTION_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"decrypt_p50_ms={summary['decryptMs']['p50']:.2f} "
+        f"decrypt_done_to_selection_received_p50_ms="
+        f"{summary['decryptDoneToSelectionReceivedMs']['p50']:.2f} "
+        f"selection_received_to_execute_start_p50_ms="
+        f"{summary['selectionReceivedToExecuteStartMs']['p50']:.2f} "
+        f"decrypt_start_to_execute_start_p50_ms="
+        f"{summary['decryptStartToExecuteStartMs']['p50']:.2f} "
+        f"duplicates={summary['duplicateDropped']} "
+        f"no_pending={summary['noPending']} "
+        f"path={path}"
+    )
+
+
 def _load_json_file(path: Path, default):
     if not path.exists():
         return default
@@ -2174,6 +2293,7 @@ def main() -> None:
                 ("cold", user_log),
                 ("warm", warm_log),
             ])
+            write_provider_selection_timing_summaries(layout, providers)
         native_dataflow_transport_ok = write_provider_timing_summaries(layout, providers)
         write_end_to_end_breakdown(layout)
         provider_text = "\n".join(

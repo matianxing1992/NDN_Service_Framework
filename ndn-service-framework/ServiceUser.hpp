@@ -790,6 +790,7 @@ namespace ndn_service_framework{
                 std::vector<ndn::Name> selectionPublishedProviders;
                 std::vector<ndn::Name> expectedResponseProviders;
                 std::vector<ndn::Name> responseProviders;
+                std::vector<ndn::Name> responseDecryptProvidersInFlight;
                 std::vector<ndn::Name> largeResponseReferenceProvidersInFlight;
                 ndn::Name selectedProvider;
                 std::map<std::string, std::string> providerTokens;
@@ -889,6 +890,8 @@ namespace ndn_service_framework{
 
             static void addUniqueName(std::vector<ndn::Name>& names,
                                       const ndn::Name& name);
+            static void removeName(std::vector<ndn::Name>& names,
+                                   const ndn::Name& name);
 
             static ndn::Name selectRandomProvider(const std::vector<ndn::Name>& providers);
 

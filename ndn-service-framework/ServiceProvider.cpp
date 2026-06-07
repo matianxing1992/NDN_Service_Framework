@@ -6052,6 +6052,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                           "decrypt", "hybrid", "success",
                                           decryptStartUs, decryptEndUs,
                                           subscriptionName, buffer.size());
+                            NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DECRYPT_DONE timestamp_us="
+                                      << decryptEndUs
+                                      << " requestId=" << requestId.toUri()
+                                      << " requesterName=" << requesterName.toUri()
+                                      << " providerName=" << providerName.toUri()
+                                      << " serviceName=" << serviceName.toUri()
+                                      << " selectionName=" << subscriptionName.toUri()
+                                      << " payloadBytes=" << buffer.size()
+                                      << " durationUs=" << (decryptEndUs >= decryptStartUs ?
+                                                            decryptEndUs - decryptStartUs : 0));
                             OnServiceSelectionMessageDecryptionSuccessCallbackV2(
                                 requesterName, providerName, serviceName,
                                 requestId, buffer);
