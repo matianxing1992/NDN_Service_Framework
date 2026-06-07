@@ -161,6 +161,105 @@ BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRunsStageShardsInParallelAndBatchesMerg
   BOOST_CHECK(mergeInputScopes.count("stage0-shard1-to-merge") == 1);
 }
 
+BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRunsStageFrontierHeadsInParallelBeforeMerge)
+{
+  const std::vector<RoleSpec> roles = {
+    RoleSpec{
+      "/Backbone",
+      {},
+      {DependencyEdge{"backbone-to-head", "/Backbone", "/Head/0",
+                      "/run/frontier/backbone/bundle/0", 1, 12000},
+       DependencyEdge{"backbone-to-head", "/Backbone", "/Head/1",
+                      "/run/frontier/backbone/bundle/0", 1, 12000}},
+    },
+    RoleSpec{
+      "/Head/0",
+      {DependencyEdge{"backbone-to-head", "/Backbone", "/Head/0",
+                      "/run/frontier/backbone/bundle/0", 1, 12000}},
+      {DependencyEdge{"head0-to-merge", "/Head/0", "/Merge",
+                      "/run/frontier/head0/bundle/0", 1, 6000}},
+    },
+    RoleSpec{
+      "/Head/1",
+      {DependencyEdge{"backbone-to-head", "/Backbone", "/Head/1",
+                      "/run/frontier/backbone/bundle/0", 1, 12000}},
+      {DependencyEdge{"head1-to-merge", "/Head/1", "/Merge",
+                      "/run/frontier/head1/bundle/0", 1, 6000}},
+    },
+    RoleSpec{
+      "/Merge",
+      {DependencyEdge{"head0-to-merge", "/Head/0", "/Merge",
+                      "/run/frontier/head0/bundle/0", 1, 6000},
+       DependencyEdge{"head1-to-merge", "/Head/1", "/Merge",
+                      "/run/frontier/head1/bundle/0", 1, 6000}},
+      {DependencyEdge{"merge-to-user", "/Merge", "",
+                      "/run/frontier/merge/bundle/0", 1, 3000}},
+    },
+  };
+
+  AsyncDataflowRuntime runtime(4);
+  const auto started = std::chrono::steady_clock::now();
+  const auto result = runtime.run(
+    "frontier-run",
+    roles,
+    {},
+    [] (const RoleExecutionContext& ctx) {
+      if (ctx.role == "/Backbone") {
+        BOOST_CHECK(ctx.inputsByScope.empty());
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return std::map<std::string, TensorBundle>{
+          {"backbone-to-head", bundle("backbone", "features")},
+        };
+      }
+      if (ctx.role == "/Head/0" || ctx.role == "/Head/1") {
+        BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+        BOOST_CHECK_EQUAL(payloadText(ctx.inputsByScope.at("backbone-to-head")),
+                          "features");
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        const auto scope = ctx.role == "/Head/0" ? "head0-to-merge" : "head1-to-merge";
+        const auto value = ctx.role == "/Head/0" ? "h0" : "h1";
+        return std::map<std::string, TensorBundle>{
+          {scope, bundle(scope, value)},
+        };
+      }
+
+      BOOST_CHECK_EQUAL(ctx.role, "/Merge");
+      BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 2);
+      const auto merged =
+        payloadText(ctx.inputsByScope.at("head0-to-merge")) + "+" +
+        payloadText(ctx.inputsByScope.at("head1-to-merge"));
+      return std::map<std::string, TensorBundle>{
+        {"merge-to-user", bundle("result", merged)},
+      };
+    });
+  const auto elapsed = durationMs(started, std::chrono::steady_clock::now());
+
+  BOOST_REQUIRE(result.outputsByScope.count("merge-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("merge-to-user")), "h0+h1");
+  BOOST_CHECK_LT(elapsed, 170.0);
+
+  std::map<std::string, RoleTiming> timingByRole;
+  for (const auto& timing : result.roleTimings) {
+    timingByRole.emplace(timing.role, timing);
+  }
+  BOOST_REQUIRE(timingByRole.count("/Backbone") == 1);
+  BOOST_REQUIRE(timingByRole.count("/Head/0") == 1);
+  BOOST_REQUIRE(timingByRole.count("/Head/1") == 1);
+  BOOST_REQUIRE(timingByRole.count("/Merge") == 1);
+
+  const auto& backbone = timingByRole.at("/Backbone");
+  const auto& head0 = timingByRole.at("/Head/0");
+  const auto& head1 = timingByRole.at("/Head/1");
+  const auto& merge = timingByRole.at("/Merge");
+
+  BOOST_CHECK_GE(durationMs(backbone.finishedAt, head0.startedAt), 0.0);
+  BOOST_CHECK_GE(durationMs(backbone.finishedAt, head1.startedAt), 0.0);
+  BOOST_CHECK_LT(durationMs(head0.startedAt, head1.finishedAt), 90.0);
+  BOOST_CHECK_LT(durationMs(head1.startedAt, head0.finishedAt), 90.0);
+  BOOST_CHECK_GE(durationMs(head0.finishedAt, merge.startedAt), 0.0);
+  BOOST_CHECK_GE(durationMs(head1.finishedAt, merge.startedAt), 0.0);
+}
+
 BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRejectsMissingDeclaredOutput)
 {
   const std::vector<RoleSpec> roles = {
