@@ -218,7 +218,10 @@ shared `/Backbone` chunk computes the backbone/neck once, parallel
 `/Head/Shard/*` chunks run YOLO Detect scale branches, and `/Merge` decodes the
 final predictions. It is still model-specific, but it exercises the intended
 fan-out/fan-in dependency executor without pretending that every ONNX model has
-a rectangular shard layout.
+a rectangular shard layout. Merge fan-in edges use producer-local key scopes
+such as `detect-head-shard0-to-merge` and `detect-head-shard1-to-merge`, so the
+native C++ hot path can prefetch and store each planned input independently
+instead of collapsing multiple producers into one scope.
 
 For a two-stage YOLO split:
 
@@ -1402,7 +1405,10 @@ For true parallel-graph experimentation, prefer
 `/Backbone` role, parallel YOLO Detect scale head roles, and a `/Merge` decode
 role. This is a model-specific YOLO DAG rather than a generic rectangular
 `N x M` mapper, but it avoids duplicating backbone compute and is the current
-closest example of real parallel model execution in NDNSF-DI.
+closest example of real parallel model execution in NDNSF-DI. Its generated
+policy and `native-execution-plan.json` keep every fan-in edge scope unique, so
+`/Merge` receives one planned input per head shard and can batch-wait for all
+required inputs.
 
 The older `split_model.py --parallel-output-shards` mode remains available as a
 minimal fan-in correctness scaffold. It should not be used as a performance

@@ -16,10 +16,13 @@ role restores the full prediction tensor.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -39,6 +42,55 @@ def run(command: list[str], env: dict[str, str]) -> str:
     if proc.returncode != 0:
         raise SystemExit(proc.returncode)
     return proc.stdout
+
+
+def validate_parallel_detect_native_plan(policy: Path,
+                                         native_plan: Path) -> None:
+    policy_doc = yaml.safe_load(policy.read_text(encoding="utf-8"))
+    services = [
+        service for service in policy_doc.get("services", [])
+        if service.get("name") != "/NDNSF/DistributedRepo"
+    ]
+    if len(services) != 1:
+        raise SystemExit(f"expected one DI service in {policy}")
+    dependencies = services[0].get("dependencies", [])
+    key_scopes = [str(dep.get("key_scope", "")) for dep in dependencies]
+    if len(key_scopes) != len(set(key_scopes)):
+        raise SystemExit("parallel-detect policy contains duplicate dependency key_scope")
+    merge_inputs = [
+        dep for dep in dependencies
+        if dep.get("consumers") == ["/Merge"]
+    ]
+    merge_scopes = {str(dep.get("key_scope", "")) for dep in merge_inputs}
+    if len(merge_scopes) < 2:
+        raise SystemExit("parallel-detect policy merge role does not have per-head input scopes")
+    if any(len(dep.get("producers", [])) != 1 for dep in merge_inputs):
+        raise SystemExit("parallel-detect policy merge input must have exactly one producer per edge")
+
+    native_doc = json.loads(native_plan.read_text(encoding="utf-8"))
+    native_services = [
+        service for service in native_doc.get("services", [])
+        if service.get("service") != "/NDNSF/DistributedRepo"
+    ]
+    if len(native_services) != 1:
+        raise SystemExit(f"expected one DI service in native plan {native_plan}")
+    native_dependencies = native_services[0].get("dependencies", [])
+    native_scopes = [str(dep.get("keyScope", "")) for dep in native_dependencies]
+    if len(native_scopes) != len(set(native_scopes)):
+        raise SystemExit("parallel-detect native plan contains duplicate keyScope")
+    native_merge_inputs = [
+        dep for dep in native_dependencies
+        if dep.get("consumers") == ["/Merge"]
+    ]
+    native_merge_scopes = {str(dep.get("keyScope", "")) for dep in native_merge_inputs}
+    if native_merge_scopes != merge_scopes:
+        raise SystemExit(
+            "parallel-detect native plan merge scopes do not match policy scopes")
+    print(
+        "YOLO_LAYOUT_NATIVE_PLAN_SCOPE_OK "
+        f"merge_input_scopes={','.join(sorted(native_merge_scopes))} "
+        f"dependencies={len(native_dependencies)}"
+    )
 
 
 def main() -> int:
@@ -113,6 +165,11 @@ def main() -> int:
         str(generated_policy_dir),
         "--print-summary",
     ], env)
+    if args.parallel_detect_scale_shards:
+        validate_parallel_detect_native_plan(
+            policy,
+            generated_policy_dir / "native-execution-plan.json",
+        )
 
     print(
         "YOLO_LAYOUT_SMOKE_OK "

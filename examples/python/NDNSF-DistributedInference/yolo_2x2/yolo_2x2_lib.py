@@ -1199,26 +1199,32 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             "expectedSegments": dep.expected_segments,
         })
 
-    merge_bytes = sum(_tensor_nbytes(value) for value in head_outputs.values())
-    merge_dep = InferenceDependency(
-        producers=head_roles,
-        consumers=[ROLE_MERGE],
-        key_scope="detect-heads-to-merge",
-        topic_prefix="/activation",
-        tensors=merge_inputs,
-        object_name_template=_activation_name_template(),
-        expected_bytes=merge_bytes,
-        expected_segments=_estimated_segments(merge_bytes),
-    )
-    dependencies.append(merge_dep)
-    chunk_graph["dependencies"].append({
-        "producers": merge_dep.producers,
-        "consumers": merge_dep.consumers,
-        "keyScope": merge_dep.key_scope,
-        "tensors": merge_dep.tensors,
-        "expectedBytes": merge_dep.expected_bytes,
-        "expectedSegments": merge_dep.expected_segments,
-    })
+    for shard, group in enumerate(scale_groups):
+        tensors = [
+            name
+            for scale in group
+            for name in (f"boxes_scale_{scale}", f"scores_scale_{scale}")
+        ]
+        expected_bytes = sum(_tensor_nbytes(head_outputs[name]) for name in tensors)
+        dep = InferenceDependency(
+            producers=[f"/Head/Shard/{shard}"],
+            consumers=[ROLE_MERGE],
+            key_scope=f"detect-head-shard{shard}-to-merge",
+            topic_prefix="/activation",
+            tensors=tensors,
+            object_name_template=_activation_name_template(),
+            expected_bytes=expected_bytes,
+            expected_segments=_estimated_segments(expected_bytes),
+        )
+        dependencies.append(dep)
+        chunk_graph["dependencies"].append({
+            "producers": dep.producers,
+            "consumers": dep.consumers,
+            "keyScope": dep.key_scope,
+            "tensors": dep.tensors,
+            "expectedBytes": dep.expected_bytes,
+            "expectedSegments": dep.expected_segments,
+        })
 
     graph_summary = output / f"{stem}-{layout}-parallel-detect-scale-onnx-graph-summary.json"
     write_onnx_graph_summary(
