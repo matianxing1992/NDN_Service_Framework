@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
@@ -46,6 +47,44 @@ plannedNameOrFalse(const std::string& plannedDataName)
   return plannedDataName.empty() ? "false" : plannedDataName;
 }
 
+bool
+runtimeTimingEnabled()
+{
+  const char* value = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  if (value == nullptr) {
+    return false;
+  }
+  const std::string text(value);
+  return !(text.empty() || text == "0" || text == "false" || text == "FALSE" ||
+           text == "off" || text == "OFF");
+}
+
+class NativeProviderHandlerState
+{
+public:
+  explicit NativeProviderHandlerState(const NativeProviderHandlerConfig& config)
+    : plan(config.plan)
+    , baseAssignment(config.assignment)
+    , runnerSpecs(config.runnerSpecs)
+    , runnerFactory(config.runnerFactory)
+    , runtime(config.workerCount)
+  {
+    if (!runnerFactory) {
+      throw std::invalid_argument(
+        "NativeProviderHandlerState requires NativeModelRunnerFactory");
+    }
+    for (const auto& spec : runnerSpecs) {
+      runtime.registerRunner(spec.role, runnerFactory->create(spec));
+    }
+  }
+
+  NativeExecutionPlan plan;
+  NativeProviderAssignment baseAssignment;
+  std::vector<NativeModelRunnerSpec> runnerSpecs;
+  std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
+  NativeProviderRuntime runtime;
+};
+
 void
 logProviderTiming(const std::string& sessionId,
                   const std::string& role,
@@ -53,9 +92,24 @@ logProviderTiming(const std::string& sessionId,
                   std::chrono::steady_clock::time_point baseSteady,
                   long long baseEpochMs)
 {
-  const auto queueWaitMs = durationMs(result.timing.queuedAt, result.timing.startedAt);
-  const auto handlerMs = durationMs(result.timing.queuedAt, result.timing.finishedAt);
-  const auto startEpoch = approxEpochMs(baseSteady, baseEpochMs, result.timing.startedAt);
+  if (!runtimeTimingEnabled()) {
+    return;
+  }
+
+  const auto workerQueueWaitMs = durationMs(result.timing.queuedAt,
+                                            result.timing.workerStartedAt);
+  const auto inputFetchWaitMs = durationMs(result.timing.workerStartedAt,
+                                           result.timing.startedAt);
+  const auto runnerPublishMs = durationMs(result.timing.startedAt,
+                                          result.timing.finishedAt);
+  const auto handlerMs = durationMs(result.timing.workerStartedAt,
+                                    result.timing.finishedAt);
+  const auto totalMs = durationMs(result.timing.queuedAt,
+                                  result.timing.finishedAt);
+  const auto workerStartEpoch = approxEpochMs(baseSteady, baseEpochMs,
+                                              result.timing.workerStartedAt);
+  const auto startEpoch = approxEpochMs(baseSteady, baseEpochMs,
+                                        result.timing.startedAt);
   const auto endEpoch = approxEpochMs(baseSteady, baseEpochMs, result.timing.finishedAt);
 
   std::cout << std::fixed << std::setprecision(3)
@@ -64,8 +118,13 @@ logProviderTiming(const std::string& sessionId,
             << " session=" << sessionId
             << " role=" << role
             << " submitted_epoch_ms=" << baseEpochMs
+            << " worker_start_epoch_ms=" << workerStartEpoch
             << " start_epoch_ms=" << startEpoch
-            << " queue_wait_ms=" << queueWaitMs
+            << " queue_wait_ms=" << workerQueueWaitMs
+            << " worker_queue_wait_ms=" << workerQueueWaitMs
+            << " input_fetch_wait_ms=" << inputFetchWaitMs
+            << " runner_publish_ms=0"
+            << " total_ms=0"
             << " handler_ms=0"
             << std::endl;
   std::cout << std::fixed << std::setprecision(3)
@@ -74,9 +133,14 @@ logProviderTiming(const std::string& sessionId,
             << " session=" << sessionId
             << " role=" << role
             << " submitted_epoch_ms=" << baseEpochMs
+            << " worker_start_epoch_ms=" << workerStartEpoch
             << " start_epoch_ms=" << startEpoch
             << " end_epoch_ms=" << endEpoch
-            << " queue_wait_ms=" << queueWaitMs
+            << " queue_wait_ms=" << workerQueueWaitMs
+            << " worker_queue_wait_ms=" << workerQueueWaitMs
+            << " input_fetch_wait_ms=" << inputFetchWaitMs
+            << " runner_publish_ms=" << runnerPublishMs
+            << " total_ms=" << totalMs
             << " handler_ms=" << handlerMs
             << std::endl;
 
@@ -177,12 +241,13 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
     throw std::invalid_argument(
       "NativeProviderHandlerConfig requires NativeModelRunnerFactory");
   }
+  auto state = std::make_shared<NativeProviderHandlerState>(config);
 
-  return [config = std::move(config)] (
+  return [config = std::move(config), state = std::move(state)] (
            ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
            const ndn_service_framework::RequestMessage& request) mutable {
     try {
-      auto assignment = config.assignment;
+      auto assignment = state->baseAssignment;
       for (const auto& item : ctx.assignment().roleProviders) {
         assignment.providerByRole[item.first] = item.second.toUri();
       }
@@ -195,27 +260,22 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
         config.fetchTimeoutMs,
         config.maxSegmentSize,
         config.freshnessMs);
-      NativeProviderSession session(
-        config.plan,
-        std::move(assignment),
-        std::move(io),
-        config.runnerFactory,
-        config.workerCount);
-
-      for (const auto& spec : config.runnerSpecs) {
-        session.registerRunner(spec);
-      }
 
       const auto role = ctx.role();
-      const auto roleSpec = session.roleSpec(role, ctx.sessionId());
+      const auto roleSpec = roleSpecFor(state->plan,
+                                        role,
+                                        ctx.sessionId(),
+                                        assignment,
+                                        ctx.localProvider().toUri());
       auto initialInputs = roleSpec.inputs.empty()
         ? initialInputsFromRequest(ctx, request)
         : std::map<std::string, TensorBundle>{};
       const auto submittedSteady = std::chrono::steady_clock::now();
       const auto submittedEpoch = epochMs();
-      auto result = session.executeRoleAsync(
+      auto result = state->runtime.executeRoleAsync(
         ctx.sessionId(),
-        role,
+        roleSpec,
+        std::move(io),
         std::move(initialInputs)).get();
       logProviderTiming(ctx.sessionId(), role, result, submittedSteady, submittedEpoch);
 

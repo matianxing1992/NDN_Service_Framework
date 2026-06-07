@@ -195,7 +195,8 @@ AsyncDataflowRuntime::execute(const WorkItem& item)
   RoleTiming timing;
   timing.role = item.role;
   timing.queuedAt = item.queuedAt;
-  timing.startedAt = std::chrono::steady_clock::now();
+  timing.workerStartedAt = std::chrono::steady_clock::now();
+  timing.startedAt = timing.workerStartedAt;
 
   std::map<std::string, TensorBundle> outputs;
   try {

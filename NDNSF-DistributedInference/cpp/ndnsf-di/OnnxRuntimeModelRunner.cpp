@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -90,6 +91,18 @@ elapsedMs(std::chrono::steady_clock::time_point start,
           std::chrono::steady_clock::time_point end)
 {
   return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+bool
+runtimeTimingEnabled()
+{
+  const char* value = std::getenv("NDNSF_DI_RUNTIME_TIMING");
+  if (value == nullptr) {
+    return false;
+  }
+  const std::string text(value);
+  return !(text.empty() || text == "0" || text == "false" || text == "FALSE" ||
+           text == "off" || text == "OFF");
 }
 
 std::string
@@ -410,16 +423,18 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
                    std::move(bundle));
   }
   const auto packageDone = std::chrono::steady_clock::now();
-  std::cout << std::fixed << std::setprecision(3)
-            << "\nNDNSF_DI_ONNX_TIMING"
-            << " session=" << ctx.sessionId
-            << " role=" << ctx.role
-            << " collect_ms=" << elapsedMs(collectStart, runStart)
-            << " session_ms=0"
-            << " run_ms=" << elapsedMs(runStart, runDone)
-            << " publish_ms=" << elapsedMs(runDone, packageDone)
-            << " session_cache=hit"
-            << std::endl;
+  if (runtimeTimingEnabled()) {
+    std::cout << std::fixed << std::setprecision(3)
+              << "\nNDNSF_DI_ONNX_TIMING"
+              << " session=" << ctx.sessionId
+              << " role=" << ctx.role
+              << " collect_ms=" << elapsedMs(collectStart, runStart)
+              << " session_ms=0"
+              << " run_ms=" << elapsedMs(runStart, runDone)
+              << " publish_ms=" << elapsedMs(runDone, packageDone)
+              << " session_cache=hit"
+              << std::endl;
+  }
   return result;
 }
 

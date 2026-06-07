@@ -1273,12 +1273,14 @@ namespace ndn_service_framework
     std::optional<ndn::Buffer>
     ServiceProvider::CollaborationContext::fetchLarge(const ndn::Name& dataName,
                                                       KeyScope keyScope,
-                                                      int timeoutMs)
+                                                      int timeoutMs,
+                                                      std::size_t expectedSegments)
     {
         return m_provider.fetchCollaborationLargeData(m_requestId,
                                                       std::move(keyScope),
                                                       dataName,
-                                                      timeoutMs);
+                                                      timeoutMs,
+                                                      expectedSegments);
     }
 
     void ServiceProvider::CollaborationContext::subscribe(
@@ -1733,6 +1735,16 @@ namespace ndn_service_framework
         if (m_providerRequestLifecycleCallback) {
             m_providerRequestLifecycleCallback(status);
         }
+        logControlTiming("provider",
+                         providerRequestLifecycleStateToString(state),
+                         requestId,
+                         {{"serviceName", status.serviceName.empty() ? "-" : status.serviceName.toUri()},
+                          {"providerName", identity.toUri()},
+                          {"suppressionReason", status.suppressionReason.empty() ? "-" : status.suppressionReason},
+                          {"pendingAtDecision", std::to_string(status.providerPendingCountAtDecision)},
+                          {"selectionLagUs", std::to_string(status.selectionLagUs)},
+                          {"eventLoopLagUs", std::to_string(status.eventLoopLagUs)},
+                          {"finalStatus", status.finalStatus.empty() ? "-" : status.finalStatus}});
     }
 
     bool ServiceProvider::shouldSuppressAdaptiveAck(const ndn::Name& requesterIdentity,
@@ -2795,7 +2807,8 @@ namespace ndn_service_framework
         const ndn::Name& requestId,
         const std::string& keyScope,
         const ndn::Name& dataName,
-        int timeoutMs)
+        int timeoutMs,
+        std::size_t expectedSegments)
     {
         ndn::Buffer scopeKey;
         {
@@ -2830,6 +2843,9 @@ namespace ndn_service_framework
         const double fetchInitCwnd = static_cast<double>(
             std::max(1, intEnvOrDefault("NDNSF_COLLAB_LARGE_FETCH_INIT_CWND", 8)));
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
+        const bool exactSegmentFetch =
+            expectedSegments > 0 &&
+            isTruthyEnv("NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH");
         const auto fetchStart = std::chrono::steady_clock::now();
         auto fetchStats = std::make_shared<CollaborationLargeFetchTiming>();
         fetchStats->start = fetchStart;
@@ -2837,7 +2853,211 @@ namespace ndn_service_framework
         boost::asio::post(m_face.getIoContext(), [this, dataName, completed, mutex, cv, error,
                                                   encoded, requestId, keyScope, fetchTimeoutMs,
                                                   interestLifetimeMs, fetchTimingEnabled,
-                                                  fetchInitCwnd, fetchStart, fetchStats] {
+                                                  fetchInitCwnd, fetchStart, fetchStats,
+                                                  exactSegmentFetch, expectedSegments] {
+            if (exactSegmentFetch) {
+                struct ExactFetchState {
+                    std::vector<ndn::Buffer> contents;
+                    std::vector<bool> received;
+                    size_t remaining = 0;
+                    size_t targetSegments = 0;
+                    bool failed = false;
+                };
+                auto state = std::make_shared<ExactFetchState>();
+                state->contents.resize(expectedSegments);
+                state->received.resize(expectedSegments, false);
+                state->remaining = expectedSegments;
+                state->targetSegments = expectedSegments;
+                if (fetchTimingEnabled) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=start"
+                                 << " mode=exact-segments"
+                                 << " requestId=" << requestId.toUri()
+                                 << " keyScope=" << keyScope
+                                 << " dataName=" << dataName.toUri()
+                                 << " expected_segments=" << expectedSegments
+                                 << " timeout_ms=" << fetchTimeoutMs
+                                 << " interest_lifetime_ms=" << interestLifetimeMs
+                                 << " init_cwnd=" << fetchInitCwnd);
+                }
+                auto finishIfComplete = [completed, mutex, cv, encoded, requestId, keyScope,
+                                         dataName, fetchTimeoutMs, interestLifetimeMs,
+                                         fetchTimingEnabled, fetchInitCwnd, fetchStart,
+                                         fetchStats, state] {
+                    if (state->failed || state->remaining != 0) {
+                        return;
+                    }
+                    ndn::Buffer assembled;
+                    size_t totalSize = 0;
+                    for (size_t i = 0; i < state->targetSegments; ++i) {
+                        const auto& content = state->contents[i];
+                        totalSize += content.size();
+                    }
+                    assembled.reserve(totalSize);
+                    for (size_t i = 0; i < state->targetSegments; ++i) {
+                        const auto& content = state->contents[i];
+                        assembled.insert(assembled.end(), content.begin(), content.end());
+                    }
+                    const auto completeTime = std::chrono::steady_clock::now();
+                    fetchStats->completeWall = std::chrono::system_clock::now();
+                    const auto elapsedMs = elapsedMsSince(fetchStart, completeTime);
+                    {
+                        std::lock_guard<std::mutex> lock(*mutex);
+                        *encoded = std::move(assembled);
+                        completed->store(true);
+                    }
+                    if (fetchTimingEnabled) {
+                        const double firstSegmentMs = fetchStats->receivedSegments == 0 ? 0.0 :
+                            elapsedMsSince(fetchStart, fetchStats->firstSegmentReceived);
+                        const double lastReceivedMs = fetchStats->receivedSegments == 0 ? 0.0 :
+                            elapsedMsSince(fetchStart, fetchStats->lastSegmentReceived);
+                        const double lastValidatedMs = fetchStats->validatedSegments == 0 ? 0.0 :
+                            elapsedMsSince(fetchStart, fetchStats->lastSegmentValidated);
+                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=complete"
+                                     << " mode=exact-segments"
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << dataName.toUri()
+                                     << " encoded_bytes=" << encoded->size()
+                                     << " elapsed_ms=" << elapsedMs
+                                     << " first_segment_ms=" << firstSegmentMs
+                                     << " last_segment_received_ms=" << lastReceivedMs
+                                     << " last_segment_validated_ms=" << lastValidatedMs
+                                     << " first_segment_epoch_ms="
+                                     << epochMs(fetchStats->firstSegmentWall)
+                                     << " complete_epoch_ms="
+                                     << epochMs(fetchStats->completeWall)
+                                     << " received_segments=" << fetchStats->receivedSegments
+                                     << " validated_segments=" << fetchStats->validatedSegments
+                                     << " received_wire_bytes=" << fetchStats->receivedWireBytes
+                                     << " nacks=" << fetchStats->nacks
+                                     << " segment_timeouts=" << fetchStats->timeouts
+                                     << " timeout_ms=" << fetchTimeoutMs
+                                     << " interest_lifetime_ms=" << interestLifetimeMs
+                                     << " init_cwnd=" << fetchInitCwnd);
+                    }
+                    cv->notify_one();
+                };
+                auto failOnce = [completed, mutex, cv, error, requestId, keyScope, dataName,
+                                 fetchTimeoutMs, interestLifetimeMs, fetchTimingEnabled,
+                                 fetchInitCwnd, fetchStart, fetchStats, state]
+                                (const std::string& message) {
+                    if (state->failed || completed->load()) {
+                        return;
+                    }
+                    state->failed = true;
+                    fetchStats->completeWall = std::chrono::system_clock::now();
+                    const auto elapsedMs = elapsedMsSince(
+                        fetchStart, std::chrono::steady_clock::now());
+                    {
+                        std::lock_guard<std::mutex> lock(*mutex);
+                        *error = message;
+                        completed->store(true);
+                    }
+                    if (fetchTimingEnabled) {
+                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=error"
+                                     << " mode=exact-segments"
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << dataName.toUri()
+                                     << " error_code=exact"
+                                     << " error_message=\"" << message << "\""
+                                     << " elapsed_ms=" << elapsedMs
+                                     << " first_segment_epoch_ms="
+                                     << epochMs(fetchStats->firstSegmentWall)
+                                     << " complete_epoch_ms="
+                                     << epochMs(fetchStats->completeWall)
+                                     << " received_segments=" << fetchStats->receivedSegments
+                                     << " validated_segments=" << fetchStats->validatedSegments
+                                     << " received_wire_bytes=" << fetchStats->receivedWireBytes
+                                     << " nacks=" << fetchStats->nacks
+                                     << " segment_timeouts=" << fetchStats->timeouts
+                                     << " timeout_ms=" << fetchTimeoutMs
+                                     << " interest_lifetime_ms=" << interestLifetimeMs
+                                     << " init_cwnd=" << fetchInitCwnd);
+                    }
+                    cv->notify_one();
+                };
+
+                for (size_t i = 0; i < expectedSegments; ++i) {
+                    ndn::Name segmentName(dataName);
+                    segmentName.appendSegment(i);
+                    ndn::Interest interest(segmentName);
+                    interest.setCanBePrefix(false);
+                    interest.setMustBeFresh(true);
+                    interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
+                    m_face.expressInterest(
+                        interest,
+                        [this, state, fetchStats, finishIfComplete, failOnce, i]
+                        (const ndn::Interest&, const ndn::Data& data) {
+                            const auto receivedAt = std::chrono::steady_clock::now();
+                            if (fetchStats->receivedSegments == 0) {
+                                fetchStats->firstSegmentReceived = receivedAt;
+                                fetchStats->firstSegmentWall = std::chrono::system_clock::now();
+                            }
+                            fetchStats->lastSegmentReceived = receivedAt;
+                            ++fetchStats->receivedSegments;
+                            fetchStats->receivedWireBytes += data.wireEncode().size();
+                            nac_validator.validate(
+                                data,
+                                [state, fetchStats, finishIfComplete, failOnce, i]
+                                (const ndn::Data& validData) {
+                                    if (state->failed || state->received[i]) {
+                                        return;
+                                    }
+                                    const auto& finalBlock = validData.getFinalBlock();
+                                    if (finalBlock && finalBlock->isSegment()) {
+                                        const auto finalSegment = finalBlock->toSegment();
+                                        const auto actualSegments =
+                                            static_cast<size_t>(finalSegment + 1);
+                                        if (actualSegments > state->contents.size()) {
+                                            failOnce("actual final segment exceeds planned exact "
+                                                     "fetch window for " +
+                                                     validData.getName().toUri());
+                                            return;
+                                        }
+                                        if (actualSegments < state->targetSegments) {
+                                            size_t remaining = 0;
+                                            for (size_t j = 0; j < actualSegments; ++j) {
+                                                if (!state->received[j]) {
+                                                    ++remaining;
+                                                }
+                                            }
+                                            state->targetSegments = actualSegments;
+                                            state->remaining = remaining;
+                                        }
+                                    }
+                                    fetchStats->lastSegmentValidated =
+                                        std::chrono::steady_clock::now();
+                                    ++fetchStats->validatedSegments;
+                                    const auto content = validData.getContent();
+                                    state->contents[i] = ndn::Buffer(content.value_begin(),
+                                                                     content.value_end());
+                                    state->received[i] = true;
+                                    if (i < state->targetSegments && state->remaining > 0) {
+                                        --state->remaining;
+                                    }
+                                    finishIfComplete();
+                                },
+                                [failOnce](const ndn::Data& data,
+                                           const ndn::security::ValidationError& error) {
+                                    failOnce("validation failed for " +
+                                             data.getName().toUri() + ": " +
+                                             error.getInfo());
+                                });
+                        },
+                        [fetchStats, failOnce](const ndn::Interest& interest,
+                                               const ndn::lp::Nack&) {
+                            ++fetchStats->nacks;
+                            failOnce("Nack for " + interest.getName().toUri());
+                        },
+                        [fetchStats, failOnce](const ndn::Interest& interest) {
+                            ++fetchStats->timeouts;
+                            failOnce("timeout for " + interest.getName().toUri());
+                        });
+                }
+                return;
+            }
+
             ndn::Interest interest(dataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
@@ -2849,7 +3069,7 @@ namespace ndn_service_framework
             options.maxTimeout = ndn::time::milliseconds(fetchTimeoutMs);
             options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
             if (fetchTimingEnabled) {
-                NDN_LOG_INFO("NDNSF_COLLAB_LARGE_FETCH_TIMING event=start"
+                NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=start"
                              << " requestId=" << requestId.toUri()
                              << " keyScope=" << keyScope
                              << " dataName=" << dataName.toUri()
@@ -2903,7 +3123,7 @@ namespace ndn_service_framework
                             elapsedMsSince(fetchStart, fetchStats->lastSegmentReceived);
                         const double lastValidatedMs = fetchStats->validatedSegments == 0 ? 0.0 :
                             elapsedMsSince(fetchStart, fetchStats->lastSegmentValidated);
-                        NDN_LOG_INFO("NDNSF_COLLAB_LARGE_FETCH_TIMING event=complete"
+                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=complete"
                                      << " requestId=" << requestId.toUri()
                                      << " keyScope=" << keyScope
                                      << " dataName=" << dataName.toUri()
@@ -2940,7 +3160,7 @@ namespace ndn_service_framework
                         completed->store(true);
                     }
                     if (fetchTimingEnabled) {
-                        NDN_LOG_INFO("NDNSF_COLLAB_LARGE_FETCH_TIMING event=error"
+                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=error"
                                      << " requestId=" << requestId.toUri()
                                      << " keyScope=" << keyScope
                                      << " dataName=" << dataName.toUri()
@@ -4244,6 +4464,7 @@ namespace ndn_service_framework
                                                std::function<void(const ndn::Buffer&)> onSuccess,
                                                std::function<void(const std::string&)> onError)
     {
+        const auto decryptEntryUs = timelineSteadyMicroseconds();
         HybridMessageEnvelope envelope;
         if (!envelope.WireDecode(envelopeBlock)) {
             return false;
@@ -4267,21 +4488,37 @@ namespace ndn_service_framework
         }
 
         auto finish = [this, envelope, messageName, serviceName, requestId,
-                       senderPrefix, onSuccess = std::move(onSuccess),
+                       senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
                        onError = std::move(onError)](const ndn::Buffer& key) mutable {
+            const auto keyReadyUs = timelineSteadyMicroseconds();
             const auto ad = hybridAssociatedData(messageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
                                                 envelope.getKeyId(), envelope.getEpochId());
-            auto decryptAndPost = [this, key, envelope, ad,
+            auto decryptAndPost = [this, key, envelope, ad, requestId, keyReadyUs, decryptEntryUs,
                                    onSuccess = std::move(onSuccess),
                                    onError = std::move(onError)]() mutable {
+                const auto aesStartUs = timelineSteadyMicroseconds();
                 ndn::Buffer plaintext;
                 const bool ok = hybridAesGcmDecrypt(
                     key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), plaintext);
+                const auto aesDoneUs = timelineSteadyMicroseconds();
+                logHybridCryptoTiming("provider", "hybrid_decrypt_aes_done", requestId,
+                                      {{"messageType", envelope.getMessageType()},
+                                       {"aesUs", std::to_string(aesDoneUs - aesStartUs)},
+                                       {"entryToKeyReadyUs", std::to_string(keyReadyUs - decryptEntryUs)},
+                                       {"keyReadyToAesStartUs", std::to_string(aesStartUs - keyReadyUs)},
+                                       {"cipherBytes", std::to_string(envelope.getCipherText().size())},
+                                       {"ok", ok ? "true" : "false"}});
                 boost::asio::post(m_face.getIoContext(),
-                    [this, ok, envelope, plaintext = std::move(plaintext),
+                    [this, ok, envelope, plaintext = std::move(plaintext), requestId,
+                     aesDoneUs,
                      onSuccess = std::move(onSuccess),
                      onError = std::move(onError)]() mutable {
+                    const auto callbackUs = timelineSteadyMicroseconds();
+                    logHybridCryptoTiming("provider", "hybrid_decrypt_callback_dispatch", requestId,
+                                          {{"messageType", envelope.getMessageType()},
+                                           {"aesDoneToCallbackUs", std::to_string(callbackUs - aesDoneUs)},
+                                           {"ok", ok ? "true" : "false"}});
                     if (!ok) {
                         ++m_hybridCryptoCounters.auth_decrypt_failure_count;
                         if (onError) {
@@ -4312,16 +4549,38 @@ namespace ndn_service_framework
         ndn::Buffer key;
         if (m_hybridMessageCrypto.findReceiveKey(envelope.getKeyId(), key,
                                                  m_hybridCryptoCounters)) {
+            logHybridCryptoTiming("provider", "hybrid_decrypt_key_cache", requestId,
+                                  {{"messageType", envelope.getMessageType()},
+                                   {"hit", "true"},
+                                   {"entryToCacheLookupUs",
+                                    std::to_string(timelineSteadyMicroseconds() - decryptEntryUs)}});
             finish(key);
             return true;
         }
+        logHybridCryptoTiming("provider", "hybrid_decrypt_key_cache", requestId,
+                              {{"messageType", envelope.getMessageType()},
+                               {"hit", "false"},
+                               {"wrappedKeyAttached",
+                                envelope.hasWrappedMessageKey() ? "true" : "false"},
+                               {"entryToCacheLookupUs",
+                                std::to_string(timelineSteadyMicroseconds() - decryptEntryUs)}});
         if (!envelope.hasWrappedMessageKey()) {
             ndn::Name keyDataName = senderPrefix;
             keyDataName.append(ndn::Name(envelope.getKeyId()));
             ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
+            const auto unwrapStartUs = timelineSteadyMicroseconds();
+            logHybridCryptoTiming("provider", "hybrid_decrypt_key_unwrap_start", requestId,
+                                  {{"messageType", envelope.getMessageType()},
+                                   {"source", "fetch"},
+                                   {"keyDataName", keyDataName.toUri()}});
             nacConsumer.consume(
                 keyDataName,
-                [this, envelope, finish = std::move(finish)](const ndn::Buffer& unwrappedKey) mutable {
+                [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
+                    logHybridCryptoTiming("provider", "hybrid_decrypt_key_unwrap_done", requestId,
+                                          {{"messageType", envelope.getMessageType()},
+                                           {"source", "fetch"},
+                                           {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
+                                           {"keyBytes", std::to_string(unwrappedKey.size())}});
                     m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
                                                           envelope.getEpochId(),
                                                           unwrappedKey);
@@ -4337,9 +4596,18 @@ namespace ndn_service_framework
         }
 
         ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
+        const auto unwrapStartUs = timelineSteadyMicroseconds();
+        logHybridCryptoTiming("provider", "hybrid_decrypt_key_unwrap_start", requestId,
+                              {{"messageType", envelope.getMessageType()},
+                               {"source", "attached"}});
         nacConsumer.consume(ndn::Name(envelope.getKeyId()),
                             ndn::Block(envelope.getWrappedMessageKey()),
-                            [this, envelope, finish = std::move(finish)](const ndn::Buffer& unwrappedKey) mutable {
+                            [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
+                                logHybridCryptoTiming("provider", "hybrid_decrypt_key_unwrap_done", requestId,
+                                                      {{"messageType", envelope.getMessageType()},
+                                                       {"source", "attached"},
+                                                       {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
+                                                       {"keyBytes", std::to_string(unwrappedKey.size())}});
                                 m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
                                                                       envelope.getEpochId(),
                                                                       unwrappedKey);
@@ -5616,7 +5884,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         ++m_pendingImsInterestCount;
         if (isTruthyEnv("NDNSF_PENDING_IMS_TIMING")) {
-            NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=remember"
+            NDN_LOG_WARN("NDNSF_PENDING_IMS_TIMING event=remember"
                          << " interest=" << interest.getName().toUri()
                          << " lifetime_ms=" << interest.getInterestLifetime().count()
                          << " pending=" << m_pendingImsInterestCount);
@@ -5638,7 +5906,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             if (timingEnabled) {
                 const auto ageUs = ndn::time::duration_cast<ndn::time::microseconds>(
                     now - item.requestedAt).count();
-                NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=satisfy"
+                NDN_LOG_WARN("NDNSF_PENDING_IMS_TIMING event=satisfy"
                              << " interest=" << item.interest.getName().toUri()
                              << " dataName=" << insertedData.getName().toUri()
                              << " pending_age_ms=" << (ageUs / 1000.0)
@@ -5706,7 +5974,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     if (timingEnabled) {
                         const auto ageUs = ndn::time::duration_cast<ndn::time::microseconds>(
                             now - item.requestedAt).count();
-                        NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=satisfy"
+                        NDN_LOG_WARN("NDNSF_PENDING_IMS_TIMING event=satisfy"
                                      << " interest=" << item.interest.getName().toUri()
                                      << " dataName=" << data->getName().toUri()
                                      << " pending_age_ms=" << (ageUs / 1000.0)
@@ -5734,7 +6002,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 if (timingEnabled) {
                     const auto ageUs = ndn::time::duration_cast<ndn::time::microseconds>(
                         now - item.requestedAt).count();
-                    NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=satisfy"
+                    NDN_LOG_WARN("NDNSF_PENDING_IMS_TIMING event=satisfy"
                                  << " interest=" << item.interest.getName().toUri()
                                  << " dataName=" << data->getName().toUri()
                                  << " pending_age_ms=" << (ageUs / 1000.0)

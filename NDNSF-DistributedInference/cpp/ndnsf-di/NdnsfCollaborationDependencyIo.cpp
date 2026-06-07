@@ -29,7 +29,8 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string&, const Dependen
     auto payload = m_ctx.fetchLarge(
       ndn::Name(edge.plannedDataName),
       edge.scope,
-      m_fetchTimeoutMs);
+      m_fetchTimeoutMs,
+      edge.expectedSegments);
     if (!payload) {
       throw std::runtime_error(
         "failed to fetch planned dependency object: " +

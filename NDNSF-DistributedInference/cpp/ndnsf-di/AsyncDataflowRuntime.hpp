@@ -69,6 +69,7 @@ struct RoleTiming
 {
   std::string role;
   std::chrono::steady_clock::time_point queuedAt;
+  std::chrono::steady_clock::time_point workerStartedAt;
   std::chrono::steady_clock::time_point startedAt;
   std::chrono::steady_clock::time_point finishedAt;
 };

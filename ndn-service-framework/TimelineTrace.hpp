@@ -20,6 +20,20 @@ void logTimelineTrace(const std::string& role,
                       const ndn::Name& requestId,
                       TimelineFields fields = {});
 
+bool hybridCryptoTimingEnvEnabled();
+
+void logHybridCryptoTiming(const std::string& role,
+                           const std::string& event,
+                           const ndn::Name& requestId,
+                           TimelineFields fields = {});
+
+bool controlTimingEnvEnabled();
+
+void logControlTiming(const std::string& role,
+                      const std::string& event,
+                      const ndn::Name& requestId,
+                      TimelineFields fields = {});
+
 } // namespace ndn_service_framework
 
 #endif

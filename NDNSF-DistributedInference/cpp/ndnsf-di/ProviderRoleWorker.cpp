@@ -117,6 +117,7 @@ ProviderRoleWorker::execute(const WorkItem& item)
 ProviderRoleResult
 ProviderRoleWorker::runRole(const WorkItem& item)
 {
+  const auto workerStartedAt = std::chrono::steady_clock::now();
   std::vector<std::future<TensorBundle>> futures;
   std::vector<InputFetchTiming> inputTimings;
   futures.reserve(item.role.inputs.size());
@@ -145,6 +146,7 @@ ProviderRoleWorker::runRole(const WorkItem& item)
   ProviderRoleResult result;
   result.timing.role = item.role.role;
   result.timing.queuedAt = item.queuedAt;
+  result.timing.workerStartedAt = workerStartedAt;
   result.timing.startedAt = std::chrono::steady_clock::now();
   result.inputTimings = std::move(inputTimings);
 

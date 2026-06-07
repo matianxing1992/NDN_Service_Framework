@@ -101,35 +101,90 @@ def wait_log(path: Path, needle: str, timeout: int = 30, proc=None) -> bool:
     return False
 
 
-def prepare_fractional_delay_routing_costs(net) -> None:
-    """Keep sub-ms Mininet links but give MiniNDN routing integer costs.
+def print_user_workload_output(text: str, quiet: bool) -> None:
+    if not quiet:
+        print(text)
+        return
+    allowed_prefixes = (
+        "Run YOLO",
+        "NDNSF_DI_PLAN_CACHE",
+        "NDNSF_DI_CLIENT_INFERENCE_TIMING",
+        "YOLO_LAYOUT_CONTROL_TIMING",
+        "YOLO_LAYOUT_RESULT",
+        "YOLO_2X2_RESULT",
+    )
+    lines = [
+        line for line in text.splitlines()
+        if line.startswith(allowed_prefixes)
+    ]
+    if lines:
+        print("\n".join(lines) + "\n")
 
-    MiniNDN can create TC links such as delay=0.1ms, but its
-    NdnRoutingHelper currently parses the topology metadata with int(...).
-    The real link has already been created by this point, so only the routing
-    cost metadata needs to be rounded up to a valid integer millisecond value.
-    """
-    patched = []
-    for src, dst, info_dict in net.topo.links(withInfo=True):
-        delay = str(info_dict.get("delay", "0ms"))
-        if not delay.endswith("ms"):
-            continue
-        value = delay[:-2]
+
+def parse_ndnping_rtts(text: str) -> list[float]:
+    values = []
+    for match in re.finditer(r"time=([0-9]+(?:\.[0-9]+)?)\s*ms", text):
+        values.append(float(match.group(1)))
+    return values
+
+
+def write_ndnping_rtt_summary(ndn,
+                              providers: list[tuple[str, str, list[str]]],
+                              env: dict,
+                              procs) -> None:
+    rows = []
+    for node_name, provider_log_name, argv in providers:
+        provider_id = argv[argv.index("--provider-id") + 1]
+        provider_prefix = provider_identity(provider_id)
+        ping_prefix = f"{provider_prefix}/ndnping"
+        server_log = OUT / f"ndnpingserver-{provider_log_name}.log"
+        client_log = OUT / f"ndnping-user-to-{provider_log_name}.log"
+        server_file = server_log.open("wb")
+        server_cmd = f"exec ndnpingserver {perf.shell_quote(ping_prefix)}"
+        server = getPopen(ndn.net[node_name], server_cmd, envDict=env, shell=True,
+                          stdout=server_file, stderr=subprocess.STDOUT)
+        procs.append((server, server_file, server_log))
+        time.sleep(0.5)
+        client_file = client_log.open("wb")
+        client_cmd = f"exec timeout 15s ndnping {perf.shell_quote(ping_prefix)} -c 5"
+        client = getPopen(ndn.net["memphis"], client_cmd, envDict=env, shell=True,
+                          stdout=client_file, stderr=subprocess.STDOUT)
         try:
-            delay_ms = float(value)
-        except ValueError:
-            continue
-        if delay_ms <= 0 or delay_ms.is_integer():
-            continue
-        route_cost_ms = max(1, int(delay_ms + 0.999999))
-        info_dict["ndnsf_actual_delay"] = delay
-        info_dict["delay"] = f"{route_cost_ms}ms"
-        patched.append((src, dst, delay, info_dict["delay"]))
-    for src, dst, actual, route_cost in patched:
-        log(
-            "NDNSF_DI_ROUTING_DELAY_COST_PATCH "
-            f"link={src}:{dst} actual_delay={actual} route_cost_delay={route_cost}"
-        )
+            client.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            client.terminate()
+            client.wait(timeout=5)
+        client_file.close()
+        text = client_log.read_text(errors="replace") if client_log.exists() else ""
+        rtts = parse_ndnping_rtts(text)
+        row = {
+            "providerLog": provider_log_name,
+            "providerNode": node_name,
+            "providerPrefix": provider_prefix,
+            "pingPrefix": ping_prefix,
+            "returncode": client.returncode,
+            "count": len(rtts),
+            "rttsMs": rtts,
+            "summaryMs": summarize_numeric(rtts),
+            "clientLog": str(client_log),
+            "serverLog": str(server_log),
+        }
+        rows.append(row)
+
+    summary = {
+        "sourceNode": "memphis",
+        "count": len(rows),
+        "rows": rows,
+    }
+    path = OUT / "ndnping-rtt-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    printable = " ".join(
+        f"{row['providerLog']}={row['summaryMs']['mean']:.2f}ms"
+        if row["summaryMs"]["count"] else f"{row['providerLog']}=NA"
+        for row in rows
+    )
+    print(f"YOLO_LAYOUT_NDNPING_RTT {printable} path={path}")
 
 
 def validate_repo_manifest_references(path: Path) -> None:
@@ -512,13 +567,29 @@ def parse_int_prefix(value, default: int = 0) -> int:
     return int(parse_numeric_prefix(value, float(default)))
 
 
+def request_id_from_message_name(name: str) -> str:
+    if not name:
+        return ""
+    for marker in (
+            "/NDNSF/REQUEST/",
+            "/NDNSF/ACK/",
+            "/NDNSF/SELECTION/",
+            "/NDNSF/RESPONSE/"):
+        if marker in name:
+            tail = name.rsplit("/", 1)[-1]
+            return "/" + tail if tail else ""
+    return ""
+
+
 def has_planned_name(row: dict) -> bool:
     value = str(row.get("planned_name", "")).strip()
     return bool(value and value.lower() not in {"false", "0", "none", "-"})
 
 
 def write_provider_timing_summaries(layout: str,
-                                    providers: list[tuple[str, str, list[str]]]) -> bool:
+                                    providers: list[tuple[str, str, list[str]]],
+                                    *,
+                                    require_runtime_timing: bool = True) -> bool:
     onnx_rows = []
     dependency_rows = []
     output_rows = []
@@ -604,10 +675,22 @@ def write_provider_timing_summaries(layout: str,
                 pending_ims_rows.append(row)
             elif "NDNSF_DI_PROVIDER_HANDLER_TIMING" in line:
                 row = parse_key_value_line(line)
-                for key in ("queue_wait_ms", "handler_ms"):
+                for key in (
+                    "queue_wait_ms",
+                    "worker_queue_wait_ms",
+                    "input_fetch_wait_ms",
+                    "runner_publish_ms",
+                    "total_ms",
+                    "handler_ms",
+                ):
                     if key in row:
                         row[key] = parse_numeric_prefix(row.get(key, "0"))
-                for key in ("submitted_epoch_ms", "start_epoch_ms", "end_epoch_ms"):
+                for key in (
+                    "submitted_epoch_ms",
+                    "worker_start_epoch_ms",
+                    "start_epoch_ms",
+                    "end_epoch_ms",
+                ):
                     if key in row:
                         row[key] = parse_int_prefix(row.get(key, "0"))
                 row["providerLog"] = path.name
@@ -918,7 +1001,9 @@ def write_provider_timing_summaries(layout: str,
         row for row in dependency_rows
         if row.get("ref_wait_ms", 0.0) > 0.0
     ]
-    planned_transport_ok = (
+    has_runtime_timing = bool(output_rows or dependency_rows)
+    validation_skipped = not require_runtime_timing and not has_runtime_timing
+    planned_transport_ok = validation_skipped or (
         len(output_rows) > 0 and
         len(dependency_rows) > 0 and
         not unplanned_output_rows and
@@ -929,6 +1014,8 @@ def write_provider_timing_summaries(layout: str,
     transport_summary = {
         "layout": layout,
         "ok": planned_transport_ok,
+        "validationSkipped": validation_skipped,
+        "runtimeTimingObserved": has_runtime_timing,
         "outputCount": len(output_rows),
         "plannedOutputCount": len(output_rows) - len(unplanned_output_rows),
         "unplannedOutputCount": len(unplanned_output_rows),
@@ -956,6 +1043,7 @@ def write_provider_timing_summaries(layout: str,
     print(
         "YOLO_LAYOUT_NATIVE_DATAFLOW_TRANSPORT "
         f"layout={layout} ok={str(planned_transport_ok).lower()} "
+        f"validation={'skipped' if validation_skipped else 'checked'} "
         f"outputs={transport_summary['outputCount']} "
         f"planned_outputs={transport_summary['plannedOutputCount']} "
         f"unplanned_outputs={transport_summary['unplannedOutputCount']} "
@@ -1229,9 +1317,21 @@ def write_provider_timing_summaries(layout: str,
             row["queue_wait_ms"] for row in handler_start_rows
             if "queue_wait_ms" in row
         ]),
+        "inputFetchWaitMs": summarize_numeric([
+            row["input_fetch_wait_ms"] for row in handler_end_rows
+            if "input_fetch_wait_ms" in row
+        ]),
+        "runnerPublishMs": summarize_numeric([
+            row["runner_publish_ms"] for row in handler_end_rows
+            if "runner_publish_ms" in row
+        ]),
         "handlerMs": summarize_numeric([
             row["handler_ms"] for row in handler_end_rows
             if "handler_ms" in row
+        ]),
+        "totalMs": summarize_numeric([
+            row["total_ms"] for row in handler_end_rows
+            if "total_ms" in row
         ]),
         "rows": handler_rows,
     }
@@ -1291,7 +1391,12 @@ def write_provider_timing_summaries(layout: str,
         f"layout={layout} starts={handler_summary['starts']} "
         f"ends={handler_summary['ends']} "
         f"queue_wait_p50_ms={handler_summary['queueWaitMs']['p50']:.2f} "
+        f"input_fetch_wait_p50_ms="
+        f"{handler_summary['inputFetchWaitMs']['p50']:.2f} "
+        f"runner_publish_p50_ms="
+        f"{handler_summary['runnerPublishMs']['p50']:.2f} "
         f"handler_p50_ms={handler_summary['handlerMs']['p50']:.2f} "
+        f"total_p50_ms={handler_summary['totalMs']['p50']:.2f} "
         f"dataflow_p50_ms={handler_summary['dataflow']['dataflowMs']['p50']:.2f} "
         f"submitted_dataflow_p50_ms="
         f"{handler_summary['dataflow']['submittedDataflowMs']['p50']:.2f} "
@@ -1355,6 +1460,342 @@ def write_client_timing_summaries(layout: str,
     )
 
 
+def write_hybrid_crypto_timing_summaries(layout: str,
+                                         phases: list[tuple[str, Path]],
+                                         providers: list[tuple[str, str, list[str]]]) -> None:
+    rows = []
+    log_paths = [(phase, path) for phase, path in phases]
+    log_paths.extend(("provider", OUT / f"{name}.log") for _, name, _ in providers)
+    for phase, path in log_paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "NDNSF_CRYPTO_TIMING" not in line:
+                continue
+            row = parse_key_value_line(line)
+            row["phase"] = phase
+            row["log"] = path.name
+            for key in (
+                    "steady_us",
+                    "timestamp_us",
+                    "entryToCacheLookupUs",
+                    "entryToKeyReadyUs",
+                    "keyReadyToAesStartUs",
+                    "aesUs",
+                    "aesDoneToCallbackUs",
+                    "unwrapUs",
+                    "cipherBytes",
+                    "keyBytes"):
+                if key in row:
+                    row[key] = parse_numeric_prefix(row.get(key, "0"))
+            rows.append(row)
+
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        group_key = "|".join([
+            row.get("role", ""),
+            row.get("messageType", ""),
+            row.get("event", ""),
+            f"hit={row.get('hit', '')}",
+            f"source={row.get('source', '')}",
+        ])
+        groups.setdefault(group_key, []).append(row)
+
+    group_summaries = {}
+    for key, group_rows in sorted(groups.items()):
+        summary = {
+            "count": len(group_rows),
+            "role": group_rows[0].get("role", "") if group_rows else "",
+            "messageType": group_rows[0].get("messageType", "") if group_rows else "",
+            "event": group_rows[0].get("event", "") if group_rows else "",
+            "hit": group_rows[0].get("hit", "") if group_rows else "",
+            "source": group_rows[0].get("source", "") if group_rows else "",
+            "entryToCacheLookupUs": summarize_numeric([
+                row["entryToCacheLookupUs"] for row in group_rows
+                if "entryToCacheLookupUs" in row
+            ]),
+            "entryToKeyReadyUs": summarize_numeric([
+                row["entryToKeyReadyUs"] for row in group_rows
+                if "entryToKeyReadyUs" in row
+            ]),
+            "keyReadyToAesStartUs": summarize_numeric([
+                row["keyReadyToAesStartUs"] for row in group_rows
+                if "keyReadyToAesStartUs" in row
+            ]),
+            "aesUs": summarize_numeric([
+                row["aesUs"] for row in group_rows
+                if "aesUs" in row
+            ]),
+            "aesDoneToCallbackUs": summarize_numeric([
+                row["aesDoneToCallbackUs"] for row in group_rows
+                if "aesDoneToCallbackUs" in row
+            ]),
+            "unwrapUs": summarize_numeric([
+                row["unwrapUs"] for row in group_rows
+                if "unwrapUs" in row
+            ]),
+            "cipherBytes": summarize_numeric([
+                row["cipherBytes"] for row in group_rows
+                if "cipherBytes" in row
+            ]),
+        }
+        group_summaries[key] = summary
+
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "groups": group_summaries,
+        "rows": rows,
+    }
+    path = OUT / "hybrid-crypto-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+
+    provider_request = [
+        row for row in rows
+        if row.get("role") == "provider" and row.get("messageType") == "REQUEST"
+    ]
+    user_ack = [
+        row for row in rows
+        if row.get("role") == "user" and row.get("messageType") == "ACK"
+    ]
+    provider_request_aes = summarize_numeric([
+        row["aesUs"] for row in provider_request
+        if row.get("event") == "hybrid_decrypt_aes_done" and "aesUs" in row
+    ])
+    provider_request_key = summarize_numeric([
+        row["entryToKeyReadyUs"] for row in provider_request
+        if row.get("event") == "hybrid_decrypt_aes_done" and "entryToKeyReadyUs" in row
+    ])
+    user_ack_aes = summarize_numeric([
+        row["aesUs"] for row in user_ack
+        if row.get("event") == "hybrid_decrypt_aes_done" and "aesUs" in row
+    ])
+    user_ack_callback = summarize_numeric([
+        row["aesDoneToCallbackUs"] for row in user_ack
+        if row.get("event") == "hybrid_decrypt_callback_dispatch" and "aesDoneToCallbackUs" in row
+    ])
+    print(
+        "YOLO_LAYOUT_HYBRID_CRYPTO_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"provider_request_key_ready_p50_us={provider_request_key['p50']:.0f} "
+        f"provider_request_aes_p50_us={provider_request_aes['p50']:.0f} "
+        f"user_ack_aes_p50_us={user_ack_aes['p50']:.0f} "
+        f"user_ack_callback_p50_us={user_ack_callback['p50']:.0f} "
+        f"path={path}"
+    )
+
+
+def write_control_timing_summaries(layout: str,
+                                   phases: list[tuple[str, Path]],
+                                   providers: list[tuple[str, str, list[str]]]) -> None:
+    rows = []
+    log_paths = [(phase, path) for phase, path in phases]
+    log_paths.extend(("provider", OUT / f"{name}.log") for _, name, _ in providers)
+    for phase, path in log_paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "NDNSF_CONTROL_TIMING" not in line:
+                continue
+            row = parse_key_value_line(line)
+            row["phase"] = phase
+            row["log"] = path.name
+            for key in (
+                    "steady_us",
+                    "timestamp_us",
+                    "queuedDurationMs",
+                    "inflightDurationMs",
+                    "endToEndLatencyMs",
+                    "pendingAtDecision",
+                    "selectionLagUs",
+                    "eventLoopLagUs"):
+                if key in row:
+                    row[key] = parse_numeric_prefix(row.get(key, "0"))
+            rows.append(row)
+
+    def event_time(group_rows: list[dict], event: str) -> float:
+        values = [
+            float(row.get("steady_us", 0))
+            for row in group_rows
+            if row.get("event") == event and float(row.get("steady_us", 0)) > 0
+        ]
+        return min(values) if values else 0.0
+
+    def delta_ms(end_us: float, start_us: float) -> float:
+        if end_us <= 0 or start_us <= 0 or end_us < start_us:
+            return 0.0
+        return (end_us - start_us) / 1000.0
+
+    user_groups: dict[tuple[str, str], list[dict]] = {}
+    provider_groups: dict[tuple[str, str, str], list[dict]] = {}
+    for row in rows:
+        request_id = str(row.get("requestId", ""))
+        if not request_id:
+            continue
+        if row.get("role") == "user":
+            user_groups.setdefault((row["phase"], request_id), []).append(row)
+        elif row.get("role") == "provider":
+            provider = str(row.get("providerName", row.get("log", "")))
+            provider_groups.setdefault((request_id, provider, row["log"]), []).append(row)
+
+    user_summary_rows = []
+    for (phase, request_id), group_rows in user_groups.items():
+        request_published = event_time(group_rows, "REQUEST_PUBLISHED")
+        ack_matched = event_time(group_rows, "ACK_MATCHED")
+        provider_selected = event_time(group_rows, "PROVIDER_SELECTED")
+        selection_published = event_time(group_rows, "SELECTION_PUBLISHED")
+        response_observed = event_time(group_rows, "RESPONSE_OBSERVED")
+        response_decrypted = event_time(group_rows, "RESPONSE_DECRYPTED")
+        callback_fired = event_time(group_rows, "CALLBACK_FIRED")
+        completed = event_time(group_rows, "COMPLETED")
+        user_summary_rows.append({
+            "phase": phase,
+            "requestId": request_id,
+            "requestPublishedToAckMatchedMs": delta_ms(ack_matched, request_published),
+            "ackMatchedToProviderSelectedMs": delta_ms(provider_selected, ack_matched),
+            "providerSelectedToSelectionPublishedMs": delta_ms(selection_published, provider_selected),
+            "selectionPublishedToResponseObservedMs": delta_ms(response_observed, selection_published),
+            "responseObservedToDecryptedMs": delta_ms(response_decrypted, response_observed),
+            "responseDecryptedToCallbackMs": delta_ms(callback_fired, response_decrypted),
+            "requestPublishedToCallbackMs": delta_ms(callback_fired, request_published),
+            "requestPublishedToCompletedMs": delta_ms(completed, request_published),
+        })
+
+    provider_summary_rows = []
+    for (request_id, provider, log), group_rows in provider_groups.items():
+        observed = event_time(group_rows, "REQUEST_OBSERVED")
+        admission = event_time(group_rows, "ACK_ADMISSION_CHECKED")
+        ack_published = event_time(group_rows, "ACK_PUBLISHED")
+        selection_received = event_time(group_rows, "SELECTION_RECEIVED")
+        execution_started = event_time(group_rows, "EXECUTION_STARTED")
+        execution_done = event_time(group_rows, "EXECUTION_DONE")
+        response_published = event_time(group_rows, "RESPONSE_PUBLISHED")
+        provider_summary_rows.append({
+            "requestId": request_id,
+            "providerName": provider,
+            "log": log,
+            "requestObservedToAckAdmissionMs": delta_ms(admission, observed),
+            "ackAdmissionToAckPublishedMs": delta_ms(ack_published, admission),
+            "requestObservedToAckPublishedMs": delta_ms(ack_published, observed),
+            "ackPublishedToSelectionReceivedMs": delta_ms(selection_received, ack_published),
+            "selectionReceivedToExecutionStartedMs": delta_ms(execution_started, selection_received),
+            "executionStartedToDoneMs": delta_ms(execution_done, execution_started),
+            "executionDoneToResponsePublishedMs": delta_ms(response_published, execution_done),
+            "selectionReceivedToResponsePublishedMs": delta_ms(response_published, selection_received),
+        })
+    final_provider_rows = [
+        row for row in provider_summary_rows
+        if row["selectionReceivedToResponsePublishedMs"] > 0
+    ]
+
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "userRequests": len(user_summary_rows),
+        "providerRequests": len(provider_summary_rows),
+        "finalProviderRequests": len(final_provider_rows),
+        "user": {
+            "requestPublishedToAckMatchedMs": summarize_numeric([
+                row["requestPublishedToAckMatchedMs"] for row in user_summary_rows
+            ]),
+            "ackMatchedToProviderSelectedMs": summarize_numeric([
+                row["ackMatchedToProviderSelectedMs"] for row in user_summary_rows
+            ]),
+            "providerSelectedToSelectionPublishedMs": summarize_numeric([
+                row["providerSelectedToSelectionPublishedMs"] for row in user_summary_rows
+            ]),
+            "selectionPublishedToResponseObservedMs": summarize_numeric([
+                row["selectionPublishedToResponseObservedMs"] for row in user_summary_rows
+            ]),
+            "responseObservedToDecryptedMs": summarize_numeric([
+                row["responseObservedToDecryptedMs"] for row in user_summary_rows
+            ]),
+            "responseDecryptedToCallbackMs": summarize_numeric([
+                row["responseDecryptedToCallbackMs"] for row in user_summary_rows
+            ]),
+            "requestPublishedToCallbackMs": summarize_numeric([
+                row["requestPublishedToCallbackMs"] for row in user_summary_rows
+            ]),
+            "requestPublishedToCompletedMs": summarize_numeric([
+                row["requestPublishedToCompletedMs"] for row in user_summary_rows
+            ]),
+        },
+        "provider": {
+            "requestObservedToAckPublishedMs": summarize_numeric([
+                row["requestObservedToAckPublishedMs"] for row in provider_summary_rows
+            ]),
+            "ackPublishedToSelectionReceivedMs": summarize_numeric([
+                row["ackPublishedToSelectionReceivedMs"] for row in provider_summary_rows
+            ]),
+            "selectionReceivedToExecutionStartedMs": summarize_numeric([
+                row["selectionReceivedToExecutionStartedMs"] for row in provider_summary_rows
+            ]),
+            "executionStartedToDoneMs": summarize_numeric([
+                row["executionStartedToDoneMs"] for row in provider_summary_rows
+            ]),
+            "executionDoneToResponsePublishedMs": summarize_numeric([
+                row["executionDoneToResponsePublishedMs"] for row in provider_summary_rows
+            ]),
+            "selectionReceivedToResponsePublishedMs": summarize_numeric([
+                row["selectionReceivedToResponsePublishedMs"] for row in provider_summary_rows
+            ]),
+        },
+        "finalProvider": {
+            "requestObservedToAckPublishedMs": summarize_numeric([
+                row["requestObservedToAckPublishedMs"] for row in final_provider_rows
+            ]),
+            "ackPublishedToSelectionReceivedMs": summarize_numeric([
+                row["ackPublishedToSelectionReceivedMs"] for row in final_provider_rows
+            ]),
+            "selectionReceivedToExecutionStartedMs": summarize_numeric([
+                row["selectionReceivedToExecutionStartedMs"] for row in final_provider_rows
+            ]),
+            "executionStartedToDoneMs": summarize_numeric([
+                row["executionStartedToDoneMs"] for row in final_provider_rows
+            ]),
+            "executionDoneToResponsePublishedMs": summarize_numeric([
+                row["executionDoneToResponsePublishedMs"] for row in final_provider_rows
+            ]),
+            "selectionReceivedToResponsePublishedMs": summarize_numeric([
+                row["selectionReceivedToResponsePublishedMs"] for row in final_provider_rows
+            ]),
+        },
+        "userRows": user_summary_rows,
+        "providerRows": provider_summary_rows,
+        "finalProviderRows": final_provider_rows,
+        "rows": rows,
+    }
+    path = OUT / "control-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_CONTROL_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"user_request_published_to_ack_matched_p50_ms="
+        f"{summary['user']['requestPublishedToAckMatchedMs']['p50']:.2f} "
+        f"user_ack_to_selected_p50_ms="
+        f"{summary['user']['ackMatchedToProviderSelectedMs']['p50']:.2f} "
+        f"user_selection_to_response_p50_ms="
+        f"{summary['user']['selectionPublishedToResponseObservedMs']['p50']:.2f} "
+        f"user_response_decrypt_p50_ms="
+        f"{summary['user']['responseObservedToDecryptedMs']['p50']:.2f} "
+        f"user_request_to_callback_p50_ms="
+        f"{summary['user']['requestPublishedToCallbackMs']['p50']:.2f} "
+        f"provider_request_to_ack_p50_ms="
+        f"{summary['provider']['requestObservedToAckPublishedMs']['p50']:.2f} "
+        f"provider_ack_to_selection_p50_ms="
+        f"{summary['provider']['ackPublishedToSelectionReceivedMs']['p50']:.2f} "
+        f"provider_selection_to_response_p50_ms="
+        f"{summary['provider']['selectionReceivedToResponsePublishedMs']['p50']:.2f} "
+        f"final_provider_selection_to_response_p50_ms="
+        f"{summary['finalProvider']['selectionReceivedToResponsePublishedMs']['p50']:.2f} "
+        f"final_provider_execution_p50_ms="
+        f"{summary['finalProvider']['executionStartedToDoneMs']['p50']:.2f} "
+        f"path={path}"
+    )
+
+
 def write_ack_selection_timing_summaries(layout: str,
                                          phases: list[tuple[str, Path]]) -> None:
     requests: dict[tuple[str, str], dict] = {}
@@ -1362,6 +1803,9 @@ def write_ack_selection_timing_summaries(layout: str,
         "COLLAB_REQUEST_CREATED",
         "REQUEST_PUBLISHED",
         "FIRST_ACK_OBSERVED",
+        "ACK_DECRYPT_IN_FLIGHT",
+        "ACK_DECRYPT_IN_FLIGHT_DONE",
+        "ACK_RECEIVED",
         "ACK_MATCHED_PENDING_CALL",
         "ACK_SELECTION_COLLAB_ROLE_COVERAGE_CHECK",
         "ACK_SELECTION_EARLY_COLLAB_ROLE_COVERAGE",
@@ -1395,11 +1839,20 @@ def write_ack_selection_timing_summaries(layout: str,
                 "log": path.name,
                 "events": [],
                 "acks": [],
+                "ackDecryptStart": [],
+                "ackDecryptDone": [],
+                "ackReceived": [],
                 "selections": [],
             })
             timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
             row["timestamp_us"] = timestamp_us
             item["events"].append(row)
+            if event == "ACK_DECRYPT_IN_FLIGHT":
+                item["ackDecryptStart"].append(row)
+            if event == "ACK_DECRYPT_IN_FLIGHT_DONE":
+                item["ackDecryptDone"].append(row)
+            if event == "ACK_RECEIVED":
+                item["ackReceived"].append(row)
             if event == "ACK_MATCHED_PENDING_CALL":
                 item["acks"].append(row)
             if event == "SELECTION_PUBLISHED":
@@ -1419,6 +1872,21 @@ def write_ack_selection_timing_summaries(layout: str,
 
         publish_us = event_time("REQUEST_PUBLISHED")
         first_ack_us = event_time("FIRST_ACK_OBSERVED")
+        ack_decrypt_start_times = [
+            int(row.get("timestamp_us", 0))
+            for row in item["ackDecryptStart"]
+            if int(row.get("timestamp_us", 0)) > 0
+        ]
+        ack_decrypt_done_times = [
+            int(row.get("timestamp_us", 0))
+            for row in item["ackDecryptDone"]
+            if int(row.get("timestamp_us", 0)) > 0
+        ]
+        ack_received_times = [
+            int(row.get("timestamp_us", 0))
+            for row in item["ackReceived"]
+            if int(row.get("timestamp_us", 0)) > 0
+        ]
         ack_times = [
             int(row.get("timestamp_us", 0))
             for row in item["acks"]
@@ -1435,6 +1903,10 @@ def write_ack_selection_timing_summaries(layout: str,
         early_role_us = event_time("ACK_SELECTION_EARLY_COLLAB_ROLE_COVERAGE")
         early_learned_us = event_time("ACK_SELECTION_EARLY_LEARNED_PROVIDERS")
         last_ack_us = max(ack_times) if ack_times else 0
+        first_ack_decrypt_start_us = min(ack_decrypt_start_times) if ack_decrypt_start_times else 0
+        first_ack_decrypt_done_us = min(ack_decrypt_done_times) if ack_decrypt_done_times else 0
+        first_ack_received_us = min(ack_received_times) if ack_received_times else 0
+        last_ack_received_us = max(ack_received_times) if ack_received_times else 0
 
         def delta_ms(end_us: int, start_us: int) -> float:
             if end_us <= 0 or start_us <= 0 or end_us < start_us:
@@ -1446,7 +1918,14 @@ def write_ack_selection_timing_summaries(layout: str,
             "requestId": item["requestId"],
             "log": item["log"],
             "ackCount": len(item["acks"]),
+            "ackDecryptStartCount": len(item["ackDecryptStart"]),
+            "ackReceivedCount": len(item["ackReceived"]),
             "selectionCount": len(item["selections"]),
+            "publishedToFirstAckDecryptStartMs": delta_ms(first_ack_decrypt_start_us, publish_us),
+            "firstAckDecryptStartToDoneMs": delta_ms(first_ack_decrypt_done_us, first_ack_decrypt_start_us),
+            "firstAckDecryptDoneToReceivedMs": delta_ms(first_ack_received_us, first_ack_decrypt_done_us),
+            "publishedToFirstAckReceivedMs": delta_ms(first_ack_received_us, publish_us),
+            "publishedToLastAckReceivedMs": delta_ms(last_ack_received_us, publish_us),
             "publishedToFirstAckMs": delta_ms(first_ack_us, publish_us),
             "publishedToLastAckMs": delta_ms(last_ack_us, publish_us),
             "lastAckToSelectionBeginMs": delta_ms(selection_begin_us, last_ack_us),
@@ -1464,6 +1943,24 @@ def write_ack_selection_timing_summaries(layout: str,
         "layout": layout,
         "count": len(rows),
         "ackCount": summarize_numeric([float(row["ackCount"]) for row in rows]),
+        "ackDecryptStartCount": summarize_numeric([
+            float(row["ackDecryptStartCount"]) for row in rows
+        ]),
+        "publishedToFirstAckDecryptStartMs": summarize_numeric([
+            row["publishedToFirstAckDecryptStartMs"] for row in rows
+        ]),
+        "firstAckDecryptStartToDoneMs": summarize_numeric([
+            row["firstAckDecryptStartToDoneMs"] for row in rows
+        ]),
+        "firstAckDecryptDoneToReceivedMs": summarize_numeric([
+            row["firstAckDecryptDoneToReceivedMs"] for row in rows
+        ]),
+        "publishedToFirstAckReceivedMs": summarize_numeric([
+            row["publishedToFirstAckReceivedMs"] for row in rows
+        ]),
+        "publishedToLastAckReceivedMs": summarize_numeric([
+            row["publishedToLastAckReceivedMs"] for row in rows
+        ]),
         "publishedToFirstAckMs": summarize_numeric([
             row["publishedToFirstAckMs"] for row in rows
         ]),
@@ -1490,6 +1987,12 @@ def write_ack_selection_timing_summaries(layout: str,
         "YOLO_LAYOUT_ACK_SELECTION_TIMING "
         f"layout={layout} count={summary['count']} "
         f"ack_count_p50={summary['ackCount']['p50']:.0f} "
+        f"published_to_first_ack_decrypt_start_p50_ms="
+        f"{summary['publishedToFirstAckDecryptStartMs']['p50']:.2f} "
+        f"first_ack_decrypt_start_to_done_p50_ms="
+        f"{summary['firstAckDecryptStartToDoneMs']['p50']:.2f} "
+        f"published_to_first_ack_received_p50_ms="
+        f"{summary['publishedToFirstAckReceivedMs']['p50']:.2f} "
         f"published_to_first_ack_p50_ms={summary['publishedToFirstAckMs']['p50']:.2f} "
         f"published_to_last_ack_p50_ms={summary['publishedToLastAckMs']['p50']:.2f} "
         f"last_ack_to_selection_begin_p50_ms="
@@ -1622,6 +2125,292 @@ def write_provider_selection_timing_summaries(layout: str,
     )
 
 
+def write_provider_request_ack_timing_summaries(
+        layout: str,
+        providers: list[tuple[str, str, list[str]]]) -> None:
+    events_of_interest = {
+        "REQUEST_RECEIVED",
+        "REQUEST_DECRYPT_DONE",
+        "ACK_PUBLISHED",
+    }
+    by_request_provider: dict[tuple[str, str], dict] = {}
+    for _, name, _ in providers:
+        path = OUT / f"{name}.log"
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "[NDNSF_TRACE]" not in line:
+                continue
+            row = parse_trace_row(line)
+            event = row.get("event", "")
+            request_id = row.get("requestId", "")
+            if event not in events_of_interest or not request_id:
+                continue
+            provider = row.get("providerName", "") or name
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            row["timestamp_us"] = timestamp_us
+            row["providerLog"] = path.name
+            key = (request_id, name)
+            item = by_request_provider.setdefault(key, {
+                "requestId": request_id,
+                "providerName": provider,
+                "providerLog": path.name,
+                "events": [],
+            })
+            if row.get("providerName"):
+                item["providerName"] = row["providerName"]
+            item["events"].append(row)
+
+    rows = []
+    for item in by_request_provider.values():
+        events = item["events"]
+
+        def first_event(name: str):
+            found = [row for row in events if row.get("event") == name]
+            return min(found, key=lambda row: row.get("timestamp_us", 0)) if found else None
+
+        def event_time(name: str) -> int:
+            row = first_event(name)
+            return int(row.get("timestamp_us", 0)) if row else 0
+
+        def delta_ms(end_us: int, start_us: int) -> float:
+            if end_us <= 0 or start_us <= 0 or end_us < start_us:
+                return 0.0
+            return (end_us - start_us) / 1000.0
+
+        received_us = event_time("REQUEST_RECEIVED")
+        decrypt_done_us = event_time("REQUEST_DECRYPT_DONE")
+        ack_published_us = event_time("ACK_PUBLISHED")
+        rows.append({
+            "requestId": item["requestId"],
+            "providerName": item["providerName"],
+            "providerLog": item["providerLog"],
+            "requestReceivedUs": received_us,
+            "requestDecryptDoneUs": decrypt_done_us,
+            "ackPublishedUs": ack_published_us,
+            "requestReceivedToDecryptDoneMs": delta_ms(decrypt_done_us, received_us),
+            "requestDecryptDoneToAckPublishedMs": delta_ms(ack_published_us, decrypt_done_us),
+            "requestReceivedToAckPublishedMs": delta_ms(ack_published_us, received_us),
+            "events": events,
+        })
+
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "requestReceivedToDecryptDoneMs": summarize_numeric([
+            row["requestReceivedToDecryptDoneMs"] for row in rows
+        ]),
+        "requestDecryptDoneToAckPublishedMs": summarize_numeric([
+            row["requestDecryptDoneToAckPublishedMs"] for row in rows
+        ]),
+        "requestReceivedToAckPublishedMs": summarize_numeric([
+            row["requestReceivedToAckPublishedMs"] for row in rows
+        ]),
+        "rows": rows,
+    }
+    path = OUT / "provider-request-ack-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_PROVIDER_REQUEST_ACK_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"request_received_to_decrypt_done_p50_ms="
+        f"{summary['requestReceivedToDecryptDoneMs']['p50']:.2f} "
+        f"request_decrypt_done_to_ack_published_p50_ms="
+        f"{summary['requestDecryptDoneToAckPublishedMs']['p50']:.2f} "
+        f"request_received_to_ack_published_p50_ms="
+        f"{summary['requestReceivedToAckPublishedMs']['p50']:.2f} "
+        f"path={path}"
+    )
+
+
+def write_control_path_timing_summaries(
+        layout: str,
+        phases: list[tuple[str, Path]],
+        providers: list[tuple[str, str, list[str]]]) -> None:
+    user_events: dict[str, dict] = {}
+    for phase, path in phases:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "[NDNSF_TRACE]" not in line:
+                continue
+            row = parse_trace_row(line)
+            event = row.get("event", "")
+            request_id = row.get("requestId", "")
+            if event == "SVS_PUBLISH_BEGIN":
+                request_id = request_id_from_message_name(row.get("messageName", ""))
+            if not request_id:
+                continue
+            item = user_events.setdefault(request_id, {
+                "phase": phase,
+                "requestId": request_id,
+                "requestPublishedUs": 0,
+                "requestSvsPublishBeginUs": 0,
+                "ackPreDecrypt": {},
+                "ackReceived": {},
+            })
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            if event == "REQUEST_PUBLISHED":
+                item["requestPublishedUs"] = min(
+                    [value for value in (item["requestPublishedUs"], timestamp_us)
+                     if value > 0] or [timestamp_us])
+            elif event == "SVS_PUBLISH_BEGIN" and "/NDNSF/REQUEST/" in row.get("messageName", ""):
+                item["requestSvsPublishBeginUs"] = min(
+                    [value for value in (item["requestSvsPublishBeginUs"], timestamp_us)
+                     if value > 0] or [timestamp_us])
+            elif event == "ACK_MATCH_ATTEMPT" and row.get("phase") == "pre_decrypt":
+                provider = row.get("providerName", "")
+                if provider:
+                    current = item["ackPreDecrypt"].get(provider, 0)
+                    item["ackPreDecrypt"][provider] = min(
+                        [value for value in (current, timestamp_us) if value > 0]
+                        or [timestamp_us])
+            elif event == "ACK_RECEIVED":
+                provider = row.get("providerName", "")
+                if provider:
+                    current = item["ackReceived"].get(provider, 0)
+                    item["ackReceived"][provider] = min(
+                        [value for value in (current, timestamp_us) if value > 0]
+                        or [timestamp_us])
+
+    rows = []
+    for _, name, _ in providers:
+        path = OUT / f"{name}.log"
+        if not path.exists():
+            continue
+        provider_events: dict[str, dict] = {}
+        for line in path.read_text(errors="replace").splitlines():
+            if "[NDNSF_TRACE]" not in line:
+                continue
+            row = parse_trace_row(line)
+            event = row.get("event", "")
+            request_id = row.get("requestId", "")
+            if event == "SVS_PUBLISH_BEGIN":
+                request_id = request_id_from_message_name(row.get("messageName", ""))
+            if not request_id:
+                continue
+            item = provider_events.setdefault(request_id, {
+                "requestReceivedUs": 0,
+                "requestDecryptDoneUs": 0,
+                "ackPublishedUs": 0,
+                "ackSvsPublishBeginUs": 0,
+                "providerName": row.get("providerName", "") or name,
+            })
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            if row.get("providerName"):
+                item["providerName"] = row["providerName"]
+            if event == "REQUEST_RECEIVED":
+                current = item["requestReceivedUs"]
+                item["requestReceivedUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            elif event == "REQUEST_DECRYPT_DONE":
+                current = item["requestDecryptDoneUs"]
+                item["requestDecryptDoneUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            elif event == "ACK_PUBLISHED":
+                current = item["ackPublishedUs"]
+                item["ackPublishedUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            elif (event == "SVS_PUBLISH_BEGIN" and
+                  "/NDNSF/ACK/" in row.get("messageName", "")):
+                current = item["ackSvsPublishBeginUs"]
+                item["ackSvsPublishBeginUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+
+        for request_id, provider_event in provider_events.items():
+            user = user_events.get(request_id, {})
+            provider_name = provider_event.get("providerName", "")
+            published_us = int(user.get("requestPublishedUs", 0) or 0)
+            request_svs_us = int(user.get("requestSvsPublishBeginUs", 0) or 0)
+            received_us = int(provider_event.get("requestReceivedUs", 0) or 0)
+            decrypt_done_us = int(provider_event.get("requestDecryptDoneUs", 0) or 0)
+            ack_published_us = int(provider_event.get("ackPublishedUs", 0) or 0)
+            ack_svs_us = int(provider_event.get("ackSvsPublishBeginUs", 0) or 0)
+            ack_pre_decrypt_us = int(user.get("ackPreDecrypt", {}).get(provider_name, 0) or 0)
+            ack_received_us = int(user.get("ackReceived", {}).get(provider_name, 0) or 0)
+
+            def delta_ms(end_us: int, start_us: int) -> float:
+                if end_us <= 0 or start_us <= 0 or end_us < start_us:
+                    return 0.0
+                return (end_us - start_us) / 1000.0
+
+            rows.append({
+                "phase": user.get("phase", ""),
+                "requestId": request_id,
+                "providerLog": path.name,
+                "providerName": provider_name,
+                "requestPublishedUs": published_us,
+                "requestSvsPublishBeginUs": request_svs_us,
+                "providerRequestReceivedUs": received_us,
+                "providerRequestDecryptDoneUs": decrypt_done_us,
+                "providerAckPublishedUs": ack_published_us,
+                "providerAckSvsPublishBeginUs": ack_svs_us,
+                "userAckPreDecryptUs": ack_pre_decrypt_us,
+                "userAckReceivedUs": ack_received_us,
+                "requestPublishedToRequestSvsPublishBeginMs": delta_ms(request_svs_us, published_us),
+                "requestPublishedToProviderReceivedMs": delta_ms(received_us, published_us),
+                "providerReceivedToRequestDecryptDoneMs": delta_ms(decrypt_done_us, received_us),
+                "requestDecryptDoneToAckPublishedMs": delta_ms(ack_published_us, decrypt_done_us),
+                "ackPublishedToAckSvsPublishBeginMs": delta_ms(ack_svs_us, ack_published_us),
+                "ackPublishedToUserPreDecryptMs": delta_ms(ack_pre_decrypt_us, ack_published_us),
+                "userPreDecryptToAckReceivedMs": delta_ms(ack_received_us, ack_pre_decrypt_us),
+                "requestPublishedToAckReceivedMs": delta_ms(ack_received_us, published_us),
+            })
+
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "requestPublishedToRequestSvsPublishBeginMs": summarize_numeric([
+            row["requestPublishedToRequestSvsPublishBeginMs"] for row in rows
+        ]),
+        "requestPublishedToProviderReceivedMs": summarize_numeric([
+            row["requestPublishedToProviderReceivedMs"] for row in rows
+        ]),
+        "providerReceivedToRequestDecryptDoneMs": summarize_numeric([
+            row["providerReceivedToRequestDecryptDoneMs"] for row in rows
+        ]),
+        "requestDecryptDoneToAckPublishedMs": summarize_numeric([
+            row["requestDecryptDoneToAckPublishedMs"] for row in rows
+        ]),
+        "ackPublishedToAckSvsPublishBeginMs": summarize_numeric([
+            row["ackPublishedToAckSvsPublishBeginMs"] for row in rows
+        ]),
+        "ackPublishedToUserPreDecryptMs": summarize_numeric([
+            row["ackPublishedToUserPreDecryptMs"] for row in rows
+        ]),
+        "userPreDecryptToAckReceivedMs": summarize_numeric([
+            row["userPreDecryptToAckReceivedMs"] for row in rows
+        ]),
+        "requestPublishedToAckReceivedMs": summarize_numeric([
+            row["requestPublishedToAckReceivedMs"] for row in rows
+        ]),
+        "rows": rows,
+    }
+    path = OUT / "control-path-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_CONTROL_PATH_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"request_publish_to_provider_received_p50_ms="
+        f"{summary['requestPublishedToProviderReceivedMs']['p50']:.2f} "
+        f"provider_received_to_request_decrypt_done_p50_ms="
+        f"{summary['providerReceivedToRequestDecryptDoneMs']['p50']:.2f} "
+        f"ack_published_to_user_pre_decrypt_p50_ms="
+        f"{summary['ackPublishedToUserPreDecryptMs']['p50']:.2f} "
+        f"user_pre_decrypt_to_ack_received_p50_ms="
+        f"{summary['userPreDecryptToAckReceivedMs']['p50']:.2f} "
+        f"request_publish_to_ack_received_p50_ms="
+        f"{summary['requestPublishedToAckReceivedMs']['p50']:.2f} "
+        f"path={path}"
+    )
+
+
 def _load_json_file(path: Path, default):
     if not path.exists():
         return default
@@ -1631,7 +2420,7 @@ def _load_json_file(path: Path, default):
         return default
 
 
-def write_end_to_end_breakdown(layout: str) -> None:
+def write_end_to_end_breakdown(layout: str, *, print_rows: bool = True) -> None:
     client = _load_json_file(OUT / "client-inference-timing-stats.json", {})
     handler = _load_json_file(OUT / "provider-handler-timing-stats.json", {})
     onnx = _load_json_file(OUT / "onnx-timing-stats.json", {})
@@ -1778,6 +2567,8 @@ def write_end_to_end_breakdown(layout: str) -> None:
         f"onnx_run_sum_p50_ms={summary['onnxRunSumMs']['p50']:.2f} "
         f"path={path}"
     )
+    if not print_rows:
+        return
     for row in rows:
         print(
             "YOLO_LAYOUT_E2E_BREAKDOWN_ROW "
@@ -1965,6 +2756,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--layout", default="2x2",
                         help="YOLO stage-by-shard layout, e.g. 1x3, 2x3, 3x2, 3x3")
+    parser.add_argument("--results-dir", default="",
+                        help="Override the default results/yolo_<layout>_minindn_quick output directory")
     parser.add_argument("--cold-requests", type=int, default=1,
                         help="Sequential requests in the cold user process")
     parser.add_argument("--warm-requests", type=int, default=1,
@@ -1989,9 +2782,29 @@ def main() -> None:
                         help="Use the YOLO Detect-scale DAG splitter")
     parser.add_argument("--control-trace", action="store_true",
                         help="Enable NDNSF user control-plane TRACE logs and write ACK/selection timing stats")
+    parser.add_argument("--quiet-perf-logs", action="store_true",
+                        help="suppress NDNSF library INFO/DEBUG/TRACE logs and print only DI result lines")
+    parser.add_argument("--crypto-timing", action="store_true",
+                        help="enable narrow hybrid decrypt cache/unwrap/AES/callback timing logs")
+    parser.add_argument("--control-timing", action="store_true",
+                        help="enable narrow NDNSF request/provider lifecycle timing logs")
+    parser.add_argument("--dependency-timing", action="store_true",
+                        help="enable dependency fetch and pending IMS timing logs")
+    parser.add_argument("--disable-exact-segment-fetch", action="store_true",
+                        help="disable deterministic exact segment fetch for planned native DI activations")
+    parser.add_argument("--ndnsf-handler-threads", type=int, default=-1,
+                        help="Override NDNSF_HANDLER_THREADS; -1 keeps env/default serial experiment setting")
+    parser.add_argument("--ndnsf-ack-threads", type=int, default=-1,
+                        help="Override NDNSF_ACK_THREADS; -1 keeps env/default serial experiment setting")
+    parser.add_argument("--parallel-svs-runtime", action="store_true",
+                        help="Enable NDNSF async/parallel SVS publish/sync/production for a runtime-overhead comparison")
+    parser.add_argument("--serial-svs-runtime", action="store_true",
+                        help="Force the older serial NDNSF/SVS runtime even when native providers are used")
     args_cli = parser.parse_args()
     if args_cli.parallel_output_shards and args_cli.parallel_detect_scale_shards:
         raise SystemExit("--parallel-output-shards and --parallel-detect-scale-shards are mutually exclusive")
+    if args_cli.parallel_svs_runtime and args_cli.serial_svs_runtime:
+        raise SystemExit("--parallel-svs-runtime and --serial-svs-runtime are mutually exclusive")
     layout = args_cli.layout.strip().lower().replace("*", "x")
     cold_requests = max(1, args_cli.cold_requests)
     warm_requests = max(1, args_cli.warm_requests)
@@ -2008,17 +2821,24 @@ def main() -> None:
     if args_cli.parallel_detect_scale_shards:
         safe_layout += "_parallel_detect_scale"
     global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST
-    OUT = REPO / f"results/yolo_{safe_layout}_minindn_quick"
+    OUT = Path(args_cli.results_dir).expanduser() if args_cli.results_dir else (
+        REPO / f"results/yolo_{safe_layout}_minindn_quick")
+    if not OUT.is_absolute():
+        OUT = REPO / OUT
     CONFIG = OUT / "yolo_policy.yaml"
     GEN_POLICY = f"/tmp/ndnsf-di-yolo-{safe_layout}-policy"
     REPO_MANIFEST = OUT / "repo-manifests.json"
 
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
+    for stats_path in OUT.glob("*-stats.json"):
+        try:
+            stats_path.unlink()
+        except FileNotFoundError:
+            pass
     for stats_path in (
             OUT / "traffic-stats.json",
-            OUT / "inference-latency-stats.json",
-            OUT / "nfd-data-stats.json"):
+            OUT / "repo-manifests.json"):
         try:
             stats_path.unlink()
         except FileNotFoundError:
@@ -2084,7 +2904,7 @@ def main() -> None:
         svs_sync_batching=False,
         svs_sync_batch_ms=0,
         ack_threads=1,
-        performance_mode=False,
+        performance_mode=args_cli.quiet_perf_logs,
     )
     try:
         ndn.start()
@@ -2097,7 +2917,6 @@ def main() -> None:
             for _, _, argv in providers
         ]
 
-        prepare_fractional_delay_routing_costs(ndn.net)
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
         rh.addOrigin([ndn.net["csu"]], [
             "/NDNSF-DistributeInference/example/controller",
@@ -2127,15 +2946,57 @@ def main() -> None:
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
-        env["NDNSF_HANDLER_THREADS"] = "1"
-        env["NDNSF_ACK_THREADS"] = "1"
-        env["NDNSF_SVS_ASYNC_PUBLISH"] = "0"
-        env["NDNSF_SVS_PARALLEL_SYNC"] = "0"
-        env["NDNSF_SVS_PARALLEL_PRODUCTION"] = "0"
-        env["NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING"] = "0"
-        env["NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK"] = "0"
-        env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
-        env["NDNSF_PENDING_IMS_TIMING"] = "1"
+        default_runtime_threads = "2" if args_cli.native_providers else "1"
+        env["NDNSF_HANDLER_THREADS"] = str(
+            args_cli.ndnsf_handler_threads
+            if args_cli.ndnsf_handler_threads >= 0
+            else int(os.environ.get("NDNSF_HANDLER_THREADS", default_runtime_threads)))
+        env["NDNSF_ACK_THREADS"] = str(
+            args_cli.ndnsf_ack_threads
+            if args_cli.ndnsf_ack_threads >= 0
+            else int(os.environ.get("NDNSF_ACK_THREADS", default_runtime_threads)))
+        use_parallel_runtime = (
+            args_cli.parallel_svs_runtime or
+            (args_cli.native_providers and not args_cli.serial_svs_runtime)
+        )
+        if use_parallel_runtime:
+            env["NDNSF_SVS_ASYNC_PUBLISH"] = "1"
+            env["NDNSF_SVS_PARALLEL_SYNC"] = "1"
+            env["NDNSF_SVS_PARALLEL_WORKERS"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_WORKERS", "4")
+            env["NDNSF_SVS_PARALLEL_QUEUE"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_QUEUE", "256")
+            env["NDNSF_SVS_PARALLEL_PRODUCTION"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_PRODUCTION", "4")
+            env["NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING", "0")
+            env["NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK", "1")
+        else:
+            env["NDNSF_SVS_ASYNC_PUBLISH"] = os.environ.get(
+                "NDNSF_SVS_ASYNC_PUBLISH", "0")
+            env["NDNSF_SVS_PARALLEL_SYNC"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_SYNC", "0")
+            env["NDNSF_SVS_PARALLEL_PRODUCTION"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_PRODUCTION", "0")
+            env["NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING", "0")
+            env["NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK"] = os.environ.get(
+                "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK", "0")
+        if args_cli.native_providers and not args_cli.disable_exact_segment_fetch:
+            env["NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH"] = "1"
+        if (not args_cli.quiet_perf_logs or args_cli.dependency_timing or
+                args_cli.control_timing or args_cli.control_trace):
+            env["NDNSF_DI_RUNTIME_TIMING"] = "1"
+        if args_cli.dependency_timing:
+            env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
+            env["NDNSF_PENDING_IMS_TIMING"] = "1"
+        if args_cli.crypto_timing:
+            env["NDNSF_HYBRID_CRYPTO_TIMING"] = "1"
+            env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"
+        if args_cli.control_timing:
+            env["NDNSF_CONTROL_TIMING"] = "1"
+            env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"
         env["PYTHONPATH"] = ":".join([
             str(REPO / "NDNSF-DistributedInference"),
             str(REPO / "pythonWrapper"),
@@ -2145,10 +3006,18 @@ def main() -> None:
             "/usr/lib/python3/dist-packages",
             os.environ.get("PYTHONPATH", ""),
         ])
+        bootstrap_env = dict(env)
+        if args_cli.quiet_perf_logs:
+            bootstrap_env["NDN_LOG"] = os.environ.get(
+                "NDN_LOG",
+                "ndn_service_framework.*=WARN:"
+                "ndn_service_framework.ServiceController=INFO")
+
+        write_ndnping_rtt_summary(ndn, providers, env, procs)
 
         common = ["--config", str(CONFIG), "--generated-policy-dir", GEN_POLICY]
         _, controller_log = start(ndn.net["csu"], "controller",
-                                  python_cmd("controller.py", common), env, procs)
+                                  python_cmd("controller.py", common), bootstrap_env, procs)
         if not wait_log(controller_log, "ServiceController listening", 20):
             raise RuntimeError(f"controller did not become ready; see {controller_log}")
         time.sleep(4)
@@ -2191,8 +3060,8 @@ def main() -> None:
                     argv,
                     service_name=service_name,
                     workers=provider_handler_workers,
-                    handler_threads=1,
-                    ack_threads=1)
+                    handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
+                    ack_threads=int(env["NDNSF_ACK_THREADS"]))
                 ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
             else:
                 cmd = python_cmd("provider.py", common + argv + [
@@ -2236,7 +3105,7 @@ def main() -> None:
         write_nfd_data_delta(layout, "cold", cold_nfd_start, cold_nfd_end,
                              cold_requests)
         cold_text = user_log.read_text(errors="replace")
-        print(cold_text)
+        print_user_workload_output(cold_text, args_cli.quiet_perf_logs)
         cold_latencies = write_latency_summary(layout, "cold", cold_text)
         if len(cold_latencies) < cold_requests or "ok=false" in cold_text:
             raise RuntimeError(
@@ -2279,7 +3148,7 @@ def main() -> None:
                             warm_count or warm_requests)
         write_nfd_data_delta(layout, "warm", warm_nfd_start, warm_nfd_end,
                              warm_count or warm_requests)
-        print(warm_text)
+        print_user_workload_output(warm_text, args_cli.quiet_perf_logs)
         write_plan_cache_summary(layout, [
             ("cold", user_log),
             ("warm", warm_log),
@@ -2288,14 +3157,33 @@ def main() -> None:
             ("cold", user_log),
             ("warm", warm_log),
         ])
+        if args_cli.crypto_timing:
+            write_hybrid_crypto_timing_summaries(layout, [
+                ("cold", user_log),
+                ("warm", warm_log),
+            ], providers)
+        if args_cli.control_timing:
+            write_control_timing_summaries(layout, [
+                ("cold", user_log),
+                ("warm", warm_log),
+            ], providers)
         if args_cli.control_trace:
             write_ack_selection_timing_summaries(layout, [
                 ("cold", user_log),
                 ("warm", warm_log),
             ])
             write_provider_selection_timing_summaries(layout, providers)
-        native_dataflow_transport_ok = write_provider_timing_summaries(layout, providers)
-        write_end_to_end_breakdown(layout)
+            write_provider_request_ack_timing_summaries(layout, providers)
+            write_control_path_timing_summaries(layout, [
+                ("cold", user_log),
+                ("warm", warm_log),
+            ], providers)
+        native_dataflow_transport_ok = write_provider_timing_summaries(
+            layout,
+            providers,
+            require_runtime_timing=bool(env.get("NDNSF_DI_RUNTIME_TIMING")),
+        )
+        write_end_to_end_breakdown(layout, print_rows=not args_cli.quiet_perf_logs)
         provider_text = "\n".join(
             (OUT / f"{name}.log").read_text(errors="replace")
             for _, name, _ in providers

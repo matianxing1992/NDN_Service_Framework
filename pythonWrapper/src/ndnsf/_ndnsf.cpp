@@ -17,9 +17,11 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <exception>
 #include <map>
 #include <memory>
@@ -40,6 +42,32 @@ namespace {
 std::mutex g_keyChainMutex;
 
 using PyFunctionPtr = std::shared_ptr<py::function>;
+
+int
+envIntValue(const char* name, int defaultValue, int minValue, int maxValue)
+{
+  const char* value = std::getenv(name);
+  if (value == nullptr || *value == '\0') {
+    return defaultValue;
+  }
+  try {
+    int parsed = std::stoi(value);
+    parsed = std::max(minValue, parsed);
+    parsed = std::min(maxValue, parsed);
+    return parsed;
+  }
+  catch (...) {
+    return defaultValue;
+  }
+}
+
+ndn::time::milliseconds
+pythonFacePollTimeout()
+{
+  static const int pollMs =
+    envIntValue("NDNSF_PY_FACE_POLL_MS", 1, 1, 100);
+  return ndn::time::milliseconds(pollMs);
+}
 
 PyFunctionPtr
 keepPyFunction(py::function fn)
@@ -1368,7 +1396,7 @@ public:
     m_thread = std::thread([this] {
       while (m_running.load()) {
         try {
-          processFaceEvents(m_face, ndn::time::milliseconds(10));
+          processFaceEvents(m_face, pythonFacePollTimeout());
         }
         catch (const std::exception& e) {
           std::lock_guard<std::mutex> lock(m_errorMutex);
@@ -1614,7 +1642,7 @@ public:
     m_thread = std::thread([this] {
       while (m_running.load()) {
         try {
-          processFaceEvents(m_face, ndn::time::milliseconds(10));
+          processFaceEvents(m_face, pythonFacePollTimeout());
         }
         catch (const std::exception& e) {
           std::lock_guard<std::mutex> lock(m_errorMutex);
@@ -1711,7 +1739,7 @@ PyServiceResponse
         }
       }
       py::gil_scoped_release release;
-      processFaceEvents(m_face, ndn::time::milliseconds(10));
+      processFaceEvents(m_face, pythonFacePollTimeout());
     }
     output.status = false;
     output.error = "local deadline";
@@ -1934,7 +1962,7 @@ PyServiceResponse
         }
       }
       py::gil_scoped_release release;
-      processFaceEvents(m_face, ndn::time::milliseconds(10));
+      processFaceEvents(m_face, pythonFacePollTimeout());
     }
     output.status = false;
     output.error = "local deadline";
@@ -2050,7 +2078,7 @@ PyServiceResponse
         }
       }
       py::gil_scoped_release release;
-      processFaceEvents(m_face, ndn::time::milliseconds(10));
+      processFaceEvents(m_face, pythonFacePollTimeout());
     }
     output.status = false;
     output.error = "local deadline";
@@ -2117,7 +2145,7 @@ PyServiceResponse
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(milliseconds);
     while (std::chrono::steady_clock::now() < deadline) {
-      processFaceEvents(m_face, ndn::time::milliseconds(10));
+      processFaceEvents(m_face, pythonFacePollTimeout());
     }
   }
 

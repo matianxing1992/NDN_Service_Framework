@@ -1295,6 +1295,15 @@ namespace ndn_service_framework
         if (m_requestLifecycleCallback) {
             m_requestLifecycleCallback(status);
         }
+        logControlTiming("user",
+                         requestLifecycleStateToString(state),
+                         requestId,
+                         {{"serviceName", status.serviceName.empty() ? "-" : status.serviceName.toUri()},
+                          {"selectedProvider", status.selectedProviderName.empty() ? "-" : status.selectedProviderName.toUri()},
+                          {"queuedDurationMs", std::to_string(status.queuedDurationMs)},
+                          {"inflightDurationMs", std::to_string(status.inflightDurationMs)},
+                          {"endToEndLatencyMs", std::to_string(status.endToEndLatencyMs)},
+                          {"cleanupReason", status.finalCleanupReason.empty() ? "-" : status.finalCleanupReason}});
     }
 
     void ServiceUser::setPendingCallTimeoutGrace(ndn::time::milliseconds grace)
@@ -6548,6 +6557,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                            std::function<void(const ndn::Buffer&)> onSuccess,
                                            std::function<void(const std::string&)> onError)
     {
+        const auto decryptEntryUs = timelineSteadyMicroseconds();
         HybridMessageEnvelope envelope;
         if (!envelope.WireDecode(envelopeBlock)) {
             return false;
@@ -6571,21 +6581,37 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
 
         auto finish = [this, envelope, messageName, serviceName, requestId,
-                       senderPrefix, onSuccess = std::move(onSuccess),
+                       senderPrefix, decryptEntryUs, onSuccess = std::move(onSuccess),
                        onError = std::move(onError)](const ndn::Buffer& key) mutable {
+            const auto keyReadyUs = timelineSteadyMicroseconds();
             const auto ad = hybridAssociatedData(messageName, envelope.getMessageType(),
                                                 requestId, serviceName, senderPrefix,
                                                 envelope.getKeyId(), envelope.getEpochId());
-            auto decryptAndPost = [this, key, envelope, ad,
+            auto decryptAndPost = [this, key, envelope, ad, requestId, keyReadyUs, decryptEntryUs,
                                    onSuccess = std::move(onSuccess),
                                    onError = std::move(onError)]() mutable {
+                const auto aesStartUs = timelineSteadyMicroseconds();
                 ndn::Buffer plaintext;
                 const bool ok = hybridAesGcmDecrypt(
                     key, envelope, ndn::span<const uint8_t>(ad.data(), ad.size()), plaintext);
+                const auto aesDoneUs = timelineSteadyMicroseconds();
+                logHybridCryptoTiming("user", "hybrid_decrypt_aes_done", requestId,
+                                      {{"messageType", envelope.getMessageType()},
+                                       {"aesUs", std::to_string(aesDoneUs - aesStartUs)},
+                                       {"entryToKeyReadyUs", std::to_string(keyReadyUs - decryptEntryUs)},
+                                       {"keyReadyToAesStartUs", std::to_string(aesStartUs - keyReadyUs)},
+                                       {"cipherBytes", std::to_string(envelope.getCipherText().size())},
+                                       {"ok", ok ? "true" : "false"}});
                 boost::asio::post(m_face.getIoContext(),
-                    [this, ok, envelope, plaintext = std::move(plaintext),
+                    [this, ok, envelope, plaintext = std::move(plaintext), requestId,
+                     aesDoneUs,
                      onSuccess = std::move(onSuccess),
                      onError = std::move(onError)]() mutable {
+                    const auto callbackUs = timelineSteadyMicroseconds();
+                    logHybridCryptoTiming("user", "hybrid_decrypt_callback_dispatch", requestId,
+                                          {{"messageType", envelope.getMessageType()},
+                                           {"aesDoneToCallbackUs", std::to_string(callbackUs - aesDoneUs)},
+                                           {"ok", ok ? "true" : "false"}});
                     if (!ok) {
                         ++m_hybridCryptoCounters.auth_decrypt_failure_count;
                         if (onError) {
@@ -6619,16 +6645,38 @@ void ServiceUser::finishRequestAckOnEventLoop(
         ndn::Buffer key;
         if (m_hybridMessageCrypto.findReceiveKey(envelope.getKeyId(), key,
                                                  m_hybridCryptoCounters)) {
+            logHybridCryptoTiming("user", "hybrid_decrypt_key_cache", requestId,
+                                  {{"messageType", envelope.getMessageType()},
+                                   {"hit", "true"},
+                                   {"entryToCacheLookupUs",
+                                    std::to_string(timelineSteadyMicroseconds() - decryptEntryUs)}});
             finish(key);
             return true;
         }
+        logHybridCryptoTiming("user", "hybrid_decrypt_key_cache", requestId,
+                              {{"messageType", envelope.getMessageType()},
+                               {"hit", "false"},
+                               {"wrappedKeyAttached",
+                                envelope.hasWrappedMessageKey() ? "true" : "false"},
+                               {"entryToCacheLookupUs",
+                                std::to_string(timelineSteadyMicroseconds() - decryptEntryUs)}});
         if (!envelope.hasWrappedMessageKey()) {
             ndn::Name keyDataName = senderPrefix;
             keyDataName.append(ndn::Name(envelope.getKeyId()));
             ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
+            const auto unwrapStartUs = timelineSteadyMicroseconds();
+            logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_start", requestId,
+                                  {{"messageType", envelope.getMessageType()},
+                                   {"source", "fetch"},
+                                   {"keyDataName", keyDataName.toUri()}});
             nacConsumer.consume(
                 keyDataName,
-                [this, envelope, finish = std::move(finish)](const ndn::Buffer& unwrappedKey) mutable {
+                [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
+                    logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_done", requestId,
+                                          {{"messageType", envelope.getMessageType()},
+                                           {"source", "fetch"},
+                                           {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
+                                           {"keyBytes", std::to_string(unwrappedKey.size())}});
                     m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
                                                           envelope.getEpochId(),
                                                           unwrappedKey);
@@ -6644,9 +6692,18 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
 
         ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
+        const auto unwrapStartUs = timelineSteadyMicroseconds();
+        logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_start", requestId,
+                              {{"messageType", envelope.getMessageType()},
+                               {"source", "attached"}});
         nacConsumer.consume(ndn::Name(envelope.getKeyId()),
                             ndn::Block(envelope.getWrappedMessageKey()),
-                            [this, envelope, finish = std::move(finish)](const ndn::Buffer& unwrappedKey) mutable {
+                            [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
+                                logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_done", requestId,
+                                                      {{"messageType", envelope.getMessageType()},
+                                                       {"source", "attached"},
+                                                       {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
+                                                       {"keyBytes", std::to_string(unwrappedKey.size())}});
                                 m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
                                                                       envelope.getEpochId(),
                                                                       unwrappedKey);

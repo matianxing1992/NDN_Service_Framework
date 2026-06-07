@@ -208,11 +208,15 @@ loadManifestSpecs(const Options& options)
 
 std::vector<NativeModelRunnerSpec>
 orderedSpecs(const NativeExecutionPlan& plan,
-             const std::map<std::string, NativeModelRunnerSpec>& specs)
+             const std::map<std::string, NativeModelRunnerSpec>& specs,
+             const std::vector<std::string>& roles)
 {
   std::vector<NativeModelRunnerSpec> ordered;
-  ordered.reserve(plan.roles.size());
-  for (const auto& role : plan.roles) {
+  ordered.reserve(roles.size());
+  for (const auto& role : roles) {
+    if (std::find(plan.roles.begin(), plan.roles.end(), role) == plan.roles.end()) {
+      throw std::runtime_error("runner role is not in native plan: " + role);
+    }
     const auto found = specs.find(role);
     if (found == specs.end()) {
       throw std::runtime_error("service manifest missing artifact for role: " + role);
@@ -288,7 +292,8 @@ main(int argc, char** argv)
 
     auto plan = loadPlan(options);
     auto specs = loadManifestSpecs(options);
-    auto runners = orderedSpecs(plan, specs);
+    const auto allowedRoles = allowedRolesForOptions(plan, options);
+    auto runners = orderedSpecs(plan, specs, allowedRoles);
 
     auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
     registerOnnxRuntimeBackend(*factory);
@@ -327,7 +332,6 @@ main(int argc, char** argv)
       config.runnerSpecs = runners;
       config.workerCount = options.workers;
 
-      const auto allowedRoles = allowedRolesForOptions(plan, options);
       provider.addCollaborationHandler(
         ndn::Name(options.serviceName),
         allowedRoles,

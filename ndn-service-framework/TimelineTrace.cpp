@@ -70,6 +70,18 @@ timelineTraceEnvEnabled()
     return envFlagEnabled("NDNSF_TIMELINE_TRACE");
 }
 
+bool
+hybridCryptoTimingEnvEnabled()
+{
+    return envFlagEnabled("NDNSF_HYBRID_CRYPTO_TIMING");
+}
+
+bool
+controlTimingEnvEnabled()
+{
+    return envFlagEnabled("NDNSF_CONTROL_TIMING");
+}
+
 void
 logTimelineTrace(const std::string& role,
                  const std::string& event,
@@ -94,6 +106,58 @@ logTimelineTrace(const std::string& role,
         os << " " << field.first << "=" << field.second;
     }
     NDN_LOG_DEBUG(os.str());
+}
+
+void
+logHybridCryptoTiming(const std::string& role,
+                      const std::string& event,
+                      const ndn::Name& requestId,
+                      TimelineFields fields)
+{
+    if (!hybridCryptoTimingEnvEnabled()) {
+        return;
+    }
+    if (!timelineTraceSampleAllows(requestId)) {
+        return;
+    }
+
+    std::ostringstream os;
+    os << "NDNSF_CRYPTO_TIMING"
+       << " role=" << role
+       << " event=" << event
+       << " steady_us=" << timelineSteadyMicroseconds()
+       << " timestamp_us=" << wallMicroseconds()
+       << " requestId=" << requestId.toUri();
+    for (const auto& field : fields) {
+        os << " " << field.first << "=" << field.second;
+    }
+    NDN_LOG_WARN(os.str());
+}
+
+void
+logControlTiming(const std::string& role,
+                 const std::string& event,
+                 const ndn::Name& requestId,
+                 TimelineFields fields)
+{
+    if (!controlTimingEnvEnabled()) {
+        return;
+    }
+    if (!timelineTraceSampleAllows(requestId)) {
+        return;
+    }
+
+    std::ostringstream os;
+    os << "NDNSF_CONTROL_TIMING"
+       << " role=" << role
+       << " event=" << event
+       << " steady_us=" << timelineSteadyMicroseconds()
+       << " timestamp_us=" << wallMicroseconds()
+       << " requestId=" << requestId.toUri();
+    for (const auto& field : fields) {
+        os << " " << field.first << "=" << field.second;
+    }
+    NDN_LOG_WARN(os.str());
 }
 
 } // namespace ndn_service_framework
