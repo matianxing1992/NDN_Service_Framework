@@ -2961,7 +2961,12 @@ def main() -> None:
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
-        default_runtime_threads = "2" if args_cli.native_providers else "1"
+        # Native providers use C++ execution and benefit from a slightly wider
+        # NDNSF control/runtime queue. A 10-request diagnostic on AI_testbed
+        # reduced warm steady p50 from ~94 ms to ~83 ms when moving native
+        # handler/ACK threads from 2 to 4. Keep the Python provider path
+        # conservative.
+        default_runtime_threads = "4" if args_cli.native_providers else "1"
         env["NDNSF_HANDLER_THREADS"] = str(
             args_cli.ndnsf_handler_threads
             if args_cli.ndnsf_handler_threads >= 0
