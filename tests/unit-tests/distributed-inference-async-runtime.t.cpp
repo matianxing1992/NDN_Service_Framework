@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <chrono>
@@ -249,6 +250,50 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
   BOOST_REQUIRE(io->publishedByScope.count("native-to-user") == 1);
   BOOST_CHECK_EQUAL(payloadText(io->publishedByScope.at("native-to-user")),
                     "native:input:input-to-native");
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeDispatchesRegisteredRoleRunner)
+{
+  RoleSpec role{
+    "/RuntimeRole",
+    {DependencyEdge{"input-to-runtime", "/Input", "/RuntimeRole",
+                    "/run/5/input/bundle/0", 1}},
+    {DependencyEdge{"runtime-to-user", "/RuntimeRole", "",
+                    "/run/5/runtime/bundle/0", 1}},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  NativeProviderRuntime runtime(1);
+  BOOST_CHECK(!runtime.hasRunner("/RuntimeRole"));
+  runtime.registerRunner(
+    "/RuntimeRole",
+    [] (const RoleExecutionContext& ctx) {
+      BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+      return std::map<std::string, TensorBundle>{
+        {"runtime-to-user", bundle("runtime-result",
+                                   "runtime:" + payloadText(ctx.inputsByScope.begin()->second))},
+      };
+    });
+  BOOST_CHECK(runtime.hasRunner("/RuntimeRole"));
+
+  const auto result = runtime.executeRoleAsync("run-5", role, io).get();
+  BOOST_REQUIRE(result.outputsByScope.count("runtime-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("runtime-to-user")),
+                    "runtime:input:input-to-runtime");
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRejectsMissingRoleRunner)
+{
+  NativeProviderRuntime runtime(1);
+  RoleSpec role{
+    "/MissingRole",
+    {},
+    {DependencyEdge{"missing-to-user", "/MissingRole", "",
+                    "/run/6/missing/bundle/0", 1}},
+  };
+  auto io = std::make_shared<FakeDependencyIo>();
+
+  BOOST_CHECK_THROW(runtime.executeRoleAsync("run-6", role, io), std::out_of_range);
 }
 
 } // namespace ndnsf::di::test

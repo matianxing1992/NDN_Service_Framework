@@ -146,6 +146,11 @@ Python 从 per-edge execution loop 中移出去，同时保留现有 Python-faci
 边界。后续 C++ ONNX Runtime backend 应实现 `NativeModelRunner`；从测试 runner
 切换到 ONNX chunk runner 时，不应该再改 provider scheduling 和 dependency I/O。
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` 是 provider
+进程 facade。它持有 worker pool 和 role-to-runner registry。Deployment/Python
+代码后续应为 provider 能执行的 roles 注册 native runners，然后把分配到的
+`RoleSpec` 提交给这个 runtime。这就是预期的 “C++ core, thin Python API” 结构。
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 是第一块面向 Core 的 adapter。它把 `DependencyIo` 映射到
 `ServiceProvider::CollaborationContext`：planned input names 用 `fetchLarge(...)`
