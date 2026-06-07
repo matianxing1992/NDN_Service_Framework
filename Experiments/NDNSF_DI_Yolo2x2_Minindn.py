@@ -497,6 +497,12 @@ def parse_key_value_line(line: str) -> dict[str, str]:
     return dict(re.findall(r"(\w+)=([^ \n]+)", line))
 
 
+def parse_trace_row(line: str) -> dict[str, str]:
+    if "[NDNSF_TRACE]" not in line:
+        return {}
+    return parse_key_value_line(line)
+
+
 def parse_numeric_prefix(value, default: float = 0.0) -> float:
     match = re.match(r"[-+]?[0-9]+(?:\.[0-9]+)?", str(value or ""))
     return float(match.group(0)) if match else default
@@ -1278,6 +1284,154 @@ def write_client_timing_summaries(layout: str,
     )
 
 
+def write_ack_selection_timing_summaries(layout: str,
+                                         phases: list[tuple[str, Path]]) -> None:
+    requests: dict[tuple[str, str], dict] = {}
+    events_of_interest = {
+        "COLLAB_REQUEST_CREATED",
+        "REQUEST_PUBLISHED",
+        "FIRST_ACK_OBSERVED",
+        "ACK_MATCHED_PENDING_CALL",
+        "ACK_SELECTION_COLLAB_ROLE_COVERAGE_CHECK",
+        "ACK_SELECTION_EARLY_COLLAB_ROLE_COVERAGE",
+        "ACK_SELECTION_EARLY_LEARNED_PROVIDERS",
+        "ACK_SELECTION_BEGIN",
+        "ACK_SELECTION_END",
+        "PROVIDER_SELECTED",
+        "CUSTOM_ACK_SELECTED",
+        "SELECTION_PUBLISHED",
+        "RESPONSE_RECEIVED",
+        "CALLBACK_FIRED",
+        "REQUEST_PENDING_COMPLETED",
+        "REQUEST_PENDING_TIMEOUT",
+    }
+
+    for phase, path in phases:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "[NDNSF_TRACE]" not in line:
+                continue
+            row = parse_trace_row(line)
+            event = row.get("event", "")
+            request_id = row.get("requestId", "")
+            if event not in events_of_interest or not request_id:
+                continue
+            key = (phase, request_id)
+            item = requests.setdefault(key, {
+                "phase": phase,
+                "requestId": request_id,
+                "log": path.name,
+                "events": [],
+                "acks": [],
+                "selections": [],
+            })
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            row["timestamp_us"] = timestamp_us
+            item["events"].append(row)
+            if event == "ACK_MATCHED_PENDING_CALL":
+                item["acks"].append(row)
+            if event == "SELECTION_PUBLISHED":
+                item["selections"].append(row)
+
+    rows = []
+    for item in requests.values():
+        events = item["events"]
+
+        def first_event(name: str):
+            found = [row for row in events if row.get("event") == name]
+            return min(found, key=lambda row: row.get("timestamp_us", 0)) if found else None
+
+        def event_time(name: str) -> int:
+            row = first_event(name)
+            return int(row.get("timestamp_us", 0)) if row else 0
+
+        publish_us = event_time("REQUEST_PUBLISHED")
+        first_ack_us = event_time("FIRST_ACK_OBSERVED")
+        ack_times = [
+            int(row.get("timestamp_us", 0))
+            for row in item["acks"]
+            if int(row.get("timestamp_us", 0)) > 0
+        ]
+        selection_begin_us = event_time("ACK_SELECTION_BEGIN")
+        selection_end_us = event_time("ACK_SELECTION_END")
+        first_selection_us = min(
+            [int(row.get("timestamp_us", 0)) for row in item["selections"]]
+            or [0]
+        )
+        response_us = event_time("RESPONSE_RECEIVED")
+        callback_us = event_time("CALLBACK_FIRED")
+        early_role_us = event_time("ACK_SELECTION_EARLY_COLLAB_ROLE_COVERAGE")
+        early_learned_us = event_time("ACK_SELECTION_EARLY_LEARNED_PROVIDERS")
+        last_ack_us = max(ack_times) if ack_times else 0
+
+        def delta_ms(end_us: int, start_us: int) -> float:
+            if end_us <= 0 or start_us <= 0 or end_us < start_us:
+                return 0.0
+            return (end_us - start_us) / 1000.0
+
+        row = {
+            "phase": item["phase"],
+            "requestId": item["requestId"],
+            "log": item["log"],
+            "ackCount": len(item["acks"]),
+            "selectionCount": len(item["selections"]),
+            "publishedToFirstAckMs": delta_ms(first_ack_us, publish_us),
+            "publishedToLastAckMs": delta_ms(last_ack_us, publish_us),
+            "lastAckToSelectionBeginMs": delta_ms(selection_begin_us, last_ack_us),
+            "selectionBeginToFirstSelectionMs": delta_ms(first_selection_us, selection_begin_us),
+            "selectionBeginToEndMs": delta_ms(selection_end_us, selection_begin_us),
+            "firstSelectionToResponseMs": delta_ms(response_us, first_selection_us),
+            "responseToCallbackMs": delta_ms(callback_us, response_us),
+            "earlyRoleCoverage": early_role_us > 0,
+            "earlyLearnedProviders": early_learned_us > 0,
+            "events": events,
+        }
+        rows.append(row)
+
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "ackCount": summarize_numeric([float(row["ackCount"]) for row in rows]),
+        "publishedToFirstAckMs": summarize_numeric([
+            row["publishedToFirstAckMs"] for row in rows
+        ]),
+        "publishedToLastAckMs": summarize_numeric([
+            row["publishedToLastAckMs"] for row in rows
+        ]),
+        "lastAckToSelectionBeginMs": summarize_numeric([
+            row["lastAckToSelectionBeginMs"] for row in rows
+        ]),
+        "selectionBeginToFirstSelectionMs": summarize_numeric([
+            row["selectionBeginToFirstSelectionMs"] for row in rows
+        ]),
+        "firstSelectionToResponseMs": summarize_numeric([
+            row["firstSelectionToResponseMs"] for row in rows
+        ]),
+        "earlyRoleCoverageCount": sum(1 for row in rows if row["earlyRoleCoverage"]),
+        "earlyLearnedProvidersCount": sum(1 for row in rows if row["earlyLearnedProviders"]),
+        "rows": rows,
+    }
+    path = OUT / "ack-selection-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_ACK_SELECTION_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"ack_count_p50={summary['ackCount']['p50']:.0f} "
+        f"published_to_first_ack_p50_ms={summary['publishedToFirstAckMs']['p50']:.2f} "
+        f"published_to_last_ack_p50_ms={summary['publishedToLastAckMs']['p50']:.2f} "
+        f"last_ack_to_selection_begin_p50_ms="
+        f"{summary['lastAckToSelectionBeginMs']['p50']:.2f} "
+        f"selection_begin_to_first_selection_p50_ms="
+        f"{summary['selectionBeginToFirstSelectionMs']['p50']:.2f} "
+        f"first_selection_to_response_p50_ms="
+        f"{summary['firstSelectionToResponseMs']['p50']:.2f} "
+        f"early_role_coverage={summary['earlyRoleCoverageCount']} "
+        f"path={path}"
+    )
+
+
 def _load_json_file(path: Path, default):
     if not path.exists():
         return default
@@ -1631,6 +1785,8 @@ def main() -> None:
                         help="Use the experimental true-NxM YOLO output-shard prototype")
     parser.add_argument("--parallel-detect-scale-shards", action="store_true",
                         help="Use the YOLO Detect-scale DAG splitter")
+    parser.add_argument("--control-trace", action="store_true",
+                        help="Enable NDNSF user control-plane TRACE logs and write ACK/selection timing stats")
     args_cli = parser.parse_args()
     if args_cli.parallel_output_shards and args_cli.parallel_detect_scale_shards:
         raise SystemExit("--parallel-output-shards and --parallel-detect-scale-shards are mutually exclusive")
@@ -1707,7 +1863,7 @@ def main() -> None:
         providers=5,
         provider_nodes="ucla,wustl,uiuc,umich,neu",
         serve_provider_certs=False,
-        debug_ack=False,
+        debug_ack=args_cli.control_trace,
         timeline_trace=False,
         dk_bootstrap_check=False,
         crypto_diagnostics=False,
@@ -1930,6 +2086,11 @@ def main() -> None:
             ("cold", user_log),
             ("warm", warm_log),
         ])
+        if args_cli.control_trace:
+            write_ack_selection_timing_summaries(layout, [
+                ("cold", user_log),
+                ("warm", warm_log),
+            ])
         write_provider_timing_summaries(layout, providers)
         write_end_to_end_breakdown(layout)
         provider_text = "\n".join(

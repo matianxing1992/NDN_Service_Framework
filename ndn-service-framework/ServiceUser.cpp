@@ -151,73 +151,6 @@ namespace ndn_service_framework
                    isTruthyEnv("NDNSF_SVS_ASYNC_PUBLISH");
         }
 
-        std::string
-        bufferToText(const ndn::Buffer& payload)
-        {
-            return std::string(reinterpret_cast<const char*>(payload.data()),
-                               payload.size());
-        }
-
-        std::string
-        fieldFromSemicolonText(const std::string& text, const std::string& key)
-        {
-            const std::string prefix = key + "=";
-            size_t begin = 0;
-            while (begin <= text.size()) {
-                const size_t end = text.find(';', begin);
-                const size_t length =
-                    (end == std::string::npos) ? text.size() - begin : end - begin;
-                if (length >= prefix.size() &&
-                    text.compare(begin, prefix.size(), prefix) == 0) {
-                    return text.substr(begin + prefix.size(),
-                                       length - prefix.size());
-                }
-                if (end == std::string::npos) {
-                    break;
-                }
-                begin = end + 1;
-            }
-            return {};
-        }
-
-        std::vector<std::string>
-        splitCommaTextList(const std::string& text)
-        {
-            std::vector<std::string> values;
-            size_t begin = 0;
-            while (begin <= text.size()) {
-                const size_t end = text.find(',', begin);
-                const size_t length =
-                    (end == std::string::npos) ? text.size() - begin : end - begin;
-                auto value = text.substr(begin, length);
-                const auto first = value.find_first_not_of(" \t\r\n");
-                const auto last = value.find_last_not_of(" \t\r\n");
-                if (first != std::string::npos) {
-                    values.push_back(value.substr(first, last - first + 1));
-                }
-                if (end == std::string::npos) {
-                    break;
-                }
-                begin = end + 1;
-            }
-            return values;
-        }
-
-        std::vector<std::string>
-        collaborationRolesFromAckPayload(const ndn::Buffer& payload)
-        {
-            const auto text = bufferToText(payload);
-            auto roles = splitCommaTextList(fieldFromSemicolonText(text, "roles"));
-            if (!roles.empty()) {
-                return roles;
-            }
-            auto role = fieldFromSemicolonText(text, "role");
-            if (!role.empty()) {
-                roles.push_back(std::move(role));
-            }
-            return roles;
-        }
-
         bool
         containsRole(const std::vector<SelectedParticipant>& participants,
                      const CollaborationRole& role)
@@ -4261,7 +4194,8 @@ namespace ndn_service_framework
                 const size_t learnedProviderCount =
                     pendingCall->second.learnedAckProviderCountAtPublish;
                 if (pendingCall->second.isCollaboration &&
-                    collaborationAckRoleCoverageSatisfied(pendingCall->second)) {
+                    collaborationAckRoleCoverageSatisfied(parsedV2->requestId,
+                                                          pendingCall->second)) {
                     pendingCall->second.ackWindowExpired = true;
                     NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_COLLAB_ROLE_COVERAGE timestamp_us="
                               << nowMicroseconds()
@@ -4481,7 +4415,8 @@ namespace ndn_service_framework
                 const size_t learnedProviderCount =
                     pendingCall->second.learnedAckProviderCountAtPublish;
                 if (pendingCall->second.isCollaboration &&
-                    collaborationAckRoleCoverageSatisfied(pendingCall->second)) {
+                    collaborationAckRoleCoverageSatisfied(requestId,
+                                                          pendingCall->second)) {
                     pendingCall->second.ackWindowExpired = true;
                     NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_COLLAB_ROLE_COVERAGE timestamp_us="
                               << nowMicroseconds()
@@ -4652,6 +4587,7 @@ namespace ndn_service_framework
     }
 
     bool ServiceUser::collaborationAckRoleCoverageSatisfied(
+        const ndn::Name& requestId,
         const PendingCall& pendingCall) const
     {
         if (!pendingCall.isCollaboration ||
@@ -4659,41 +4595,37 @@ namespace ndn_service_framework
             return false;
         }
 
-        std::map<std::string, size_t> requiredProvidersByRole;
-        for (const auto& role : pendingCall.collaborationPlan.roles) {
-            if (role.role.empty() || role.minProviders == 0) {
-                continue;
-            }
-            requiredProvidersByRole[role.role] = role.minProviders;
-        }
-        if (requiredProvidersByRole.empty()) {
+        if (!pendingCall.collaborationPlan.participantSelector) {
             return false;
         }
 
-        std::map<std::string, std::set<std::string>> ackProvidersByRole;
+        std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
         for (const auto& storedAck : pendingCall.requestAcks) {
-            if (!storedAck.message.getStatus()) {
-                continue;
-            }
-            const auto ackRoles =
-                collaborationRolesFromAckPayload(storedAck.message.getPayload());
-            for (const auto& role : ackRoles) {
-                if (requiredProvidersByRole.find(role) ==
-                    requiredProvidersByRole.end()) {
-                    continue;
-                }
-                ackProvidersByRole[role].insert(storedAck.providerName.toUri());
-            }
+            candidates.push_back({storedAck.providerName,
+                                  storedAck.serviceName,
+                                  storedAck.requestId,
+                                  storedAck.message});
         }
-
-        for (const auto& entry : requiredProvidersByRole) {
-            const auto providers = ackProvidersByRole.find(entry.first);
-            if (providers == ackProvidersByRole.end() ||
-                providers->second.size() < entry.second) {
-                return false;
-            }
-        }
-        return true;
+        const auto selected =
+            pendingCall.collaborationPlan.participantSelector->select(
+                candidates,
+                pendingCall.collaborationPlan.roles);
+        std::string validationError;
+        const bool valid =
+            validateCollaborationSelection(pendingCall.collaborationPlan,
+                                           selected,
+                                           validationError);
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_COLLAB_ROLE_COVERAGE_CHECK timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " candidateCount=" << candidates.size()
+                  << " selectedCount=" << selected.size()
+                  << " roleCount="
+                  << pendingCall.collaborationPlan.roles.size()
+                  << " valid=" << valid
+                  << " reason="
+                  << (validationError.empty() ? "-" : validationError));
+        return valid;
     }
 
     bool ServiceUser::evaluateAckSelection(const ndn::Name& requestId)
