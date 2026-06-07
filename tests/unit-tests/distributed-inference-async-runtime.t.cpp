@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <fstream>
 #include <future>
@@ -69,6 +70,65 @@ public:
   std::vector<std::string> sessions;
   std::vector<std::string> prefetchedScopes;
   std::map<std::string, TensorBundle> publishedByScope;
+};
+
+class BlockingDependencyIo : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override
+  {
+    auto promise = std::make_shared<std::promise<TensorBundle>>();
+    auto future = promise->get_future();
+    const auto itemKey = key(sessionId, edge);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      prefetchedNames.push_back(edge.plannedDataName);
+      const auto found = available.find(itemKey);
+      if (found != available.end()) {
+        promise->set_value(found->second);
+        return future;
+      }
+      waiters[itemKey].push_back(std::move(promise));
+    }
+    return future;
+  }
+
+  void
+  publishOutput(const std::string& sessionId,
+                const DependencyEdge& edge,
+                const TensorBundle& value) override
+  {
+    std::vector<std::shared_ptr<std::promise<TensorBundle>>> ready;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      publishedNames.push_back(edge.plannedDataName);
+      const auto itemKey = key(sessionId, edge);
+      available[itemKey] = value;
+      const auto found = waiters.find(itemKey);
+      if (found != waiters.end()) {
+        ready = std::move(found->second);
+        waiters.erase(found);
+      }
+    }
+    for (auto& promise : ready) {
+      promise->set_value(value);
+    }
+  }
+
+private:
+  static std::string
+  key(const std::string& sessionId, const DependencyEdge& edge)
+  {
+    return sessionId + "|" + edge.plannedDataName;
+  }
+
+public:
+  std::mutex mutex;
+  std::map<std::string, TensorBundle> available;
+  std::map<std::string, std::vector<std::shared_ptr<std::promise<TensorBundle>>>> waiters;
+  std::vector<std::string> prefetchedNames;
+  std::vector<std::string> publishedNames;
 };
 
 class EchoNativeRunner : public NativeModelRunner
@@ -746,6 +806,123 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
   BOOST_CHECK_EQUAL(mergeInputScopes.size(), merge.inputs.size());
   for (const auto& edge : merge.inputs) {
     BOOST_CHECK(mergeInputScopes.count(edge.scope) == 1);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
+{
+  const char* planPath = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
+  if (planPath == nullptr || std::string(planPath).empty()) {
+    BOOST_TEST_MESSAGE("NDNSF_DI_NATIVE_PLAN_JSON not set; generated provider-role smoke skipped");
+    return;
+  }
+
+  const std::string serviceName = [] {
+    const char* value = std::getenv("NDNSF_DI_NATIVE_PLAN_SERVICE");
+    if (value == nullptr || std::string(value).empty()) {
+      return std::string("/AI/YOLO/2x2Inference");
+    }
+    return std::string(value);
+  }();
+
+  std::ifstream input(planPath);
+  BOOST_REQUIRE_MESSAGE(input.good(), "cannot open native plan: " << planPath);
+  const auto plan = nativeExecutionPlanForServiceFromJson(input, serviceName);
+  BOOST_REQUIRE(plan.roles.size() >= 4);
+
+  NativeProviderAssignment assignment;
+  for (const auto& role : plan.roles) {
+    assignment.providerByRole[role] = "/example/provider/" + trimSlashes(role);
+  }
+
+  std::map<std::string, RoleSpec> roleSpecs;
+  for (const auto& role : plan.roles) {
+    roleSpecs.emplace(role, roleSpecFor(plan, role, "/generated-provider-run", assignment));
+  }
+  BOOST_REQUIRE(roleSpecs.count("/Backbone") == 1);
+  BOOST_REQUIRE(roleSpecs.count("/Merge") == 1);
+  BOOST_REQUIRE_GE(roleSpecs.at("/Merge").inputs.size(), 2);
+
+  auto io = std::make_shared<BlockingDependencyIo>();
+  NativeProviderRuntime runtime(plan.roles.size());
+  std::mutex observedMutex;
+  std::set<std::string> mergeInputScopes;
+
+  for (const auto& item : roleSpecs) {
+    runtime.registerRunner(
+      item.first,
+      [&roleSpecs, &observedMutex, &mergeInputScopes] (const RoleExecutionContext& ctx) {
+        const auto found = roleSpecs.find(ctx.role);
+        BOOST_REQUIRE(found != roleSpecs.end());
+        const auto& role = found->second;
+
+        if (ctx.role == "/Backbone") {
+          BOOST_CHECK(ctx.inputsByScope.empty());
+          std::map<std::string, TensorBundle> outputs;
+          for (const auto& edge : role.outputs) {
+            outputs.emplace(edge.scope, bundle(edge.scope, "features:" + edge.scope));
+          }
+          return outputs;
+        }
+
+        if (ctx.role.find("/Head/Shard/") == 0) {
+          BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+          std::map<std::string, TensorBundle> outputs;
+          for (const auto& edge : role.outputs) {
+            outputs.emplace(edge.scope, bundle(edge.scope, "head:" + ctx.role));
+          }
+          return outputs;
+        }
+
+        if (ctx.role == "/Merge") {
+          BOOST_REQUIRE_GE(ctx.inputsByScope.size(), 2);
+          std::lock_guard<std::mutex> lock(observedMutex);
+          for (const auto& inputScope : ctx.inputsByScope) {
+            mergeInputScopes.insert(inputScope.first);
+          }
+          return std::map<std::string, TensorBundle>{};
+        }
+
+        return std::map<std::string, TensorBundle>{};
+      });
+  }
+
+  std::vector<std::future<ProviderRoleResult>> futures;
+  futures.reserve(roleSpecs.size());
+  for (const auto& item : roleSpecs) {
+    futures.push_back(runtime.executeRoleAsync("generated-provider-run", item.second, io));
+  }
+
+  std::map<std::string, ProviderRoleResult> resultsByRole;
+  for (std::size_t i = 0; i < plan.roles.size(); ++i) {
+    auto result = futures[i].get();
+    resultsByRole.emplace(result.timing.role, std::move(result));
+  }
+
+  BOOST_REQUIRE(resultsByRole.count("/Backbone") == 1);
+  BOOST_REQUIRE(resultsByRole.count("/Merge") == 1);
+  BOOST_CHECK(resultsByRole.at("/Backbone").inputTimings.empty());
+  BOOST_CHECK_EQUAL(resultsByRole.at("/Merge").inputTimings.size(),
+                    roleSpecs.at("/Merge").inputs.size());
+
+  {
+    std::lock_guard<std::mutex> lock(observedMutex);
+    BOOST_CHECK_EQUAL(mergeInputScopes.size(), roleSpecs.at("/Merge").inputs.size());
+    for (const auto& edge : roleSpecs.at("/Merge").inputs) {
+      BOOST_CHECK(mergeInputScopes.count(edge.scope) == 1);
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(io->mutex);
+    BOOST_CHECK_GE(io->prefetchedNames.size(), plan.dependencies.size());
+    BOOST_CHECK_GE(io->publishedNames.size(), plan.dependencies.size());
+    for (const auto& name : io->prefetchedNames) {
+      BOOST_CHECK(!name.empty());
+    }
+    for (const auto& name : io->publishedNames) {
+      BOOST_CHECK(!name.empty());
+    }
   }
 }
 

@@ -182,11 +182,15 @@ def main() -> int:
         cpp_env["NDNSF_DI_NATIVE_PLAN_JSON"] = str(
             generated_policy_dir / "native-execution-plan.json")
         cpp_env["NDNSF_DI_NATIVE_PLAN_SERVICE"] = "/AI/YOLO/2x2Inference"
-        run([
-            str(unit_tests),
-            "--run_test=NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime",
-            "--log_level=test_suite",
-        ], cpp_env)
+        for test_case in [
+            "NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime",
+            "NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers",
+        ]:
+            run([
+                str(unit_tests),
+                f"--run_test={test_case}",
+                "--log_level=test_suite",
+            ], cpp_env)
 
     print(
         "YOLO_LAYOUT_SMOKE_OK "
