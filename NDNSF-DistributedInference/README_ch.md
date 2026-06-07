@@ -168,17 +168,24 @@ executor。这已经能证明 native hot path 可以在不穿过 Python wrapper 
 仍是后续工作。
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` 是 provider
-进程 facade。它持有 worker pool 和 role-to-runner registry。Deployment/Python
-代码后续应为 provider 能执行的 roles 注册 native runners，然后把分配到的
-`RoleSpec` 提交给这个 runtime。这就是预期的 “C++ core, thin Python API” 结构。
+进程 facade，具体实现在 `NativeProviderRuntime.cpp`。它持有 worker pool 和
+role-to-runner registry。Deployment/Python 代码后续应为 provider 能执行的 roles
+注册 native runners，然后把分配到的 `RoleSpec` 提交给这个 runtime。这就是预期的
+“C++ core, thin Python API” 结构。
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp` 是 native
-provider skeleton 边界。它把 generated execution plan、provider assignment、
-`DependencyIo`、runner factory 和 provider runtime 组合起来。后续 provider
-executable 应加载 generated plan，根据 artifact metadata 注册 role runners，再通过
-这个 session 执行被分配的 roles，而不是在应用里手写这些组合逻辑。它现在已经支持
-source-role initial input、dependency-driven intermediate roles 和 final role result
-publication。
+provider skeleton 边界，具体实现在 `NativeProviderSession.cpp`。它把 generated
+execution plan、provider assignment、`DependencyIo`、runner factory 和 provider
+runtime 组合起来。后续真正服务网络请求的 provider executable 应加载 generated
+plan，根据 artifact metadata 注册 role runners，再通过这个 session 执行被分配的
+roles，而不是在应用里手写这些组合逻辑。它现在已经支持 source-role initial input、
+dependency-driven intermediate roles 和 final role result publication。
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/` 下每个 header 现在都有对应 `.cpp`
+translation unit。`ProviderRoleWorker`、`NativeProviderRuntime`、
+`NativeProviderSession` 这类有状态 runtime 类已经把实现移出 header。较小的 codec
+和 plan helper 仍保留必要 inline helper，但对应 `.cpp` 会被 native DI targets 编译，
+使 C++ 项目结构不再只是 header-only scaffold。
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp` 把这个
 session 形态适配到 `ServiceProvider::CollaborationContext`。它会为每次请求构造
@@ -223,6 +230,26 @@ build/examples/di-native-plan-manifest-smoke \
   /tmp/ndnsf-di-yolo-policy/service-manifest.json \
   /AI/YOLO/2x2Inference
 ```
+
+`examples/DI_NativeProviderExecutable.cpp` 是第一版 native provider executable 边界。
+当前 `--check-only` 模式会加载 `native-execution-plan.json`，加载
+`service-manifest.json`，通过构造 `OnnxRuntimeModelRunner` materialize 本地 ONNX
+artifact path，并把每个 role 注册进 `NativeProviderSession`：
+
+```bash
+./waf build --targets=di-native-provider
+build/examples/di-native-provider \
+  --plan /tmp/ndnsf-di-yolo-policy/native-execution-plan.json \
+  --manifest /tmp/ndnsf-di-yolo-policy/service-manifest.json \
+  --service /AI/YOLO/2x2Inference \
+  --provider /NDNSF-DistributeInference/example/provider/A \
+  --workers 4 \
+  --check-only
+```
+
+这个 executable 还没有真正服务 NDNSF network requests。它现在的意义是证明 generated
+deployment artifacts 可以创建一个带真实 ONNX runners 的 native C++ provider
+session。
 
 顶层 `wscript` 会检查可选的 `onnxruntime` pkg-config package。存在 C++ dev 包时，
 unit-test target 会链接 native adapter；不存在时，注册 `onnxruntime` backend 仍会
@@ -272,10 +299,11 @@ wire behavior。
   native-execution-plan.json 中的 tensor-level dependency metadata
   C++ service-manifest loader to NativeModelRunnerSpec
   C++ generated plan + service manifest smoke
+  native provider executable check-only path for local artifacts
   source role 的 request initial-input injection
 
 仍缺：
-  能加载 plan + manifest specs 并服务 NDNSF requests 的 native provider executable
+  native provider executable 的 NDNSF network serving mode
   从 repo/largeDataReference materialize artifact 的 C++ 路径
   Python NPZ activation bridge to native tensor-bundle codec
   用 native provider 直接替换当前 MiniNDN Python provider processes

@@ -140,6 +140,18 @@ def build(bld):
     if not bld.env.WITH_EXAMPLES:
         return
 
+    di_native_session_sources = bld.path.parent.ant_glob([
+        'NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
+    ])
+
     bld.program(name='generic-dynamic-user-provider',
                 target='generic-dynamic-user-provider',
                 source=(["generic-dynamic-user-provider.cpp"] +
@@ -183,6 +195,7 @@ def build(bld):
     bld.program(name='di-native-provider-session-smoke',
                 target='di-native-provider-session-smoke',
                 source=(["DI_NativeProviderSessionSmoke.cpp"] +
+                        di_native_session_sources +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/BloomFilter.cpp',
@@ -202,9 +215,23 @@ def build(bld):
 
     bld.program(name='di-native-plan-manifest-smoke',
                 target='di-native-plan-manifest-smoke',
-                source=["DI_NativePlanManifestSmoke.cpp"],
+                source=(["DI_NativePlanManifestSmoke.cpp"] +
+                        di_native_session_sources),
                 includes=['..', '../ndn-service-framework'],
                 use='BOOST',
+                cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread'],
+                install_path=None)
+
+    bld.program(name='di-native-provider',
+                target='di-native-provider',
+                source=(["DI_NativeProviderExecutable.cpp"] +
+                        di_native_session_sources +
+                        bld.path.parent.ant_glob([
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                        ])),
+                includes=['..', '../ndn-service-framework'],
+                use='BOOST ONNXRUNTIME',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -212,12 +239,14 @@ def build(bld):
     bld.program(name='di-native-onnxruntime-smoke',
                 target='di-native-onnxruntime-smoke',
                 source=(["DI_NativeOnnxRuntimeSmoke.cpp"] +
+                        di_native_session_sources +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
                         ])),
                 includes=['..', '../ndn-service-framework'],
                 use='ONNXRUNTIME',
-                cxxflags=['-fPIC'],
+                cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread'],
                 install_path=None)
 
     bld.install_files('/usr/local/bin', ['trust-schema.conf', 'trust-any.conf', 'example_muas.policies'])

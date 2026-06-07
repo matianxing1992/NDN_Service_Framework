@@ -179,6 +179,7 @@ def main() -> int:
     if args.cpp_native_plan_smoke:
         unit_tests = REPO / "build" / "unit-tests"
         plan_manifest_smoke = REPO / "build" / "examples" / "di-native-plan-manifest-smoke"
+        native_provider = REPO / "build" / "examples" / "di-native-provider"
         if not unit_tests.exists():
             raise SystemExit(
                 "build/unit-tests is required for --cpp-native-plan-smoke; "
@@ -188,6 +189,10 @@ def main() -> int:
                 "build/examples/di-native-plan-manifest-smoke is required for "
                 "--cpp-native-plan-smoke; run "
                 "./waf build --targets=di-native-plan-manifest-smoke first")
+        if not native_provider.exists():
+            raise SystemExit(
+                "build/examples/di-native-provider is required for "
+                "--cpp-native-plan-smoke; run ./waf build --targets=di-native-provider first")
         cpp_env = dict(env)
         cpp_env["NDNSF_DI_NATIVE_PLAN_JSON"] = str(
             generated_policy_dir / "native-execution-plan.json")
@@ -207,6 +212,20 @@ def main() -> int:
             str(generated_policy_dir / "native-execution-plan.json"),
             str(generated_policy_dir / "service-manifest.json"),
             "/AI/YOLO/2x2Inference",
+        ], cpp_env)
+        run([
+            str(native_provider),
+            "--plan",
+            str(generated_policy_dir / "native-execution-plan.json"),
+            "--manifest",
+            str(generated_policy_dir / "service-manifest.json"),
+            "--service",
+            "/AI/YOLO/2x2Inference",
+            "--provider",
+            "/NDNSF-DistributeInference/example/provider/A",
+            "--workers",
+            "4",
+            "--check-only",
         ], cpp_env)
 
     print(

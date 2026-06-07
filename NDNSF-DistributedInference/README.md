@@ -190,19 +190,27 @@ richer shape negotiation, and full service-level provider executables remain
 follow-up work.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` is the
-provider process facade. It owns the worker pool and the role-to-runner
-registry. Deployment/Python code should eventually register native runners for
-the roles a provider can execute, then submit assigned `RoleSpec` objects to
-this runtime. That is the intended "C++ core, thin Python API" shape.
+provider process facade, with implementation in `NativeProviderRuntime.cpp`.
+It owns the worker pool and the role-to-runner registry. Deployment/Python code
+should eventually register native runners for the roles a provider can execute,
+then submit assigned `RoleSpec` objects to this runtime. That is the intended
+"C++ core, thin Python API" shape.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp` is the
-native provider skeleton boundary. It combines a generated execution plan,
-provider assignment, `DependencyIo`, runner factory, and provider runtime. A
-future provider executable should load the generated plan, register role
-runners from artifact metadata, then execute assigned roles through this
-session instead of wiring those pieces by hand. It already supports source-role
-initial inputs, dependency-driven intermediate roles, and final role result
-publication.
+native provider skeleton boundary, with implementation in
+`NativeProviderSession.cpp`. It combines a generated execution plan, provider
+assignment, `DependencyIo`, runner factory, and provider runtime. A future
+network-serving provider should load the generated plan, register role runners
+from artifact metadata, then execute assigned roles through this session
+instead of wiring those pieces by hand. It already supports source-role initial
+inputs, dependency-driven intermediate roles, and final role result publication.
+
+Every header under `NDNSF-DistributedInference/cpp/ndnsf-di/` now has a matching
+`.cpp` translation unit. Stateful runtime classes such as
+`ProviderRoleWorker`, `NativeProviderRuntime`, and `NativeProviderSession` keep
+their implementation out of the header. Smaller codec/plan helper headers still
+use inline helpers where appropriate, but their corresponding `.cpp` files are
+compiled by the native DI targets so the C++ project has a real source layout.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp` adapts that
 session shape to `ServiceProvider::CollaborationContext`. It constructs the
@@ -249,6 +257,27 @@ build/examples/di-native-plan-manifest-smoke \
   /tmp/ndnsf-di-yolo-policy/service-manifest.json \
   /AI/YOLO/2x2Inference
 ```
+
+`examples/DI_NativeProviderExecutable.cpp` is the first native provider
+executable boundary. Its current `--check-only` mode loads
+`native-execution-plan.json`, loads `service-manifest.json`, materializes local
+ONNX artifact paths by constructing `OnnxRuntimeModelRunner` instances, and
+registers every role in a `NativeProviderSession`:
+
+```bash
+./waf build --targets=di-native-provider
+build/examples/di-native-provider \
+  --plan /tmp/ndnsf-di-yolo-policy/native-execution-plan.json \
+  --manifest /tmp/ndnsf-di-yolo-policy/service-manifest.json \
+  --service /AI/YOLO/2x2Inference \
+  --provider /NDNSF-DistributeInference/example/provider/A \
+  --workers 4 \
+  --check-only
+```
+
+This executable does not yet serve NDNSF network requests. It is the checkpoint
+that proves generated deployment artifacts can create a native C++ provider
+session with real ONNX runners.
 
 The top-level `wscript` checks for an optional `onnxruntime` pkg-config package.
 When the C++ development package is present, the unit-test target links the
@@ -304,10 +333,11 @@ Done:
   tensor-level dependency metadata in native-execution-plan.json
   C++ service-manifest loader to NativeModelRunnerSpec
   C++ generated plan + service manifest smoke
+  native provider executable check-only path for local artifacts
   request initial-input injection for source roles
 
 Still missing:
-  native provider executable that loads plan + manifest specs and serves NDNSF requests
+  native provider executable NDNSF network serving mode
   C++ artifact materialization from repo/largeDataReference
   Python NPZ activation bridge to the native tensor-bundle codec
   direct MiniNDN replacement of the current Python provider processes
