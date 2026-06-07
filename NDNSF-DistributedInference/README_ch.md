@@ -156,6 +156,12 @@ backend；真正的 ONNX Runtime C++ adapter 仍是后续 backend implementation
 代码后续应为 provider 能执行的 roles 注册 native runners，然后把分配到的
 `RoleSpec` 提交给这个 runtime。这就是预期的 “C++ core, thin Python API” 结构。
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp` 是 native
+provider skeleton 边界。它把 generated execution plan、provider assignment、
+`DependencyIo`、runner factory 和 provider runtime 组合起来。后续 provider
+executable 应加载 generated plan，根据 artifact metadata 注册 role runners，再通过
+这个 session 执行被分配的 roles，而不是在应用里手写这些组合逻辑。
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` 是 deployment
 plan 的 C++ 镜像。它把 role/dependency metadata、session/provider assignment
 转换成 role-local `RoleSpec`，其中包含 deterministic planned data names 和

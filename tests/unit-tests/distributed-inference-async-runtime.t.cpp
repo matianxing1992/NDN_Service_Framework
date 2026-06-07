@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <chrono>
@@ -977,6 +978,118 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
       BOOST_CHECK(!name.empty());
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderSessionSkeleton)
+{
+  const char* planPath = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
+  if (planPath == nullptr || std::string(planPath).empty()) {
+    BOOST_TEST_MESSAGE("NDNSF_DI_NATIVE_PLAN_JSON not set; generated provider-session smoke skipped");
+    return;
+  }
+
+  const std::string serviceName = [] {
+    const char* value = std::getenv("NDNSF_DI_NATIVE_PLAN_SERVICE");
+    if (value == nullptr || std::string(value).empty()) {
+      return std::string("/AI/YOLO/2x2Inference");
+    }
+    return std::string(value);
+  }();
+
+  std::ifstream input(planPath);
+  BOOST_REQUIRE_MESSAGE(input.good(), "cannot open native plan: " << planPath);
+  const auto plan = nativeExecutionPlanForServiceFromJson(input, serviceName);
+  BOOST_REQUIRE(plan.roles.size() >= 4);
+
+  NativeProviderAssignment assignment;
+  for (const auto& role : plan.roles) {
+    assignment.providerByRole[role] = "/example/provider/" + trimSlashes(role);
+  }
+
+  auto io = std::make_shared<BlockingDependencyIo>();
+  auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
+  std::mutex observedMutex;
+  std::set<std::string> mergeInputScopes;
+
+  factory->registerBackend(
+    "test-backend",
+    [&observedMutex, &mergeInputScopes] (const NativeModelRunnerSpec& spec) {
+      return makeNativeModelRunner(
+        [spec, &observedMutex, &mergeInputScopes] (const RoleExecutionContext& ctx) {
+          BOOST_CHECK_EQUAL(ctx.role, spec.role);
+          if (ctx.role == "/Backbone") {
+            BOOST_CHECK(ctx.inputsByScope.empty());
+            std::map<std::string, TensorBundle> outputs;
+            for (const auto& item : spec.metadata) {
+              if (item.first.find("outputScope.") == 0) {
+                outputs.emplace(item.second, bundle(item.second, "features:" + item.second));
+              }
+            }
+            return outputs;
+          }
+          if (ctx.role.find("/Head/Shard/") == 0) {
+            BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+            std::map<std::string, TensorBundle> outputs;
+            for (const auto& item : spec.metadata) {
+              if (item.first.find("outputScope.") == 0) {
+                outputs.emplace(item.second, bundle(item.second, "head:" + ctx.role));
+              }
+            }
+            return outputs;
+          }
+          if (ctx.role == "/Merge") {
+            BOOST_REQUIRE_GE(ctx.inputsByScope.size(), 2);
+            std::lock_guard<std::mutex> lock(observedMutex);
+            for (const auto& inputScope : ctx.inputsByScope) {
+              mergeInputScopes.insert(inputScope.first);
+            }
+            return std::map<std::string, TensorBundle>{};
+          }
+          return std::map<std::string, TensorBundle>{};
+        });
+    });
+
+  NativeProviderSession session(plan, assignment, io, factory, plan.roles.size());
+  for (const auto& role : plan.roles) {
+    const auto spec = session.roleSpec(role, "generated-session-run");
+    NativeModelRunnerSpec runnerSpec;
+    runnerSpec.role = role;
+    runnerSpec.kind = "onnx-model";
+    runnerSpec.backend = "test-backend";
+    runnerSpec.path = "/tmp/" + trimSlashes(role) + ".onnx";
+    for (std::size_t i = 0; i < spec.outputs.size(); ++i) {
+      runnerSpec.metadata["outputScope." + std::to_string(i)] = spec.outputs[i].scope;
+    }
+    session.registerRunner(runnerSpec);
+    BOOST_CHECK(session.hasRunner(role));
+  }
+
+  std::vector<std::future<ProviderRoleResult>> futures;
+  futures.reserve(plan.roles.size());
+  for (const auto& role : plan.roles) {
+    futures.push_back(session.executeRoleAsync("generated-session-run", role));
+  }
+
+  std::map<std::string, ProviderRoleResult> resultsByRole;
+  for (auto& future : futures) {
+    auto result = future.get();
+    resultsByRole.emplace(result.timing.role, std::move(result));
+  }
+
+  BOOST_REQUIRE(resultsByRole.count("/Backbone") == 1);
+  BOOST_REQUIRE(resultsByRole.count("/Merge") == 1);
+  BOOST_CHECK(resultsByRole.at("/Backbone").inputTimings.empty());
+  BOOST_CHECK_GE(resultsByRole.at("/Merge").inputTimings.size(), 2);
+
+  {
+    std::lock_guard<std::mutex> lock(observedMutex);
+    BOOST_CHECK_EQUAL(mergeInputScopes.size(),
+                      resultsByRole.at("/Merge").inputTimings.size());
+  }
+
+  BOOST_CHECK_THROW(
+    session.registerRunner(NativeModelRunnerSpec{"/Unknown", "onnx-model", "test-backend", "", {}}),
+    std::out_of_range);
 }
 
 } // namespace ndnsf::di::test

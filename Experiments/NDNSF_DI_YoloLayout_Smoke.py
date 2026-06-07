@@ -185,6 +185,7 @@ def main() -> int:
         for test_case in [
             "NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime",
             "NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers",
+            "NativeExecutionPlanGeneratedJsonDrivesProviderSessionSkeleton",
         ]:
             run([
                 str(unit_tests),

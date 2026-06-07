@@ -175,6 +175,13 @@ registry. Deployment/Python code should eventually register native runners for
 the roles a provider can execute, then submit assigned `RoleSpec` objects to
 this runtime. That is the intended "C++ core, thin Python API" shape.
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp` is the
+native provider skeleton boundary. It combines a generated execution plan,
+provider assignment, `DependencyIo`, runner factory, and provider runtime. A
+future provider executable should load the generated plan, register role
+runners from artifact metadata, then execute assigned roles through this
+session instead of wiring those pieces by hand.
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
 deployment plan in C++. It converts role/dependency metadata plus a
 session/provider assignment into role-local `RoleSpec` objects with
