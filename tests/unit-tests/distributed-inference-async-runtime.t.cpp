@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <chrono>
@@ -507,6 +508,25 @@ BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
   BOOST_CHECK_THROW(
     factory.create(NativeModelRunnerSpec{"/Missing", "onnx-model", "onnxruntime", "", {}}),
     std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendReportsDisabledWhenNotCompiled)
+{
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  BOOST_CHECK(factory.hasBackend("onnxruntime"));
+
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  BOOST_CHECK_THROW(
+    factory.create(NativeModelRunnerSpec{
+      "/OnnxRole",
+      "onnx-model",
+      "onnxruntime",
+      "/tmp/model.onnx",
+      {},
+    }),
+    std::runtime_error);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(NativeProviderRuntimeDispatchesRegisteredRoleRunner)

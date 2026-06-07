@@ -110,6 +110,15 @@ def configure(conf):
     conf.check_cfg(package="gtkmm-3.0", uselib_store="gtkmm", 
             args=['--cflags', '--libs'], pkg_config_path=pkg_config_path)
 
+    conf.check_cfg(package='onnxruntime', args=['--cflags', '--libs'],
+                   uselib_store='ONNXRUNTIME', mandatory=False,
+                   pkg_config_path=pkg_config_path)
+    conf.env.HAVE_ONNXRUNTIME_CPP = bool(
+        conf.env.CXXFLAGS_ONNXRUNTIME or
+        conf.env.INCLUDES_ONNXRUNTIME or
+        conf.env.LIB_ONNXRUNTIME or
+        conf.env.LIBPATH_ONNXRUNTIME)
+
     boost_libs = ['system']
     if conf.env.WITH_TESTS:
         boost_libs.append('unit_test_framework')
@@ -128,6 +137,7 @@ def configure(conf):
     conf.env.prepend_value('STLIBPATH', ['.'])
 
     conf.define_cond('HAVE_TESTS', conf.env.WITH_TESTS)
+    conf.define_cond('HAVE_ONNXRUNTIME_CPP', conf.env.HAVE_ONNXRUNTIME_CPP)
     # The config header will contain all defines that were added using conf.define()
     # or conf.define_cond().  Everything that was added directly to conf.env.DEFINES
     # will not appear in the config header, but will instead be passed directly to the

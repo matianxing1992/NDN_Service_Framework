@@ -198,6 +198,13 @@ for this boundary. It uses a fake backend and in-memory dependency I/O to run a
 build/examples/di-native-provider-session-smoke
 ```
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp` reserves the
+C++ ONNX Runtime backend slot. The top-level `wscript` checks for an optional
+`onnxruntime` pkg-config package and records `HAVE_ONNXRUNTIME_CPP`, but the
+actual adapter is still disabled until the C++ headers/libs and implementation
+are wired together. When disabled, registering the `onnxruntime` backend gives a
+clear runtime error instead of silently falling back to Python.
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
 deployment plan in C++. It converts role/dependency metadata plus a
 session/provider assignment into role-local `RoleSpec` objects with

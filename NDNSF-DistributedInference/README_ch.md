@@ -177,6 +177,12 @@ smoke。它使用 fake backend 和 in-memory dependency I/O，在不启动 MiniN
 build/examples/di-native-provider-session-smoke
 ```
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp` 预留了
+C++ ONNX Runtime backend 插槽。顶层 `wscript` 会检查可选的 `onnxruntime`
+pkg-config package，并记录 `HAVE_ONNXRUNTIME_CPP`，但真实 adapter 仍保持 disabled，
+直到 C++ headers/libs 和具体实现都接好。disabled 状态下，注册 `onnxruntime`
+backend 会给出明确 runtime error，而不是悄悄退回 Python。
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` 是 deployment
 plan 的 C++ 镜像。它把 role/dependency metadata、session/provider assignment
 转换成 role-local `RoleSpec`，其中包含 deterministic planned data names 和
