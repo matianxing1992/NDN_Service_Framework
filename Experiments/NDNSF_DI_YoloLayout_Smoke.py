@@ -179,6 +179,7 @@ def main() -> int:
     if args.cpp_native_plan_smoke:
         unit_tests = REPO / "build" / "unit-tests"
         plan_manifest_smoke = REPO / "build" / "examples" / "di-native-plan-manifest-smoke"
+        plan_onnx_smoke = REPO / "build" / "examples" / "di-native-plan-onnx-smoke"
         native_provider = REPO / "build" / "examples" / "di-native-provider"
         if not unit_tests.exists():
             raise SystemExit(
@@ -189,6 +190,11 @@ def main() -> int:
                 "build/examples/di-native-plan-manifest-smoke is required for "
                 "--cpp-native-plan-smoke; run "
                 "./waf build --targets=di-native-plan-manifest-smoke first")
+        if not plan_onnx_smoke.exists():
+            raise SystemExit(
+                "build/examples/di-native-plan-onnx-smoke is required for "
+                "--cpp-native-plan-smoke; run "
+                "./waf build --targets=di-native-plan-onnx-smoke first")
         if not native_provider.exists():
             raise SystemExit(
                 "build/examples/di-native-provider is required for "
@@ -209,6 +215,12 @@ def main() -> int:
             ], cpp_env)
         run([
             str(plan_manifest_smoke),
+            str(generated_policy_dir / "native-execution-plan.json"),
+            str(generated_policy_dir / "service-manifest.json"),
+            "/AI/YOLO/2x2Inference",
+        ], cpp_env)
+        run([
+            str(plan_onnx_smoke),
             str(generated_policy_dir / "native-execution-plan.json"),
             str(generated_policy_dir / "service-manifest.json"),
             "/AI/YOLO/2x2Inference",

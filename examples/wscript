@@ -229,6 +229,19 @@ def build(bld):
                 linkflags=['-pthread'],
                 install_path=None)
 
+    bld.program(name='di-native-plan-onnx-smoke',
+                target='di-native-plan-onnx-smoke',
+                source=(["DI_NativePlanOnnxSmoke.cpp"] +
+                        di_native_session_sources +
+                        bld.path.parent.ant_glob([
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
+                        ])),
+                includes=['..', '../ndn-service-framework'],
+                use='BOOST ONNXRUNTIME',
+                cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread'],
+                install_path=None)
+
     bld.program(name='di-native-provider',
                 target='di-native-provider',
                 source=(["DI_NativeProviderExecutable.cpp"] +
