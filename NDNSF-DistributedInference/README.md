@@ -170,6 +170,13 @@ registry. Deployment/Python code should eventually register native runners for
 the roles a provider can execute, then submit assigned `RoleSpec` objects to
 this runtime. That is the intended "C++ core, thin Python API" shape.
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` mirrors the
+deployment plan in C++. It converts role/dependency metadata plus a
+session/provider assignment into role-local `RoleSpec` objects with
+deterministic planned data names and expected segment counts. This is the
+handoff point from Python policy/deployment code into the native provider
+runtime.
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 is the first Core-facing adapter. It maps `DependencyIo` to
 `ServiceProvider::CollaborationContext`: planned input names are fetched with

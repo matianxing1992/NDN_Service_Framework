@@ -151,6 +151,12 @@ Python 从 per-edge execution loop 中移出去，同时保留现有 Python-faci
 代码后续应为 provider 能执行的 roles 注册 native runners，然后把分配到的
 `RoleSpec` 提交给这个 runtime。这就是预期的 “C++ core, thin Python API” 结构。
 
+`NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp` 是 deployment
+plan 的 C++ 镜像。它把 role/dependency metadata、session/provider assignment
+转换成 role-local `RoleSpec`，其中包含 deterministic planned data names 和
+expected segment counts。这是 Python policy/deployment code 进入 native provider
+runtime 的交接点。
+
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 是第一块面向 Core 的 adapter。它把 `DependencyIo` 映射到
 `ServiceProvider::CollaborationContext`：planned input names 用 `fetchLarge(...)`

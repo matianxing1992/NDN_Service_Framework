@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
@@ -294,6 +295,66 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRejectsMissingRoleRunner)
   auto io = std::make_shared<FakeDependencyIo>();
 
   BOOST_CHECK_THROW(runtime.executeRoleAsync("run-6", role, io), std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNames)
+{
+  NativeExecutionPlan plan;
+  plan.roles = {"/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"};
+  plan.dependencies = {
+    NativeDependencySpec{
+      {"/Backbone"},
+      {"/Head/Shard/0", "/Head/Shard/1"},
+      "backbone-to-head",
+      "/activation",
+      "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+      3,
+    },
+    NativeDependencySpec{
+      {"/Head/Shard/0", "/Head/Shard/1"},
+      {"/Merge"},
+      "heads-to-merge",
+      "/activation",
+      "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+      2,
+    },
+  };
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole["/Backbone"] = "/example/provider/backbone";
+  assignment.providerByRole["/Head/Shard/0"] = "/example/provider/head0";
+  assignment.providerByRole["/Head/Shard/1"] = "/example/provider/head1";
+  assignment.providerByRole["/Merge"] = "/example/provider/merge";
+
+  const auto head0 = roleSpecFor(plan, "/Head/Shard/0", "/run-7", assignment);
+  BOOST_CHECK_EQUAL(head0.role, "/Head/Shard/0");
+  BOOST_REQUIRE_EQUAL(head0.inputs.size(), 1);
+  BOOST_CHECK_EQUAL(head0.inputs[0].scope, "backbone-to-head");
+  BOOST_CHECK_EQUAL(head0.inputs[0].producerRole, "/Backbone");
+  BOOST_CHECK_EQUAL(head0.inputs[0].consumerRole, "/Head/Shard/0");
+  BOOST_CHECK_EQUAL(head0.inputs[0].expectedSegments, 3);
+  BOOST_CHECK_EQUAL(
+    head0.inputs[0].plannedDataName,
+    "/example/provider/backbone/NDNSF/DI/ACTIVATION/run-7/backbone-to-head/Backbone/bundle/0");
+
+  const auto backbone = roleSpecFor(plan, "/Backbone", "/run-7", assignment);
+  BOOST_REQUIRE_EQUAL(backbone.outputs.size(), 2);
+  BOOST_CHECK_EQUAL(backbone.outputs[0].plannedDataName,
+                    backbone.outputs[1].plannedDataName);
+  BOOST_CHECK_EQUAL(
+    backbone.outputs[0].plannedDataName,
+    "/example/provider/backbone/NDNSF/DI/ACTIVATION/run-7/backbone-to-head/Backbone/bundle/0");
+
+  const auto merge = roleSpecFor(plan, "/Merge", "/run-7", assignment);
+  BOOST_REQUIRE_EQUAL(merge.inputs.size(), 2);
+  BOOST_CHECK_EQUAL(
+    merge.inputs[0].plannedDataName,
+    "/example/provider/head0/NDNSF/DI/ACTIVATION/run-7/heads-to-merge/Head/Shard/0/bundle/0");
+  BOOST_CHECK_EQUAL(
+    merge.inputs[1].plannedDataName,
+    "/example/provider/head1/NDNSF/DI/ACTIVATION/run-7/heads-to-merge/Head/Shard/1/bundle/0");
+
+  BOOST_CHECK_THROW(roleSpecFor(plan, "/Missing", "/run-7", assignment), std::out_of_range);
 }
 
 } // namespace ndnsf::di::test
