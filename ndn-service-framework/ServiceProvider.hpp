@@ -20,6 +20,7 @@
 #include <set>
 #include <string>
 #include <condition_variable>
+#include <deque>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -487,6 +488,7 @@ namespace ndn_service_framework{
             void insertDataIntoIMS(const ndn::Data& data);
             void insertDataIntoIMS(const ndn::Data& data,
                                    const ndn::time::milliseconds& freshness);
+            void satisfyPendingImsInterestsLocked(const ndn::Data& insertedData);
             void satisfyPendingImsInterestsLocked();
             void pruneExpiredPendingImsInterestsLocked();
 
@@ -853,7 +855,10 @@ namespace ndn_service_framework{
                 ndn::time::steady_clock::time_point requestedAt;
                 ndn::time::steady_clock::time_point expiresAt;
             };
-            std::vector<PendingImsInterest> m_pendingImsInterests;
+            std::map<ndn::Name, std::deque<PendingImsInterest>> m_pendingImsInterestsByName;
+            std::vector<PendingImsInterest> m_pendingPrefixImsInterests;
+            std::deque<ndn::Name> m_pendingImsInsertionOrder;
+            size_t m_pendingImsInterestCount = 0;
 
             OptionalServiceDiscovery m_ServiceDiscovery;
 

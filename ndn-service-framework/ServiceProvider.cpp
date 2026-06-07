@@ -2827,6 +2827,8 @@ namespace ndn_service_framework
         // runs while still allowing experiments to override it explicitly.
         const int interestLifetimeMs =
             std::max(50, intEnvOrDefault("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS", 10000));
+        const double fetchInitCwnd = static_cast<double>(
+            std::max(1, intEnvOrDefault("NDNSF_COLLAB_LARGE_FETCH_INIT_CWND", 8)));
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
         const auto fetchStart = std::chrono::steady_clock::now();
         auto fetchStats = std::make_shared<CollaborationLargeFetchTiming>();
@@ -2835,7 +2837,7 @@ namespace ndn_service_framework
         boost::asio::post(m_face.getIoContext(), [this, dataName, completed, mutex, cv, error,
                                                   encoded, requestId, keyScope, fetchTimeoutMs,
                                                   interestLifetimeMs, fetchTimingEnabled,
-                                                  fetchStart, fetchStats] {
+                                                  fetchInitCwnd, fetchStart, fetchStats] {
             ndn::Interest interest(dataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
@@ -2843,7 +2845,7 @@ namespace ndn_service_framework
             ndn::SegmentFetcher::Options options;
             options.probeLatestVersion = false;
             options.useConstantCwnd = true;
-            options.initCwnd = 4.0;
+            options.initCwnd = fetchInitCwnd;
             options.maxTimeout = ndn::time::milliseconds(fetchTimeoutMs);
             options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
             if (fetchTimingEnabled) {
@@ -2853,7 +2855,7 @@ namespace ndn_service_framework
                              << " dataName=" << dataName.toUri()
                              << " timeout_ms=" << fetchTimeoutMs
                              << " interest_lifetime_ms=" << interestLifetimeMs
-                             << " init_cwnd=4.0");
+                             << " init_cwnd=" << fetchInitCwnd);
             }
             auto fetcher = ndn::SegmentFetcher::start(m_face, interest, nac_validator, options);
             if (fetchTimingEnabled) {
@@ -2884,7 +2886,7 @@ namespace ndn_service_framework
             }
             fetcher->onComplete.connect(
                 [completed, mutex, cv, encoded, requestId, keyScope, dataName, fetchTimeoutMs,
-                 interestLifetimeMs, fetchTimingEnabled, fetchStart, fetchStats]
+                 interestLifetimeMs, fetchTimingEnabled, fetchInitCwnd, fetchStart, fetchStats]
                 (ndn::ConstBufferPtr buffer) {
                     const auto completeTime = std::chrono::steady_clock::now();
                     fetchStats->completeWall = std::chrono::system_clock::now();
@@ -2920,13 +2922,14 @@ namespace ndn_service_framework
                                      << " nacks=" << fetchStats->nacks
                                      << " segment_timeouts=" << fetchStats->timeouts
                                      << " timeout_ms=" << fetchTimeoutMs
-                                     << " interest_lifetime_ms=" << interestLifetimeMs);
+                                     << " interest_lifetime_ms=" << interestLifetimeMs
+                                     << " init_cwnd=" << fetchInitCwnd);
                     }
                     cv->notify_one();
                 });
             fetcher->onError.connect(
                 [completed, mutex, cv, error, requestId, keyScope, dataName, fetchTimeoutMs,
-                 interestLifetimeMs, fetchTimingEnabled, fetchStart, fetchStats]
+                 interestLifetimeMs, fetchTimingEnabled, fetchInitCwnd, fetchStart, fetchStats]
                 (uint32_t code, const std::string& msg) {
                     fetchStats->completeWall = std::chrono::system_clock::now();
                     const auto elapsedMs = elapsedMsSince(
@@ -2953,7 +2956,8 @@ namespace ndn_service_framework
                                      << " nacks=" << fetchStats->nacks
                                      << " segment_timeouts=" << fetchStats->timeouts
                                      << " timeout_ms=" << fetchTimeoutMs
-                                     << " interest_lifetime_ms=" << interestLifetimeMs);
+                                     << " interest_lifetime_ms=" << interestLifetimeMs
+                                     << " init_cwnd=" << fetchInitCwnd);
                     }
                     cv->notify_one();
                 });
@@ -5540,13 +5544,32 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::pruneExpiredPendingImsInterestsLocked()
     {
         const auto now = ndn::time::steady_clock::now();
-        m_pendingImsInterests.erase(
-            std::remove_if(m_pendingImsInterests.begin(),
-                           m_pendingImsInterests.end(),
+        m_pendingImsInterestCount = 0;
+        for (auto it = m_pendingImsInterestsByName.begin();
+             it != m_pendingImsInterestsByName.end();) {
+            auto& bucket = it->second;
+            bucket.erase(
+                std::remove_if(bucket.begin(), bucket.end(),
+                               [now](const PendingImsInterest& item) {
+                                   return item.expiresAt <= now;
+                               }),
+                bucket.end());
+            if (bucket.empty()) {
+                it = m_pendingImsInterestsByName.erase(it);
+            }
+            else {
+                m_pendingImsInterestCount += bucket.size();
+                ++it;
+            }
+        }
+        m_pendingPrefixImsInterests.erase(
+            std::remove_if(m_pendingPrefixImsInterests.begin(),
+                           m_pendingPrefixImsInterests.end(),
                            [now](const PendingImsInterest& item) {
                                return item.expiresAt <= now;
                            }),
-            m_pendingImsInterests.end());
+            m_pendingPrefixImsInterests.end());
+        m_pendingImsInterestCount += m_pendingPrefixImsInterests.size();
     }
 
     void ServiceProvider::rememberPendingImsInterest(const ndn::Interest& interest)
@@ -5558,34 +5581,155 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if (maxPending == 0) {
             return;
         }
-        if (m_pendingImsInterests.size() >= maxPending) {
-            m_pendingImsInterests.erase(m_pendingImsInterests.begin());
+        while (m_pendingImsInterestCount >= maxPending &&
+               !m_pendingImsInsertionOrder.empty()) {
+            const auto oldestName = m_pendingImsInsertionOrder.front();
+            m_pendingImsInsertionOrder.pop_front();
+            auto bucketIt = m_pendingImsInterestsByName.find(oldestName);
+            if (bucketIt == m_pendingImsInterestsByName.end() ||
+                bucketIt->second.empty()) {
+                continue;
+            }
+            bucketIt->second.pop_front();
+            --m_pendingImsInterestCount;
+            if (bucketIt->second.empty()) {
+                m_pendingImsInterestsByName.erase(bucketIt);
+            }
+        }
+        while (m_pendingImsInterestCount >= maxPending &&
+               !m_pendingPrefixImsInterests.empty()) {
+            m_pendingPrefixImsInterests.erase(m_pendingPrefixImsInterests.begin());
+            --m_pendingImsInterestCount;
         }
         const auto now = ndn::time::steady_clock::now();
-        m_pendingImsInterests.push_back(PendingImsInterest{
+        PendingImsInterest item{
             interest,
             now,
             now + interest.getInterestLifetime()
-        });
+        };
+        if (interest.getCanBePrefix()) {
+            m_pendingPrefixImsInterests.push_back(std::move(item));
+        }
+        else {
+            m_pendingImsInterestsByName[interest.getName()].push_back(std::move(item));
+            m_pendingImsInsertionOrder.push_back(interest.getName());
+        }
+        ++m_pendingImsInterestCount;
         if (isTruthyEnv("NDNSF_PENDING_IMS_TIMING")) {
             NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=remember"
                          << " interest=" << interest.getName().toUri()
                          << " lifetime_ms=" << interest.getInterestLifetime().count()
-                         << " pending=" << m_pendingImsInterests.size());
+                         << " pending=" << m_pendingImsInterestCount);
         }
         NDN_LOG_TRACE("Pending IMS Interest: " << interest.getName().toUri()
-                      << " pending=" << m_pendingImsInterests.size());
+                      << " pending=" << m_pendingImsInterestCount);
+    }
+
+    void ServiceProvider::satisfyPendingImsInterestsLocked(const ndn::Data& insertedData)
+    {
+        std::vector<ndn::Data> toSend;
+        const auto now = ndn::time::steady_clock::now();
+        const bool timingEnabled = isTruthyEnv("NDNSF_PENDING_IMS_TIMING");
+
+        auto satisfyItem = [&](const PendingImsInterest& item) {
+            if (item.expiresAt <= now || !item.interest.matchesData(insertedData)) {
+                return false;
+            }
+            if (timingEnabled) {
+                const auto ageUs = ndn::time::duration_cast<ndn::time::microseconds>(
+                    now - item.requestedAt).count();
+                NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=satisfy"
+                             << " interest=" << item.interest.getName().toUri()
+                             << " dataName=" << insertedData.getName().toUri()
+                             << " pending_age_ms=" << (ageUs / 1000.0)
+                             << " remaining_before=" << m_pendingImsInterestCount);
+            }
+            toSend.emplace_back(insertedData);
+            return true;
+        };
+
+        auto bucketIt = m_pendingImsInterestsByName.find(insertedData.getName());
+        if (bucketIt != m_pendingImsInterestsByName.end()) {
+            auto& bucket = bucketIt->second;
+            std::deque<PendingImsInterest> pending;
+            for (const auto& item : bucket) {
+                if (satisfyItem(item)) {
+                    --m_pendingImsInterestCount;
+                }
+                else if (item.expiresAt > now) {
+                    pending.push_back(item);
+                }
+                else {
+                    --m_pendingImsInterestCount;
+                }
+            }
+            if (pending.empty()) {
+                m_pendingImsInterestsByName.erase(bucketIt);
+            }
+            else {
+                bucket = std::move(pending);
+            }
+        }
+
+        std::vector<PendingImsInterest> pendingPrefix;
+        pendingPrefix.reserve(m_pendingPrefixImsInterests.size());
+        for (const auto& item : m_pendingPrefixImsInterests) {
+            if (satisfyItem(item)) {
+                --m_pendingImsInterestCount;
+            }
+            else if (item.expiresAt > now) {
+                pendingPrefix.push_back(item);
+            }
+            else {
+                --m_pendingImsInterestCount;
+            }
+        }
+        m_pendingPrefixImsInterests = std::move(pendingPrefix);
+
+        for (const auto& data : toSend) {
+            m_face.put(data);
+        }
     }
 
     void ServiceProvider::satisfyPendingImsInterestsLocked()
     {
         pruneExpiredPendingImsInterestsLocked();
-        std::vector<PendingImsInterest> pending;
-        pending.reserve(m_pendingImsInterests.size());
         std::vector<ndn::Data> toSend;
         const auto now = ndn::time::steady_clock::now();
         const bool timingEnabled = isTruthyEnv("NDNSF_PENDING_IMS_TIMING");
-        for (const auto& item : m_pendingImsInterests) {
+        for (auto it = m_pendingImsInterestsByName.begin();
+             it != m_pendingImsInterestsByName.end();) {
+            auto& bucket = it->second;
+            std::deque<PendingImsInterest> pending;
+            for (const auto& item : bucket) {
+                if (auto data = m_IMS.find(item.interest)) {
+                    if (timingEnabled) {
+                        const auto ageUs = ndn::time::duration_cast<ndn::time::microseconds>(
+                            now - item.requestedAt).count();
+                        NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=satisfy"
+                                     << " interest=" << item.interest.getName().toUri()
+                                     << " dataName=" << data->getName().toUri()
+                                     << " pending_age_ms=" << (ageUs / 1000.0)
+                                     << " remaining_before=" << m_pendingImsInterestCount);
+                    }
+                    toSend.emplace_back(*data);
+                    --m_pendingImsInterestCount;
+                }
+                else {
+                    pending.push_back(item);
+                }
+            }
+            if (pending.empty()) {
+                it = m_pendingImsInterestsByName.erase(it);
+            }
+            else {
+                bucket = std::move(pending);
+                ++it;
+            }
+        }
+        std::vector<PendingImsInterest> pendingPrefix;
+        pendingPrefix.reserve(m_pendingPrefixImsInterests.size());
+        for (const auto& item : m_pendingPrefixImsInterests) {
             if (auto data = m_IMS.find(item.interest)) {
                 if (timingEnabled) {
                     const auto ageUs = ndn::time::duration_cast<ndn::time::microseconds>(
@@ -5594,15 +5738,16 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                  << " interest=" << item.interest.getName().toUri()
                                  << " dataName=" << data->getName().toUri()
                                  << " pending_age_ms=" << (ageUs / 1000.0)
-                                 << " remaining_before=" << m_pendingImsInterests.size());
+                                 << " remaining_before=" << m_pendingImsInterestCount);
                 }
                 toSend.emplace_back(*data);
+                --m_pendingImsInterestCount;
             }
             else {
-                pending.push_back(item);
+                pendingPrefix.push_back(item);
             }
         }
-        m_pendingImsInterests = std::move(pending);
+        m_pendingPrefixImsInterests = std::move(pendingPrefix);
         for (const auto& data : toSend) {
             m_face.put(data);
         }
@@ -5612,7 +5757,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         std::lock_guard<std::mutex> lock(_cache_mutex);
         m_IMS.insert(data);
-        satisfyPendingImsInterestsLocked();
+        satisfyPendingImsInterestsLocked(data);
     }
 
     void ServiceProvider::insertDataIntoIMS(const ndn::Data& data,
@@ -5620,7 +5765,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         std::lock_guard<std::mutex> lock(_cache_mutex);
         m_IMS.insert(data, freshness);
-        satisfyPendingImsInterestsLocked();
+        satisfyPendingImsInterestsLocked(data);
     }
 
     void ServiceProvider::onPrefixRegisterFailure(const ndn::Name &prefix, const std::string &reason)

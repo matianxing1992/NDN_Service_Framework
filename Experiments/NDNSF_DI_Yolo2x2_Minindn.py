@@ -518,7 +518,7 @@ def has_planned_name(row: dict) -> bool:
 
 
 def write_provider_timing_summaries(layout: str,
-                                    providers: list[tuple[str, str, list[str]]]) -> None:
+                                    providers: list[tuple[str, str, list[str]]]) -> bool:
     onnx_rows = []
     dependency_rows = []
     output_rows = []
@@ -571,6 +571,7 @@ def write_provider_timing_summaries(layout: str,
                     "first_segment_ms",
                     "last_segment_received_ms",
                     "last_segment_validated_ms",
+                    "init_cwnd",
                 ):
                     if key in row:
                         row[key] = parse_numeric_prefix(row.get(key, "0"))
@@ -903,6 +904,70 @@ def write_provider_timing_summaries(layout: str,
         f"output_expected_segments={volume_summary['outputs']['expectedSegments']} "
         f"path={volume_path}"
     )
+    unplanned_output_rows = [
+        row for row in output_rows if not has_planned_name(row)
+    ]
+    unplanned_input_rows = [
+        row for row in dependency_rows if not has_planned_name(row)
+    ]
+    mismatched_planned_output_rows = [
+        row for row in output_rows
+        if has_planned_name(row) and row.get("data_name") != row.get("planned_name")
+    ]
+    ref_wait_input_rows = [
+        row for row in dependency_rows
+        if row.get("ref_wait_ms", 0.0) > 0.0
+    ]
+    planned_transport_ok = (
+        len(output_rows) > 0 and
+        len(dependency_rows) > 0 and
+        not unplanned_output_rows and
+        not unplanned_input_rows and
+        not mismatched_planned_output_rows and
+        not ref_wait_input_rows
+    )
+    transport_summary = {
+        "layout": layout,
+        "ok": planned_transport_ok,
+        "outputCount": len(output_rows),
+        "plannedOutputCount": len(output_rows) - len(unplanned_output_rows),
+        "unplannedOutputCount": len(unplanned_output_rows),
+        "inputCount": len(dependency_rows),
+        "plannedInputCount": len(dependency_rows) - len(unplanned_input_rows),
+        "unplannedInputCount": len(unplanned_input_rows),
+        "mismatchedPlannedOutputCount": len(mismatched_planned_output_rows),
+        "refWaitInputCount": len(ref_wait_input_rows),
+        "refWaitMs": summarize_numeric([
+            float(row.get("ref_wait_ms", 0.0)) for row in dependency_rows
+        ]),
+        "pendingImsRememberCount": sum(
+            1 for row in pending_ims_rows if row.get("event") == "remember"),
+        "pendingImsSatisfyCount": sum(
+            1 for row in pending_ims_rows if row.get("event") == "satisfy"),
+        "unplannedOutputs": unplanned_output_rows,
+        "unplannedInputs": unplanned_input_rows,
+        "mismatchedPlannedOutputs": mismatched_planned_output_rows,
+        "refWaitInputs": ref_wait_input_rows,
+    }
+    transport_path = OUT / "native-dataflow-transport-stats.json"
+    transport_path.write_text(
+        json.dumps(transport_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_NATIVE_DATAFLOW_TRANSPORT "
+        f"layout={layout} ok={str(planned_transport_ok).lower()} "
+        f"outputs={transport_summary['outputCount']} "
+        f"planned_outputs={transport_summary['plannedOutputCount']} "
+        f"unplanned_outputs={transport_summary['unplannedOutputCount']} "
+        f"inputs={transport_summary['inputCount']} "
+        f"planned_inputs={transport_summary['plannedInputCount']} "
+        f"unplanned_inputs={transport_summary['unplannedInputCount']} "
+        f"ref_wait_inputs={transport_summary['refWaitInputCount']} "
+        f"ref_wait_p50_ms={transport_summary['refWaitMs']['p50']:.2f} "
+        f"pending_ims_remember={transport_summary['pendingImsRememberCount']} "
+        f"pending_ims_satisfy={transport_summary['pendingImsSatisfyCount']} "
+        f"path={transport_path}"
+    )
     role_run_p50_sum = 0.0
     role_publish_p50_sum = 0.0
     role_session_p50_sum = 0.0
@@ -963,6 +1028,10 @@ def write_provider_timing_summaries(layout: str,
             float(row.get("interest_lifetime_ms", 0)) for row in collab_fetch_rows
             if "interest_lifetime_ms" in row
         ]),
+        "initCwnd": summarize_numeric([
+            float(row.get("init_cwnd", 0)) for row in collab_fetch_rows
+            if "init_cwnd" in row
+        ]),
         "rows": collab_fetch_rows,
     }
     collab_fetch_path = OUT / "collab-large-fetch-stats.json"
@@ -981,6 +1050,7 @@ def write_provider_timing_summaries(layout: str,
         f"segment_timeouts={collab_fetch_summary['segmentTimeouts']} "
         f"encoded_bytes_p50={collab_fetch_summary['encodedBytes']['p50']:.0f} "
         f"interest_lifetime_p50_ms={collab_fetch_summary['interestLifetimeMs']['p50']:.0f} "
+        f"init_cwnd_p50={collab_fetch_summary['initCwnd']['p50']:.0f} "
         f"path={collab_fetch_path}"
     )
 
@@ -1227,6 +1297,7 @@ def write_provider_timing_summaries(layout: str,
         f"{handler_summary['dataflow']['submittedDataflowMs']['p50']:.2f} "
         f"path={handler_path}"
     )
+    return planned_transport_ok
 
 
 def _session_from_data_name(name: str) -> str:
@@ -1639,6 +1710,18 @@ def write_plan_cache_summary(layout: str,
         f"misses={sum(row['misses'] for row in rows)} "
         f"path={path}"
     )
+    for row in rows:
+        print(
+            "YOLO_LAYOUT_PLAN_CACHE_PHASE "
+            f"layout={layout} phase={row['phase']} "
+            f"entries={len(row['entries'])} "
+            f"hits={row['hits']} "
+            f"misses={row['misses']} "
+            f"artifact_publishes={row['artifactPublishes']} "
+            f"scope_key_publishes={row['scopeKeyPublishes']} "
+            f"input_publishes={row['inputPublishes']} "
+            f"log={row['log']}"
+        )
 
 
 def user_wait_timeout(count: int, timeout_ms: int, duration_s: float = 0.0) -> int:
@@ -2091,7 +2174,7 @@ def main() -> None:
                 ("cold", user_log),
                 ("warm", warm_log),
             ])
-        write_provider_timing_summaries(layout, providers)
+        native_dataflow_transport_ok = write_provider_timing_summaries(layout, providers)
         write_end_to_end_breakdown(layout)
         provider_text = "\n".join(
             (OUT / f"{name}.log").read_text(errors="replace")
@@ -2104,7 +2187,8 @@ def main() -> None:
         if args_cli.native_providers:
             success = (
                 common_success and
-                "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY" in provider_text
+                "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY" in provider_text and
+                native_dataflow_transport_ok
             )
         else:
             success = (
