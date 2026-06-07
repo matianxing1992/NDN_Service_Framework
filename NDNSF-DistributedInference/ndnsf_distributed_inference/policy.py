@@ -77,6 +77,8 @@ class DistributedInferenceDeployment:
     policy_file: str
     service_manifest_file: str = ""
     service_manifest_sha256: str = ""
+    native_execution_plan_file: str = ""
+    native_execution_plan_sha256: str = ""
     trust_anchor_file: str = ""
     artifact_security: ArtifactSecurityPolicy = ArtifactSecurityPolicy()
 
@@ -782,6 +784,41 @@ def service_manifest(services: tuple[ServicePolicy, ...]) -> dict[str, Any]:
     }
 
 
+def native_execution_plan_spec(services: tuple[ServicePolicy, ...]) -> dict[str, Any]:
+    """Return the minimal native C++ hot-path execution plan.
+
+    This is intentionally narrower than ``service_manifest``.  Python policy
+    and deployment code may keep richer artifact/security/user-facing fields,
+    while the C++ provider runtime only needs deterministic role and dependency
+    metadata for RoleSpec construction and planned large-data names.
+    """
+
+    return {
+        "version": 1,
+        "services": [
+            {
+                "service": service.name,
+                "model": service.model_name,
+                "roles": list(service.roles),
+                "dependencies": [
+                    {
+                        "producers": list(dep.producers),
+                        "consumers": list(dep.consumers),
+                        "keyScope": dep.key_scope,
+                        "topicPrefix": dep.topic_prefix,
+                        "objectNameTemplate": dep.object_name_template,
+                        "expectedSegments": dep.expected_segments,
+                        "expectedBytes": dep.expected_bytes,
+                        "required": dep.required,
+                    }
+                    for dep in service.dependencies
+                ],
+            }
+            for service in services
+        ],
+    }
+
+
 def canonical_service_manifest_payload(services: tuple[ServicePolicy, ...]) -> bytes:
     return json.dumps(
         service_manifest(services),
@@ -801,6 +838,21 @@ def write_service_manifest(
     return digest
 
 
+def write_native_execution_plan(
+    services: tuple[ServicePolicy, ...],
+    output_file: Path,
+) -> str:
+    payload = json.dumps(
+        native_execution_plan_spec(services),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    output_file.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    output_file.with_suffix(output_file.suffix + ".sha256").write_text(digest + "\n")
+    return digest
+
+
 def write_policy_bundle(
     config_path: str | Path,
     output_dir: str | Path,
@@ -814,9 +866,11 @@ def write_policy_bundle(
     trust_schema = out / "trust-schema.conf"
     policy_file = out / "controller.policies"
     service_manifest_file = out / "service-manifest.json"
+    native_plan_file = out / "native-execution-plan.json"
     trust_schema.write_text(generate_trust_schema(config, services))
     policy_file.write_text(generate_controller_policy(config, services))
     manifest_sha256 = write_service_manifest(services, service_manifest_file)
+    native_plan_sha256 = write_native_execution_plan(services, native_plan_file)
     return DistributedInferenceDeployment(
         application=str(config.get("application", "distributed-inference")),
         controller=str(config["controller"]),
@@ -828,6 +882,8 @@ def write_policy_bundle(
         policy_file=str(policy_file),
         service_manifest_file=str(service_manifest_file),
         service_manifest_sha256=manifest_sha256,
+        native_execution_plan_file=str(native_plan_file),
+        native_execution_plan_sha256=native_plan_sha256,
         trust_anchor_file=trust_anchor_file(config),
         artifact_security=parse_artifact_security(config),
     )
@@ -859,6 +915,8 @@ def main(argv: list[str] | None = None) -> int:
     deployment = write_policy_bundle(args.config, args.out_dir)
     print("Generated trust schema:", deployment.trust_schema)
     print("Generated controller policy:", deployment.policy_file)
+    print("Generated native execution plan:",
+          str(Path(args.out_dir) / "native-execution-plan.json"))
     if args.print_summary:
         print()
         print(explain_policy(deployment), end="")

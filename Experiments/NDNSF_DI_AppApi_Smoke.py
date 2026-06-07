@@ -107,6 +107,44 @@ def main() -> int:
         except ValueError as exc:
             assert "no authorized provider: /Stage/1" in str(exc)
 
+        native_plan_config = copy.deepcopy(config)
+        native_service = native_plan_config["services"][0]
+        native_service["roles"] = ["/Stage/0", "/Stage/1"]
+        native_service["dependencies"] = [
+            {
+                "producers": ["/Stage/0"],
+                "consumers": ["/Stage/1"],
+                "key_scope": "stage0-to-stage1",
+                "topic_prefix": "/activation",
+                "object_name_template": (
+                    "{producerProvider}/NDNSF/DI/ACTIVATION/"
+                    "{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
+                ),
+                "expected_segments": 3,
+                "expected_bytes": 17000,
+            }
+        ]
+        native_service["providers"][0]["roles"] = "all"
+        native_plan_path = root / "native-plan-policy.json"
+        native_plan_path.write_text(json.dumps(native_plan_config), encoding="utf-8")
+        native_deployment = load_or_generate_deployment(
+            native_plan_path,
+            root / "native-plan-generated",
+        )
+        native_plan_file = Path(native_deployment.native_execution_plan_file)
+        assert native_plan_file.exists()
+        assert Path(str(native_plan_file) + ".sha256").exists()
+        native_plan = json.loads(native_plan_file.read_text(encoding="utf-8"))
+        native_service_plan = native_plan["services"][0]
+        assert native_plan["version"] == 1
+        assert native_service_plan["service"] == "/AI/Toy/Inference"
+        assert native_service_plan["roles"] == ["/Stage/0", "/Stage/1"]
+        native_dependency = native_service_plan["dependencies"][0]
+        assert native_dependency["keyScope"] == "stage0-to-stage1"
+        assert native_dependency["objectNameTemplate"].startswith("{producerProvider}/NDNSF")
+        assert native_dependency["expectedSegments"] == 3
+        assert native_dependency["expectedBytes"] == 17000
+
         client = APPClient(deployment, client=None)
         policy_text = Path(deployment.policy_file).read_text(encoding="utf-8")
         assert "for /example/di/users/alice" in policy_text

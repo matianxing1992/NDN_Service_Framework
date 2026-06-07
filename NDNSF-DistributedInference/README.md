@@ -1249,12 +1249,22 @@ Generated files:
 /tmp/ndnsf-di-yolo-policy/controller.policies
 /tmp/ndnsf-di-yolo-policy/service-manifest.json
 /tmp/ndnsf-di-yolo-policy/service-manifest.json.sha256
+/tmp/ndnsf-di-yolo-policy/native-execution-plan.json
+/tmp/ndnsf-di-yolo-policy/native-execution-plan.json.sha256
 ```
 
 The service manifest is a canonical JSON form of the service-to-model and
 service-to-dependency mapping. The `.sha256` file is only a local fingerprint
 for deployment tooling; it is not a security signature. Security comes from
 publishing the manifest as NDN Data and validating the Data signature.
+
+`native-execution-plan.json` is narrower than the service manifest. It is the
+handoff artifact for the C++ hot path and contains only the fields needed to
+construct native `RoleSpec` objects: service name, roles, dependency
+producers/consumers, key scopes, topic prefixes, deterministic object-name
+templates, expected segment counts, and expected byte counts. It is generated
+from the policy; deployment operators should edit the policy or splitter
+inputs, not this file.
 
 The client can publish the manifest through NDNSF:
 

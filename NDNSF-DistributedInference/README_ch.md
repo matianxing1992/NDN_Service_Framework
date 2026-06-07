@@ -1098,9 +1098,17 @@ artifact-security 状态。这个命令使用和生成部署文件相同的 pars
 /tmp/ndnsf-di-yolo-policy/controller.policies
 /tmp/ndnsf-di-yolo-policy/service-manifest.json
 /tmp/ndnsf-di-yolo-policy/service-manifest.json.sha256
+/tmp/ndnsf-di-yolo-policy/native-execution-plan.json
+/tmp/ndnsf-di-yolo-policy/native-execution-plan.json.sha256
 ```
 
 Service manifest 是 service-to-model 和 service-to-dependency 映射的 canonical JSON 形式。`.sha256` 文件只是部署工具的本地 fingerprint，不是安全签名。安全性来自把 manifest 作为 NDN Data 发布并验证 Data signature。
+
+`native-execution-plan.json` 比 service manifest 更窄。它是交给 C++ hot path 的
+handoff artifact，只包含构造 native `RoleSpec` 所需的字段：service name、roles、
+dependency producers/consumers、key scopes、topic prefixes、deterministic
+object-name templates、expected segment counts 和 expected byte counts。它由
+policy 生成；部署者应该修改 policy 或 splitter 输入，而不是手工改这个文件。
 
 Client 可以通过 NDNSF 发布 manifest：
 

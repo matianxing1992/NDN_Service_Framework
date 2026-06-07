@@ -89,6 +89,7 @@ from .policy import (
     SandboxPolicy,
     load_config,
     load_or_generate_deployment,
+    native_execution_plan_spec,
     write_policy_bundle,
 )
 from .split_planner import (
@@ -164,6 +165,7 @@ __all__ = [
     "load_npz_payload",
     "load_config",
     "load_or_generate_deployment",
+    "native_execution_plan_spec",
     "npz_payload",
     "nxm_stage_frontier_dependencies",
     "nxm_stage_roles",
