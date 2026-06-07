@@ -841,6 +841,7 @@ namespace ndn_service_framework{
                                            uint64_t timestampUs);
             size_t getRecentAckProviderCount(const ndn::Name& serviceName,
                                              uint64_t nowUs);
+            bool collaborationAckRoleCoverageSatisfied(const PendingCall& pendingCall) const;
             void scheduleRequestTimeout(const ndn::Name& requestId, int timeoutMs);
             void finalizeTimedOutPendingCall(const ndn::Name& requestId);
             void scheduleSelectionStatusQuery(const ndn::Name& requestId,
