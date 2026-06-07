@@ -103,6 +103,8 @@ def main() -> int:
                         help="Validate the experimental true-NxM YOLO output-shard prototype")
     parser.add_argument("--parallel-detect-scale-shards", action="store_true",
                         help="Validate the YOLO Detect-scale DAG splitter")
+    parser.add_argument("--cpp-native-plan-smoke", action="store_true",
+                        help="Run the C++ native runtime smoke against the generated native plan")
     args = parser.parse_args()
 
     layout = args.layout.strip().lower().replace("*", "x")
@@ -170,6 +172,21 @@ def main() -> int:
             policy,
             generated_policy_dir / "native-execution-plan.json",
         )
+    if args.cpp_native_plan_smoke:
+        unit_tests = REPO / "build" / "unit-tests"
+        if not unit_tests.exists():
+            raise SystemExit(
+                "build/unit-tests is required for --cpp-native-plan-smoke; "
+                "run ./waf build --targets=unit-tests first")
+        cpp_env = dict(env)
+        cpp_env["NDNSF_DI_NATIVE_PLAN_JSON"] = str(
+            generated_policy_dir / "native-execution-plan.json")
+        cpp_env["NDNSF_DI_NATIVE_PLAN_SERVICE"] = "/AI/YOLO/2x2Inference"
+        run([
+            str(unit_tests),
+            "--run_test=NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime",
+            "--log_level=test_suite",
+        ], cpp_env)
 
     print(
         "YOLO_LAYOUT_SMOKE_OK "

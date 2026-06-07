@@ -8,6 +8,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <future>
 #include <sstream>
 #include <map>
@@ -642,6 +644,109 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonDrivesAsyncFrontierRuntime)
   BOOST_CHECK_GE(durationMs(timingByRole.at("/Head/1").finishedAt,
                             timingByRole.at("/Merge").startedAt),
                  0.0);
+}
+
+BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
+{
+  const char* planPath = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
+  if (planPath == nullptr || std::string(planPath).empty()) {
+    BOOST_TEST_MESSAGE("NDNSF_DI_NATIVE_PLAN_JSON not set; generated-plan smoke skipped");
+    return;
+  }
+
+  const std::string serviceName = [] {
+    const char* value = std::getenv("NDNSF_DI_NATIVE_PLAN_SERVICE");
+    if (value == nullptr || std::string(value).empty()) {
+      return std::string("/AI/YOLO/2x2Inference");
+    }
+    return std::string(value);
+  }();
+
+  std::ifstream input(planPath);
+  BOOST_REQUIRE_MESSAGE(input.good(), "cannot open native plan: " << planPath);
+  const auto plan = nativeExecutionPlanForServiceFromJson(input, serviceName);
+  BOOST_REQUIRE(plan.roles.size() >= 4);
+
+  NativeProviderAssignment assignment;
+  for (const auto& role : plan.roles) {
+    assignment.providerByRole[role] = "/example/provider/" + trimSlashes(role);
+  }
+
+  std::vector<RoleSpec> roles;
+  roles.reserve(plan.roles.size());
+  for (const auto& role : plan.roles) {
+    roles.push_back(roleSpecFor(plan, role, "/generated-plan-run", assignment));
+  }
+
+  const auto merge = roleSpecFor(plan, "/Merge", "/generated-plan-run", assignment);
+  BOOST_REQUIRE_GE(merge.inputs.size(), 2);
+  std::set<std::string> mergeScopes;
+  for (const auto& edge : merge.inputs) {
+    BOOST_CHECK(!edge.scope.empty());
+    BOOST_CHECK(!edge.plannedDataName.empty());
+    mergeScopes.insert(edge.scope);
+  }
+  BOOST_CHECK_EQUAL(mergeScopes.size(), merge.inputs.size());
+
+  std::mutex observedMutex;
+  std::set<std::string> mergeInputScopes;
+  AsyncDataflowRuntime runtime(4);
+  const auto result = runtime.run(
+    "generated-plan-run",
+    roles,
+    {},
+    [&] (const RoleExecutionContext& ctx) {
+      if (ctx.role == "/Backbone") {
+        BOOST_CHECK(ctx.inputsByScope.empty());
+        std::map<std::string, TensorBundle> outputs;
+        for (const auto& role : roles) {
+          if (role.role == ctx.role) {
+            for (const auto& edge : role.outputs) {
+              outputs.emplace(edge.scope, bundle(edge.scope, "features"));
+            }
+            break;
+          }
+        }
+        return outputs;
+      }
+      if (ctx.role.find("/Head/Shard/") == 0) {
+        BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+        std::map<std::string, TensorBundle> outputs;
+        for (const auto& role : roles) {
+          if (role.role == ctx.role) {
+            for (const auto& edge : role.outputs) {
+              outputs.emplace(edge.scope, bundle(edge.scope, ctx.role));
+            }
+            break;
+          }
+        }
+        return outputs;
+      }
+
+      if (ctx.role == "/Merge") {
+        BOOST_REQUIRE_GE(ctx.inputsByScope.size(), 2);
+        std::lock_guard<std::mutex> lock(observedMutex);
+        for (const auto& item : ctx.inputsByScope) {
+          mergeInputScopes.insert(item.first);
+        }
+        return std::map<std::string, TensorBundle>{};
+      }
+
+      return std::map<std::string, TensorBundle>{};
+    });
+
+  std::map<std::string, RoleTiming> timingByRole;
+  for (const auto& timing : result.roleTimings) {
+    timingByRole.emplace(timing.role, timing);
+  }
+  BOOST_REQUIRE(timingByRole.count("/Backbone") == 1);
+  BOOST_REQUIRE(timingByRole.count("/Merge") == 1);
+
+  std::lock_guard<std::mutex> lock(observedMutex);
+  BOOST_CHECK_EQUAL(mergeInputScopes.size(), merge.inputs.size());
+  for (const auto& edge : merge.inputs) {
+    BOOST_CHECK(mergeInputScopes.count(edge.scope) == 1);
+  }
 }
 
 } // namespace ndnsf::di::test
