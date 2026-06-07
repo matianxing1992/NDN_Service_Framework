@@ -849,6 +849,7 @@ namespace ndn_service_framework{
             struct PendingImsInterest
             {
                 ndn::Interest interest;
+                ndn::time::steady_clock::time_point requestedAt;
                 ndn::time::steady_clock::time_point expiresAt;
             };
             std::vector<PendingImsInterest> m_pendingImsInterests;

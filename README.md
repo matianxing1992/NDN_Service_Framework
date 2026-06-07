@@ -306,6 +306,18 @@ for large-data references, repo objects, and distributed-inference activation
 objects. It does not change the Request/ACK/Selection/Response protocol, Data
 names, signatures, encryption, or application callbacks.
 
+Provider collaboration large-data fetches default to a 10-second Interest
+lifetime (`NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS`). This is intentionally
+longer than a normal low-latency command timeout because distributed-inference
+roles may prefetch a deterministic activation name before the upstream role has
+finished publishing the segments. Experiments can still lower or raise this
+value explicitly with the environment variable.
+Set `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` to emit Core-level SegmentFetcher
+timing lines for these collaboration large-data fetches. The DI MiniNDN
+regression parses those lines into `collab-large-fetch-stats.json` so the
+application-level dependency wait can be compared with native segmented fetch
+time.
+
 The default automatic response threshold is 6000 bytes and can be changed or
 disabled with environment variables:
 

@@ -8,6 +8,7 @@ import secrets
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Lock
+from time import perf_counter
 from typing import Callable, Iterable
 
 from ndnsf import CollaborationDependency, CollaborationRole, ServiceResponse, ServiceUser
@@ -110,6 +111,10 @@ def _jsonable(value):
         if isinstance(value, (list, tuple)):
             return [_jsonable(item) for item in value]
         return repr(value)
+
+
+def _elapsed_ms(start: float) -> float:
+    return (perf_counter() - start) * 1000.0
 
 
 class DistributedInferenceClient:
@@ -241,10 +246,14 @@ class DistributedInferenceClient:
         timeout_ms: int = 30000,
         freshness_ms: int = 60000,
     ) -> InferenceResult:
+        total_start = perf_counter()
+        plan_start = perf_counter()
         published = self._published_plan_references(
             plan,
             freshness_ms=freshness_ms,
         )
+        plan_ms = _elapsed_ms(plan_start)
+        request_start = perf_counter()
         response: ServiceResponse = self.user.request_collaboration(
             plan.service,
             payload,
@@ -256,6 +265,18 @@ class DistributedInferenceClient:
             role_scopes=plan.role_scopes(),
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
+        )
+        request_ms = _elapsed_ms(request_start)
+        total_ms = _elapsed_ms(total_start)
+        print(
+            "NDNSF_DI_CLIENT_INFERENCE_TIMING "
+            f"service={plan.service} "
+            f"mode=dynamic "
+            f"plan_ms={plan_ms:.2f} "
+            f"request_ms={request_ms:.2f} "
+            f"total_ms={total_ms:.2f} "
+            f"status={'true' if response.status else 'false'}",
+            flush=True,
         )
         return InferenceResult(
             status=response.status,
@@ -317,12 +338,16 @@ class DistributedInferenceClient:
     ) -> InferenceResult:
         """Request a service whose model layout/artifacts are already deployed."""
 
+        total_start = perf_counter()
+        scope_start = perf_counter()
         scope_key_data_names = self.publish_scope_keys_for_scopes(
             service,
             key_scopes,
             object_label_prefix="inference-scope-key",
             freshness_ms=freshness_ms,
         )
+        scope_ms = _elapsed_ms(scope_start)
+        request_start = perf_counter()
         response: ServiceResponse = self.user.request_collaboration(
             service,
             payload,
@@ -337,6 +362,18 @@ class DistributedInferenceClient:
             role_scopes=role_scopes,
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
+        )
+        request_ms = _elapsed_ms(request_start)
+        total_ms = _elapsed_ms(total_start)
+        print(
+            "NDNSF_DI_CLIENT_INFERENCE_TIMING "
+            f"service={service} "
+            f"mode=deployed "
+            f"scope_key_ms={scope_ms:.2f} "
+            f"request_ms={request_ms:.2f} "
+            f"total_ms={total_ms:.2f} "
+            f"status={'true' if response.status else 'false'}",
+            flush=True,
         )
         return InferenceResult(
             status=response.status,

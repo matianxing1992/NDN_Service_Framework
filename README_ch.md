@@ -279,6 +279,16 @@ Data 能匹配这个 Interest 时，provider 会立即回复。这是 large-data
 repo object 和 distributed-inference activation object 的传输优化。它不改变
 Request/ACK/Selection/Response 协议、Data 名字、签名、加密或应用 callback。
 
+Provider collaboration large-data fetch 默认使用 10 秒 Interest lifetime
+（`NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS`）。这个默认值刻意比普通低延迟命令
+timeout 更长，因为 distributed-inference role 可能会在上游 role 完成 segments
+发布前，就预取一个确定性 activation name。实验仍然可以通过这个环境变量显式调低
+或调高该值。
+设置 `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` 时，Core 会为这些 collaboration
+large-data fetch 输出 SegmentFetcher 级 timing 日志。DI MiniNDN 回归会把这些日志解析到
+`collab-large-fetch-stats.json`，这样可以把应用层 dependency wait 和 native segmented
+fetch 时间分开比较。
+
 自动 response reference 的默认阈值是 6000 bytes，可以用环境变量调整或关闭：
 
 ```bash

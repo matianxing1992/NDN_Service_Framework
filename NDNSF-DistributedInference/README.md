@@ -1,8 +1,28 @@
 # NDNSF-DistributedInference
 
-NDNSF-DistributedInference is a Python library built on top of the generic
-NDNSF Python API. It provides higher-level APIs for distributed AI inference
-without adding AI-specific semantics to NDNSF Core.
+NDNSF-DistributedInference is an application-layer distributed inference
+runtime built on NDNSF. The current user-facing API and examples are still
+Python-first, but the performance direction is C++-first: hot-path scheduling,
+dependency dataflow, prefetch, worker dispatch, and future ONNX Runtime
+execution should run in native C++ and call NDNSF Core directly. Python should
+remain a thin API, deployment, GUI, and experiment layer.
+
+The repository therefore contains two layers today:
+
+```text
+Stable APP-facing layer
+  Python APPClient / APPProvider / APPController / APPDeployment
+  policy generation, MiniNDN experiments, GUI, and example scripts
+
+Native hot-path migration layer
+  C++ async dataflow runtime under NDNSF-DistributedInference/cpp/
+  multi-worker role scheduling, planned dependency edges, fan-in/fan-out
+  execution, and timing hooks for future C++ ONNX/NDNSF integration
+```
+
+The long-term goal is not to wrap a Python executor around NDNSF forever.
+Instead, Python should describe the service and submit inference jobs, while
+the providers execute dependency-driven inference through native C++ workers.
 
 Layering:
 
@@ -12,7 +32,8 @@ APP
 
 NDNSF-DistributedInference
   understands model plans, roles, stages, shards, runtime artifacts,
-  backend requirements, and inference dependencies
+  backend requirements, and inference dependencies; current public API is
+  Python, while the hot-path runtime is migrating to C++
 
 NDNSF-DistributedRepo
   stores model/runtime/intermediate objects with controlled replication,
@@ -20,7 +41,7 @@ NDNSF-DistributedRepo
 
 NDNSF Python Wrapper
   exposes generic service invocation, collaboration, encrypted artifacts,
-  segmented large data, and provider callbacks
+  segmented large data, and provider callbacks for Python clients/tools
 
 NDNSF Core
   handles Face, SVS, NAC-ABE, signing, permissions, selection, workers,
@@ -101,6 +122,34 @@ dependency graph. A sequential chain of chunks is not considered true NxM
 parallel sharding. Splitters can use `nxm_stage_roles(...)` and
 `nxm_stage_frontier_dependencies(...)` as the generic stage-frontier skeleton,
 then fill in model-specific tensor names, merge semantics, and artifacts.
+
+### 2.1 Native Hot-Path Runtime Direction
+
+The Python executor remains useful for experiments, policy validation, and
+model-specific splitter prototyping, but it is not the right long-term hot path.
+The native migration is staged:
+
+```text
+Step 1: C++ async dataflow runtime
+  Role frontier scheduling, fan-in/fan-out readiness, multi-worker execution,
+  planned dependency edge metadata, and timing records.
+
+Step 2: C++ NDNSF integration
+  Use ServiceUser/ServiceProvider, large-data references, pending Interests,
+  and deterministic activation names directly from C++ instead of crossing the
+  Python wrapper for every role callback.
+
+Step 3: C++ backend runners
+  Add ONNX Runtime and other backend adapters as role runners. Python can still
+  create policies and submit jobs, but provider execution should stay native.
+```
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp` is the first
+native building block. It is intentionally model-agnostic: a role runner can be
+an ONNX chunk, a PyTorch-exported native runner, a containerized function, or a
+future accelerator backend. The runtime only enforces dependency readiness and
+parallel execution semantics. It does not change NDNSF Request/ACK/Selection/
+Response semantics and does not add AI-specific behavior to NDNSF Core.
 
 ### 3. Create or Inspect a Policy
 
@@ -1469,14 +1518,89 @@ plan-cache-stats.json
 onnx-timing-stats.json
 dependency-input-timing-stats.json
 dependency-output-timing-stats.json
+dependency-frontier-timing-stats.json
 ```
 
 These files record end-to-end latency, node traffic counters, NFD Data counters,
 plan-cache hits, ONNX session/run time, per-edge activation reference/fetch
-timing, and per-edge activation publish timing. Use them to decide whether the
-next bottleneck is ACK/selection, artifact publication, ONNX execution,
-activation reference wait, segmented fetch, activation publish, or tensor
-decoding.
+timing, per-edge activation publish timing, and producer-output-ready to
+consumer-first-segment frontier timing. Use them to decide whether the next
+bottleneck is ACK/selection, artifact publication, ONNX execution, activation
+reference wait, segmented fetch, activation publish, frontier scheduling, or
+tensor decoding.
+
+AI-oriented MiniNDN regressions use
+`Experiments/Topology/AI_testbed.conf`, which models same-switch links as
+`delay=0.1ms bw=1000`. MiniNDN can create those sub-millisecond TC links, but
+its routing helper parses link delay as an integer millisecond value. The DI
+MiniNDN script therefore keeps the real `0.1ms` link and rounds only the
+routing-cost metadata up to `1ms`, printing
+`NDNSF_DI_ROUTING_DELAY_COST_PATCH ...` for each patched link.
+
+For the current 2x3 parallel-detect-scale baseline, use a 60-second warm
+window and explicit Python worker knobs:
+
+```bash
+PYTHONPATH=NDNSF-DistributedInference:$PYTHONPATH \
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case yolo-layout \
+  --layout 2x3 \
+  --parallel-detect-scale-shards \
+  --cold-requests 1 \
+  --warm-requests 1 \
+  --warm-duration-s 60 \
+  --warm-interval-ms 1000 \
+  --ack-timeout-ms 1500 \
+  --timeout-ms 60000 \
+  --provider-handler-workers 4 \
+  --user-async-workers 4
+```
+
+A representative run on the current development machine produced
+`YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK` with 59 warm samples, warm p50
+363.91 ms, warm p95 436.76 ms, and steady-under-1s p50 362.90 ms. The same
+run recorded about 132.90 NFD Data packets per warm inference, about
+1.49 MB of NFD `nOutBytes` per warm inference, and about 3.10 MB of total
+node traffic per warm inference. `nfd-data-stats.json` reports
+`data_packets_per_inference` and `avg_data_packet_bytes`; the byte average is
+an approximate transport-size ratio because NFD byte counters include all
+packet types on the measured faces. `traffic-stats.json` also reports total
+node bytes per inference.
+
+The same run confirmed planned-name prefetching: 360/360 dependency fetches
+used deterministic planned names, dependency `future_wait_ms` p50 was 0.02 ms,
+and dependency `prefetch_overlap_ms` p50 was 108.30 ms. In other words, the
+provider handler issued dependency Interests early and usually only waited for
+an already-running future at the point where the tensors were needed. ONNX
+itself was not the p50 bottleneck for this tiny model: ONNX run p50 was
+0.27 ms and ONNX session lookup p50 was 0.37 ms with the session cache hot.
+The remaining latency is currently dominated by NDNSF/large-data fetch,
+activation publication, and distributed-control overhead rather than local
+ONNX execution.
+
+The same script also enables `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` and writes
+`collab-large-fetch-stats.json`. That file records Core-level SegmentFetcher
+elapsed time, encoded object size, and InterestLifetime for each collaboration
+large-data fetch. Use it together with `dependency-input-timing-stats.json` to
+separate native segmented fetch cost from Python executor scheduling and tensor
+decode cost. It also enables `NDNSF_PENDING_IMS_TIMING=1` and writes
+`pending-ims-timing-stats.json`, which records whether predictable activation
+Interests reached the producer before the Data was inserted into in-memory
+storage. In the representative run above, Core-level collaboration fetches
+completed 360/360 times with no errors, elapsed p50 104.84 ms, elapsed p95
+224.18 ms, first-segment p50 98.01 ms, encoded object p50 8844 bytes, p50
+received/validated segments 2, and InterestLifetime p50 10000 ms.
+`pending-ims-timing-stats.json` showed 261 pending activation Interests that
+were later satisfied, with pending-age p50 96.26 ms. The same run also wrote
+`dependency-frontier-timing-stats.json`: 360 output/fetch pairs joined by
+deterministic Data name, producer-output-ready to consumer-first-segment p50
+12.00 ms, publish-done to consumer-first-segment p50 6.50 ms, and
+producer-output-ready to fetch-complete p50 23.00 ms. That confirms planned
+prefetch is reaching the producer before the corresponding activation Data
+exists and that, once output is ready, the first segment usually returns
+quickly. The remaining cost is therefore mostly stage-frontier scheduling,
+activation publish/control overhead, and final result delivery rather than
+ONNX execution, tensor decode, segment validation, or segment window size.
 
 When comparing cold and warm inference, keep the user process model in mind.
 If a script launches cold and warm as separate user processes, in-memory plan

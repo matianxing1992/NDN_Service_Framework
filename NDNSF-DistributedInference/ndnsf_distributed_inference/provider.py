@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import tempfile
-from time import perf_counter
+from time import perf_counter, time
 from typing import Callable, Sequence
 
 from ndnsf import (
@@ -28,6 +28,7 @@ class LargePrefetchResult:
     fetch_ms: float
     total_ms: float
     expected_segments: int = 0
+    used_planned_name: bool = False
 
 
 class DependencyPrefetcher:
@@ -70,6 +71,7 @@ class DependencyPrefetcher:
                         fetch_ms=fetch_ms,
                         total_ms=_elapsed_ms(total_start),
                         expected_segments=expected_segments,
+                        used_planned_name=True,
                     )
             ref_start = perf_counter()
             ref = self._ndnsf.wait_one(edge.key_scope, topic, ref_timeout_ms)
@@ -95,6 +97,7 @@ class DependencyPrefetcher:
                 fetch_ms=fetch_ms,
                 total_ms=_elapsed_ms(total_start),
                 expected_segments=expected_segments,
+                used_planned_name=False,
             )
 
         return self._executor.submit(fetch)
@@ -314,12 +317,44 @@ class DistributedInferenceProvider:
 
     def _run_handler(self, handler: InferenceHandler,
                      context: ProviderRuntimeContext) -> None:
+        submitted_at = perf_counter()
+        submitted_epoch_ms = int(time() * 1000)
+
+        def run() -> None:
+            started_at = perf_counter()
+            started_epoch_ms = int(time() * 1000)
+            queue_wait_ms = _elapsed_ms(submitted_at)
+            print(
+                "NDNSF_DI_PROVIDER_HANDLER_TIMING "
+                f"event=start "
+                f"session={context.ndnsf.session_id} "
+                f"role={context.role} "
+                f"queue_wait_ms={queue_wait_ms:.2f} "
+                f"submitted_epoch_ms={submitted_epoch_ms} "
+                f"start_epoch_ms={started_epoch_ms}",
+                flush=True,
+            )
+            try:
+                handler(context)
+            finally:
+                ended_epoch_ms = int(time() * 1000)
+                print(
+                    "NDNSF_DI_PROVIDER_HANDLER_TIMING "
+                    f"event=end "
+                    f"session={context.ndnsf.session_id} "
+                    f"role={context.role} "
+                    f"handler_ms={_elapsed_ms(started_at):.2f} "
+                    f"start_epoch_ms={started_epoch_ms} "
+                    f"end_epoch_ms={ended_epoch_ms}",
+                    flush=True,
+                )
+
         if self._handler_executor is None:
-            handler(context)
+            run()
             return
         # CollaborationContext is owned by the active NDNSF callback. Wait for
         # the Python worker to complete before returning to keep it valid.
-        self._handler_executor.submit(handler, context).result()
+        self._handler_executor.submit(run).result()
 
     def _local_execution(
         self,

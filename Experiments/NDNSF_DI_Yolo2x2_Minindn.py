@@ -74,6 +74,37 @@ def wait_log(path: Path, needle: str, timeout: int = 30, proc=None) -> bool:
     return False
 
 
+def prepare_fractional_delay_routing_costs(net) -> None:
+    """Keep sub-ms Mininet links but give MiniNDN routing integer costs.
+
+    MiniNDN can create TC links such as delay=0.1ms, but its
+    NdnRoutingHelper currently parses the topology metadata with int(...).
+    The real link has already been created by this point, so only the routing
+    cost metadata needs to be rounded up to a valid integer millisecond value.
+    """
+    patched = []
+    for src, dst, info_dict in net.topo.links(withInfo=True):
+        delay = str(info_dict.get("delay", "0ms"))
+        if not delay.endswith("ms"):
+            continue
+        value = delay[:-2]
+        try:
+            delay_ms = float(value)
+        except ValueError:
+            continue
+        if delay_ms <= 0 or delay_ms.is_integer():
+            continue
+        route_cost_ms = max(1, int(delay_ms + 0.999999))
+        info_dict["ndnsf_actual_delay"] = delay
+        info_dict["delay"] = f"{route_cost_ms}ms"
+        patched.append((src, dst, delay, info_dict["delay"]))
+    for src, dst, actual, route_cost in patched:
+        log(
+            "NDNSF_DI_ROUTING_DELAY_COST_PATCH "
+            f"link={src}:{dst} actual_delay={actual} route_cost_delay={route_cost}"
+        )
+
+
 def validate_repo_manifest_references(path: Path) -> None:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     roles = manifest.get("roles", {})
@@ -178,6 +209,7 @@ def write_traffic_delta(layout: str, phase: str,
         f"request_count={max(1, request_count)} "
         f"rx_bytes={total_rx} tx_bytes={total_tx} "
         f"total_node_bytes={total_rx + total_tx} "
+        f"total_node_bytes_per_inference={(total_rx + total_tx) / max(1, request_count):.1f} "
         f"total_node_bytes_per_request={(total_rx + total_tx) / max(1, request_count):.1f} "
         f"path={path}"
     )
@@ -313,9 +345,11 @@ def write_nfd_data_delta(layout: str, phase: str,
         f"layout={layout} phase={phase} request_count={request_count} "
         f"n_out_data={out_data} n_in_data={in_data} "
         f"n_out_data_per_request={out_data / request_count:.2f} "
+        f"data_packets_per_inference={out_data / request_count:.2f} "
         f"n_out_bytes={totals['nOutBytes']} "
         f"n_out_bytes_per_request={totals['nOutBytes'] / request_count:.1f} "
         f"avg_nfd_out_bytes_per_out_data={summary['avgNfdOutBytesPerOutData']:.1f} "
+        f"avg_data_packet_bytes={summary['avgNfdOutBytesPerOutData']:.1f} "
         f"path={path}"
     )
     return summary
@@ -436,11 +470,23 @@ def parse_key_value_line(line: str) -> dict[str, str]:
     return dict(re.findall(r"(\w+)=([^ \n]+)", line))
 
 
+def parse_numeric_prefix(value, default: float = 0.0) -> float:
+    match = re.match(r"[-+]?[0-9]+(?:\.[0-9]+)?", str(value or ""))
+    return float(match.group(0)) if match else default
+
+
+def parse_int_prefix(value, default: int = 0) -> int:
+    return int(parse_numeric_prefix(value, float(default)))
+
+
 def write_provider_timing_summaries(layout: str,
                                     providers: list[tuple[str, str, list[str]]]) -> None:
     onnx_rows = []
     dependency_rows = []
     output_rows = []
+    collab_fetch_rows = []
+    pending_ims_rows = []
+    handler_rows = []
     for _, name, _ in providers:
         path = OUT / f"{name}.log"
         if not path.exists():
@@ -449,7 +495,7 @@ def write_provider_timing_summaries(layout: str,
             if "NDNSF_DI_ONNX_TIMING" in line:
                 row = parse_key_value_line(line)
                 for key in ("collect_ms", "session_ms", "run_ms", "publish_ms"):
-                    row[key] = float(row.get(key, "0"))
+                    row[key] = parse_numeric_prefix(row.get(key, "0"))
                 row["providerLog"] = path.name
                 onnx_rows.append(row)
             elif "NDNSF_DI_DEPENDENCY_INPUT_TIMING" in line:
@@ -460,19 +506,70 @@ def write_provider_timing_summaries(layout: str,
                     "fetch_ms",
                     "decode_ms",
                     "prefetch_total_ms",
+                    "prefetch_overlap_ms",
                 ):
-                    row[key] = float(row.get(key, "0"))
-                row["bytes"] = int(row.get("bytes", "0"))
-                row["expected_segments"] = int(row.get("expected_segments", "0"))
+                    row[key] = parse_numeric_prefix(row.get(key, "0"))
+                row["bytes"] = parse_int_prefix(row.get("bytes", "0"))
+                row["expected_segments"] = parse_int_prefix(row.get("expected_segments", "0"))
+                row["planned_name"] = str(row.get("planned_name", "false"))
                 row["providerLog"] = path.name
                 dependency_rows.append(row)
             elif "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING" in line:
                 row = parse_key_value_line(line)
-                row["publish_ms"] = float(row.get("publish_ms", "0"))
-                row["bytes"] = int(row.get("bytes", "0"))
-                row["expected_segments"] = int(row.get("expected_segments", "0"))
+                row["publish_ms"] = parse_numeric_prefix(row.get("publish_ms", "0"))
+                row["bytes"] = parse_int_prefix(row.get("bytes", "0"))
+                row["expected_segments"] = parse_int_prefix(row.get("expected_segments", "0"))
+                row["output_ready_epoch_ms"] = parse_int_prefix(row.get("output_ready_epoch_ms", "0"))
+                row["publish_done_epoch_ms"] = parse_int_prefix(row.get("publish_done_epoch_ms", "0"))
                 row["providerLog"] = path.name
                 output_rows.append(row)
+            elif "NDNSF_COLLAB_LARGE_FETCH_TIMING" in line:
+                row = parse_key_value_line(line)
+                for key in (
+                    "elapsed_ms",
+                    "first_segment_ms",
+                    "last_segment_received_ms",
+                    "last_segment_validated_ms",
+                ):
+                    if key in row:
+                        row[key] = parse_numeric_prefix(row.get(key, "0"))
+                for key in (
+                    "encoded_bytes",
+                    "error_code",
+                    "timeout_ms",
+                    "interest_lifetime_ms",
+                    "received_segments",
+                    "validated_segments",
+                    "received_wire_bytes",
+                    "nacks",
+                    "segment_timeouts",
+                    "first_segment_epoch_ms",
+                    "complete_epoch_ms",
+                ):
+                    if key in row:
+                        row[key] = parse_int_prefix(row.get(key, "0"))
+                row["providerLog"] = path.name
+                collab_fetch_rows.append(row)
+            elif "NDNSF_PENDING_IMS_TIMING" in line:
+                row = parse_key_value_line(line)
+                for key in ("pending_age_ms",):
+                    if key in row:
+                        row[key] = parse_numeric_prefix(row.get(key, "0"))
+                for key in ("lifetime_ms", "pending", "remaining_before"):
+                    if key in row:
+                        row[key] = parse_int_prefix(row.get(key, "0"))
+                row["providerLog"] = path.name
+                pending_ims_rows.append(row)
+            elif "NDNSF_DI_PROVIDER_HANDLER_TIMING" in line:
+                row = parse_key_value_line(line)
+                for key in ("queue_wait_ms", "handler_ms"):
+                    if key in row:
+                        row[key] = parse_numeric_prefix(row.get(key, "0"))
+                for key in ("submitted_epoch_ms", "start_epoch_ms", "end_epoch_ms"):
+                    if key in row:
+                        row[key] = parse_int_prefix(row.get(key, "0"))
+                row["providerLog"] = path.name
+                handler_rows.append(row)
 
     onnx_summary = {
         "layout": layout,
@@ -550,6 +647,11 @@ def write_provider_timing_summaries(layout: str,
         "fetchMs": summarize_numeric([row["fetch_ms"] for row in dependency_rows]),
         "decodeMs": summarize_numeric([row["decode_ms"] for row in dependency_rows]),
         "prefetchTotalMs": summarize_numeric([row["prefetch_total_ms"] for row in dependency_rows]),
+        "prefetchOverlapMs": summarize_numeric([
+            row["prefetch_overlap_ms"] for row in dependency_rows
+        ]),
+        "plannedNameFetches": sum(1 for row in dependency_rows
+                                  if row.get("planned_name") == "true"),
         "rows": dependency_rows,
     }
     dep_path = OUT / "dependency-input-timing-stats.json"
@@ -561,6 +663,8 @@ def write_provider_timing_summaries(layout: str,
         f"ref_wait_p50_ms={dep_summary['referenceWaitMs']['p50']:.2f} "
         f"fetch_p50_ms={dep_summary['fetchMs']['p50']:.2f} "
         f"decode_p50_ms={dep_summary['decodeMs']['p50']:.2f} "
+        f"prefetch_overlap_p50_ms={dep_summary['prefetchOverlapMs']['p50']:.2f} "
+        f"planned_name_fetches={dep_summary['plannedNameFetches']} "
         f"total_bytes={dep_summary['totalBytes']} "
         f"path={dep_path}"
     )
@@ -575,6 +679,7 @@ def write_provider_timing_summaries(layout: str,
     for (consumer, producer), rows in sorted(dependency_by_consumer.items()):
         fetch = summarize_numeric([row["fetch_ms"] for row in rows])
         prefetch = summarize_numeric([row["prefetch_total_ms"] for row in rows])
+        overlap = summarize_numeric([row["prefetch_overlap_ms"] for row in rows])
         decode = summarize_numeric([row["decode_ms"] for row in rows])
         bytes_summary = summarize_numeric([float(row["bytes"]) for row in rows])
         edge_fetch_p50_sum += fetch["p50"]
@@ -586,6 +691,22 @@ def write_provider_timing_summaries(layout: str,
             f"count={len(rows)} bytes_p50={bytes_summary['p50']:.0f} "
             f"fetch_p50_ms={fetch['p50']:.2f} fetch_p95_ms={fetch['p95']:.2f} "
             f"prefetch_p50_ms={prefetch['p50']:.2f} "
+            f"prefetch_overlap_p50_ms={overlap['p50']:.2f} "
+            f"planned_name_fetches={sum(1 for row in rows if row.get('planned_name') == 'true')} "
+            f"decode_p50_ms={decode['p50']:.2f}"
+        )
+    dependency_by_scope = {}
+    for row in dependency_rows:
+        dependency_by_scope.setdefault(row.get("scope", "-"), []).append(row)
+    for scope, rows in sorted(dependency_by_scope.items()):
+        fetch = summarize_numeric([row["fetch_ms"] for row in rows])
+        overlap = summarize_numeric([row["prefetch_overlap_ms"] for row in rows])
+        decode = summarize_numeric([row["decode_ms"] for row in rows])
+        print(
+            "YOLO_LAYOUT_DEPENDENCY_STAGE_TIMING "
+            f"layout={layout} scope={scope} count={len(rows)} "
+            f"fetch_p50_ms={fetch['p50']:.2f} fetch_p95_ms={fetch['p95']:.2f} "
+            f"prefetch_overlap_p50_ms={overlap['p50']:.2f} "
             f"decode_p50_ms={decode['p50']:.2f}"
         )
     dependency_by_session = {}
@@ -594,12 +715,15 @@ def write_provider_timing_summaries(layout: str,
     for session, rows in sorted(dependency_by_session.items()):
         fetch_sum = sum(row["fetch_ms"] for row in rows)
         decode_sum = sum(row["decode_ms"] for row in rows)
+        overlap_sum = sum(row["prefetch_overlap_ms"] for row in rows)
         bytes_sum = sum(row["bytes"] for row in rows)
         print(
             "YOLO_LAYOUT_DEPENDENCY_SESSION_TIMING "
             f"layout={layout} session={session} count={len(rows)} "
             f"bytes={bytes_sum} "
             f"fetch_sum_ms={fetch_sum:.2f} "
+            f"prefetch_overlap_sum_ms={overlap_sum:.2f} "
+            f"planned_name_fetches={sum(1 for row in rows if row.get('planned_name') == 'true')} "
             f"decode_sum_ms={decode_sum:.2f}"
         )
 
@@ -663,6 +787,357 @@ def write_provider_timing_summaries(layout: str,
         f"onnx_session_p50_sum_ms={role_session_p50_sum:.2f} "
         f"onnx_run_p50_sum_ms={role_run_p50_sum:.2f} "
         f"activation_publish_p50_sum_ms={role_publish_p50_sum:.2f}"
+    )
+
+    complete_fetch_rows = [
+        row for row in collab_fetch_rows
+        if row.get("event") == "complete" and "elapsed_ms" in row
+    ]
+    error_fetch_rows = [
+        row for row in collab_fetch_rows
+        if row.get("event") == "error"
+    ]
+    collab_fetch_summary = {
+        "layout": layout,
+        "count": len(collab_fetch_rows),
+        "complete": len(complete_fetch_rows),
+        "errors": len(error_fetch_rows),
+        "elapsedMs": summarize_numeric([
+            row["elapsed_ms"] for row in complete_fetch_rows
+        ]),
+        "encodedBytes": summarize_numeric([
+            float(row.get("encoded_bytes", 0)) for row in complete_fetch_rows
+        ]),
+        "firstSegmentMs": summarize_numeric([
+            row.get("first_segment_ms", 0.0) for row in complete_fetch_rows
+        ]),
+        "lastSegmentReceivedMs": summarize_numeric([
+            row.get("last_segment_received_ms", 0.0) for row in complete_fetch_rows
+        ]),
+        "lastSegmentValidatedMs": summarize_numeric([
+            row.get("last_segment_validated_ms", 0.0) for row in complete_fetch_rows
+        ]),
+        "receivedSegments": summarize_numeric([
+            float(row.get("received_segments", 0)) for row in complete_fetch_rows
+        ]),
+        "validatedSegments": summarize_numeric([
+            float(row.get("validated_segments", 0)) for row in complete_fetch_rows
+        ]),
+        "receivedWireBytes": summarize_numeric([
+            float(row.get("received_wire_bytes", 0)) for row in complete_fetch_rows
+        ]),
+        "nacks": sum(row.get("nacks", 0) for row in collab_fetch_rows),
+        "segmentTimeouts": sum(row.get("segment_timeouts", 0) for row in collab_fetch_rows),
+        "interestLifetimeMs": summarize_numeric([
+            float(row.get("interest_lifetime_ms", 0)) for row in collab_fetch_rows
+            if "interest_lifetime_ms" in row
+        ]),
+        "rows": collab_fetch_rows,
+    }
+    collab_fetch_path = OUT / "collab-large-fetch-stats.json"
+    collab_fetch_path.write_text(
+        json.dumps(collab_fetch_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_COLLAB_LARGE_FETCH_TIMING "
+        f"layout={layout} count={collab_fetch_summary['count']} "
+        f"complete={collab_fetch_summary['complete']} "
+        f"errors={collab_fetch_summary['errors']} "
+        f"elapsed_p50_ms={collab_fetch_summary['elapsedMs']['p50']:.2f} "
+        f"elapsed_p95_ms={collab_fetch_summary['elapsedMs']['p95']:.2f} "
+        f"first_segment_p50_ms={collab_fetch_summary['firstSegmentMs']['p50']:.2f} "
+        f"last_validated_p50_ms={collab_fetch_summary['lastSegmentValidatedMs']['p50']:.2f} "
+        f"segment_timeouts={collab_fetch_summary['segmentTimeouts']} "
+        f"encoded_bytes_p50={collab_fetch_summary['encodedBytes']['p50']:.0f} "
+        f"interest_lifetime_p50_ms={collab_fetch_summary['interestLifetimeMs']['p50']:.0f} "
+        f"path={collab_fetch_path}"
+    )
+
+    pending_satisfy_rows = [
+        row for row in pending_ims_rows
+        if row.get("event") == "satisfy" and "pending_age_ms" in row
+    ]
+    pending_ims_summary = {
+        "layout": layout,
+        "count": len(pending_ims_rows),
+        "remember": sum(1 for row in pending_ims_rows if row.get("event") == "remember"),
+        "satisfy": len(pending_satisfy_rows),
+        "pendingAgeMs": summarize_numeric([
+            row["pending_age_ms"] for row in pending_satisfy_rows
+        ]),
+        "rows": pending_ims_rows,
+    }
+    pending_ims_path = OUT / "pending-ims-timing-stats.json"
+    pending_ims_path.write_text(
+        json.dumps(pending_ims_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_PENDING_IMS_TIMING "
+        f"layout={layout} count={pending_ims_summary['count']} "
+        f"remember={pending_ims_summary['remember']} "
+        f"satisfy={pending_ims_summary['satisfy']} "
+        f"pending_age_p50_ms={pending_ims_summary['pendingAgeMs']['p50']:.2f} "
+        f"pending_age_p95_ms={pending_ims_summary['pendingAgeMs']['p95']:.2f} "
+        f"path={pending_ims_path}"
+    )
+
+    output_by_data_name = {
+        row.get("data_name"): row
+        for row in output_rows
+        if row.get("data_name") and row.get("data_name") != "-"
+    }
+    frontier_rows = []
+    for row in complete_fetch_rows:
+        output = output_by_data_name.get(row.get("dataName"))
+        if output is None:
+            continue
+        output_ready = parse_int_prefix(output.get("output_ready_epoch_ms", 0))
+        publish_done = parse_int_prefix(output.get("publish_done_epoch_ms", 0))
+        first_segment = parse_int_prefix(row.get("first_segment_epoch_ms", 0))
+        complete = parse_int_prefix(row.get("complete_epoch_ms", 0))
+        if output_ready <= 0 or first_segment <= 0:
+            continue
+        frontier_rows.append({
+            "dataName": row.get("dataName"),
+            "producerLog": output.get("providerLog"),
+            "consumerLog": row.get("providerLog"),
+            "scope": output.get("scope", row.get("keyScope", "")),
+            "producerRole": output.get("role", ""),
+            "outputReadyEpochMs": output_ready,
+            "publishDoneEpochMs": publish_done,
+            "firstSegmentEpochMs": first_segment,
+            "completeEpochMs": complete,
+            "readyToFirstSegmentMs": first_segment - output_ready,
+            "publishDoneToFirstSegmentMs": first_segment - publish_done
+                if publish_done > 0 else 0,
+            "readyToCompleteMs": complete - output_ready
+                if complete > 0 else 0,
+            "publishMs": output.get("publish_ms", 0.0),
+            "fetchElapsedMs": row.get("elapsed_ms", 0.0),
+            "encodedBytes": row.get("encoded_bytes", 0),
+            "receivedSegments": row.get("received_segments", 0),
+        })
+    frontier_summary = {
+        "layout": layout,
+        "count": len(frontier_rows),
+        "readyToFirstSegmentMs": summarize_numeric([
+            float(row["readyToFirstSegmentMs"]) for row in frontier_rows
+        ]),
+        "publishDoneToFirstSegmentMs": summarize_numeric([
+            float(row["publishDoneToFirstSegmentMs"]) for row in frontier_rows
+        ]),
+        "readyToCompleteMs": summarize_numeric([
+            float(row["readyToCompleteMs"]) for row in frontier_rows
+        ]),
+        "rows": frontier_rows,
+    }
+    frontier_by_scope = {}
+    for row in frontier_rows:
+        frontier_by_scope.setdefault(row.get("scope", "-"), []).append(row)
+    frontier_summary["byScope"] = {
+        scope: {
+            "count": len(rows),
+            "readyToFirstSegmentMs": summarize_numeric([
+                float(row["readyToFirstSegmentMs"]) for row in rows
+            ]),
+            "publishDoneToFirstSegmentMs": summarize_numeric([
+                float(row["publishDoneToFirstSegmentMs"]) for row in rows
+            ]),
+            "readyToCompleteMs": summarize_numeric([
+                float(row["readyToCompleteMs"]) for row in rows
+            ]),
+        }
+        for scope, rows in sorted(frontier_by_scope.items())
+    }
+    merge_sessions = {}
+    for row in frontier_rows:
+        if row.get("scope") != "detect-heads-to-merge":
+            continue
+        session = _session_from_data_name(str(row.get("dataName", "")))
+        if session:
+            merge_sessions.setdefault(session, []).append(row)
+    merge_batch_rows = []
+    for session, rows in sorted(merge_sessions.items()):
+        first_values = [float(row["readyToFirstSegmentMs"]) for row in rows]
+        complete_values = [float(row["readyToCompleteMs"]) for row in rows]
+        merge_batch_rows.append({
+            "session": session,
+            "inputCount": len(rows),
+            "completeInputSet": len(rows) >= 3,
+            "firstSegmentSpreadMs": max(first_values) - min(first_values)
+                if first_values else 0.0,
+            "completeSpreadMs": max(complete_values) - min(complete_values)
+                if complete_values else 0.0,
+            "maxReadyToCompleteMs": max(complete_values) if complete_values else 0.0,
+        })
+    frontier_summary["mergeBatch"] = {
+        "sessions": len(merge_batch_rows),
+        "completeInputSets": sum(1 for row in merge_batch_rows
+                                 if row["completeInputSet"]),
+        "firstSegmentSpreadMs": summarize_numeric([
+            row["firstSegmentSpreadMs"] for row in merge_batch_rows
+        ]),
+        "completeSpreadMs": summarize_numeric([
+            row["completeSpreadMs"] for row in merge_batch_rows
+        ]),
+        "maxReadyToCompleteMs": summarize_numeric([
+            row["maxReadyToCompleteMs"] for row in merge_batch_rows
+        ]),
+        "rows": merge_batch_rows,
+    }
+    frontier_path = OUT / "dependency-frontier-timing-stats.json"
+    frontier_path.write_text(
+        json.dumps(frontier_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_DEPENDENCY_FRONTIER_TIMING "
+        f"layout={layout} count={frontier_summary['count']} "
+        f"ready_to_first_p50_ms={frontier_summary['readyToFirstSegmentMs']['p50']:.2f} "
+        f"publish_done_to_first_p50_ms="
+        f"{frontier_summary['publishDoneToFirstSegmentMs']['p50']:.2f} "
+        f"ready_to_complete_p50_ms={frontier_summary['readyToCompleteMs']['p50']:.2f} "
+        f"path={frontier_path}"
+    )
+    for scope, summary in frontier_summary["byScope"].items():
+        print(
+            "YOLO_LAYOUT_DEPENDENCY_FRONTIER_SCOPE_TIMING "
+            f"layout={layout} scope={scope} count={summary['count']} "
+            f"ready_to_first_p50_ms={summary['readyToFirstSegmentMs']['p50']:.2f} "
+            f"publish_done_to_first_p50_ms="
+            f"{summary['publishDoneToFirstSegmentMs']['p50']:.2f} "
+            f"ready_to_complete_p50_ms={summary['readyToCompleteMs']['p50']:.2f}"
+        )
+    merge_batch = frontier_summary["mergeBatch"]
+    print(
+        "YOLO_LAYOUT_MERGE_BATCH_TIMING "
+        f"layout={layout} sessions={merge_batch['sessions']} "
+        f"complete_input_sets={merge_batch['completeInputSets']} "
+        f"first_segment_spread_p50_ms={merge_batch['firstSegmentSpreadMs']['p50']:.2f} "
+        f"complete_spread_p50_ms={merge_batch['completeSpreadMs']['p50']:.2f} "
+        f"max_ready_to_complete_p50_ms={merge_batch['maxReadyToCompleteMs']['p50']:.2f}"
+    )
+
+    handler_start_rows = [row for row in handler_rows if row.get("event") == "start"]
+    handler_end_rows = [row for row in handler_rows if row.get("event") == "end"]
+    handler_summary = {
+        "layout": layout,
+        "count": len(handler_rows),
+        "starts": len(handler_start_rows),
+        "ends": len(handler_end_rows),
+        "queueWaitMs": summarize_numeric([
+            row["queue_wait_ms"] for row in handler_start_rows
+            if "queue_wait_ms" in row
+        ]),
+        "handlerMs": summarize_numeric([
+            row["handler_ms"] for row in handler_end_rows
+            if "handler_ms" in row
+        ]),
+        "rows": handler_rows,
+    }
+    handler_by_session = {}
+    for row in handler_rows:
+        session = row.get("session", "-")
+        if session and session != "-":
+            handler_by_session.setdefault(session, []).append(row)
+    dataflow_rows = []
+    for session, rows in sorted(handler_by_session.items()):
+        starts = [
+            parse_int_prefix(row.get("start_epoch_ms", 0)) for row in rows
+            if row.get("event") == "start" and parse_int_prefix(row.get("start_epoch_ms", 0)) > 0
+        ]
+        ends = [
+            parse_int_prefix(row.get("end_epoch_ms", 0)) for row in rows
+            if row.get("event") == "end" and parse_int_prefix(row.get("end_epoch_ms", 0)) > 0
+        ]
+        if not starts or not ends:
+            continue
+        roles = sorted({
+            row.get("role", "")
+            for row in rows
+            if row.get("role")
+        })
+        dataflow_rows.append({
+            "session": session,
+            "roleCount": len(roles),
+            "roles": roles,
+            "startEpochMs": min(starts),
+            "endEpochMs": max(ends),
+            "dataflowMs": max(ends) - min(starts),
+        })
+    handler_summary["dataflow"] = {
+        "count": len(dataflow_rows),
+        "dataflowMs": summarize_numeric([
+            float(row["dataflowMs"]) for row in dataflow_rows
+        ]),
+        "rows": dataflow_rows,
+    }
+    handler_path = OUT / "provider-handler-timing-stats.json"
+    handler_path.write_text(
+        json.dumps(handler_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_PROVIDER_HANDLER_TIMING "
+        f"layout={layout} starts={handler_summary['starts']} "
+        f"ends={handler_summary['ends']} "
+        f"queue_wait_p50_ms={handler_summary['queueWaitMs']['p50']:.2f} "
+        f"handler_p50_ms={handler_summary['handlerMs']['p50']:.2f} "
+        f"dataflow_p50_ms={handler_summary['dataflow']['dataflowMs']['p50']:.2f} "
+        f"path={handler_path}"
+    )
+
+
+def _session_from_data_name(name: str) -> str:
+    marker = "/NDNSF/DI/ACTIVATION/"
+    if marker not in name:
+        return ""
+    rest = name.split(marker, 1)[1]
+    return rest.split("/", 1)[0]
+
+
+def write_client_timing_summaries(layout: str,
+                                  phases: list[tuple[str, Path]]) -> None:
+    rows = []
+    for phase, path in phases:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "NDNSF_DI_CLIENT_INFERENCE_TIMING" not in line:
+                continue
+            row = parse_key_value_line(line)
+            for key in ("plan_ms", "scope_key_ms", "request_ms", "total_ms"):
+                if key in row:
+                    row[key] = parse_numeric_prefix(row.get(key, "0"))
+            row["phase"] = phase
+            row["log"] = path.name
+            rows.append(row)
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "requestMs": summarize_numeric([
+            row["request_ms"] for row in rows if "request_ms" in row
+        ]),
+        "totalMs": summarize_numeric([
+            row["total_ms"] for row in rows if "total_ms" in row
+        ]),
+        "planMs": summarize_numeric([
+            row["plan_ms"] for row in rows if "plan_ms" in row
+        ]),
+        "scopeKeyMs": summarize_numeric([
+            row["scope_key_ms"] for row in rows if "scope_key_ms" in row
+        ]),
+        "rows": rows,
+    }
+    path = OUT / "client-inference-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_CLIENT_INFERENCE_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"request_p50_ms={summary['requestMs']['p50']:.2f} "
+        f"total_p50_ms={summary['totalMs']['p50']:.2f} "
+        f"plan_p50_ms={summary['planMs']['p50']:.2f} "
+        f"scope_key_p50_ms={summary['scopeKeyMs']['p50']:.2f} "
+        f"path={path}"
     )
 
 
@@ -823,6 +1298,10 @@ def main() -> None:
                         help="ACK collection timeout passed to the DI user")
     parser.add_argument("--timeout-ms", type=int, default=60000,
                         help="End-to-end service timeout passed to the DI user")
+    parser.add_argument("--provider-handler-workers", type=int, default=2,
+                        help="Python worker count passed to each DI provider")
+    parser.add_argument("--user-async-workers", type=int, default=1,
+                        help="Async worker count passed to the DI user process")
     parser.add_argument("--parallel-output-shards", action="store_true",
                         help="Use the experimental true-NxM YOLO output-shard prototype")
     parser.add_argument("--parallel-detect-scale-shards", action="store_true",
@@ -837,6 +1316,8 @@ def main() -> None:
     warm_interval_ms = max(0, args_cli.warm_interval_ms)
     ack_timeout_ms = max(1, args_cli.ack_timeout_ms)
     timeout_ms = max(1, args_cli.timeout_ms)
+    provider_handler_workers = max(1, args_cli.provider_handler_workers)
+    user_async_workers = max(1, args_cli.user_async_workers)
     sys.argv = [sys.argv[0]]
     safe_layout = layout.replace("/", "-")
     if args_cli.parallel_output_shards:
@@ -926,6 +1407,7 @@ def main() -> None:
             for _, _, argv in providers
         ]
 
+        prepare_fractional_delay_routing_costs(ndn.net)
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
         rh.addOrigin([ndn.net["csu"]], [
             "/NDNSF-DistributeInference/example/controller",
@@ -962,6 +1444,8 @@ def main() -> None:
         env["NDNSF_SVS_PARALLEL_PRODUCTION"] = "0"
         env["NDNSF_SVS_PARALLEL_PRODUCTION_SIGNING"] = "0"
         env["NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK"] = "0"
+        env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
+        env["NDNSF_PENDING_IMS_TIMING"] = "1"
         env["PYTHONPATH"] = ":".join([
             str(REPO / "NDNSF-DistributedInference"),
             str(REPO / "pythonWrapper"),
@@ -1017,6 +1501,8 @@ def main() -> None:
                               "--dynamic-provisioning",
                               "--temp-dir",
                               f"/tmp/{name}",
+                              "--handler-workers",
+                              str(provider_handler_workers),
                           ]),
                           env, procs)
             if not wait_log(lp, "Installed provider permission", 20):
@@ -1029,6 +1515,7 @@ def main() -> None:
             str(REPO_MANIFEST),
             "--ack-timeout-ms", str(ack_timeout_ms),
             "--timeout-ms", str(timeout_ms),
+            "--async-requests", str(user_async_workers),
             "--sequential-requests", str(cold_requests),
         ]
         cold_traffic_start = snapshot_traffic(ndn)
@@ -1063,6 +1550,7 @@ def main() -> None:
             str(REPO_MANIFEST),
             "--ack-timeout-ms", str(ack_timeout_ms),
             "--timeout-ms", str(timeout_ms),
+            "--async-requests", str(user_async_workers),
         ]
         if warm_duration_s > 0:
             warm_user_args.extend([
@@ -1090,6 +1578,10 @@ def main() -> None:
                              warm_count or warm_requests)
         print(warm_text)
         write_plan_cache_summary(layout, [
+            ("cold", user_log),
+            ("warm", warm_log),
+        ])
+        write_client_timing_summaries(layout, [
             ("cold", user_log),
             ("warm", warm_log),
         ])

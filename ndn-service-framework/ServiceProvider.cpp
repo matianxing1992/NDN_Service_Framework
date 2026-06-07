@@ -211,6 +211,39 @@ namespace ndn_service_framework
                    isTruthyEnv("NDNSF_SVS_ASYNC_PUBLISH");
         }
 
+        struct CollaborationLargeFetchTiming
+        {
+            std::chrono::steady_clock::time_point start;
+            std::chrono::steady_clock::time_point firstSegmentReceived;
+            std::chrono::steady_clock::time_point lastSegmentReceived;
+            std::chrono::steady_clock::time_point lastSegmentValidated;
+            std::chrono::system_clock::time_point firstSegmentWall;
+            std::chrono::system_clock::time_point completeWall;
+            size_t receivedSegments = 0;
+            size_t validatedSegments = 0;
+            size_t receivedWireBytes = 0;
+            size_t nacks = 0;
+            size_t timeouts = 0;
+        };
+
+        double
+        elapsedMsSince(const std::chrono::steady_clock::time_point& start,
+                       const std::chrono::steady_clock::time_point& end)
+        {
+            return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() /
+                   1000.0;
+        }
+
+        int64_t
+        epochMs(const std::chrono::system_clock::time_point& timePoint)
+        {
+            if (timePoint == std::chrono::system_clock::time_point{}) {
+                return 0;
+            }
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                timePoint.time_since_epoch()).count();
+        }
+
         int
         hexValue(char c)
         {
@@ -2788,11 +2821,21 @@ namespace ndn_service_framework
         auto encoded = std::make_shared<ndn::Buffer>();
 
         const int fetchTimeoutMs = timeoutMs <= 0 ? 5000 : timeoutMs;
+        // Planned dataflow users may issue Interests before the upstream
+        // provider has published the corresponding activation segments. Keep
+        // the default lifetime long enough for normal distributed inference
+        // runs while still allowing experiments to override it explicitly.
         const int interestLifetimeMs =
-            std::max(50, intEnvOrDefault("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS", 250));
+            std::max(50, intEnvOrDefault("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS", 10000));
+        const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
+        const auto fetchStart = std::chrono::steady_clock::now();
+        auto fetchStats = std::make_shared<CollaborationLargeFetchTiming>();
+        fetchStats->start = fetchStart;
 
         boost::asio::post(m_face.getIoContext(), [this, dataName, completed, mutex, cv, error,
-                                                  encoded, fetchTimeoutMs, interestLifetimeMs] {
+                                                  encoded, requestId, keyScope, fetchTimeoutMs,
+                                                  interestLifetimeMs, fetchTimingEnabled,
+                                                  fetchStart, fetchStats] {
             ndn::Interest interest(dataName);
             interest.setCanBePrefix(true);
             interest.setMustBeFresh(true);
@@ -2803,22 +2846,114 @@ namespace ndn_service_framework
             options.initCwnd = 4.0;
             options.maxTimeout = ndn::time::milliseconds(fetchTimeoutMs);
             options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
+            if (fetchTimingEnabled) {
+                NDN_LOG_INFO("NDNSF_COLLAB_LARGE_FETCH_TIMING event=start"
+                             << " requestId=" << requestId.toUri()
+                             << " keyScope=" << keyScope
+                             << " dataName=" << dataName.toUri()
+                             << " timeout_ms=" << fetchTimeoutMs
+                             << " interest_lifetime_ms=" << interestLifetimeMs
+                             << " init_cwnd=4.0");
+            }
             auto fetcher = ndn::SegmentFetcher::start(m_face, interest, nac_validator, options);
+            if (fetchTimingEnabled) {
+                fetcher->afterSegmentReceived.connect(
+                    [fetchStats](const ndn::Data& data) {
+                        const auto now = std::chrono::steady_clock::now();
+                        if (fetchStats->receivedSegments == 0) {
+                            fetchStats->firstSegmentReceived = now;
+                            fetchStats->firstSegmentWall = std::chrono::system_clock::now();
+                        }
+                        fetchStats->lastSegmentReceived = now;
+                        ++fetchStats->receivedSegments;
+                        fetchStats->receivedWireBytes += data.wireEncode().size();
+                    });
+                fetcher->afterSegmentValidated.connect(
+                    [fetchStats](const ndn::Data&) {
+                        fetchStats->lastSegmentValidated = std::chrono::steady_clock::now();
+                        ++fetchStats->validatedSegments;
+                    });
+                fetcher->afterSegmentNacked.connect(
+                    [fetchStats] {
+                        ++fetchStats->nacks;
+                    });
+                fetcher->afterSegmentTimedOut.connect(
+                    [fetchStats] {
+                        ++fetchStats->timeouts;
+                    });
+            }
             fetcher->onComplete.connect(
-                [completed, mutex, cv, encoded](ndn::ConstBufferPtr buffer) {
+                [completed, mutex, cv, encoded, requestId, keyScope, dataName, fetchTimeoutMs,
+                 interestLifetimeMs, fetchTimingEnabled, fetchStart, fetchStats]
+                (ndn::ConstBufferPtr buffer) {
+                    const auto completeTime = std::chrono::steady_clock::now();
+                    fetchStats->completeWall = std::chrono::system_clock::now();
+                    const auto elapsedMs = elapsedMsSince(fetchStart, completeTime);
                     {
                         std::lock_guard<std::mutex> lock(*mutex);
                         encoded->assign(buffer->begin(), buffer->end());
                         completed->store(true);
                     }
+                    if (fetchTimingEnabled) {
+                        const double firstSegmentMs = fetchStats->receivedSegments == 0 ? 0.0 :
+                            elapsedMsSince(fetchStart, fetchStats->firstSegmentReceived);
+                        const double lastReceivedMs = fetchStats->receivedSegments == 0 ? 0.0 :
+                            elapsedMsSince(fetchStart, fetchStats->lastSegmentReceived);
+                        const double lastValidatedMs = fetchStats->validatedSegments == 0 ? 0.0 :
+                            elapsedMsSince(fetchStart, fetchStats->lastSegmentValidated);
+                        NDN_LOG_INFO("NDNSF_COLLAB_LARGE_FETCH_TIMING event=complete"
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << dataName.toUri()
+                                     << " encoded_bytes=" << buffer->size()
+                                     << " elapsed_ms=" << elapsedMs
+                                     << " first_segment_ms=" << firstSegmentMs
+                                     << " last_segment_received_ms=" << lastReceivedMs
+                                     << " last_segment_validated_ms=" << lastValidatedMs
+                                     << " first_segment_epoch_ms="
+                                     << epochMs(fetchStats->firstSegmentWall)
+                                     << " complete_epoch_ms="
+                                     << epochMs(fetchStats->completeWall)
+                                     << " received_segments=" << fetchStats->receivedSegments
+                                     << " validated_segments=" << fetchStats->validatedSegments
+                                     << " received_wire_bytes=" << fetchStats->receivedWireBytes
+                                     << " nacks=" << fetchStats->nacks
+                                     << " segment_timeouts=" << fetchStats->timeouts
+                                     << " timeout_ms=" << fetchTimeoutMs
+                                     << " interest_lifetime_ms=" << interestLifetimeMs);
+                    }
                     cv->notify_one();
                 });
             fetcher->onError.connect(
-                [completed, mutex, cv, error](uint32_t code, const std::string& msg) {
+                [completed, mutex, cv, error, requestId, keyScope, dataName, fetchTimeoutMs,
+                 interestLifetimeMs, fetchTimingEnabled, fetchStart, fetchStats]
+                (uint32_t code, const std::string& msg) {
+                    fetchStats->completeWall = std::chrono::system_clock::now();
+                    const auto elapsedMs = elapsedMsSince(
+                        fetchStart, std::chrono::steady_clock::now());
                     {
                         std::lock_guard<std::mutex> lock(*mutex);
                         *error = "SegmentFetcher error " + std::to_string(code) + ": " + msg;
                         completed->store(true);
+                    }
+                    if (fetchTimingEnabled) {
+                        NDN_LOG_INFO("NDNSF_COLLAB_LARGE_FETCH_TIMING event=error"
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << dataName.toUri()
+                                     << " error_code=" << code
+                                     << " elapsed_ms=" << elapsedMs
+                                     << " first_segment_epoch_ms="
+                                     << epochMs(fetchStats->firstSegmentWall)
+                                     << " complete_epoch_ms="
+                                     << epochMs(fetchStats->completeWall)
+                                     << " received_segments=" << fetchStats->receivedSegments
+                                     << " validated_segments=" << fetchStats->validatedSegments
+                                     << " received_wire_bytes=" << fetchStats->receivedWireBytes
+                                     << " nacks=" << fetchStats->nacks
+                                     << " segment_timeouts=" << fetchStats->timeouts
+                                     << " timeout_ms=" << fetchTimeoutMs
+                                     << " interest_lifetime_ms=" << interestLifetimeMs);
                     }
                     cv->notify_one();
                 });
@@ -5421,10 +5556,18 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         if (m_pendingImsInterests.size() >= maxPending) {
             m_pendingImsInterests.erase(m_pendingImsInterests.begin());
         }
+        const auto now = ndn::time::steady_clock::now();
         m_pendingImsInterests.push_back(PendingImsInterest{
             interest,
-            ndn::time::steady_clock::now() + interest.getInterestLifetime()
+            now,
+            now + interest.getInterestLifetime()
         });
+        if (isTruthyEnv("NDNSF_PENDING_IMS_TIMING")) {
+            NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=remember"
+                         << " interest=" << interest.getName().toUri()
+                         << " lifetime_ms=" << interest.getInterestLifetime().count()
+                         << " pending=" << m_pendingImsInterests.size());
+        }
         NDN_LOG_TRACE("Pending IMS Interest: " << interest.getName().toUri()
                       << " pending=" << m_pendingImsInterests.size());
     }
@@ -5435,8 +5578,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         std::vector<PendingImsInterest> pending;
         pending.reserve(m_pendingImsInterests.size());
         std::vector<ndn::Data> toSend;
+        const auto now = ndn::time::steady_clock::now();
+        const bool timingEnabled = isTruthyEnv("NDNSF_PENDING_IMS_TIMING");
         for (const auto& item : m_pendingImsInterests) {
             if (auto data = m_IMS.find(item.interest)) {
+                if (timingEnabled) {
+                    const auto ageUs = ndn::time::duration_cast<ndn::time::microseconds>(
+                        now - item.requestedAt).count();
+                    NDN_LOG_INFO("NDNSF_PENDING_IMS_TIMING event=satisfy"
+                                 << " interest=" << item.interest.getName().toUri()
+                                 << " dataName=" << data->getName().toUri()
+                                 << " pending_age_ms=" << (ageUs / 1000.0)
+                                 << " remaining_before=" << m_pendingImsInterests.size());
+                }
                 toSend.emplace_back(*data);
             }
             else {

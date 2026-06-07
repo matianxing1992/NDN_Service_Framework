@@ -1,6 +1,27 @@
 # NDNSF-DistributedInference
 
-NDNSF-DistributedInference 是构建在通用 NDNSF Python API 之上的 Python 库。它为分布式 AI 推理提供更高层 API，但不会把 AI-specific semantics 加入 NDNSF Core。
+NDNSF-DistributedInference 是构建在 NDNSF 之上的应用层分布式推理运行时。
+当前用户可见 API 和示例仍然以 Python 为主，但性能方向必须转向 C++：hot-path
+调度、dependency dataflow、prefetch、worker dispatch，以及后续 ONNX Runtime
+执行，都应在 native C++ 中运行并直接调用 NDNSF Core。Python 应保留为薄 API、
+deployment、GUI 和实验层。
+
+因此当前仓库中同时存在两层：
+
+```text
+稳定的 APP-facing layer
+  Python APPClient / APPProvider / APPController / APPDeployment
+  policy 生成、MiniNDN 实验、GUI 和示例脚本
+
+Native hot-path 迁移层
+  NDNSF-DistributedInference/cpp/ 下的 C++ async dataflow runtime
+  multi-worker role scheduling、planned dependency edges、fan-in/fan-out
+  execution，以及后续 C++ ONNX/NDNSF 集成所需的 timing hooks
+```
+
+长期目标不是永远用 Python executor 包一层 NDNSF。更合理的结构是：Python 描述
+service 并提交 inference jobs，而 providers 通过 native C++ workers 执行
+dependency-driven inference。
 
 分层结构：
 
@@ -10,7 +31,8 @@ APP
 
 NDNSF-DistributedInference
   understands model plans, roles, stages, shards, runtime artifacts,
-  backend requirements, and inference dependencies
+  backend requirements, and inference dependencies; current public API is
+  Python, while the hot-path runtime is migrating to C++
 
 NDNSF Core
   handles Face, SVS, NAC-ABE, signing, permissions, selection, workers,
@@ -87,6 +109,33 @@ result = client.distributed_inference("/AI/YOLO/SplitInference", image_tensor)
 一条 sequential chunk chain 不能算真正的 NxM parallel sharding。Splitter 可以使用
 `nxm_stage_roles(...)` 和 `nxm_stage_frontier_dependencies(...)` 生成通用
 stage-frontier skeleton，然后填入模型特定的 tensor 名称、merge 语义和 artifacts。
+
+### 2.1 Native Hot-Path Runtime 方向
+
+Python executor 仍然适合实验、policy validation 和 model-specific splitter 原型，
+但它不适合长期作为性能 hot path。Native 迁移分阶段推进：
+
+```text
+Step 1: C++ async dataflow runtime
+  Role frontier scheduling、fan-in/fan-out readiness、multi-worker execution、
+  planned dependency edge metadata 和 timing records。
+
+Step 2: C++ NDNSF integration
+  直接在 C++ 中使用 ServiceUser/ServiceProvider、large-data references、
+  pending Interests 和 deterministic activation names，避免每个 role callback
+  都穿过 Python wrapper。
+
+Step 3: C++ backend runners
+  增加 ONNX Runtime 和其它 backend adapters 作为 role runners。Python 仍可负责
+  生成 policy 和提交 jobs，但 provider 执行应留在 native 层。
+```
+
+`NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp` 是第一块
+native 基座。它刻意保持 model-agnostic：role runner 可以是 ONNX chunk、
+PyTorch 导出的 native runner、containerized function，或未来的 accelerator
+backend。这个 runtime 只负责 dependency readiness 和并行执行语义；它不改变
+NDNSF Request/ACK/Selection/Response 语义，也不会把 AI-specific behavior 加进
+NDNSF Core。
 
 ### 3. 创建或审查 Policy
 
@@ -1299,14 +1348,83 @@ plan-cache-stats.json
 onnx-timing-stats.json
 dependency-input-timing-stats.json
 dependency-output-timing-stats.json
+dependency-frontier-timing-stats.json
 ```
 
 这些文件记录端到端 latency、节点流量计数、NFD Data 计数、plan cache 命中、
 ONNX session/run 时间、每条 activation edge 的 reference wait/fetch timing，以及
-每条 activation edge 的 publish timing。
+每条 activation edge 的 publish timing，以及 producer-output-ready 到
+consumer-first-segment 的 frontier timing。
 后续分析瓶颈时，应根据这些统计判断问题是在 ACK/selection、artifact 发布、
-ONNX 执行、activation reference wait、segmented fetch、activation publish，还是
-tensor decode。
+ONNX 执行、activation reference wait、segmented fetch、activation publish、
+frontier scheduling，还是 tensor decode。
+
+面向 AI 的 MiniNDN 回归统一使用
+`Experiments/Topology/AI_testbed.conf`。这个拓扑用 `delay=0.1ms bw=1000`
+模拟同一交换机内的高速链路。MiniNDN 可以创建这种 sub-millisecond TC link，
+但它的 routing helper 会把 link delay 当作整数毫秒解析。因此 DI MiniNDN
+脚本会保留真实的 `0.1ms` link，只把 routing cost metadata 向上取整为
+`1ms`，并为每条被修正的 link 打印
+`NDNSF_DI_ROUTING_DELAY_COST_PATCH ...`。
+
+当前 2x3 parallel-detect-scale baseline 建议用 60 秒 warm window 和显式
+Python worker 参数运行：
+
+```bash
+PYTHONPATH=NDNSF-DistributedInference:$PYTHONPATH \
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case yolo-layout \
+  --layout 2x3 \
+  --parallel-detect-scale-shards \
+  --cold-requests 1 \
+  --warm-requests 1 \
+  --warm-duration-s 60 \
+  --warm-interval-ms 1000 \
+  --ack-timeout-ms 1500 \
+  --timeout-ms 60000 \
+  --provider-handler-workers 4 \
+  --user-async-workers 4
+```
+
+在当前开发机器上的一次代表性运行中，脚本输出
+`YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK`，59 个 warm samples 的 p50 为
+363.91 ms，p95 为 436.76 ms，去掉首次 warm 且过滤 1s 以上尾部后的 p50 为
+362.90 ms。同一次运行记录到每次 warm inference 约 132.90 个 NFD Data packet，
+每次 warm inference 约 1.49 MB NFD `nOutBytes`，以及约 3.10 MB total node
+traffic。`nfd-data-stats.json`
+会输出 `data_packets_per_inference` 和 `avg_data_packet_bytes`；后者只是
+近似 transport-size ratio，因为 NFD byte counters 包含测量 face 上的所有包类型。
+`traffic-stats.json` 也会输出每次 inference 的 total node bytes。
+
+同一次运行确认了 planned-name prefetch 确实生效：360/360 个 dependency fetch
+都使用确定性 planned name，dependency `future_wait_ms` p50 为 0.02 ms，
+`prefetch_overlap_ms` p50 为 108.30 ms。也就是说，provider handler 会提前发出
+dependency Interest，真正需要 tensor 时通常只是等待一个已经在运行的 future。
+对于这个很小的模型，ONNX 本身不是 p50 主瓶颈：ONNX run p50 为 0.27 ms，
+ONNX session lookup p50 为 0.37 ms，且 session cache 已经命中。当前剩余 latency
+主要来自 NDNSF/large-data fetch、activation publish 和分布式控制路径，而不是
+本地 ONNX 执行。
+
+同一个脚本也会启用 `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` 并写出
+`collab-large-fetch-stats.json`。这个文件记录每次 collaboration large-data fetch
+在 Core SegmentFetcher 层的 elapsed time、encoded object size 和 InterestLifetime。
+把它和 `dependency-input-timing-stats.json` 对照，就能区分 native segmented fetch、
+Python executor scheduling 和 tensor decode 各自的成本。它还会启用
+`NDNSF_PENDING_IMS_TIMING=1` 并写出 `pending-ims-timing-stats.json`，记录可预测
+activation Interest 是否在 Data 插入 in-memory storage 之前到达 producer。上面的
+代表性运行中，Core-level collaboration fetch 360/360 次完成、无错误，elapsed p50
+为 104.84 ms，p95 为 224.18 ms，first-segment p50 为 98.01 ms，encoded object
+p50 为 8844 bytes，received/validated segments p50 都是 2，InterestLifetime p50
+为 10000 ms。`pending-ims-timing-stats.json` 显示 261 个 pending activation
+Interests 后续被满足，pending-age p50 为 96.26 ms。同一次运行还写出了
+`dependency-frontier-timing-stats.json`：360 个 output/fetch pair 通过确定性
+Data name 成功 join，producer-output-ready 到 consumer-first-segment p50 为
+12.00 ms，publish-done 到 consumer-first-segment p50 为 6.50 ms，
+producer-output-ready 到 fetch-complete p50 为 23.00 ms。这说明 planned prefetch
+确实在 activation Data 产生前到达了 producer，而且 output ready 后首段通常很快返回。
+剩余成本主要是 stage-frontier scheduling、activation publish/control overhead 和
+最终结果返回，而不是 ONNX 执行、tensor decode、segment validation 或 segment
+window size。
 
 比较 cold 和 warm inference 时要注意 user 进程模型。如果脚本把 cold 和 warm
 作为两个独立 user 进程启动，内存中的 plan cache 和 recent-responder history 不会

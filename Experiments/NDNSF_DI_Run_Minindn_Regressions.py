@@ -140,6 +140,10 @@ def main() -> int:
                         help="ACK timeout forwarded to --case yolo-layout")
     parser.add_argument("--timeout-ms", type=int, default=60000,
                         help="Service timeout forwarded to --case yolo-layout")
+    parser.add_argument("--provider-handler-workers", type=int, default=2,
+                        help="Provider Python worker count forwarded to --case yolo-layout")
+    parser.add_argument("--user-async-workers", type=int, default=1,
+                        help="User async worker count forwarded to --case yolo-layout")
     parser.add_argument("--list", action="store_true",
                         help="List available regression cases and exit")
     args = parser.parse_args()
@@ -167,6 +171,8 @@ def main() -> int:
                 "--warm-interval-ms", str(args.warm_interval_ms),
                 "--ack-timeout-ms", str(args.ack_timeout_ms),
                 "--timeout-ms", str(args.timeout_ms),
+                "--provider-handler-workers", str(args.provider_handler_workers),
+                "--user-async-workers", str(args.user_async_workers),
             ])
         run_case(case, extra_args)
     print(f"NDNSF_DI_REGRESSION_SUITE_OK case={args.case}")

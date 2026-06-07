@@ -12,7 +12,7 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
-from time import perf_counter
+from time import perf_counter, time
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -179,6 +179,7 @@ def execute_onnx_dependency_chunk(
                 f"{edge.key_scope}: " + ", ".join(edge.tensors)
             )
         edge_publish_start = perf_counter()
+        output_ready_epoch_ms = int(time() * 1000)
         edge_payload = encode_tensor_bundle(
             select_tensor_payload(output_payload, edge_tensors)
         )
@@ -192,6 +193,7 @@ def execute_onnx_dependency_chunk(
             object_id=role_topic_token(ctx.role),
             data_name=data_name,
         )
+        publish_done_epoch_ms = int(time() * 1000)
         edge_publish_ms = _elapsed_ms(edge_publish_start)
         print(
             "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING "
@@ -203,6 +205,9 @@ def execute_onnx_dependency_chunk(
             f"bytes={len(edge_payload)} "
             f"expected_segments={int(getattr(edge, 'expected_segments', 0) or 0)} "
             f"planned_name={'true' if data_name else 'false'} "
+            f"data_name={data_name or '-'} "
+            f"output_ready_epoch_ms={output_ready_epoch_ms} "
+            f"publish_done_epoch_ms={publish_done_epoch_ms} "
             f"publish_ms={edge_publish_ms:.2f}",
             flush=True,
         )
@@ -262,12 +267,14 @@ def _collect_input_values(
             fetch_ms = 0.0
             prefetch_total_ms = wait_ms
             expected_segments = int(getattr(edge, "expected_segments", 0) or 0)
+            used_planned_name = False
         else:
             payload = result.payload
             ref_wait_ms = result.ref_wait_ms
             fetch_ms = result.fetch_ms
             prefetch_total_ms = result.total_ms
             expected_segments = result.expected_segments
+            used_planned_name = bool(result.used_planned_name)
         tensor_payload = decode_tensor_bundle(payload)
         tensor_values = load_npz_payload(tensor_payload)
         if edge.tensors and not _available_edge_tensors(tensor_values, edge.tensors):
@@ -289,7 +296,10 @@ def _collect_input_values(
             f"fetch_ms={fetch_ms:.2f} "
             f"decode_ms={decode_ms:.2f} "
             f"prefetch_total_ms={prefetch_total_ms:.2f} "
+            f"prefetch_overlap_ms={max(0.0, prefetch_total_ms - wait_ms):.2f} "
             f"expected_segments={expected_segments}",
+            f"planned_name={'true' if used_planned_name else 'false'}",
+            f"data_name={ctx.planned_large_data_name(edge, item.producer) or '-'}",
             flush=True,
         )
     if expected_tensors_by_scope:
