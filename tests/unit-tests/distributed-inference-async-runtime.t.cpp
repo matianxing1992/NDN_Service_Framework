@@ -417,6 +417,59 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
                     "native:input:input-to-native");
 }
 
+BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
+{
+  NativeModelRunnerSpec spec{
+    "/FactoryRole",
+    "onnx-model",
+    "test-backend",
+    "/tmp/factory-role.onnx",
+    {{"outputScope", "factory-to-user"}},
+  };
+
+  RegistryNativeModelRunnerFactory factory;
+  BOOST_CHECK(!factory.hasBackend("test-backend"));
+  factory.registerBackend(
+    "test-backend",
+    [] (const NativeModelRunnerSpec& runnerSpec) {
+      BOOST_CHECK_EQUAL(runnerSpec.role, "/FactoryRole");
+      BOOST_CHECK_EQUAL(runnerSpec.kind, "onnx-model");
+      BOOST_CHECK_EQUAL(runnerSpec.path, "/tmp/factory-role.onnx");
+      const auto outputScope = runnerSpec.metadata.at("outputScope");
+      return makeNativeModelRunner(
+        [outputScope] (const RoleExecutionContext& ctx) {
+          BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+          return std::map<std::string, TensorBundle>{
+            {outputScope,
+             bundle("factory-result",
+                    "factory:" + payloadText(ctx.inputsByScope.begin()->second))},
+          };
+        });
+    });
+  BOOST_CHECK(factory.hasBackend("test-backend"));
+
+  NativeProviderRuntime runtime(1);
+  runtime.registerRunner(spec.role, factory.create(spec));
+
+  RoleSpec role{
+    spec.role,
+    {DependencyEdge{"input-to-factory", "/Input", spec.role,
+                    "/run/factory/input/bundle/0", 1}},
+    {DependencyEdge{"factory-to-user", spec.role, "",
+                    "/run/factory/output/bundle/0", 1}},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  const auto result = runtime.executeRoleAsync("factory-run", role, io).get();
+
+  BOOST_REQUIRE(result.outputsByScope.count("factory-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("factory-to-user")),
+                    "factory:input:input-to-factory");
+  BOOST_CHECK_THROW(
+    factory.create(NativeModelRunnerSpec{"/Missing", "onnx-model", "onnxruntime", "", {}}),
+    std::out_of_range);
+}
+
 BOOST_AUTO_TEST_CASE(NativeProviderRuntimeDispatchesRegisteredRoleRunner)
 {
   RoleSpec role{

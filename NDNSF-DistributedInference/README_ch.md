@@ -145,6 +145,11 @@ Python 从 per-edge execution loop 中移出去，同时保留现有 Python-faci
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp` 定义 backend
 边界。后续 C++ ONNX Runtime backend 应实现 `NativeModelRunner`；从测试 runner
 切换到 ONNX chunk runner 时，不应该再改 provider scheduling 和 dependency I/O。
+它也定义了 `NativeModelRunnerSpec` 和
+`RegistryNativeModelRunnerFactory`，这样 deployment/artifact metadata 可以通过
+一个很窄的 backend registry 转成 role runner。当前 factory 测试使用 fake
+backend；真正的 ONNX Runtime C++ adapter 仍是后续 backend implementation，而不是
+已经默认存在的链接依赖。
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` 是 provider
 进程 facade。它持有 worker pool 和 role-to-runner registry。Deployment/Python

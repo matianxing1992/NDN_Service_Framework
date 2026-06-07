@@ -163,6 +163,11 @@ the existing Python-facing API.
 backend boundary. A future C++ ONNX Runtime backend should implement
 `NativeModelRunner`; provider scheduling and dependency I/O should not need to
 change when switching from a test runner to an ONNX chunk runner.
+It also defines `NativeModelRunnerSpec` and
+`RegistryNativeModelRunnerFactory`, so deployment/artifact metadata can be
+converted into a role runner through a narrow backend registry. The current
+factory tests use a fake backend; a real ONNX Runtime C++ adapter is still a
+planned backend implementation rather than an assumed dependency.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` is the
 provider process facade. It owns the worker pool and the role-to-runner
