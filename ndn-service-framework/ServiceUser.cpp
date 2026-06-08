@@ -21,6 +21,8 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 namespace ndn_service_framework
@@ -65,6 +67,94 @@ namespace ndn_service_framework
                 pos = end + 1;
             }
             return fields;
+        }
+
+        ndn::security::Certificate
+        getExistingSigningCertificateOrFallback(ndn::KeyChain& keyChain,
+                                                const ndn::security::Certificate& encryptionCert)
+        {
+            if (const char* value = std::getenv("NDNSF_DISABLE_SPLIT_SIGNING")) {
+                std::string text(value);
+                std::transform(text.begin(), text.end(), text.begin(),
+                               [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (!(text.empty() || text == "0" || text == "false" ||
+                      text == "no" || text == "off")) {
+                    return encryptionCert;
+                }
+            }
+            const auto identityName = encryptionCert.getIdentity();
+            try {
+                auto identity = keyChain.getPib().getIdentity(identityName);
+                for (const auto& key : identity.getKeys()) {
+                    if (key.getKeyType() == ndn::KeyType::EC) {
+                        try {
+                            return key.getDefaultCertificate();
+                        }
+                        catch (const std::exception&) {
+                            continue;
+                        }
+                    }
+                }
+            }
+            catch (const std::exception&) {
+                return encryptionCert;
+            }
+            return encryptionCert;
+        }
+
+        ndn::KeyType
+        getCertificateKeyType(const ndn::security::Certificate& cert)
+        {
+            ndn::security::transform::PublicKey publicKey;
+            publicKey.loadPkcs8(cert.getPublicKey());
+            return publicKey.getKeyType();
+        }
+
+        bool
+        isRsaCertificate(const ndn::security::Certificate& cert)
+        {
+            return getCertificateKeyType(cert) == ndn::KeyType::RSA;
+        }
+
+        ndn::security::Certificate
+        getExistingEncryptionCertificateOrThrow(const ndn::security::Certificate& identityHintCert)
+        {
+            if (isRsaCertificate(identityHintCert)) {
+                return identityHintCert;
+            }
+
+            ndn::KeyChain keyChain;
+            const auto identityName = identityHintCert.getIdentity();
+            try {
+                auto identity = keyChain.getPib().getIdentity(identityName);
+                for (const auto& key : identity.getKeys()) {
+                    if (key.getKeyType() == ndn::KeyType::RSA) {
+                        return key.getDefaultCertificate();
+                    }
+                }
+            }
+            catch (const std::exception&) {
+            }
+
+            throw std::invalid_argument("ServiceUser requires an RSA encryption certificate for NAC-ABE");
+        }
+
+        ndn::security::Certificate
+        getExistingSigningCertificateOrFallback(const ndn::security::Certificate& encryptionCert)
+        {
+            ndn::KeyChain keyChain;
+            return getExistingSigningCertificateOrFallback(keyChain, encryptionCert);
+        }
+
+        void
+        ensureSameIdentity(const ndn::security::Certificate& encryptionCert,
+                           const ndn::security::Certificate& signingCert,
+                           const char* role)
+        {
+            if (encryptionCert.getIdentity() != signingCert.getIdentity()) {
+                throw std::invalid_argument(std::string(role) +
+                                            " encryptionCert and signingCert must share identity");
+            }
         }
 
         double
@@ -542,17 +632,47 @@ namespace ndn_service_framework
             std::make_shared<AllSelectedPolicy>();
     }
 
-    ServiceUser::ServiceUser(ndn::Face &face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath) :
+    ServiceUser::ServiceUser(ndn::Face &face,
+                             ndn::Name group_prefix,
+                             ndn::security::Certificate identityCert,
+                             ndn::security::Certificate attrAuthorityCertificate,
+                             std::string trustSchemaPath)
+        : ServiceUser(face,
+                      std::move(group_prefix),
+                      getExistingEncryptionCertificateOrThrow(identityCert),
+                      getExistingSigningCertificateOrFallback(identityCert),
+                      std::move(attrAuthorityCertificate),
+                      std::move(trustSchemaPath))
+    {
+    }
+
+    ServiceUser::ServiceUser(ndn::Face &face,
+                             ndn::Name group_prefix,
+                             ndn::security::Certificate encryptionCert,
+                             ndn::security::Certificate signingCert,
+                             ndn::security::Certificate attrAuthorityCertificate,
+                             std::string trustSchemaPath) :
         m_face(face),
         m_scheduler(m_face.getIoContext()),
-        identity(identityCert.getIdentity()),
+        identity(encryptionCert.getIdentity()),
         validator(std::make_shared<MessageValidator>(trustSchemaPath)),
-        identityCert(identityCert),
+        identityCert(encryptionCert),
+        signingCert(signingCert),
         // nac_validator(std::move(ndn::security::ValidatorNull())),
-        nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
+        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         m_IMS(50000)
     {
+        ensureSameIdentity(encryptionCert, signingCert, "ServiceUser");
+        if (!isRsaCertificate(encryptionCert)) {
+            throw std::invalid_argument("ServiceUser encryptionCert must be RSA for NAC-ABE");
+        }
+        NDN_LOG_WARN("NDNSF_CERT_SELECTION role=user identity="
+                     << identity.toUri()
+                     << " encryptionCert=" << encryptionCert.getName()
+                     << " signingCert=" << signingCert.getName()
+                     << " splitSigning="
+                     << (encryptionCert.getName() == signingCert.getName() ? "false" : "true"));
         m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
         NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=user workers="
                      << m_handlerPool.getThreadCount());
@@ -581,15 +701,15 @@ namespace ndn_service_framework
             std::bind(&ServiceUser::onInterest, this, _1, _2),
             std::bind(&ServiceUser::onPrefixRegisterFailure, this, _1, _2));
 
-        m_signingInfo = ndn::security::signingByCertificate(identityCert);
+        m_signingInfo = ndn::security::signingByCertificate(signingCert);
 
         ndn::svs::SecurityOptions secOpts(m_keyChain);
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-        secOpts.interestSigner->signingInfo.setSigningKeyName(identityCert.getKeyName());
-        secOpts.dataSigner->signingInfo.setSigningCertName(identityCert.getName());
+        secOpts.interestSigner->signingInfo.setSigningKeyName(signingCert.getKeyName());
+        secOpts.dataSigner->signingInfo.setSigningCertName(signingCert.getName());
         secOpts.dataSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-        secOpts.pubSigner->signingInfo.setSigningCertName(identityCert.getName());
+        secOpts.pubSigner->signingInfo.setSigningCertName(signingCert.getName());
         secOpts.pubSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
         secOpts.validator = validator;
         secOpts.encapsulatedDataValidator = validator;
@@ -696,20 +816,42 @@ namespace ndn_service_framework
                              ndn::security::Certificate identityCert,
                              ndn::security::Certificate attrAuthorityCertificate,
                              std::string trustSchemaPath)
+        : ServiceUser(LocalMockTag{},
+                      face,
+                      std::move(group_prefix),
+                      getExistingEncryptionCertificateOrThrow(identityCert),
+                      getExistingSigningCertificateOrFallback(identityCert),
+                      std::move(attrAuthorityCertificate),
+                      std::move(trustSchemaPath))
+    {
+    }
+
+    ServiceUser::ServiceUser(LocalMockTag,
+                             ndn::Face& face,
+                             ndn::Name group_prefix,
+                             ndn::security::Certificate encryptionCert,
+                             ndn::security::Certificate signingCert,
+                             ndn::security::Certificate attrAuthorityCertificate,
+                             std::string trustSchemaPath)
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
-        identity(identityCert.getIdentity()),
+        identity(encryptionCert.getIdentity()),
         m_keyChain(),
         m_svsps(nullptr),
         validator(std::make_shared<MessageValidator>(trustSchemaPath)),
         nac_validator(m_face),
-        identityCert(identityCert),
-        nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        identityCert(encryptionCert),
+        signingCert(signingCert),
+        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
+        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         m_IMS(50000),
         m_configManager("/tmp/ndnsf-service-user-local-mock.conf")
     {
-        m_signingInfo = ndn::security::signingByCertificate(identityCert);
+        ensureSameIdentity(encryptionCert, signingCert, "ServiceUser");
+        if (!isRsaCertificate(encryptionCert)) {
+            throw std::invalid_argument("ServiceUser encryptionCert must be RSA for NAC-ABE");
+        }
+        m_signingInfo = ndn::security::signingByCertificate(signingCert);
     }
 
     void ServiceUser::init()
@@ -6746,6 +6888,34 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     }
                 }
                 publishSvs(m_svsps, messageName, contentBlock);
+                if (messageType == "SELECTION" &&
+                    isTruthyEnv("NDNSF_SELECTION_DIRECT_PREFETCH")) {
+                    try {
+                        ndn::Data directSelectionData(messageName);
+                        directSelectionData.setFreshnessPeriod(ndn::time::milliseconds(
+                            std::max(100, intEnvOrDefault("NDNSF_SELECTION_DIRECT_FRESHNESS_MS", 10000))));
+                        directSelectionData.setContent(
+                            ndn::span<const uint8_t>(buffer.data(), buffer.size()));
+                        m_keyChain.sign(directSelectionData, m_signingInfo);
+                        m_face.put(directSelectionData);
+                        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_DIRECT_PUT timestamp_us="
+                                      << nowMicroseconds()
+                                      << " requestId=" << requestId.toUri()
+                                      << " serviceName=" << serviceName.toUri()
+                                      << " messageName=" << messageName.toUri()
+                                      << " contentBytes=" << buffer.size());
+                        logControlTiming("user", "SELECTION_DIRECT_PUT", requestId,
+                                         {{"serviceName", serviceName.toUri()},
+                                          {"messageType", messageType},
+                                          {"messageName", messageName.toUri()},
+                                          {"contentBytes", std::to_string(buffer.size())}});
+                    }
+                    catch (const std::exception& e) {
+                        NDN_LOG_WARN("[NDNSF_HYBRID] role=user event=SELECTION_DIRECT_PUT_FAILED"
+                                     << " messageName=" << messageName.toUri()
+                                     << " reason=" << e.what());
+                    }
+                }
                 logControlTiming("user", "SVS_PUBLISH_DONE", requestId,
                                  {{"serviceName", serviceName.toUri()},
                                   {"messageType", messageType},

@@ -154,6 +154,7 @@ def main() -> int:
         preflight_requests = max(0, int(args.preflight_requests or 0))
         for index in range(preflight_requests):
             started = time.perf_counter()
+            epoch_started = time.time()
             if plan_session is not None:
                 preflight = client.preflight_plan(
                     plan_session,
@@ -172,9 +173,12 @@ def main() -> int:
                     artifact_references=args.repo_manifest_file or None,
                 )
             elapsed_ms = (time.perf_counter() - started) * 1000.0
+            epoch_finished = time.time()
             print(
                 "YOLO_LAYOUT_PREFLIGHT "
                 f"layout={layout} index={index} "
+                f"epoch_start_s={epoch_started:.6f} "
+                f"epoch_end_s={epoch_finished:.6f} "
                 f"status={str(preflight.status).lower()} "
                 f"elapsed_ms={elapsed_ms:.2f} "
                 f"error={preflight.error}"
@@ -193,8 +197,10 @@ def main() -> int:
                 if run_deadline is None and index >= request_count:
                     break
                 started = time.perf_counter()
+                epoch_started = time.time()
                 result = invoke_once()
-                futures.append(_TimedFuture(_ImmediateResult(result), started, time.perf_counter()))
+                futures.append(_TimedFuture(_ImmediateResult(result), started, time.perf_counter(),
+                                            epoch_started, time.time()))
                 index += 1
                 if interval_s > 0:
                     next_start = started + interval_s
@@ -207,6 +213,7 @@ def main() -> int:
             futures = []
             for _ in range(request_count):
                 started = time.perf_counter()
+                epoch_started = time.time()
                 if plan_session is not None:
                     future = client.invoke_plan_async(
                         plan_session,
@@ -224,20 +231,25 @@ def main() -> int:
                         runtime=runtime_spec(),
                         artifact_references=args.repo_manifest_file or None,
                     )
-                futures.append(_TimedFuture(future, started, None))
+                futures.append(_TimedFuture(future, started, None, epoch_started, None))
         ok = True
         for index, timed in enumerate(futures):
             result = timed.future.result(timeout=args.timeout_ms / 1000 + 10)
             finished = timed.finished if timed.finished is not None else time.perf_counter()
+            epoch_finished = timed.epoch_finished if timed.epoch_finished is not None else time.time()
             elapsed_ms = (finished - timed.started) * 1000.0
             if not result.status:
                 print(
                     f"YOLO_LAYOUT_RESULT layout={layout} index={index} "
+                    f"epoch_start_s={timed.epoch_started:.6f} "
+                    f"epoch_end_s={epoch_finished:.6f} "
                     f"status=false inference_elapsed_ms={elapsed_ms:.2f} error={result.error}"
                 )
                 if layout == "2x2":
                     print(
                         f"YOLO_2X2_RESULT index={index} status=false "
+                        f"epoch_start_s={timed.epoch_started:.6f} "
+                        f"epoch_end_s={epoch_finished:.6f} "
                         f"inference_elapsed_ms={elapsed_ms:.2f} error={result.error}"
                     )
                 ok = False
@@ -251,7 +263,10 @@ def main() -> int:
             print(
                 "YOLO_LAYOUT_RESULT "
                 f"layout={layout} "
-                f"index={index} status=true shape={actual.shape} "
+                f"index={index} "
+                f"epoch_start_s={timed.epoch_started:.6f} "
+                f"epoch_end_s={epoch_finished:.6f} "
+                f"status=true shape={actual.shape} "
                 f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
                 f"inference_elapsed_ms={elapsed_ms:.2f} "
                 f"ok={str(item_ok).lower()}"
@@ -259,7 +274,10 @@ def main() -> int:
             if layout == "2x2":
                 print(
                     "YOLO_2X2_RESULT "
-                    f"index={index} status=true shape={actual.shape} "
+                    f"index={index} "
+                    f"epoch_start_s={timed.epoch_started:.6f} "
+                    f"epoch_end_s={epoch_finished:.6f} "
+                    f"status=true shape={actual.shape} "
                     f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
                     f"inference_elapsed_ms={elapsed_ms:.2f} "
                     f"ok={str(item_ok).lower()}"
@@ -277,10 +295,13 @@ class _ImmediateResult:
 
 
 class _TimedFuture:
-    def __init__(self, future, started: float, finished: float | None):
+    def __init__(self, future, started: float, finished: float | None,
+                 epoch_started: float, epoch_finished: float | None):
         self.future = future
         self.started = started
         self.finished = finished
+        self.epoch_started = epoch_started
+        self.epoch_finished = epoch_finished
 
 
 if __name__ == "__main__":

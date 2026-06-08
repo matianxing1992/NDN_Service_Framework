@@ -31,7 +31,7 @@ from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
 
-DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/AI_testbed.conf"
+DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/AI_Lab.conf"
 
 
 def log(message: str) -> None:
@@ -58,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--status-interval-ms", type=int, default=500)
     parser.add_argument("--status-timeout-ms", type=int, default=300)
     parser.add_argument("--nfd-log-level", default="ERROR")
+    parser.add_argument("--quick-smoke", action="store_true",
+                        help="Validate topology, node names, and required binaries without starting MiniNDN.")
     return parser
 
 
@@ -150,8 +152,49 @@ def configure_routes(ndn, args: argparse.Namespace) -> None:
             Nfdc.setStrategy(node, prefix, Nfdc.STRATEGY_MULTICAST)
 
 
+def topology_nodes(path: Path) -> set[str]:
+    nodes = set()
+    in_nodes = False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line == "[nodes]":
+            in_nodes = True
+            continue
+        if line.startswith("[") and line != "[nodes]":
+            in_nodes = False
+        if in_nodes and line and not line.startswith("#"):
+            nodes.add(line.rstrip(":"))
+    return nodes
+
+
+def quick_smoke(args: argparse.Namespace) -> int:
+    topology = Path(args.topology_file)
+    required_files = [
+        topology,
+        REPO / "build/examples/App_ServiceController",
+        REPO / "build/examples/App_TextToImageProvider",
+        REPO / "build/examples/App_TextToImageUser",
+        REPO / "examples/text-to-image-status.policies",
+    ]
+    missing = [str(path) for path in required_files if not path.exists()]
+    nodes = topology_nodes(topology) if topology.exists() else set()
+    required_nodes = {args.controller_node, args.user_node, args.provider_node}
+    missing_nodes = sorted(required_nodes - nodes)
+    if missing or missing_nodes:
+        raise RuntimeError(
+            "TextToImage status quick smoke failed "
+            f"missingFiles={missing} missingNodes={missing_nodes}")
+    print(
+        "TEXT_TO_IMAGE_STATUS_MININDN_QUICK_SMOKE_OK "
+        f"topology={topology} controller={args.controller_node} "
+        f"user={args.user_node} provider={args.provider_node}")
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
+    if args.quick_smoke:
+        return quick_smoke(args)
     sys.argv = [sys.argv[0]]
     setLogLevel("info")
     output_dir = Path(args.output_dir).resolve()

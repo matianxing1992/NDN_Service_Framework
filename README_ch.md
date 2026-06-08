@@ -148,6 +148,24 @@ python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
 ```
 
+### 2.1 MiniNDN quick checks
+
+每次更新 API 或实验脚本后，可以先跑短 MiniNDN/script 健康检查：
+
+```bash
+python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py
+```
+
+默认 suite 会先对更新过的 NDNSF、Repo、DI 和 UAV MiniNDN 实验脚本做
+syntax/import sanity 检查，然后调用较长旧实验 launcher 的 no-MiniNDN
+quick-smoke 分支。之后它会覆盖 Python HELLO MiniNDN smoke、DistributedRepo 单对象
+MiniNDN quick smoke、DI 本地 YOLO layout smoke，以及 UAV launcher quick smoke。
+较慢的 DI native-provider MiniNDN smoke 默认不跑；需要时显式加：
+
+```bash
+python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py --include-di-minindn
+```
+
 ## 3. 使用方法
 
 ### 3.1 通用动态 API，新应用推荐使用
@@ -499,6 +517,14 @@ Controller 不再发放 service invocation token。服务调用使用 `ServiceUs
 
 NAC-ABE 仍然是 NDNSF service request/response message、未来 selection payload、content key、IMS 和 SVS-backed runtime publication 的 runtime encryption 机制。
 
+运行时证书选择会区分 encryption certificate 和 signing certificate。由于当前
+NAC-ABE 和 PermissionResponse unwrap 仍要求 identity 具有 RSA-capable
+certificate，每个 user/provider/controller identity 必须至少有一个 RSA encryption
+certificate。如果同一个 identity 还安装了 EC/ECDSA certificate，`ServiceUser` 和
+`ServiceProvider` 会优先用它给 NDN Data、Interest 和 SVS 消息签名，因为高频签名更快。
+如果找不到 EC signing certificate，runtime 会自动回退到 RSA encryption certificate，
+保持旧部署兼容，只是签名性能较慢。已有 constructor 会自动执行这个兼容选择；如果部署者希望显式指定，也可以使用分别传入 `encryptionCert` 和 `signingCert` 的 constructor。
+
 ### 3.5 分布式部署中的证书发布
 
 NDN certificate 本身也是具名 Data packet。在分布式部署中，user、provider、controller 和 AA certificate 必须能通过 certificate name 被路由/FIB 到达，就像普通 service Data 一样。远端 validator、NAC-ABE authority 和 controller 可能会在 DKEY、permission 和 bootstrap 流程中 fetch 这些 certificate。
@@ -520,7 +546,8 @@ ndn_service_framework::CertificatePublisher certPublisher(
   providerCert.getName());
 ```
 
-它会在本地 KeyChain 中找到 certificate，在精确 certificate name 下服务已有 certificate Data，默认注册 certificate 的 `.../KEY/<key-id>` prefix。HELLO 示例默认启用这个功能；如果部署环境已经用其它机制服务 certificate，可以使用 `--no-serve-certificates`。
+它会在本地 KeyChain 中找到 certificate，并默认同时服务同一 identity 下其它 key 的默认
+certificates，例如 RSA encryption certificate 加 EC/ECDSA signing certificate。它会为每个被服务 certificate 注册对应的 `.../KEY/<key-id>` prefix，并且只返回 Data name 与 incoming Interest 匹配的 certificate。HELLO 示例默认启用这个功能；如果部署环境已经用其它机制服务 certificate，可以使用 `--no-serve-certificates`。
 
 有物理 access 时的手动证书 bootstrap：
 

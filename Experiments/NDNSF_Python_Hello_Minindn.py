@@ -35,7 +35,7 @@ from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
 
-DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/AI_Lab.conf"
 
 
 def log(message: str) -> None:
@@ -87,6 +87,7 @@ def make_perf_args(args: argparse.Namespace) -> SimpleNamespace:
         svs_sync_batching=False,
         svs_sync_batch_ms=0,
         ack_threads=2,
+        performance_mode=False,
     )
 
 

@@ -49,6 +49,14 @@ def build(bld):
                 linkflags=['-Wl,-rpath,$ORIGIN/..'],
                 install_path=None)
 
+    bld.program(name='CryptoMicrobench',
+                target='CryptoMicrobench',
+                source=['CryptoMicrobench.cpp'],
+                includes=['..'],
+                use='NDN_CXX BOOST',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     bld.program(name='App_IntermittentProvider',
                 target='App_IntermittentProvider',
                 source=['App_IntermittentProvider.cpp'],

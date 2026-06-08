@@ -16,6 +16,7 @@
 
 #include <ndn-cxx/security/validation-error.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <fcntl.h>
@@ -39,6 +40,94 @@ namespace ndn_service_framework
                 os << attributes[i];
             }
             return os.str();
+        }
+
+        ndn::security::Certificate
+        getExistingSigningCertificateOrFallback(ndn::KeyChain& keyChain,
+                                                const ndn::security::Certificate& encryptionCert)
+        {
+            if (const char* value = std::getenv("NDNSF_DISABLE_SPLIT_SIGNING")) {
+                std::string text(value);
+                std::transform(text.begin(), text.end(), text.begin(),
+                               [] (unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (!(text.empty() || text == "0" || text == "false" ||
+                      text == "no" || text == "off")) {
+                    return encryptionCert;
+                }
+            }
+            const auto identityName = encryptionCert.getIdentity();
+            try {
+                auto identity = keyChain.getPib().getIdentity(identityName);
+                for (const auto& key : identity.getKeys()) {
+                    if (key.getKeyType() == ndn::KeyType::EC) {
+                        try {
+                            return key.getDefaultCertificate();
+                        }
+                        catch (const std::exception&) {
+                            continue;
+                        }
+                    }
+                }
+            }
+            catch (const std::exception&) {
+                return encryptionCert;
+            }
+            return encryptionCert;
+        }
+
+        ndn::security::Certificate
+        getExistingSigningCertificateOrFallback(const ndn::security::Certificate& encryptionCert)
+        {
+            ndn::KeyChain keyChain;
+            return getExistingSigningCertificateOrFallback(keyChain, encryptionCert);
+        }
+
+        ndn::KeyType
+        getCertificateKeyType(const ndn::security::Certificate& cert)
+        {
+            ndn::security::transform::PublicKey publicKey;
+            publicKey.loadPkcs8(cert.getPublicKey());
+            return publicKey.getKeyType();
+        }
+
+        bool
+        isRsaCertificate(const ndn::security::Certificate& cert)
+        {
+            return getCertificateKeyType(cert) == ndn::KeyType::RSA;
+        }
+
+        ndn::security::Certificate
+        getExistingEncryptionCertificateOrThrow(const ndn::security::Certificate& identityHintCert)
+        {
+            if (isRsaCertificate(identityHintCert)) {
+                return identityHintCert;
+            }
+
+            ndn::KeyChain keyChain;
+            const auto identityName = identityHintCert.getIdentity();
+            try {
+                auto identity = keyChain.getPib().getIdentity(identityName);
+                for (const auto& key : identity.getKeys()) {
+                    if (key.getKeyType() == ndn::KeyType::RSA) {
+                        return key.getDefaultCertificate();
+                    }
+                }
+            }
+            catch (const std::exception&) {
+            }
+
+            throw std::invalid_argument("ServiceProvider requires an RSA encryption certificate for NAC-ABE");
+        }
+
+        void
+        ensureSameIdentity(const ndn::security::Certificate& encryptionCert,
+                           const ndn::security::Certificate& signingCert,
+                           const char* role)
+        {
+            if (encryptionCert.getIdentity() != signingCert.getIdentity()) {
+                throw std::invalid_argument(std::string(role) +
+                                            " encryptionCert and signingCert must share identity");
+            }
         }
 
         class FileLock
@@ -598,20 +687,50 @@ namespace ndn_service_framework
         }
     }
 
-    ServiceProvider::ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate, std::string trustSchemaPath)
+    ServiceProvider::ServiceProvider(ndn::Face& face,
+                                     ndn::Name group_prefix,
+                                     ndn::security::Certificate identityCert,
+                                     ndn::security::Certificate attrAuthorityCertificate,
+                                     std::string trustSchemaPath)
+        : ServiceProvider(face,
+                          std::move(group_prefix),
+                          getExistingEncryptionCertificateOrThrow(identityCert),
+                          getExistingSigningCertificateOrFallback(identityCert),
+                          std::move(attrAuthorityCertificate),
+                          std::move(trustSchemaPath))
+    {
+    }
+
+    ServiceProvider::ServiceProvider(ndn::Face& face,
+                                     ndn::Name group_prefix,
+                                     ndn::security::Certificate encryptionCert,
+                                     ndn::security::Certificate signingCert,
+                                     ndn::security::Certificate attrAuthorityCertificate,
+                                     std::string trustSchemaPath)
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
-        identity(identityCert.getIdentity()),
+        identity(encryptionCert.getIdentity()),
         validator(std::make_shared<MessageValidator>(trustSchemaPath)),
-        identityCert(identityCert),
+        identityCert(encryptionCert),
+        signingCert(signingCert),
         // nac_validator(std::move(ndn::security::ValidatorNull())),
-        nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
+        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
         m_IMS(50000)
     {
+        ensureSameIdentity(encryptionCert, signingCert, "ServiceProvider");
+        if (!isRsaCertificate(encryptionCert)) {
+            throw std::invalid_argument("ServiceProvider encryptionCert must be RSA for NAC-ABE");
+        }
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider="
                      << identity.toUri());
+        NDN_LOG_WARN("NDNSF_CERT_SELECTION role=provider identity="
+                     << identity.toUri()
+                     << " encryptionCert=" << encryptionCert.getName()
+                     << " signingCert=" << signingCert.getName()
+                     << " splitSigning="
+                     << (encryptionCert.getName() == signingCert.getName() ? "false" : "true"));
         m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
         m_ackPool.setThreadCount(defaultNdnsfAckThreads());
         NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=provider workers="
@@ -655,17 +774,17 @@ namespace ndn_service_framework
         NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider="
                      << identity.toUri());
 
-        m_signingInfo = ndn::security::signingByCertificate(identityCert);
+        m_signingInfo = ndn::security::signingByCertificate(signingCert);
 
         ndn::svs::SecurityOptions secOpts(m_keyChain);
         secOpts.interestSigner = std::make_shared<CommandInterestSigner>(m_keyChain);
         secOpts.interestSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-        const auto identityKeyName = identityCert.getKeyName();
-        const auto identityCertName = identityCert.getName();
-        secOpts.interestSigner->signingInfo.setSigningKeyName(identityKeyName);
-        secOpts.dataSigner->signingInfo.setSigningCertName(identityCertName);
+        const auto signingKeyName = signingCert.getKeyName();
+        const auto signingCertName = signingCert.getName();
+        secOpts.interestSigner->signingInfo.setSigningKeyName(signingKeyName);
+        secOpts.dataSigner->signingInfo.setSigningCertName(signingCertName);
         secOpts.dataSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
-        secOpts.pubSigner->signingInfo.setSigningCertName(identityCertName);
+        secOpts.pubSigner->signingInfo.setSigningCertName(signingCertName);
         secOpts.pubSigner->signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);
         secOpts.validator = validator;
         secOpts.encapsulatedDataValidator = validator;
@@ -781,22 +900,44 @@ namespace ndn_service_framework
                                      ndn::security::Certificate identityCert,
                                      ndn::security::Certificate attrAuthorityCertificate,
                                      std::string trustSchemaPath)
+        : ServiceProvider(LocalMockTag{},
+                          face,
+                          std::move(group_prefix),
+                          getExistingEncryptionCertificateOrThrow(identityCert),
+                          getExistingSigningCertificateOrFallback(identityCert),
+                          std::move(attrAuthorityCertificate),
+                          std::move(trustSchemaPath))
+    {
+    }
+
+    ServiceProvider::ServiceProvider(LocalMockTag,
+                                     ndn::Face& face,
+                                     ndn::Name group_prefix,
+                                     ndn::security::Certificate encryptionCert,
+                                     ndn::security::Certificate signingCert,
+                                     ndn::security::Certificate attrAuthorityCertificate,
+                                     std::string trustSchemaPath)
         : m_face(face),
         m_scheduler(m_face.getIoContext()),
-        identity(identityCert.getIdentity()),
+        identity(encryptionCert.getIdentity()),
         m_keyChain(),
         m_svsps(nullptr),
         validator(std::make_shared<MessageValidator>(trustSchemaPath)),
         nac_validator(m_face),
-        identityCert(identityCert),
+        identityCert(encryptionCert),
+        signingCert(signingCert),
         attrAuthorityCertificate(attrAuthorityCertificate),
-        nacConsumer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
-        nacProducer(m_face, m_keyChain, nac_validator, identityCert, attrAuthorityCertificate),
+        nacConsumer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
+        nacProducer(m_face, m_keyChain, nac_validator, encryptionCert, attrAuthorityCertificate),
         random(ndn::random::getRandomNumberEngine()),
         m_IMS(50000),
         m_configManager("/tmp/ndnsf-service-provider-local-mock.conf")
     {
-        m_signingInfo = ndn::security::signingByCertificate(identityCert);
+        ensureSameIdentity(encryptionCert, signingCert, "ServiceProvider");
+        if (!isRsaCertificate(encryptionCert)) {
+            throw std::invalid_argument("ServiceProvider encryptionCert must be RSA for NAC-ABE");
+        }
+        m_signingInfo = ndn::security::signingByCertificate(signingCert);
     }
 
     void ServiceProvider::init()
@@ -2765,10 +2906,22 @@ namespace ndn_service_framework
 
         const bool activePut =
             boolEnvOrDefault("NDNSF_COLLAB_LARGE_ACTIVE_PUT", true);
+        const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
         for (const auto& data : segments) {
             insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
             if (activePut) {
                 m_face.put(*data);
+                if (fetchTimingEnabled) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
+                                 << " event=segment_active_put"
+                                 << " mode=producer-active-put"
+                                 << " timestamp_us=" << nowMicroseconds()
+                                 << " requestId=" << requestId.toUri()
+                                 << " keyScope=" << keyScope
+                                 << " dataName=" << name.toUri()
+                                 << " segmentName=" << data->getName().toUri()
+                                 << " wire_bytes=" << data->wireEncode().size());
+                }
             }
         }
         NDN_LOG_DEBUG("COLLAB_LARGE_PUBLISHED name=" << name.toUri()
@@ -2840,10 +2993,22 @@ namespace ndn_service_framework
 
         const bool activePut =
             boolEnvOrDefault("NDNSF_COLLAB_LARGE_ACTIVE_PUT", true);
+        const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
         for (const auto& data : segments) {
             insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
             if (activePut) {
                 m_face.put(*data);
+                if (fetchTimingEnabled) {
+                    NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
+                                 << " event=segment_active_put"
+                                 << " mode=producer-active-put"
+                                 << " timestamp_us=" << nowMicroseconds()
+                                 << " requestId=" << requestId.toUri()
+                                 << " keyScope=" << keyScope
+                                 << " dataName=" << dataName.toUri()
+                                 << " segmentName=" << data->getName().toUri()
+                                 << " wire_bytes=" << data->wireEncode().size());
+                }
             }
         }
         NDN_LOG_DEBUG("COLLAB_LARGE_NAMED_PUBLISHED name=" << dataName.toUri()
@@ -3044,6 +3209,7 @@ namespace ndn_service_framework
                         state->interestIssued[i] = std::chrono::steady_clock::now();
                         NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=segment_interest"
                                      << " mode=exact-segments"
+                                     << " timestamp_us=" << nowMicroseconds()
                                      << " requestId=" << requestId.toUri()
                                      << " keyScope=" << keyScope
                                      << " dataName=" << dataName.toUri()
@@ -3078,6 +3244,7 @@ namespace ndn_service_framework
                                 NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
                                              << " event=segment_received"
                                              << " mode=exact-segments"
+                                             << " timestamp_us=" << nowMicroseconds()
                                              << " requestId=" << requestId.toUri()
                                              << " keyScope=" << keyScope
                                              << " dataName=" << dataName.toUri()
@@ -3137,6 +3304,7 @@ namespace ndn_service_framework
                                         NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
                                                      << " event=segment_validated"
                                                      << " mode=exact-segments"
+                                                     << " timestamp_us=" << nowMicroseconds()
                                                      << " requestId=" << requestId.toUri()
                                                      << " keyScope=" << keyScope
                                                      << " dataName=" << dataName.toUri()
@@ -6381,11 +6549,96 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                               serviceName,
                                               requestId);
         PublishMessage(name, nameWithoutPrefix, requestAckMessage);
+        prefetchSelectionMessageV2(requesterIdentity, serviceName, requestId);
     }
 
     void ServiceProvider::onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
     {
-        if(!isFresh(subscription)) return;
+        handleServiceSelectionMessage(subscription, true);
+    }
+
+    void ServiceProvider::prefetchSelectionMessageV2(const ndn::Name& requesterIdentity,
+                                                     const ndn::Name& serviceName,
+                                                     const ndn::Name& requestId)
+    {
+        if (!isTruthyEnv("NDNSF_SELECTION_DIRECT_PREFETCH")) {
+            return;
+        }
+
+        const ndn::Name selectionName =
+            makeCompactServiceSelectionNameV2(requesterIdentity, serviceName, requestId);
+        ndn::Interest interest(selectionName);
+        interest.setCanBePrefix(false);
+        interest.setMustBeFresh(false);
+        interest.setInterestLifetime(ndn::time::milliseconds(
+            std::max(100, intEnvOrDefault("NDNSF_SELECTION_DIRECT_PREFETCH_LIFETIME_MS", 10000))));
+
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DIRECT_PREFETCH_ISSUED timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " serviceName=" << serviceName.toUri()
+                      << " requesterName=" << requesterIdentity.toUri()
+                      << " providerName=" << identity.toUri()
+                      << " selectionName=" << selectionName.toUri());
+
+        m_face.expressInterest(
+            interest,
+            [this, requesterIdentity, serviceName, requestId, selectionName]
+            (const ndn::Interest&, const ndn::Data& data) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DIRECT_PREFETCH_DATA timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " serviceName=" << serviceName.toUri()
+                              << " requesterName=" << requesterIdentity.toUri()
+                              << " providerName=" << identity.toUri()
+                              << " selectionName=" << selectionName.toUri()
+                              << " dataName=" << data.getName().toUri()
+                              << " contentBytes=" << data.getContent().value_size());
+                logControlTiming("provider", "SELECTION_DIRECT_PREFETCH_DATA", requestId,
+                                 {{"serviceName", serviceName.toUri()},
+                                  {"requesterName", requesterIdentity.toUri()},
+                                  {"providerName", identity.toUri()},
+                                  {"selectionName", selectionName.toUri()},
+                                  {"contentBytes", std::to_string(data.getContent().value_size())}});
+                ndn::Name producerPrefix(requesterIdentity);
+                producerPrefix.appendNumber(0);
+                std::optional<ndn::Data> packet(data);
+                ndn::svs::SVSPubSub::SubscriptionData subData{
+                    data.getName(),
+                    data.getContent().value_bytes(),
+                    producerPrefix,
+                    0,
+                    packet,
+                };
+                handleServiceSelectionMessage(subData, false);
+            },
+            [this, requestId, serviceName, requesterIdentity, selectionName]
+            (const ndn::Interest&, const ndn::lp::Nack&) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DIRECT_PREFETCH_NACK timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " serviceName=" << serviceName.toUri()
+                              << " requesterName=" << requesterIdentity.toUri()
+                              << " providerName=" << identity.toUri()
+                              << " selectionName=" << selectionName.toUri());
+            },
+            [this, requestId, serviceName, requesterIdentity, selectionName]
+            (const ndn::Interest&) {
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=SELECTION_DIRECT_PREFETCH_TIMEOUT timestamp_us="
+                              << nowMicroseconds()
+                              << " requestId=" << requestId.toUri()
+                              << " serviceName=" << serviceName.toUri()
+                              << " requesterName=" << requesterIdentity.toUri()
+                              << " providerName=" << identity.toUri()
+                              << " selectionName=" << selectionName.toUri());
+            });
+    }
+
+    void ServiceProvider::handleServiceSelectionMessage(
+        const ndn::svs::SVSPubSub::SubscriptionData& subscription,
+        bool checkFreshness)
+    {
+        if(checkFreshness && !isFresh(subscription)) return;
 
         auto compactSelectionV2 =
             ndn_service_framework::parseCompactServiceSelectionNameV2(subscription.name);

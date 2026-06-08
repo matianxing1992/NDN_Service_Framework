@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import pwd
+import site
 import subprocess
 import sys
 import time
@@ -12,6 +15,26 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
+
+
+def python_path_entries() -> list[str]:
+    entries = [
+        str(REPO / "NDNSF-DistributedInference"),
+        str(REPO / "pythonWrapper"),
+        str(REPO / "Experiments"),
+        site.getusersitepackages(),
+    ]
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            sudo_home = pwd.getpwnam(sudo_user).pw_dir
+            version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+            entries.append(str(Path(sudo_home) / ".local/lib" / version / "site-packages"))
+        except KeyError:
+            pass
+    if os.environ.get("PYTHONPATH"):
+        entries.append(os.environ["PYTHONPATH"])
+    return entries
 
 
 @dataclass(frozen=True)
@@ -48,14 +71,29 @@ CASES = {
     "yolo-2x2": RegressionCase(
         name="yolo-2x2",
         script=REPO / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py",
-        success_marker="YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK",
-        description="YOLO 2x2 chunk graph, repo-backed artifacts, and cache reuse",
+        success_marker="YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK",
+        description="YOLO 2x2 native-provider dataflow, repo-backed artifacts, and cache reuse",
+        extra_args=(
+            "--layout", "2x2",
+            "--parallel-detect-scale-shards",
+            "--native-providers",
+            "--cold-requests", "1",
+            "--warm-requests", "1",
+            "--ack-timeout-ms", "300",
+            "--timeout-ms", "10000",
+            "--quiet-perf-logs",
+        ),
     ),
     "yolo-layout": RegressionCase(
         name="yolo-layout",
         script=REPO / "Experiments/NDNSF_DI_Yolo2x2_Minindn.py",
-        success_marker="YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK",
-        description="YOLO custom layout chunk graph, repo-backed artifacts, and cache reuse",
+        success_marker="YOLO_LAYOUT_NATIVE_PROVIDERS_MININDN_OK",
+        description="YOLO custom-layout native-provider dataflow, repo-backed artifacts, and cache reuse",
+        extra_args=(
+            "--native-providers",
+            "--parallel-detect-scale-shards",
+            "--quiet-perf-logs",
+        ),
     ),
     "yolo-layout-local": RegressionCase(
         name="yolo-layout-local",
@@ -81,12 +119,17 @@ def selected_cases(selection: str) -> list[RegressionCase]:
 def run_case(case: RegressionCase, extra_args: list[str] | None = None) -> None:
     start = time.time()
     print(f"NDNSF_DI_REGRESSION_START case={case.name} script={case.script}")
+    env = {
+        **os.environ,
+        "PYTHONPATH": ":".join(python_path_entries()),
+    }
     command = ["python3", str(case.script), *case.extra_args, *(extra_args or [])]
     if case.use_sudo:
-        command = ["sudo", "-E", *command]
+        command = ["sudo", "-E", "env", f"PYTHONPATH={env['PYTHONPATH']}", *command]
     proc = subprocess.run(
         command,
         cwd=str(REPO),
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

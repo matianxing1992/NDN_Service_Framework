@@ -1829,18 +1829,30 @@ reference wait, segmented fetch, activation publish, frontier scheduling, or
 tensor decoding.
 
 AI-oriented MiniNDN regressions use
-`Experiments/Topology/AI_testbed.conf`. That topology uses 1 ms links and is the
-current reproducible testbed for DI performance experiments. Do not set a global
+`Experiments/Topology/AI_Lab.conf` by default. That topology uses five nodes:
+`memphis` as the user/controller-side hub and four directly attached 1 ms,
+1 Gbps provider nodes (`ucla`, `arizona`, `wustl`, `neu`). It is intentionally
+smaller than the older `AI_testbed.conf` so MiniNDN/NFD CPU scheduling noise is
+lower during DI performance experiments. Use `AI_testbed.conf` only when a
+larger multi-node topology is the point of the experiment. Do not set a global
 `NDN_LOG` value around the MiniNDN command: NFD inherits that environment and
 can fail to start on application-style logging filters. For low-noise benchmark
 runs, use the script flags and `NDNSF_TIMELINE_TRACE_SAMPLE_RATE` shown below.
 
 The current 2x2 native-provider benchmark recipe is:
 
+During this MiniNDN setup, each DI user/provider/controller identity receives
+two root-signed keys in its per-node `/tmp/Minindn/<node>` keychain: an RSA key
+kept as the default encryption certificate for NAC-ABE/PermissionResponse
+unwrap, and an ECDSA key used as the optional signing certificate when present.
+If the ECDSA key is absent, NDNSF falls back to signing with the RSA certificate.
+Use `--single-rsa-certs` only as a control run when comparing the dual-certificate
+signing path against the older RSA-only behavior.
+
 ```bash
 sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true
 sleep 3
-sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
+sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=1 \
   python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
   --layout 2x2 \
   --parallel-detect-scale-shards \
@@ -1852,27 +1864,36 @@ sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
   --ack-timeout-ms 300 \
   --timeout-ms 10000 \
   --quiet-perf-logs \
-  --results-dir results/yolo_2x2_native_provider_active_put_60s_minimal
+  --results-dir results/yolo_2x2_native_provider_selection_direct_prefetch_60s_minimal
 ```
 
 The representative run in
-`results/yolo_2x2_native_provider_active_put_60s_minimal` produced
+`results/yolo_2x2_native_provider_selection_direct_prefetch_60s_minimal` produced
 `YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK`, 60 measured warm requests, warm p50
-100.70 ms, warm p95 129.93 ms, and warm mean 100.27 ms. After discarding the
-first measured warm request, steady warm p50 was 100.80 ms, p95 was 129.94 ms,
-and mean was 100.63 ms. NFD observed 913 incoming/outgoing Data packets across
-the 62 warm-side requests counted by the script, or 14.73 Data packets per
-observed request. The measured-window ratio was 15.22 NFD out Data packets per
-inference and about 430 KB of NFD `nOutBytes` per measured inference. As above,
+66.91 ms, warm p95 95.61 ms, and warm mean 67.02 ms. After discarding the
+first measured warm request, steady warm p50 was 66.76 ms, p95 was 95.64 ms,
+and mean was 66.62 ms. NFD observed 1212 incoming/outgoing Data packets across
+the 62 warm-side requests counted by the script, or 19.55 Data packets per
+observed request. The measured-window ratio was 20.20 NFD out Data packets per
+inference and about 451 KB of NFD `nOutBytes` per measured inference. As above,
 the byte average is an approximate transport-size ratio because NFD byte
 counters include all packet types on the measured faces.
 
-The current native provider path uses deterministic activation names and
-active-put segment delivery by default (`NDNSF_COLLAB_LARGE_ACTIVE_PUT=1`).
-This keeps the generated activation segments in IMS and also immediately
-pushes them to NFD so pre-issued exact segment Interests can be satisfied
-without waiting for an additional application-level notification path. Disable
-that behavior only for A/B diagnosis with `NDNSF_COLLAB_LARGE_ACTIVE_PUT=0`.
+The current native provider path uses deterministic activation names,
+active-put segment delivery, and direct Selection prefetch by default in the DI
+MiniNDN native-provider experiment. `NDNSF_COLLAB_LARGE_ACTIVE_PUT=1` keeps
+generated activation segments in IMS and also immediately pushes them to NFD so
+pre-issued exact segment Interests can be satisfied without waiting for an
+additional application-level notification path. `NDNSF_SELECTION_DIRECT_PREFETCH=1`
+lets each provider pre-express an Interest for the predictable SelectionMessage
+name after it publishes an ACK; the user still publishes the same Selection via
+SVS, but also puts a signed Data packet under the same selection name. Providers
+feed that Data into the same selection handler, token checks, and hybrid
+decrypt path, while the later SVS duplicate is suppressed by the normal
+duplicate guard. Core keeps this feature behind the environment variable; the
+DI native-provider runner enables it for this measured experiment. Disable
+these behaviors only for A/B diagnosis with
+`NDNSF_COLLAB_LARGE_ACTIVE_PUT=0` or `NDNSF_SELECTION_DIRECT_PREFETCH=0`.
 
 This minimal recipe intentionally disables detailed dependency/control/crypto
 timing so the latency number is not dominated by tracing. Treat this 60-second
@@ -1883,22 +1904,73 @@ runs explain the remaining outer ACK/Selection/Response and SVS delivery cost,
 but should not be compared directly with the minimal latency baseline.
 
 A sampled control-timing diagnostic run is preserved in
-`results/yolo_2x2_native_provider_active_put_60s_control`. It used the same
-60-second shape with `--control-timing` and produced 60 measured warm requests
-with p50 99.76 ms, p95 126.51 ms, and steady-after-first p50 100.58 ms. The run
-measured p50 request latency at 100.45 ms, provider dataflow at 21.00 ms, role
-run window at 20.00 ms, ONNX run sum at 2.39 ms, and outer-control residual at
-78.56 ms. Activation reference wait was 0.00 ms for all planned inputs, all 252
-native dataflow inputs and outputs matched the deterministic plan, and
-activation publish p50 was about 1.20 ms per edge. The remaining cost is mainly
-control propagation: request SVS to provider request observation was about
-15.77 ms p50, ACK SVS to user pre-decrypt about 7.46 ms p50, selection SVS to
-provider selection observation about 32.98 ms p50, and response SVS to user
-observation about 16.86 ms p50. Provider-side request admission, provider-side
-selection decrypt/dispatch, and response publication are sub-millisecond. In
-other words, ONNX and activation publication are no longer the bottleneck; the
-largest residual is the outer ACK/Selection/Response control path, especially
-SelectionMessage delivery through SVS/NFD.
+`results/yolo_2x2_native_provider_selection_direct_prefetch_60s_control`. It
+used the same 60-second shape with `--control-timing` and produced 60 measured
+warm requests with p50 78.72 ms, p95 96.92 ms, and steady-after-first p50
+78.64 ms. The run measured p50 request latency at 78.66 ms, provider dataflow
+at 20.00 ms, role run window at 16.00 ms, ONNX run sum at 2.52 ms, and
+outer-control residual at 51.93 ms. Activation reference wait was 0.00 ms for
+all planned inputs, all 252 native dataflow inputs and outputs matched the
+deterministic plan, and activation publish p50 was about 1.21 ms per edge.
+Control propagation is still visible: request SVS to provider request
+observation was about 18.02 ms p50, ACK SVS to user pre-decrypt about 7.62 ms
+p50, selection delivery to provider selection handling about 15.73 ms p50 in
+the sampled rows, and response SVS to user observation about 15.69 ms p50.
+Provider-side request admission, provider-side selection decrypt/dispatch, and
+response publication remain sub-millisecond. In other words, ONNX and
+activation publication are no longer the bottleneck; the largest remaining
+residual is the outer ACK/Selection/Response control path and NFD/SVS delivery
+around request, ACK, selection, and response.
+
+Control-timing runs also print `YOLO_LAYOUT_SELECTION_DIRECT_PREFETCH` and write
+`selection-direct-prefetch-stats.json`. That diagnostic pairs the user-side
+`SELECTION_DIRECT_PUT` event with each provider-side
+`SELECTION_DIRECT_PREFETCH_DATA` and `SELECTION_OBSERVED` event. Use it to
+answer the narrow question of whether direct Selection Data is stuck between
+`Face::put()` and provider handling. A short packet-trace smoke at
+`results/yolo_2x2_selection_direct_put_packet_trace_smoke` showed the first
+large NDN/UDP packets on the user node about 3 ms after `SELECTION_DIRECT_PUT`,
+and provider nodes observed corresponding traffic within a few more
+milliseconds. This points away from a tens-of-milliseconds `Face::put()` stall
+on the direct Selection path.
+
+If the question is whether ndn-svs itself is spending milliseconds inside
+Sync processing, use `--svs-internal-timing` for a short diagnostic run. This
+enables only `ndn_svs.SyncTimeline` and `ndn_svs.SVSPubSub` TRACE logs and
+writes `svs-internal-timing-stats.json`; it is not a baseline benchmark mode.
+A short smoke at `results/yolo_2x2_svs_mapping_timing_smoke` showed
+`sync_worker_p50_ms=0.000`, `sync_main_blocked_p50_ms=0.000`,
+`sync_encode_p50_us=66.0`, `sync_sign_p50_us=702.5`, and
+`sync_face_put_p50_us=11.0`. Extra mapping piggyback was also bounded:
+34 extra-block builds carried 28 mapping entries and 24 piggyback Data packets
+in total, with p50 extra-block size about 1145 bytes and no network mapping
+fetches. The mapping-specific split is even smaller: mapping block construction
+had `extra_mapping_build_total_p50_us=16.5`, while receive-side mapping parse
+and processing had `extra_mapping_parse_total_p50_us=244.5` and
+`extra_mapping_parse_process_p50_us=157.5`. In other words, the current
+evidence does not support a large per-message ndn-svs CPU bottleneck or
+repeated full-history mapping payload. The remaining cost is primarily the
+number of outer control deliveries Request -> ACK -> Selection -> Response
+over the measured MiniNDN/NFD/SVS path.
+
+For activation transport, dependency-timing runs also print
+`YOLO_LAYOUT_ACTIVATION_SEGMENT_TIMELINE` and write
+`activation-segment-timeline-stats.json`. That diagnostic pairs consumer
+`segment_interest`, producer `segment_active_put`, and consumer
+`segment_received/segment_validated` events by deterministic segment name. A
+run also writes `dependency-edge-ndnping-rtt-stats.json`, which measures
+ndnping RTT along each planned dependency edge from the consumer provider node
+to the producer provider prefix. Use this edge RTT, not only user-to-provider
+RTT, when explaining activation delivery; in AI_Lab, the activation edges can
+have materially higher observed RTT than the memphis-to-provider baseline. A
+short diagnostic smoke at `results/yolo_2x2_activation_segment_timeline_smoke`
+showed `interest_to_data_p50_ms=83.81`, but
+`interest_to_active_put_p50_ms=80.27` and `active_put_to_data_p50_ms=8.51`.
+Thus the large apparent activation fetch time is mostly productive prefetch
+wait for the upstream role to finish and publish its segment. Once the producer
+active-puts the Data, delivery and validation are much smaller. This
+distinction matters when interpreting dependency fetch p50: prefetch overlap is
+not the same as blocking network transfer.
 
 A second control run with synchronous local SVS publish is preserved in
 `results/yolo_2x2_native_provider_active_put_60s_sync_publish_control`. It
@@ -1906,10 +1978,9 @@ produced warm p50 95.28 ms and p95 115.27 ms, reducing outer-control residual
 from 78.56 ms to 73.59 ms. This is a useful A/B result but not a complete fix:
 selection SVS to provider observation remained about 33.67 ms p50. Therefore,
 do not keep compressing SelectionMessage payloads or changing ndn-svs timing by
-default. The next meaningful optimization should be an NDNSF-layer design such
-as predictable SelectionMessage prefetch or another measured control-path
-shortcut that preserves the same selection name, permissions, tokens, and
-hybrid encryption semantics.
+default. That result motivated the direct Selection prefetch path described
+above: keep the same selection name, permissions, tokens, and hybrid encryption
+semantics, but let providers prefetch the predictable Selection Data directly.
 
 When the question is specifically whether the delay is in NFD/SVS packet
 propagation, first run the narrow 60-second control diagnostic without packet
@@ -1931,8 +2002,105 @@ sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=10 \
   --timeout-ms 10000 \
   --quiet-perf-logs \
   --control-timing \
-  --results-dir results/yolo_2x2_native_provider_active_put_60s_control
+  --results-dir results/yolo_2x2_native_provider_selection_direct_prefetch_60s_control
 ```
+
+If the question is whether a 40-100 ms latency swing correlates with MiniNDN/NFD
+forwarding pressure, keep the same 60-second measured window and add only the
+warm RTT/NFD monitor:
+
+```bash
+sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true
+sleep 3
+sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=1 \
+  python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --layout 2x2 \
+  --parallel-detect-scale-shards \
+  --native-providers \
+  --cold-requests 1 \
+  --warm-duration-s 60 \
+  --warm-interval-ms 1000 \
+  --preflight-requests 3 \
+  --ack-timeout-ms 300 \
+  --timeout-ms 10000 \
+  --quiet-perf-logs \
+  --control-timing \
+  --warm-rtt-monitor-interval-s 1 \
+  --results-dir results/yolo_2x2_warm_rtt_nfd_monitor_60s
+```
+
+This writes `warm-rtt-nfd-monitor.json`. Each measured inference result carries
+`epoch_start_s` and `epoch_end_s`; the monitor aligns each request with the
+nearest user-to-provider ndnping-style RTT sample and NFD network-face Data
+counter delta. This mode adds four ndnping probes per sample interval, so use
+it for correlation and diagnosis, not as the canonical low-overhead benchmark.
+With `--control-timing`, the script also writes
+`outer-control-rtt-correlation-stats.json`, which aligns each request with
+outer ACK/Selection/Response timing and reports the strongest correlations with
+inference latency. Use `NDNSF_TIMELINE_TRACE_SAMPLE_RATE=1` for this correlation
+run; sampled rates such as `10` are useful for lower overhead summaries but do
+not provide one control row per inference request.
+The same run also writes `native-session-breakdown-stats.json`, which joins the
+user outer-control row with provider role timing, dependency fetch timing, and
+ONNX timing by request/session id. Use that file for individual outliers: it
+separates request-to-first-ACK delay, ACK-to-selection delay, selection-to-final
+response delay, final merge execution, and the slowest activation dependency
+fetch. In the current 2x2 native-provider diagnostics, RTT/NFD counter drift is
+weakly correlated with latency; the larger swings are usually outer
+ACK/Selection propagation or final merge activation fetch waits.
+
+When comparing RSA-only signing with RSA+ECDSA split certificates, do not use
+separate MiniNDN runs as the primary evidence. MiniNDN/NFD RTT drift can be
+larger than the signing difference. Use one topology and run the signing modes
+back-to-back:
+
+```bash
+sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true
+sleep 3
+sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
+  python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --layout 2x2 \
+  --parallel-detect-scale-shards \
+  --native-providers \
+  --cold-requests 1 \
+  --warm-duration-s 60 \
+  --warm-interval-ms 1000 \
+  --preflight-requests 3 \
+  --ack-timeout-ms 300 \
+  --timeout-ms 10000 \
+  --quiet-perf-logs \
+  --signing-ab-phases rsa,ecdsa,rsa \
+  --results-dir results/yolo_2x2_cert_ab_same_topology_60s
+```
+
+This mode installs dual RSA/ECDSA certificates, keeps the same controller,
+repo, topology, and NFD instances, and restarts only the compute providers for
+each signing phase. The phase labels in `inference-latency-stats.json` are
+`warm-rsa-1`, `warm-ecdsa-2`, and `warm-rsa-3`. Treat short runs as smoke tests
+only; use the 60-second measured window above for evidence. A separate
+`--single-rsa-certs` run is still useful as a compatibility smoke, but it is
+not a fair signing-performance comparison if run under a different MiniNDN
+RTT baseline.
+
+`splitSigning` is certificate selection, not a SelectionMessage mode. RSA stays
+the encryption certificate for NAC-ABE/permission unwrap. When an EC certificate
+is available and `NDNSF_DISABLE_SPLIT_SIGNING` is not set, EC is used as the
+signing certificate. Check the `NDNSF_CERT_SELECTION` lines in the user/provider
+logs before interpreting a signing benchmark. `splitSigning=true` means
+RSA-encryption plus EC-signing; `splitSigning=false` means the same RSA
+certificate is used for both encryption and signing. Do not call this "split
+selection"; selection-message behavior is controlled separately by normal or
+compact selection.
+
+For signing A/B/A runs, latency samples are the primary signal. The
+`nfd-data-stats.json` and `traffic-stats.json` phase deltas cover the whole
+phase window, including `--preflight-requests` and any first-use certificate,
+repo, or control fetches. Short phases can therefore show extra Data packets
+from the repo/certificate-publisher node even when the measured inference
+latency is unchanged. Use `*PerObservedRequest` for a phase-average transport
+view, and use `*PerMeasuredInference` only when `preflightRequestCount` is zero
+or when deliberately amortizing preflight/control traffic over the measured
+requests.
 
 Use full packet tracing only as a last-resort external diagnosis for unexpected
 or unexplained NDN names, stale Sync traffic, or startup/repo/keychain behavior.
@@ -1955,7 +2123,7 @@ sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=10 \
   --quiet-perf-logs \
   --control-timing \
   --ndn-packet-trace \
-  --ndn-packet-trace-nodes memphis,ucla,wustl,uiuc,umich,neu,csu \
+  --ndn-packet-trace-nodes memphis,ucla,arizona,wustl,neu \
   --results-dir results/yolo_2x2_control_packet_trace_60s
 ```
 
@@ -1990,59 +2158,82 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
   --user-async-workers 4
 ```
 
-A representative run on the current development machine produced
-`YOLO_LAYOUT_DYNAMIC_PROVISIONING_MININDN_OK` with 59 warm samples, warm p50
-363.91 ms, warm p95 436.76 ms, and steady-under-1s p50 362.90 ms. The same
-run recorded about 132.90 NFD Data packets per warm inference, about
-1.49 MB of NFD `nOutBytes` per warm inference, and about 3.10 MB of total
-node traffic per warm inference. `nfd-data-stats.json` reports
-`data_packets_per_inference` and `avg_data_packet_bytes`; the byte average is
-an approximate transport-size ratio because NFD byte counters include all
-packet types on the measured faces. `traffic-stats.json` also reports total
-node bytes per inference.
+A representative native-provider MiniNDN diagnostic on the current AI_Lab
+topology is preserved at
+`results/yolo_2x2_ailab_dependency_control_60s_latest`. It used the generated
+native execution plan, C++ native provider executable, local ONNX Runtime role
+runners, deterministic activation names, direct Selection prefetch, and
+dependency timing. The 60 measured warm requests produced warm p50 53.75 ms,
+p95 79.49 ms, and max 93.49 ms. The same run recorded about 23.98 NFD Data
+packets and about 143.81 KB of NFD `nOutBytes` per measured warm inference.
+`nfd-data-stats.json` reports `data_packets_per_inference` and
+`avg_data_packet_bytes`; the byte average is an approximate transport-size
+ratio because NFD byte counters include all packet types on the measured faces.
+`traffic-stats.json` also reports total node bytes per inference.
 
-The same run confirmed planned-name prefetching: 360/360 dependency fetches
-used deterministic planned names, dependency `future_wait_ms` p50 was 0.02 ms,
-and dependency `prefetch_overlap_ms` p50 was 108.30 ms. In other words, the
-provider handler issued dependency Interests early and usually only waited for
-an already-running future at the point where the tensors were needed. ONNX
-itself was not the p50 bottleneck for this tiny model: ONNX run p50 was
-0.27 ms and ONNX session lookup p50 was 0.37 ms with the session cache hot.
-The remaining latency is currently dominated by NDNSF/large-data fetch,
-activation publication, and distributed-control overhead rather than local
-ONNX execution.
+The same run confirmed planned-name prefetching in the native provider path:
+256/256 dependency fetches used deterministic planned names, ref-wait p50 was
+0.00 ms, and provider input-fetch-wait p50 was about 13.69 ms. ONNX was not the
+p50 bottleneck for this tiny model: ONNX run sum p50 was about 2.37 ms across
+the role chain, while dependency fetch max p50 was about 28.41 ms and outer
+control residual p50 was about 24.94 ms. Compared with the older AI_testbed
+diagnostic, AI_Lab reduced MiniNDN RTT noise and outer-control residual, but
+activation delivery still costs tens of milliseconds. The remaining latency is
+therefore dominated by NDNSF outer Request/ACK/Selection/Response propagation
+and activation dependency fetch waits, not by local ONNX execution.
 
-The minimal C++ ONNX Runtime runner is a local role-computation milestone, not
-yet a replacement for the Python MiniNDN providers used by the current
-end-to-end scripts. Until a native provider executable loads the generated
-plan, materializes artifacts, registers `OnnxRuntimeModelRunner` instances, and
-handles NDNSF collaboration requests directly, the published MiniNDN latency
-numbers should be interpreted as Python-provider performance with native plan
-and timing scaffolding, not as final C++ hot-path performance.
+An edge-RTT diagnostic run is preserved at
+`results/yolo_2x2_ailab_edge_rtt_60s_latest`. It uses the same AI_Lab topology
+but also starts short ndnping probes along the generated dependency edges, so it
+should be treated as a latency-cause diagnostic rather than a replacement for
+the canonical baseline above. It produced warm p50 63.86 ms and p95 85.64 ms.
+More importantly, it showed dependency fetch p50 20.90 ms, dependency fetch max
+p50 29.53 ms, and provider dataflow p50 31.00 ms. The edge RTT p50 samples were
+about 16.75 ms for Backbone -> Head/Shard/0, 15.44 ms for Backbone ->
+Head/Shard/1, 20.35 ms for Head/Shard/0 -> Merge, and 5.60 ms for
+Head/Shard/1 -> Merge. This confirms that activation latency should be
+interpreted with provider-to-provider edge RTT, not only the user-to-provider
+baseline.
+
+The more detailed outer-control breakdown run
+`results/yolo_2x2_ailab_outer_breakdown_60s_latest` keeps the same 60-second
+AI_Lab recipe and adds a split for Selection -> final provider -> Response ->
+User. It produced warm p50 63.52 ms and p95 87.11 ms. Warm SVS propagation p50
+was about 3.99 ms for Request, 3.89 ms for ACK, 4.41 ms for Selection, and
+3.95 ms for Response. The final-provider breakdown showed Selection publication
+to final-provider selection receive p50 5.05 ms, final-provider response publish
+to user observe p50 4.06 ms, and final-provider selection receive to response
+publish p50 about 33.22 ms. Therefore, in this diagnostic, the long
+`selection_to_response` component is not mostly Selection or Response delivery;
+it is the final Merge provider's dataflow/handler path, which is dominated by
+dependency fetch waits from the head shards.
 
 The same script also enables `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` and writes
 `collab-large-fetch-stats.json`. That file records Core-level SegmentFetcher
 elapsed time, encoded object size, and InterestLifetime for each collaboration
 large-data fetch. Use it together with `dependency-input-timing-stats.json` to
-separate native segmented fetch cost from Python executor scheduling and tensor
-decode cost. It also enables `NDNSF_PENDING_IMS_TIMING=1` and writes
+separate native segmented fetch cost from provider scheduling and tensor decode
+cost. It also enables `NDNSF_PENDING_IMS_TIMING=1` and writes
 `pending-ims-timing-stats.json`, which records whether predictable activation
 Interests reached the producer before the Data was inserted into in-memory
-storage. In the representative run above, Core-level collaboration fetches
-completed 360/360 times with no errors, elapsed p50 104.84 ms, elapsed p95
-224.18 ms, first-segment p50 98.01 ms, encoded object p50 8844 bytes, p50
-received/validated segments 2, and InterestLifetime p50 10000 ms.
-`pending-ims-timing-stats.json` showed 261 pending activation Interests that
-were later satisfied, with pending-age p50 96.26 ms. The same run also wrote
-`dependency-frontier-timing-stats.json`: 360 output/fetch pairs joined by
+storage. In the representative native-provider run above, Core-level
+collaboration fetches completed 256/256 times with no errors, elapsed p50
+16.70 ms, elapsed p95 33.75 ms, first-segment p50 16.62 ms, encoded object p50
+3839 bytes, received/validated segment p50 1, and InterestLifetime p50
+10000 ms. `activation-segment-timeline-stats.json` showed segment
+interest-to-Data p50 18.46 ms; this split into interest-to-active-put p50
+10.30 ms, active-put-to-Data p50 8.90 ms, and Data-to-validated p50 0.07 ms.
+`pending-ims-timing-stats.json` showed 245 pending activation Interests that
+were later satisfied, with pending-age p50 8.03 ms. The same run also wrote
+`dependency-frontier-timing-stats.json`: 256 output/fetch pairs joined by
 deterministic Data name, producer-output-ready to consumer-first-segment p50
-12.00 ms, publish-done to consumer-first-segment p50 6.50 ms, and
-producer-output-ready to fetch-complete p50 23.00 ms. That confirms planned
+9.00 ms, publish-done to consumer-first-segment p50 9.00 ms, and
+producer-output-ready to fetch-complete p50 9.00 ms. That confirms planned
 prefetch is reaching the producer before the corresponding activation Data
-exists and that, once output is ready, the first segment usually returns
-quickly. The remaining cost is therefore mostly stage-frontier scheduling,
-activation publish/control overhead, and final result delivery rather than
-ONNX execution, tensor decode, segment validation, or segment window size.
+exists. The remaining cost is therefore mostly outer control propagation,
+stage-frontier scheduling, activation delivery after active-put, and final
+result delivery rather than ONNX execution, tensor decode, segment validation,
+or segment window size.
 
 When comparing cold and warm inference, keep the user process model in mind.
 If a script launches cold and warm as separate user processes, in-memory plan
@@ -2051,7 +2242,7 @@ Stable P95 measurements should use multiple sequential requests in the same
 user process, or the 60-second warm window supported by the MiniNDN runner.
 
 The MiniNDN script clears the provider artifact cache before the first command.
-It starts a repo node on `neu`, starts the controller on `csu`, and then runs a
+It starts a repo node on `neu`, starts the controller on `memphis`, and then runs a
 controller-side deployer that writes the model shards and runner into the repo.
 Provider logs then show `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`
 for each role's `model` and `runner` artifacts during the cold command,

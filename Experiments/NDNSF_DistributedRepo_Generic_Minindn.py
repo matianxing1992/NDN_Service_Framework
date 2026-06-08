@@ -8,6 +8,7 @@ import re
 import subprocess
 import time
 import sys
+import argparse
 from pathlib import Path
 import yaml  # type: ignore
 
@@ -25,16 +26,34 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/distributed_repo_generic_minindn"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedRepo/generic_object_store"
 CONFIG = PY_DIR / "repo_policy.yaml"
 RUNTIME_CONFIG = OUT / "repo_policy.yaml"
 GEN_POLICY = "/tmp/ndnsf-distributed-repo-generic-policy"
+CONTROLLER_NODE = "memphis"
+USER_NODE = "neu"
+REPO_A_NODE = "ucla"
+REPO_B_NODE = "wustl"
+REPO_C_NODE = "arizona"
 
 
 def log(message: str) -> None:
     info(message + "\n")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="MiniNDN smoke test for the generic NDNSF-DistributedRepo API")
+    parser.add_argument("--topology-file", default=str(TOPO),
+                        help="MiniNDN topology file. Defaults to AI_Lab.conf.")
+    parser.add_argument("--output-dir", default=str(OUT))
+    parser.add_argument("--quick-smoke", action="store_true",
+                        help="Run only the core store/fetch/catalog/delete smoke.")
+    parser.add_argument("--nlsr-wait-s", type=float, default=15.0)
+    parser.add_argument("--repo-start-wait-s", type=float, default=25.0)
+    return parser
 
 
 class CleanNlsr(Nlsr):
@@ -71,8 +90,17 @@ def normalize_nlsr_link_costs(ndn) -> None:
                 pass
 
 
+def key_name_from_certificate_name(cert_name: str) -> str:
+    return cert_name.rsplit("/", 2)[0]
+
+
 def main() -> None:
+    global OUT, RUNTIME_CONFIG
+    args = build_parser().parse_args()
+    sys.argv = [sys.argv[0]]
     setLogLevel("info")
+    OUT = Path(args.output_dir).expanduser().resolve()
+    RUNTIME_CONFIG = OUT / "repo_policy.yaml"
     OUT.mkdir(parents=True, exist_ok=True)
     subprocess.run([
         "pkill", "-f",
@@ -81,7 +109,7 @@ def main() -> None:
     ], check=False)
     Minindn.cleanUp()
     Minindn.verifyDependencies()
-    ndn = Minindn(topoFile=str(TOPO))
+    ndn = Minindn(topoFile=args.topology_file)
     processes = []
     try:
         ndn.start()
@@ -94,7 +122,7 @@ def main() -> None:
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
         rh.addOrigin(
-            [ndn.net["csu"]],
+            [ndn.net[CONTROLLER_NODE]],
             [
                 "/example/repo/controller",
                 "/example/repo/controller/DKEY",
@@ -104,43 +132,44 @@ def main() -> None:
             ],
         )
         rh.addOrigin(
-            [ndn.net["memphis"]],
+            [ndn.net[USER_NODE]],
             ["/example/repo/user", "/example/repo/user/KEY"],
         )
         rh.addOrigin(
-            [ndn.net["ucla"]],
+            [ndn.net[REPO_A_NODE]],
             ["/example/repo/provider/repoA", "/example/repo/provider/repoA/KEY"],
         )
         rh.addOrigin(
-            [ndn.net["wustl"]],
+            [ndn.net[REPO_B_NODE]],
             ["/example/repo/provider/repoB", "/example/repo/provider/repoB/KEY"],
         )
         rh.addOrigin(
-            [ndn.net["uiuc"]],
+            [ndn.net[REPO_C_NODE]],
             ["/example/repo/provider/repoC", "/example/repo/provider/repoC/KEY"],
         )
         rh.addOrigin(
-            [ndn.net["ucla"], ndn.net["wustl"], ndn.net["uiuc"]],
+            [ndn.net[REPO_A_NODE], ndn.net[REPO_B_NODE], ndn.net[REPO_C_NODE]],
             ["/NDNSF/DistributedRepo/Object"],
         )
         rh.addOrigin(ndn.net.hosts, ["/example/repo/group"])
         rh.calculateRoutes()
-        log("Waiting 15s for NLSR base convergence")
-        time.sleep(15.0)
+        log(f"Waiting {args.nlsr_wait_s:.1f}s for NLSR base convergence")
+        time.sleep(args.nlsr_wait_s)
         for node in ndn.net.hosts:
             Nfdc.setStrategy(node, "/example/repo", Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, "/example/repo/group", Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
 
-        identities = {
-            "csu": "/example/repo/controller",
-            "memphis": "/example/repo/user",
-            "ucla": "/example/repo/provider/repoA",
-            "wustl": "/example/repo/provider/repoB",
-            "uiuc": "/example/repo/provider/repoC",
-        }
+        node_identities = [
+            (CONTROLLER_NODE, "/example/repo/controller"),
+            (USER_NODE, "/example/repo/user"),
+            (REPO_A_NODE, "/example/repo/provider/repoA"),
+            (REPO_B_NODE, "/example/repo/provider/repoB"),
+            (REPO_C_NODE, "/example/repo/provider/repoC"),
+        ]
+        identities = dict(node_identities)
         homes = {}
-        for host_name, identity in identities.items():
+        for host_name in sorted(set(identities)):
             home = MININDN_ROOT / host_name
             ndn_dir = home / ".ndn"
             subprocess.run(["rm", "-rf", str(ndn_dir)], check=False)
@@ -152,129 +181,61 @@ def main() -> None:
             )
             homes[host_name] = home
 
-        key_source = OUT / "identity-source"
-        subprocess.run(["rm", "-rf", str(key_source)], check=False)
-        key_source.mkdir(parents=True, exist_ok=True)
-        (key_source / ".ndn").mkdir(parents=True, exist_ok=True)
-        (key_source / ".ndn/client.conf").write_text("transport=unix:///run/nfd/csu.sock\n",
-                                                     encoding="utf-8")
         passphrase = "ndnsf-minindn"
         root_identity = "/example/repo"
         root_cert = OUT / "root.cert"
-        root_bag = OUT / "root.safebag"
-        subprocess.run(
-            "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -t r {} > {}; "
-            "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true; "
-            "HOME={} NDN_CLIENT_CONF={} ndnsec export -P {} -o {} -i {}".format(
-                perf.shell_quote(key_source),
-                perf.shell_quote(key_source / ".ndn/client.conf"),
-                perf.shell_quote(root_identity),
-                perf.shell_quote(root_cert),
-                perf.shell_quote(key_source),
-                perf.shell_quote(key_source / ".ndn/client.conf"),
-                perf.shell_quote(root_cert),
-                perf.shell_quote(key_source),
-                perf.shell_quote(key_source / ".ndn/client.conf"),
-                perf.shell_quote(passphrase),
-                perf.shell_quote(root_bag),
-                perf.shell_quote(root_identity),
-            ),
-            shell=True,
-            check=True,
-        )
-        cert_paths = {}
-        bag_paths = {}
-        for host_name, identity in identities.items():
-            bag = OUT / f"{host_name}.safebag"
-            req = OUT / f"{host_name}.req"
-            cert = OUT / f"{host_name}.cert"
-            subprocess.run(
-                "HOME={} NDN_CLIENT_CONF={} ndnsec key-gen -n -t r {} > {}; "
-                "HOME={} NDN_CLIENT_CONF={} ndnsec cert-gen -s {} -i ROOT {} > {}; "
-                "HOME={} NDN_CLIENT_CONF={} ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
-                    perf.shell_quote(key_source),
-                    perf.shell_quote(key_source / ".ndn/client.conf"),
-                    perf.shell_quote(identity),
-                    perf.shell_quote(req),
-                    perf.shell_quote(key_source),
-                    perf.shell_quote(key_source / ".ndn/client.conf"),
-                    perf.shell_quote(root_identity),
-                    perf.shell_quote(req),
-                    perf.shell_quote(cert),
-                    perf.shell_quote(key_source),
-                    perf.shell_quote(key_source / ".ndn/client.conf"),
-                    perf.shell_quote(cert),
-                ),
-                shell=True,
-                check=True,
-            )
-            cert_name = perf.certificate_name_from_file(cert)
-            subprocess.run(
-                "HOME={} NDN_CLIENT_CONF={} ndnsec set-default -c -n {}".format(
-                    perf.shell_quote(key_source),
-                    perf.shell_quote(key_source / ".ndn/client.conf"),
-                    perf.shell_quote(cert_name),
-                ),
-                shell=True,
-                check=True,
-            )
-            cert_listing = subprocess.check_output(
-                "HOME={} NDN_CLIENT_CONF={} ndnsec list -c".format(
-                    perf.shell_quote(key_source),
-                    perf.shell_quote(key_source / ".ndn/client.conf"),
-                ),
-                shell=True,
-                text=True,
-            )
-            for match in re.finditer(
-                r"({}/KEY/\S+/self/v=\S+)".format(re.escape(identity)),
-                cert_listing,
-            ):
-                subprocess.run(
-                    "HOME={} NDN_CLIENT_CONF={} ndnsec delete -c -n {} >/dev/null 2>&1 || true".format(
-                        perf.shell_quote(key_source),
-                        perf.shell_quote(key_source / ".ndn/client.conf"),
-                        perf.shell_quote(match.group(1)),
-                    ),
-                    shell=True,
-                    check=False,
-                )
-            subprocess.run(
-                "HOME={} NDN_CLIENT_CONF={} ndnsec export -P {} -o {} -i {}".format(
-                    perf.shell_quote(key_source),
-                    perf.shell_quote(key_source / ".ndn/client.conf"),
-                    perf.shell_quote(passphrase),
-                    perf.shell_quote(bag),
-                    perf.shell_quote(identity),
-                ),
-                shell=True,
-                check=True,
-            )
-            cert_paths[host_name] = cert
-            bag_paths[host_name] = bag
+        controller_node = ndn.net[CONTROLLER_NODE]
+        for node in ndn.net.hosts:
+            for identity in [root_identity] + [item[1] for item in node_identities]:
+                perf.node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(identity)))
+        perf.node_cmd(controller_node, "ndnsec key-gen -t r {} > {}".format(
+            perf.shell_quote(root_identity), perf.shell_quote(root_cert)))
+        perf.node_cmd(controller_node,
+                      "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                          perf.shell_quote(root_cert)))
 
-        for target_host in identities:
+        exported_keys = []
+        cert_names = {}
+        for index, (host_name, identity) in enumerate(node_identities):
+            req = OUT / f"{host_name}-{index}.req"
+            cert = OUT / f"{host_name}.cert"
+            key = OUT / f"{host_name}-{index}.ndnkey"
+            perf.node_cmd(controller_node, "ndnsec key-gen -t r {} > {}".format(
+                perf.shell_quote(identity), perf.shell_quote(req)))
+            perf.node_cmd(controller_node, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
+                perf.shell_quote(root_identity), perf.shell_quote(req), perf.shell_quote(cert)))
+            perf.node_cmd(controller_node,
+                          "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                              perf.shell_quote(cert)))
+            cert_name = perf.certificate_name_from_file(cert)
+            cert_names[host_name] = cert_name
+            key_name = key_name_from_certificate_name(cert_name)
+            perf.node_cmd(controller_node,
+                          "ndnsec set-default -k -n {} >/dev/null 2>&1 || true".format(
+                              perf.shell_quote(key_name)))
+            perf.node_cmd(controller_node, "ndnsec-export -P {} -o {} -k {}".format(
+                perf.shell_quote(passphrase), perf.shell_quote(key), perf.shell_quote(key_name)))
+            exported_keys.append((host_name, identity, key, key_name))
+
+        for target_host in sorted(set(identities)):
             perf.node_cmd(
                 ndn.net[target_host],
-                "HOME={} NDN_CLIENT_CONF={} ndnsec import -P {} {} >/dev/null 2>&1 || true".format(
-                    perf.shell_quote(homes[target_host]),
-                    perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
-                    perf.shell_quote(passphrase),
-                    perf.shell_quote(root_bag)))
-            for bag in bag_paths.values():
+                "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(root_cert)))
+            for _, _, key, _ in exported_keys:
                 perf.node_cmd(
                     ndn.net[target_host],
-                    "HOME={} NDN_CLIENT_CONF={} ndnsec import -P {} {} >/dev/null 2>&1 || true".format(
-                        perf.shell_quote(homes[target_host]),
-                        perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
-                        perf.shell_quote(passphrase),
-                        perf.shell_quote(bag)))
+                    "ndnsec import -P {} {} >/dev/null 2>&1 || true".format(
+                        perf.shell_quote(passphrase), perf.shell_quote(key)))
             perf.node_cmd(
                 ndn.net[target_host],
-                "HOME={} NDN_CLIENT_CONF={} ndnsec set-default -n {} >/dev/null 2>&1 || true".format(
-                    perf.shell_quote(homes[target_host]),
-                    perf.shell_quote(homes[target_host] / ".ndn/client.conf"),
+                "ndnsec set-default -n {} >/dev/null 2>&1 || true".format(
                     perf.shell_quote(identities[target_host])))
+            perf.node_cmd(
+                ndn.net[target_host],
+                "ndnsec set-default -c -n {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(cert_names[target_host])))
 
         config_obj = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
         config_obj.setdefault("trust", {})["anchor_file"] = str(root_cert)
@@ -319,37 +280,37 @@ def main() -> None:
                 perf.shell_quote(GEN_POLICY),
             )
         )
-        start("csu", "controller", base + perf.shell_quote(PY_DIR / "controller.py") + common)
+        start(CONTROLLER_NODE, "controller", base + perf.shell_quote(PY_DIR / "controller.py") + common)
         time.sleep(15.0)
         repoA_proc, _ = start(
-            "ucla",
+            REPO_A_NODE,
             "repoA",
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoA --repo-node /example/repo/provider/repoA "
             "--failure-domain rack-a "
-            f"--storage-dir {MININDN_ROOT}/ucla/repo-store "
+            f"--storage-dir {MININDN_ROOT}/{REPO_A_NODE}/repo-store "
             "--advertise-stored-prefixes",
         )
         repoB_proc, _ = start(
-            "wustl",
+            REPO_B_NODE,
             "repoB",
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoB --repo-node /example/repo/provider/repoB "
             "--failure-domain rack-b "
-            f"--storage-dir {MININDN_ROOT}/wustl/repo-store "
+            f"--storage-dir {MININDN_ROOT}/{REPO_B_NODE}/repo-store "
             "--advertise-stored-prefixes",
         )
         repoC_proc, _ = start(
-            "uiuc",
+            REPO_C_NODE,
             "repoC",
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoC --repo-node /example/repo/provider/repoC "
             "--failure-domain rack-c "
-            f"--storage-dir {MININDN_ROOT}/uiuc/repo-store "
+            f"--storage-dir {MININDN_ROOT}/{REPO_C_NODE}/repo-store "
             "--advertise-stored-prefixes",
         )
         catalogA_proc, _ = start(
-            "ucla",
+            REPO_A_NODE,
             "catalogA",
             base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
             " --repo-node /example/repo/provider/repoA "
@@ -358,7 +319,7 @@ def main() -> None:
             "--interval-s 10",
         )
         catalogB_proc, _ = start(
-            "wustl",
+            REPO_B_NODE,
             "catalogB",
             base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
             " --repo-node /example/repo/provider/repoB "
@@ -367,7 +328,7 @@ def main() -> None:
             "--interval-s 10",
         )
         catalogC_proc, _ = start(
-            "uiuc",
+            REPO_C_NODE,
             "catalogC",
             base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
             " --repo-node /example/repo/provider/repoC "
@@ -375,16 +336,24 @@ def main() -> None:
             "--peer-repo-node /example/repo/provider/repoB "
             "--interval-s 10",
         )
-        time.sleep(25.0)
+        log(f"Waiting {args.repo_start_wait_s:.1f}s for repo providers")
+        time.sleep(args.repo_start_wait_s)
         client_log = OUT / "client.log"
         out = client_log.open("wb")
+        quick_client_args = (
+            " --use-local-config --quick-core-smoke"
+            if args.quick_smoke else
+            " --test-delete"
+        )
         client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
-            " --trust-schema {} --ack-timeout-ms 8000 --test-delete".format(
-                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            " --trust-schema {} --ack-timeout-ms 8000{}".format(
+                perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
+                quick_client_args,
+            ),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -393,6 +362,14 @@ def main() -> None:
         client.wait(timeout=360)
         text = client_log.read_text(errors="replace")
         print(text)
+        if args.quick_smoke:
+            if (client.returncode != 0 or
+                    "GENERIC_DISTRIBUTED_REPO_QUICK_CORE_OK" not in text):
+                raise RuntimeError(
+                    f"generic DistributedRepo quick smoke failed "
+                    f"rc={client.returncode}; log={client_log}")
+            print(f"GENERIC_DISTRIBUTED_REPO_QUICK_MININDN_OK log={client_log}")
+            return
         if (client.returncode != 0 or
                 "GENERIC_DISTRIBUTED_REPO_CATALOG_GOSSIP_OK" not in text or
                 "GENERIC_DISTRIBUTED_REPO_CATALOG_TOMBSTONE_OK" not in text or
@@ -403,13 +380,13 @@ def main() -> None:
         policy_log = OUT / "client-object-policy.log"
         out = policy_log.open("wb")
         policy_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
             "--object-policy-smoke".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -426,7 +403,7 @@ def main() -> None:
         tombstone_gossip_log = OUT / "client-tombstone-gossip.log"
         out = tombstone_gossip_log.open("wb")
         tombstone_gossip_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
@@ -435,7 +412,7 @@ def main() -> None:
             "--catalog-tombstone-peer-repo-node /example/repo/provider/repoB "
             "--catalog-tombstone-peer-repo-node /example/repo/provider/repoC".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -454,7 +431,7 @@ def main() -> None:
         tombstone_epoch_log = OUT / "client-tombstone-epoch-conflict.log"
         out = tombstone_epoch_log.open("wb")
         tombstone_epoch_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
@@ -463,7 +440,7 @@ def main() -> None:
             "--catalog-tombstone-peer-repo-node /example/repo/provider/repoB "
             "--catalog-tombstone-peer-repo-node /example/repo/provider/repoC".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -482,13 +459,13 @@ def main() -> None:
         uav_data_log = OUT / "client-uav-data-product.log"
         out = uav_data_log.open("wb")
         uav_data_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
             "--uav-data-product-smoke".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -508,13 +485,13 @@ def main() -> None:
         uav_browse_log = OUT / "client-uav-browse.log"
         out = uav_browse_log.open("wb")
         uav_browse_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
             "--uav-browse-smoke --uav-browse-repo-node /example/repo/provider/repoA".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -532,14 +509,14 @@ def main() -> None:
         snapshot_log = OUT / "client-catalog-snapshot.log"
         out = snapshot_log.open("wb")
         snapshot_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
             "--catalog-snapshot-large-response-smoke "
             "--catalog-snapshot-repo-node /example/repo/provider/repoA".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -575,7 +552,7 @@ def main() -> None:
         health_log = OUT / "client-catalog-health.log"
         out = health_log.open("wb")
         health_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
@@ -583,7 +560,7 @@ def main() -> None:
             "--catalog-health-repo-node /example/repo/provider/repoA "
             "--catalog-health-stale-repo /example/repo/provider/repoC".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -601,7 +578,7 @@ def main() -> None:
         seed_log = OUT / "client-catalog-auto-repair-seed.log"
         out = seed_log.open("wb")
         seed_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
@@ -609,7 +586,7 @@ def main() -> None:
             "--catalog-auto-source-repo-node /example/repo/provider/repoB "
             "--catalog-auto-target-repo-node /example/repo/provider/repoA".format(
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf")),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,
@@ -628,7 +605,7 @@ def main() -> None:
                 f"rc={seed_client.returncode}; log={seed_log}")
         auto_repair_object = seed_match.group(1)
         catalog_auto_proc, catalog_auto_log = start(
-            "ucla",
+            REPO_A_NODE,
             "catalogA-auto",
             base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
             " --repo-node /example/repo/provider/repoA "
@@ -651,7 +628,7 @@ def main() -> None:
         verify_log = OUT / "client-catalog-auto-repair-verify.log"
         out = verify_log.open("wb")
         verify_client = getPopen(
-            ndn.net["memphis"],
+            ndn.net[USER_NODE],
             base + perf.shell_quote(PY_DIR / "client.py") +
             common +
             " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
@@ -659,7 +636,7 @@ def main() -> None:
                 perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
                 perf.shell_quote(auto_repair_object),
             ),
-            envDict=node_env("memphis"),
+            envDict=node_env(USER_NODE),
             shell=True,
             stdout=out,
             stderr=subprocess.STDOUT,

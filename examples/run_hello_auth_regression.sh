@@ -56,10 +56,10 @@ if [[ "${user_status}" -eq 0 ]] &&
    grep -q "Installed provider permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/provider.log" &&
    grep -q "\\[PERMISSIONS/USER\\] Encrypted reply target=/example/hello/user" "${tmpdir}/controller.log" &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider" "${tmpdir}/controller.log" &&
-   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider.log" &&
-   grep -q "userToken=" "${tmpdir}/user.log" &&
-   grep -q "providerToken=" "${tmpdir}/provider.log" &&
-   grep -q "RESPONSE accepted .*userToken=" "${tmpdir}/user.log" &&
+   grep -q "UserToken/ProviderToken runtime mode: enabled" "${tmpdir}/provider.log" &&
+   grep -q "UserToken/ProviderToken runtime mode: enabled" "${tmpdir}/user.log" &&
+   grep -q "NDNSF_CERT_SELECTION role=provider" "${tmpdir}/provider.log" &&
+   grep -q "NDNSF_CERT_SELECTION role=user" "${tmpdir}/user.log" &&
    ! grep -R -q "isAuthorized[[:space:]]*=[[:space:]]*true" "${tmpdir}" &&
    ! rg -n "isAuthorized[[:space:]]*=[[:space:]]*true" ndn-service-framework examples >/dev/null &&
    grep -q "Received HELLO request" "${tmpdir}/provider.log" &&

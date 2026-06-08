@@ -90,6 +90,8 @@ def main() -> int:
                         help="Repo object name that stores the deployment config")
     parser.add_argument("--ack-timeout-ms", type=int, default=2500)
     parser.add_argument("--timeout-ms", type=int, default=60000)
+    parser.add_argument("--quick-core-smoke", action="store_true",
+                        help="Only verify one small single-replica put/get through the repo service")
     parser.add_argument("--test-delete", action="store_true",
                         help="Also exercise deletion after store/fetch/catalog checks")
     parser.add_argument("--catalog-health-smoke", action="store_true",
@@ -157,6 +159,34 @@ def main() -> int:
             timeout_ms=args.timeout_ms,
         )
         user_name = args.user
+
+    if args.quick_core_smoke:
+        capability = repo.wait_until_ready(15.0)
+        payload = json.dumps({
+            "smoke": "quick-core",
+            "timestampMs": int(time.time() * 1000),
+        }, sort_keys=True).encode()
+        manifest = repo.put(
+            f"APP/QuickSmoke/Object/{int(time.time() * 1000)}",
+            payload,
+            object_type="quick-smoke",
+            replication_factor=1,
+            replica_nodes=("/example/repo/provider/repoA",),
+            policy_epoch="/Policy/generic-repo/v1",
+        )
+        fetched = repo.get(manifest.object_name, manifest)
+        if fetched != payload:
+            raise RuntimeError(
+                f"quick core smoke fetch mismatch object={manifest.object_name}"
+            )
+        print(
+            "GENERIC_DISTRIBUTED_REPO_QUICK_CORE_OK "
+            f"repoMode={capability.get('repoMode', 'unknown')} "
+            f"object={manifest.object_name} replica={manifest.replica_nodes[0]} "
+            f"bytes={len(payload)}",
+            flush=True,
+        )
+        return 0
 
     if args.catalog_auto_repair_seed_smoke:
         payload = b"auto catalog repair object"

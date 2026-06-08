@@ -247,10 +247,23 @@ namespace ndn_service_framework{
             };
 
             ServiceProvider(ndn::Face& face, ndn::Name group_prefix, ndn::security::Certificate identityCert, ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
+            ServiceProvider(ndn::Face& face,
+                            ndn::Name group_prefix,
+                            ndn::security::Certificate encryptionCert,
+                            ndn::security::Certificate signingCert,
+                            ndn::security::Certificate attrAuthorityCertificate,
+                            std::string trustSchemaPath);
             ServiceProvider(LocalMockTag,
                             ndn::Face& face,
                             ndn::Name group_prefix,
                             ndn::security::Certificate identityCert,
+                            ndn::security::Certificate attrAuthorityCertificate,
+                            std::string trustSchemaPath);
+            ServiceProvider(LocalMockTag,
+                            ndn::Face& face,
+                            ndn::Name group_prefix,
+                            ndn::security::Certificate encryptionCert,
+                            ndn::security::Certificate signingCert,
                             ndn::security::Certificate attrAuthorityCertificate,
                             std::string trustSchemaPath);
             virtual ~ServiceProvider();
@@ -513,6 +526,11 @@ namespace ndn_service_framework{
                                             const std::string& providerToken = "");
     
             void onServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
+            void handleServiceSelectionMessage(const ndn::svs::SVSPubSub::SubscriptionData& subscription,
+                                               bool checkFreshness);
+            void prefetchSelectionMessageV2(const ndn::Name& requesterIdentity,
+                                            const ndn::Name& serviceName,
+                                            const ndn::Name& requestId);
 
             void PublishMessage(const ndn::Name& messageName, const ndn::Name &messageNameWithoutPrefix, AbstractMessage& message);
             void publishHybridMessage(const ndn::Name& messageName,
@@ -783,6 +801,7 @@ namespace ndn_service_framework{
             //ndn::security::Validator nac_validator;
             ndn::ValidatorConfig nac_validator{m_face};
             ndn::security::Certificate identityCert;
+            ndn::security::Certificate signingCert;
             ndn::security::Certificate attrAuthorityCertificate;
             ndn::nacabe::Consumer nacConsumer;
             //ndn::nacabe::Producer nacProducer;

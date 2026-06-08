@@ -167,6 +167,25 @@ python3 -m pip install -e ./NDNSF-DistributedRepo/pythonWrapper
 python3 -m pip install -e ./NDNSF-DistributedInference
 ```
 
+### 2.1 MiniNDN quick checks
+
+After an API or script update, run the short MiniNDN/script health suite:
+
+```bash
+python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py
+```
+
+The default suite first runs syntax/import sanity for the updated NDNSF, Repo,
+DI, and UAV MiniNDN experiment scripts, then calls the no-MiniNDN quick-smoke
+branches for the longer legacy experiment launchers. It then covers the Python
+HELLO MiniNDN smoke, DistributedRepo single-object MiniNDN quick smoke, DI local
+YOLO layout smoke, and UAV launcher quick smoke. It intentionally skips the
+slower DI native-provider MiniNDN smoke unless requested:
+
+```bash
+python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py --include-di-minindn
+```
+
 ## 3. How-to
 
 ### 3.1 Generic dynamic API, preferred for new applications
@@ -554,6 +573,18 @@ This PermissionResponse encryption is not NAC-ABE.
 
 NAC-ABE remains the runtime encryption mechanism for NDNSF service request and response messages, future selection payloads, content keys, IMS, and SVS-backed runtime publication.
 
+Runtime certificate selection separates encryption from signing. NAC-ABE and
+PermissionResponse unwrap currently require an RSA-capable identity certificate,
+so each user/provider/controller identity must have an RSA encryption
+certificate. If the same identity also has an EC/ECDSA certificate, `ServiceUser`
+and `ServiceProvider` use it for NDN Data, Interest, and SVS signing because it
+is faster for high-frequency signing. If no EC signing certificate is installed,
+the runtime falls back to the RSA encryption certificate and keeps the same
+behavior as older deployments, only with slower signing. Existing constructors
+perform this compatible selection automatically; explicit constructors are also
+available when a deployment wants to pass `encryptionCert` and `signingCert`
+separately.
+
 ### 3.5 Certificate publishing in distributed deployments
 
 NDN certificates are named Data packets. In a distributed deployment, user,
@@ -583,11 +614,13 @@ ndn_service_framework::CertificatePublisher certPublisher(
   providerCert.getName());
 ```
 
-It locates the certificate in the local KeyChain, serves the existing certificate
-Data under its exact certificate name, and by default registers the certificate's
-`.../KEY/<key-id>` prefix. The HELLO examples enable this by default and accept
-`--no-serve-certificates` for deployments that already serve certificates
-through another mechanism.
+It locates the certificate in the local KeyChain. By default it also serves the
+default certificates for the other keys under the same identity, such as an RSA
+encryption certificate plus an EC/ECDSA signing certificate. It registers each
+served certificate's `.../KEY/<key-id>` prefix and returns only the certificate
+whose Data name matches the incoming Interest. The HELLO examples enable this by
+default and accept `--no-serve-certificates` for deployments that already serve
+certificates through another mechanism.
 
 Manual certificate bootstrap with physical access:
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import subprocess
@@ -24,7 +25,7 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
+TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/yolo_2x2_distributed_repo_minindn"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 MININDN_ROOT = Path("/tmp/minindn")
@@ -72,7 +73,49 @@ def normalize_nlsr_link_costs(ndn) -> None:
                 pass
 
 
+def topology_nodes(path: Path) -> set[str]:
+    nodes = set()
+    in_nodes = False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line == "[nodes]":
+            in_nodes = True
+            continue
+        if line.startswith("[") and line != "[nodes]":
+            in_nodes = False
+        if in_nodes and line and not line.startswith("#"):
+            nodes.add(line.rstrip(":"))
+    return nodes
+
+
+def quick_smoke() -> int:
+    required_files = [
+        TOPO,
+        PY_DIR / "controller.py",
+        PY_DIR / "repo_node.py",
+        PY_DIR / "repo_client.py",
+    ]
+    missing = [str(path) for path in required_files if not path.exists()]
+    nodes = topology_nodes(TOPO) if TOPO.exists() else set()
+    required_nodes = {"memphis", "ucla", "arizona", "wustl", "neu"}
+    missing_nodes = sorted(required_nodes - nodes)
+    if missing or missing_nodes:
+        raise RuntimeError(
+            "YOLO 2x2 repo quick smoke failed "
+            f"missingFiles={missing} missingNodes={missing_nodes}")
+    print(
+        "YOLO_2X2_DISTRIBUTED_REPO_MININDN_QUICK_SMOKE_OK "
+        f"topology={TOPO} controller=neu user=memphis repos=ucla,wustl,arizona")
+    return 0
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--quick-smoke", action="store_true")
+    args_cli = parser.parse_args()
+    if args_cli.quick_smoke:
+        return quick_smoke()
+
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
     subprocess.run([
@@ -92,13 +135,13 @@ def main() -> None:
         perf.wait_for_nfd_sockets(ndn, OUT)
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
-        rh.addOrigin([ndn.net["csu"]], ["/NDNSF-DistributeInference/example/controller"])
+        rh.addOrigin([ndn.net["neu"]], ["/NDNSF-DistributeInference/example/controller"])
         rh.addOrigin([ndn.net["memphis"]], ["/NDNSF-DistributeInference/example/user"])
         rh.addOrigin([ndn.net["ucla"]], ["/NDNSF-DistributeInference/example/provider/repoA"])
         rh.addOrigin([ndn.net["wustl"]], ["/NDNSF-DistributeInference/example/provider/repoB"])
-        rh.addOrigin([ndn.net["uiuc"]], ["/NDNSF-DistributeInference/example/provider/repoC"])
+        rh.addOrigin([ndn.net["arizona"]], ["/NDNSF-DistributeInference/example/provider/repoC"])
         rh.addOrigin(
-            [ndn.net["ucla"], ndn.net["wustl"], ndn.net["uiuc"]],
+            [ndn.net["ucla"], ndn.net["wustl"], ndn.net["arizona"]],
             ["/NDNSF/DistributedRepo/Object"],
         )
         rh.addOrigin(ndn.net.hosts, ["/NDNSF-DistributeInference/example/group"])
@@ -111,11 +154,11 @@ def main() -> None:
             Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
 
         identities = {
-            "csu": "/NDNSF-DistributeInference/example/controller",
+            "neu": "/NDNSF-DistributeInference/example/controller",
             "memphis": "/NDNSF-DistributeInference/example/user",
             "ucla": "/NDNSF-DistributeInference/example/provider/repoA",
             "wustl": "/NDNSF-DistributeInference/example/provider/repoB",
-            "uiuc": "/NDNSF-DistributeInference/example/provider/repoC",
+            "arizona": "/NDNSF-DistributeInference/example/provider/repoC",
         }
         homes = {}
         for host_name, identity in identities.items():
@@ -133,7 +176,7 @@ def main() -> None:
         subprocess.run(["rm", "-rf", str(key_source)], check=False)
         key_source.mkdir(parents=True, exist_ok=True)
         (key_source / ".ndn").mkdir(parents=True, exist_ok=True)
-        (key_source / ".ndn/client.conf").write_text("transport=unix:///run/nfd/csu.sock\n",
+        (key_source / ".ndn/client.conf").write_text("transport=unix:///run/nfd/neu.sock\n",
                                                      encoding="utf-8")
         root_identity = "/NDNSF-DistributeInference/example"
         root_cert = OUT / "root.cert"
@@ -226,7 +269,7 @@ def main() -> None:
 
         base = f"cd {perf.shell_quote(REPO)} && exec python3 "
         controller, _ = start(
-            "csu",
+            "neu",
             "controller",
             base + perf.shell_quote(PY_DIR / "controller.py"),
         )
@@ -250,12 +293,12 @@ def main() -> None:
             "--advertise-stored-prefixes",
         )
         start(
-            "uiuc",
+            "arizona",
             "repoC",
             base + perf.shell_quote(PY_DIR / "repo_node.py") +
             " --provider-id repoC --repo-node /NDNSF-DistributeInference/example/provider/repoC "
             "--failure-domain rack-c "
-            f"--storage-dir {MININDN_ROOT}/uiuc/repo-store "
+            f"--storage-dir {MININDN_ROOT}/arizona/repo-store "
             "--advertise-stored-prefixes",
         )
         time.sleep(15.0)
@@ -295,4 +338,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

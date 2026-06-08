@@ -6,6 +6,8 @@
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 
+#include <vector>
+
 namespace ndn_service_framework {
 
 class CertificatePublisher
@@ -22,13 +24,18 @@ public:
 private:
   static ndn::security::Certificate findCertificate(ndn::security::KeyChain& keyChain,
                                                     const ndn::Name& identityOrCertName);
+  static std::vector<ndn::security::Certificate>
+  findIdentityCertificates(ndn::security::KeyChain& keyChain,
+                           const ndn::security::Certificate& primaryCertificate);
 
   void onInterest(const ndn::InterestFilter& filter, const ndn::Interest& interest);
 
 private:
   ndn::Face& m_face;
   ndn::security::Certificate m_certificate;
+  std::vector<ndn::security::Certificate> m_certificates;
   ndn::Name m_registeredPrefix;
+  std::vector<ndn::Name> m_registeredPrefixes;
 };
 
 } // namespace ndn_service_framework

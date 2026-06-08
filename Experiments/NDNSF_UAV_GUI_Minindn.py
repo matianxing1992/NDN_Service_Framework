@@ -35,7 +35,7 @@ from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import MiniNDNCLI, getPopen  # noqa: E402
 
 
-DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/testbed(loss=0%).conf"
+DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/AI_Lab.conf"
 APP_BUILD_DIR = Path(os.environ.get("NDNSF_UAV_APP_BUILD_DIR",
                                     str(REPO / "build/examples")))
 APP_CONTROLLER = APP_BUILD_DIR / "App_ServiceController"
@@ -61,7 +61,7 @@ def log(message: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run NDNSF UAV GUI apps inside MiniNDN")
     parser.add_argument("--topology-file", default=str(DEFAULT_TOPOLOGY))
-    parser.add_argument("--controller-node", default="csu")
+    parser.add_argument("--controller-node", default="memphis")
     parser.add_argument("--gs-node", default="memphis")
     parser.add_argument("--drone-node", default="ucla")
     parser.add_argument("--drone-id", default="A")
@@ -126,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Requested encoded frame width passed to the drone video service.")
     parser.add_argument("--output-dir", default=str(REPO / "results/uav_gui_minindn"))
     parser.add_argument("--nfd-log-level", default="WARN")
+    parser.add_argument("--quick-smoke", action="store_true",
+                        help="Validate launcher inputs, APP binaries, topology nodes, and configs without starting MiniNDN or GUI apps.")
     parser.add_argument("--enable-ndnsd", action="store_true",
                         help="Reserved for NDNSD service discovery experiments; not enabled by default.")
     parser.add_argument("--auto-video-test", action="store_true",
@@ -780,6 +782,51 @@ def require_log_any(path: Path, needles: list[str]) -> None:
         raise RuntimeError(f"missing any of {needles} in {path}\n--- tail ---\n{tail}")
 
 
+def run_quick_smoke(args: argparse.Namespace) -> int:
+    required_binaries = [APP_CONTROLLER, APP_DRONE, APP_GS]
+    missing_binaries = [str(path) for path in required_binaries if not path.is_file()]
+    if missing_binaries:
+        raise RuntimeError(
+            "UAV APP binaries are missing; build examples first: " +
+            ", ".join(missing_binaries)
+        )
+    required_files = [
+        Path(args.topology_file),
+        Path(args.runtime_config),
+        POLICY,
+        Path(args.app_config_dir) / "ground-station.conf",
+    ]
+    for drone_id, _ in active_drones(args):
+        required_files.append(Path(args.app_config_dir) / f"drone-{drone_id}.conf")
+    missing_files = [str(path) for path in required_files if not path.exists()]
+    if missing_files:
+        raise RuntimeError("UAV MiniNDN quick smoke missing files: " + ", ".join(missing_files))
+
+    topology_text = Path(args.topology_file).read_text(encoding="utf-8")
+    required_nodes = {args.controller_node, args.gs_node}
+    required_nodes.update(node_name for _, node_name in active_drones(args))
+    missing_nodes = [
+        node_name for node_name in sorted(required_nodes)
+        if f"{node_name}:" not in topology_text
+    ]
+    if missing_nodes:
+        raise RuntimeError(
+            f"UAV MiniNDN quick smoke topology missing nodes: {', '.join(missing_nodes)}"
+        )
+
+    runtime = load_runtime_config(args.runtime_config)
+    print(
+        "NDNSF_UAV_GUI_MININDN_QUICK_SMOKE_OK "
+        f"topology={Path(args.topology_file).resolve()} "
+        f"controller={args.controller_node} gs={args.gs_node} "
+        f"drones={','.join(f'{drone_id}@{node}' for drone_id, node in active_drones(args))} "
+        f"controllerPrefix={runtime['controller-prefix']} "
+        f"group={runtime['group-prefix']}",
+        flush=True,
+    )
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.auto_video_pressure_profile_test:
@@ -787,6 +834,8 @@ def main() -> int:
     sys.argv = [sys.argv[0]]
     setLogLevel("info")
     runtime = load_runtime_config(args.runtime_config)
+    if args.quick_smoke:
+        return run_quick_smoke(args)
     if not os.environ.get("DISPLAY"):
         raise RuntimeError("DISPLAY is not set; run from a graphical session, e.g. sudo -E ...")
 

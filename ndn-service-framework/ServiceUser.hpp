@@ -279,10 +279,23 @@ namespace ndn_service_framework{
             };
 
             ServiceUser(ndn::Face& face,ndn::Name group_prefix, ndn::security::Certificate identityCert,ndn::security::Certificate attrAuthorityCertificate,std::string trustSchemaPath);
+            ServiceUser(ndn::Face& face,
+                        ndn::Name group_prefix,
+                        ndn::security::Certificate encryptionCert,
+                        ndn::security::Certificate signingCert,
+                        ndn::security::Certificate attrAuthorityCertificate,
+                        std::string trustSchemaPath);
             ServiceUser(LocalMockTag,
                         ndn::Face& face,
                         ndn::Name group_prefix,
                         ndn::security::Certificate identityCert,
+                        ndn::security::Certificate attrAuthorityCertificate,
+                        std::string trustSchemaPath);
+            ServiceUser(LocalMockTag,
+                        ndn::Face& face,
+                        ndn::Name group_prefix,
+                        ndn::security::Certificate encryptionCert,
+                        ndn::security::Certificate signingCert,
                         ndn::security::Certificate attrAuthorityCertificate,
                         std::string trustSchemaPath);
 
@@ -959,6 +972,7 @@ namespace ndn_service_framework{
             //ndn::security::Validator nac_validator;
             ndn::ValidatorConfig nac_validator{m_face};
             ndn::security::Certificate identityCert;
+            ndn::security::Certificate signingCert;
             
             ndn::nacabe::Consumer nacConsumer;
             //ndn::nacabe::Producer nacProducer;

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
 import os
 import signal
 import subprocess
@@ -22,7 +25,7 @@ from minindn.util import getPopen
 APP_CONTROLLER = REPO / "build/examples/App_ServiceController"
 APP_PROVIDER = REPO / "build/examples/AI_DistributedCollaborationProvider"
 APP_USER = REPO / "build/examples/AI_User"
-TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
+TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/ai_collaboration_minindn_quick"
 
 
@@ -65,7 +68,45 @@ def stop(procs):
         f.close()
 
 
+def topology_nodes(path: Path) -> set[str]:
+    nodes = set()
+    in_nodes = False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line == "[nodes]":
+            in_nodes = True
+            continue
+        if line.startswith("[") and line != "[nodes]":
+            in_nodes = False
+        if in_nodes and line and not line.startswith("#"):
+            nodes.add(line.rstrip(":"))
+    return nodes
+
+
+def quick_smoke() -> int:
+    required_files = [APP_CONTROLLER, APP_PROVIDER, APP_USER, TOPO]
+    missing = [str(path) for path in required_files if not path.exists()]
+    nodes = topology_nodes(TOPO) if TOPO.exists() else set()
+    required_nodes = {"memphis", "ucla", "arizona", "wustl", "neu"}
+    missing_nodes = sorted(required_nodes - nodes)
+    if missing or missing_nodes:
+        raise RuntimeError(
+            "AI collaboration quick smoke failed "
+            f"missingFiles={missing} missingNodes={missing_nodes}")
+    print(
+        "AI_COLLAB_MININDN_QUICK_SMOKE_OK "
+        f"topology={TOPO} controller=memphis user=memphis "
+        "providers=ucla,arizona,wustl,neu")
+    return 0
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--quick-smoke", action="store_true")
+    args_cli = parser.parse_args()
+    if args_cli.quick_smoke:
+        return quick_smoke()
+
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
     Minindn.cleanUp()
@@ -75,8 +116,8 @@ def main():
     args = Args(
         controller_node="memphis",
         user_node="memphis",
-        providers=9,
-        provider_nodes="ucla,wustl,uiuc,csu,arizona,caida,neu,umich,pku",
+        providers=4,
+        provider_nodes="ucla,arizona,wustl,neu",
         serve_provider_certs=False,
         debug_ack=False,
         timeline_trace=False,
@@ -111,14 +152,9 @@ def main():
         )
         origins = [
             ("ucla", "/example/hello/provider"),
-            ("wustl", "/example/hello/provider/A"),
-            ("uiuc", "/example/hello/provider/B"),
-            ("csu", "/example/hello/provider/C"),
-            ("arizona", "/example/hello/provider/D"),
-            ("caida", "/example/hello/provider/E"),
-            ("neu", "/example/hello/provider/F"),
-            ("umich", "/example/hello/provider/G"),
-            ("pku", "/example/hello/provider/H"),
+            ("arizona", "/example/hello/provider/A"),
+            ("wustl", "/example/hello/provider/B"),
+            ("neu", "/example/hello/provider/C"),
         ]
         for node_name, prefix in origins:
             rh.addOrigin([ndn.net[node_name]], [prefix, prefix + "/KEY", "/example/hello/group"])
@@ -139,14 +175,9 @@ def main():
 
         providers = [
             ("ucla", "provider-p00", ["--role", "p00"]),
-            ("wustl", "provider-p01", ["--provider-id", "A", "--role", "p01"]),
-            ("uiuc", "provider-p02", ["--provider-id", "B", "--role", "p02"]),
-            ("csu", "provider-p10", ["--provider-id", "C", "--role", "p10"]),
-            ("arizona", "provider-p11", ["--provider-id", "D", "--role", "p11"]),
-            ("caida", "provider-p12", ["--provider-id", "E", "--role", "p12"]),
-            ("neu", "provider-p20", ["--provider-id", "F", "--role", "p20"]),
-            ("umich", "provider-p21", ["--provider-id", "G", "--role", "p21"]),
-            ("pku", "provider-p22", ["--provider-id", "H", "--role", "p22"]),
+            ("arizona", "provider-p01", ["--provider-id", "A", "--role", "p01"]),
+            ("wustl", "provider-p02", ["--provider-id", "B", "--role", "p02"]),
+            ("neu", "provider-p03", ["--provider-id", "C", "--role", "p03"]),
         ]
         for node_name, name, argv in providers:
             _, lp = start(ndn.net[node_name], name, perf.managed_cmd(APP_PROVIDER, argv), env, procs)
@@ -175,4 +206,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

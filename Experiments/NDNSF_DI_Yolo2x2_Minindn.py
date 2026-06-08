@@ -10,8 +10,10 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
+import pwd
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,7 +29,7 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
+TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/yolo_2x2_minindn_quick"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_2x2"
 CONFIG = OUT / "yolo_policy.yaml"
@@ -37,6 +39,10 @@ APP_ROOT = "/NDNSF-DistributeInference/example"
 CONTROLLER_IDENTITY = APP_ROOT + "/controller"
 USER_IDENTITY = APP_ROOT + "/user"
 PROVIDER_PREFIX = APP_ROOT + "/provider"
+AI_LAB_CONTROLLER_NODE = "memphis"
+AI_LAB_USER_NODE = "memphis"
+AI_LAB_REPO_NODE = "neu"
+AI_LAB_PROVIDER_NODES = ["ucla", "arizona", "wustl", "neu"]
 
 
 class Args(SimpleNamespace):
@@ -51,6 +57,28 @@ def python_cmd(script: str, argv: list[str]) -> str:
     args = " ".join([perf.shell_quote(str(PY_DIR / script))] +
                     [perf.shell_quote(arg) for arg in argv])
     return f"cd {perf.shell_quote(REPO)} && exec python3 {args}"
+
+
+def run_user_python_step(command: list[str], *, cwd: str, env: dict[str, str], writable_path: Path) -> None:
+    """Run pre-MiniNDN Python generation in the invoking user's Python env."""
+    sudo_user = os.environ.get("SUDO_USER", "")
+    sudo_uid = os.environ.get("SUDO_UID", "")
+    sudo_gid = os.environ.get("SUDO_GID", "")
+    if os.geteuid() == 0 and sudo_user and sudo_uid and sudo_gid:
+        writable_path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["chown", "-R", f"{sudo_uid}:{sudo_gid}", str(writable_path)], check=True)
+        user_home = pwd.getpwnam(sudo_user).pw_dir
+        env = {**env, "HOME": user_home}
+        env_args = []
+        for key in ("PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "HOME"):
+            value = env.get(key, os.environ.get(key))
+            if value:
+                env_args.append(f"{key}={value}")
+        subprocess.run(["sudo", "-n", "-u", sudo_user, "env", *env_args, *command],
+                       cwd=cwd,
+                       check=True)
+        return
+    subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
 def native_provider_cmd(argv: list[str],
@@ -89,6 +117,17 @@ def start(node, name, cmd, env, procs):
     p = getPopen(node, cmd, envDict=node_env, shell=True, stdout=f, stderr=subprocess.STDOUT)
     procs.append((p, f, path))
     return p, path
+
+
+def stop_process_group(procs: list[tuple[object, object, Path]]) -> None:
+    for p, f, _ in reversed(procs):
+        if p.poll() is None:
+            p.send_signal(signal.SIGINT)
+            try:
+                p.wait(timeout=3)
+            except Exception:
+                p.kill()
+        f.close()
 
 
 def start_ndn_packet_traces(ndn, env: dict, node_names: list[str]):
@@ -446,6 +485,301 @@ def write_ndnping_rtt_summary(ndn,
     print(f"YOLO_LAYOUT_NDNPING_RTT {printable} path={path}")
 
 
+def provider_metadata(providers: list[tuple[str, str, list[str]]]) -> dict[str, dict[str, str]]:
+    metadata = {}
+    for node_name, provider_log_name, argv in providers:
+        provider_id = argv[argv.index("--provider-id") + 1]
+        roles = []
+        if "--roles" in argv:
+            roles = str(argv[argv.index("--roles") + 1]).split(",")
+        elif "--role" in argv:
+            roles = [str(argv[argv.index("--role") + 1])]
+        for role in roles:
+            if not role:
+                continue
+            metadata[role] = {
+                "providerId": provider_id,
+                "providerLog": provider_log_name,
+                "providerNode": node_name,
+                "providerPrefix": provider_identity(provider_id),
+            }
+    return metadata
+
+
+def load_native_dependency_edges(plan_path: Path) -> list[dict]:
+    if not plan_path.exists():
+        return []
+    data = json.loads(plan_path.read_text(encoding="utf-8"))
+    edges = []
+    for service in data.get("services", []):
+        for dependency in service.get("dependencies", []):
+            producers = [str(item) for item in dependency.get("producers", [])]
+            consumers = [str(item) for item in dependency.get("consumers", [])]
+            for producer in producers:
+                for consumer in consumers:
+                    edges.append({
+                        "producerRole": producer,
+                        "consumerRole": consumer,
+                        "scope": str(dependency.get("keyScope", "")),
+                        "expectedSegments": int(dependency.get("expectedSegments", 0) or 0),
+                        "expectedBytes": int(dependency.get("expectedBytes", 0) or 0),
+                    })
+    return edges
+
+
+def write_dependency_edge_rtt_summary(ndn,
+                                      providers: list[tuple[str, str, list[str]]],
+                                      env: dict,
+                                      procs,
+                                      plan_path: Path) -> None:
+    role_meta = provider_metadata(providers)
+    rows = []
+    for index, edge in enumerate(load_native_dependency_edges(plan_path)):
+        producer = role_meta.get(edge["producerRole"])
+        consumer = role_meta.get(edge["consumerRole"])
+        if not producer or not consumer:
+            continue
+        ping_prefix = f"{producer['providerPrefix']}/ndnping"
+        server_log = OUT / f"ndnpingserver-edge-{index}-{producer['providerLog']}.log"
+        client_log = OUT / (
+            f"ndnping-edge-{index}-{consumer['providerLog']}-to-"
+            f"{producer['providerLog']}.log")
+        server_file = server_log.open("wb")
+        server_cmd = f"exec ndnpingserver {perf.shell_quote(ping_prefix)}"
+        server = getPopen(ndn.net[producer["providerNode"]],
+                          server_cmd,
+                          envDict=env,
+                          shell=True,
+                          stdout=server_file,
+                          stderr=subprocess.STDOUT)
+        procs.append((server, server_file, server_log))
+        time.sleep(0.3)
+        client_file = client_log.open("wb")
+        client_cmd = f"exec timeout 15s ndnping {perf.shell_quote(ping_prefix)} -c 5"
+        client = getPopen(ndn.net[consumer["providerNode"]],
+                          client_cmd,
+                          envDict=env,
+                          shell=True,
+                          stdout=client_file,
+                          stderr=subprocess.STDOUT)
+        try:
+            client.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            client.terminate()
+            client.wait(timeout=5)
+        client_file.close()
+        text = client_log.read_text(errors="replace") if client_log.exists() else ""
+        rtts = parse_ndnping_rtts(text)
+        row = {
+            **edge,
+            "producerNode": producer["providerNode"],
+            "producerLog": producer["providerLog"],
+            "producerPrefix": producer["providerPrefix"],
+            "consumerNode": consumer["providerNode"],
+            "consumerLog": consumer["providerLog"],
+            "pingPrefix": ping_prefix,
+            "returncode": client.returncode,
+            "count": len(rtts),
+            "rttsMs": rtts,
+            "summaryMs": summarize_numeric(rtts),
+            "clientLog": str(client_log),
+            "serverLog": str(server_log),
+        }
+        rows.append(row)
+    summary = {
+        "plan": str(plan_path),
+        "count": len(rows),
+        "rows": rows,
+    }
+    path = OUT / "dependency-edge-ndnping-rtt-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    printable = " ".join(
+        f"{row['scope']}={row['summaryMs']['mean']:.2f}ms"
+        if row["summaryMs"]["count"] else f"{row['scope']}=NA"
+        for row in rows
+    )
+    print(f"YOLO_LAYOUT_DEPENDENCY_EDGE_RTT {printable} path={path}")
+
+
+def ndnping_once_from_user(ndn, ping_prefix: str) -> dict:
+    start = time.time()
+    text = perf.node_cmd(
+        ndn.net["memphis"],
+        f"timeout 5s ndnping {perf.shell_quote(ping_prefix)} -c 1 2>&1",
+    )
+    finished = time.time()
+    rtts = parse_ndnping_rtts(text)
+    return {
+        "epochStartS": start,
+        "epochEndS": finished,
+        "rttMs": rtts[0] if rtts else None,
+        "count": len(rtts),
+        "rawTail": text[-500:],
+    }
+
+
+def diff_nfd_data_counters(before: dict[str, dict[str, int]],
+                           after: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    counter_names = ["nInData", "nOutData", "nInBytes", "nOutBytes"]
+    delta = {}
+    for name in sorted(set(before) | set(after)):
+        start = before.get(name, {})
+        end = after.get(name, {})
+        delta[name] = {
+            counter: max(0, int(end.get(counter, 0)) - int(start.get(counter, 0)))
+            for counter in counter_names
+        }
+    return delta
+
+
+def parse_inference_result_rows(text: str) -> list[dict]:
+    rows = []
+    pattern = re.compile(r"YOLO_LAYOUT_RESULT[^\n]*ok=true[^\n]*|YOLO_LAYOUT_RESULT[^\n]*status=false[^\n]*")
+    for match in pattern.finditer(text):
+        line = match.group(0)
+        elapsed = re.search(r"inference_elapsed_ms=([0-9.]+)", line)
+        if not elapsed:
+            continue
+        start_match = re.search(r"epoch_start_s=([0-9.]+)", line)
+        end_match = re.search(r"epoch_end_s=([0-9.]+)", line)
+        index_match = re.search(r"\bindex=([0-9]+)", line)
+        ok_match = re.search(r"\bok=(true|false)", line)
+        status_match = re.search(r"\bstatus=(true|false)", line)
+        rows.append({
+            "index": int(index_match.group(1)) if index_match else len(rows),
+            "epochStartS": float(start_match.group(1)) if start_match else None,
+            "epochEndS": float(end_match.group(1)) if end_match else None,
+            "inferenceElapsedMs": float(elapsed.group(1)),
+            "ok": (ok_match.group(1) == "true") if ok_match else (status_match.group(1) == "true" if status_match else None),
+            "line": line,
+        })
+    return rows
+
+
+def nearest_monitor_sample(samples: list[dict], epoch_s: float | None) -> dict | None:
+    if epoch_s is None or not samples:
+        return None
+    return min(samples, key=lambda sample: abs(float(sample.get("epochS", 0.0)) - epoch_s))
+
+
+def start_warm_rtt_nfd_monitor(ndn,
+                               providers: list[tuple[str, str, list[str]]],
+                               interval_s: float):
+    stop_event = threading.Event()
+    samples: list[dict] = []
+    lock = threading.Lock()
+    provider_rows = []
+    for node_name, provider_log_name, argv in providers:
+        provider_id = argv[argv.index("--provider-id") + 1]
+        provider_prefix = provider_identity(provider_id)
+        provider_rows.append({
+            "providerLog": provider_log_name,
+            "providerNode": node_name,
+            "providerPrefix": provider_prefix,
+            "pingPrefix": f"{provider_prefix}/ndnping",
+        })
+
+    def loop() -> None:
+        last_nfd = snapshot_nfd_data_counters(ndn)
+        sample_index = 0
+        while not stop_event.wait(interval_s):
+            sample_start = time.time()
+            rtts = []
+            for provider in provider_rows:
+                ping = ndnping_once_from_user(ndn, provider["pingPrefix"])
+                rtts.append({**provider, **ping})
+            current_nfd = snapshot_nfd_data_counters(ndn)
+            nfd_delta = diff_nfd_data_counters(last_nfd, current_nfd)
+            last_nfd = current_nfd
+            rtt_values = [
+                float(item["rttMs"]) for item in rtts
+                if item.get("rttMs") is not None
+            ]
+            nfd_totals = {
+                "nInData": sum(item.get("nInData", 0) for item in nfd_delta.values()),
+                "nOutData": sum(item.get("nOutData", 0) for item in nfd_delta.values()),
+                "nInBytes": sum(item.get("nInBytes", 0) for item in nfd_delta.values()),
+                "nOutBytes": sum(item.get("nOutBytes", 0) for item in nfd_delta.values()),
+            }
+            with lock:
+                samples.append({
+                    "sample": sample_index,
+                    "epochS": sample_start,
+                    "epochEndS": time.time(),
+                    "rttSummaryMs": summarize_numeric(rtt_values),
+                    "rtts": rtts,
+                    "nfdDelta": nfd_delta,
+                    "nfdTotals": nfd_totals,
+                })
+            sample_index += 1
+
+    thread = threading.Thread(target=loop, name="warm-rtt-nfd-monitor", daemon=True)
+    thread.start()
+    return stop_event, thread, samples, lock
+
+
+def write_warm_rtt_nfd_monitor_summary(layout: str,
+                                       phase: str,
+                                       log_path: Path,
+                                       samples: list[dict],
+                                       lock: threading.Lock) -> None:
+    with lock:
+        copied_samples = list(samples)
+    text = log_path.read_text(errors="replace") if log_path.exists() else ""
+    requests = parse_inference_result_rows(text)
+    aligned = []
+    for request in requests:
+        midpoint = None
+        if request.get("epochStartS") is not None and request.get("epochEndS") is not None:
+            midpoint = (float(request["epochStartS"]) + float(request["epochEndS"])) / 2.0
+        sample = nearest_monitor_sample(copied_samples, midpoint)
+        aligned.append({
+            "request": request,
+            "nearestSample": sample,
+            "nearestSampleDeltaMs": (
+                abs(float(sample.get("epochS", 0.0)) - midpoint) * 1000.0
+                if sample is not None and midpoint is not None else None
+            ),
+        })
+    summary = {
+        "layout": layout,
+        "phase": phase,
+        "sampleCount": len(copied_samples),
+        "requestCount": len(requests),
+        "samples": copied_samples,
+        "requestsWithNearestSample": aligned,
+        "note": (
+            "This diagnostic samples ndnping-style RTT and NFD network-face counters "
+            "during the warm window. It adds probe traffic and should be used for "
+            "correlation, not as the canonical low-overhead benchmark mode."
+        ),
+    }
+    path = OUT / "warm-rtt-nfd-monitor.json"
+    history = []
+    if path.exists():
+        try:
+            history = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            history = []
+    if not isinstance(history, list):
+        history = []
+    history.append(summary)
+    path.write_text(json.dumps(history, indent=2, sort_keys=True), encoding="utf-8")
+    rtt_values = [
+        float(row["rttMs"])
+        for sample in copied_samples
+        for row in sample.get("rtts", [])
+        if row.get("rttMs") is not None
+    ]
+    print(
+        "YOLO_LAYOUT_WARM_RTT_NFD_MONITOR "
+        f"layout={layout} phase={phase} samples={len(copied_samples)} "
+        f"requests={len(requests)} rtt_p50_ms={percentile(rtt_values, 50):.2f} "
+        f"rtt_p95_ms={percentile(rtt_values, 95):.2f} path={path}"
+    )
+
+
 def validate_repo_manifest_references(path: Path) -> None:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     roles = manifest.get("roles", {})
@@ -542,6 +876,13 @@ def write_traffic_delta(layout: str, phase: str,
         "totalNodeBytesPerRequest": total_bytes / observed_request_count,
         "totalNodeBytesPerObservedRequest": total_bytes / observed_request_count,
         "totalNodeBytesPerMeasuredInference": total_bytes / measured_count,
+        "notes": [
+            "Traffic deltas cover the whole phase window, including preflight requests "
+            "and any first-use certificate/control fetches in that phase.",
+            "Use totalNodeBytesPerObservedRequest for a phase-average transport view. "
+            "Use totalNodeBytesPerMeasuredInference only when preflightRequestCount is 0 "
+            "or when intentionally amortizing preflight/control traffic over measured requests.",
+        ],
         "nodes": nodes,
     }
     path = OUT / "traffic-stats.json"
@@ -694,6 +1035,13 @@ def write_nfd_data_delta(layout: str, phase: str,
             "NFD nOutBytes/nInBytes are face byte counters for all packet types, "
             "so avgNfdOutBytesPerOutData is an approximate transport-size ratio, "
             "not a Data-only wire-size measurement.",
+            "Phase deltas include preflight requests and first-use certificate/control "
+            "fetches. In signing A/B/A runs, extra Data from the repo or certificate "
+            "publisher node can reflect certificate/cache warmup rather than inference "
+            "hot-path activation traffic.",
+            "Compare nOutDataPerObservedRequest for phase-average transport cost. "
+            "Use nOutDataPerMeasuredInference only when preflightRequestCount is 0 "
+            "or when deliberately amortizing preflight/control traffic.",
         ],
         "nodes": nodes,
     }
@@ -894,6 +1242,216 @@ def has_planned_name(row: dict) -> bool:
     return bool(value and value.lower() not in {"false", "0", "none", "-"})
 
 
+def write_svs_internal_timing_summaries(
+        layout: str,
+        phases: list[tuple[str, Path]],
+        providers: list[tuple[str, str, list[str]]]) -> None:
+    log_paths = [(phase, "user", path) for phase, path in phases]
+    log_paths.extend(("provider", name, OUT / f"{name}.log") for _, name, _ in providers)
+    rows = []
+    for phase, role, path in log_paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "event=" not in line:
+                continue
+            if ("ndn_svs.SyncTimeline" not in line and
+                    "ndn_svs.SVSPubSub" not in line):
+                continue
+            row = parse_key_value_line(line)
+            event = str(row.get("event", ""))
+            if not event:
+                continue
+            row["phase"] = phase
+            row["role"] = role
+            row["log"] = path.name
+            for key in ("elapsed_us", "elapsed_ms", "mappings", "data",
+                        "retained", "expired", "bytes", "processed",
+                        "received", "matches", "queue_depth",
+                        "lock_wait_us", "mapping_select_us",
+                        "initial_mapping_encode_us", "piggy_pack_us",
+                        "final_encode_us", "total_us",
+                        "top_level_mappings", "child_mappings",
+                        "child_data", "received_mappings",
+                        "top_level_parse_us", "block_parse_us",
+                        "child_mapping_parse_us", "child_data_parse_us",
+                        "child_cache_us", "process_mapping_us"):
+                if key in row:
+                    row[key] = parse_numeric_prefix(row.get(key, "0"))
+            rows.append(row)
+
+    def values_for(event: str, key: str, *, mode: str = "") -> list[float]:
+        values = []
+        for row in rows:
+            if row.get("event") != event:
+                continue
+            if mode and row.get("mode") != mode:
+                continue
+            if key not in row:
+                continue
+            value = float(row.get(key, 0))
+            if value >= 0:
+                values.append(value)
+        return values
+
+    def count_event(event: str) -> int:
+        return sum(1 for row in rows if row.get("event") == event)
+
+    piggy_build_rows = [row for row in rows if row.get("event") == "piggyback_build"]
+    piggy_recv_rows = [row for row in rows if row.get("event") == "piggyback_recv_children"]
+    extra_build_timing_rows = [
+        row for row in rows if row.get("event") == "extra_mapping_build_timing"
+    ]
+    extra_recv_timing_rows = [
+        row for row in rows if row.get("event") == "extra_mapping_recv_timing"
+    ]
+    mapping_fetch_rows = [
+        row for row in rows
+        if str(row.get("event", "")).startswith("mapping_fetch")
+    ]
+    parallel_sign = summarize_numeric(
+        values_for("response_sign_done", "elapsed_us", mode="parallel"))
+    parallel_worker_sign = summarize_numeric(
+        values_for("response_sign_done", "elapsed_us", mode="parallel-worker-result"))
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "events": {
+            event: sum(1 for row in rows if row.get("event") == event)
+            for event in sorted({str(row.get("event", "")) for row in rows})
+        },
+        "syncProcessing": {
+            "workerProcessingMs": summarize_numeric(
+                values_for("sync_worker_processing_ms", "elapsed_ms")),
+            "parallelTotalMs": summarize_numeric(
+                values_for("sync_interest_parallel_total_ms", "elapsed_ms")),
+            "parallelMainLoopBlockedMs": summarize_numeric(
+                values_for("main_loop_blocked_ms", "elapsed_ms", mode="parallel")),
+            "serialMainLoopBlockedMs": summarize_numeric(
+                values_for("main_loop_blocked_ms", "elapsed_ms", mode="serial")),
+        },
+        "syncProduction": {
+            "parallelEncodeUs": summarize_numeric(
+                values_for("response_encode_done", "elapsed_us", mode="parallel")),
+            "parallelSignUs": parallel_sign,
+            "parallelWorkerSignUs": parallel_worker_sign,
+            "parallelFacePutUs": summarize_numeric(
+                values_for("face_put_done", "elapsed_us", mode="parallel")),
+            "serialEncodeUs": summarize_numeric(
+                values_for("response_encode_done", "elapsed_us")),
+            "serialSignUs": summarize_numeric(
+                values_for("response_sign_done", "elapsed_us")),
+            "serialFacePutUs": summarize_numeric(
+                values_for("face_put_done", "elapsed_us")),
+        },
+        "extraMapping": {
+            "buildCount": len(piggy_build_rows),
+            "builtMappings": sum(float(row.get("mappings", 0)) for row in piggy_build_rows),
+            "builtData": sum(float(row.get("data", 0)) for row in piggy_build_rows),
+            "builtBytes": summarize_numeric([
+                float(row.get("bytes", 0)) for row in piggy_build_rows
+            ]),
+            "recvMappings": sum(float(row.get("mappings", 0)) for row in piggy_recv_rows),
+            "recvData": sum(float(row.get("data", 0)) for row in piggy_recv_rows),
+            "recvCount": len(piggy_recv_rows),
+            "recvBytes": summarize_numeric([
+                float(row.get("bytes", 0)) for row in rows
+                if row.get("event") == "piggyback_recv_block"
+            ]),
+            "cacheSatisfy": count_event("piggyback_cache_satisfy"),
+            "directSatisfy": count_event("piggyback_satisfy"),
+            "drops": count_event("piggyback_drop"),
+            "skips": count_event("piggyback_skip"),
+            "processMappings": count_event("piggyback_process_mappings"),
+            "buildTiming": {
+                "count": len(extra_build_timing_rows),
+                "lockWaitUs": summarize_numeric([
+                    float(row.get("lock_wait_us", 0)) for row in extra_build_timing_rows
+                ]),
+                "mappingSelectUs": summarize_numeric([
+                    float(row.get("mapping_select_us", 0)) for row in extra_build_timing_rows
+                ]),
+                "initialMappingEncodeUs": summarize_numeric([
+                    float(row.get("initial_mapping_encode_us", 0)) for row in extra_build_timing_rows
+                ]),
+                "piggyPackUs": summarize_numeric([
+                    float(row.get("piggy_pack_us", 0)) for row in extra_build_timing_rows
+                ]),
+                "finalEncodeUs": summarize_numeric([
+                    float(row.get("final_encode_us", 0)) for row in extra_build_timing_rows
+                ]),
+                "totalUs": summarize_numeric([
+                    float(row.get("total_us", 0)) for row in extra_build_timing_rows
+                ]),
+            },
+            "recvTiming": {
+                "count": len(extra_recv_timing_rows),
+                "topLevelParseUs": summarize_numeric([
+                    float(row.get("top_level_parse_us", 0)) for row in extra_recv_timing_rows
+                ]),
+                "blockParseUs": summarize_numeric([
+                    float(row.get("block_parse_us", 0)) for row in extra_recv_timing_rows
+                ]),
+                "childMappingParseUs": summarize_numeric([
+                    float(row.get("child_mapping_parse_us", 0)) for row in extra_recv_timing_rows
+                ]),
+                "childDataParseUs": summarize_numeric([
+                    float(row.get("child_data_parse_us", 0)) for row in extra_recv_timing_rows
+                ]),
+                "childCacheUs": summarize_numeric([
+                    float(row.get("child_cache_us", 0)) for row in extra_recv_timing_rows
+                ]),
+                "processMappingUs": summarize_numeric([
+                    float(row.get("process_mapping_us", 0)) for row in extra_recv_timing_rows
+                ]),
+                "totalUs": summarize_numeric([
+                    float(row.get("total_us", 0)) for row in extra_recv_timing_rows
+                ]),
+            },
+        },
+        "mappingFetch": {
+            "count": len(mapping_fetch_rows),
+            "suppressedInFlight": sum(
+                1 for row in mapping_fetch_rows if row.get("reason") == "in_flight"),
+            "suppressedBackoff": sum(
+                1 for row in mapping_fetch_rows if row.get("reason") == "backoff"),
+        },
+        "rows": rows,
+    }
+    path = OUT / "svs-internal-timing-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_SVS_INTERNAL_TIMING "
+        f"layout={layout} count={summary['count']} "
+        f"sync_worker_p50_ms="
+        f"{summary['syncProcessing']['workerProcessingMs']['p50']:.3f} "
+        f"sync_parallel_total_p50_ms="
+        f"{summary['syncProcessing']['parallelTotalMs']['p50']:.3f} "
+        f"sync_main_blocked_p50_ms="
+        f"{summary['syncProcessing']['parallelMainLoopBlockedMs']['p50']:.3f} "
+        f"sync_encode_p50_us="
+        f"{summary['syncProduction']['parallelEncodeUs']['p50']:.1f} "
+        f"sync_sign_p50_us="
+        f"{max(parallel_sign['p50'], parallel_worker_sign['p50']):.1f} "
+        f"sync_face_put_p50_us="
+        f"{summary['syncProduction']['parallelFacePutUs']['p50']:.1f} "
+        f"extra_mapping_build_count={summary['extraMapping']['buildCount']} "
+        f"extra_mapping_built_mappings={summary['extraMapping']['builtMappings']:.0f} "
+        f"extra_mapping_built_data={summary['extraMapping']['builtData']:.0f} "
+        f"extra_mapping_build_bytes_p50="
+        f"{summary['extraMapping']['builtBytes']['p50']:.0f} "
+        f"extra_mapping_build_total_p50_us="
+        f"{summary['extraMapping']['buildTiming']['totalUs']['p50']:.1f} "
+        f"extra_mapping_parse_total_p50_us="
+        f"{summary['extraMapping']['recvTiming']['totalUs']['p50']:.1f} "
+        f"extra_mapping_parse_process_p50_us="
+        f"{summary['extraMapping']['recvTiming']['processMappingUs']['p50']:.1f} "
+        f"mapping_fetch_count={summary['mappingFetch']['count']} "
+        f"path={path}"
+    )
+
+
 def write_provider_timing_summaries(layout: str,
                                     providers: list[tuple[str, str, list[str]]],
                                     *,
@@ -961,6 +1519,7 @@ def write_provider_timing_summaries(layout: str,
                     if key in row:
                         row[key] = parse_numeric_prefix(row.get(key, "0"))
                 for key in (
+                    "timestamp_us",
                     "encoded_bytes",
                     "error_code",
                     "timeout_ms",
@@ -1499,6 +2058,171 @@ def write_provider_timing_summaries(layout: str,
         f"path={collab_fetch_path}"
     )
 
+    segment_events: dict[tuple[str, str, str], dict] = {}
+    for row in collab_fetch_rows:
+        event = row.get("event", "")
+        segment_name = row.get("segmentName", "")
+        request_id = row.get("requestId", "")
+        key_scope = row.get("keyScope", "")
+        if not segment_name or not request_id or event not in {
+                "segment_active_put",
+                "segment_interest",
+                "segment_received",
+                "segment_validated",
+        }:
+            continue
+        key = (request_id, key_scope, segment_name)
+        item = segment_events.setdefault(key, {
+            "requestId": request_id,
+            "keyScope": key_scope,
+            "segmentName": segment_name,
+            "dataName": row.get("dataName", ""),
+            "producerLog": "",
+            "consumerLog": "",
+            "activePutTimestampUs": 0,
+            "interestTimestampUs": 0,
+            "dataTimestampUs": 0,
+            "validatedTimestampUs": 0,
+            "interestFetchStartDeltaMs": 0.0,
+            "dataFetchStartDeltaMs": 0.0,
+            "validatedFetchStartDeltaMs": 0.0,
+            "interestToDataMs": 0.0,
+            "interestToValidatedMs": 0.0,
+            "dataToValidatedMs": 0.0,
+            "wireBytes": 0,
+        })
+        provider_log = row.get("providerLog", "")
+        if event == "segment_active_put":
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            current = int(item.get("activePutTimestampUs", 0) or 0)
+            if timestamp_us > 0:
+                item["activePutTimestampUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            item["producerLog"] = provider_log
+            item["wireBytes"] = parse_int_prefix(row.get("wire_bytes", "0"))
+        elif event == "segment_interest":
+            item["consumerLog"] = provider_log
+            item["interestTimestampUs"] = parse_int_prefix(row.get("timestamp_us", "0"))
+            item["interestFetchStartDeltaMs"] = parse_numeric_prefix(
+                row.get("fetch_start_to_interest_ms", "0"))
+        elif event == "segment_received":
+            item["consumerLog"] = provider_log
+            item["dataTimestampUs"] = parse_int_prefix(row.get("timestamp_us", "0"))
+            item["dataFetchStartDeltaMs"] = parse_numeric_prefix(
+                row.get("fetch_start_to_data_ms", "0"))
+            item["interestToDataMs"] = parse_numeric_prefix(
+                row.get("interest_to_data_ms", "0"))
+            if not item["wireBytes"]:
+                item["wireBytes"] = parse_int_prefix(row.get("wire_bytes", "0"))
+        elif event == "segment_validated":
+            item["consumerLog"] = provider_log
+            item["validatedTimestampUs"] = parse_int_prefix(row.get("timestamp_us", "0"))
+            item["validatedFetchStartDeltaMs"] = parse_numeric_prefix(
+                row.get("fetch_start_to_validated_ms", "0"))
+            item["interestToValidatedMs"] = parse_numeric_prefix(
+                row.get("interest_to_validated_ms", "0"))
+            item["dataToValidatedMs"] = parse_numeric_prefix(
+                row.get("data_to_validated_ms", "0"))
+
+    segment_rows = []
+    for item in segment_events.values():
+        row = dict(item)
+        interest_delta = float(row.get("interestFetchStartDeltaMs", 0.0) or 0.0)
+        data_delta = float(row.get("dataFetchStartDeltaMs", 0.0) or 0.0)
+        validated_delta = float(row.get("validatedFetchStartDeltaMs", 0.0) or 0.0)
+        interest_to_data = float(row.get("interestToDataMs", 0.0) or 0.0)
+        active_put_ts = int(row.get("activePutTimestampUs", 0) or 0)
+        interest_ts = int(row.get("interestTimestampUs", 0) or 0)
+        data_ts = int(row.get("dataTimestampUs", 0) or 0)
+        validated_ts = int(row.get("validatedTimestampUs", 0) or 0)
+        if active_put_ts > 0:
+            row["activePutFetchStartDeltaMs"] = 0.0
+            row["interestToActivePutMs"] = (
+                (active_put_ts - interest_ts) / 1000.0
+                if interest_ts > 0 and active_put_ts >= interest_ts else 0.0)
+            row["activePutToDataMs"] = (
+                (data_ts - active_put_ts) / 1000.0
+                if data_ts > 0 and data_ts >= active_put_ts else 0.0)
+            row["activePutToValidatedMs"] = (
+                (validated_ts - active_put_ts) / 1000.0
+                if validated_ts > 0 and validated_ts >= active_put_ts else 0.0)
+        else:
+            row["activePutFetchStartDeltaMs"] = 0.0
+            row["interestToActivePutMs"] = 0.0
+            row["activePutToDataMs"] = 0.0
+            row["activePutToValidatedMs"] = 0.0
+        segment_rows.append(row)
+
+    active_rows = [row for row in segment_rows if row.get("activePutTimestampUs", 0) > 0]
+    activation_segment_summary = {
+        "layout": layout,
+        "count": len(segment_rows),
+        "activePutCount": len(active_rows),
+        "interestToDataMs": summarize_numeric([
+            row["interestToDataMs"] for row in segment_rows
+            if row["interestToDataMs"] > 0
+        ]),
+        "dataToValidatedMs": summarize_numeric([
+            row["dataToValidatedMs"] for row in segment_rows
+            if row["dataToValidatedMs"] > 0
+        ]),
+        "interestToActivePutMs": summarize_numeric([
+            row["interestToActivePutMs"] for row in segment_rows
+            if row["interestToActivePutMs"] > 0
+        ]),
+        "activePutToDataMs": summarize_numeric([
+            row["activePutToDataMs"] for row in segment_rows
+            if row["activePutToDataMs"] > 0
+        ]),
+        "activePutToValidatedMs": summarize_numeric([
+            row["activePutToValidatedMs"] for row in segment_rows
+            if row["activePutToValidatedMs"] > 0
+        ]),
+        "wireBytes": summarize_numeric([
+            float(row["wireBytes"]) for row in segment_rows
+            if row["wireBytes"] > 0
+        ]),
+        "rows": segment_rows,
+    }
+    activation_segment_path = OUT / "activation-segment-timeline-stats.json"
+    activation_segment_path.write_text(
+        json.dumps(activation_segment_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_ACTIVATION_SEGMENT_TIMELINE "
+        f"layout={layout} count={activation_segment_summary['count']} "
+        f"active_put_count={activation_segment_summary['activePutCount']} "
+        f"interest_to_data_p50_ms="
+        f"{activation_segment_summary['interestToDataMs']['p50']:.2f} "
+        f"interest_to_active_put_p50_ms="
+        f"{activation_segment_summary['interestToActivePutMs']['p50']:.2f} "
+        f"active_put_to_data_p50_ms="
+        f"{activation_segment_summary['activePutToDataMs']['p50']:.2f} "
+        f"data_to_validated_p50_ms="
+        f"{activation_segment_summary['dataToValidatedMs']['p50']:.2f} "
+        f"wire_bytes_p50={activation_segment_summary['wireBytes']['p50']:.0f} "
+        f"path={activation_segment_path}"
+    )
+    activation_by_scope = {}
+    for row in segment_rows:
+        activation_by_scope.setdefault(row.get("keyScope", "-"), []).append(row)
+    for scope, rows in sorted(activation_by_scope.items()):
+        active_rows_for_scope = [
+            row for row in rows if int(row.get("activePutTimestampUs", 0) or 0) > 0
+        ]
+        print(
+            "YOLO_LAYOUT_ACTIVATION_SEGMENT_SCOPE_TIMELINE "
+            f"layout={layout} scope={scope} count={len(rows)} "
+            f"active_put_count={len(active_rows_for_scope)} "
+            f"interest_to_active_put_p50_ms="
+            f"{summarize_numeric([row['interestToActivePutMs'] for row in rows if row['interestToActivePutMs'] > 0])['p50']:.2f} "
+            f"active_put_to_data_p50_ms="
+            f"{summarize_numeric([row['activePutToDataMs'] for row in rows if row['activePutToDataMs'] > 0])['p50']:.2f} "
+            f"data_to_validated_p50_ms="
+            f"{summarize_numeric([row['dataToValidatedMs'] for row in rows if row['dataToValidatedMs'] > 0])['p50']:.2f}"
+        )
+
     pending_satisfy_rows = [
         row for row in pending_ims_rows
         if row.get("event") == "satisfy" and "pending_age_ms" in row
@@ -1754,6 +2478,336 @@ def write_provider_timing_summaries(layout: str,
         ]),
         "rows": dataflow_rows,
     }
+
+    merge_handler_by_session = {}
+    for row in handler_end_rows:
+        if str(row.get("role", "")) != "/Merge":
+            continue
+        session = str(row.get("session", ""))
+        if not session:
+            continue
+        merge_handler_by_session[session] = row
+        if session.startswith("/"):
+            merge_handler_by_session[session[1:]] = row
+        else:
+            merge_handler_by_session["/" + session] = row
+
+    frontier_by_session_scope: dict[tuple[str, str], list[dict]] = {}
+    for row in frontier_rows:
+        scope = str(row.get("scope", ""))
+        session = _session_from_data_name(str(row.get("dataName", "")))
+        if session and not session.startswith("/"):
+            session = "/" + session
+        if session:
+            frontier_by_session_scope.setdefault((session, scope), []).append(row)
+
+    all_segments_by_session_scope: dict[tuple[str, str], list[dict]] = {}
+    segments_by_session_scope: dict[tuple[str, str], list[dict]] = {}
+    for row in segment_rows:
+        scope = str(row.get("keyScope", ""))
+        session = str(row.get("requestId", ""))
+        if session:
+            all_segments_by_session_scope.setdefault((session, scope), []).append(row)
+            if scope.endswith("-to-merge"):
+                segments_by_session_scope.setdefault((session, scope), []).append(row)
+
+    def min_positive(values: list[float]) -> float:
+        positives = [value for value in values if value > 0]
+        return min(positives) if positives else 0.0
+
+    def max_positive(values: list[float]) -> float:
+        positives = [value for value in values if value > 0]
+        return max(positives) if positives else 0.0
+
+    def us_to_ms_delta(end_us: float, start_us: float) -> float:
+        if end_us <= 0 or start_us <= 0 or end_us < start_us:
+            return 0.0
+        return (end_us - start_us) / 1000.0
+
+    def epoch_ms_delta(end_ms: float, start_ms: float) -> float:
+        if end_ms <= 0 or start_ms <= 0 or end_ms < start_ms:
+            return 0.0
+        return end_ms - start_ms
+
+    def summarize_edge_segments(session: str, scope: str, segments: list[dict]) -> dict:
+        frontier_items = frontier_by_session_scope.get((session, scope), [])
+        interest_us = min_positive([
+            float(row.get("interestTimestampUs", 0) or 0) for row in segments
+        ])
+        active_put_us = min_positive([
+            float(row.get("activePutTimestampUs", 0) or 0) for row in segments
+        ])
+        first_data_us = min_positive([
+            float(row.get("dataTimestampUs", 0) or 0) for row in segments
+        ])
+        last_validated_us = max_positive([
+            float(row.get("validatedTimestampUs", 0) or 0) for row in segments
+        ])
+        output_ready_ms = min_positive([
+            float(row.get("outputReadyEpochMs", 0) or 0) for row in frontier_items
+        ])
+        publish_done_ms = min_positive([
+            float(row.get("publishDoneEpochMs", 0) or 0) for row in frontier_items
+        ])
+        return {
+            "session": session,
+            "scope": scope,
+            "producerLog": segments[0].get("producerLog", "") if segments else "",
+            "consumerLog": segments[0].get("consumerLog", "") if segments else "",
+            "segmentCount": len(segments),
+            "activePutSegmentCount": sum(
+                1 for row in segments
+                if int(row.get("activePutTimestampUs", 0) or 0) > 0),
+            "interestTimestampUs": int(interest_us),
+            "activePutTimestampUs": int(active_put_us),
+            "firstDataTimestampUs": int(first_data_us),
+            "lastValidatedTimestampUs": int(last_validated_us),
+            "outputReadyEpochMs": int(output_ready_ms),
+            "publishDoneEpochMs": int(publish_done_ms),
+            "interestToActivePutMs": us_to_ms_delta(active_put_us, interest_us),
+            "activePutToFirstDataMs": us_to_ms_delta(first_data_us, active_put_us),
+            "firstDataToLastValidatedMs": us_to_ms_delta(last_validated_us, first_data_us),
+            "interestToLastValidatedMs": us_to_ms_delta(last_validated_us, interest_us),
+            "outputReadyToFirstDataMs": epoch_ms_delta(first_data_us / 1000.0, output_ready_ms),
+            "publishDoneToLastValidatedMs": epoch_ms_delta(last_validated_us / 1000.0, publish_done_ms),
+        }
+
+    dag_edge_rows = [
+        summarize_edge_segments(session, scope, segments)
+        for (session, scope), segments in sorted(all_segments_by_session_scope.items())
+    ]
+
+    merge_critical_rows = []
+    for (session, scope), segments in sorted(segments_by_session_scope.items()):
+        merge_handler = merge_handler_by_session.get(session, {})
+        last_validated_us = max_positive([
+            float(row.get("validatedTimestampUs", 0) or 0) for row in segments
+        ])
+        merge_start_ms = float(merge_handler.get("start_epoch_ms", 0) or 0)
+        merge_end_ms = float(merge_handler.get("end_epoch_ms", 0) or 0)
+        merge_row = {
+            **summarize_edge_segments(session, scope, segments),
+            "mergeHandlerStartEpochMs": int(merge_start_ms),
+            "mergeHandlerEndEpochMs": int(merge_end_ms),
+            "mergeStartToLastValidatedMs": epoch_ms_delta(last_validated_us / 1000.0, merge_start_ms),
+            "mergeStartToEndMs": epoch_ms_delta(merge_end_ms, merge_start_ms),
+            "lastValidatedToMergeEndMs": epoch_ms_delta(merge_end_ms, last_validated_us / 1000.0),
+        }
+        merge_critical_rows.append(merge_row)
+
+    critical_by_session: dict[str, list[dict]] = {}
+    for row in merge_critical_rows:
+        critical_by_session.setdefault(row["session"], []).append(row)
+    merge_session_rows = []
+    for session, rows in sorted(critical_by_session.items()):
+        merge_handler = merge_handler_by_session.get(session, {})
+        merge_start_ms = float(merge_handler.get("start_epoch_ms", 0) or 0)
+        merge_end_ms = float(merge_handler.get("end_epoch_ms", 0) or 0)
+        last_validated_ms = max_positive([
+            float(row.get("lastValidatedTimestampUs", 0) or 0) / 1000.0
+            for row in rows
+        ])
+        first_interest_ms = min_positive([
+            float(row.get("interestTimestampUs", 0) or 0) / 1000.0
+            for row in rows
+        ])
+        first_active_put_ms = min_positive([
+            float(row.get("activePutTimestampUs", 0) or 0) / 1000.0
+            for row in rows
+        ])
+        merge_session_rows.append({
+            "session": session,
+            "edgeCount": len(rows),
+            "mergeHandlerStartEpochMs": int(merge_start_ms),
+            "mergeHandlerEndEpochMs": int(merge_end_ms),
+            "firstInterestToFirstActivePutMs": epoch_ms_delta(
+                first_active_put_ms, first_interest_ms),
+            "firstInterestToLastValidatedMs": epoch_ms_delta(
+                last_validated_ms, first_interest_ms),
+            "mergeStartToLastValidatedMs": epoch_ms_delta(
+                last_validated_ms, merge_start_ms),
+            "lastValidatedToMergeEndMs": epoch_ms_delta(
+                merge_end_ms, last_validated_ms),
+            "mergeStartToEndMs": epoch_ms_delta(merge_end_ms, merge_start_ms),
+            "maxInterestToActivePutMs": max(
+                [float(row.get("interestToActivePutMs", 0.0) or 0.0)
+                 for row in rows],
+                default=0.0),
+            "maxActivePutToFirstDataMs": max(
+                [float(row.get("activePutToFirstDataMs", 0.0) or 0.0)
+                 for row in rows],
+                default=0.0),
+            "maxPublishDoneToLastValidatedMs": max(
+                [float(row.get("publishDoneToLastValidatedMs", 0.0) or 0.0)
+                 for row in rows],
+                default=0.0),
+        })
+
+    all_edges_by_session: dict[str, list[dict]] = {}
+    for row in dag_edge_rows:
+        all_edges_by_session.setdefault(row["session"], []).append(row)
+    dag_session_rows = []
+    for session, rows in sorted(all_edges_by_session.items()):
+        merge_handler = merge_handler_by_session.get(session, {})
+        merge_end_ms = float(merge_handler.get("end_epoch_ms", 0) or 0)
+        first_interest_ms = min_positive([
+            float(row.get("interestTimestampUs", 0) or 0) / 1000.0 for row in rows
+        ])
+        first_active_put_ms = min_positive([
+            float(row.get("activePutTimestampUs", 0) or 0) / 1000.0 for row in rows
+        ])
+        last_validated_ms = max_positive([
+            float(row.get("lastValidatedTimestampUs", 0) or 0) / 1000.0 for row in rows
+        ])
+        max_interest_to_active = max(
+            [float(row.get("interestToActivePutMs", 0.0) or 0.0) for row in rows],
+            default=0.0)
+        max_active_to_data = max(
+            [float(row.get("activePutToFirstDataMs", 0.0) or 0.0) for row in rows],
+            default=0.0)
+        max_publish_to_validated = max(
+            [float(row.get("publishDoneToLastValidatedMs", 0.0) or 0.0) for row in rows],
+            default=0.0)
+        slowest_edge = max(
+            rows,
+            key=lambda row: float(row.get("interestToLastValidatedMs", 0.0) or 0.0),
+            default={},
+        )
+        dag_session_rows.append({
+            "session": session,
+            "edgeCount": len(rows),
+            "firstInterestToFirstActivePutMs": epoch_ms_delta(
+                first_active_put_ms, first_interest_ms),
+            "firstInterestToLastValidatedMs": epoch_ms_delta(
+                last_validated_ms, first_interest_ms),
+            "firstInterestToMergeEndMs": epoch_ms_delta(
+                merge_end_ms, first_interest_ms),
+            "maxInterestToActivePutMs": max_interest_to_active,
+            "maxActivePutToFirstDataMs": max_active_to_data,
+            "maxPublishDoneToLastValidatedMs": max_publish_to_validated,
+            "slowestEdgeScope": slowest_edge.get("scope", ""),
+            "slowestEdgeInterestToLastValidatedMs": slowest_edge.get(
+                "interestToLastValidatedMs", 0.0),
+        })
+
+    dag_summary = {
+        "layout": layout,
+        "edgeRows": len(dag_edge_rows),
+        "sessionRows": len(dag_session_rows),
+        "interestToActivePutMs": summarize_numeric([
+            row["interestToActivePutMs"] for row in dag_edge_rows
+            if row["interestToActivePutMs"] > 0
+        ]),
+        "activePutToFirstDataMs": summarize_numeric([
+            row["activePutToFirstDataMs"] for row in dag_edge_rows
+            if row["activePutToFirstDataMs"] > 0
+        ]),
+        "publishDoneToLastValidatedMs": summarize_numeric([
+            row["publishDoneToLastValidatedMs"] for row in dag_edge_rows
+            if row["publishDoneToLastValidatedMs"] > 0
+        ]),
+        "firstInterestToLastValidatedMs": summarize_numeric([
+            row["firstInterestToLastValidatedMs"] for row in dag_session_rows
+            if row["firstInterestToLastValidatedMs"] > 0
+        ]),
+        "firstInterestToMergeEndMs": summarize_numeric([
+            row["firstInterestToMergeEndMs"] for row in dag_session_rows
+            if row["firstInterestToMergeEndMs"] > 0
+        ]),
+        "rows": dag_edge_rows,
+        "sessions": dag_session_rows,
+    }
+    dag_path = OUT / "dag-activation-critical-path.json"
+    dag_path.write_text(json.dumps(dag_summary, indent=2, sort_keys=True),
+                        encoding="utf-8")
+    dag_csv = OUT / "dag-activation-critical-path.csv"
+    dag_csv_fields = [
+        "session", "scope", "producerLog", "consumerLog", "segmentCount",
+        "activePutSegmentCount", "interestToActivePutMs",
+        "activePutToFirstDataMs", "firstDataToLastValidatedMs",
+        "interestToLastValidatedMs", "outputReadyToFirstDataMs",
+        "publishDoneToLastValidatedMs",
+    ]
+    with dag_csv.open("w", encoding="utf-8") as fh:
+        fh.write(",".join(dag_csv_fields) + "\n")
+        for row in dag_edge_rows:
+            fh.write(",".join(str(row.get(field, "")) for field in dag_csv_fields) + "\n")
+    print(
+        "YOLO_LAYOUT_DAG_ACTIVATION_CRITICAL_PATH "
+        f"layout={layout} edge_rows={dag_summary['edgeRows']} "
+        f"sessions={dag_summary['sessionRows']} "
+        f"interest_to_active_put_p50_ms="
+        f"{dag_summary['interestToActivePutMs']['p50']:.2f} "
+        f"active_put_to_first_data_p50_ms="
+        f"{dag_summary['activePutToFirstDataMs']['p50']:.2f} "
+        f"publish_done_to_last_validated_p50_ms="
+        f"{dag_summary['publishDoneToLastValidatedMs']['p50']:.2f} "
+        f"path={dag_path}"
+    )
+
+    merge_critical_summary = {
+        "layout": layout,
+        "edgeRows": len(merge_critical_rows),
+        "sessionRows": len(merge_session_rows),
+        "interestToActivePutMs": summarize_numeric([
+            row["interestToActivePutMs"] for row in merge_critical_rows
+            if row["interestToActivePutMs"] > 0
+        ]),
+        "activePutToFirstDataMs": summarize_numeric([
+            row["activePutToFirstDataMs"] for row in merge_critical_rows
+            if row["activePutToFirstDataMs"] > 0
+        ]),
+        "publishDoneToLastValidatedMs": summarize_numeric([
+            row["publishDoneToLastValidatedMs"] for row in merge_critical_rows
+            if row["publishDoneToLastValidatedMs"] > 0
+        ]),
+        "mergeStartToLastValidatedMs": summarize_numeric([
+            row["mergeStartToLastValidatedMs"] for row in merge_session_rows
+            if row["mergeStartToLastValidatedMs"] > 0
+        ]),
+        "lastValidatedToMergeEndMs": summarize_numeric([
+            row["lastValidatedToMergeEndMs"] for row in merge_session_rows
+            if row["lastValidatedToMergeEndMs"] > 0
+        ]),
+        "mergeStartToEndMs": summarize_numeric([
+            row["mergeStartToEndMs"] for row in merge_session_rows
+            if row["mergeStartToEndMs"] > 0
+        ]),
+        "rows": merge_critical_rows,
+        "sessions": merge_session_rows,
+    }
+    merge_critical_path = OUT / "merge-activation-critical-path.json"
+    merge_critical_path.write_text(
+        json.dumps(merge_critical_summary, indent=2, sort_keys=True),
+        encoding="utf-8")
+    merge_critical_csv = OUT / "merge-activation-critical-path.csv"
+    csv_fields = [
+        "session", "scope", "producerLog", "consumerLog", "segmentCount",
+        "activePutSegmentCount", "interestToActivePutMs",
+        "activePutToFirstDataMs", "firstDataToLastValidatedMs",
+        "interestToLastValidatedMs", "outputReadyToFirstDataMs",
+        "publishDoneToLastValidatedMs", "mergeStartToLastValidatedMs",
+        "lastValidatedToMergeEndMs", "mergeStartToEndMs",
+    ]
+    with merge_critical_csv.open("w", encoding="utf-8") as fh:
+        fh.write(",".join(csv_fields) + "\n")
+        for row in merge_critical_rows:
+            fh.write(",".join(str(row.get(field, "")) for field in csv_fields) + "\n")
+    print(
+        "YOLO_LAYOUT_MERGE_ACTIVATION_CRITICAL_PATH "
+        f"layout={layout} edge_rows={merge_critical_summary['edgeRows']} "
+        f"sessions={merge_critical_summary['sessionRows']} "
+        f"interest_to_active_put_p50_ms="
+        f"{merge_critical_summary['interestToActivePutMs']['p50']:.2f} "
+        f"active_put_to_first_data_p50_ms="
+        f"{merge_critical_summary['activePutToFirstDataMs']['p50']:.2f} "
+        f"merge_start_to_last_validated_p50_ms="
+        f"{merge_critical_summary['mergeStartToLastValidatedMs']['p50']:.2f} "
+        f"last_validated_to_merge_end_p50_ms="
+        f"{merge_critical_summary['lastValidatedToMergeEndMs']['p50']:.2f} "
+        f"path={merge_critical_path}"
+    )
+
     handler_path = OUT / "provider-handler-timing-stats.json"
     handler_path.write_text(
         json.dumps(handler_summary, indent=2, sort_keys=True),
@@ -2018,6 +3072,14 @@ def write_control_timing_summaries(layout: str,
         ]
         return min(values) if values else 0.0
 
+    def event_epoch_s(group_rows: list[dict], event: str) -> float:
+        values = [
+            float(row.get("timestamp_us", 0)) / 1000000.0
+            for row in group_rows
+            if row.get("event") == event and float(row.get("timestamp_us", 0)) > 0
+        ]
+        return min(values) if values else 0.0
+
     def delta_ms(end_us: float, start_us: float) -> float:
         if end_us <= 0 or start_us <= 0 or end_us < start_us:
             return 0.0
@@ -2188,6 +3250,668 @@ def write_control_timing_summaries(layout: str,
         f"{summary['finalProvider']['selectionReceivedToResponsePublishedMs']['p50']:.2f} "
         f"final_provider_execution_p50_ms="
         f"{summary['finalProvider']['executionStartedToDoneMs']['p50']:.2f} "
+        f"path={path}"
+    )
+
+
+def write_outer_control_waterfall_summaries(
+        layout: str,
+        phases: list[tuple[str, Path]],
+        providers: list[tuple[str, str, list[str]]]) -> None:
+    rows = []
+    log_paths = [(phase, path) for phase, path in phases]
+    log_paths.extend(("provider", OUT / f"{name}.log") for _, name, _ in providers)
+    for phase, path in log_paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            if "NDNSF_CONTROL_TIMING" not in line:
+                continue
+            row = parse_key_value_line(line)
+            row["phase"] = phase
+            row["log"] = path.name
+            for key in ("steady_us", "timestamp_us"):
+                if key in row:
+                    row[key] = parse_numeric_prefix(row.get(key, "0"))
+            rows.append(row)
+
+    def event_time(group_rows: list[dict], event: str) -> float:
+        values = [
+            float(row.get("steady_us", 0))
+            for row in group_rows
+            if row.get("event") == event and float(row.get("steady_us", 0)) > 0
+        ]
+        return min(values) if values else 0.0
+
+    def event_epoch_s(group_rows: list[dict], event: str) -> float:
+        values = [
+            float(row.get("timestamp_us", 0)) / 1000000.0
+            for row in group_rows
+            if row.get("event") == event and float(row.get("timestamp_us", 0)) > 0
+        ]
+        return min(values) if values else 0.0
+
+    def delta_ms(end_us: float, start_us: float) -> float:
+        if end_us <= 0 or start_us <= 0 or end_us < start_us:
+            return 0.0
+        return (end_us - start_us) / 1000.0
+
+    user_groups: dict[tuple[str, str], list[dict]] = {}
+    provider_groups: dict[tuple[str, str, str], list[dict]] = {}
+    for row in rows:
+        request_id = str(row.get("requestId", ""))
+        if not request_id:
+            continue
+        if row.get("role") == "user":
+            user_groups.setdefault((str(row["phase"]), request_id), []).append(row)
+        elif row.get("role") == "provider":
+            provider = str(row.get("providerName", row.get("log", "")))
+            provider_groups.setdefault((request_id, provider, str(row["log"])), []).append(row)
+
+    user_rows = []
+    for (phase, request_id), group_rows in user_groups.items():
+        request_published = event_time(group_rows, "REQUEST_PUBLISHED")
+        ack_observed = event_time(group_rows, "ACK_OBSERVED")
+        ack_matched = event_time(group_rows, "ACK_MATCHED")
+        provider_selected = event_time(group_rows, "PROVIDER_SELECTED")
+        selection_published = event_time(group_rows, "SELECTION_PUBLISHED")
+        selection_direct_put = event_time(group_rows, "SELECTION_DIRECT_PUT")
+        response_observed = event_time(group_rows, "RESPONSE_OBSERVED")
+        response_decrypted = event_time(group_rows, "RESPONSE_DECRYPTED")
+        callback_fired = event_time(group_rows, "CALLBACK_FIRED")
+        request_published_epoch_s = event_epoch_s(group_rows, "REQUEST_PUBLISHED")
+        response_observed_epoch_s = event_epoch_s(group_rows, "RESPONSE_OBSERVED")
+        callback_fired_epoch_s = event_epoch_s(group_rows, "CALLBACK_FIRED")
+        selection_published_epoch_s = event_epoch_s(group_rows, "SELECTION_PUBLISHED")
+        user_rows.append({
+            "phase": phase,
+            "requestId": request_id,
+            "requestPublishedEpochS": request_published_epoch_s,
+            "selectionPublishedEpochS": selection_published_epoch_s,
+            "responseObservedEpochS": response_observed_epoch_s,
+            "callbackFiredEpochS": callback_fired_epoch_s,
+            "requestPublishedToFirstAckObservedMs": delta_ms(ack_observed, request_published),
+            "firstAckObservedToAckMatchedMs": delta_ms(ack_matched, ack_observed),
+            "ackMatchedToProviderSelectedMs": delta_ms(provider_selected, ack_matched),
+            "providerSelectedToSelectionPublishedMs": delta_ms(selection_published, provider_selected),
+            "selectionPublishedToSelectionDirectPutMs": delta_ms(selection_direct_put, selection_published),
+            "selectionPublishedToResponseObservedMs": delta_ms(response_observed, selection_published),
+            "responseObservedToDecryptedMs": delta_ms(response_decrypted, response_observed),
+            "responseDecryptedToCallbackMs": delta_ms(callback_fired, response_decrypted),
+            "requestPublishedToCallbackMs": delta_ms(callback_fired, request_published),
+        })
+
+    provider_rows = []
+    for (request_id, provider, log), group_rows in provider_groups.items():
+        request_observed = event_time(group_rows, "REQUEST_OBSERVED")
+        request_received = event_time(group_rows, "REQUEST_RECEIVED")
+        ack_admission = event_time(group_rows, "ACK_ADMISSION_CHECKED")
+        ack_published = event_time(group_rows, "ACK_PUBLISHED")
+        selection_prefetch = event_time(group_rows, "SELECTION_DIRECT_PREFETCH_DATA")
+        selection_observed = event_time(group_rows, "SELECTION_OBSERVED")
+        selection_received = event_time(group_rows, "SELECTION_RECEIVED")
+        execution_started = event_time(group_rows, "EXECUTION_STARTED")
+        execution_done = event_time(group_rows, "EXECUTION_DONE")
+        response_published = event_time(group_rows, "RESPONSE_PUBLISHED")
+        request_observed_epoch_s = event_epoch_s(group_rows, "REQUEST_OBSERVED")
+        ack_published_epoch_s = event_epoch_s(group_rows, "ACK_PUBLISHED")
+        selection_received_epoch_s = event_epoch_s(group_rows, "SELECTION_RECEIVED")
+        response_published_epoch_s = event_epoch_s(group_rows, "RESPONSE_PUBLISHED")
+        provider_rows.append({
+            "requestId": request_id,
+            "providerName": provider,
+            "log": log,
+            "requestObservedEpochS": request_observed_epoch_s,
+            "ackPublishedEpochS": ack_published_epoch_s,
+            "selectionReceivedEpochS": selection_received_epoch_s,
+            "responsePublishedEpochS": response_published_epoch_s,
+            "requestReceivedToObservedMs": delta_ms(request_observed, request_received),
+            "requestObservedToAckAdmissionMs": delta_ms(ack_admission, request_observed),
+            "ackAdmissionToAckPublishedMs": delta_ms(ack_published, ack_admission),
+            "requestObservedToAckPublishedMs": delta_ms(ack_published, request_observed),
+            "ackPublishedToSelectionPrefetchDataMs": delta_ms(selection_prefetch, ack_published),
+            "selectionPrefetchDataToSelectionObservedMs": delta_ms(selection_observed, selection_prefetch),
+            "ackPublishedToSelectionObservedMs": delta_ms(selection_observed, ack_published),
+            "selectionObservedToSelectionReceivedMs": delta_ms(selection_received, selection_observed),
+            "selectionReceivedToExecutionStartedMs": delta_ms(execution_started, selection_received),
+            "executionStartedToDoneMs": delta_ms(execution_done, execution_started),
+            "executionDoneToResponsePublishedMs": delta_ms(response_published, execution_done),
+            "selectionReceivedToResponsePublishedMs": delta_ms(response_published, selection_received),
+        })
+
+    final_provider_rows = [
+        row for row in provider_rows
+        if row["selectionReceivedToResponsePublishedMs"] > 0
+    ]
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "userRequests": len(user_rows),
+        "providerRequests": len(provider_rows),
+        "finalProviderRequests": len(final_provider_rows),
+        "user": {
+            "requestPublishedToFirstAckObservedMs": summarize_numeric([
+                row["requestPublishedToFirstAckObservedMs"] for row in user_rows
+            ]),
+            "firstAckObservedToAckMatchedMs": summarize_numeric([
+                row["firstAckObservedToAckMatchedMs"] for row in user_rows
+            ]),
+            "ackMatchedToProviderSelectedMs": summarize_numeric([
+                row["ackMatchedToProviderSelectedMs"] for row in user_rows
+            ]),
+            "providerSelectedToSelectionPublishedMs": summarize_numeric([
+                row["providerSelectedToSelectionPublishedMs"] for row in user_rows
+            ]),
+            "selectionPublishedToSelectionDirectPutMs": summarize_numeric([
+                row["selectionPublishedToSelectionDirectPutMs"] for row in user_rows
+            ]),
+            "selectionPublishedToResponseObservedMs": summarize_numeric([
+                row["selectionPublishedToResponseObservedMs"] for row in user_rows
+            ]),
+            "responseObservedToDecryptedMs": summarize_numeric([
+                row["responseObservedToDecryptedMs"] for row in user_rows
+            ]),
+            "responseDecryptedToCallbackMs": summarize_numeric([
+                row["responseDecryptedToCallbackMs"] for row in user_rows
+            ]),
+            "requestPublishedToCallbackMs": summarize_numeric([
+                row["requestPublishedToCallbackMs"] for row in user_rows
+            ]),
+        },
+        "provider": {
+            "requestObservedToAckPublishedMs": summarize_numeric([
+                row["requestObservedToAckPublishedMs"] for row in provider_rows
+            ]),
+            "ackPublishedToSelectionPrefetchDataMs": summarize_numeric([
+                row["ackPublishedToSelectionPrefetchDataMs"] for row in provider_rows
+            ]),
+            "selectionPrefetchDataToSelectionObservedMs": summarize_numeric([
+                row["selectionPrefetchDataToSelectionObservedMs"] for row in provider_rows
+            ]),
+            "ackPublishedToSelectionObservedMs": summarize_numeric([
+                row["ackPublishedToSelectionObservedMs"] for row in provider_rows
+            ]),
+            "selectionObservedToSelectionReceivedMs": summarize_numeric([
+                row["selectionObservedToSelectionReceivedMs"] for row in provider_rows
+            ]),
+            "selectionReceivedToExecutionStartedMs": summarize_numeric([
+                row["selectionReceivedToExecutionStartedMs"] for row in provider_rows
+            ]),
+            "executionStartedToDoneMs": summarize_numeric([
+                row["executionStartedToDoneMs"] for row in provider_rows
+            ]),
+            "executionDoneToResponsePublishedMs": summarize_numeric([
+                row["executionDoneToResponsePublishedMs"] for row in provider_rows
+            ]),
+            "selectionReceivedToResponsePublishedMs": summarize_numeric([
+                row["selectionReceivedToResponsePublishedMs"] for row in provider_rows
+            ]),
+        },
+        "finalProvider": {
+            "requestObservedToAckPublishedMs": summarize_numeric([
+                row["requestObservedToAckPublishedMs"] for row in final_provider_rows
+            ]),
+            "ackPublishedToSelectionObservedMs": summarize_numeric([
+                row["ackPublishedToSelectionObservedMs"] for row in final_provider_rows
+            ]),
+            "selectionReceivedToExecutionStartedMs": summarize_numeric([
+                row["selectionReceivedToExecutionStartedMs"] for row in final_provider_rows
+            ]),
+            "executionStartedToDoneMs": summarize_numeric([
+                row["executionStartedToDoneMs"] for row in final_provider_rows
+            ]),
+            "executionDoneToResponsePublishedMs": summarize_numeric([
+                row["executionDoneToResponsePublishedMs"] for row in final_provider_rows
+            ]),
+            "selectionReceivedToResponsePublishedMs": summarize_numeric([
+                row["selectionReceivedToResponsePublishedMs"] for row in final_provider_rows
+            ]),
+        },
+        "userRows": user_rows,
+        "providerRows": provider_rows,
+        "finalProviderRows": final_provider_rows,
+    }
+    path = OUT / "outer-control-waterfall-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_OUTER_CONTROL_WATERFALL "
+        f"layout={layout} count={summary['count']} "
+        f"user_request_to_first_ack_p50_ms="
+        f"{summary['user']['requestPublishedToFirstAckObservedMs']['p50']:.2f} "
+        f"user_ack_match_to_selection_p50_ms="
+        f"{summary['user']['ackMatchedToProviderSelectedMs']['p50']:.2f} "
+        f"user_selection_to_response_p50_ms="
+        f"{summary['user']['selectionPublishedToResponseObservedMs']['p50']:.2f} "
+        f"user_response_to_callback_p50_ms="
+        f"{summary['user']['responseObservedToDecryptedMs']['p50'] + summary['user']['responseDecryptedToCallbackMs']['p50']:.2f} "
+        f"provider_request_to_ack_p50_ms="
+        f"{summary['provider']['requestObservedToAckPublishedMs']['p50']:.2f} "
+        f"provider_ack_to_selection_observed_p50_ms="
+        f"{summary['provider']['ackPublishedToSelectionObservedMs']['p50']:.2f} "
+        f"final_provider_selection_to_exec_p50_ms="
+        f"{summary['finalProvider']['selectionReceivedToExecutionStartedMs']['p50']:.2f} "
+        f"final_provider_exec_to_response_p50_ms="
+        f"{summary['finalProvider']['executionStartedToDoneMs']['p50'] + summary['finalProvider']['executionDoneToResponsePublishedMs']['p50']:.2f} "
+        f"path={path}"
+    )
+
+
+def write_outer_control_rtt_correlation_summary(layout: str) -> None:
+    monitor_path = OUT / "warm-rtt-nfd-monitor.json"
+    control_path = OUT / "outer-control-waterfall-stats.json"
+    if not monitor_path.exists() or not control_path.exists():
+        return
+    try:
+        monitor_history = json.loads(monitor_path.read_text(encoding="utf-8"))
+        control = json.loads(control_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    if not isinstance(monitor_history, list) or not monitor_history:
+        return
+    monitor = monitor_history[-1]
+    monitor_rows = monitor.get("requestsWithNearestSample", [])
+    control_rows = [
+        row for row in control.get("userRows", [])
+        if str(row.get("phase", "")).startswith("warm")
+        and float(row.get("requestPublishedEpochS", 0.0) or 0.0) > 0.0
+    ]
+    if not monitor_rows or not control_rows:
+        return
+
+    def corr(a: list[float], b: list[float]) -> float:
+        if len(a) != len(b) or len(a) < 2:
+            return 0.0
+        ma = sum(a) / len(a)
+        mb = sum(b) / len(b)
+        da = sum((value - ma) ** 2 for value in a)
+        db = sum((value - mb) ** 2 for value in b)
+        if da <= 0.0 or db <= 0.0:
+            return 0.0
+        return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / ((da * db) ** 0.5)
+
+    def nearest_control(epoch_s: float | None) -> dict | None:
+        if epoch_s is None:
+            return None
+        return min(
+            control_rows,
+            key=lambda row: abs(float(row.get("requestPublishedEpochS", 0.0)) - epoch_s),
+        )
+
+    rows = []
+    for monitor_row in monitor_rows:
+        request = monitor_row.get("request", {})
+        start_epoch = request.get("epochStartS")
+        control_row = nearest_control(float(start_epoch) if start_epoch is not None else None)
+        sample = monitor_row.get("nearestSample") or {}
+        rtt_values = [
+            float(item["rttMs"])
+            for item in sample.get("rtts", [])
+            if item.get("rttMs") is not None
+        ]
+        nfd_totals = sample.get("nfdTotals") or {}
+        if control_row is None:
+            continue
+        control_delta_ms = abs(
+            float(control_row.get("requestPublishedEpochS", 0.0)) -
+            float(start_epoch or 0.0)
+        ) * 1000.0
+        rows.append({
+            "requestIndex": request.get("index"),
+            "requestId": control_row.get("requestId", ""),
+            "phase": control_row.get("phase", ""),
+            "inferenceElapsedMs": float(request.get("inferenceElapsedMs", 0.0)),
+            "requestEpochStartS": start_epoch,
+            "requestEpochEndS": request.get("epochEndS"),
+            "controlMatchDeltaMs": control_delta_ms,
+            "nearestMonitorSampleDeltaMs": monitor_row.get("nearestSampleDeltaMs"),
+            "rttMeanMs": (sum(rtt_values) / len(rtt_values)) if rtt_values else 0.0,
+            "rttMaxMs": max(rtt_values) if rtt_values else 0.0,
+            "nfdOutData": int(nfd_totals.get("nOutData", 0)),
+            "nfdOutBytes": int(nfd_totals.get("nOutBytes", 0)),
+            "requestPublishedToFirstAckObservedMs": float(
+                control_row.get("requestPublishedToFirstAckObservedMs", 0.0) or 0.0),
+            "firstAckObservedToAckMatchedMs": float(
+                control_row.get("firstAckObservedToAckMatchedMs", 0.0) or 0.0),
+            "ackMatchedToProviderSelectedMs": float(
+                control_row.get("ackMatchedToProviderSelectedMs", 0.0) or 0.0),
+            "providerSelectedToSelectionPublishedMs": float(
+                control_row.get("providerSelectedToSelectionPublishedMs", 0.0) or 0.0),
+            "selectionPublishedToResponseObservedMs": float(
+                control_row.get("selectionPublishedToResponseObservedMs", 0.0) or 0.0),
+            "responseObservedToDecryptedMs": float(
+                control_row.get("responseObservedToDecryptedMs", 0.0) or 0.0),
+            "responseDecryptedToCallbackMs": float(
+                control_row.get("responseDecryptedToCallbackMs", 0.0) or 0.0),
+            "requestPublishedToCallbackMs": float(
+                control_row.get("requestPublishedToCallbackMs", 0.0) or 0.0),
+        })
+    if not rows:
+        return
+
+    latency = [row["inferenceElapsedMs"] for row in rows]
+    fields = [
+        "rttMeanMs",
+        "rttMaxMs",
+        "nfdOutData",
+        "nfdOutBytes",
+        "requestPublishedToFirstAckObservedMs",
+        "firstAckObservedToAckMatchedMs",
+        "ackMatchedToProviderSelectedMs",
+        "providerSelectedToSelectionPublishedMs",
+        "selectionPublishedToResponseObservedMs",
+        "responseObservedToDecryptedMs",
+        "responseDecryptedToCallbackMs",
+        "requestPublishedToCallbackMs",
+    ]
+    correlations = {
+        field: corr(latency, [float(row.get(field, 0.0) or 0.0) for row in rows])
+        for field in fields
+    }
+    sorted_fields = sorted(
+        correlations.items(), key=lambda item: abs(item[1]), reverse=True)
+    summary = {
+        "layout": layout,
+        "count": len(rows),
+        "latencyMs": summarize_numeric(latency),
+        "controlMatchDeltaMs": summarize_numeric([
+            row["controlMatchDeltaMs"] for row in rows
+        ]),
+        "nearestMonitorSampleDeltaMs": summarize_numeric([
+            float(row.get("nearestMonitorSampleDeltaMs", 0.0) or 0.0)
+            for row in rows
+        ]),
+        "correlationWithInferenceLatency": correlations,
+        "strongestCorrelations": [
+            {"field": field, "correlation": value}
+            for field, value in sorted_fields
+        ],
+        "slowestRequests": sorted(
+            rows, key=lambda row: row["inferenceElapsedMs"], reverse=True)[:20],
+        "fastestRequests": sorted(
+            rows, key=lambda row: row["inferenceElapsedMs"])[:10],
+        "rows": rows,
+        "note": (
+            "Rows are aligned by request epoch timestamps. Use controlMatchDeltaMs "
+            "and nearestMonitorSampleDeltaMs to judge alignment quality before "
+            "drawing conclusions from correlations."
+        ),
+    }
+    path = OUT / "outer-control-rtt-correlation-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    top = summary["strongestCorrelations"][:4]
+    top_text = ",".join(
+        f"{item['field']}={item['correlation']:.3f}" for item in top)
+    print(
+        "YOLO_LAYOUT_OUTER_CONTROL_RTT_CORRELATION "
+        f"layout={layout} count={len(rows)} "
+        f"latency_p50_ms={summary['latencyMs']['p50']:.2f} "
+        f"latency_p95_ms={summary['latencyMs']['p95']:.2f} "
+        f"top={top_text} path={path}"
+    )
+
+
+def write_native_session_breakdown_summary(layout: str) -> None:
+    paths = {
+        "correlation": OUT / "outer-control-rtt-correlation-stats.json",
+        "waterfall": OUT / "outer-control-waterfall-stats.json",
+        "handler": OUT / "provider-handler-timing-stats.json",
+        "dependency": OUT / "dependency-input-timing-stats.json",
+        "onnx": OUT / "onnx-timing-stats.json",
+    }
+    if not all(path.exists() for path in paths.values()):
+        return
+    try:
+        correlation = json.loads(paths["correlation"].read_text(encoding="utf-8"))
+        waterfall = json.loads(paths["waterfall"].read_text(encoding="utf-8"))
+        handler = json.loads(paths["handler"].read_text(encoding="utf-8"))
+        dependency = json.loads(paths["dependency"].read_text(encoding="utf-8"))
+        onnx = json.loads(paths["onnx"].read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+
+    request_rows = {
+        str(row.get("requestId", "")): row
+        for row in correlation.get("rows", [])
+        if row.get("requestId")
+    }
+    user_rows_by_session = {
+        str(row.get("requestId", "")): row
+        for row in waterfall.get("userRows", [])
+        if row.get("requestId")
+    }
+    provider_rows_by_session: dict[str, list[dict]] = {}
+    for row in waterfall.get("providerRows", []):
+        provider_rows_by_session.setdefault(str(row.get("requestId", "")), []).append(row)
+    handler_rows_by_session: dict[str, list[dict]] = {}
+    for row in handler.get("rows", []):
+        if row.get("event") != "end":
+            continue
+        handler_rows_by_session.setdefault(str(row.get("session", "")), []).append(row)
+    dependency_rows_by_session: dict[str, list[dict]] = {}
+    for row in dependency.get("rows", []):
+        dependency_rows_by_session.setdefault(str(row.get("session", "")), []).append(row)
+    onnx_rows_by_session: dict[str, list[dict]] = {}
+    for row in onnx.get("rows", []):
+        onnx_rows_by_session.setdefault(str(row.get("session", "")), []).append(row)
+
+    sessions = []
+    for request_id, request in sorted(request_rows.items()):
+        provider_rows = provider_rows_by_session.get(request_id, [])
+        handler_rows = handler_rows_by_session.get(request_id, [])
+        dependency_rows = dependency_rows_by_session.get(request_id, [])
+        onnx_rows = onnx_rows_by_session.get(request_id, [])
+        final_provider_rows = [
+            row for row in provider_rows
+            if float(row.get("selectionReceivedToResponsePublishedMs", 0.0) or 0.0) > 0.0
+        ]
+        final_handler_rows = [
+            row for row in handler_rows
+            if str(row.get("role", "")) == "/Merge"
+        ]
+        max_handler = max(
+            handler_rows,
+            key=lambda row: float(row.get("handler_ms", 0.0) or 0.0),
+            default={},
+        )
+        max_dependency = max(
+            dependency_rows,
+            key=lambda row: float(row.get("fetch_ms", 0.0) or 0.0),
+            default={},
+        )
+        max_selection_observed = max(
+            provider_rows,
+            key=lambda row: float(row.get("ackPublishedToSelectionObservedMs", 0.0) or 0.0),
+            default={},
+        )
+        max_request_ack = max(
+            provider_rows,
+            key=lambda row: float(row.get("requestObservedToAckPublishedMs", 0.0) or 0.0),
+            default={},
+        )
+        handler_total_max = max(
+            [float(row.get("handler_ms", 0.0) or 0.0) for row in handler_rows],
+            default=0.0,
+        )
+        dependency_fetch_max = max(
+            [float(row.get("fetch_ms", 0.0) or 0.0) for row in dependency_rows],
+            default=0.0,
+        )
+        final_provider_selection_to_response = max(
+            [
+                float(row.get("selectionReceivedToResponsePublishedMs", 0.0) or 0.0)
+                for row in final_provider_rows
+            ],
+            default=0.0,
+        )
+        user_waterfall_row = user_rows_by_session.get(request_id, {})
+        selection_published_epoch_s = float(
+            user_waterfall_row.get("selectionPublishedEpochS", 0.0) or 0.0)
+        response_observed_epoch_s = float(
+            user_waterfall_row.get("responseObservedEpochS", 0.0) or 0.0)
+        final_selection_received_epoch_s = min(
+            [
+                float(row.get("selectionReceivedEpochS", 0.0) or 0.0)
+                for row in final_provider_rows
+                if float(row.get("selectionReceivedEpochS", 0.0) or 0.0) > 0.0
+            ],
+            default=0.0,
+        )
+        final_response_published_epoch_s = min(
+            [
+                float(row.get("responsePublishedEpochS", 0.0) or 0.0)
+                for row in final_provider_rows
+                if float(row.get("responsePublishedEpochS", 0.0) or 0.0) > 0.0
+            ],
+            default=0.0,
+        )
+        def epoch_delta_ms(end_s: float, start_s: float) -> float:
+            if end_s <= 0.0 or start_s <= 0.0 or end_s < start_s:
+                return 0.0
+            return (end_s - start_s) * 1000.0
+        onnx_run_sum = sum(float(row.get("run_ms", 0.0) or 0.0) for row in onnx_rows)
+        row = {
+            "requestId": request_id,
+            "requestIndex": request.get("requestIndex"),
+            "inferenceElapsedMs": float(request.get("inferenceElapsedMs", 0.0) or 0.0),
+            "requestPublishedToFirstAckObservedMs": float(
+                request.get("requestPublishedToFirstAckObservedMs", 0.0) or 0.0),
+            "ackMatchedToProviderSelectedMs": float(
+                request.get("ackMatchedToProviderSelectedMs", 0.0) or 0.0),
+            "selectionPublishedToResponseObservedMs": float(
+                request.get("selectionPublishedToResponseObservedMs", 0.0) or 0.0),
+            "rttMeanMs": float(request.get("rttMeanMs", 0.0) or 0.0),
+            "rttMaxMs": float(request.get("rttMaxMs", 0.0) or 0.0),
+            "nfdOutData": int(request.get("nfdOutData", 0) or 0),
+            "providerRequestToAckMaxMs": max(
+                [float(item.get("requestObservedToAckPublishedMs", 0.0) or 0.0)
+                 for item in provider_rows],
+                default=0.0,
+            ),
+            "providerAckToSelectionObservedMaxMs": max(
+                [float(item.get("ackPublishedToSelectionObservedMs", 0.0) or 0.0)
+                 for item in provider_rows],
+                default=0.0,
+            ),
+            "providerExecutionMaxMs": max(
+                [float(item.get("executionStartedToDoneMs", 0.0) or 0.0)
+                 for item in provider_rows],
+                default=0.0,
+            ),
+            "selectionPublishedToFinalProviderSelectionReceivedMs": epoch_delta_ms(
+                final_selection_received_epoch_s, selection_published_epoch_s),
+            "selectionPublishedToFinalProviderResponsePublishedMs": epoch_delta_ms(
+                final_response_published_epoch_s, selection_published_epoch_s),
+            "finalProviderSelectionToResponseMs": final_provider_selection_to_response,
+            "finalProviderResponsePublishedToUserObservedMs": epoch_delta_ms(
+                response_observed_epoch_s, final_response_published_epoch_s),
+            "handlerMaxMs": handler_total_max,
+            "handlerMaxRole": max_handler.get("role", ""),
+            "handlerMaxProviderLog": max_handler.get("providerLog", ""),
+            "finalMergeHandlerMs": max(
+                [float(item.get("handler_ms", 0.0) or 0.0) for item in final_handler_rows],
+                default=0.0,
+            ),
+            "dependencyFetchMaxMs": dependency_fetch_max,
+            "dependencyFetchSumMs": sum(
+                float(item.get("fetch_ms", 0.0) or 0.0) for item in dependency_rows),
+            "dependencyFetchMaxRole": max_dependency.get("role", ""),
+            "dependencyFetchMaxScope": max_dependency.get("scope", ""),
+            "dependencyFetchMaxProviderLog": max_dependency.get("providerLog", ""),
+            "selectionObservedMaxProviderLog": max_selection_observed.get("log", ""),
+            "requestAckMaxProviderLog": max_request_ack.get("log", ""),
+            "onnxRunSumMs": onnx_run_sum,
+            "providerRows": provider_rows,
+            "handlerRows": handler_rows,
+            "dependencyRows": dependency_rows,
+            "onnxRows": onnx_rows,
+        }
+        components = {
+            "request_to_first_ack": row["requestPublishedToFirstAckObservedMs"],
+            "ack_to_selected": row["ackMatchedToProviderSelectedMs"],
+            "selection_to_response": row["selectionPublishedToResponseObservedMs"],
+            "selection_to_final_provider": row[
+                "selectionPublishedToFinalProviderSelectionReceivedMs"],
+            "final_response_to_user": row[
+                "finalProviderResponsePublishedToUserObservedMs"],
+            "max_dependency_fetch": row["dependencyFetchMaxMs"],
+            "max_handler": row["handlerMaxMs"],
+            "final_provider_selection_to_response": row["finalProviderSelectionToResponseMs"],
+        }
+        row["dominantComponent"] = max(components.items(), key=lambda item: item[1])[0]
+        row["dominantComponentMs"] = components[row["dominantComponent"]]
+        sessions.append(row)
+
+    if not sessions:
+        return
+    summary = {
+        "layout": layout,
+        "count": len(sessions),
+        "latencyMs": summarize_numeric([
+            row["inferenceElapsedMs"] for row in sessions
+        ]),
+        "providerAckToSelectionObservedMaxMs": summarize_numeric([
+            row["providerAckToSelectionObservedMaxMs"] for row in sessions
+        ]),
+        "providerExecutionMaxMs": summarize_numeric([
+            row["providerExecutionMaxMs"] for row in sessions
+        ]),
+        "selectionPublishedToFinalProviderSelectionReceivedMs": summarize_numeric([
+            row["selectionPublishedToFinalProviderSelectionReceivedMs"]
+            for row in sessions
+        ]),
+        "selectionPublishedToFinalProviderResponsePublishedMs": summarize_numeric([
+            row["selectionPublishedToFinalProviderResponsePublishedMs"]
+            for row in sessions
+        ]),
+        "finalProviderResponsePublishedToUserObservedMs": summarize_numeric([
+            row["finalProviderResponsePublishedToUserObservedMs"]
+            for row in sessions
+        ]),
+        "dependencyFetchMaxMs": summarize_numeric([
+            row["dependencyFetchMaxMs"] for row in sessions
+        ]),
+        "dependencyFetchSumMs": summarize_numeric([
+            row["dependencyFetchSumMs"] for row in sessions
+        ]),
+        "handlerMaxMs": summarize_numeric([
+            row["handlerMaxMs"] for row in sessions
+        ]),
+        "dominantComponentCounts": {
+            component: sum(1 for row in sessions if row["dominantComponent"] == component)
+            for component in sorted({row["dominantComponent"] for row in sessions})
+        },
+        "slowestSessions": sorted(
+            sessions, key=lambda row: row["inferenceElapsedMs"], reverse=True)[:20],
+        "fastestSessions": sorted(
+            sessions, key=lambda row: row["inferenceElapsedMs"])[:10],
+        "sessions": sessions,
+        "note": (
+            "This table joins user outer-control timing with provider role, dependency, "
+            "and ONNX timing by request/session id. It is intended to explain individual "
+            "outliers rather than replace the low-overhead latency benchmark."
+        ),
+    }
+    path = OUT / "native-session-breakdown-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    slow = summary["slowestSessions"][0]
+    print(
+        "YOLO_LAYOUT_NATIVE_SESSION_BREAKDOWN "
+        f"layout={layout} count={len(sessions)} "
+        f"latency_p50_ms={summary['latencyMs']['p50']:.2f} "
+        f"latency_p95_ms={summary['latencyMs']['p95']:.2f} "
+        f"dependency_fetch_max_p50_ms={summary['dependencyFetchMaxMs']['p50']:.2f} "
+        f"provider_ack_to_selection_max_p50_ms="
+        f"{summary['providerAckToSelectionObservedMaxMs']['p50']:.2f} "
+        f"selection_to_final_provider_p50_ms="
+        f"{summary['selectionPublishedToFinalProviderSelectionReceivedMs']['p50']:.2f} "
+        f"final_response_to_user_p50_ms="
+        f"{summary['finalProviderResponsePublishedToUserObservedMs']['p50']:.2f} "
+        f"slowest_request={slow['requestId']} "
+        f"slowest_latency_ms={slow['inferenceElapsedMs']:.2f} "
+        f"slowest_dominant={slow['dominantComponent']} "
+        f"slowest_dominant_ms={slow['dominantComponentMs']:.2f} "
         f"path={path}"
     )
 
@@ -3034,6 +4758,192 @@ def write_svs_control_propagation_summaries(
     )
 
 
+def write_selection_direct_prefetch_summaries(
+        layout: str,
+        phases: list[tuple[str, Path]],
+        providers: list[tuple[str, str, list[str]]]) -> None:
+    user_puts: dict[str, dict] = {}
+    for phase, path in phases:
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            row = parse_timing_or_trace_row(line)
+            if not row or row.get("event") != "SELECTION_DIRECT_PUT":
+                continue
+            request_id = row.get("requestId", "")
+            if not request_id:
+                continue
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            steady_us = parse_int_prefix(row.get("steady_us", "0"))
+            item = user_puts.setdefault(request_id, {
+                "phase": phase,
+                "requestId": request_id,
+                "putTimestampUs": 0,
+                "putSteadyUs": 0,
+                "messageName": row.get("messageName", ""),
+                "contentBytes": parse_int_prefix(row.get("contentBytes", "0")),
+            })
+            if timestamp_us > 0:
+                current = int(item.get("putTimestampUs", 0) or 0)
+                item["putTimestampUs"] = min(
+                    [value for value in (current, timestamp_us) if value > 0]
+                    or [timestamp_us])
+            if steady_us > 0:
+                current = int(item.get("putSteadyUs", 0) or 0)
+                item["putSteadyUs"] = min(
+                    [value for value in (current, steady_us) if value > 0]
+                    or [steady_us])
+
+    provider_rows: dict[tuple[str, str], dict] = {}
+    prefetch_issued = 0
+    prefetch_timeouts = 0
+    prefetch_nacks = 0
+    for _, name, _ in providers:
+        path = OUT / f"{name}.log"
+        if not path.exists():
+            continue
+        for line in path.read_text(errors="replace").splitlines():
+            row = parse_timing_or_trace_row(line)
+            if not row:
+                continue
+            event = row.get("event", "")
+            if not event.startswith("SELECTION_DIRECT_PREFETCH") and event not in {
+                    "SELECTION_OBSERVED", "SELECTION_RECEIVED"}:
+                continue
+            request_id = row.get("requestId", "")
+            provider = row.get("providerName", "") or name
+            if not request_id or not provider:
+                continue
+            if event == "SELECTION_DIRECT_PREFETCH_ISSUED":
+                prefetch_issued += 1
+            elif event == "SELECTION_DIRECT_PREFETCH_TIMEOUT":
+                prefetch_timeouts += 1
+            elif event == "SELECTION_DIRECT_PREFETCH_NACK":
+                prefetch_nacks += 1
+            timestamp_us = parse_int_prefix(row.get("timestamp_us", "0"))
+            steady_us = parse_int_prefix(row.get("steady_us", "0"))
+            item = provider_rows.setdefault((request_id, provider), {
+                "requestId": request_id,
+                "providerName": provider,
+                "providerLog": path.name,
+                "prefetchIssuedTimestampUs": 0,
+                "prefetchIssuedSteadyUs": 0,
+                "prefetchDataTimestampUs": 0,
+                "prefetchDataSteadyUs": 0,
+                "selectionObservedTimestampUs": 0,
+                "selectionObservedSteadyUs": 0,
+                "contentBytes": 0,
+            })
+            if event == "SELECTION_DIRECT_PREFETCH_ISSUED":
+                for field, value in (
+                        ("prefetchIssuedTimestampUs", timestamp_us),
+                        ("prefetchIssuedSteadyUs", steady_us)):
+                    if value <= 0:
+                        continue
+                    current = int(item.get(field, 0) or 0)
+                    item[field] = min([v for v in (current, value) if v > 0] or [value])
+            elif event == "SELECTION_DIRECT_PREFETCH_DATA":
+                for field, value in (
+                        ("prefetchDataTimestampUs", timestamp_us),
+                        ("prefetchDataSteadyUs", steady_us)):
+                    if value <= 0:
+                        continue
+                    current = int(item.get(field, 0) or 0)
+                    item[field] = min([v for v in (current, value) if v > 0] or [value])
+                item["contentBytes"] = parse_int_prefix(row.get("contentBytes", "0"))
+            elif event in {"SELECTION_OBSERVED", "SELECTION_RECEIVED"}:
+                for field, value in (
+                        ("selectionObservedTimestampUs", timestamp_us),
+                        ("selectionObservedSteadyUs", steady_us)):
+                    if value <= 0:
+                        continue
+                    current = int(item.get(field, 0) or 0)
+                    item[field] = min([v for v in (current, value) if v > 0] or [value])
+
+    def delta_ms(end_us: int, start_us: int) -> float:
+        if end_us <= 0 or start_us <= 0 or end_us < start_us:
+            return 0.0
+        return (end_us - start_us) / 1000.0
+
+    rows = []
+    for (request_id, provider), pitem in sorted(provider_rows.items()):
+        uitem = user_puts.get(request_id, {})
+        row = {
+            "phase": uitem.get("phase", ""),
+            "requestId": request_id,
+            "providerName": provider,
+            "providerLog": pitem.get("providerLog", ""),
+            "putTimestampUs": int(uitem.get("putTimestampUs", 0) or 0),
+            "putSteadyUs": int(uitem.get("putSteadyUs", 0) or 0),
+            "prefetchIssuedTimestampUs": int(pitem.get("prefetchIssuedTimestampUs", 0) or 0),
+            "prefetchDataTimestampUs": int(pitem.get("prefetchDataTimestampUs", 0) or 0),
+            "selectionObservedTimestampUs": int(pitem.get("selectionObservedTimestampUs", 0) or 0),
+            "messageName": uitem.get("messageName", ""),
+            "contentBytes": int(pitem.get("contentBytes", 0) or uitem.get("contentBytes", 0) or 0),
+        }
+        row["prefetchIssuedToDirectDataMs"] = delta_ms(
+            int(pitem.get("prefetchDataTimestampUs", 0) or 0),
+            int(pitem.get("prefetchIssuedTimestampUs", 0) or 0))
+        row["directPutToDirectDataMs"] = delta_ms(
+            int(pitem.get("prefetchDataTimestampUs", 0) or 0),
+            int(uitem.get("putTimestampUs", 0) or 0))
+        row["directDataToSelectionObservedMs"] = delta_ms(
+            int(pitem.get("selectionObservedTimestampUs", 0) or 0),
+            int(pitem.get("prefetchDataTimestampUs", 0) or 0))
+        row["directPutToSelectionObservedMs"] = delta_ms(
+            int(pitem.get("selectionObservedTimestampUs", 0) or 0),
+            int(uitem.get("putTimestampUs", 0) or 0))
+        rows.append(row)
+
+    matched_rows = [row for row in rows if row["directPutToDirectDataMs"] > 0]
+    summary = {
+        "layout": layout,
+        "requestPutCount": len(user_puts),
+        "providerRowCount": len(rows),
+        "matchedProviderRowCount": len(matched_rows),
+        "prefetchIssuedCount": prefetch_issued,
+        "prefetchTimeoutCount": prefetch_timeouts,
+        "prefetchNackCount": prefetch_nacks,
+        "prefetchIssuedToDirectDataMs": summarize_numeric([
+            row["prefetchIssuedToDirectDataMs"]
+            for row in rows if row["prefetchIssuedToDirectDataMs"] > 0
+        ]),
+        "directPutToDirectDataMs": summarize_numeric([
+            row["directPutToDirectDataMs"]
+            for row in rows if row["directPutToDirectDataMs"] > 0
+        ]),
+        "directDataToSelectionObservedMs": summarize_numeric([
+            row["directDataToSelectionObservedMs"]
+            for row in rows if row["directDataToSelectionObservedMs"] > 0
+        ]),
+        "directPutToSelectionObservedMs": summarize_numeric([
+            row["directPutToSelectionObservedMs"]
+            for row in rows if row["directPutToSelectionObservedMs"] > 0
+        ]),
+        "contentBytes": summarize_numeric([
+            row["contentBytes"] for row in rows if row["contentBytes"] > 0
+        ]),
+        "rows": rows,
+    }
+    path = OUT / "selection-direct-prefetch-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_SELECTION_DIRECT_PREFETCH "
+        f"layout={layout} request_puts={summary['requestPutCount']} "
+        f"matched_provider_rows={summary['matchedProviderRowCount']} "
+        f"issued={summary['prefetchIssuedCount']} "
+        f"timeouts={summary['prefetchTimeoutCount']} "
+        f"nacks={summary['prefetchNackCount']} "
+        f"put_to_data_p50_ms={summary['directPutToDirectDataMs']['p50']:.2f} "
+        f"data_to_selection_observed_p50_ms="
+        f"{summary['directDataToSelectionObservedMs']['p50']:.2f} "
+        f"put_to_selection_observed_p50_ms="
+        f"{summary['directPutToSelectionObservedMs']['p50']:.2f} "
+        f"path={path}"
+    )
+
+
 def _load_json_file(path: Path, default):
     if not path.exists():
         return default
@@ -3322,7 +5232,7 @@ def load_policy_service_name(path: Path) -> str:
 
 
 def provider_role_assignments(roles: list[str]) -> list[tuple[str, str, list[str]]]:
-    nodes = ["ucla", "wustl", "uiuc", "umich", "arizona", "caida", "pku", "neu", "csu"]
+    nodes = list(AI_LAB_PROVIDER_NODES)
     provider_ids = ["", "A", "B", "C", "E", "F", "G", "H", "I"]
     if len(roles) > len(nodes):
         raise RuntimeError(
@@ -3355,7 +5265,20 @@ def provider_identity(provider_id: str) -> str:
     return PROVIDER_PREFIX if not provider_id else PROVIDER_PREFIX + "/" + provider_id
 
 
-def initialize_di_keychains(ndn, output_dir: Path, provider_identities: list[str]) -> None:
+def key_name_from_certificate_name(cert_name: str) -> str:
+    marker = "/KEY/"
+    if marker not in cert_name:
+        raise RuntimeError(f"certificate name does not contain KEY component: {cert_name}")
+    prefix, suffix = cert_name.split(marker, 1)
+    key_id = suffix.split("/", 1)[0]
+    return prefix + marker + key_id
+
+
+def initialize_di_keychains(ndn,
+                            output_dir: Path,
+                            provider_identities: list[str],
+                            *,
+                            dual_signing_certs: bool = True) -> None:
     """Install root-signed keys that match the generated DI policy namespace."""
     log("Installing root-signed DI keychain material on MiniNDN nodes")
     security_dir = output_dir / "security"
@@ -3373,7 +5296,7 @@ def initialize_di_keychains(ndn, output_dir: Path, provider_identities: list[str
             perf.node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
                 perf.shell_quote(identity)))
 
-    controller = ndn.net["csu"]
+    controller = ndn.net[AI_LAB_CONTROLLER_NODE]
     root_cert_path = security_dir / "root.cert"
     perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
         perf.shell_quote(APP_ROOT), perf.shell_quote(root_cert_path)))
@@ -3384,25 +5307,55 @@ def initialize_di_keychains(ndn, output_dir: Path, provider_identities: list[str
 
     exported_keys = []
     for index, identity in enumerate(identities):
-        cert_path = security_dir / f"di-identity-{index}.cert"
-        req_path = security_dir / f"di-identity-{index}.req"
-        key_path = security_dir / f"di-identity-{index}.ndnkey"
-        perf.node_cmd(controller, "ndnsec key-gen -n -t r {} > {}".format(
-            perf.shell_quote(identity), perf.shell_quote(req_path)))
+        rsa_cert_path = security_dir / f"di-identity-{index}-rsa.cert"
+        rsa_req_path = security_dir / f"di-identity-{index}-rsa.req"
+        rsa_key_path = security_dir / f"di-identity-{index}-rsa.ndnkey"
+        perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
+            perf.shell_quote(identity), perf.shell_quote(rsa_req_path)))
         perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
-            perf.shell_quote(APP_ROOT), perf.shell_quote(req_path), perf.shell_quote(cert_path)))
+            perf.shell_quote(APP_ROOT), perf.shell_quote(rsa_req_path), perf.shell_quote(rsa_cert_path)))
         perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
-            perf.shell_quote(cert_path)))
-        perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -i {}".format(
-            perf.shell_quote(key_path), perf.shell_quote(identity)))
-        exported_keys.append(key_path)
+            perf.shell_quote(rsa_cert_path)))
+
+        rsa_cert_name = perf.certificate_name_from_file(rsa_cert_path)
+        rsa_key_name = key_name_from_certificate_name(rsa_cert_name)
+        perf.node_cmd(controller, "ndnsec set-default -k -n {} >/dev/null 2>&1 || true".format(
+            perf.shell_quote(rsa_key_name)))
+        perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -k {}".format(
+            perf.shell_quote(rsa_key_path), perf.shell_quote(rsa_key_name)))
+        ec_key_path = None
+        if dual_signing_certs:
+            ec_cert_path = security_dir / f"di-identity-{index}-ec.cert"
+            ec_req_path = security_dir / f"di-identity-{index}-ec.req"
+            ec_key_path = security_dir / f"di-identity-{index}-ec.ndnkey"
+            perf.node_cmd(controller, "ndnsec key-gen -n -t e {} > {}".format(
+                perf.shell_quote(identity), perf.shell_quote(ec_req_path)))
+            perf.node_cmd(controller, "ndnsec cert-gen -s {} -i ROOT {} > {}".format(
+                perf.shell_quote(APP_ROOT), perf.shell_quote(ec_req_path), perf.shell_quote(ec_cert_path)))
+            perf.node_cmd(controller, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
+                perf.shell_quote(ec_cert_path)))
+            ec_cert_name = perf.certificate_name_from_file(ec_cert_path)
+            ec_key_name = key_name_from_certificate_name(ec_cert_name)
+            perf.node_cmd(controller, "ndnsec-export -P 123456 -o {} -k {}".format(
+                perf.shell_quote(ec_key_path), perf.shell_quote(ec_key_name)))
+            log("di_identity_certs identity={} rsaCert={} ecSigningCert={}".format(
+                identity, rsa_cert_name, ec_cert_name))
+        else:
+            log("di_identity_certs identity={} rsaCert={} ecSigningCert=disabled".format(
+                identity, rsa_cert_name))
+        exported_keys.append((rsa_key_path, ec_key_path, rsa_key_name))
 
     for node in ndn.net.hosts:
         perf.node_cmd(node, "ndnsec cert-install -f {} >/dev/null 2>&1 || true".format(
             perf.shell_quote(root_cert_path)))
-        for key_path in exported_keys:
+        for rsa_key_path, ec_key_path, rsa_key_name in exported_keys:
             perf.node_cmd(node, "ndnsec import -P 123456 {} >/dev/null 2>&1 || true".format(
-                perf.shell_quote(key_path)))
+                perf.shell_quote(rsa_key_path)))
+            if ec_key_path is not None:
+                perf.node_cmd(node, "ndnsec import -P 123456 {} >/dev/null 2>&1 || true".format(
+                    perf.shell_quote(ec_key_path)))
+            perf.node_cmd(node, "ndnsec set-default -k -n {} >/dev/null 2>&1 || true".format(
+                perf.shell_quote(rsa_key_name)))
 
 
 def main() -> None:
@@ -3453,14 +5406,28 @@ def main() -> None:
                         help="enable narrow hybrid decrypt cache/unwrap/AES/callback timing logs")
     parser.add_argument("--control-timing", action="store_true",
                         help="enable NDNSF request/provider lifecycle timing plus ACK/selection/control-path summaries")
+    parser.add_argument("--svs-internal-timing", action="store_true",
+                        help=("enable narrow ndn-svs internal timing logs for Sync Interest "
+                              "parse/decode/compare/missing-data/extra-block/encode/sign/face-put"))
     parser.add_argument("--dependency-timing", action="store_true",
                         help="enable dependency fetch and pending IMS timing logs")
     parser.add_argument("--disable-exact-segment-fetch", action="store_true",
                         help="disable deterministic exact segment fetch for planned native DI activations")
+    parser.add_argument("--single-rsa-certs", action="store_true",
+                        help="MiniNDN control run: create only RSA identity certs instead of RSA+ECDSA split certs")
+    parser.add_argument("--disable-split-signing", action="store_true",
+                        help="MiniNDN control run: keep dual certs installed but force RSA signing")
+    parser.add_argument("--signing-ab-phases", default="",
+                        help=("Run same-topology signing comparison phases, e.g. rsa,ecdsa,rsa. "
+                              "Each phase restarts providers and runs a warm workload; requires dual certs."))
     parser.add_argument("--ndnsf-handler-threads", type=int, default=-1,
                         help="Override NDNSF_HANDLER_THREADS; -1 keeps env/default serial experiment setting")
     parser.add_argument("--ndnsf-ack-threads", type=int, default=-1,
                         help="Override NDNSF_ACK_THREADS; -1 keeps env/default serial experiment setting")
+    parser.add_argument("--warm-rtt-monitor-interval-s", type=float, default=0.0,
+                        help=("Diagnostic mode: during each warm phase, sample user->provider "
+                              "ndnping RTT and NFD network-face counters at this interval. "
+                              "Adds probe traffic; do not use for canonical latency numbers."))
     parser.add_argument("--parallel-svs-runtime", action="store_true",
                         help="Enable NDNSF async/parallel SVS publish/sync/production for a runtime-overhead comparison")
     parser.add_argument("--serial-svs-runtime", action="store_true",
@@ -3471,7 +5438,7 @@ def main() -> None:
                         help=("last-resort external NDN packet capture for SVS/control diagnostics; "
                               "prefer 60s --control-timing runs for latency analysis"))
     parser.add_argument("--ndn-packet-trace-nodes",
-                        default="memphis,ucla,wustl,uiuc,umich,neu,csu",
+                        default="memphis,ucla,arizona,wustl,neu",
                         help="comma-separated node list for --ndn-packet-trace")
     parser.add_argument("--ndn-packet-trace-window",
                         choices=["all", "warm"],
@@ -3488,6 +5455,19 @@ def main() -> None:
     warm_duration_s = max(0.0, float(args_cli.warm_duration_s or 0.0))
     warm_interval_ms = max(0, args_cli.warm_interval_ms)
     preflight_requests = max(0, args_cli.preflight_requests)
+    signing_ab_phases = [
+        item.strip().lower()
+        for item in args_cli.signing_ab_phases.split(",")
+        if item.strip()
+    ]
+    if signing_ab_phases:
+        invalid = [item for item in signing_ab_phases if item not in {"rsa", "ecdsa"}]
+        if invalid:
+            raise RuntimeError(
+                "--signing-ab-phases accepts only rsa and ecdsa entries; "
+                f"invalid={invalid}")
+        if args_cli.single_rsa_certs and "ecdsa" in signing_ab_phases:
+            raise RuntimeError("--signing-ab-phases ecdsa requires dual certs; remove --single-rsa-certs")
     ack_timeout_ms = max(1, args_cli.ack_timeout_ms)
     timeout_ms = max(1, args_cli.timeout_ms)
     provider_handler_workers = max(1, args_cli.provider_handler_workers)
@@ -3545,7 +5525,10 @@ def main() -> None:
         split_command.append("--parallel-output-shards")
     if args_cli.parallel_detect_scale_shards:
         split_command.append("--parallel-detect-scale-shards")
-    subprocess.run(split_command, cwd=str(REPO), env={**os.environ, "PYTHONPATH": py_path}, check=True)
+    run_user_python_step(split_command,
+                         cwd=str(REPO),
+                         env={**os.environ, "PYTHONPATH": py_path},
+                         writable_path=OUT)
     service_name = load_policy_service_name(CONFIG)
     if args_cli.native_providers:
         native_exe = REPO / "build/examples/di-native-provider"
@@ -3559,10 +5542,10 @@ def main() -> None:
     procs = []
     control_detail_trace = args_cli.control_trace
     args = Args(
-        controller_node="csu",
-        user_node="memphis",
-        providers=5,
-        provider_nodes="ucla,wustl,uiuc,umich,neu",
+        controller_node=AI_LAB_CONTROLLER_NODE,
+        user_node=AI_LAB_USER_NODE,
+        providers=len(AI_LAB_PROVIDER_NODES),
+        provider_nodes=",".join(AI_LAB_PROVIDER_NODES),
         serve_provider_certs=False,
         debug_ack=control_detail_trace,
         # Keep app_env() on the debug_ack log profile only for explicit
@@ -3600,13 +5583,13 @@ def main() -> None:
         ]
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
-        rh.addOrigin([ndn.net["csu"]], [
+        rh.addOrigin([ndn.net[AI_LAB_CONTROLLER_NODE]], [
             "/NDNSF-DistributeInference/example/controller",
             "/NDNSF-DistributeInference/example/controller/DKEY",
             "/NDNSF-DistributeInference/example/controller/KEY",
             "/NDNSF-DistributeInference/example/group",
         ])
-        rh.addOrigin([ndn.net["memphis"]], ["/NDNSF-DistributeInference/example/user", "/NDNSF-DistributeInference/example/group"])
+        rh.addOrigin([ndn.net[AI_LAB_USER_NODE]], ["/NDNSF-DistributeInference/example/user", "/NDNSF-DistributeInference/example/group"])
         origins = [
             (
                 node_name,
@@ -3614,10 +5597,10 @@ def main() -> None:
             )
             for node_name, _, argv in providers
         ]
-        origins.append(("neu", "/NDNSF-DistributeInference/example/provider/D"))
+        origins.append((AI_LAB_REPO_NODE, "/NDNSF-DistributeInference/example/provider/D"))
         for node_name, prefix in origins:
             rh.addOrigin([ndn.net[node_name]], [prefix, prefix + "/KEY", "/NDNSF-DistributeInference/example/group"])
-        rh.addOrigin([ndn.net["neu"]], ["/NDNSF/DistributedRepo/Object"])
+        rh.addOrigin([ndn.net[AI_LAB_REPO_NODE]], ["/NDNSF/DistributedRepo/Object"])
         rh.calculateRoutes()
         for node in ndn.net.hosts:
             Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_MULTICAST)
@@ -3633,14 +5616,15 @@ def main() -> None:
         if args_cli.ndn_packet_trace and args_cli.ndn_packet_trace_window == "all":
             packet_traces = start_ndn_packet_traces(ndn, os.environ.copy(), trace_nodes)
 
-        initialize_di_keychains(ndn, OUT, provider_identities)
+        initialize_di_keychains(ndn,
+                                OUT,
+                                provider_identities,
+                                dual_signing_certs=not args_cli.single_rsa_certs)
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
         # Native providers use C++ execution and benefit from a slightly wider
-        # NDNSF control/runtime queue. A 10-request diagnostic on AI_testbed
-        # reduced warm steady p50 from ~94 ms to ~83 ms when moving native
-        # handler/ACK threads from 2 to 4. Keep the Python provider path
+        # NDNSF control/runtime queue. Keep the Python provider path
         # conservative.
         default_runtime_threads = "4" if args_cli.native_providers else "1"
         env["NDNSF_HANDLER_THREADS"] = str(
@@ -3681,6 +5665,8 @@ def main() -> None:
                 "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK", "0")
         if args_cli.native_providers and not args_cli.disable_exact_segment_fetch:
             env["NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH"] = "1"
+            env["NDNSF_SELECTION_DIRECT_PREFETCH"] = os.environ.get(
+                "NDNSF_SELECTION_DIRECT_PREFETCH", "1")
         if (not args_cli.quiet_perf_logs or args_cli.dependency_timing or
                 args_cli.control_timing or args_cli.control_trace):
             env["NDNSF_DI_RUNTIME_TIMING"] = "1"
@@ -3691,10 +5677,19 @@ def main() -> None:
             env["NDNSF_HYBRID_CRYPTO_TIMING"] = "1"
             env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = os.environ.get(
                 "NDNSF_TIMELINE_TRACE_SAMPLE_RATE", "10")
+        if args_cli.disable_split_signing:
+            env["NDNSF_DISABLE_SPLIT_SIGNING"] = "1"
         if args_cli.control_timing:
             env["NDNSF_CONTROL_TIMING"] = "1"
             env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = os.environ.get(
                 "NDNSF_TIMELINE_TRACE_SAMPLE_RATE", "10")
+        if args_cli.svs_internal_timing:
+            env["NDNSF_CONTROL_TIMING"] = "1"
+            env["NDN_LOG"] = os.environ.get(
+                "NDN_LOG",
+                "ndn_svs.SyncTimeline=TRACE:ndn_svs.SVSPubSub=TRACE:"
+                "ndn_service_framework.*=WARN:"
+                "ndn_service_framework.ServiceController=INFO")
         if args_cli.control_trace:
             env["NDNSF_TIMELINE_TRACE"] = "1"
         env["PYTHONPATH"] = ":".join([
@@ -3707,7 +5702,7 @@ def main() -> None:
             os.environ.get("PYTHONPATH", ""),
         ])
         bootstrap_env = dict(env)
-        if args_cli.quiet_perf_logs:
+        if args_cli.quiet_perf_logs and not args_cli.svs_internal_timing:
             bootstrap_env["NDN_LOG"] = os.environ.get(
                 "NDN_LOG",
                 "ndn_service_framework.*=WARN:"
@@ -3716,13 +5711,13 @@ def main() -> None:
         write_ndnping_rtt_summary(ndn, providers, env, procs)
 
         common = ["--config", str(CONFIG), "--generated-policy-dir", GEN_POLICY]
-        _, controller_log = start(ndn.net["csu"], "controller",
+        _, controller_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller",
                                   python_cmd("controller.py", common), bootstrap_env, procs)
         if not wait_log(controller_log, "ServiceController listening", 20):
             raise RuntimeError(f"controller did not become ready; see {controller_log}")
         time.sleep(4)
         _, repo_log = start(
-            ndn.net["neu"],
+            ndn.net[AI_LAB_REPO_NODE],
             "repo",
             python_cmd("repo_node.py", common + [
                 "--provider-id", "D",
@@ -3737,7 +5732,7 @@ def main() -> None:
         )
         if not wait_log(repo_log, "Installed provider permission", 60):
             raise RuntimeError(f"repo did not install permissions; see {repo_log}")
-        deployer_proc, deployer_log = start(ndn.net["csu"], "controller-deployer",
+        deployer_proc, deployer_log = start(ndn.net[AI_LAB_CONTROLLER_NODE], "controller-deployer",
                                             python_cmd("controller.py", common + [
                                                 "--deploy-only",
                                                 "--deploy-to-repo-manifest",
@@ -3754,30 +5749,139 @@ def main() -> None:
                 f"returncode={deployer_rc}; see {deployer_log}\n{deployer_tail}")
         validate_repo_manifest_references(REPO_MANIFEST)
 
-        for node_name, name, argv in providers:
-            if args_cli.native_providers:
-                cmd = native_provider_cmd(
-                    argv,
-                    service_name=service_name,
-                    workers=provider_handler_workers,
-                    handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
-                    ack_threads=int(env["NDNSF_ACK_THREADS"]))
-                ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
-                ready_timeout = 120
+        def start_compute_providers(phase_suffix: str,
+                                    provider_env: dict[str, str]
+                                    ) -> list[tuple[object, object, Path]]:
+            provider_procs: list[tuple[object, object, Path]] = []
+            for node_name, name, argv in providers:
+                if args_cli.native_providers:
+                    cmd = native_provider_cmd(
+                        argv,
+                        service_name=service_name,
+                        workers=provider_handler_workers,
+                        handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
+                        ack_threads=int(env["NDNSF_ACK_THREADS"]))
+                    ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
+                    ready_timeout = 120
+                else:
+                    cmd = python_cmd("provider.py", common + argv + [
+                        "--dynamic-provisioning",
+                        "--temp-dir",
+                        f"/tmp/{name}",
+                        "--handler-workers",
+                        str(provider_handler_workers),
+                    ])
+                    ready = "Installed provider permission"
+                    ready_timeout = 30
+                log_name = f"{name}{phase_suffix}"
+                _, lp = start(ndn.net[node_name], log_name, cmd,
+                              provider_env, provider_procs)
+                if not wait_log(lp, ready, ready_timeout):
+                    raise RuntimeError(
+                        f"{log_name} did not become ready; expected {ready}; see {lp}")
+                time.sleep(0.5)
+            return provider_procs
+
+        provider_procs = start_compute_providers("", env)
+        procs.extend(provider_procs)
+        write_dependency_edge_rtt_summary(
+            ndn,
+            providers,
+            env,
+            procs,
+            Path(GEN_POLICY) / "native-execution-plan.json")
+
+        def remove_provider_procs(entries: list[tuple[object, object, Path]]) -> None:
+            if not entries:
+                return
+            stop_process_group(entries)
+            entry_ids = {id(entry) for entry in entries}
+            procs[:] = [entry for entry in procs if id(entry) not in entry_ids]
+
+        def signing_phase_env(mode: str) -> dict[str, str]:
+            phase_env = dict(env)
+            if mode == "rsa":
+                phase_env["NDNSF_DISABLE_SPLIT_SIGNING"] = "1"
+            elif mode == "ecdsa":
+                phase_env.pop("NDNSF_DISABLE_SPLIT_SIGNING", None)
             else:
-                cmd = python_cmd("provider.py", common + argv + [
-                    "--dynamic-provisioning",
-                    "--temp-dir",
-                    f"/tmp/{name}",
-                    "--handler-workers",
-                    str(provider_handler_workers),
+                raise RuntimeError(f"unsupported signing phase mode: {mode}")
+            return phase_env
+
+        def build_warm_user_args() -> list[str]:
+            warm_user_args = common + [
+                "--repo-manifest-file",
+                str(REPO_MANIFEST),
+                "--ack-timeout-ms", str(ack_timeout_ms),
+                "--timeout-ms", str(timeout_ms),
+                "--async-requests", str(user_async_workers),
+            ]
+            if preflight_requests > 0:
+                warm_user_args.extend(["--preflight-requests", str(preflight_requests)])
+            if args_cli.native_providers:
+                warm_user_args.append("--native-tensor-input")
+            if warm_duration_s > 0:
+                warm_user_args.extend([
+                    "--sequential-duration-s", str(warm_duration_s),
+                    "--sequential-interval-ms", str(warm_interval_ms),
                 ])
-                ready = "Installed provider permission"
-                ready_timeout = 30
-            _, lp = start(ndn.net[node_name], name, cmd, env, procs)
-            if not wait_log(lp, ready, ready_timeout):
-                raise RuntimeError(f"{name} did not become ready; expected {ready}; see {lp}")
-            time.sleep(0.5)
+            else:
+                warm_user_args.extend(["--sequential-requests", str(warm_requests)])
+            return warm_user_args
+
+        def run_warm_phase(phase: str,
+                           workload_env: dict[str, str],
+                           *,
+                           trace_for_phase: bool) -> tuple[Path, list[float], int]:
+            nonlocal packet_traces
+            if (args_cli.ndn_packet_trace and
+                    args_cli.ndn_packet_trace_window == "warm" and
+                    trace_for_phase and not packet_traces):
+                packet_traces = start_ndn_packet_traces(ndn, os.environ.copy(), trace_nodes)
+                # Give tcpdump a brief moment to open the pcap files before the
+                # warm request stream starts.
+                time.sleep(0.5)
+            traffic_start = snapshot_traffic(ndn)
+            nfd_start = snapshot_nfd_data_counters(ndn)
+            monitor = None
+            if args_cli.warm_rtt_monitor_interval_s > 0:
+                monitor = start_warm_rtt_nfd_monitor(
+                    ndn, providers, args_cli.warm_rtt_monitor_interval_s)
+            proc, log_path = start(
+                ndn.net["memphis"],
+                f"user-{phase}",
+                python_cmd("user.py", build_warm_user_args()),
+                workload_env,
+                procs,
+            )
+            try:
+                proc.wait(timeout=user_wait_timeout(warm_requests, timeout_ms, warm_duration_s))
+            finally:
+                if monitor is not None:
+                    stop_event, thread, _, _ = monitor
+                    stop_event.set()
+                    thread.join(timeout=max(2.0, args_cli.warm_rtt_monitor_interval_s + 1.0))
+                if packet_traces and args_cli.ndn_packet_trace_window == "warm" and trace_for_phase:
+                    stop_ndn_packet_traces(packet_traces)
+            nfd_end = snapshot_nfd_data_counters(ndn)
+            traffic_end = snapshot_traffic(ndn)
+            text = log_path.read_text(errors="replace")
+            latencies = write_latency_summary(layout, phase, text)
+            if monitor is not None:
+                _, _, samples, lock = monitor
+                write_warm_rtt_nfd_monitor_summary(layout, phase, log_path, samples, lock)
+            measured_count = len(latencies) or warm_requests
+            observed_count = measured_count + preflight_requests
+            write_traffic_delta(layout, phase, traffic_start, traffic_end,
+                                observed_count,
+                                measured_request_count=measured_count,
+                                preflight_request_count=preflight_requests)
+            write_nfd_data_delta(layout, phase, nfd_start, nfd_end,
+                                 observed_count,
+                                 measured_request_count=measured_count,
+                                 preflight_request_count=preflight_requests)
+            print_user_workload_output(text, args_cli.quiet_perf_logs)
+            return log_path, latencies, measured_count
 
         time.sleep(2)
         user_common = common + [
@@ -3815,93 +5919,59 @@ def main() -> None:
                 f"count={len(cold_latencies)} expected={cold_requests} "
                 f"rc={user_proc.returncode}; log={user_log}")
 
-        if (args_cli.ndn_packet_trace and
-                args_cli.ndn_packet_trace_window == "warm" and
-                not packet_traces):
-            packet_traces = start_ndn_packet_traces(ndn, os.environ.copy(), trace_nodes)
-            # Give tcpdump a brief moment to open the pcap files before the
-            # warm request stream starts.
-            time.sleep(0.5)
-        warm_traffic_start = snapshot_traffic(ndn)
-        warm_nfd_start = snapshot_nfd_data_counters(ndn)
-        warm_user_args = common + [
-            "--repo-manifest-file",
-            str(REPO_MANIFEST),
-            "--ack-timeout-ms", str(ack_timeout_ms),
-            "--timeout-ms", str(timeout_ms),
-            "--async-requests", str(user_async_workers),
-        ]
-        if preflight_requests > 0:
-            warm_user_args.extend(["--preflight-requests", str(preflight_requests)])
-        if args_cli.native_providers:
-            warm_user_args.append("--native-tensor-input")
-        if warm_duration_s > 0:
-            warm_user_args.extend([
-                "--sequential-duration-s", str(warm_duration_s),
-                "--sequential-interval-ms", str(warm_interval_ms),
-            ])
+        phase_logs: list[tuple[str, Path]] = [("cold", user_log)]
+        warm_log = None
+        warm_latencies: list[float] = []
+        measured_warm_count = 0
+        if signing_ab_phases:
+            remove_provider_procs(provider_procs)
+            provider_procs = []
+            for index, mode in enumerate(signing_ab_phases, start=1):
+                phase = f"warm-{mode}-{index}"
+                phase_env = signing_phase_env(mode)
+                provider_procs = start_compute_providers(
+                    f"-{phase}", phase_env)
+                procs.extend(provider_procs)
+                log_path, latencies, measured_count = run_warm_phase(
+                    phase,
+                    phase_env,
+                    trace_for_phase=(index == 1))
+                phase_logs.append((phase, log_path))
+                warm_log = log_path
+                warm_latencies = latencies
+                measured_warm_count = measured_count
+                remove_provider_procs(provider_procs)
+                provider_procs = []
+            # Keep providers alive after the comparison for consistent teardown
+            # and for any late summary hooks that inspect provider logs.
+            provider_procs = start_compute_providers("", env)
+            procs.extend(provider_procs)
         else:
-            warm_user_args.extend(["--sequential-requests", str(warm_requests)])
-        warm_proc, warm_log = start(
-            ndn.net["memphis"],
-            "user-warm",
-            python_cmd("user.py", warm_user_args),
-            env,
-            procs,
-        )
-        warm_proc.wait(timeout=user_wait_timeout(warm_requests, timeout_ms, warm_duration_s))
-        if packet_traces and args_cli.ndn_packet_trace_window == "warm":
-            stop_ndn_packet_traces(packet_traces)
-        warm_nfd_end = snapshot_nfd_data_counters(ndn)
-        warm_traffic_end = snapshot_traffic(ndn)
-        warm_text = warm_log.read_text(errors="replace")
-        warm_latencies = write_latency_summary(layout, "warm", warm_text)
-        warm_count = len(warm_latencies)
-        measured_warm_count = warm_count or warm_requests
-        observed_warm_count = measured_warm_count + preflight_requests
-        write_traffic_delta(layout, "warm", warm_traffic_start, warm_traffic_end,
-                            observed_warm_count,
-                            measured_request_count=measured_warm_count,
-                            preflight_request_count=preflight_requests)
-        write_nfd_data_delta(layout, "warm", warm_nfd_start, warm_nfd_end,
-                             observed_warm_count,
-                             measured_request_count=measured_warm_count,
-                             preflight_request_count=preflight_requests)
-        print_user_workload_output(warm_text, args_cli.quiet_perf_logs)
+            warm_log, warm_latencies, measured_warm_count = run_warm_phase(
+                "warm",
+                env,
+                trace_for_phase=True)
+            phase_logs.append(("warm", warm_log))
         write_plan_cache_summary(layout, [
-            ("cold", user_log),
-            ("warm", warm_log),
+            *phase_logs,
         ])
-        write_client_timing_summaries(layout, [
-            ("cold", user_log),
-            ("warm", warm_log),
-        ])
+        write_client_timing_summaries(layout, phase_logs)
         if args_cli.crypto_timing:
-            write_hybrid_crypto_timing_summaries(layout, [
-                ("cold", user_log),
-                ("warm", warm_log),
-            ], providers)
+            write_hybrid_crypto_timing_summaries(layout, phase_logs, providers)
         if args_cli.control_timing:
-            write_control_timing_summaries(layout, [
-                ("cold", user_log),
-                ("warm", warm_log),
-            ], providers)
+            write_control_timing_summaries(layout, phase_logs, providers)
+            write_outer_control_waterfall_summaries(layout, phase_logs, providers)
+            write_outer_control_rtt_correlation_summary(layout)
+        if args_cli.svs_internal_timing:
+            write_svs_internal_timing_summaries(layout, phase_logs, providers)
         if args_cli.control_trace:
-            write_ack_selection_timing_summaries(layout, [
-                ("cold", user_log),
-                ("warm", warm_log),
-            ])
+            write_ack_selection_timing_summaries(layout, phase_logs)
             write_provider_selection_timing_summaries(layout, providers)
             write_provider_request_ack_timing_summaries(layout, providers)
-            write_control_path_timing_summaries(layout, [
-                ("cold", user_log),
-                ("warm", warm_log),
-            ], providers)
+            write_control_path_timing_summaries(layout, phase_logs, providers)
         if args_cli.control_timing or args_cli.control_trace:
-            write_svs_control_propagation_summaries(layout, [
-                ("cold", user_log),
-                ("warm", warm_log),
-            ], providers)
+            write_svs_control_propagation_summaries(layout, phase_logs, providers)
+            write_selection_direct_prefetch_summaries(layout, phase_logs, providers)
         if packet_traces:
             stop_ndn_packet_traces(packet_traces)
             write_ndn_packet_trace_summary(packet_traces)
@@ -3911,10 +5981,13 @@ def main() -> None:
             require_runtime_timing=bool(env.get("NDNSF_DI_RUNTIME_TIMING")),
         )
         write_end_to_end_breakdown(layout, print_rows=not args_cli.quiet_perf_logs)
+        if args_cli.control_timing:
+            write_native_session_breakdown_summary(layout)
         provider_text = "\n".join(
             (OUT / f"{name}.log").read_text(errors="replace")
             for _, name, _ in providers
         )
+        warm_text = warm_log.read_text(errors="replace") if warm_log else ""
         common_success = (
             len(warm_latencies) >= (1 if warm_duration_s > 0 else warm_requests) and
             "ok=false" not in warm_text

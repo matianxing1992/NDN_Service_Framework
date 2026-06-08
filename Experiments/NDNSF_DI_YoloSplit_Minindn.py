@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import shutil
@@ -24,7 +25,7 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
+TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/yolo_split_minindn_auto"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_split"
 CONFIG = OUT / "yolo_policy.yaml"
@@ -134,7 +135,7 @@ def initialize_di_keychains(ndn, output_dir: Path) -> None:
             perf.node_cmd(node, "ndnsec delete {} >/dev/null 2>&1 || true".format(
                 perf.shell_quote(identity)))
 
-    controller = ndn.net["csu"]
+    controller = ndn.net["memphis"]
     root_cert_path = security_dir / "di-root.cert"
     perf.node_cmd(controller, "ndnsec key-gen -t r {} > {}".format(
         perf.shell_quote(APP_ROOT), perf.shell_quote(root_cert_path)))
@@ -166,7 +167,50 @@ def initialize_di_keychains(ndn, output_dir: Path) -> None:
                 perf.shell_quote(key_path)))
 
 
+def topology_nodes(path: Path) -> set[str]:
+    nodes = set()
+    in_nodes = False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line == "[nodes]":
+            in_nodes = True
+            continue
+        if line.startswith("[") and line != "[nodes]":
+            in_nodes = False
+        if in_nodes and line and not line.startswith("#"):
+            nodes.add(line.rstrip(":"))
+    return nodes
+
+
+def quick_smoke() -> int:
+    required_files = [
+        TOPO,
+        PY_DIR / "split_model.py",
+        PY_DIR / "controller.py",
+        PY_DIR / "provider.py",
+        PY_DIR / "user.py",
+    ]
+    missing = [str(path) for path in required_files if not path.exists()]
+    nodes = topology_nodes(TOPO) if TOPO.exists() else set()
+    required_nodes = {"memphis", "ucla", "wustl"}
+    missing_nodes = sorted(required_nodes - nodes)
+    if missing or missing_nodes:
+        raise RuntimeError(
+            "YOLO split quick smoke failed "
+            f"missingFiles={missing} missingNodes={missing_nodes}")
+    print(
+        "YOLO_SPLIT_MININDN_QUICK_SMOKE_OK "
+        f"topology={TOPO} controller=memphis user=memphis providers=ucla,wustl")
+    return 0
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--quick-smoke", action="store_true")
+    args_cli = parser.parse_args()
+    if args_cli.quick_smoke:
+        return quick_smoke()
+
     setLogLevel("info")
     generate_auto_split_policy()
     Minindn.cleanUp()
@@ -174,7 +218,7 @@ def main() -> None:
     ndn = Minindn(topoFile=str(TOPO))
     procs = []
     args = Args(
-        controller_node="csu",
+        controller_node="memphis",
         user_node="memphis",
         providers=2,
         provider_nodes="ucla,wustl",
@@ -206,7 +250,7 @@ def main() -> None:
         perf.wait_for_nfd_sockets(ndn, OUT)
 
         rh = NdnRoutingHelper(ndn.net, "udp", "link-state")
-        rh.addOrigin([ndn.net["csu"]], [
+        rh.addOrigin([ndn.net["memphis"]], [
             CONTROLLER_IDENTITY,
             CONTROLLER_IDENTITY + "/DKEY",
             CONTROLLER_IDENTITY + "/KEY",
@@ -244,7 +288,7 @@ def main() -> None:
         env["PYTHONPATH"] = build_python_path()
 
         common = ["--config", str(CONFIG), "--generated-policy-dir", GEN_POLICY]
-        _, controller_log = start(ndn.net["csu"], "controller",
+        _, controller_log = start(ndn.net["memphis"], "controller",
                                   python_cmd("controller.py", common), env, procs)
         if not wait_log(controller_log, "ServiceController listening", 20):
             raise RuntimeError(f"controller did not become ready; see {controller_log}")
@@ -288,4 +332,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

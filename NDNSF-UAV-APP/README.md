@@ -1242,6 +1242,15 @@ sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-video-test --auto-stop-seconds 10 --no-cli
 ```
 
+For a fast launcher/config health check that does not start MiniNDN, X11, or
+the APP processes, run:
+
+```bash
+python3 Experiments/NDNSF_UAV_GUI_Minindn.py --quick-smoke
+```
+
+Success prints `NDNSF_UAV_GUI_MININDN_QUICK_SMOKE_OK`.
+
 Use `--video-bitrate-kbps <kbps>` to change the requested stream bitrate, and
 `--video-width <pixels>` to change the requested encoded frame width. The ground
 station forwards those values through NDNSF, the drone adjusts its encoder
@@ -1251,9 +1260,10 @@ accepted bitrate.
 Default placement:
 
 ```text
-controller: csu
-drone:      ucla
+controller:     memphis
 ground station: memphis
+Drone A:        ucla
+Drone B:        wustl
 ```
 
 In interactive mode, the launcher starts PX4 SITL with the jMAVSim GUI on the

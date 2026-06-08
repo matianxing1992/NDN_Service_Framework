@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import subprocess
@@ -23,7 +24,7 @@ from minindn.helpers.nfdc import Nfdc  # noqa: E402
 from minindn.minindn import Minindn  # noqa: E402
 from minindn.util import getPopen  # noqa: E402
 
-TOPO = REPO / "Experiments/Topology/AI_testbed.conf"
+TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 OUT = REPO / "results/pytorch_eager_2x2_minindn_quick"
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2"
 CONFIG = OUT / "pytorch_policy.yaml"
@@ -142,7 +143,51 @@ def initialize_di_keychains(ndn, output_dir: Path) -> None:
                 perf.shell_quote(key_path)))
 
 
+def topology_nodes(path: Path) -> set[str]:
+    nodes = set()
+    in_nodes = False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line == "[nodes]":
+            in_nodes = True
+            continue
+        if line.startswith("[") and line != "[nodes]":
+            in_nodes = False
+        if in_nodes and line and not line.startswith("#"):
+            nodes.add(line.rstrip(":"))
+    return nodes
+
+
+def quick_smoke() -> int:
+    required_files = [
+        TOPO,
+        PY_DIR / "split_model.py",
+        PY_DIR / "controller.py",
+        PY_DIR / "provider.py",
+        PY_DIR / "user.py",
+    ]
+    missing = [str(path) for path in required_files if not path.exists()]
+    nodes = topology_nodes(TOPO) if TOPO.exists() else set()
+    required_nodes = {"memphis", "ucla", "arizona", "wustl", "neu"}
+    missing_nodes = sorted(required_nodes - nodes)
+    if missing or missing_nodes:
+        raise RuntimeError(
+            "PyTorch 2x2 quick smoke failed "
+            f"missingFiles={missing} missingNodes={missing_nodes}")
+    print(
+        "PYTORCH_2X2_MININDN_QUICK_SMOKE_OK "
+        f"topology={TOPO} controller=memphis user=memphis "
+        "providers=ucla,arizona,wustl,neu")
+    return 0
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--quick-smoke", action="store_true")
+    args_cli = parser.parse_args()
+    if args_cli.quick_smoke:
+        return quick_smoke()
+
     setLogLevel("info")
     OUT.mkdir(parents=True, exist_ok=True)
     subprocess.run([
@@ -161,7 +206,7 @@ def main() -> None:
         controller_node="memphis",
         user_node="memphis",
         providers=4,
-        provider_nodes="ucla,wustl,uiuc,csu",
+        provider_nodes="ucla,arizona,wustl,neu",
         serve_provider_certs=False,
         debug_ack=False,
         timeline_trace=False,
@@ -196,9 +241,9 @@ def main() -> None:
         )
         origins = [
             ("ucla", "/NDNSF-DistributeInference/example/provider"),
-            ("wustl", "/NDNSF-DistributeInference/example/provider/A"),
-            ("uiuc", "/NDNSF-DistributeInference/example/provider/B"),
-            ("csu", "/NDNSF-DistributeInference/example/provider/C"),
+            ("arizona", "/NDNSF-DistributeInference/example/provider/A"),
+            ("wustl", "/NDNSF-DistributeInference/example/provider/B"),
+            ("neu", "/NDNSF-DistributeInference/example/provider/C"),
         ]
         for node_name, prefix in origins:
             rh.addOrigin([ndn.net[node_name]], [prefix, prefix + "/KEY", "/NDNSF-DistributeInference/example/group"])
@@ -232,9 +277,9 @@ def main() -> None:
 
         providers = [
             ("ucla", "provider-s00", ["--role", "/Stage/0/Shard/0"]),
-            ("wustl", "provider-s01", ["--provider-id", "A", "--role", "/Stage/0/Shard/1"]),
-            ("uiuc", "provider-s10", ["--provider-id", "B", "--role", "/Stage/1/Shard/0"]),
-            ("csu", "provider-s11", ["--provider-id", "C", "--role", "/Stage/1/Shard/1"]),
+            ("arizona", "provider-s01", ["--provider-id", "A", "--role", "/Stage/0/Shard/1"]),
+            ("wustl", "provider-s10", ["--provider-id", "B", "--role", "/Stage/1/Shard/0"]),
+            ("neu", "provider-s11", ["--provider-id", "C", "--role", "/Stage/1/Shard/1"]),
         ]
         for node_name, name, argv in providers:
             _, lp = start(ndn.net[node_name], name,
@@ -277,4 +322,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

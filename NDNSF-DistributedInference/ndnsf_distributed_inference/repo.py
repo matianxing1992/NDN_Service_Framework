@@ -2951,15 +2951,6 @@ class NetworkDistributedRepoClient:
                 f"repo select start object={object_name} "
                 f"replicas={replication_factor} bytes={len(payload)}",
             )
-            select_user = ServiceUser(
-                group=self.user.group,
-                controller=self.user.controller,
-                user=self.user.user,
-                trust_schema=self.user.trust_schema,
-                permission_wait_ms=6000,
-                adaptive_admission=False,
-            )
-
             def selector(candidates: list[AckCandidate]) -> list[str]:
                 selected_providers = self._select_replicas_from_acks(
                     candidates,
@@ -2980,7 +2971,7 @@ class NetworkDistributedRepoClient:
                 return selected_providers
 
             self._log(f"repo select request object={object_name}")
-            response = select_user.request_service_select(
+            response = self.user.request_service_select(
                 self.service_name,
                 encode_repo_request("CAPABILITY", objectName=object_name),
                 selector,
@@ -3016,14 +3007,6 @@ class NetworkDistributedRepoClient:
                     for repo_node in selected
                 )
                 segment_locations: list[dict] = []
-                packet_user = ServiceUser(
-                    group=self.user.group,
-                    controller=self.user.controller,
-                    user=self.user.user,
-                    trust_schema=self.user.trust_schema,
-                    permission_wait_ms=6000,
-                    adaptive_admission=False,
-                )
                 final_manifest = RepoObjectManifest(
                     object_name=object_name,
                     object_type=object_type,
@@ -3106,7 +3089,7 @@ class NetworkDistributedRepoClient:
                         ).start()
                         producers.append(manifest_producer)
                         time.sleep(0.2)
-                        response = packet_user.request_service(
+                        response = self.user.request_service(
                             self.service_name,
                             encode_repo_request(
                                 "STORE_PACKET_PULL",
@@ -3133,7 +3116,7 @@ class NetworkDistributedRepoClient:
                             f"repo store packet target={repo_node} "
                             f"segment={packet.segment} name={packet.name}",
                         )
-                        response = packet_user.request_service(
+                        response = self.user.request_service(
                             self.service_name,
                             encode_repo_request(
                                 "STORE_PACKET",
