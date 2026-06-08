@@ -1846,27 +1846,33 @@ sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
   --parallel-detect-scale-shards \
   --native-providers \
   --cold-requests 1 \
-  --warm-requests 1 \
   --warm-duration-s 60 \
   --warm-interval-ms 1000 \
-  --preflight-requests 3 \
+  --preflight-requests 2 \
   --ack-timeout-ms 300 \
   --timeout-ms 10000 \
   --quiet-perf-logs \
-  --results-dir results/yolo_2x2_unified_selection_60s_minimal
+  --results-dir results/yolo_2x2_native_provider_active_put_60s_minimal
 ```
 
 The representative run in
-`results/yolo_2x2_unified_selection_60s_minimal` produced
+`results/yolo_2x2_native_provider_active_put_60s_minimal` produced
 `YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK`, 60 measured warm requests, warm p50
-84.95 ms, warm p95 114.46 ms, and warm mean 85.96 ms. After discarding the
-first measured warm request, steady warm p50 was 84.78 ms, p95 was 114.29 ms,
-and mean was 85.27 ms. NFD observed 819 incoming/outgoing Data packets across
-the 63 warm-side requests counted by the script, or 13.00 Data packets per
-observed request. The measured-window ratio was 13.65 NFD out Data packets per
-inference and about 427 KB of NFD `nOutBytes` per measured inference. As above,
+100.70 ms, warm p95 129.93 ms, and warm mean 100.27 ms. After discarding the
+first measured warm request, steady warm p50 was 100.80 ms, p95 was 129.94 ms,
+and mean was 100.63 ms. NFD observed 913 incoming/outgoing Data packets across
+the 62 warm-side requests counted by the script, or 14.73 Data packets per
+observed request. The measured-window ratio was 15.22 NFD out Data packets per
+inference and about 430 KB of NFD `nOutBytes` per measured inference. As above,
 the byte average is an approximate transport-size ratio because NFD byte
 counters include all packet types on the measured faces.
+
+The current native provider path uses deterministic activation names and
+active-put segment delivery by default (`NDNSF_COLLAB_LARGE_ACTIVE_PUT=1`).
+This keeps the generated activation segments in IMS and also immediately
+pushes them to NFD so pre-issued exact segment Interests can be satisfied
+without waiting for an additional application-level notification path. Disable
+that behavior only for A/B diagnosis with `NDNSF_COLLAB_LARGE_ACTIVE_PUT=0`.
 
 This minimal recipe intentionally disables detailed dependency/control/crypto
 timing so the latency number is not dominated by tracing. Treat this 60-second
@@ -1877,21 +1883,33 @@ runs explain the remaining outer ACK/Selection/Response and SVS delivery cost,
 but should not be compared directly with the minimal latency baseline.
 
 A sampled control-timing diagnostic run is preserved in
-`results/yolo_2x2_control_svs_timing_60s`. It used the same 60-second shape with
-`--control-timing` and produced 60 measured warm requests with p50 74.73 ms,
-p95 95.64 ms, and steady-after-first p50 77.10 ms. The run measured p50 request
-latency at 76.95 ms, provider dataflow at 20.00 ms, and outer-control residual
-at 50.13 ms. Provider-side request handling was sub-millisecond
-(`requestObservedToAckPublishedMs` p50 0.15 ms), response decrypt/callback was
-also sub-millisecond, and ONNX execution was not the bottleneck. The remaining
-cost is in SVS/NFD delivery and segmented activation fetch: request publication
-to provider observation was about 11.55 ms p50, ACK publication to user
-pre-decrypt about 6.70 ms p50, selection publication to provider observation
-about 5.83 ms p50, and response publication to user observation about 7.81 ms
-p50. Compact multi-provider SelectionMessages still carry shared scope-key
-large-data references at message level because all selected DI providers need
-the same encrypted activation scope metadata; treat that reference passing as a
-required correctness cost, not a payload-compression optimization target.
+`results/yolo_2x2_native_provider_active_put_60s_control`. It used the same
+60-second shape with `--control-timing` and produced 60 measured warm requests
+with p50 99.76 ms, p95 126.51 ms, and steady-after-first p50 100.58 ms. The run
+measured p50 request latency at 100.45 ms, provider dataflow at 21.00 ms, role
+run window at 20.00 ms, ONNX run sum at 2.39 ms, and outer-control residual at
+78.56 ms. Activation reference wait was 0.00 ms for all planned inputs, all 252
+native dataflow inputs and outputs matched the deterministic plan, and
+activation publish p50 was about 1.20 ms per edge. The remaining cost is mainly
+control propagation: request SVS to provider request observation was about
+15.77 ms p50, ACK SVS to user pre-decrypt about 7.46 ms p50, selection SVS to
+provider selection observation about 32.98 ms p50, and response SVS to user
+observation about 16.86 ms p50. Provider-side request admission, provider-side
+selection decrypt/dispatch, and response publication are sub-millisecond. In
+other words, ONNX and activation publication are no longer the bottleneck; the
+largest residual is the outer ACK/Selection/Response control path, especially
+SelectionMessage delivery through SVS/NFD.
+
+A second control run with synchronous local SVS publish is preserved in
+`results/yolo_2x2_native_provider_active_put_60s_sync_publish_control`. It
+produced warm p50 95.28 ms and p95 115.27 ms, reducing outer-control residual
+from 78.56 ms to 73.59 ms. This is a useful A/B result but not a complete fix:
+selection SVS to provider observation remained about 33.67 ms p50. Therefore,
+do not keep compressing SelectionMessage payloads or changing ndn-svs timing by
+default. The next meaningful optimization should be an NDNSF-layer design such
+as predictable SelectionMessage prefetch or another measured control-path
+shortcut that preserves the same selection name, permissions, tokens, and
+hybrid encryption semantics.
 
 When the question is specifically whether the delay is in NFD/SVS packet
 propagation, first run the narrow 60-second control diagnostic without packet
@@ -1906,15 +1924,14 @@ sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=10 \
   --parallel-detect-scale-shards \
   --native-providers \
   --cold-requests 1 \
-  --warm-requests 1 \
   --warm-duration-s 60 \
   --warm-interval-ms 1000 \
-  --preflight-requests 3 \
+  --preflight-requests 2 \
   --ack-timeout-ms 300 \
   --timeout-ms 10000 \
   --quiet-perf-logs \
   --control-timing \
-  --results-dir results/yolo_2x2_control_svs_timing_60s
+  --results-dir results/yolo_2x2_native_provider_active_put_60s_control
 ```
 
 Use full packet tracing only as a last-resort external diagnosis for unexpected
