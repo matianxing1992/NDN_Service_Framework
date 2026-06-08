@@ -2763,12 +2763,18 @@ namespace ndn_service_framework
             maxSegmentSize == 0 ? 7000 : maxSegmentSize,
             ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
 
+        const bool activePut =
+            boolEnvOrDefault("NDNSF_COLLAB_LARGE_ACTIVE_PUT", true);
         for (const auto& data : segments) {
             insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+            if (activePut) {
+                m_face.put(*data);
+            }
         }
         NDN_LOG_DEBUG("COLLAB_LARGE_PUBLISHED name=" << name.toUri()
                       << " plaintextBytes=" << payload.size()
-                      << " segments=" << segments.size());
+                      << " segments=" << segments.size()
+                      << " activePut=" << activePut);
         return name;
     }
 
@@ -2832,12 +2838,18 @@ namespace ndn_service_framework
             maxSegmentSize == 0 ? 7000 : maxSegmentSize,
             ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
 
+        const bool activePut =
+            boolEnvOrDefault("NDNSF_COLLAB_LARGE_ACTIVE_PUT", true);
         for (const auto& data : segments) {
             insertDataIntoIMS(*data, ndn::time::milliseconds(freshnessMs <= 0 ? 60000 : freshnessMs));
+            if (activePut) {
+                m_face.put(*data);
+            }
         }
         NDN_LOG_DEBUG("COLLAB_LARGE_NAMED_PUBLISHED name=" << dataName.toUri()
                       << " plaintextBytes=" << payload.size()
-                      << " segments=" << segments.size());
+                      << " segments=" << segments.size()
+                      << " activePut=" << activePut);
         return dataName;
     }
 
