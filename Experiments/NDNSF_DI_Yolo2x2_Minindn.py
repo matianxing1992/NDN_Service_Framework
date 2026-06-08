@@ -91,6 +91,264 @@ def start(node, name, cmd, env, procs):
     return p, path
 
 
+def start_ndn_packet_traces(ndn, env: dict, node_names: list[str]):
+    traces = []
+    if not node_names:
+        return traces
+    trace_dir = OUT / "ndn-packet-trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    for node_name in node_names:
+        if node_name not in ndn.net:
+            continue
+        pcap_path = trace_dir / f"{node_name}.pcap"
+        decoded_path = trace_dir / f"{node_name}.ndndump.log"
+        log_path = trace_dir / f"{node_name}.tcpdump.log"
+        f = log_path.open("wb")
+        cmd = (
+            "exec tcpdump -i any -s 0 -U -w "
+            f"{perf.shell_quote(str(pcap_path))} "
+            "'(ether proto 0x8624) or (tcp port 6363) or "
+            "(udp port 6363) or (udp port 56363)'"
+        )
+        log(f"start tcpdump NDN trace on {node_name}: {cmd}")
+        proc = getPopen(ndn.net[node_name], cmd, envDict=env, shell=True,
+                        stdout=f, stderr=subprocess.STDOUT)
+        traces.append((proc, f, pcap_path, decoded_path, node_name))
+    return traces
+
+
+def stop_ndn_packet_traces(traces) -> None:
+    for proc, f, pcap_path, decoded_path, _ in traces:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+        try:
+            f.close()
+        except Exception:
+            pass
+        if pcap_path.exists() and pcap_path.stat().st_size > 24:
+            with decoded_path.open("wb") as out:
+                # Decode the full pcap and filter in Python. ndndump's offline
+                # -f path can produce truncated output for some captured UDP
+                # packets, which hides exactly the packet names this diagnostic
+                # is meant to observe.
+                subprocess.run(
+                    ["ndndump", "-r", str(pcap_path)],
+                    stdout=out,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+
+
+def parse_ndndump_line(line: str) -> dict:
+    text = line.strip()
+    if not text:
+        return {}
+    if text.startswith("ndndump:"):
+        return {}
+    timestamp = 0.0
+    match = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s+(.*)$", text)
+    if match:
+        timestamp = float(match.group(1))
+        text = match.group(2)
+    endpoint_match = re.search(
+        r"\bIP\s+([^,\s]+)\s+>\s+([^,\s]+),\s+UDP(?:,\s+length\s+([0-9]+))?",
+        text)
+    src = endpoint_match.group(1) if endpoint_match else ""
+    dst = endpoint_match.group(2) if endpoint_match else ""
+    wire_length = int(endpoint_match.group(3)) if endpoint_match and endpoint_match.group(3) else 0
+    pkt_type = ""
+    if re.search(r"\bINTEREST\b", text, re.IGNORECASE):
+        pkt_type = "Interest"
+    elif re.search(r"\bDATA\b", text, re.IGNORECASE):
+        pkt_type = "Data"
+    name = ""
+    # ndndump variants print either "Interest /name" or verbose text that
+    # still contains an absolute NDN name token. Keep the extraction loose.
+    name_match = re.search(r"((?:/[A-Za-z0-9%._~!$&'()*+,;=:@-]+)+)", text)
+    if name_match:
+        name = name_match.group(1)
+    if name and "NDNSF" not in name:
+        return {}
+    if not pkt_type and not name:
+        return {}
+    category = "other"
+    if "/ndnping/" in name:
+        category = "ndnping"
+    elif "/NDNSF/DI/ACTIVATION/" in name:
+        category = "di-activation"
+    elif "/group/v=2/params-sha256=" in name:
+        category = "svs-sync"
+    elif "/group/MAPPING/" in name:
+        category = "svs-mapping"
+    elif "/group/t=" in name or "/group/" in name:
+        category = "svs-data"
+    elif "/NDNSF/REQUEST/" in name:
+        category = "request"
+    elif "/NDNSF/ACK/" in name:
+        category = "ack"
+    elif "/NDNSF/SELECTION/" in name:
+        category = "selection"
+    elif "/NDNSF/RESPONSE/" in name:
+        category = "response"
+    elif "/NDNSF/DistributedRepo" in name:
+        category = "repo"
+    return {
+        "timestamp": timestamp,
+        "type": pkt_type,
+        "name": name,
+        "src": src,
+        "dst": dst,
+        "wireLength": wire_length,
+        "category": category,
+        "line": line.rstrip("\n"),
+    }
+
+
+def write_ndn_packet_trace_summary(traces) -> None:
+    if not traces:
+        return
+    rows = []
+    by_node = {}
+    by_name = {}
+    for _, _, pcap_path, path, node_name in traces:
+        node_rows = []
+        if path.exists():
+            for line in path.read_text(errors="replace").splitlines():
+                row = parse_ndndump_line(line)
+                if not row:
+                    continue
+                row["node"] = node_name
+                node_rows.append(row)
+                rows.append(row)
+                name = row.get("name", "")
+                if name:
+                    item = by_name.setdefault(name, {
+                        "name": name,
+                        "type": row.get("type", ""),
+                        "category": row.get("category", ""),
+                        "nodes": {},
+                        "firstTimestamp": 0.0,
+                        "lastTimestamp": 0.0,
+                    })
+                    ts = float(row.get("timestamp", 0.0) or 0.0)
+                    if ts:
+                        if not item["firstTimestamp"] or ts < item["firstTimestamp"]:
+                            item["firstTimestamp"] = ts
+                        if ts > item["lastTimestamp"]:
+                            item["lastTimestamp"] = ts
+                    node_item = item["nodes"].setdefault(node_name, {
+                        "count": 0,
+                        "firstTimestamp": 0.0,
+                        "lastTimestamp": 0.0,
+                        "endpoints": {},
+                    })
+                    node_item["count"] += 1
+                    endpoint = f"{row.get('src', '')}>{row.get('dst', '')}"
+                    if endpoint != ">":
+                        node_item["endpoints"][endpoint] = (
+                            node_item["endpoints"].get(endpoint, 0) + 1)
+                    if ts:
+                        if not node_item["firstTimestamp"] or ts < node_item["firstTimestamp"]:
+                            node_item["firstTimestamp"] = ts
+                        if ts > node_item["lastTimestamp"]:
+                            node_item["lastTimestamp"] = ts
+        counts = {}
+        first_ts = 0.0
+        last_ts = 0.0
+        for row in node_rows:
+            key = f"{row.get('category', 'other')}:{row.get('type', '') or 'unknown'}"
+            counts[key] = counts.get(key, 0) + 1
+            ts = float(row.get("timestamp", 0.0) or 0.0)
+            if ts:
+                first_ts = ts if not first_ts else min(first_ts, ts)
+                last_ts = max(last_ts, ts)
+        by_node[node_name] = {
+            "path": str(path),
+            "pcap": str(pcap_path),
+            "count": len(node_rows),
+            "counts": counts,
+            "firstTimestamp": first_ts,
+            "lastTimestamp": last_ts,
+            "spanMs": (last_ts - first_ts) * 1000.0 if first_ts and last_ts else 0.0,
+        }
+    name_rows = list(by_name.values())
+    name_rows.sort(key=lambda row: (row.get("firstTimestamp", 0.0), row.get("name", "")))
+    span_values = {}
+    for row in name_rows:
+        first_ts = float(row.get("firstTimestamp", 0.0) or 0.0)
+        last_ts = float(row.get("lastTimestamp", 0.0) or 0.0)
+        if not first_ts or not last_ts:
+            continue
+        span_ms = max(0.0, (last_ts - first_ts) * 1000.0)
+        key = f"{row.get('category', 'other')}:{row.get('type', '') or 'unknown'}"
+        span_values.setdefault(key, []).append(span_ms)
+    span_stats = {
+        key: {
+            "count": len(values),
+            "p50Ms": percentile(values, 50),
+            "p95Ms": percentile(values, 95),
+            "maxMs": max(values) if values else 0.0,
+        }
+        for key, values in sorted(span_values.items())
+    }
+    slowest_spans = []
+    most_repeated = []
+    for row in name_rows:
+        first_ts = float(row.get("firstTimestamp", 0.0) or 0.0)
+        last_ts = float(row.get("lastTimestamp", 0.0) or 0.0)
+        span_ms = max(0.0, (last_ts - first_ts) * 1000.0) if first_ts and last_ts else 0.0
+        total_count = sum(int(node.get("count", 0)) for node in row.get("nodes", {}).values())
+        item = {
+            "name": row.get("name", ""),
+            "type": row.get("type", ""),
+            "category": row.get("category", ""),
+            "spanMs": span_ms,
+            "count": total_count,
+            "nodes": row.get("nodes", {}),
+        }
+        slowest_spans.append(item)
+        most_repeated.append(item)
+    slowest_spans.sort(key=lambda row: (-row["spanMs"], row["category"], row["name"]))
+    most_repeated.sort(key=lambda row: (-row["count"], -row["spanMs"], row["category"], row["name"]))
+    summary = {
+        "count": len(rows),
+        "nodes": by_node,
+        "names": name_rows[:500],
+        "nameCount": len(name_rows),
+        "crossNodeObservationSpanStats": span_stats,
+        "slowestCrossNodeObservationSpans": slowest_spans[:50],
+        "mostRepeatedNames": most_repeated[:50],
+        "note": (
+            "Packet trace is external ndndump observation. It does not expose "
+            "ndn-svs internal scheduling, but it shows when each MiniNDN node's "
+            "NFD-facing capture saw Sync/control Interest/Data names."
+        ),
+    }
+    path = OUT / "ndn-packet-trace-summary.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    sync_count = sum(
+        count for node in by_node.values()
+        for key, count in node["counts"].items()
+        if key.startswith("svs-")
+    )
+    control_count = sum(
+        count for node in by_node.values()
+        for key, count in node["counts"].items()
+        if key.split(":", 1)[0] in {"request", "ack", "selection", "response"}
+    )
+    print(
+        "YOLO_LAYOUT_NDN_PACKET_TRACE "
+        f"packets={len(rows)} sync_packets={sync_count} "
+        f"control_packets={control_count} unique_names={len(name_rows)} "
+        f"path={path}"
+    )
+
+
 def wait_log(path: Path, needle: str, timeout: int = 30, proc=None) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -593,6 +851,12 @@ def parse_trace_row(line: str) -> dict[str, str]:
     return parse_key_value_line(line)
 
 
+def parse_timing_or_trace_row(line: str) -> dict[str, str]:
+    if "[NDNSF_TRACE]" not in line and "NDNSF_CONTROL_TIMING" not in line:
+        return {}
+    return parse_key_value_line(line)
+
+
 def parse_numeric_prefix(value, default: float = 0.0) -> float:
     match = re.match(r"[-+]?[0-9]+(?:\.[0-9]+)?", str(value or ""))
     return float(match.group(0)) if match else default
@@ -686,6 +950,12 @@ def write_provider_timing_summaries(layout: str,
                     "first_segment_ms",
                     "last_segment_received_ms",
                     "last_segment_validated_ms",
+                    "fetch_start_to_interest_ms",
+                    "fetch_start_to_data_ms",
+                    "interest_to_data_ms",
+                    "fetch_start_to_validated_ms",
+                    "interest_to_validated_ms",
+                    "data_to_validated_ms",
                     "init_cwnd",
                 ):
                     if key in row:
@@ -702,6 +972,8 @@ def write_provider_timing_summaries(layout: str,
                     "segment_timeouts",
                     "first_segment_epoch_ms",
                     "complete_epoch_ms",
+                    "segment",
+                    "wire_bytes",
                 ):
                     if key in row:
                         row[key] = parse_int_prefix(row.get(key, "0"))
@@ -1125,11 +1397,26 @@ def write_provider_timing_summaries(layout: str,
         row for row in collab_fetch_rows
         if row.get("event") == "error"
     ]
+    segment_interest_rows = [
+        row for row in collab_fetch_rows
+        if row.get("event") == "segment_interest"
+    ]
+    segment_received_rows = [
+        row for row in collab_fetch_rows
+        if row.get("event") == "segment_received"
+    ]
+    segment_validated_rows = [
+        row for row in collab_fetch_rows
+        if row.get("event") == "segment_validated"
+    ]
     collab_fetch_summary = {
         "layout": layout,
         "count": len(collab_fetch_rows),
         "complete": len(complete_fetch_rows),
         "errors": len(error_fetch_rows),
+        "segmentInterests": len(segment_interest_rows),
+        "segmentReceived": len(segment_received_rows),
+        "segmentValidated": len(segment_validated_rows),
         "elapsedMs": summarize_numeric([
             row["elapsed_ms"] for row in complete_fetch_rows
         ]),
@@ -1153,6 +1440,27 @@ def write_provider_timing_summaries(layout: str,
         ]),
         "receivedWireBytes": summarize_numeric([
             float(row.get("received_wire_bytes", 0)) for row in complete_fetch_rows
+        ]),
+        "segmentFetchStartToInterestMs": summarize_numeric([
+            row.get("fetch_start_to_interest_ms", 0.0) for row in segment_interest_rows
+        ]),
+        "segmentFetchStartToDataMs": summarize_numeric([
+            row.get("fetch_start_to_data_ms", 0.0) for row in segment_received_rows
+        ]),
+        "segmentInterestToDataMs": summarize_numeric([
+            row.get("interest_to_data_ms", 0.0) for row in segment_received_rows
+        ]),
+        "segmentFetchStartToValidatedMs": summarize_numeric([
+            row.get("fetch_start_to_validated_ms", 0.0) for row in segment_validated_rows
+        ]),
+        "segmentInterestToValidatedMs": summarize_numeric([
+            row.get("interest_to_validated_ms", 0.0) for row in segment_validated_rows
+        ]),
+        "segmentDataToValidatedMs": summarize_numeric([
+            row.get("data_to_validated_ms", 0.0) for row in segment_validated_rows
+        ]),
+        "segmentWireBytes": summarize_numeric([
+            float(row.get("wire_bytes", 0)) for row in segment_received_rows
         ]),
         "nacks": sum(row.get("nacks", 0) for row in collab_fetch_rows),
         "segmentTimeouts": sum(row.get("segment_timeouts", 0) for row in collab_fetch_rows),
@@ -1179,6 +1487,11 @@ def write_provider_timing_summaries(layout: str,
         f"elapsed_p95_ms={collab_fetch_summary['elapsedMs']['p95']:.2f} "
         f"first_segment_p50_ms={collab_fetch_summary['firstSegmentMs']['p50']:.2f} "
         f"last_validated_p50_ms={collab_fetch_summary['lastSegmentValidatedMs']['p50']:.2f} "
+        f"segments_received={collab_fetch_summary['segmentReceived']} "
+        f"seg_interest_to_data_p50_ms="
+        f"{collab_fetch_summary['segmentInterestToDataMs']['p50']:.2f} "
+        f"seg_data_to_validated_p50_ms="
+        f"{collab_fetch_summary['segmentDataToValidatedMs']['p50']:.2f} "
         f"segment_timeouts={collab_fetch_summary['segmentTimeouts']} "
         f"encoded_bytes_p50={collab_fetch_summary['encodedBytes']['p50']:.0f} "
         f"interest_lifetime_p50_ms={collab_fetch_summary['interestLifetimeMs']['p50']:.0f} "
@@ -2508,9 +2821,9 @@ def write_svs_control_propagation_summaries(
         if not path.exists():
             continue
         for line in path.read_text(errors="replace").splitlines():
-            if "[NDNSF_TRACE]" not in line:
+            row = parse_timing_or_trace_row(line)
+            if not row:
                 continue
-            row = parse_trace_row(line)
             event = row.get("event", "")
             message_name = row.get("messageName", "")
             request_id = row.get("requestId", "")
@@ -2522,6 +2835,7 @@ def write_svs_control_propagation_summaries(
                 "phase": phase,
                 "requestId": request_id,
                 "requestSvsBeginUs": 0,
+                "selectionSvsBeginUs": 0,
                 "selectionSvsBeginByProvider": {},
                 "ackPreDecryptByProvider": {},
                 "responseObservedByProvider": {},
@@ -2533,13 +2847,21 @@ def write_svs_control_propagation_summaries(
                     [value for value in (current, timestamp_us) if value > 0]
                     or [timestamp_us])
             elif event == "SVS_PUBLISH_BEGIN" and "/NDNSF/SELECTION/" in message_name:
-                provider = selection_provider_from_message_name(message_name)
+                provider = row.get("providerName", "") or selection_provider_from_message_name(message_name)
+                if provider and not provider.startswith("/"):
+                    provider = ""
                 if provider:
                     current = int(item["selectionSvsBeginByProvider"].get(provider, 0) or 0)
                     item["selectionSvsBeginByProvider"][provider] = min(
                         [value for value in (current, timestamp_us) if value > 0]
                         or [timestamp_us])
-            elif event == "ACK_MATCH_ATTEMPT" and row.get("phase") == "pre_decrypt":
+                else:
+                    current = int(item.get("selectionSvsBeginUs", 0) or 0)
+                    item["selectionSvsBeginUs"] = min(
+                        [value for value in (current, timestamp_us) if value > 0]
+                        or [timestamp_us])
+            elif ((event == "ACK_MATCH_ATTEMPT" and row.get("phase") == "pre_decrypt") or
+                  event == "ACK_OBSERVED"):
                 provider = row.get("providerName", "")
                 if provider:
                     current = int(item["ackPreDecryptByProvider"].get(provider, 0) or 0)
@@ -2561,9 +2883,9 @@ def write_svs_control_propagation_summaries(
             continue
         default_provider = provider_names.get(name, name)
         for line in path.read_text(errors="replace").splitlines():
-            if "[NDNSF_TRACE]" not in line:
+            row = parse_timing_or_trace_row(line)
+            if not row:
                 continue
-            row = parse_trace_row(line)
             event = row.get("event", "")
             message_name = row.get("messageName", "")
             request_id = row.get("requestId", "")
@@ -2592,7 +2914,7 @@ def write_svs_control_propagation_summaries(
                 item["ackSvsBeginUs"] = min(
                     [value for value in (current, timestamp_us) if value > 0]
                     or [timestamp_us])
-            elif event == "SELECTION_RECEIVED":
+            elif event in {"SELECTION_OBSERVED", "SELECTION_RECEIVED"}:
                 current = int(item.get("selectionReceivedUs", 0) or 0)
                 item["selectionReceivedUs"] = min(
                     [value for value in (current, timestamp_us) if value > 0]
@@ -2614,6 +2936,8 @@ def write_svs_control_propagation_summaries(
         request_svs_us = int(uitem.get("requestSvsBeginUs", 0) or 0)
         selection_svs_us = int(
             uitem.get("selectionSvsBeginByProvider", {}).get(provider, 0) or 0)
+        if selection_svs_us <= 0:
+            selection_svs_us = int(uitem.get("selectionSvsBeginUs", 0) or 0)
         ack_pre_us = int(
             uitem.get("ackPreDecryptByProvider", {}).get(provider, 0) or 0)
         response_observed_us = int(
@@ -3083,6 +3407,16 @@ def initialize_di_keychains(ndn, output_dir: Path, provider_identities: list[str
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    # Benchmark recipe note:
+    #   sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true; sleep 3
+    #   sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
+    #     python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+    #       --layout 2x2 --parallel-detect-scale-shards --native-providers \
+    #       --cold-requests 1 --warm-requests 1 --warm-duration-s 60 \
+    #       --warm-interval-ms 1000 --preflight-requests 3 \
+    #       --ack-timeout-ms 300 --timeout-ms 10000 --quiet-perf-logs
+    # Do not set a global NDN_LOG around this MiniNDN command. NFD inherits it
+    # and may fail on application-style filters; use --quiet-perf-logs instead.
     parser.add_argument("--layout", default="2x2",
                         help="YOLO stage-by-shard layout, e.g. 1x3, 2x3, 3x2, 3x3")
     parser.add_argument("--results-dir", default="",
@@ -3131,6 +3465,18 @@ def main() -> None:
                         help="Enable NDNSF async/parallel SVS publish/sync/production for a runtime-overhead comparison")
     parser.add_argument("--serial-svs-runtime", action="store_true",
                         help="Force the older serial NDNSF/SVS runtime even when native providers are used")
+    parser.add_argument("--sync-svs-publish", action="store_true",
+                        help="keep parallel SVS processing/production but publish local control messages synchronously")
+    parser.add_argument("--ndn-packet-trace", action="store_true",
+                        help=("last-resort external NDN packet capture for SVS/control diagnostics; "
+                              "prefer 60s --control-timing runs for latency analysis"))
+    parser.add_argument("--ndn-packet-trace-nodes",
+                        default="memphis,ucla,wustl,uiuc,umich,neu,csu",
+                        help="comma-separated node list for --ndn-packet-trace")
+    parser.add_argument("--ndn-packet-trace-window",
+                        choices=["all", "warm"],
+                        default="warm",
+                        help="capture only the warm inference window by default; use all only for startup/repo/keychain diagnostics")
     args_cli = parser.parse_args()
     if args_cli.parallel_output_shards and args_cli.parallel_detect_scale_shards:
         raise SystemExit("--parallel-output-shards and --parallel-detect-scale-shards are mutually exclusive")
@@ -3211,7 +3557,7 @@ def main() -> None:
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=str(TOPO))
     procs = []
-    control_detail_trace = args_cli.control_trace or args_cli.control_timing
+    control_detail_trace = args_cli.control_trace
     args = Args(
         controller_node="csu",
         user_node="memphis",
@@ -3219,10 +3565,9 @@ def main() -> None:
         provider_nodes="ucla,wustl,uiuc,umich,neu",
         serve_provider_certs=False,
         debug_ack=control_detail_trace,
-        # Keep app_env() on the debug_ack log profile so ServiceUser and
-        # ServiceProvider [NDNSF_TRACE] rows remain visible. We set
-        # NDNSF_TIMELINE_TRACE explicitly below for sampled timing, because
-        # app_env(timeline_trace=True) narrows NDN_LOG to TimelineTrace only.
+        # Keep app_env() on the debug_ack log profile only for explicit
+        # full trace. --control-timing uses narrow NDNSF_CONTROL_TIMING rows
+        # so it can be used during 60s benchmark runs without full TRACE cost.
         timeline_trace=False,
         dk_bootstrap_check=False,
         crypto_diagnostics=False,
@@ -3279,6 +3624,15 @@ def main() -> None:
             Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
 
+        trace_nodes = [
+            item.strip()
+            for item in args_cli.ndn_packet_trace_nodes.split(",")
+            if item.strip()
+        ] if args_cli.ndn_packet_trace else []
+        packet_traces = []
+        if args_cli.ndn_packet_trace and args_cli.ndn_packet_trace_window == "all":
+            packet_traces = start_ndn_packet_traces(ndn, os.environ.copy(), trace_nodes)
+
         initialize_di_keychains(ndn, OUT, provider_identities)
         subprocess.run(["rm", "-rf", str(OUT / "artifact-cache")], check=False)
         session = int(time.time()) + os.getpid()
@@ -3302,7 +3656,7 @@ def main() -> None:
             (args_cli.native_providers and not args_cli.serial_svs_runtime)
         )
         if use_parallel_runtime:
-            env["NDNSF_SVS_ASYNC_PUBLISH"] = "1"
+            env["NDNSF_SVS_ASYNC_PUBLISH"] = "0" if args_cli.sync_svs_publish else "1"
             env["NDNSF_SVS_PARALLEL_SYNC"] = "1"
             env["NDNSF_SVS_PARALLEL_WORKERS"] = os.environ.get(
                 "NDNSF_SVS_PARALLEL_WORKERS", "4")
@@ -3335,10 +3689,13 @@ def main() -> None:
             env["NDNSF_PENDING_IMS_TIMING"] = "1"
         if args_cli.crypto_timing:
             env["NDNSF_HYBRID_CRYPTO_TIMING"] = "1"
-            env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"
+            env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = os.environ.get(
+                "NDNSF_TIMELINE_TRACE_SAMPLE_RATE", "10")
         if args_cli.control_timing:
             env["NDNSF_CONTROL_TIMING"] = "1"
-            env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"
+            env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = os.environ.get(
+                "NDNSF_TIMELINE_TRACE_SAMPLE_RATE", "10")
+        if args_cli.control_trace:
             env["NDNSF_TIMELINE_TRACE"] = "1"
         env["PYTHONPATH"] = ":".join([
             str(REPO / "NDNSF-DistributedInference"),
@@ -3406,6 +3763,7 @@ def main() -> None:
                     handler_threads=int(env["NDNSF_HANDLER_THREADS"]),
                     ack_threads=int(env["NDNSF_ACK_THREADS"]))
                 ready = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
+                ready_timeout = 120
             else:
                 cmd = python_cmd("provider.py", common + argv + [
                     "--dynamic-provisioning",
@@ -3415,9 +3773,10 @@ def main() -> None:
                     str(provider_handler_workers),
                 ])
                 ready = "Installed provider permission"
+                ready_timeout = 30
             _, lp = start(ndn.net[node_name], name, cmd, env, procs)
-            if not wait_log(lp, ready, 30):
-                raise RuntimeError(f"{name} did not install permissions; see {lp}")
+            if not wait_log(lp, ready, ready_timeout):
+                raise RuntimeError(f"{name} did not become ready; expected {ready}; see {lp}")
             time.sleep(0.5)
 
         time.sleep(2)
@@ -3456,6 +3815,13 @@ def main() -> None:
                 f"count={len(cold_latencies)} expected={cold_requests} "
                 f"rc={user_proc.returncode}; log={user_log}")
 
+        if (args_cli.ndn_packet_trace and
+                args_cli.ndn_packet_trace_window == "warm" and
+                not packet_traces):
+            packet_traces = start_ndn_packet_traces(ndn, os.environ.copy(), trace_nodes)
+            # Give tcpdump a brief moment to open the pcap files before the
+            # warm request stream starts.
+            time.sleep(0.5)
         warm_traffic_start = snapshot_traffic(ndn)
         warm_nfd_start = snapshot_nfd_data_counters(ndn)
         warm_user_args = common + [
@@ -3484,6 +3850,8 @@ def main() -> None:
             procs,
         )
         warm_proc.wait(timeout=user_wait_timeout(warm_requests, timeout_ms, warm_duration_s))
+        if packet_traces and args_cli.ndn_packet_trace_window == "warm":
+            stop_ndn_packet_traces(packet_traces)
         warm_nfd_end = snapshot_nfd_data_counters(ndn)
         warm_traffic_end = snapshot_traffic(ndn)
         warm_text = warm_log.read_text(errors="replace")
@@ -3518,7 +3886,7 @@ def main() -> None:
                 ("cold", user_log),
                 ("warm", warm_log),
             ], providers)
-        if args_cli.control_timing or args_cli.control_trace:
+        if args_cli.control_trace:
             write_ack_selection_timing_summaries(layout, [
                 ("cold", user_log),
                 ("warm", warm_log),
@@ -3529,10 +3897,14 @@ def main() -> None:
                 ("cold", user_log),
                 ("warm", warm_log),
             ], providers)
+        if args_cli.control_timing or args_cli.control_trace:
             write_svs_control_propagation_summaries(layout, [
                 ("cold", user_log),
                 ("warm", warm_log),
             ], providers)
+        if packet_traces:
+            stop_ndn_packet_traces(packet_traces)
+            write_ndn_packet_trace_summary(packet_traces)
         native_dataflow_transport_ok = write_provider_timing_summaries(
             layout,
             providers,
@@ -3578,6 +3950,8 @@ def main() -> None:
             if layout == "2x2":
                 print(f"YOLO_2X2_DYNAMIC_PROVISIONING_MININDN_OK cold={user_log} warm={warm_log}")
     finally:
+        if 'packet_traces' in locals():
+            stop_ndn_packet_traces(packet_traces)
         stop(procs)
         ndn.stop()
         Minindn.cleanUp()

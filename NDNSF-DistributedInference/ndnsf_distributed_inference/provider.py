@@ -60,11 +60,19 @@ class DependencyPrefetcher:
             total_start = perf_counter()
             if data_name:
                 fetch_start = perf_counter()
-                payload = self._ndnsf.fetch_large(
-                    data_name,
-                    edge.key_scope,
-                    fetch_timeout_ms,
-                )
+                if expected_segments > 0 and hasattr(self._ndnsf, "fetch_large_exact"):
+                    payload = self._ndnsf.fetch_large_exact(
+                        data_name,
+                        edge.key_scope,
+                        fetch_timeout_ms,
+                        expected_segments,
+                    )
+                else:
+                    payload = self._ndnsf.fetch_large(
+                        data_name,
+                        edge.key_scope,
+                        fetch_timeout_ms,
+                    )
                 fetch_ms = _elapsed_ms(fetch_start)
                 if payload is not None:
                     return LargePrefetchResult(

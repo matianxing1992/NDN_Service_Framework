@@ -12,6 +12,7 @@
 #include <optional>
 #include <random>
 #include <sstream>
+#include <vector>
 
 #include <ndn-cxx/security/validation-error.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -2883,6 +2884,8 @@ namespace ndn_service_framework
                 struct ExactFetchState {
                     std::vector<ndn::Buffer> contents;
                     std::vector<bool> received;
+                    std::vector<std::chrono::steady_clock::time_point> interestIssued;
+                    std::vector<std::chrono::steady_clock::time_point> dataReceived;
                     size_t remaining = 0;
                     size_t targetSegments = 0;
                     bool failed = false;
@@ -2890,6 +2893,8 @@ namespace ndn_service_framework
                 auto state = std::make_shared<ExactFetchState>();
                 state->contents.resize(expectedSegments);
                 state->received.resize(expectedSegments, false);
+                state->interestIssued.resize(expectedSegments);
+                state->dataReceived.resize(expectedSegments);
                 state->remaining = expectedSegments;
                 state->targetSegments = expectedSegments;
                 if (fetchTimingEnabled) {
@@ -3009,11 +3014,28 @@ namespace ndn_service_framework
                     interest.setCanBePrefix(false);
                     interest.setMustBeFresh(true);
                     interest.setInterestLifetime(ndn::time::milliseconds(interestLifetimeMs));
+                    if (fetchTimingEnabled) {
+                        state->interestIssued[i] = std::chrono::steady_clock::now();
+                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=segment_interest"
+                                     << " mode=exact-segments"
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << dataName.toUri()
+                                     << " segment=" << i
+                                     << " segmentName=" << segmentName.toUri()
+                                     << " fetch_start_to_interest_ms="
+                                     << elapsedMsSince(fetchStart, state->interestIssued[i])
+                                     << " interest_lifetime_ms=" << interestLifetimeMs);
+                    }
                     m_face.expressInterest(
                         interest,
-                        [this, state, fetchStats, finishIfComplete, failOnce, i]
+                        [this, state, fetchStats, finishIfComplete, failOnce, i,
+                         fetchTimingEnabled, fetchStart, requestId, keyScope, dataName]
                         (const ndn::Interest&, const ndn::Data& data) {
                             const auto receivedAt = std::chrono::steady_clock::now();
+                            if (i < state->dataReceived.size()) {
+                                state->dataReceived[i] = receivedAt;
+                            }
                             if (fetchStats->receivedSegments == 0) {
                                 fetchStats->firstSegmentReceived = receivedAt;
                                 fetchStats->firstSegmentWall = std::chrono::system_clock::now();
@@ -3021,9 +3043,29 @@ namespace ndn_service_framework
                             fetchStats->lastSegmentReceived = receivedAt;
                             ++fetchStats->receivedSegments;
                             fetchStats->receivedWireBytes += data.wireEncode().size();
+                            if (fetchTimingEnabled) {
+                                const auto issuedAt = i < state->interestIssued.size() ?
+                                    state->interestIssued[i] : std::chrono::steady_clock::time_point{};
+                                const double interestToDataMs =
+                                    issuedAt == std::chrono::steady_clock::time_point{} ? 0.0 :
+                                    elapsedMsSince(issuedAt, receivedAt);
+                                NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
+                                             << " event=segment_received"
+                                             << " mode=exact-segments"
+                                             << " requestId=" << requestId.toUri()
+                                             << " keyScope=" << keyScope
+                                             << " dataName=" << dataName.toUri()
+                                             << " segment=" << i
+                                             << " segmentName=" << data.getName().toUri()
+                                             << " fetch_start_to_data_ms="
+                                             << elapsedMsSince(fetchStart, receivedAt)
+                                             << " interest_to_data_ms=" << interestToDataMs
+                                             << " wire_bytes=" << data.wireEncode().size());
+                            }
                             nac_validator.validate(
                                 data,
-                                [state, fetchStats, finishIfComplete, failOnce, i]
+                                [state, fetchStats, finishIfComplete, failOnce, i,
+                                 fetchTimingEnabled, fetchStart, requestId, keyScope, dataName]
                                 (const ndn::Data& validData) {
                                     if (state->failed || state->received[i]) {
                                         return;
@@ -3050,9 +3092,38 @@ namespace ndn_service_framework
                                             state->remaining = remaining;
                                         }
                                     }
-                                    fetchStats->lastSegmentValidated =
-                                        std::chrono::steady_clock::now();
+                                    const auto validatedAt = std::chrono::steady_clock::now();
+                                    fetchStats->lastSegmentValidated = validatedAt;
                                     ++fetchStats->validatedSegments;
+                                    if (fetchTimingEnabled) {
+                                        const auto issuedAt = i < state->interestIssued.size() ?
+                                            state->interestIssued[i] :
+                                            std::chrono::steady_clock::time_point{};
+                                        const auto receivedAt = i < state->dataReceived.size() ?
+                                            state->dataReceived[i] :
+                                            std::chrono::steady_clock::time_point{};
+                                        const double interestToValidatedMs =
+                                            issuedAt == std::chrono::steady_clock::time_point{} ?
+                                            0.0 : elapsedMsSince(issuedAt, validatedAt);
+                                        const double dataToValidatedMs =
+                                            receivedAt == std::chrono::steady_clock::time_point{} ?
+                                            0.0 : elapsedMsSince(receivedAt, validatedAt);
+                                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
+                                                     << " event=segment_validated"
+                                                     << " mode=exact-segments"
+                                                     << " requestId=" << requestId.toUri()
+                                                     << " keyScope=" << keyScope
+                                                     << " dataName=" << dataName.toUri()
+                                                     << " segment=" << i
+                                                     << " segmentName="
+                                                     << validData.getName().toUri()
+                                                     << " fetch_start_to_validated_ms="
+                                                     << elapsedMsSince(fetchStart, validatedAt)
+                                                     << " interest_to_validated_ms="
+                                                     << interestToValidatedMs
+                                                     << " data_to_validated_ms="
+                                                     << dataToValidatedMs);
+                                    }
                                     const auto content = validData.getContent();
                                     state->contents[i] = ndn::Buffer(content.value_begin(),
                                                                      content.value_end());
@@ -4436,6 +4507,15 @@ namespace ndn_service_framework
                           << " contentBytes=" << contentBlock.value_size()
                           << " eventLoopLagUs=" << (beginUs >= queuedAtUs ? beginUs - queuedAtUs : 0)
                           << " mode=hybrid-message-crypto");
+                logControlTiming("provider", "SVS_PUBLISH_BEGIN", requestId,
+                                 {{"serviceName", serviceName.toUri()},
+                                  {"providerName", identity.toUri()},
+                                  {"messageType", messageType},
+                                  {"messageName", messageName.toUri()},
+                                  {"contentBytes", std::to_string(contentBlock.value_size())},
+                                  {"eventLoopLagUs", std::to_string(beginUs >= queuedAtUs ?
+                                                                    beginUs - queuedAtUs : 0)},
+                                  {"mode", "hybrid-message-crypto"}});
                 if (m_timelineTrace) {
                     ndn::Name rid;
                     ndn::Name svc;
@@ -4456,6 +4536,13 @@ namespace ndn_service_framework
                     }
                 }
                 publishSvs(m_svsps, messageName, contentBlock);
+                logControlTiming("provider", "SVS_PUBLISH_DONE", requestId,
+                                 {{"serviceName", serviceName.toUri()},
+                                  {"providerName", identity.toUri()},
+                                  {"messageType", messageType},
+                                  {"messageName", messageName.toUri()},
+                                  {"contentBytes", std::to_string(contentBlock.value_size())},
+                                  {"mode", "hybrid-message-crypto"}});
                 if (m_timelineTrace) {
                     ndn::Name rid;
                     ndn::Name svc;
@@ -4501,6 +4588,11 @@ namespace ndn_service_framework
             serviceName = request->serviceName;
             requestId = request->requestId;
             senderPrefix = request->requesterName;
+        }
+        else if (auto selection = parseCompactServiceSelectionNameV2(messageName)) {
+            serviceName = selection->serviceName;
+            requestId = selection->requestId;
+            senderPrefix = selection->requesterName;
         }
         else if (auto selection = parseServiceSelectionNameV2(messageName)) {
             serviceName = selection->serviceName;
@@ -5122,6 +5214,12 @@ namespace ndn_service_framework
                       << " requestId=" << requestV2->requestId.toUri()
                       << " serviceName=" << requestV2->serviceName.toUri()
                       << " requestName=" << subscription.name.toUri());
+            logControlTiming("provider", "REQUEST_RECEIVED", requestV2->requestId,
+                             {{"serviceName", requestV2->serviceName.toUri()},
+                              {"providerName", identity.toUri()},
+                              {"requesterName", requestV2->requesterName.toUri()},
+                              {"requestName", subscription.name.toUri()},
+                              {"contentBytes", std::to_string(subscription.data.size())}});
             if (m_timelineTrace) {
                 logTimelineTrace("provider", "request_observed", requestV2->requestId,
                                  {{"serviceName", requestV2->serviceName.toUri()},
@@ -6276,7 +6374,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                   {"providerName", identity.toUri()},
                                   {"selectionName", subscription.name.toUri()}});
             }
-
             const auto selectionKey = ndn::Name(compactSelectionV2->requesterName.toUri())
                                           .append(compactSelectionV2->serviceName)
                                           .append(compactSelectionV2->requestId);
@@ -6297,6 +6394,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 }
                 m_selectionDecryptsInFlight.insert(selectionKey);
             }
+            logControlTiming("provider", "SELECTION_OBSERVED",
+                             compactSelectionV2->requestId,
+                             {{"serviceName", compactSelectionV2->serviceName.toUri()},
+                              {"requesterName", compactSelectionV2->requesterName.toUri()},
+                              {"providerName", identity.toUri()},
+                              {"selectionName", subscription.name.toUri()},
+                              {"contentBytes", std::to_string(subscription.data.size())},
+                              {"compactSelection", "1"}});
 
             if (subscription.data.size() == 0) {
                 OnServiceSelectionMessageDecryptionErrorCallback(
@@ -6398,7 +6503,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                   {"providerName", selectionV2->providerName.toUri()},
                                   {"selectionName", subscription.name.toUri()}});
             }
-
             const auto selectionKey = ndn::Name(selectionV2->requesterName.toUri())
                                           .append(selectionV2->serviceName)
                                           .append(selectionV2->requestId);
@@ -6421,6 +6525,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 }
                 m_selectionDecryptsInFlight.insert(selectionKey);
             }
+            logControlTiming("provider", "SELECTION_OBSERVED",
+                             selectionV2->requestId,
+                             {{"serviceName", selectionV2->serviceName.toUri()},
+                              {"requesterName", selectionV2->requesterName.toUri()},
+                              {"providerName", selectionV2->providerName.toUri()},
+                              {"selectionName", subscription.name.toUri()},
+                              {"contentBytes", std::to_string(subscription.data.size())},
+                              {"compactSelection", "0"}});
 
             if(subscription.data.size() > 0){
                 const auto decryptStartUs = nowMicroseconds();
@@ -6836,12 +6948,21 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         ServiceSelectionMessage message;
         message.WireDecode(block);
         const std::string selectionDigest = computeSelectionDigest(message);
-        ndn::Buffer effectiveAssignmentPayload = message.getAssignmentPayload();
+        const ndn::Buffer sharedAssignmentPayload = message.getAssignmentPayload();
+        ndn::Buffer effectiveAssignmentPayload = sharedAssignmentPayload;
+        std::string derivedRoleProviderFields;
         std::string receivedProviderToken = message.getProviderToken();
         std::string receivedProviderTokenProofHash;
         if (!message.getProviderEntries().empty()) {
             bool hasLocalProviderEntry = false;
             for (const auto& entry : message.getProviderEntries()) {
+                const auto entryFields = parseSemicolonFields(entry.assignmentPayload);
+                const auto roleIt = entryFields.find("role");
+                if (roleIt != entryFields.end() && !roleIt->second.empty()) {
+                    derivedRoleProviderFields +=
+                        "roleProvider." + roleIt->second + "=" +
+                        entry.providerName.toUri() + ";";
+                }
                 if (!entry.providerName.equals(providerName)) {
                     continue;
                 }
@@ -6865,6 +6986,29 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                "compact selection has no local provider entry");
                 clearSelectionDecryptInFlight();
                 return;
+            }
+        }
+        if (!sharedAssignmentPayload.empty() && !message.getProviderEntries().empty()) {
+            const std::string sharedAssignmentText(
+                reinterpret_cast<const char*>(sharedAssignmentPayload.data()),
+                sharedAssignmentPayload.size());
+            const std::string entryAssignmentText(
+                reinterpret_cast<const char*>(effectiveAssignmentPayload.data()),
+                effectiveAssignmentPayload.size());
+            const std::string mergedAssignment = sharedAssignmentText + entryAssignmentText;
+            effectiveAssignmentPayload =
+                ndn::Buffer(reinterpret_cast<const uint8_t*>(mergedAssignment.data()),
+                            mergedAssignment.size());
+        }
+        if (!derivedRoleProviderFields.empty()) {
+            const std::string assignmentText(
+                reinterpret_cast<const char*>(effectiveAssignmentPayload.data()),
+                effectiveAssignmentPayload.size());
+            if (assignmentText.find("roleProvider.") == std::string::npos) {
+                std::string mergedAssignment = assignmentText + derivedRoleProviderFields;
+                effectiveAssignmentPayload =
+                    ndn::Buffer(reinterpret_cast<const uint8_t*>(mergedAssignment.data()),
+                                mergedAssignment.size());
             }
         }
         updateSelectionExecutionStatus(selectionDigest,

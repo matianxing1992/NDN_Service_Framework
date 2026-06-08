@@ -1829,15 +1829,133 @@ reference wait, segmented fetch, activation publish, frontier scheduling, or
 tensor decoding.
 
 AI-oriented MiniNDN regressions use
-`Experiments/Topology/AI_testbed.conf`, which models same-switch links as
-`delay=0.1ms bw=1000`. MiniNDN can create those sub-millisecond TC links, but
-its routing helper parses link delay as an integer millisecond value. The DI
-MiniNDN script therefore keeps the real `0.1ms` link and rounds only the
-routing-cost metadata up to `1ms`, printing
-`NDNSF_DI_ROUTING_DELAY_COST_PATCH ...` for each patched link.
+`Experiments/Topology/AI_testbed.conf`. That topology uses 1 ms links and is the
+current reproducible testbed for DI performance experiments. Do not set a global
+`NDN_LOG` value around the MiniNDN command: NFD inherits that environment and
+can fail to start on application-style logging filters. For low-noise benchmark
+runs, use the script flags and `NDNSF_TIMELINE_TRACE_SAMPLE_RATE` shown below.
 
-For the current 2x3 parallel-detect-scale baseline, use a 60-second warm
-window and explicit Python worker knobs:
+The current 2x2 native-provider benchmark recipe is:
+
+```bash
+sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true
+sleep 3
+sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
+  python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --layout 2x2 \
+  --parallel-detect-scale-shards \
+  --native-providers \
+  --cold-requests 1 \
+  --warm-requests 1 \
+  --warm-duration-s 60 \
+  --warm-interval-ms 1000 \
+  --preflight-requests 3 \
+  --ack-timeout-ms 300 \
+  --timeout-ms 10000 \
+  --quiet-perf-logs \
+  --results-dir results/yolo_2x2_unified_selection_60s_minimal
+```
+
+The representative run in
+`results/yolo_2x2_unified_selection_60s_minimal` produced
+`YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK`, 60 measured warm requests, warm p50
+84.95 ms, warm p95 114.46 ms, and warm mean 85.96 ms. After discarding the
+first measured warm request, steady warm p50 was 84.78 ms, p95 was 114.29 ms,
+and mean was 85.27 ms. NFD observed 819 incoming/outgoing Data packets across
+the 63 warm-side requests counted by the script, or 13.00 Data packets per
+observed request. The measured-window ratio was 13.65 NFD out Data packets per
+inference and about 427 KB of NFD `nOutBytes` per measured inference. As above,
+the byte average is an approximate transport-size ratio because NFD byte
+counters include all packet types on the measured faces.
+
+This minimal recipe intentionally disables detailed dependency/control/crypto
+timing so the latency number is not dominated by tracing. Treat this 60-second
+shape as the performance baseline. For bottleneck analysis, keep the same
+60-second measured window and add only narrow sampled instrumentation such as
+`--control-timing`, `--dependency-timing`, or `--crypto-timing`; those diagnostic
+runs explain the remaining outer ACK/Selection/Response and SVS delivery cost,
+but should not be compared directly with the minimal latency baseline.
+
+A sampled control-timing diagnostic run is preserved in
+`results/yolo_2x2_control_svs_timing_60s`. It used the same 60-second shape with
+`--control-timing` and produced 60 measured warm requests with p50 74.73 ms,
+p95 95.64 ms, and steady-after-first p50 77.10 ms. The run measured p50 request
+latency at 76.95 ms, provider dataflow at 20.00 ms, and outer-control residual
+at 50.13 ms. Provider-side request handling was sub-millisecond
+(`requestObservedToAckPublishedMs` p50 0.15 ms), response decrypt/callback was
+also sub-millisecond, and ONNX execution was not the bottleneck. The remaining
+cost is in SVS/NFD delivery and segmented activation fetch: request publication
+to provider observation was about 11.55 ms p50, ACK publication to user
+pre-decrypt about 6.70 ms p50, selection publication to provider observation
+about 5.83 ms p50, and response publication to user observation about 7.81 ms
+p50. Compact multi-provider SelectionMessages still carry shared scope-key
+large-data references at message level because all selected DI providers need
+the same encrypted activation scope metadata; treat that reference passing as a
+required correctness cost, not a payload-compression optimization target.
+
+When the question is specifically whether the delay is in NFD/SVS packet
+propagation, first run the narrow 60-second control diagnostic without packet
+capture:
+
+```bash
+sudo mn -c >/tmp/ndnsf_mn_cleanup.log 2>&1 || true
+sleep 3
+sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=10 \
+  python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --layout 2x2 \
+  --parallel-detect-scale-shards \
+  --native-providers \
+  --cold-requests 1 \
+  --warm-requests 1 \
+  --warm-duration-s 60 \
+  --warm-interval-ms 1000 \
+  --preflight-requests 3 \
+  --ack-timeout-ms 300 \
+  --timeout-ms 10000 \
+  --quiet-perf-logs \
+  --control-timing \
+  --results-dir results/yolo_2x2_control_svs_timing_60s
+```
+
+Use full packet tracing only as a last-resort external diagnosis for unexpected
+or unexplained NDN names, stale Sync traffic, or startup/repo/keychain behavior.
+Do not use a packet-trace run as a latency benchmark; tcpdump, pcap decoding,
+and summary generation perturb the MiniNDN run. If packet tracing is necessary:
+
+```bash
+sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=10 \
+  python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
+  --layout 2x2 \
+  --parallel-detect-scale-shards \
+  --native-providers \
+  --cold-requests 1 \
+  --warm-requests 1 \
+  --warm-duration-s 60 \
+  --warm-interval-ms 1000 \
+  --preflight-requests 3 \
+  --ack-timeout-ms 300 \
+  --timeout-ms 10000 \
+  --quiet-perf-logs \
+  --control-timing \
+  --ndn-packet-trace \
+  --ndn-packet-trace-nodes memphis,ucla,wustl,uiuc,umich,neu,csu \
+  --results-dir results/yolo_2x2_control_packet_trace_60s
+```
+
+`--ndn-packet-trace` starts full-snaplen `tcpdump` on the selected MiniNDN
+nodes and decodes the pcaps with `ndndump` after the run. The script writes
+`ndn-packet-trace-summary.json`, including each observed NDNSF/SVS name, the
+per-node first/last observation timestamp, and the observed IP endpoint
+directions. This is an external packet-level diagnostic. It can show when a
+node's NFD-facing capture saw a Sync Interest or Data name, but it cannot decode
+the NDNSF Request/ACK/Selection/Response semantic message carried inside an SVS
+payload. Use it together with `svs-control-propagation-stats.json` and provider
+lifecycle logs. The script now defaults `--ndn-packet-trace-window` to `warm` so
+the pcap stays focused on the measured inference window; use `all` only when
+debugging keychain, artifact deployment, repo, or startup synchronization.
+
+For the older 2x3 Python-provider parallel-detect-scale baseline, use a
+60-second warm window and explicit Python worker knobs:
 
 ```bash
 PYTHONPATH=NDNSF-DistributedInference:$PYTHONPATH \

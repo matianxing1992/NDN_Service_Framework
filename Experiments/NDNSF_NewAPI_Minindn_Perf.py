@@ -1058,16 +1058,26 @@ def log_tail(path, line_count=80):
     return "\n".join(p.read_text(errors="replace").splitlines()[-line_count:])
 
 
-def wait_for_nfd_sockets(ndn, output_dir, timeout_s=12):
+def wait_for_nfd_sockets(ndn, output_dir, timeout_s=20):
     nodes = list(ndn.net.hosts)
     deadline = time.time() + timeout_s
     missing = []
+    not_ready = []
     while time.time() < deadline:
         missing = [
             node.name for node in nodes
             if not Path("/run/nfd/{}.sock".format(node.name)).exists()
         ]
-        if not missing:
+        if missing:
+            time.sleep(0.25)
+            continue
+
+        not_ready = []
+        for node in nodes:
+            rc = node.cmd("nfdc face list >/dev/null 2>&1; echo $?").strip().splitlines()
+            if not rc or rc[-1] != "0":
+                not_ready.append(node.name)
+        if not not_ready:
             return
         time.sleep(0.25)
 
@@ -1083,6 +1093,7 @@ def wait_for_nfd_sockets(ndn, output_dir, timeout_s=12):
         diagnostics[node.name] = {
             "socket": "/run/nfd/{}.sock".format(node.name),
             "socket_exists": Path("/run/nfd/{}.sock".format(node.name)).exists(),
+            "nfdc_face_list_ready": node.name not in not_ready,
             "home": str(home),
             "nfd_log": str(nfd_log),
             "copied_log": copied_log,
@@ -1091,8 +1102,8 @@ def wait_for_nfd_sockets(ndn, output_dir, timeout_s=12):
     (output_dir / "nfd-startup-failure.json").write_text(
         json.dumps(diagnostics, indent=2, sort_keys=True) + "\n")
     raise RuntimeError(
-        "NFD socket startup failure: missing sockets for {}".format(
-            ",".join(missing)))
+        "NFD startup failure: missing sockets for {}; nfdc not ready for {}".format(
+            ",".join(missing), ",".join(not_ready)))
 
 
 def node_home_report(ndn, node_names):

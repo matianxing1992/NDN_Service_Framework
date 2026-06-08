@@ -499,6 +499,9 @@ BOOST_AUTO_TEST_CASE(V2RequestAndResponseNames)
 
   const auto compactSelectionName =
     makeCompactServiceSelectionNameV2(requester, serviceName, requestId);
+  BOOST_CHECK(compactSelectionName.toUri().find("%2FNDNSF%2FCOMPACT") ==
+              std::string::npos);
+  BOOST_CHECK(!parseServiceSelectionNameV2(compactSelectionName));
   const auto parsedCompactSelection =
     parseCompactServiceSelectionNameV2(compactSelectionName);
   BOOST_REQUIRE(parsedCompactSelection);

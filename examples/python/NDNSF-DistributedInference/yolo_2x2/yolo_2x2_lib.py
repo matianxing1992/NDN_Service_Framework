@@ -805,6 +805,7 @@ def split_parallel_output_model(output_dir: str | Path,
     full_model_path = output / f"{stem}-full-{input_size}.onnx"
     paths: dict[str, Path] = {}
     chunk_metadata: dict[str, dict] = {}
+    chunk_output_payloads: dict[str, bytes] = {}
 
     x = torch.from_numpy(make_input(input_size)).float()
     with torch.no_grad():
@@ -1110,6 +1111,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
     full_model_path = output / f"{stem}-full-{input_size}.onnx"
     paths: dict[str, Path] = {}
     chunk_metadata: dict[str, dict] = {}
+    chunk_output_payloads: dict[str, bytes] = {}
 
     x = torch.from_numpy(make_input(input_size)).float()
     with torch.no_grad():
@@ -1143,6 +1145,10 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             do_constant_folding=True,
         )
     paths[ROLE_BACKBONE] = backbone_path
+    chunk_output_payloads[ROLE_BACKBONE] = npz_payload({
+        name: np.asarray(value.detach().cpu().numpy(), dtype=np.float32)
+        for name, value in zip(feature_tensor_names, feature_values)
+    })
     chunk_metadata[ROLE_BACKBONE] = {
         "source_model": loaded_name,
         "input_size": input_size,
@@ -1168,6 +1174,10 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             outputs = YoloDetectHeadShard(detect, group).eval()(*input_values)
         for name, value in zip(output_names, outputs):
             head_outputs[name] = value
+        chunk_output_payloads[role] = npz_payload({
+            name: np.asarray(value.detach().cpu().numpy(), dtype=np.float32)
+            for name, value in zip(output_names, outputs)
+        })
         path = output / f"{stem}-{role.strip('/').replace('/', '-')}-{input_size}.onnx"
         if not path.exists():
             torch.onnx.export(
@@ -1290,6 +1300,12 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             "expectedBytes": dep.expected_bytes,
             "expectedSegments": dep.expected_segments,
         })
+
+    dependencies = _calibrate_yolo_dependency_payload_sizes(
+        dependencies,
+        chunk_graph,
+        chunk_output_payloads,
+    )
 
     graph_summary = output / f"{stem}-{layout}-parallel-detect-scale-onnx-graph-summary.json"
     write_onnx_graph_summary(

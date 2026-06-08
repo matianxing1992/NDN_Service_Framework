@@ -21,6 +21,18 @@ from typing import Callable, Optional
 from . import _ndnsf
 
 
+def default_large_data_interest_lifetime_ms() -> int:
+    """InterestLifetime for segmented large-object fetches.
+
+    DI dependency prefetch can intentionally issue Interests before upstream
+    providers publish the corresponding Data. Keep this long enough for normal
+    distributed inference runs so the Interest stays pending instead of being
+    re-expressed every second.
+    """
+
+    return max(50, int(os.environ.get("NDNSF_LARGE_DATA_INTEREST_LIFETIME_MS", "10000")))
+
+
 @dataclass(frozen=True)
 class ServiceResponse:
     status: bool
@@ -235,7 +247,7 @@ def fetch_segmented_data_packets(
     base_name: str,
     *,
     timeout_ms: int = 30000,
-    interest_lifetime_ms: int = 1000,
+    interest_lifetime_ms: Optional[int] = None,
     forwarding_hints: Optional[list[str]] = None,
 ) -> list[DataPacket]:
     """Fetch segmented NDN Data and return the original Data wire packets."""
@@ -243,7 +255,7 @@ def fetch_segmented_data_packets(
     packets = _ndnsf.fetch_segmented_data_packets(
         base_name,
         int(timeout_ms),
-        int(interest_lifetime_ms),
+        int(interest_lifetime_ms or default_large_data_interest_lifetime_ms()),
         list(forwarding_hints or []),
     )
     return [
@@ -256,7 +268,7 @@ def fetch_segmented_object(
     base_name: str,
     *,
     timeout_ms: int = 30000,
-    interest_lifetime_ms: int = 1000,
+    interest_lifetime_ms: Optional[int] = None,
     init_cwnd: float = 8.0,
     forwarding_hints: Optional[list[str]] = None,
 ) -> bytes:
@@ -265,7 +277,7 @@ def fetch_segmented_object(
     return bytes(_ndnsf.fetch_segmented_object(
         base_name,
         int(timeout_ms),
-        int(interest_lifetime_ms),
+        int(interest_lifetime_ms or default_large_data_interest_lifetime_ms()),
         float(init_cwnd),
         list(forwarding_hints or []),
     ))
@@ -275,7 +287,7 @@ def fetch_segmented_object_with_segment_hints(
     base_name: str,
     *,
     timeout_ms: int = 30000,
-    interest_lifetime_ms: int = 1000,
+    interest_lifetime_ms: Optional[int] = None,
     hint_ranges: Optional[list[SegmentHintRange]] = None,
 ) -> bytes:
     """Fetch segmented Data while allowing each segment range to use hints."""
@@ -290,7 +302,7 @@ def fetch_segmented_object_with_segment_hints(
     return bytes(_ndnsf.fetch_segmented_object_with_segment_hints(
         base_name,
         int(timeout_ms),
-        int(interest_lifetime_ms),
+        int(interest_lifetime_ms or default_large_data_interest_lifetime_ms()),
         native_ranges,
     ))
 
@@ -300,7 +312,7 @@ def fetch_known_segmented_object_with_segment_hints(
     segment_count: int,
     *,
     timeout_ms: int = 30000,
-    interest_lifetime_ms: int = 1000,
+    interest_lifetime_ms: Optional[int] = None,
     hint_ranges: Optional[list[SegmentHintRange]] = None,
 ) -> bytes:
     """Fetch known signed segments with per-range forwarding hints."""
@@ -316,7 +328,7 @@ def fetch_known_segmented_object_with_segment_hints(
         versioned_name,
         int(segment_count),
         int(timeout_ms),
-        int(interest_lifetime_ms),
+        int(interest_lifetime_ms or default_large_data_interest_lifetime_ms()),
         native_ranges,
     ))
 
@@ -787,6 +799,25 @@ class CollaborationContext:
             return None
         return bytes(value)
 
+    def fetch_large_exact(
+        self,
+        data_name: str,
+        key_scope: str,
+        timeout_ms: int = 5000,
+        expected_segments: int = 0,
+    ) -> Optional[bytes]:
+        if expected_segments <= 0:
+            return self.fetch_large(data_name, key_scope, timeout_ms)
+        value = self._native.fetch_large_exact(
+            data_name,
+            key_scope,
+            timeout_ms,
+            int(expected_segments),
+        )
+        if value is None:
+            return None
+        return bytes(value)
+
     def fetch_large_reference(
         self,
         reference_payload: bytes,
@@ -1013,7 +1044,7 @@ def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
                             versioned_name,
                             segment_count,
                             timeout_ms=30000,
-                            interest_lifetime_ms=1000,
+                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
                             hint_ranges=first_ranges,
                         )
                     except Exception:
@@ -1021,7 +1052,7 @@ def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
                             versioned_name,
                             segment_count,
                             timeout_ms=30000,
-                            interest_lifetime_ms=1000,
+                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
                             hint_ranges=second_ranges,
                         )
                 else:
@@ -1029,14 +1060,14 @@ def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
                         payload = fetch_segmented_object_with_segment_hints(
                             data_name,
                             timeout_ms=30000,
-                            interest_lifetime_ms=1000,
+                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
                             hint_ranges=first_ranges,
                         )
                     except Exception:
                         payload = fetch_segmented_object_with_segment_hints(
                             data_name,
                             timeout_ms=30000,
-                            interest_lifetime_ms=1000,
+                            interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
                             hint_ranges=second_ranges,
                         )
                 break
@@ -1061,7 +1092,7 @@ def _fetch_repo_manifest_payload(manifest: dict) -> bytes:
                 payload = fetch_segmented_object(
                     data_name,
                     timeout_ms=30000,
-                    interest_lifetime_ms=1000,
+                    interest_lifetime_ms=default_large_data_interest_lifetime_ms(),
                     init_cwnd=8.0,
                     forwarding_hints=hints,
                 )

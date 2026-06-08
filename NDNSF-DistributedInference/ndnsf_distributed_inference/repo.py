@@ -13,6 +13,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -43,6 +44,18 @@ def _pull_fetch_timeout_ms(segment_count: int) -> int:
     if segment_count <= 0:
         return 60000
     return max(60000, min(600000, segment_count * 150))
+
+
+def _large_data_interest_lifetime_ms() -> int:
+    """InterestLifetime for repo and DI large-object fetches.
+
+    Large-object consumers often issue Interests before the producer has
+    finished publishing all segments. A longer default keeps those Interests
+    pending in NFD and avoids repeated 1s re-expressions during cold
+    provisioning and activation prefetch.
+    """
+
+    return max(50, int(os.environ.get("NDNSF_LARGE_DATA_INTEREST_LIFETIME_MS", "10000")))
 
 
 def _boolish(value: object, default: bool = False) -> bool:
@@ -1826,7 +1839,7 @@ class RepoNodeApp:
         return fetch_segmented_object(
             name,
             timeout_ms=timeout_s * 1000,
-            interest_lifetime_ms=1000,
+            interest_lifetime_ms=_large_data_interest_lifetime_ms(),
             init_cwnd=8.0,
         )
 
@@ -2136,7 +2149,7 @@ class RepoNodeApp:
                 packet_manifest_bytes = fetch_segmented_object(
                     packet_manifest_name,
                     timeout_ms=_pull_fetch_timeout_ms(max(1, manifest.segment_count // 32)),
-                    interest_lifetime_ms=2000,
+                    interest_lifetime_ms=_large_data_interest_lifetime_ms(),
                     init_cwnd=8.0,
                 )
                 expected_manifest_hash = str(request.get("packetManifestSha256", ""))
@@ -2161,7 +2174,7 @@ class RepoNodeApp:
                 packets = fetch_segmented_data_packets(
                     fetch_name or source_name,
                     timeout_ms=_pull_fetch_timeout_ms(manifest.segment_count),
-                    interest_lifetime_ms=2000,
+                    interest_lifetime_ms=_large_data_interest_lifetime_ms(),
                 )
                 if len(packets) != manifest.segment_count:
                     raise ValueError(
@@ -2595,7 +2608,7 @@ class NetworkDistributedRepoClient:
         return fetch_segmented_object(
             name,
             timeout_ms=timeout_s * 1000,
-            interest_lifetime_ms=1000,
+            interest_lifetime_ms=_large_data_interest_lifetime_ms(),
             init_cwnd=8.0,
         )
 
@@ -3397,7 +3410,7 @@ class NetworkDistributedRepoClient:
         payload = fetch_segmented_object(
             data_name,
             timeout_ms=_pull_fetch_timeout_ms(source_manifest.segment_count),
-            interest_lifetime_ms=2000,
+            interest_lifetime_ms=_large_data_interest_lifetime_ms(),
             init_cwnd=8.0,
         )
         actual_hash = hashlib.sha256(payload).hexdigest()
@@ -3409,7 +3422,7 @@ class NetworkDistributedRepoClient:
         packets = fetch_segmented_data_packets(
             data_name,
             timeout_ms=_pull_fetch_timeout_ms(source_manifest.segment_count),
-            interest_lifetime_ms=2000,
+            interest_lifetime_ms=_large_data_interest_lifetime_ms(),
         )
         if len(packets) != source_manifest.segment_count:
             raise ValueError(
@@ -3637,7 +3650,7 @@ class NetworkDistributedRepoClient:
                                 versioned_name,
                                 manifest.segment_count,
                                 timeout_ms=max(self.timeout_ms, 30000),
-                                interest_lifetime_ms=1000,
+                                interest_lifetime_ms=_large_data_interest_lifetime_ms(),
                                 hint_ranges=first_hint_ranges,
                             )
                         except Exception:
@@ -3645,7 +3658,7 @@ class NetworkDistributedRepoClient:
                                 versioned_name,
                                 manifest.segment_count,
                                 timeout_ms=max(self.timeout_ms, 30000),
-                                interest_lifetime_ms=1000,
+                                interest_lifetime_ms=_large_data_interest_lifetime_ms(),
                                 hint_ranges=second_hint_ranges,
                             )
                     else:
@@ -3659,14 +3672,14 @@ class NetworkDistributedRepoClient:
                             payload = fetch_segmented_object_with_segment_hints(
                                 data_name,
                                 timeout_ms=max(self.timeout_ms, 30000),
-                                interest_lifetime_ms=1000,
+                                interest_lifetime_ms=_large_data_interest_lifetime_ms(),
                                 hint_ranges=first_hint_ranges,
                             )
                         except Exception:
                             payload = fetch_segmented_object_with_segment_hints(
                                 data_name,
                                 timeout_ms=max(self.timeout_ms, 30000),
-                                interest_lifetime_ms=1000,
+                                interest_lifetime_ms=_large_data_interest_lifetime_ms(),
                                 hint_ranges=second_hint_ranges,
                             )
                     break
@@ -3695,7 +3708,7 @@ class NetworkDistributedRepoClient:
                 payload = fetch_segmented_object(
                     data_name,
                     timeout_ms=max(self.timeout_ms, 30000),
-                    interest_lifetime_ms=1000,
+                    interest_lifetime_ms=_large_data_interest_lifetime_ms(),
                     init_cwnd=8.0,
                     forwarding_hints=forwarding_hints,
                 )

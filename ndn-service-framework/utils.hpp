@@ -125,7 +125,10 @@ namespace ndn_service_framework
     // ACK:
     //   /<provider>/NDNSF/ACK/<requester-uri-component>/<serviceName...>/<requestId>
     // Selection:
-    //   /<requester>/NDNSF/SELECTION/<provider-uri-component>/<serviceName...>/<requestId>
+    //   /<requester>/NDNSF/SELECTION/<serviceName...>/<requestId>
+    // Selected providers are carried in the SelectionMessage payload entries.
+    // The provider-specific selection-name helpers remain parseable for old
+    // data, but new V2 publishing uses the unified selection name above.
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
                                 const ndn::Name& serviceName,
                                 const ndn::Name& requestId);

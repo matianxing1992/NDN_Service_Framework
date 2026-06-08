@@ -1021,20 +1021,28 @@ public:
                           std::move(assignmentPayload),
                           *best});
     }
-    std::string providerMap;
-    for (const auto& participant : selected) {
-      providerMap += "roleProvider." + participant.role + "=" +
-                     participant.provider.toUri() + ";";
-    }
-    if (!providerMap.empty()) {
-      for (auto& participant : selected) {
-        std::string assignment(
-          reinterpret_cast<const char*>(participant.assignmentPayload.data()),
-          participant.assignmentPayload.size());
-        assignment += providerMap;
-        participant.assignmentPayload =
-          ndn::Buffer(reinterpret_cast<const uint8_t*>(assignment.data()),
-                      assignment.size());
+    if (!selected.empty()) {
+      std::string roleProviderFields;
+      for (const auto& participant : selected) {
+        roleProviderFields += "roleProvider." + participant.role + "=" +
+                              participant.provider.toUri() + ";";
+      }
+      if (!roleProviderFields.empty()) {
+        for (auto& participant : selected) {
+          std::string assignment;
+          if (!participant.assignmentPayload.empty()) {
+            assignment.assign(
+              reinterpret_cast<const char*>(participant.assignmentPayload.data()),
+              participant.assignmentPayload.size());
+          }
+          if (assignment.find("roleProvider.") != std::string::npos) {
+            continue;
+          }
+          assignment += roleProviderFields;
+          participant.assignmentPayload = ndn::Buffer(
+            reinterpret_cast<const uint8_t*>(assignment.data()),
+            assignment.size());
+        }
       }
     }
     return selected;
@@ -1152,6 +1160,19 @@ public:
                                       int timeoutMs)
   {
     auto payload = m_ctx->fetchLarge(ndn::Name(dataName), keyScope, timeoutMs);
+    if (!payload) {
+      return std::nullopt;
+    }
+    return toPyBytes(*payload);
+  }
+
+  std::optional<py::bytes> fetchLargeExact(const std::string& dataName,
+                                           const std::string& keyScope,
+                                           int timeoutMs,
+                                           size_t expectedSegments)
+  {
+    auto payload = m_ctx->fetchLarge(ndn::Name(dataName), keyScope, timeoutMs,
+                                     expectedSegments);
     if (!payload) {
       return std::nullopt;
     }
@@ -2313,14 +2334,14 @@ PYBIND11_MODULE(_ndnsf, m)
         &fetchSegmentedDataPackets,
         py::arg("base_name"),
         py::arg("timeout_ms") = 30000,
-        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("interest_lifetime_ms") = 10000,
         py::arg("forwarding_hints") = std::vector<std::string>{});
 
   m.def("fetch_segmented_object",
         &fetchSegmentedObject,
         py::arg("base_name"),
         py::arg("timeout_ms") = 30000,
-        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("interest_lifetime_ms") = 10000,
         py::arg("init_cwnd") = 8.0,
         py::arg("forwarding_hints") = std::vector<std::string>{});
 
@@ -2328,14 +2349,14 @@ PYBIND11_MODULE(_ndnsf, m)
         &fetchSegmentedObjectWithSegmentHints,
         py::arg("base_name"),
         py::arg("timeout_ms") = 30000,
-        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("interest_lifetime_ms") = 10000,
         py::arg("hint_ranges") = std::vector<PySegmentHintRange>{});
   m.def("fetch_known_segmented_object_with_segment_hints",
         &fetchKnownSegmentedObjectWithSegmentHints,
         py::arg("versioned_name"),
         py::arg("segment_count"),
         py::arg("timeout_ms") = 30000,
-        py::arg("interest_lifetime_ms") = 1000,
+        py::arg("interest_lifetime_ms") = 10000,
         py::arg("hint_ranges") = std::vector<PySegmentHintRange>{});
 
   py::class_<PyCollaborationContext>(m, "CollaborationContext")
@@ -2373,6 +2394,11 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("data_name"),
          py::arg("key_scope"),
          py::arg("timeout_ms") = 5000)
+    .def("fetch_large_exact", &PyCollaborationContext::fetchLargeExact,
+         py::arg("data_name"),
+         py::arg("key_scope"),
+         py::arg("timeout_ms") = 5000,
+         py::arg("expected_segments"))
     .def("wait_one", &PyCollaborationContext::waitOne,
          py::arg("key_scope"),
          py::arg("topic_prefix"),

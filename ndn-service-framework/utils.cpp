@@ -516,7 +516,6 @@ namespace ndn_service_framework
     {
         ndn::Name serviceSelectionName;
         serviceSelectionName.append(requesterName).append(ndn::Name("/NDNSF/SELECTION"));
-        appendNameUriComponent(serviceSelectionName, ndn::Name("/NDNSF/COMPACT"));
         serviceSelectionName.append(serviceName);
         serviceSelectionName.append(requestId);
         return serviceSelectionName;
@@ -527,7 +526,6 @@ namespace ndn_service_framework
     {
         ndn::Name serviceSelectionName;
         serviceSelectionName.append(ndn::Name("/NDNSF/SELECTION"));
-        appendNameUriComponent(serviceSelectionName, ndn::Name("/NDNSF/COMPACT"));
         serviceSelectionName.append(serviceName);
         serviceSelectionName.append(requestId);
         return serviceSelectionName;
@@ -540,16 +538,22 @@ namespace ndn_service_framework
         if (!marker) {
             return std::nullopt;
         }
-        const size_t compactIndex = *marker + 2;
-        if (compactIndex + 3 > serviceSelectionName.size()) {
-            return std::nullopt;
-        }
-        const auto compactMarker = parseNameUriComponent(serviceSelectionName, compactIndex);
-        if (!compactMarker || *compactMarker != ndn::Name("/NDNSF/COMPACT")) {
+        size_t serviceIndex = *marker + 2;
+        if (serviceIndex + 2 > serviceSelectionName.size()) {
             return std::nullopt;
         }
 
-        const size_t serviceIndex = compactIndex + 1;
+        // Transitional compatibility: an earlier compact-selection prototype
+        // used an encoded /NDNSF/COMPACT sentinel in the provider slot. New V2
+        // selection names use the unified shape
+        // /<requester>/NDNSF/SELECTION/<service...>/<requestId>.
+        const auto compactMarker = parseNameUriComponent(serviceSelectionName, serviceIndex);
+        if (compactMarker && *compactMarker == ndn::Name("/NDNSF/COMPACT")) {
+            ++serviceIndex;
+        }
+        if (serviceIndex + 2 > serviceSelectionName.size()) {
+            return std::nullopt;
+        }
         const size_t serviceComponentCount = serviceSelectionName.size() - serviceIndex - 1;
         return CompactServiceSelectionNameV2{
             getSubNameByComponentCount(serviceSelectionName, 0, *marker),

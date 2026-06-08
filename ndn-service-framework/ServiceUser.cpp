@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <random>
 #include <set>
@@ -40,6 +41,30 @@ namespace ndn_service_framework
                 os << attributes[i];
             }
             return os.str();
+        }
+
+        std::map<std::string, std::string>
+        parseSemicolonFields(const ndn::Buffer& payload)
+        {
+            std::map<std::string, std::string> fields;
+            const std::string text(reinterpret_cast<const char*>(payload.data()),
+                                   payload.size());
+            size_t pos = 0;
+            while (pos < text.size()) {
+                const auto eq = text.find('=', pos);
+                if (eq == std::string::npos) {
+                    break;
+                }
+                const auto end = text.find(';', eq + 1);
+                fields[text.substr(pos, eq - pos)] =
+                    text.substr(eq + 1,
+                                (end == std::string::npos ? text.size() : end) - eq - 1);
+                if (end == std::string::npos) {
+                    break;
+                }
+                pos = end + 1;
+            }
+            return fields;
         }
 
         double
@@ -5000,6 +5025,15 @@ namespace ndn_service_framework
                         assignment = ndn::Buffer(
                             reinterpret_cast<const uint8_t*>(text.data()),
                             text.size());
+                    } else {
+                        std::string text(reinterpret_cast<const char*>(assignment.data()),
+                                         assignment.size());
+                        if (text.find("roleProvider.") == std::string::npos) {
+                            text += roleProviderFields;
+                            assignment = ndn::Buffer(
+                                reinterpret_cast<const uint8_t*>(text.data()),
+                                text.size());
+                        }
                     }
                     pendingCall.collaborationAssignments[
                         storedAck.providerName.toUri()] = assignment;
@@ -5350,6 +5384,11 @@ namespace ndn_service_framework
             recordObservedAckProvider(ackV2->serviceName,
                                       ackV2->providerName,
                                       ackReceiveUs);
+            logControlTiming("user", "ACK_OBSERVED", ackV2->requestId,
+                             {{"providerName", ackV2->providerName.toUri()},
+                              {"serviceName", ackV2->serviceName.toUri()},
+                              {"ackName", subscription.name.toUri()},
+                              {"contentBytes", std::to_string(subscription.data.size())}});
             if (m_timelineTrace) {
                 logTimelineTrace("user", "first_ack_observed", ackV2->requestId,
                                  {{"providerName", ackV2->providerName.toUri()},
@@ -5766,6 +5805,11 @@ namespace ndn_service_framework
                   << " serviceName=" << ServiceName.toUri()
                   << " responseName=" << responseName.toUri()
                   << " contentBytes=" << subscription.data.size());
+        logControlTiming("user", "RESPONSE_OBSERVED", RequestId,
+                         {{"providerName", providerName.toUri()},
+                          {"serviceName", ServiceName.toUri()},
+                          {"responseName", responseName.toUri()},
+                          {"contentBytes", std::to_string(subscription.data.size())}});
         if (m_timelineTrace) {
             logTimelineTrace("user", "response_observed", RequestId,
                              {{"providerName", providerName.toUri()},
@@ -6169,11 +6213,17 @@ void ServiceUser::finishRequestAckOnEventLoop(
         selectionMessage.setPolicyEpoch(m_currentPolicyEpoch);
         auto pendingIt = m_pendingCalls.find(requestId);
         bool providerTokenPresent = false;
+        SelectionProviderEntry providerEntry;
+        providerEntry.providerName = providerName;
         if (pendingIt != m_pendingCalls.end()) {
             auto tokenIt =
                 pendingIt->second.providerTokens.find(providerName.toUri());
             if (m_useTokens && tokenIt != pendingIt->second.providerTokens.end()) {
-                selectionMessage.setProviderToken(tokenIt->second);
+                providerEntry.providerTokenHash =
+                    computeSelectionProviderTokenProofHash(identity,
+                                                           providerName,
+                                                           serviceName,
+                                                           tokenIt->second);
                 providerTokenPresent = true;
             }
         }
@@ -6184,9 +6234,10 @@ void ServiceUser::finishRequestAckOnEventLoop(
             auto assignmentIt =
                 pendingIt->second.collaborationAssignments.find(providerName.toUri());
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
-                selectionMessage.setAssignmentPayload(assignmentIt->second);
+                providerEntry.assignmentPayload = assignmentIt->second;
             }
         }
+        selectionMessage.addProviderEntry(providerEntry);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
                   << nowMicroseconds()
                   << " requestId=" << requestId.toUri()
@@ -6215,9 +6266,9 @@ void ServiceUser::finishRequestAckOnEventLoop(
         }
 
         ndn::Name serviceSelectionName =
-            makeServiceSelectionNameV2(identity, providerName, serviceName, requestId);
+            makeCompactServiceSelectionNameV2(identity, serviceName, requestId);
         ndn::Name serviceSelectionNameWithoutPrefix =
-            makeServiceSelectionNameWithoutPrefixV2(providerName, serviceName, requestId);
+            makeCompactServiceSelectionNameWithoutPrefixV2(serviceName, requestId);
         const std::string selectionDigest = computeSelectionDigest(selectionMessage);
 
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_PUBLISH_ATTEMPT timestamp_us="
@@ -6316,6 +6367,7 @@ void ServiceUser::finishRequestAckOnEventLoop(
         ServiceSelectionMessage selectionMessage;
         selectionMessage.setRequestIDs({requestId.toUri()});
         selectionMessage.setPolicyEpoch(m_currentPolicyEpoch);
+        std::map<std::string, std::string> sharedScopeKeyFields;
         for (const auto& selectedAck : selectedAcks) {
             SelectionProviderEntry entry;
             entry.providerName = selectedAck.providerName;
@@ -6341,8 +6393,23 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     selectedAck.providerName.toUri());
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
                 entry.assignmentPayload = assignmentIt->second;
+                for (const auto& field : parseSemicolonFields(assignmentIt->second)) {
+                    static const std::string scopeKeyPrefix = "scopeKeyData.";
+                    if (field.first.rfind(scopeKeyPrefix, 0) == 0 && !field.second.empty()) {
+                        sharedScopeKeyFields[field.first] = field.second;
+                    }
+                }
             }
             selectionMessage.addProviderEntry(entry);
+        }
+        if (!sharedScopeKeyFields.empty()) {
+            std::string payload;
+            for (const auto& field : sharedScopeKeyFields) {
+                payload += field.first + "=" + field.second + ";";
+            }
+            selectionMessage.setAssignmentPayload(
+                ndn::Buffer(reinterpret_cast<const uint8_t*>(payload.data()),
+                            payload.size()));
         }
 
         const auto selectionName =
@@ -6500,6 +6567,10 @@ void ServiceUser::finishRequestAckOnEventLoop(
             serviceName = request->serviceName;
             requestId = request->requestId;
         }
+        else if (auto selection = parseCompactServiceSelectionNameV2(messageName)) {
+            serviceName = selection->serviceName;
+            requestId = selection->requestId;
+        }
         else if (auto selection = parseServiceSelectionNameV2(messageName)) {
             serviceName = selection->serviceName;
             requestId = selection->requestId;
@@ -6643,12 +6714,24 @@ void ServiceUser::finishRequestAckOnEventLoop(
                           << " contentBytes=" << contentBlock.value_size()
                           << " eventLoopLagUs=" << (beginUs >= queuedAtUs ? beginUs - queuedAtUs : 0)
                           << " mode=hybrid-message-crypto");
+                logControlTiming("user", "SVS_PUBLISH_BEGIN", requestId,
+                                 {{"serviceName", serviceName.toUri()},
+                                  {"messageType", messageType},
+                                  {"messageName", messageName.toUri()},
+                                  {"contentBytes", std::to_string(contentBlock.value_size())},
+                                  {"eventLoopLagUs", std::to_string(beginUs >= queuedAtUs ?
+                                                                    beginUs - queuedAtUs : 0)},
+                                  {"mode", "hybrid-message-crypto"}});
                 if (m_timelineTrace) {
                     ndn::Name rid;
                     ndn::Name svc;
                     if (auto request = parseRequestNameV2(messageName)) {
                         rid = request->requestId;
                         svc = request->serviceName;
+                    }
+                    else if (auto selection = parseCompactServiceSelectionNameV2(messageName)) {
+                        rid = selection->requestId;
+                        svc = selection->serviceName;
                     }
                     else if (auto selection = parseServiceSelectionNameV2(messageName)) {
                         rid = selection->requestId;
@@ -6663,12 +6746,22 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     }
                 }
                 publishSvs(m_svsps, messageName, contentBlock);
+                logControlTiming("user", "SVS_PUBLISH_DONE", requestId,
+                                 {{"serviceName", serviceName.toUri()},
+                                  {"messageType", messageType},
+                                  {"messageName", messageName.toUri()},
+                                  {"contentBytes", std::to_string(contentBlock.value_size())},
+                                  {"mode", "hybrid-message-crypto"}});
                 if (m_timelineTrace) {
                     ndn::Name rid;
                     ndn::Name svc;
                     if (auto request = parseRequestNameV2(messageName)) {
                         rid = request->requestId;
                         svc = request->serviceName;
+                    }
+                    else if (auto selection = parseCompactServiceSelectionNameV2(messageName)) {
+                        rid = selection->requestId;
+                        svc = selection->serviceName;
                     }
                     else if (auto selection = parseServiceSelectionNameV2(messageName)) {
                         rid = selection->requestId;

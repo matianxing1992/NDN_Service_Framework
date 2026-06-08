@@ -285,6 +285,12 @@ main(int argc, char** argv)
 {
   try {
     auto options = parseArgs(argc, argv);
+    std::cout << "NDNSF_DI_NATIVE_PROVIDER_START mode="
+              << (options.serve ? "serve" : "check")
+              << " service=" << options.serviceName
+              << " identity=" << options.providerName
+              << " roles=" << options.roles
+              << std::endl;
     if (options.checkOnly == options.serve) {
       throw std::invalid_argument(
         "exactly one of --check-only or --serve is required");
@@ -294,36 +300,63 @@ main(int argc, char** argv)
     auto specs = loadManifestSpecs(options);
     const auto allowedRoles = allowedRolesForOptions(plan, options);
     auto runners = orderedSpecs(plan, specs, allowedRoles);
+    std::cout << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
+              << plan.roles.size()
+              << " artifacts=" << specs.size()
+              << " activeRoles=" << allowedRoles.size()
+              << " runners=" << runners.size()
+              << std::endl;
 
     auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
     registerOnnxRuntimeBackend(*factory);
+    std::cout << "NDNSF_DI_NATIVE_PROVIDER_BACKENDS_READY onnxruntime=1"
+              << std::endl;
 
     if (options.serve) {
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_FACE_CREATING" << std::endl;
       ndn::Face face;
       ndn::KeyChain keyChain;
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_FACE_READY" << std::endl;
 
       const ndn::Name providerIdentity(options.providerName);
       const ndn::Name controllerIdentity(options.controllerName);
       auto providerCert = getOrCreateIdentity(keyChain, providerIdentity);
       auto controllerCert = getOrCreateIdentity(keyChain, controllerIdentity);
       keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_KEYCHAIN_READY providerCert="
+                << providerCert.getName()
+                << " controllerCert=" << controllerCert.getName()
+                << std::endl;
 
       std::unique_ptr<ndn_service_framework::CertificatePublisher> certPublisher;
       if (!options.noServeCertificates) {
+        std::cout << "NDNSF_DI_NATIVE_PROVIDER_CERT_PUBLISHER_CREATING"
+                  << std::endl;
         certPublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
           face,
           keyChain,
           providerCert.getName());
+        std::cout << "NDNSF_DI_NATIVE_PROVIDER_CERT_PUBLISHER_READY prefix="
+                  << certPublisher->getRegisteredPrefix()
+                  << std::endl;
       }
 
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_CREATING"
+                << std::endl;
       ndn_service_framework::ServiceProvider provider(face,
                                                       ndn::Name(options.groupName),
                                                       providerCert,
                                                       controllerCert,
                                                       options.trustSchema);
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVICE_PROVIDER_READY"
+                << std::endl;
       provider.setUseTokens(!options.disableTokens);
       provider.setHandlerThreads(options.handlerThreads);
       provider.setAckThreads(options.ackThreads);
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_THREADS_READY handlerThreads="
+                << options.handlerThreads
+                << " ackThreads=" << options.ackThreads
+                << std::endl;
 
       NativeProviderHandlerConfig config;
       config.plan = plan;
@@ -348,7 +381,11 @@ main(int argc, char** argv)
         makeNativeProviderCollaborationHandler(std::move(config)));
 
       provider.fetchPermissionsFromController(controllerIdentity);
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_PERMISSION_FETCH_ISSUED controller="
+                << controllerIdentity
+                << std::endl;
       provider.init();
+      std::cout << "NDNSF_DI_NATIVE_PROVIDER_INIT_DONE" << std::endl;
 
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY service="
                 << options.serviceName
