@@ -610,6 +610,8 @@ namespace ndn_service_framework
         random(ndn::random::getRandomNumberEngine()),
         m_IMS(50000)
     {
+        NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=constructor_begin provider="
+                     << identity.toUri());
         m_handlerPool.setThreadCount(defaultNdnsfWorkerThreads());
         m_ackPool.setThreadCount(defaultNdnsfAckThreads());
         NDN_LOG_INFO("NDNSF_HANDLER_THREADS role=provider workers="
@@ -626,6 +628,8 @@ namespace ndn_service_framework
         }
 
         nac_validator.load(trustSchemaPath);
+        NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=validator_loaded provider="
+                     << identity.toUri());
 
         NDN_LOG_INFO("[ServiceProvider] NAC_ABE_BOOTSTRAP provider="
                   << identity.toUri()
@@ -634,6 +638,8 @@ namespace ndn_service_framework
                   << ndn::Name(attrAuthorityCertificate.getIdentity()).append("DKEY").toUri());
 
         nacConsumer.obtainDecryptionKey();
+        NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=dkey_initial_interest_issued provider="
+                     << identity.toUri());
 
         // Serve NDNSF and ck messages using IMS
         const ndn::Name ndnsfFilter = ndn::Name(identity.toUri()).append("NDNSF");
@@ -646,6 +652,8 @@ namespace ndn_service_framework
         m_face.setInterestFilter(ckFilter,
             std::bind(&ServiceProvider::onInterest, this, _1, _2),
             std::bind(&ServiceProvider::onPrefixRegisterFailure, this, _1, _2));
+        NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=content_filters_registered provider="
+                     << identity.toUri());
 
         m_signingInfo = ndn::security::signingByCertificate(identityCert);
 
@@ -746,6 +754,8 @@ namespace ndn_service_framework
                              << windowMs);
             }
         }
+        NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=svs_pubsub_ready provider="
+                     << identity.toUri());
 
         while(!nacConsumer.readyForDecryption()){
             // log waiting for decryption key
@@ -755,8 +765,12 @@ namespace ndn_service_framework
             nacConsumer.obtainDecryptionKey();
             NDN_LOG_INFO("Waiting for decryption key");
             face.processEvents(ndn::time::milliseconds(1000));
+            NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=dkey_wait_iteration provider="
+                         << identity.toUri());
         }
         NDN_LOG_INFO("DK_DECRYPT_SUCCESS provider=" << identity.toUri());
+        NDN_LOG_WARN("NDNSF_PROVIDER_INIT_STAGE stage=constructor_done provider="
+                     << identity.toUri());
 
 
     }
