@@ -292,6 +292,19 @@ python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --out-dir /tmp/ndnsf-yolo-detect-scale-2x3
 ```
 
+For large inputs where Backbone-to-Head activation transfer dominates, use the
+replicated-backbone Detect mode. It duplicates backbone/neck compute inside
+each Head shard and sends only compact candidate tensors to `/Merge`:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x2 \
+  --model yolo26n.pt \
+  --input-size 640 \
+  --parallel-detect-replicated-backbone-shards \
+  --out-dir /tmp/ndnsf-yolo-detect-replicated-2x2
+```
+
 ## Manual Multi-Process Run
 
 MiniNDN is the easiest way to run a full topology, but you can also run the

@@ -418,6 +418,16 @@ such as `detect-head-shard0-to-merge` and `detect-head-shard1-to-merge`, so the
 native C++ hot path can prefetch and store each planned input independently
 instead of collapsing multiple producers into one scope.
 
+For larger inputs, the splitter also supports
+`--parallel-detect-replicated-backbone-shards`. This mode removes the shared
+`/Backbone` role: each `/Head/Shard/*` chunk runs the needed backbone/neck work
+locally and only publishes compact detection-candidate tensors to `/Merge`.
+It intentionally duplicates compute to avoid large Backbone-to-Head activation
+transfer. On the current `yolo26n.pt` 640x640 experiment, this is the better
+NDN tradeoff: the plan publishes only two Head-to-Merge activation objects,
+about 202 KB and 30 planned segments total, instead of the shared-backbone
+plan's roughly 3.07 MB and 441 planned segments.
+
 For a two-stage YOLO split:
 
 ```bash
@@ -593,6 +603,18 @@ python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --layout 2x3 \
   --parallel-detect-scale-shards \
   --out-dir /tmp/ndnsf-yolo-detect-scale-2x3
+```
+
+For a larger YOLO input where cross-node activation dominates, generate the
+replicated-backbone Detect plan:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x2 \
+  --model yolo26n.pt \
+  --input-size 640 \
+  --parallel-detect-replicated-backbone-shards \
+  --out-dir /tmp/ndnsf-yolo-detect-replicated-2x2
 ```
 
 ### 8. Common Deployment Mistakes
@@ -1916,6 +1938,20 @@ NFD out bytes per observed request. This is not yet a good distributed speedup
 result; it is evidence that the Head-to-Merge candidate-filter boundary works,
 while the remaining Backbone-to-Head feature transfer and MiniNDN/NFD transport
 cost dominate the 640 run.
+
+The replicated-backbone Detect plan is the current 640-pixel counterpoint. It
+uses `--parallel-detect-replicated-backbone-shards --native-providers` so each
+Head shard repeats the backbone/neck work locally and only sends candidate
+tensors to `/Merge`. Local split verification for `yolo26n.pt --input-size 640`
+matched the full ONNX graph within about `5.8e-4`; the local cached chunk
+benchmark produced 231.46 ms p50 because it repeats backbone work. The network
+benefit is much larger: `results/yolo26n_640_2x2_replicated_backbone_60s_latest`
+produced `YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK` for 60 measured warm requests,
+warm p50 273.49 ms, p95 349.53 ms, about 88.79 NFD out Data packets per
+observed request, and about 681.9 KB of NFD out bytes per observed request.
+This does not prove replicated-backbone is always optimal; it shows that for
+the current AI_Lab topology and YOLO 640 profile, reducing cross-node activation
+bytes is more valuable than avoiding duplicated backbone compute.
 
 The splitter now prints and records `YOLO_LAYOUT_PLANNER_COST`,
 `YOLO_LAYOUT_PLANNER_DOMINANT_EDGE`, and `YOLO_LAYOUT_PLANNER_EDGE_COST` lines.

@@ -107,15 +107,27 @@ def main() -> int:
                         help="Validate the experimental true-NxM YOLO output-shard prototype")
     parser.add_argument("--parallel-detect-scale-shards", action="store_true",
                         help="Validate the YOLO Detect-scale DAG splitter")
+    parser.add_argument("--parallel-detect-replicated-backbone-shards", action="store_true",
+                        help="Validate the YOLO Detect-scale DAG splitter with replicated backbone shards")
     parser.add_argument("--cpp-native-plan-smoke", action="store_true",
                         help="Run the C++ native runtime smoke against the generated native plan")
     args = parser.parse_args()
 
     layout = args.layout.strip().lower().replace("*", "x")
     safe_layout = layout.replace("/", "-")
-    if args.parallel_detect_scale_shards and args.parallel_output_shards:
-        raise SystemExit("--parallel-detect-scale-shards and --parallel-output-shards are mutually exclusive")
-    if args.parallel_detect_scale_shards:
+    selected_parallel_modes = sum([
+        bool(args.parallel_detect_scale_shards),
+        bool(args.parallel_detect_replicated_backbone_shards),
+        bool(args.parallel_output_shards),
+    ])
+    if selected_parallel_modes > 1:
+        raise SystemExit(
+            "--parallel-detect-scale-shards, "
+            "--parallel-detect-replicated-backbone-shards, and "
+            "--parallel-output-shards are mutually exclusive")
+    if args.parallel_detect_replicated_backbone_shards:
+        mode_suffix = "-parallel-detect-replicated-backbone"
+    elif args.parallel_detect_scale_shards:
         mode_suffix = "-parallel-detect-scale"
     elif args.parallel_output_shards:
         mode_suffix = "-parallel-output"
@@ -147,6 +159,8 @@ def main() -> int:
         split_command.append("--parallel-output-shards")
     if args.parallel_detect_scale_shards:
         split_command.append("--parallel-detect-scale-shards")
+    if args.parallel_detect_replicated_backbone_shards:
+        split_command.append("--parallel-detect-replicated-backbone-shards")
     split_output = run(split_command, env)
     if "YOLO_LAYOUT_LOCAL_VERIFY" not in split_output or "ok=true" not in split_output:
         raise SystemExit(f"YOLO layout local verification failed for layout={layout}")
@@ -160,6 +174,11 @@ def main() -> int:
             raise SystemExit("parallel-detect-scale smoke did not generate detect-scale semantics")
         if "stage_shards_parallel=true" not in split_output:
             raise SystemExit("parallel-detect-scale smoke did not mark stage shards parallel")
+    if args.parallel_detect_replicated_backbone_shards:
+        if "semantics=parallel-detect-replicated-backbone-shards" not in split_output:
+            raise SystemExit("parallel-detect replicated-backbone smoke did not generate expected semantics")
+        if "stage_shards_parallel=true" not in split_output:
+            raise SystemExit("parallel-detect replicated-backbone smoke did not mark stage shards parallel")
 
     run([
         sys.executable,
@@ -171,7 +190,7 @@ def main() -> int:
         str(generated_policy_dir),
         "--print-summary",
     ], env)
-    if args.parallel_detect_scale_shards:
+    if args.parallel_detect_scale_shards or args.parallel_detect_replicated_backbone_shards:
         validate_parallel_detect_native_plan(
             policy,
             generated_policy_dir / "native-execution-plan.json",
@@ -245,6 +264,7 @@ def main() -> int:
         f"layout={layout} "
         f"parallel_output_shards={str(args.parallel_output_shards).lower()} "
         f"parallel_detect_scale_shards={str(args.parallel_detect_scale_shards).lower()} "
+        f"parallel_detect_replicated_backbone_shards={str(args.parallel_detect_replicated_backbone_shards).lower()} "
         f"policy={policy} generated_policy_dir={generated_policy_dir}"
     )
     return 0

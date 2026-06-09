@@ -1344,7 +1344,8 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
   std::ifstream input(planPath);
   BOOST_REQUIRE_MESSAGE(input.good(), "cannot open native plan: " << planPath);
   const auto plan = nativeExecutionPlanForServiceFromJson(input, serviceName);
-  BOOST_REQUIRE(plan.roles.size() >= 4);
+  BOOST_REQUIRE(plan.roles.size() >= 3);
+  BOOST_REQUIRE(std::find(plan.roles.begin(), plan.roles.end(), "/Merge") != plan.roles.end());
 
   NativeProviderAssignment assignment;
   for (const auto& role : plan.roles) {
@@ -1415,7 +1416,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
         return outputs;
       }
       if (ctx.role.find("/Head/Shard/") == 0) {
-        BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+        BOOST_REQUIRE(ctx.inputsByScope.size() <= 1);
         std::map<std::string, TensorBundle> outputs;
         for (const auto& role : roles) {
           if (role.role == ctx.role) {
@@ -1444,8 +1445,14 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
   for (const auto& timing : result.roleTimings) {
     timingByRole.emplace(timing.role, timing);
   }
-  BOOST_REQUIRE(timingByRole.count("/Backbone") == 1);
   BOOST_REQUIRE(timingByRole.count("/Merge") == 1);
+  BOOST_REQUIRE_GE(std::count_if(
+                     timingByRole.begin(),
+                     timingByRole.end(),
+                     [] (const auto& item) {
+                       return item.first.find("/Head/Shard/") == 0;
+                     }),
+                   2);
 
   std::lock_guard<std::mutex> lock(observedMutex);
   BOOST_CHECK_EQUAL(mergeInputScopes.size(), merge.inputs.size());
@@ -1473,7 +1480,8 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
   std::ifstream input(planPath);
   BOOST_REQUIRE_MESSAGE(input.good(), "cannot open native plan: " << planPath);
   const auto plan = nativeExecutionPlanForServiceFromJson(input, serviceName);
-  BOOST_REQUIRE(plan.roles.size() >= 4);
+  BOOST_REQUIRE(plan.roles.size() >= 3);
+  BOOST_REQUIRE(std::find(plan.roles.begin(), plan.roles.end(), "/Merge") != plan.roles.end());
 
   NativeProviderAssignment assignment;
   for (const auto& role : plan.roles) {
@@ -1484,9 +1492,15 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
   for (const auto& role : plan.roles) {
     roleSpecs.emplace(role, roleSpecFor(plan, role, "/generated-provider-run", assignment));
   }
-  BOOST_REQUIRE(roleSpecs.count("/Backbone") == 1);
   BOOST_REQUIRE(roleSpecs.count("/Merge") == 1);
   BOOST_REQUIRE_GE(roleSpecs.at("/Merge").inputs.size(), 2);
+  BOOST_REQUIRE_GE(std::count_if(
+                     roleSpecs.begin(),
+                     roleSpecs.end(),
+                     [] (const auto& item) {
+                       return item.first.find("/Head/Shard/") == 0;
+                     }),
+                   2);
 
   auto io = std::make_shared<BlockingDependencyIo>();
   NativeProviderRuntime runtime(plan.roles.size());
@@ -1511,7 +1525,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
         }
 
         if (ctx.role.find("/Head/Shard/") == 0) {
-          BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+          BOOST_REQUIRE(ctx.inputsByScope.size() <= 1);
           std::map<std::string, TensorBundle> outputs;
           for (const auto& edge : role.outputs) {
             outputs.emplace(edge.scope, bundle(edge.scope, "head:" + ctx.role));
@@ -1544,9 +1558,17 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
     resultsByRole.emplace(result.timing.role, std::move(result));
   }
 
-  BOOST_REQUIRE(resultsByRole.count("/Backbone") == 1);
   BOOST_REQUIRE(resultsByRole.count("/Merge") == 1);
-  BOOST_CHECK(resultsByRole.at("/Backbone").inputTimings.empty());
+  if (resultsByRole.count("/Backbone") == 1) {
+    BOOST_CHECK(resultsByRole.at("/Backbone").inputTimings.empty());
+  }
+  BOOST_REQUIRE_GE(std::count_if(
+                     resultsByRole.begin(),
+                     resultsByRole.end(),
+                     [] (const auto& item) {
+                       return item.first.find("/Head/Shard/") == 0;
+                     }),
+                   2);
   BOOST_CHECK_EQUAL(resultsByRole.at("/Merge").inputTimings.size(),
                     roleSpecs.at("/Merge").inputs.size());
 
@@ -1590,7 +1612,8 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderSessionSkelet
   std::ifstream input(planPath);
   BOOST_REQUIRE_MESSAGE(input.good(), "cannot open native plan: " << planPath);
   const auto plan = nativeExecutionPlanForServiceFromJson(input, serviceName);
-  BOOST_REQUIRE(plan.roles.size() >= 4);
+  BOOST_REQUIRE(plan.roles.size() >= 3);
+  BOOST_REQUIRE(std::find(plan.roles.begin(), plan.roles.end(), "/Merge") != plan.roles.end());
 
   NativeProviderAssignment assignment;
   for (const auto& role : plan.roles) {
@@ -1619,7 +1642,7 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderSessionSkelet
             return outputs;
           }
           if (ctx.role.find("/Head/Shard/") == 0) {
-            BOOST_REQUIRE_EQUAL(ctx.inputsByScope.size(), 1);
+            BOOST_REQUIRE(ctx.inputsByScope.size() <= 1);
             std::map<std::string, TensorBundle> outputs;
             for (const auto& item : spec.metadata) {
               if (item.first.find("outputScope.") == 0) {
@@ -1667,9 +1690,17 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderSessionSkelet
     resultsByRole.emplace(result.timing.role, std::move(result));
   }
 
-  BOOST_REQUIRE(resultsByRole.count("/Backbone") == 1);
   BOOST_REQUIRE(resultsByRole.count("/Merge") == 1);
-  BOOST_CHECK(resultsByRole.at("/Backbone").inputTimings.empty());
+  if (resultsByRole.count("/Backbone") == 1) {
+    BOOST_CHECK(resultsByRole.at("/Backbone").inputTimings.empty());
+  }
+  BOOST_REQUIRE_GE(std::count_if(
+                     resultsByRole.begin(),
+                     resultsByRole.end(),
+                     [] (const auto& item) {
+                       return item.first.find("/Head/Shard/") == 0;
+                     }),
+                   2);
   BOOST_CHECK_GE(resultsByRole.at("/Merge").inputTimings.size(), 2);
 
   {

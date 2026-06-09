@@ -88,6 +88,9 @@ DEFAULT_LAYOUT = "2x2"
 YOLO_LAYOUT_SEMANTICS = "pipeline-sequential-chunks"
 YOLO_PARALLEL_OUTPUT_SEMANTICS = "parallel-output-channel-shards"
 YOLO_PARALLEL_DETECT_SCALE_SEMANTICS = "parallel-detect-scale-shards"
+YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS = (
+    "parallel-detect-replicated-backbone-shards"
+)
 
 DEFAULT_MODEL = "yolo26n.pt"
 DEFAULT_INPUT_SIZE = 32
@@ -390,6 +393,21 @@ def parallel_detect_scale_layout_metadata(layout: str | None = None) -> dict:
     }
 
 
+def parallel_detect_replicated_backbone_layout_metadata(layout: str | None = None) -> dict:
+    metadata = parallel_detect_scale_layout_metadata(layout)
+    metadata.update({
+        "layout_semantics": YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS,
+        "shared_backbone_role": "",
+        "duplicates_backbone_compute": True,
+        "prototype_note": (
+            "YOLO-specific parallel detection-scale splitter: each Detect-head "
+            "shard carries its own backbone/neck copy and only candidate "
+            "tensors cross nodes before the merge chunk"
+        ),
+    })
+    return metadata
+
+
 def planner_cost_summary(
     dependencies: Sequence[InferenceDependency],
     *,
@@ -462,6 +480,11 @@ def parallel_detect_scale_roles_for_layout(layout: str | None = None) -> list[st
         [f"/Head/Shard/{shard}" for shard in range(shards)] +
         [ROLE_MERGE]
     )
+
+
+def parallel_detect_replicated_backbone_roles_for_layout(layout: str | None = None) -> list[str]:
+    _, shards = parse_layout(layout)
+    return [f"/Head/Shard/{shard}" for shard in range(shards)] + [ROLE_MERGE]
 
 
 def compute_provider_identities(count: int) -> list[str]:
@@ -610,7 +633,12 @@ def split_model(output_dir: str | Path,
                 auto_split: bool = False,
                 layout: str = DEFAULT_LAYOUT,
                 parallel_output_shards: bool = False,
-                parallel_detect_scale_shards: bool = False) -> dict:
+                parallel_detect_scale_shards: bool = False,
+                parallel_detect_replicated_backbone_shards: bool = False) -> dict:
+    if parallel_detect_scale_shards and parallel_detect_replicated_backbone_shards:
+        raise ValueError(
+            "parallel_detect_scale_shards and "
+            "parallel_detect_replicated_backbone_shards are mutually exclusive")
     if parallel_detect_scale_shards:
         return split_parallel_detect_scale_model(
             output_dir,
@@ -619,6 +647,16 @@ def split_model(output_dir: str | Path,
             provider_profiles=provider_profiles,
             auto_split=auto_split,
             layout=layout,
+        )
+    if parallel_detect_replicated_backbone_shards:
+        return split_parallel_detect_scale_model(
+            output_dir,
+            model_name=model_name,
+            input_size=input_size,
+            provider_profiles=provider_profiles,
+            auto_split=auto_split,
+            layout=layout,
+            replicate_backbone_shards=True,
         )
     if parallel_output_shards:
         return split_parallel_output_model(
@@ -1102,7 +1140,8 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
                                       input_size: int = DEFAULT_INPUT_SIZE,
                                       provider_profiles: list[ProviderProfile] | None = None,
                                       auto_split: bool = False,
-                                      layout: str = DEFAULT_LAYOUT) -> dict:
+                                      layout: str = DEFAULT_LAYOUT,
+                                      replicate_backbone_shards: bool = False) -> dict:
     """Export a YOLO DAG splitter with shared backbone and parallel Detect shards."""
 
     del auto_split  # Detect-scale split points are fixed by the YOLO Detect head.
@@ -1182,6 +1221,22 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
                 index.unsqueeze(-1).repeat(1, 1, 4 + self.nc),
             )
 
+    class YoloDetectReplicatedBackboneShard(nn.Module):
+        def __init__(self,
+                     model,
+                     detect,
+                     feature_indices: Sequence[int],
+                     scale_indices: Sequence[int],
+                     anchor_offsets: dict[int, tuple[int, int]]):
+            super().__init__()
+            self.backbone = YoloBackboneFeatures(model, feature_indices)
+            self.head = YoloDetectHeadShard(detect, scale_indices, anchor_offsets)
+            self.scale_indices = [int(index) for index in scale_indices]
+
+        def forward(self, x):
+            features = self.backbone(x)
+            return self.head(*(features[index] for index in self.scale_indices))
+
     class YoloDetectMerge(nn.Module):
         def __init__(self, detect):
             super().__init__()
@@ -1231,9 +1286,13 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         for start, end in scale_ranges
         if end > start
     ]
-    roles = parallel_detect_scale_roles_for_layout(layout)
     head_roles = [f"/Head/Shard/{index}" for index in range(len(scale_groups))]
-    roles = [ROLE_BACKBONE, *head_roles, ROLE_MERGE]
+    roles = ([*head_roles, ROLE_MERGE] if replicate_backbone_shards
+             else [ROLE_BACKBONE, *head_roles, ROLE_MERGE])
+    layout_semantics = (
+        YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS
+        if replicate_backbone_shards else YOLO_PARALLEL_DETECT_SCALE_SEMANTICS
+    )
     stem = Path(loaded_name).stem
     full_model_path = output / f"{stem}-full-{input_size}.onnx"
     paths: dict[str, Path] = {}
@@ -1262,46 +1321,58 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             do_constant_folding=True,
         )
 
-    backbone_path = output / f"{stem}-Backbone-{input_size}.onnx"
     feature_tensor_names = [
         f"detect_feature_{index}"
         for index in range(len(feature_indices))
     ]
-    if not backbone_path.exists():
-        torch.onnx.export(
-            YoloBackboneFeatures(model, feature_indices).eval(),
-            x,
-            str(backbone_path),
-            input_names=["images"],
-            output_names=feature_tensor_names,
-            opset_version=17,
-            do_constant_folding=True,
-        )
-    paths[ROLE_BACKBONE] = backbone_path
-    chunk_output_payloads[ROLE_BACKBONE] = npz_payload({
-        name: np.asarray(value.detach().cpu().numpy(), dtype=np.float32)
-        for name, value in zip(feature_tensor_names, feature_values)
-    })
-    chunk_metadata[ROLE_BACKBONE] = {
-        "source_model": loaded_name,
-        "input_size": input_size,
-        "layout": layout,
-        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
-        "role_type": "shared-backbone-neck",
-        "feature_indices": feature_indices,
-        "output_tensors": feature_tensor_names,
-        "final": False,
-    }
+    if not replicate_backbone_shards:
+        backbone_path = output / f"{stem}-Backbone-{input_size}.onnx"
+        if not backbone_path.exists():
+            torch.onnx.export(
+                YoloBackboneFeatures(model, feature_indices).eval(),
+                x,
+                str(backbone_path),
+                input_names=["images"],
+                output_names=feature_tensor_names,
+                opset_version=17,
+                do_constant_folding=True,
+            )
+        paths[ROLE_BACKBONE] = backbone_path
+        chunk_output_payloads[ROLE_BACKBONE] = npz_payload({
+            name: np.asarray(value.detach().cpu().numpy(), dtype=np.float32)
+            for name, value in zip(feature_tensor_names, feature_values)
+        })
+        chunk_metadata[ROLE_BACKBONE] = {
+            "source_model": loaded_name,
+            "input_size": input_size,
+            "layout": layout,
+            "layout_semantics": layout_semantics,
+            "role_type": "shared-backbone-neck",
+            "feature_indices": feature_indices,
+            "output_tensors": feature_tensor_names,
+            "final": False,
+        }
 
     head_outputs: dict[str, torch.Tensor] = {}
     for shard, group in enumerate(scale_groups):
         role = f"/Head/Shard/{shard}"
-        input_names = [feature_tensor_names[index] for index in group]
+        input_names = (["images"] if replicate_backbone_shards
+                       else [feature_tensor_names[index] for index in group])
         output_names = [f"candidates_shard_{shard}"]
-        input_values = tuple(feature_values[index] for index in group)
+        input_values = (x,) if replicate_backbone_shards else tuple(
+            feature_values[index] for index in group)
         with torch.no_grad():
-            outputs = (YoloDetectHeadShard(detect, group, anchor_offsets)
-                       .eval()(*input_values),)
+            if replicate_backbone_shards:
+                shard_model = YoloDetectReplicatedBackboneShard(
+                    model,
+                    detect,
+                    feature_indices,
+                    group,
+                    anchor_offsets,
+                ).eval()
+            else:
+                shard_model = YoloDetectHeadShard(detect, group, anchor_offsets).eval()
+            outputs = (shard_model(*input_values),)
         for name, value in zip(output_names, outputs):
             head_outputs[name] = value
         chunk_output_payloads[role] = npz_payload({
@@ -1311,7 +1382,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         path = output / f"{stem}-{role.strip('/').replace('/', '-')}-{input_size}.onnx"
         if not path.exists():
             torch.onnx.export(
-                YoloDetectHeadShard(detect, group, anchor_offsets).eval(),
+                shard_model,
                 input_values,
                 str(path),
                 input_names=input_names,
@@ -1324,12 +1395,15 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             "source_model": loaded_name,
             "input_size": input_size,
             "layout": layout,
-            "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
-            "role_type": "detect-head-scale-shard-candidate-filter",
+            "layout_semantics": layout_semantics,
+            "role_type": ("detect-head-replicated-backbone-candidate-filter"
+                          if replicate_backbone_shards
+                          else "detect-head-scale-shard-candidate-filter"),
             "shard": shard,
             "scale_indices": group,
             "input_tensors": input_names,
             "output_tensors": output_names,
+            "duplicates_backbone_compute": bool(replicate_backbone_shards),
             "final": False,
         }
 
@@ -1351,7 +1425,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         "source_model": loaded_name,
         "input_size": input_size,
         "layout": layout,
-        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "layout_semantics": layout_semantics,
         "role_type": "detect-merge-global-topk",
         "input_tensors": merge_inputs,
         "output_tensor": "predictions",
@@ -1373,32 +1447,34 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
     dependencies: list[InferenceDependency] = []
     chunk_graph = {
         "layout": layout,
-        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "layout_semantics": layout_semantics,
         "stage_shards_parallel": True,
+        "duplicates_backbone_compute": bool(replicate_backbone_shards),
         "dependencies": [],
     }
-    for shard, group in enumerate(scale_groups):
-        tensors = [feature_tensor_names[index] for index in group]
-        expected_bytes = sum(_tensor_nbytes(feature_values[index]) for index in group)
-        dep = InferenceDependency(
-            producers=[ROLE_BACKBONE],
-            consumers=[f"/Head/Shard/{shard}"],
-            key_scope=f"backbone-to-head-shard{shard}",
-            topic_prefix="/activation",
-            tensors=tensors,
-            object_name_template=_activation_name_template(),
-            expected_bytes=expected_bytes,
-            expected_segments=_estimated_segments(expected_bytes),
-        )
-        dependencies.append(dep)
-        chunk_graph["dependencies"].append({
-            "producers": dep.producers,
-            "consumers": dep.consumers,
-            "keyScope": dep.key_scope,
-            "tensors": dep.tensors,
-            "expectedBytes": dep.expected_bytes,
-            "expectedSegments": dep.expected_segments,
-        })
+    if not replicate_backbone_shards:
+        for shard, group in enumerate(scale_groups):
+            tensors = [feature_tensor_names[index] for index in group]
+            expected_bytes = sum(_tensor_nbytes(feature_values[index]) for index in group)
+            dep = InferenceDependency(
+                producers=[ROLE_BACKBONE],
+                consumers=[f"/Head/Shard/{shard}"],
+                key_scope=f"backbone-to-head-shard{shard}",
+                topic_prefix="/activation",
+                tensors=tensors,
+                object_name_template=_activation_name_template(),
+                expected_bytes=expected_bytes,
+                expected_segments=_estimated_segments(expected_bytes),
+            )
+            dependencies.append(dep)
+            chunk_graph["dependencies"].append({
+                "producers": dep.producers,
+                "consumers": dep.consumers,
+                "keyScope": dep.key_scope,
+                "tensors": dep.tensors,
+                "expectedBytes": dep.expected_bytes,
+                "expectedSegments": dep.expected_segments,
+            })
 
     for shard, group in enumerate(scale_groups):
         tensors = [f"candidates_shard_{shard}"]
@@ -1449,12 +1525,12 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         "model": loaded_name,
         "input_size": input_size,
         "layout": layout,
-        "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "layout_semantics": layout_semantics,
         "service": service_name_for_layout(layout),
         "roles": roles,
         "stage_roles": head_roles,
         "split": 0,
-        "split_source": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+        "split_source": layout_semantics,
         "chunks": chunk_metadata,
         "dependencies": dependencies,
         "planner_cost_summary": cost_summary,
@@ -1608,6 +1684,8 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
     layout_semantics = str(split.get("layout_semantics", YOLO_LAYOUT_SEMANTICS))
     if layout_semantics == YOLO_PARALLEL_DETECT_SCALE_SEMANTICS:
         layout_metadata = parallel_detect_scale_layout_metadata(layout)
+    elif layout_semantics == YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS:
+        layout_metadata = parallel_detect_replicated_backbone_layout_metadata(layout)
     elif layout_semantics == YOLO_PARALLEL_OUTPUT_SEMANTICS:
         layout_metadata = parallel_output_layout_metadata(layout)
     else:
@@ -1996,15 +2074,23 @@ def run_local_parallel_detect_scale_pipeline(model_paths: dict[str, str | Path],
     layout = normalize_layout(layout)
     _, shards = parse_layout(layout)
     values: dict[str, np.ndarray] = {}
-    payload = run_intermediate_chunk(model_paths[ROLE_BACKBONE], image, image_input=True)
-    values.update(load_npz_payload(payload))
+    has_shared_backbone = ROLE_BACKBONE in model_paths
+    if has_shared_backbone:
+        payload = run_intermediate_chunk(model_paths[ROLE_BACKBONE], image, image_input=True)
+        values.update(load_npz_payload(payload))
     for shard in range(shards):
         role = f"/Head/Shard/{shard}"
         session = make_ort_session(model_paths[role])
-        feed = {
-            input_info.name: _value_for_input(values, input_info.name).astype(np.float32)
-            for input_info in session.get_inputs()
-        }
+        if has_shared_backbone:
+            feed = {
+                input_info.name: _value_for_input(values, input_info.name).astype(np.float32)
+                for input_info in session.get_inputs()
+            }
+        else:
+            feed = {
+                input_info.name: image.astype(np.float32)
+                for input_info in session.get_inputs()
+            }
         outputs = session.run(None, feed)
         values.update({
             output.name: np.asarray(value, dtype=np.float32)

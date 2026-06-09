@@ -5611,6 +5611,8 @@ def main() -> None:
                         help="Use the experimental true-NxM YOLO output-shard prototype")
     parser.add_argument("--parallel-detect-scale-shards", action="store_true",
                         help="Use the YOLO Detect-scale DAG splitter")
+    parser.add_argument("--parallel-detect-replicated-backbone-shards", action="store_true",
+                        help="Use the YOLO Detect-scale splitter with replicated backbone per head shard")
     parser.add_argument("--control-trace", action="store_true",
                         help="Enable NDNSF user control-plane TRACE logs and write ACK/selection timing stats")
     parser.add_argument("--quiet-perf-logs", action="store_true",
@@ -5662,8 +5664,15 @@ def main() -> None:
                         default="warm",
                         help="capture only the warm inference window by default; use all only for startup/repo/keychain diagnostics")
     args_cli = parser.parse_args()
-    if args_cli.parallel_output_shards and args_cli.parallel_detect_scale_shards:
-        raise SystemExit("--parallel-output-shards and --parallel-detect-scale-shards are mutually exclusive")
+    selected_parallel_modes = sum([
+        bool(args_cli.parallel_output_shards),
+        bool(args_cli.parallel_detect_scale_shards),
+        bool(args_cli.parallel_detect_replicated_backbone_shards),
+    ])
+    if selected_parallel_modes > 1:
+        raise SystemExit(
+            "--parallel-output-shards, --parallel-detect-scale-shards, and "
+            "--parallel-detect-replicated-backbone-shards are mutually exclusive")
     if args_cli.parallel_svs_runtime and args_cli.serial_svs_runtime:
         raise SystemExit("--parallel-svs-runtime and --serial-svs-runtime are mutually exclusive")
     layout = args_cli.layout.strip().lower().replace("*", "x")
@@ -5695,6 +5704,8 @@ def main() -> None:
         safe_layout += "_parallel_output"
     if args_cli.parallel_detect_scale_shards:
         safe_layout += "_parallel_detect_scale"
+    if args_cli.parallel_detect_replicated_backbone_shards:
+        safe_layout += "_parallel_detect_replicated_backbone"
     global OUT, CONFIG, GEN_POLICY, REPO_MANIFEST
     OUT = Path(args_cli.results_dir).expanduser() if args_cli.results_dir else (
         REPO / f"results/yolo_{safe_layout}_minindn_quick")
@@ -5746,6 +5757,8 @@ def main() -> None:
         split_command.append("--parallel-output-shards")
     if args_cli.parallel_detect_scale_shards:
         split_command.append("--parallel-detect-scale-shards")
+    if args_cli.parallel_detect_replicated_backbone_shards:
+        split_command.append("--parallel-detect-replicated-backbone-shards")
     run_user_python_step(split_command,
                          cwd=str(REPO),
                          env={**os.environ, "PYTHONPATH": py_path},
@@ -5938,6 +5951,7 @@ def main() -> None:
             f"layout={layout} model={args_cli.model} input_size={args_cli.input_size} "
             f"topology={TOPO} native_providers={str(args_cli.native_providers).lower()} "
             f"parallel_detect_scale_shards={str(args_cli.parallel_detect_scale_shards).lower()} "
+            f"parallel_detect_replicated_backbone_shards={str(args_cli.parallel_detect_replicated_backbone_shards).lower()} "
             f"ack_timeout_ms={ack_timeout_ms} timeout_ms={timeout_ms} "
             f"provider_handler_workers={provider_handler_workers} "
             f"user_async_workers={user_async_workers} "

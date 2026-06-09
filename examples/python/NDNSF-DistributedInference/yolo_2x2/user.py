@@ -12,6 +12,7 @@ from yolo_2x2_lib import (
     DEFAULT_MODEL,
     DEFAULT_INPUT_SIZE,
     YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+    YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS,
     YOLO_PARALLEL_OUTPUT_SEMANTICS,
     compare_yolo_outputs,
     decode_yolo_output,
@@ -121,7 +122,10 @@ def main() -> int:
         if trace_init:
             print("NDNSF_DI_INIT_TRACE stage=user_before_expected", flush=True)
         if artifact_paths and all(Path(path).exists() for path in artifact_paths.values()):
-            if layout_semantics == YOLO_PARALLEL_DETECT_SCALE_SEMANTICS:
+            if layout_semantics in {
+                    YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
+                    YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS,
+            }:
                 expected = run_local_parallel_detect_scale_pipeline(
                     artifact_paths,
                     inference_image,
