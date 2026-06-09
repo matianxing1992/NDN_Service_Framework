@@ -304,6 +304,11 @@ Provider collaboration large-data fetch 默认使用 30 秒 Interest lifetime
 timeout 更长，因为 distributed-inference role 可能会在上游 role 完成 segments
 发布前，就预取一个确定性 activation name。实验仍然可以通过这个环境变量显式调低
 或调高该值。
+对于静态 planned object，exact segment fetch 使用更短的单 segment Interest lifetime
+（`NDNSF_COLLAB_LARGE_EXACT_SEGMENT_INTEREST_LIFETIME_MS`，默认 `5000`）和有界
+exact segment window（`NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW`，默认 `64`）。
+整体 fetch 仍然可以运行到 collaboration timeout，但单个缺失 segment 会更快重试，
+避免大 activation 因一个 segment 丢失或未命中而整次超时。
 设置 `NDNSF_COLLAB_LARGE_FETCH_INIT_CWND` 可以调节 collaboration large-data fetch
 的 SegmentFetcher 初始 pipeline window，默认值是 `8`。设置
 `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` 时，Core 会为这些 collaboration large-data

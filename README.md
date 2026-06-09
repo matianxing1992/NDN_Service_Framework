@@ -335,6 +335,12 @@ longer than a normal low-latency command timeout because distributed-inference
 roles may prefetch a deterministic activation name before the upstream role has
 finished publishing the segments. Experiments can still lower or raise this
 value explicitly with the environment variable.
+For static planned objects, exact segment fetch uses a shorter per-segment
+Interest lifetime (`NDNSF_COLLAB_LARGE_EXACT_SEGMENT_INTEREST_LIFETIME_MS`,
+default `5000`) and a bounded exact segment window
+(`NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW`, default `64`). The total fetch can
+still run up to the collaboration timeout, but individual missing segments are
+retried quickly enough for large activation objects.
 Set `NDNSF_COLLAB_LARGE_FETCH_INIT_CWND` to tune the initial SegmentFetcher
 pipeline window for collaboration large-data fetches; the default is `8`.
 Set `NDNSF_COLLAB_LARGE_FETCH_TIMING=1` to emit Core-level SegmentFetcher

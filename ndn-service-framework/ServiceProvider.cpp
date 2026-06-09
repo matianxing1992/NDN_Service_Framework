@@ -3150,11 +3150,11 @@ namespace ndn_service_framework
             std::max(50, std::min(interestLifetimeMs,
                                   intEnvOrDefault(
                                       "NDNSF_COLLAB_LARGE_EXACT_SEGMENT_INTEREST_LIFETIME_MS",
-                                      10000)));
+                                      5000)));
         const double fetchInitCwnd = static_cast<double>(
             std::max(1, intEnvOrDefault("NDNSF_COLLAB_LARGE_FETCH_INIT_CWND", 8)));
         const size_t exactSegmentWindow = static_cast<size_t>(
-            std::max(1, intEnvOrDefault("NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW", 256)));
+            std::max(1, intEnvOrDefault("NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW", 64)));
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
         const bool exactSegmentFetch =
             expectedSegments > 0 &&

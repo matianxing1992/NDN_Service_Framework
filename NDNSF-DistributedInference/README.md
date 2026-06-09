@@ -347,8 +347,11 @@ Interests (`segment=0..N-1`) immediately; if an edge is dynamic, the runtime
 starts from the planned object name and follows the object's final block. This
 exact-segment mode is the default whenever `expectedSegments > 0`; set
 `NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH=0` only for comparison experiments.
-This
-is still a building block rather than a complete C++ ONNX provider, but it
+Exact segment fetch uses `NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW` (default
+`64`) and `NDNSF_COLLAB_LARGE_EXACT_SEGMENT_INTEREST_LIFETIME_MS` (default
+`5000`) so large static activation bundles can retry missing segments without
+waiting for the full collaboration fetch timeout.
+This is still a building block rather than a complete C++ ONNX provider, but it
 fixes the intended ownership boundary: DI execution logic can be native C++,
 while NDNSF Core remains responsible for segmented large data, pending
 Interests, encryption, permissions, and wire behavior.

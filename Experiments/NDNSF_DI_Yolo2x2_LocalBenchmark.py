@@ -22,8 +22,11 @@ sys.path.insert(0, str(PY_DIR))
 
 from yolo_2x2_lib import (  # noqa: E402
     DEFAULT_INPUT_SIZE,
+    ROLE_MERGE,
+    ROLE_BACKBONE,
     make_input,
     make_ort_session,
+    parallel_detect_scale_roles_for_layout,
     roles_for_layout,
     _value_for_input,
 )
@@ -42,7 +45,17 @@ def percentile(values: list[float], p: float) -> float:
     return ordered[lo] * (1.0 - weight) + ordered[hi] * weight
 
 
-def chunk_path(model_dir: Path, role: str, input_size: int) -> Path:
+def chunk_path(model_dir: Path,
+               role: str,
+               input_size: int,
+               *,
+               layout: str,
+               parallel_detect_scale_shards: bool) -> Path:
+    if parallel_detect_scale_shards and role == ROLE_MERGE:
+        path = model_dir / f"yolo26n-DetectMerge-{layout}-{input_size}.onnx"
+        if not path.exists():
+            raise FileNotFoundError(f"missing ONNX chunk for {role}: {path}")
+        return path
     suffix = role.strip("/").replace("/", "-")
     path = model_dir / f"yolo26n-{suffix}-{input_size}.onnx"
     if not path.exists():
@@ -68,6 +81,48 @@ def run_cached_pipeline(sessions: dict[str, object],
     return values.get("predictions", next(iter(values.values()))).astype(np.float32)
 
 
+def run_cached_parallel_detect_scale_pipeline(sessions: dict[str, object],
+                                              roles: list[str],
+                                              image: np.ndarray) -> np.ndarray:
+    values: dict[str, np.ndarray] = {"images": image.astype(np.float32)}
+    backbone = sessions[ROLE_BACKBONE]
+    feed = {
+        input_info.name: _value_for_input(values, input_info.name).astype(np.float32)
+        for input_info in backbone.get_inputs()
+    }
+    outputs = backbone.run(None, feed)
+    values.update({
+        output.name: np.asarray(value, dtype=np.float32)
+        for output, value in zip(backbone.get_outputs(), outputs)
+    })
+
+    for role in roles:
+        if not role.startswith("/Head/Shard/"):
+            continue
+        session = sessions[role]
+        feed = {
+            input_info.name: _value_for_input(values, input_info.name).astype(np.float32)
+            for input_info in session.get_inputs()
+        }
+        outputs = session.run(None, feed)
+        values.update({
+            output.name: np.asarray(value, dtype=np.float32)
+            for output, value in zip(session.get_outputs(), outputs)
+        })
+
+    merge = sessions[ROLE_MERGE]
+    feed = {
+        input_info.name: _value_for_input(values, input_info.name).astype(np.float32)
+        for input_info in merge.get_inputs()
+    }
+    outputs = merge.run(None, feed)
+    merged = {
+        output.name: np.asarray(value, dtype=np.float32)
+        for output, value in zip(merge.get_outputs(), outputs)
+    }
+    return merged.get("predictions", next(iter(merged.values()))).astype(np.float32)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--layout", default="2x2")
@@ -76,13 +131,20 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--output", default="")
+    parser.add_argument("--parallel-detect-scale-shards", action="store_true")
     args = parser.parse_args()
 
     layout = args.layout.strip().lower().replace("*", "x")
     model_dir = Path(args.model_dir) if args.model_dir else (
         REPO / f"results/yolo_{layout}_minindn_quick/model")
-    roles = roles_for_layout(layout)
-    paths = {role: chunk_path(model_dir, role, args.input_size) for role in roles}
+    roles = (parallel_detect_scale_roles_for_layout(layout)
+             if args.parallel_detect_scale_shards else roles_for_layout(layout))
+    paths = {
+        role: chunk_path(model_dir, role, args.input_size,
+                         layout=layout,
+                         parallel_detect_scale_shards=args.parallel_detect_scale_shards)
+        for role in roles
+    }
     image = make_input(args.input_size)
 
     session_start = time.perf_counter()
@@ -90,16 +152,23 @@ def main() -> int:
     session_init_ms = (time.perf_counter() - session_start) * 1000.0
 
     for _ in range(max(0, args.warmup)):
-        run_cached_pipeline(sessions, roles, image)
+        if args.parallel_detect_scale_shards:
+            run_cached_parallel_detect_scale_pipeline(sessions, roles, image)
+        else:
+            run_cached_pipeline(sessions, roles, image)
 
     samples = []
     for _ in range(max(1, args.iterations)):
         started = time.perf_counter()
-        result = run_cached_pipeline(sessions, roles, image)
+        if args.parallel_detect_scale_shards:
+            result = run_cached_parallel_detect_scale_pipeline(sessions, roles, image)
+        else:
+            result = run_cached_pipeline(sessions, roles, image)
         samples.append((time.perf_counter() - started) * 1000.0)
 
     summary = {
         "layout": layout,
+        "parallelDetectScaleShards": bool(args.parallel_detect_scale_shards),
         "modelDir": str(model_dir),
         "roles": roles,
         "sessionInitMs": session_init_ms,

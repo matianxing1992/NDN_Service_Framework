@@ -312,8 +312,12 @@ native provider 阶段。
 展开成精确 segment Interests（`segment=0..N-1`）；如果 edge 是 dynamic shape，
 runtime 会从 planned object name 开始，再跟随对象的 final block。只要
 `expectedSegments > 0`，exact-segment mode 就是默认行为；只有对比实验需要关闭时
-才设置 `NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH=0`。这还不是完整的 C++ ONNX
-provider，但它明确了边界：DI 执行逻辑可以是 native C++，而 NDNSF Core 继续负责
+才设置 `NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH=0`。Exact segment fetch 使用
+`NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW`（默认 `64`）和
+`NDNSF_COLLAB_LARGE_EXACT_SEGMENT_INTEREST_LIFETIME_MS`（默认 `5000`），这样大
+activation bundle 可以快速重试缺失 segment，而不是等到整个 collaboration fetch
+timeout。它还不是完整的 C++ ONNX provider，但它明确了边界：DI 执行逻辑可以是
+native C++，而 NDNSF Core 继续负责
 segmented large data、pending Interests、encryption、permissions 和 wire behavior。
 
 这些 native components 不改变 NDNSF Request/ACK/Selection/Response 语义，也不会

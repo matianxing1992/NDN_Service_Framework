@@ -5,12 +5,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 from yolo_2x2_lib import (
     DEFAULT_LAYOUT,
     YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
     YOLO_PARALLEL_OUTPUT_SEMANTICS,
+    compare_yolo_outputs,
     load_provider_profiles,
     make_input,
     parse_args_with_common,
@@ -120,12 +119,14 @@ def main() -> int:
         actual = run_local_parallel_output_pipeline(split["paths"], image, layout)
     else:
         actual = run_local_onnx_pipeline(split["paths"], image, roles_for_layout(layout))
-    diff = abs(actual - expected)
-    max_diff = float(diff.max())
-    mean_diff = float(diff.mean())
     verify_atol = 1e-3
     verify_rtol = 1e-4
-    ok = bool(np.allclose(actual, expected, atol=verify_atol, rtol=verify_rtol))
+    ok, max_diff, mean_diff = compare_yolo_outputs(
+        actual,
+        expected,
+        atol=verify_atol,
+        rtol=verify_rtol,
+    )
     print(
         "YOLO_LAYOUT_LOCAL_VERIFY",
         f"layout={layout}",

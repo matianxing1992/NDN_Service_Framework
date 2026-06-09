@@ -8,13 +8,12 @@ from pathlib import Path
 import os
 import time
 
-import numpy as np
-
 from yolo_2x2_lib import (
     DEFAULT_MODEL,
     DEFAULT_INPUT_SIZE,
     YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
     YOLO_PARALLEL_OUTPUT_SEMANTICS,
+    compare_yolo_outputs,
     decode_yolo_output,
     decode_image,
     encode_native_tensor_bundle,
@@ -285,12 +284,14 @@ def main() -> int:
                 ok = False
                 continue
             _, actual = decode_yolo_output(result.payload)
-            diff = abs(actual - expected)
-            max_diff = float(diff.max())
-            mean_diff = float(diff.mean())
             atol = 1e-3
             rtol = 1e-4
-            item_ok = bool(np.allclose(actual, expected, atol=atol, rtol=rtol))
+            item_ok, max_diff, mean_diff = compare_yolo_outputs(
+                actual,
+                expected,
+                atol=atol,
+                rtol=rtol,
+            )
             ok = ok and item_ok
             print(
                 "YOLO_LAYOUT_RESULT "

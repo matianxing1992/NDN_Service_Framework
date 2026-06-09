@@ -255,6 +255,38 @@ def full_forward(model_name: str, image: np.ndarray) -> np.ndarray:
     return yolo_full_forward(model, x).numpy().astype(np.float32)
 
 
+def _canonical_detection_rows(value: np.ndarray) -> np.ndarray:
+    rows = np.asarray(value, dtype=np.float32).reshape(-1, value.shape[-1])
+    # YOLO postprocess can return the same detections in a different row order
+    # after graph splitting. Sort by all columns so verification checks the
+    # detection set rather than the incidental top-k ordering.
+    keys = [rows[:, index] for index in range(rows.shape[1] - 1, -1, -1)]
+    return rows[np.lexsort(keys)]
+
+
+def compare_yolo_outputs(actual: np.ndarray,
+                         expected: np.ndarray,
+                         *,
+                         atol: float = 1e-3,
+                         rtol: float = 1e-4) -> tuple[bool, float, float]:
+    actual = np.asarray(actual, dtype=np.float32)
+    expected = np.asarray(expected, dtype=np.float32)
+    if actual.shape != expected.shape:
+        return False, float("inf"), float("inf")
+
+    compare_actual = actual
+    compare_expected = expected
+    if actual.ndim >= 2 and actual.shape[-1] == 6:
+        compare_actual = _canonical_detection_rows(actual)
+        compare_expected = _canonical_detection_rows(expected)
+
+    diff = np.abs(compare_actual - compare_expected)
+    max_diff = float(diff.max()) if diff.size else 0.0
+    mean_diff = float(diff.mean()) if diff.size else 0.0
+    return bool(np.allclose(compare_actual, compare_expected,
+                            atol=atol, rtol=rtol)), max_diff, mean_diff
+
+
 def _module_input(module, x, saved):
     if module.f == -1:
         return x
