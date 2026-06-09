@@ -20,7 +20,7 @@ struct NativeProviderHandlerConfig
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
   std::vector<NativeModelRunnerSpec> runnerSpecs;
   std::string finalResponseScope = "final-response";
-  int fetchTimeoutMs = 10000;
+  int fetchTimeoutMs = 30000;
   std::size_t maxSegmentSize = 7000;
   int freshnessMs = 60000;
   std::size_t workerCount = 1;

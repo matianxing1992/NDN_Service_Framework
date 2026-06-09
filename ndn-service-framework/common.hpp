@@ -19,6 +19,7 @@
 #include <ndn-cxx/security/validator-config.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/validation-policy-signed-interest.hpp>
+#include <ndn-cxx/security/certificate.hpp>
 #include "ndn-cxx/security/certificate-fetcher-from-network.hpp"
 #include "ndn-cxx/security/interest-signer.hpp"
 #include <unordered_map>
@@ -60,6 +61,29 @@
 
 
 namespace ndn_service_framework{
+
+    ndn::KeyType
+    getCertificateKeyType(const ndn::security::Certificate& cert);
+
+    ndn::security::Certificate
+    getEcdsaSigningCertificateOrFallback(ndn::KeyChain& keyChain,
+                                         const ndn::security::Certificate& fallbackCert);
+
+    ndn::security::Certificate
+    getRsaEncryptionCertificateOrThrow(ndn::KeyChain& keyChain,
+                                       const ndn::security::Certificate& identityHintCert);
+
+    ndn::security::Certificate
+    getRsaEncryptionCertificateOrThrow(const ndn::security::Certificate& identityHintCert);
+
+    ndn::security::SigningInfo
+    makeEcdsaPreferredSigningInfo(ndn::KeyChain& keyChain,
+                                  const ndn::Name& identityName);
+
+    void
+    signDataEcdsaPreferred(ndn::KeyChain& keyChain,
+                           ndn::Data& data,
+                           const ndn::Name& identityName);
 
     enum class SelectionExecutionState
     {

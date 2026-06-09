@@ -296,25 +296,29 @@ authorization or replay resistance. When the cached token pool is exhausted,
 the next `RequestServiceTargeted(...)` call automatically uses the bootstrap
 flow again.
 
-For large service payloads, NDNSF uses a common large-data reference
-abstraction. Small request and response payloads remain inline in
-`RequestMessage.payload` and `ResponseMessage.payload`. Large request inputs
-can be published by the application/runtime as segmented NDN Data and carried
-as a `LargeDataReference` in the request payload. Large responses are handled
-automatically by NDNSF core: if a successful `ResponseMessage.payload` exceeds
+For payloads that exceed the inline/single-segment threshold, NDNSF uses one
+common large-data reference abstraction. Small request and response payloads
+remain inline in `RequestMessage.payload` and `ResponseMessage.payload`.
+Large request inputs should be prepared with the Core large-data helper, which
+publishes the bytes as signed segmented NDN Data and puts only a
+`LargeDataReference` in the request payload. Large responses are handled
+automatically by NDNSF Core: if a successful `ResponseMessage.payload` exceeds
 the configured threshold, the provider publishes it as signed segmented NDN
 Data and replaces the inline response payload with a `LargeDataReference`.
 The user runtime detects that reference, fetches the segments, decrypts and
 verifies the object, and then delivers the original response payload to the
 same application callback. Application response APIs do not need to change.
 
-Large responses use hybrid message encryption, not NAC-ABE encryption over the
-whole large payload. The payload body is encrypted with AES-GCM and stored as a
-segmented `HybridMessageEnvelope`; NAC-ABE is used only to wrap the small
-message key when that key is not already cached. This preserves normal
-`/PERMISSION/<service>` response authorization while avoiding the high cost of
-NAC-ABE `produce/consume` on large catalog snapshots, model artifacts,
-activations, recordings, and other large response bodies.
+Large request and response objects use hybrid message encryption rather than
+NAC-ABE encryption over the whole large payload. The payload body is encrypted
+with AES-GCM and stored as a segmented `HybridMessageEnvelope`; NAC-ABE is used
+only to wrap the small message key when that key is not already cached. Large
+requests use the `REQUEST-LARGE` envelope type, while automatic large responses
+use `RESPONSE-LARGE` so the large-object key state cannot collide with the
+outer control `REQUEST`/`RESPONSE` messages. This preserves normal
+service-level authorization while avoiding the high cost of NAC-ABE
+`produce/consume` on large catalog snapshots, model artifacts, activations,
+recordings, and other large response bodies.
 
 NDNSF providers also keep a short pending-Interest queue for Data served from
 their in-memory storage. If an Interest for a predictable Data name arrives
@@ -325,7 +329,7 @@ for large-data references, repo objects, and distributed-inference activation
 objects. It does not change the Request/ACK/Selection/Response protocol, Data
 names, signatures, encryption, or application callbacks.
 
-Provider collaboration large-data fetches default to a 10-second Interest
+Provider collaboration large-data fetches default to a 30-second Interest
 lifetime (`NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS`). This is intentionally
 longer than a normal low-latency command timeout because distributed-inference
 roles may prefetch a deterministic activation name before the upstream role has
@@ -341,6 +345,11 @@ time.
 
 The default automatic response threshold is 6000 bytes and can be changed or
 disabled with environment variables:
+
+Automatic response references default to a 6000-byte threshold, which keeps the
+inline control response below the normal single-segment payload size. Request
+helpers can choose a stricter threshold for known large inputs. The response
+threshold can be adjusted or disabled with:
 
 ```bash
 NDNSF_RESPONSE_LARGE_DATA_THRESHOLD=4096 ./your-app
@@ -573,17 +582,19 @@ This PermissionResponse encryption is not NAC-ABE.
 
 NAC-ABE remains the runtime encryption mechanism for NDNSF service request and response messages, future selection payloads, content keys, IMS, and SVS-backed runtime publication.
 
-Runtime certificate selection separates encryption from signing. NAC-ABE and
-PermissionResponse unwrap currently require an RSA-capable identity certificate,
-so each user/provider/controller identity must have an RSA encryption
-certificate. If the same identity also has an EC/ECDSA certificate, `ServiceUser`
-and `ServiceProvider` use it for NDN Data, Interest, and SVS signing because it
-is faster for high-frequency signing. If no EC signing certificate is installed,
-the runtime falls back to the RSA encryption certificate and keeps the same
-behavior as older deployments, only with slower signing. Existing constructors
-perform this compatible selection automatically; explicit constructors are also
-available when a deployment wants to pass `encryptionCert` and `signingCert`
-separately.
+Runtime certificate selection separates encryption from signing at startup.
+NAC-ABE and PermissionResponse unwrap currently require an RSA-capable identity
+certificate, so each user/provider/controller identity must have an RSA
+encryption certificate. If the same identity also has an EC/ECDSA certificate,
+`ServiceUser`, `ServiceProvider`, and application-local high-frequency Data
+publishers cache it as the signing certificate for NDN Data, Interest, and SVS
+signing. If no EC signing certificate is installed at startup, that runtime keeps
+using the RSA encryption certificate for signing until it is restarted. Existing
+constructors perform this compatible selection automatically; explicit
+constructors are also available when a deployment wants to pass `encryptionCert`
+and `signingCert` separately. The ServiceController/AA path remains RSA-bound
+for NAC-ABE public-parameter and DKEY compatibility unless it is separately
+validated.
 
 ### 3.5 Certificate publishing in distributed deployments
 

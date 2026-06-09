@@ -369,6 +369,12 @@ generates its private key locally, sends only the certificate request to the
 CA/root machine, and installs the returned certificate plus the root
 certificate.
 
+At runtime startup, NDNSF resolves certificate roles once: RSA remains the
+encryption certificate for NAC-ABE and permission unwrap, while an installed
+EC/ECDSA certificate is preferred for signing. The drone video and recording
+Data publisher caches that signing choice, so frame-level publishing does not
+rescan the keychain.
+
 Minimal example with the current UAV namespace:
 
 ```bash
@@ -706,12 +712,13 @@ under `/example/uav/drone/A/UAV/Camera/Video`; the control action distinguishes
 start from stop. `/UAV/GS/ObjectDetection` is provided by the ground station for
 heavier compute on the latest decoded live frame. The ObjectDetection request
 carries compact metadata such as frame id, drone id, and requested target
-classes. Large images, recorded clips, reports, and other big objects should be
-published as NDN segmented Data using the ndn-cxx segmenter/SegmentFetcher
-pattern, or stored through `NDNSF-DistributedRepo` under a publisher-owned
-name, then referenced by name in the service request. Keeping service requests
-small avoids turning NDNSF invocation payloads into an ad-hoc file-transfer
-channel.
+classes. Large images, recorded clips, reports, and other big objects should
+never be carried as large inline invocation payloads. They should use the
+NDNSF Core large-data abstraction, which publishes hybrid AES-GCM encrypted,
+signed segmented NDN Data and carries only a reference in the request, or they
+should be stored through `NDNSF-DistributedRepo` under a publisher-owned name
+and referenced by manifest/name. Keeping service requests small avoids turning
+NDNSF invocation payloads into an ad-hoc file-transfer channel.
 
 ## Patrol Task Compensation
 

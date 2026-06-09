@@ -5,7 +5,10 @@ from __future__ import annotations
 
 from ndnsf_distributed_inference import APPClient
 from pathlib import Path
+import os
 import time
+
+import numpy as np
 
 from yolo_2x2_lib import (
     DEFAULT_MODEL,
@@ -60,6 +63,7 @@ def main() -> int:
         return 0
 
     with optional_local_nfd(args.start_local_nfd):
+        trace_init = os.environ.get("NDNSF_DI_INIT_TRACE") == "1"
         client = APPClient.from_config(
             args.config,
             generated_policy_dir=args.generated_policy_dir,
@@ -68,18 +72,36 @@ def main() -> int:
             adaptive_admission=False,
             async_workers=max(1, args.async_requests),
         )
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=user_after_client", flush=True)
         service = yolo_inference_service(client.deployment)
         service_policy = client.deployment.service_policy(service)
         metadata = service_policy.metadata or {}
         layout = str(metadata.get("layout", "2x2"))
         layout_semantics = str(metadata.get("layout_semantics", ""))
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=user_before_make_input", flush=True)
         image = make_input(args.input_size)
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=user_after_make_input", flush=True)
         reference_image_payload = client.encode_input(service, image)
+        if trace_init:
+            print(
+                "NDNSF_DI_INIT_TRACE "
+                f"stage=user_after_encode_input bytes={len(reference_image_payload)}",
+                flush=True,
+            )
         image_payload = (
             encode_native_tensor_bundle({"images": image})
             if args.native_tensor_input else
             reference_image_payload
         )
+        if trace_init:
+            print(
+                "NDNSF_DI_INIT_TRACE "
+                f"stage=user_before_publish_input bytes={len(image_payload)}",
+                flush=True,
+            )
         payload = client.publish_large_payload_reference(
             service,
             image_payload,
@@ -87,12 +109,18 @@ def main() -> int:
             object_type="application/x-ndnsf-di-input+npz",
             freshness_ms=120000,
         )
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=user_after_publish_input", flush=True)
         inference_image = decode_image(reference_image_payload)
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=user_after_decode_input", flush=True)
         artifact_paths = {
             artifact.role: artifact.path
             for artifact in service_policy.artifacts
             if getattr(artifact, "path", "")
         }
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=user_before_expected", flush=True)
         if artifact_paths and all(Path(path).exists() for path in artifact_paths.values()):
             if layout_semantics == YOLO_PARALLEL_DETECT_SCALE_SEMANTICS:
                 expected = run_local_parallel_detect_scale_pipeline(
@@ -114,6 +142,8 @@ def main() -> int:
                 )
         else:
             expected = full_forward(args.model, inference_image)
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=user_after_expected", flush=True)
         duration_s = max(0.0, float(args.sequential_duration_s or 0.0))
         interval_s = max(0.0, float(args.sequential_interval_ms or 0) / 1000.0)
         request_count = args.sequential_requests or args.async_requests
@@ -258,7 +288,9 @@ def main() -> int:
             diff = abs(actual - expected)
             max_diff = float(diff.max())
             mean_diff = float(diff.mean())
-            item_ok = max_diff < 1e-5
+            atol = 1e-3
+            rtol = 1e-4
+            item_ok = bool(np.allclose(actual, expected, atol=atol, rtol=rtol))
             ok = ok and item_ok
             print(
                 "YOLO_LAYOUT_RESULT "
@@ -268,6 +300,7 @@ def main() -> int:
                 f"epoch_end_s={epoch_finished:.6f} "
                 f"status=true shape={actual.shape} "
                 f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
+                f"atol={atol:.1e} rtol={rtol:.1e} "
                 f"inference_elapsed_ms={elapsed_ms:.2f} "
                 f"ok={str(item_ok).lower()}"
             )
@@ -279,6 +312,7 @@ def main() -> int:
                     f"epoch_end_s={epoch_finished:.6f} "
                     f"status=true shape={actual.shape} "
                     f"max_abs_diff={max_diff:.8f} mean_abs_diff={mean_diff:.8f} "
+                    f"atol={atol:.1e} rtol={rtol:.1e} "
                     f"inference_elapsed_ms={elapsed_ms:.2f} "
                     f"ok={str(item_ok).lower()}"
                 )

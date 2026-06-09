@@ -1304,6 +1304,8 @@ public:
     , m_videoPath(std::move(videoPath))
     , m_cameraOptions(std::move(options))
   {
+    m_signingInfo = ndn_service_framework::makeEcdsaPreferredSigningInfo(
+      m_keyChain, droneIdentity(m_config, m_droneId));
     m_videoPrefix = droneIdentity(m_config, m_droneId).append("video");
     m_streamPrefix = ndn::Name(m_videoPrefix).append(m_streamId);
     if (m_cameraOptions.recordObjectPrefix.empty()) {
@@ -1859,7 +1861,7 @@ private:
     data->setContent(ndn::span<const uint8_t>(payload.data(), payload.size()));
     {
       std::lock_guard<std::mutex> guard(m_signMutex);
-      m_keyChain.sign(*data);
+      m_keyChain.sign(*data, m_signingInfo);
     }
     boost::asio::post(m_face.getIoContext(), [this, data] {
       m_face.put(*data);
@@ -1880,7 +1882,7 @@ private:
     data->setContent(ndn::span<const uint8_t>(packet.data(), packet.size()));
     {
       std::lock_guard<std::mutex> guard(m_signMutex);
-      m_keyChain.sign(*data);
+      m_keyChain.sign(*data, m_signingInfo);
     }
     boost::asio::post(m_face.getIoContext(), [this, data] {
       m_face.put(*data);
@@ -2495,6 +2497,7 @@ private:
   static constexpr uint64_t MAX_VIDEO_FRAME_WIDTH = 1280;
   ndn::Face& m_face;
   ndn::KeyChain& m_keyChain;
+  ndn::security::SigningInfo m_signingInfo;
   ndn_service_framework::LocalServiceRegistry& m_localRegistry;
   ndn::Name m_localRecordingChunkServiceName;
   UavRuntimeConfig m_config;

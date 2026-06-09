@@ -207,11 +207,13 @@ response = user.request_collaboration(
     dependencies=[])
 ```
 
-For large objects, applications should avoid embedding large byte arrays inside
-small service messages. The wrapper provides `LargeDataReference`,
-`encode_large_data_reference_payload(...)`, and
-`parse_large_data_reference_payload(...)` so applications can carry a compact
-Data reference. Collaboration handlers also provide `publish_large(...)`,
+For objects that exceed the inline/single-segment threshold, Python
+applications should use the same NDNSF large-data rule as C++ applications:
+publish hybrid AES-GCM encrypted, signed segmented Data through the Core helper
+and carry only a compact reference in the service message. The wrapper provides
+`LargeDataReference`, `encode_large_data_reference_payload(...)`, and
+`parse_large_data_reference_payload(...)` for that reference payload.
+Collaboration handlers also provide `publish_large(...)`,
 `publish_large_reference(...)`, `fetch_large(...)`, and
 `fetch_large_reference(...)` for scoped collaboration data.
 
@@ -239,7 +241,9 @@ stored.stop()
 
 `SegmentedObjectProducer` creates signed segmented Data from a payload.
 `StoredDataProducer` serves already-signed Data wire packets without rewriting
-them. Higher-level packages such as `NDNSF-DistributedInference` decide whether
+them. The Core encrypted large-data helpers add the hybrid encryption layer
+when authorization-protected application data is required. Higher-level
+packages such as `NDNSF-DistributedInference` decide whether
 those objects are model artifacts, runner bundles, activations, or other
 application data.
 

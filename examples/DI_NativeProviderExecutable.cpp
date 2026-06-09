@@ -396,7 +396,16 @@ main(int argc, char** argv)
                 << " ackThreads=" << options.ackThreads
                 << std::endl;
       while (true) {
-        face.processEvents();
+        try {
+          face.processEvents();
+        }
+        catch (const std::exception& exc) {
+          std::cerr << "NDNSF_DI_NATIVE_PROVIDER_EVENT_LOOP_EXCEPTION"
+                    << " provider=" << options.providerName
+                    << " service=" << options.serviceName
+                    << " error=\"" << exc.what() << "\""
+                    << std::endl;
+        }
       }
     }
 

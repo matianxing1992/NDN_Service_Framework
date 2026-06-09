@@ -16,6 +16,11 @@
 
 
 #include <ndn-cxx/face.hpp>
+#include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/transform/public-key.hpp>
+
+#include "ndn-service-framework/common.hpp"
 #include "tests/boost-test.hpp"
 
 namespace ndn_service_framework {
@@ -31,7 +36,45 @@ struct TestCoreFixture
 
 };
 
-// BOOST_FIXTURE_TEST_SUITE(TestCoreFixture, TestCoreFixture)
+BOOST_FIXTURE_TEST_SUITE(Core, TestCoreFixture)
+
+BOOST_AUTO_TEST_CASE(EcdsaPreferredSigningInfoFallsBackToRsa)
+{
+  ndn::KeyChain keyChain("pib-memory:ndnsf-signing-selection",
+                         "tpm-memory:ndnsf-signing-selection");
+  const ndn::Name dualIdentity("/test/ndnsf/signing/dual");
+  const ndn::Name rsaOnlyIdentity("/test/ndnsf/signing/rsa-only");
+
+  auto dual = keyChain.createIdentity(dualIdentity, ndn::RsaKeyParams(2048));
+  auto dualRsa = dual.getDefaultKey().getDefaultCertificate();
+  auto dualEc = keyChain.createKey(dual, ndn::EcKeyParams()).getDefaultCertificate();
+  auto rsaOnly = keyChain.createIdentity(rsaOnlyIdentity, ndn::RsaKeyParams(2048))
+                   .getDefaultKey()
+                   .getDefaultCertificate();
+
+  const auto selectedDual = getEcdsaSigningCertificateOrFallback(keyChain, dualRsa);
+  BOOST_CHECK_EQUAL(selectedDual.getName(), dualEc.getName());
+  BOOST_CHECK_EQUAL(getCertificateKeyType(selectedDual), ndn::KeyType::EC);
+  const auto encryptionDualFromEc = getRsaEncryptionCertificateOrThrow(keyChain, dualEc);
+  BOOST_CHECK_EQUAL(encryptionDualFromEc.getName(), dualRsa.getName());
+  BOOST_CHECK_EQUAL(getCertificateKeyType(encryptionDualFromEc), ndn::KeyType::RSA);
+
+  const auto selectedRsaOnly = getEcdsaSigningCertificateOrFallback(keyChain, rsaOnly);
+  BOOST_CHECK_EQUAL(selectedRsaOnly.getName(), rsaOnly.getName());
+  BOOST_CHECK_EQUAL(getCertificateKeyType(selectedRsaOnly), ndn::KeyType::RSA);
+
+  ndn::Data signedDual("/test/ndnsf/signing/dual/data");
+  signedDual.setContent("payload");
+  keyChain.sign(signedDual, makeEcdsaPreferredSigningInfo(keyChain, dualIdentity));
+  BOOST_CHECK_EQUAL(signedDual.getSignatureInfo().getKeyLocator().getName(),
+                    dualEc.getName());
+
+  ndn::Data signedRsaOnly("/test/ndnsf/signing/rsa-only/data");
+  signedRsaOnly.setContent("payload");
+  keyChain.sign(signedRsaOnly, makeEcdsaPreferredSigningInfo(keyChain, rsaOnlyIdentity));
+  BOOST_CHECK_EQUAL(signedRsaOnly.getSignatureInfo().getKeyLocator().getName(),
+                    rsaOnly.getName());
+}
 
 // BOOST_AUTO_TEST_CASE(mergeStateVector)
 // {
@@ -39,7 +82,7 @@ struct TestCoreFixture
 //   //BOOST_CHECK_EQUAL(missingData[0].high, 3);
 // }
 
-// BOOST_AUTO_TEST_SUITE_END()
+BOOST_AUTO_TEST_SUITE_END()
 
 } 
 } 

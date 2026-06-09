@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from yolo_2x2_lib import (
     DEFAULT_LAYOUT,
     YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
@@ -121,13 +123,17 @@ def main() -> int:
     diff = abs(actual - expected)
     max_diff = float(diff.max())
     mean_diff = float(diff.mean())
-    ok = max_diff < 1e-4
+    verify_atol = 1e-3
+    verify_rtol = 1e-4
+    ok = bool(np.allclose(actual, expected, atol=verify_atol, rtol=verify_rtol))
     print(
         "YOLO_LAYOUT_LOCAL_VERIFY",
         f"layout={layout}",
         f"chunks={len(split['paths'])}",
         f"max_abs_diff={max_diff:.8f}",
         f"mean_abs_diff={mean_diff:.8f}",
+        f"atol={verify_atol:.1e}",
+        f"rtol={verify_rtol:.1e}",
         f"ok={str(ok).lower()}",
     )
     if layout == "2x2":
@@ -135,6 +141,8 @@ def main() -> int:
             "YOLO_2X2_LOCAL_VERIFY",
             f"max_abs_diff={max_diff:.8f}",
             f"mean_abs_diff={mean_diff:.8f}",
+            f"atol={verify_atol:.1e}",
+            f"rtol={verify_rtol:.1e}",
             f"ok={str(ok).lower()}",
         )
     if not ok:

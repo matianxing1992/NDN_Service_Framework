@@ -14,7 +14,7 @@ class NdnsfCollaborationDependencyIo : public DependencyIo
 public:
   explicit NdnsfCollaborationDependencyIo(
     ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
-    int fetchTimeoutMs = 10000,
+    int fetchTimeoutMs = 30000,
     std::size_t maxSegmentSize = 7000,
     int freshnessMs = 60000);
 
@@ -34,7 +34,7 @@ public:
 
 private:
   ndn_service_framework::ServiceProvider::CollaborationContext& m_ctx;
-  int m_fetchTimeoutMs = 10000;
+  int m_fetchTimeoutMs = 30000;
   std::size_t m_maxSegmentSize = 7000;
   int m_freshnessMs = 60000;
 };

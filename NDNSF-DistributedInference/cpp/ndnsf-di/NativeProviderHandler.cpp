@@ -69,6 +69,27 @@ runtimeTimingEnabled()
            text == "off" || text == "OFF");
 }
 
+bool
+nativeTraceEnabled()
+{
+  return runtimeTimingEnabled() || std::getenv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE") != nullptr;
+}
+
+int
+collaborationFetchTimeoutMs(int configured)
+{
+  const char* value = std::getenv("NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS");
+  if (value == nullptr || std::string(value).empty()) {
+    return std::max(50, configured);
+  }
+  char* end = nullptr;
+  const long parsed = std::strtol(value, &end, 10);
+  if (end == value || parsed <= 0) {
+    return std::max(50, configured);
+  }
+  return static_cast<int>(std::max<long>(50, parsed));
+}
+
 class NativeProviderHandlerState
 {
 public:
@@ -277,7 +298,7 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
 
       auto io = std::make_shared<NdnsfCollaborationDependencyIo>(
         ctx,
-        config.fetchTimeoutMs,
+        collaborationFetchTimeoutMs(config.fetchTimeoutMs),
         config.maxSegmentSize,
         config.freshnessMs);
 
@@ -303,6 +324,20 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
         roleSpec,
         result,
         config.finalResponseScope);
+      if (nativeTraceEnabled()) {
+        std::cout << "\nNDNSF_DI_NATIVE_FINAL_RESPONSE_DECISION"
+                  << " session=" << ctx.sessionId()
+                  << " role=" << role
+                  << " role_outputs=" << roleSpec.outputs.size()
+                  << " result_outputs=" << result.outputsByScope.size()
+                  << " final_scope=" << config.finalResponseScope
+                  << " has_payload=" << (finalPayload ? "true" : "false");
+        for (const auto& item : result.outputsByScope) {
+          std::cout << " output_scope=" << item.first
+                    << " output_bytes=" << item.second.payload.size();
+        }
+        std::cout << std::endl;
+      }
       if (finalPayload) {
         ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
       }

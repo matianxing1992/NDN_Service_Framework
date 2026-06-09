@@ -48,18 +48,20 @@ DELETE
 ```
 
 Python/NDNSF-DI helper 应逐步转向使用 `INSERT` 处理 APP 自己创建的 segmented
-Data packets。
+Data packets。如果 APP 手里只有原始 payload bytes，应先把 payload 转成同一套 Core
+large-data 表达：hybrid AES-GCM 加密、签名并分段的 Data，加上一个很小的 reference /
+manifest。Repo 只保存 opaque Data packets 和 metadata；它不是另一套大 payload transport。
 
 对象由 `RepoObjectManifest` 描述，其中包含 object name、object type、SHA-256、size、segment count、replication factor、selected replica nodes 和 policy epoch。manifest 是把 application object name 映射到 stored Data segments 与 hash 信息的元数据；它不是第二套 payload transport。Placement 和 replica selection 使用 NDNSF service discovery 与 ACK metadata。这样 repo 保持通用：存储的 Data 可以代表 model shard、runner、ONNX file、PyTorch artifact、activation tensor、payment-workflow record、telemetry log、JSON configuration，或其它任何 NDNSF application object。
 
 ## APP 自有分段 Data 引用
 
-对于大对象，更符合 NDN 的路径是：APP 在自己的 namespace 下发布已签名、可选已加密的
-segmented Data。Repo request 只携带一个 `RepoDataReference`：object name、Data
-prefix、可选 segment range/final segment hint、forwarding hint、expected size 和
-expected SHA-256。repo 通过注入的 SegmentFetcher adapter 拉取这些 Data packets，把每个
-wire packet 作为 opaque bytes 存到 `<objectName>/ndn-data/<N>`，同时为父对象只保存
-manifest。
+对于大对象，更符合 NDN 的路径是：APP 或 Core runtime 在自己的 namespace 下发布
+hybrid-encrypted、已签名并分段的 Data。Repo request 只携带一个 `RepoDataReference`：
+object name、Data prefix、可选 segment range/final segment hint、forwarding hint、
+expected size 和 expected SHA-256。repo 通过注入的 SegmentFetcher adapter 拉取这些
+Data packets，把每个 wire packet 作为 opaque bytes 存到 `<objectName>/ndn-data/<N>`，
+同时为父对象只保存 manifest。
 
 Repo 不解密、不解释、不重新授权 application data。它只保存 opaque Data wire packets，并
 提供 operation status：
@@ -402,6 +404,10 @@ auto payloadAgain = RepoClient::localGet(
    config 读取 deployment mode，并把 embedded registry 接到自己的组件中。
 2. 远程 caller 继续走正常 NDNSF service path，保留 permissions、signatures、
    NAC-ABE 和 token/replay protection。
+
+Repo service 不定义额外的 certificate-selection policy。远程 repo provider/client
+继承 NDNSF runtime 行为：certificate role 在启动时解析一次，RSA 保留给
+NAC-ABE/permission unwrap；如果安装了 EC/ECDSA certificate，则优先用于签名。
 
 Local invocation 只是 trusted same-process composition 的优化。它不应该成为
 wire-protocol mode，也不能让 remote caller 绕过 NDNSF access control。

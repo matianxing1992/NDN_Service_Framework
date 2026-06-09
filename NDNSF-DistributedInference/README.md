@@ -1267,11 +1267,14 @@ dependencies:
 
 This means the role-level edge carries a large activation object that contains
 the listed tensors. The request itself should carry only small references.
-Images, activations, model shards, and runtime bundles are transported as
-segmented NDN Data, either through the NDNSF encrypted large-data helper or
-through NDNSF-DistributedRepo manifests. Compression or precision reduction may
-be used by an application as a model-quality tradeoff, but it is not the
-transport mechanism for large objects.
+Images, activations, model shards, and runtime bundles must not be embedded as
+large inline NDNSF payloads. Once they exceed the inline/single-segment
+threshold, DI uses the NDNSF Core large-data abstraction: a
+`LargeDataReference` points to hybrid AES-GCM encrypted, signed segmented NDN
+Data, or to an NDNSF-DistributedRepo manifest that stores the same kind of
+opaque segmented Data. Compression or precision reduction may be used by an
+application as a model-quality tradeoff, but it is not the transport mechanism
+for large objects.
 
 ## Splitter Output Contract
 
@@ -1845,7 +1848,10 @@ During this MiniNDN setup, each DI user/provider/controller identity receives
 two root-signed keys in its per-node `/tmp/Minindn/<node>` keychain: an RSA key
 kept as the default encryption certificate for NAC-ABE/PermissionResponse
 unwrap, and an ECDSA key used as the optional signing certificate when present.
-If the ECDSA key is absent, NDNSF falls back to signing with the RSA certificate.
+The runtime chooses and caches these certificate roles at process startup; it
+does not rescan the keychain for every request or Data packet. If the ECDSA key
+is absent at startup, NDNSF falls back to signing with the RSA certificate until
+that process is restarted.
 Use `--single-rsa-certs` only as a control run when comparing the dual-certificate
 signing path against the older RSA-only behavior.
 
@@ -2163,8 +2169,10 @@ topology is preserved at
 `results/yolo_2x2_ailab_dependency_control_60s_latest`. It used the generated
 native execution plan, C++ native provider executable, local ONNX Runtime role
 runners, deterministic activation names, direct Selection prefetch, and
-dependency timing. The 60 measured warm requests produced warm p50 53.75 ms,
-p95 79.49 ms, and max 93.49 ms. The same run recorded about 23.98 NFD Data
+dependency timing. This result is for the small `yolo26n.pt` workload at
+input size 32; use it as the canonical tiny-model DI baseline. The 60 measured
+warm requests produced warm p50 53.75 ms, p95 79.49 ms, and max 93.49 ms.
+The same run recorded about 23.98 NFD Data
 packets and about 143.81 KB of NFD `nOutBytes` per measured warm inference.
 `nfd-data-stats.json` reports `data_packets_per_inference` and
 `avg_data_packet_bytes`; the byte average is an approximate transport-size
@@ -2181,6 +2189,23 @@ diagnostic, AI_Lab reduced MiniNDN RTT noise and outer-control residual, but
 activation delivery still costs tens of milliseconds. The remaining latency is
 therefore dominated by NDNSF outer Request/ACK/Selection/Response propagation
 and activation dependency fetch waits, not by local ONNX execution.
+
+When comparing later benchmark runs, first check the printed
+`YOLO_LAYOUT_RUN_CONFIG` line. In particular, `yolo26n.pt --input-size 32` and
+`yolov8n.pt --input-size 32` are different workloads. A current 60-second
+low-overhead `yolo26n.pt` run in
+`results/yolo26n_32_2x2_current_default_60s_latest` produced warm p50
+63.57 ms and p95 80.54 ms while MiniNDN edge RTT samples were higher than the
+canonical run. A 20-second narrow timing run in
+`results/yolo26n_32_2x2_current_timing_20s_latest` produced p50 58.55 ms and
+showed the same structure as the canonical result: provider dataflow p50 about
+29.50 ms, dependency-fetch-max p50 about 29.27 ms, outer-control residual p50
+about 27.10 ms, and ONNX run sum p50 about 3.46 ms. By contrast,
+`yolov8n.pt --input-size 32` in
+`results/yolov8n_32_2x2_current_default_60s_latest` produced output shape
+`(1, 84, 21)` and warm p50 85.98 ms. Do not treat that as a regression from
+the `yolo26n.pt` tiny-model baseline; it is a heavier model/output shape and
+must be tracked as a separate benchmark line.
 
 An edge-RTT diagnostic run is preserved at
 `results/yolo_2x2_ailab_edge_rtt_60s_latest`. It uses the same AI_Lab topology

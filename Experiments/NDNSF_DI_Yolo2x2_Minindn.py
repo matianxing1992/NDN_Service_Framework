@@ -2479,6 +2479,90 @@ def write_provider_timing_summaries(layout: str,
         "rows": dataflow_rows,
     }
 
+    parallel_head_rows = []
+    for session, rows in sorted(handler_by_session.items()):
+        head_end_rows = {
+            str(row.get("role", "")): row
+            for row in rows
+            if row.get("event") == "end" and
+            str(row.get("role", "")).startswith("/Head/Shard/")
+        }
+        if len(head_end_rows) < 2:
+            continue
+        intervals = {}
+        for role, row in sorted(head_end_rows.items()):
+            submitted = float(row.get("submitted_epoch_ms", 0) or 0)
+            active_start = float(row.get("worker_start_epoch_ms", submitted) or submitted)
+            if active_start <= 0:
+                active_start = submitted
+            start = submitted + float(row.get("input_fetch_wait_ms", 0.0) or 0.0)
+            end = submitted + float(row.get("total_ms", 0.0) or 0.0)
+            intervals[role] = {
+                "activeStartEpochMsApprox": active_start,
+                "startEpochMsApprox": start,
+                "endEpochMsApprox": end,
+                "activeDurationMs": max(0.0, end - active_start),
+                "durationMs": max(0.0, end - start),
+            }
+        active_starts = [item["activeStartEpochMsApprox"] for item in intervals.values()]
+        starts = [item["startEpochMsApprox"] for item in intervals.values()]
+        ends = [item["endEpochMsApprox"] for item in intervals.values()]
+        active_overlap = max(0.0, min(ends) - max(active_starts))
+        active_span = max(ends) - min(active_starts) if active_starts and ends else 0.0
+        compute_overlap = max(0.0, min(ends) - max(starts))
+        compute_span = max(ends) - min(starts) if starts and ends else 0.0
+        serial_sum = sum(item["durationMs"] for item in intervals.values())
+        active_serial_sum = sum(item["activeDurationMs"] for item in intervals.values())
+        compute_parallel_efficiency = serial_sum / compute_span if compute_span > 0 else 0.0
+        active_parallel_efficiency = active_serial_sum / active_span if active_span > 0 else 0.0
+        parallel_head_rows.append({
+            "session": session,
+            "roleCount": len(intervals),
+            "roles": sorted(intervals),
+            "intervals": intervals,
+            "activeOverlapMs": active_overlap,
+            "activeSpanMs": active_span,
+            "activeSerialSumMs": active_serial_sum,
+            "activeParallelEfficiency": active_parallel_efficiency,
+            "computeOverlapMs": compute_overlap,
+            "computeSpanMs": compute_span,
+            "computeSerialSumMs": serial_sum,
+            "computeParallelEfficiency": compute_parallel_efficiency,
+            # Backward-compatible names describe runner compute interval only.
+            "overlapMs": compute_overlap,
+            "spanMs": compute_span,
+            "serialSumMs": serial_sum,
+            "parallelEfficiency": compute_parallel_efficiency,
+            "activeOverlapped": active_overlap > 0.0,
+            "computeOverlapped": compute_overlap > 0.0,
+            "overlapped": active_overlap > 0.0,
+        })
+    handler_summary["parallelHeadFrontier"] = {
+        "sessions": len(parallel_head_rows),
+        "overlappedSessions": sum(1 for row in parallel_head_rows if row["overlapped"]),
+        "activeOverlapMs": summarize_numeric([
+            float(row["activeOverlapMs"]) for row in parallel_head_rows
+        ]),
+        "activeSpanMs": summarize_numeric([
+            float(row["activeSpanMs"]) for row in parallel_head_rows
+        ]),
+        "activeParallelEfficiency": summarize_numeric([
+            float(row["activeParallelEfficiency"]) for row in parallel_head_rows
+        ]),
+        "computeOverlappedSessions": sum(1 for row in parallel_head_rows
+                                         if row["computeOverlapped"]),
+        "overlapMs": summarize_numeric([
+            float(row["overlapMs"]) for row in parallel_head_rows
+        ]),
+        "spanMs": summarize_numeric([
+            float(row["spanMs"]) for row in parallel_head_rows
+        ]),
+        "parallelEfficiency": summarize_numeric([
+            float(row["parallelEfficiency"]) for row in parallel_head_rows
+        ]),
+        "rows": parallel_head_rows,
+    }
+
     merge_handler_by_session = {}
     for row in handler_end_rows:
         if str(row.get("role", "")) != "/Merge":
@@ -2828,6 +2912,22 @@ def write_provider_timing_summaries(layout: str,
         f"{handler_summary['dataflow']['submittedDataflowMs']['p50']:.2f} "
         f"path={handler_path}"
     )
+    parallel_head = handler_summary["parallelHeadFrontier"]
+    print(
+        "YOLO_LAYOUT_PARALLEL_HEAD_FRONTIER "
+        f"layout={layout} sessions={parallel_head['sessions']} "
+        f"overlapped_sessions={parallel_head['overlappedSessions']} "
+        f"active_overlap_p50_ms={parallel_head['activeOverlapMs']['p50']:.2f} "
+        f"active_span_p50_ms={parallel_head['activeSpanMs']['p50']:.2f} "
+        f"active_parallel_efficiency_p50="
+        f"{parallel_head['activeParallelEfficiency']['p50']:.2f} "
+        f"compute_overlapped_sessions="
+        f"{parallel_head['computeOverlappedSessions']} "
+        f"compute_overlap_p50_ms={parallel_head['overlapMs']['p50']:.2f} "
+        f"compute_span_p50_ms={parallel_head['spanMs']['p50']:.2f} "
+        f"compute_parallel_efficiency_p50="
+        f"{parallel_head['parallelEfficiency']['p50']:.2f}"
+    )
     return planned_transport_ok
 
 
@@ -3038,7 +3138,8 @@ def write_hybrid_crypto_timing_summaries(layout: str,
 
 def write_control_timing_summaries(layout: str,
                                    phases: list[tuple[str, Path]],
-                                   providers: list[tuple[str, str, list[str]]]) -> None:
+                                   providers: list[tuple[str, str, list[str]]],
+                                   service_name: str) -> None:
     rows = []
     log_paths = [(phase, path) for phase, path in phases]
     log_paths.extend(("provider", OUT / f"{name}.log") for _, name, _ in providers)
@@ -3049,6 +3150,8 @@ def write_control_timing_summaries(layout: str,
             if "NDNSF_CONTROL_TIMING" not in line:
                 continue
             row = parse_key_value_line(line)
+            if str(row.get("serviceName", "")) != service_name:
+                continue
             row["phase"] = phase
             row["log"] = path.name
             for key in (
@@ -3257,7 +3360,8 @@ def write_control_timing_summaries(layout: str,
 def write_outer_control_waterfall_summaries(
         layout: str,
         phases: list[tuple[str, Path]],
-        providers: list[tuple[str, str, list[str]]]) -> None:
+        providers: list[tuple[str, str, list[str]]],
+        service_name: str) -> None:
     rows = []
     log_paths = [(phase, path) for phase, path in phases]
     log_paths.extend(("provider", OUT / f"{name}.log") for _, name, _ in providers)
@@ -3268,6 +3372,8 @@ def write_outer_control_waterfall_summaries(
             if "NDNSF_CONTROL_TIMING" not in line:
                 continue
             row = parse_key_value_line(line)
+            if str(row.get("serviceName", "")) != service_name:
+                continue
             row["phase"] = phase
             row["log"] = path.name
             for key in ("steady_us", "timestamp_us"):
@@ -4953,6 +5059,107 @@ def _load_json_file(path: Path, default):
         return default
 
 
+def write_execution_frontier_summary(layout: str, policy_path: Path) -> None:
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to summarize DI execution frontiers") from exc
+
+    if not policy_path.exists():
+        raise RuntimeError(f"missing DI policy for frontier summary: {policy_path}")
+    config = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    service = None
+    for candidate in config.get("services", []) or []:
+        if candidate.get("roles") and candidate.get("dependencies") is not None:
+            service = candidate
+            break
+    collaboration = config.get("collaboration") or {}
+    source = service if service is not None else collaboration
+    roles = [str(role) for role in source.get("roles", [])]
+    dependencies = source.get("dependencies", []) or []
+
+    input_scopes_by_role: dict[str, set[str]] = {role: set() for role in roles}
+    output_scopes_by_role: dict[str, set[str]] = {role: set() for role in roles}
+    edge_rows = []
+    for index, dep in enumerate(dependencies):
+        producers = [str(item) for item in dep.get("producers", [])]
+        consumers = [str(item) for item in dep.get("consumers", [])]
+        scope = str(dep.get("key_scope", dep.get("keyScope", f"edge-{index}")))
+        for producer in producers:
+            output_scopes_by_role.setdefault(producer, set()).add(scope)
+        for consumer in consumers:
+            input_scopes_by_role.setdefault(consumer, set()).add(scope)
+        edge_rows.append({
+            "index": index,
+            "scope": scope,
+            "producers": producers,
+            "consumers": consumers,
+            "tensors": list(dep.get("tensors", []) or []),
+            "expectedSegments": int(dep.get("expected_segments",
+                                            dep.get("expectedSegments", 0)) or 0),
+            "expectedBytes": int(dep.get("expected_bytes",
+                                         dep.get("expectedBytes", 0)) or 0),
+        })
+
+    produced_scopes: set[str] = set()
+    remaining = set(roles)
+    frontier_rows = []
+    while remaining:
+        ready = sorted([
+            role for role in remaining
+            if input_scopes_by_role.get(role, set()).issubset(produced_scopes)
+        ])
+        if not ready:
+            raise RuntimeError(
+                "DI policy dependency graph has no ready frontier; "
+                f"remaining={sorted(remaining)} produced_scopes={sorted(produced_scopes)}")
+        frontier_rows.append({
+            "index": len(frontier_rows),
+            "roles": ready,
+            "parallelWidth": len(ready),
+            "inputScopes": {
+                role: sorted(input_scopes_by_role.get(role, set()))
+                for role in ready
+            },
+            "outputScopes": {
+                role: sorted(output_scopes_by_role.get(role, set()))
+                for role in ready
+            },
+        })
+        for role in ready:
+            remaining.remove(role)
+            produced_scopes.update(output_scopes_by_role.get(role, set()))
+
+    max_parallel_width = max([row["parallelWidth"] for row in frontier_rows] or [0])
+    summary = {
+        "layout": layout,
+        "policy": str(policy_path),
+        "service": str(source.get("name", "")),
+        "roleCount": len(roles),
+        "edgeCount": len(edge_rows),
+        "maxParallelWidth": max_parallel_width,
+        "hasParallelFrontier": max_parallel_width > 1,
+        "frontiers": frontier_rows,
+        "edges": edge_rows,
+    }
+    path = OUT / "execution-frontier-summary.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True),
+                    encoding="utf-8")
+    print(
+        "YOLO_LAYOUT_EXECUTION_FRONTIER "
+        f"layout={layout} roles={summary['roleCount']} edges={summary['edgeCount']} "
+        f"frontiers={len(frontier_rows)} max_parallel_width={max_parallel_width} "
+        f"has_parallel_frontier={str(summary['hasParallelFrontier']).lower()} "
+        f"path={path}"
+    )
+    for row in frontier_rows:
+        print(
+            "YOLO_LAYOUT_EXECUTION_FRONTIER_ROW "
+            f"layout={layout} index={row['index']} width={row['parallelWidth']} "
+            f"roles={','.join(row['roles'])}"
+        )
+
+
 def write_end_to_end_breakdown(layout: str, *, print_rows: bool = True) -> None:
     client = _load_json_file(OUT / "client-inference-timing-stats.json", {})
     handler = _load_json_file(OUT / "provider-handler-timing-stats.json", {})
@@ -5365,17 +5572,23 @@ def main() -> None:
     #   sudo -E env NDNSF_TIMELINE_TRACE_SAMPLE_RATE=0 \
     #     python3 Experiments/NDNSF_DI_Yolo2x2_Minindn.py \
     #       --layout 2x2 --parallel-detect-scale-shards --native-providers \
-    #       --cold-requests 1 --warm-requests 1 --warm-duration-s 60 \
-    #       --warm-interval-ms 1000 --preflight-requests 3 \
+    #       --cold-requests 0 --preflight-requests 1 --warm-duration-s 60 \
+    #       --warm-interval-ms 1000 \
     #       --ack-timeout-ms 300 --timeout-ms 10000 --quiet-perf-logs
     # Do not set a global NDN_LOG around this MiniNDN command. NFD inherits it
     # and may fail on application-style filters; use --quiet-perf-logs instead.
     parser.add_argument("--layout", default="2x2",
                         help="YOLO stage-by-shard layout, e.g. 1x3, 2x3, 3x2, 3x3")
+    parser.add_argument("--model", default="yolo26n.pt",
+                        help="YOLO model weights/path passed to split_model.py and user.py")
+    parser.add_argument("--input-size", type=int, default=32,
+                        help="Square YOLO input size passed to split_model.py and user.py")
     parser.add_argument("--results-dir", default="",
                         help="Override the default results/yolo_<layout>_minindn_quick output directory")
     parser.add_argument("--cold-requests", type=int, default=1,
-                        help="Sequential requests in the cold user process")
+                        help=("Sequential requests in the cold user process. "
+                              "Use 0 for canonical warm benchmarks so preflight "
+                              "and measured requests stay in the same user process."))
     parser.add_argument("--warm-requests", type=int, default=1,
                         help="Sequential requests in the warm user process")
     parser.add_argument("--warm-duration-s", type=float, default=0.0,
@@ -5411,6 +5624,10 @@ def main() -> None:
                               "parse/decode/compare/missing-data/extra-block/encode/sign/face-put"))
     parser.add_argument("--dependency-timing", action="store_true",
                         help="enable dependency fetch and pending IMS timing logs")
+    parser.add_argument("--disable-native-runtime-timing", action="store_true",
+                        help=("pure performance run: do not enable C++ native provider "
+                              "role/ONNX/dependency timing unless another diagnostic flag "
+                              "requires it"))
     parser.add_argument("--disable-exact-segment-fetch", action="store_true",
                         help="disable deterministic exact segment fetch for planned native DI activations")
     parser.add_argument("--single-rsa-certs", action="store_true",
@@ -5450,8 +5667,8 @@ def main() -> None:
     if args_cli.parallel_svs_runtime and args_cli.serial_svs_runtime:
         raise SystemExit("--parallel-svs-runtime and --serial-svs-runtime are mutually exclusive")
     layout = args_cli.layout.strip().lower().replace("*", "x")
-    cold_requests = max(1, args_cli.cold_requests)
-    warm_requests = max(1, args_cli.warm_requests)
+    cold_requests = max(0, args_cli.cold_requests)
+    warm_requests = max(0, args_cli.warm_requests)
     warm_duration_s = max(0.0, float(args_cli.warm_duration_s or 0.0))
     warm_interval_ms = max(0, args_cli.warm_interval_ms)
     preflight_requests = max(0, args_cli.preflight_requests)
@@ -5513,6 +5730,10 @@ def main() -> None:
         "--auto-split",
         "--layout",
         layout,
+        "--model",
+        args_cli.model,
+        "--input-size",
+        str(args_cli.input_size),
         "--out-dir",
         str(OUT / "model"),
         "--policy",
@@ -5530,6 +5751,7 @@ def main() -> None:
                          env={**os.environ, "PYTHONPATH": py_path},
                          writable_path=OUT)
     service_name = load_policy_service_name(CONFIG)
+    write_execution_frontier_summary(layout, CONFIG)
     if args_cli.native_providers:
         native_exe = REPO / "build/examples/di-native-provider"
         if not native_exe.exists():
@@ -5603,7 +5825,12 @@ def main() -> None:
         rh.addOrigin([ndn.net[AI_LAB_REPO_NODE]], ["/NDNSF/DistributedRepo/Object"])
         rh.calculateRoutes()
         for node in ndn.net.hosts:
-            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_MULTICAST)
+            # Keep SVS group traffic multicast, but let provider/controller/user
+            # object prefixes use best-route. Native DI activation Data is named
+            # under the producer provider prefix, so treating the whole example
+            # namespace as multicast makes deterministic activation fetches pay
+            # unnecessary NFD forwarding overhead.
+            Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example", Nfdc.STRATEGY_BEST_ROUTE)
             Nfdc.setStrategy(node, "/NDNSF-DistributeInference/example/group", Nfdc.STRATEGY_MULTICAST)
             Nfdc.setStrategy(node, "/NDNSF/DistributedRepo/Object", Nfdc.STRATEGY_MULTICAST)
 
@@ -5667,8 +5894,13 @@ def main() -> None:
             env["NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH"] = "1"
             env["NDNSF_SELECTION_DIRECT_PREFETCH"] = os.environ.get(
                 "NDNSF_SELECTION_DIRECT_PREFETCH", "1")
-        if (not args_cli.quiet_perf_logs or args_cli.dependency_timing or
-                args_cli.control_timing or args_cli.control_trace):
+        needs_native_runtime_timing = (
+            (args_cli.native_providers and not args_cli.disable_native_runtime_timing) or
+            not args_cli.quiet_perf_logs or
+            args_cli.dependency_timing or args_cli.control_timing or
+            args_cli.control_trace
+        )
+        if needs_native_runtime_timing:
             env["NDNSF_DI_RUNTIME_TIMING"] = "1"
         if args_cli.dependency_timing:
             env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
@@ -5701,6 +5933,22 @@ def main() -> None:
             "/usr/lib/python3/dist-packages",
             os.environ.get("PYTHONPATH", ""),
         ])
+        print(
+            "YOLO_LAYOUT_RUN_CONFIG "
+            f"layout={layout} model={args_cli.model} input_size={args_cli.input_size} "
+            f"topology={TOPO} native_providers={str(args_cli.native_providers).lower()} "
+            f"parallel_detect_scale_shards={str(args_cli.parallel_detect_scale_shards).lower()} "
+            f"ack_timeout_ms={ack_timeout_ms} timeout_ms={timeout_ms} "
+            f"provider_handler_workers={provider_handler_workers} "
+            f"user_async_workers={user_async_workers} "
+            f"exact_segment_fetch={env.get('NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH', '0')} "
+            f"exact_segment_window="
+            f"{env.get('NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW', os.environ.get('NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW', 'default'))} "
+            f"exact_segment_interest_lifetime_ms="
+            f"{env.get('NDNSF_COLLAB_LARGE_EXACT_SEGMENT_INTEREST_LIFETIME_MS', os.environ.get('NDNSF_COLLAB_LARGE_EXACT_SEGMENT_INTEREST_LIFETIME_MS', 'default'))} "
+            f"collab_large_interest_lifetime_ms="
+            f"{env.get('NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS', os.environ.get('NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS', 'default'))}"
+        )
         bootstrap_env = dict(env)
         if args_cli.quiet_perf_logs and not args_cli.svs_internal_timing:
             bootstrap_env["NDN_LOG"] = os.environ.get(
@@ -5812,6 +6060,8 @@ def main() -> None:
             warm_user_args = common + [
                 "--repo-manifest-file",
                 str(REPO_MANIFEST),
+                "--model", args_cli.model,
+                "--input-size", str(args_cli.input_size),
                 "--ack-timeout-ms", str(ack_timeout_ms),
                 "--timeout-ms", str(timeout_ms),
                 "--async-requests", str(user_async_workers),
@@ -5887,6 +6137,8 @@ def main() -> None:
         user_common = common + [
             "--repo-manifest-file",
             str(REPO_MANIFEST),
+            "--model", args_cli.model,
+            "--input-size", str(args_cli.input_size),
             "--ack-timeout-ms", str(ack_timeout_ms),
             "--timeout-ms", str(timeout_ms),
             "--async-requests", str(user_async_workers),
@@ -5894,35 +6146,40 @@ def main() -> None:
         ]
         if args_cli.native_providers:
             user_common.append("--native-tensor-input")
-        cold_traffic_start = snapshot_traffic(ndn)
-        cold_nfd_start = snapshot_nfd_data_counters(ndn)
-        user_proc, user_log = start(
-            ndn.net["memphis"],
-            "user-cold",
-            python_cmd("user.py", user_common),
-            env,
-            procs,
-        )
-        user_proc.wait(timeout=user_wait_timeout(cold_requests, timeout_ms))
-        cold_nfd_end = snapshot_nfd_data_counters(ndn)
-        cold_traffic_end = snapshot_traffic(ndn)
-        write_traffic_delta(layout, "cold", cold_traffic_start, cold_traffic_end,
-                            cold_requests)
-        write_nfd_data_delta(layout, "cold", cold_nfd_start, cold_nfd_end,
-                             cold_requests)
-        cold_text = user_log.read_text(errors="replace")
-        print_user_workload_output(cold_text, args_cli.quiet_perf_logs)
-        cold_latencies = write_latency_summary(layout, "cold", cold_text)
-        if len(cold_latencies) < cold_requests or "ok=false" in cold_text:
-            raise RuntimeError(
-                f"YOLO {layout} cold provisioning failed or returned too few results "
-                f"count={len(cold_latencies)} expected={cold_requests} "
-                f"rc={user_proc.returncode}; log={user_log}")
-
-        phase_logs: list[tuple[str, Path]] = [("cold", user_log)]
+        phase_logs: list[tuple[str, Path]] = []
+        user_log: Path | None = None
+        cold_text = ""
+        cold_latencies: list[float] = []
+        if cold_requests > 0:
+            cold_traffic_start = snapshot_traffic(ndn)
+            cold_nfd_start = snapshot_nfd_data_counters(ndn)
+            user_proc, user_log = start(
+                ndn.net["memphis"],
+                "user-cold",
+                python_cmd("user.py", user_common),
+                env,
+                procs,
+            )
+            user_proc.wait(timeout=user_wait_timeout(cold_requests, timeout_ms))
+            cold_nfd_end = snapshot_nfd_data_counters(ndn)
+            cold_traffic_end = snapshot_traffic(ndn)
+            write_traffic_delta(layout, "cold", cold_traffic_start, cold_traffic_end,
+                                cold_requests)
+            write_nfd_data_delta(layout, "cold", cold_nfd_start, cold_nfd_end,
+                                 cold_requests)
+            cold_text = user_log.read_text(errors="replace")
+            print_user_workload_output(cold_text, args_cli.quiet_perf_logs)
+            cold_latencies = write_latency_summary(layout, "cold", cold_text)
+            if len(cold_latencies) < cold_requests or "ok=false" in cold_text:
+                raise RuntimeError(
+                    f"YOLO {layout} cold provisioning failed or returned too few results "
+                    f"count={len(cold_latencies)} expected={cold_requests} "
+                    f"rc={user_proc.returncode}; log={user_log}")
+            phase_logs.append(("cold", user_log))
         warm_log = None
         warm_latencies: list[float] = []
         measured_warm_count = 0
+        skip_warm_phase = warm_requests <= 0 and warm_duration_s <= 0 and not signing_ab_phases
         if signing_ab_phases:
             remove_provider_procs(provider_procs)
             provider_procs = []
@@ -5946,7 +6203,7 @@ def main() -> None:
             # and for any late summary hooks that inspect provider logs.
             provider_procs = start_compute_providers("", env)
             procs.extend(provider_procs)
-        else:
+        elif not skip_warm_phase:
             warm_log, warm_latencies, measured_warm_count = run_warm_phase(
                 "warm",
                 env,
@@ -5959,8 +6216,8 @@ def main() -> None:
         if args_cli.crypto_timing:
             write_hybrid_crypto_timing_summaries(layout, phase_logs, providers)
         if args_cli.control_timing:
-            write_control_timing_summaries(layout, phase_logs, providers)
-            write_outer_control_waterfall_summaries(layout, phase_logs, providers)
+            write_control_timing_summaries(layout, phase_logs, providers, service_name)
+            write_outer_control_waterfall_summaries(layout, phase_logs, providers, service_name)
             write_outer_control_rtt_correlation_summary(layout)
         if args_cli.svs_internal_timing:
             write_svs_internal_timing_summaries(layout, phase_logs, providers)
@@ -5988,10 +6245,13 @@ def main() -> None:
             for _, name, _ in providers
         )
         warm_text = warm_log.read_text(errors="replace") if warm_log else ""
-        common_success = (
-            len(warm_latencies) >= (1 if warm_duration_s > 0 else warm_requests) and
-            "ok=false" not in warm_text
-        )
+        if skip_warm_phase:
+            common_success = bool(cold_latencies) and "ok=false" not in cold_text
+        else:
+            common_success = (
+                len(warm_latencies) >= (1 if warm_duration_s > 0 else warm_requests) and
+                "ok=false" not in warm_text
+            )
         if args_cli.native_providers:
             success = (
                 common_success and

@@ -273,21 +273,23 @@ Targeted invocation 的安全模型：
 authorization 和 replay resistance。缓存 token pool 用完后，下一次
 `RequestServiceTargeted(...)` 会自动重新走 bootstrap/refill 流程。
 
-对于较大的 service payload，NDNSF 使用统一的 large-data reference abstraction。
-小 request/response payload 仍然内联放在 `RequestMessage.payload` 和
-`ResponseMessage.payload` 里。大的 request input 可以由应用或 runtime 先发布为
-segmented NDN Data，再把 `LargeDataReference` 放进 request payload。大的 response
-则由 NDNSF core 自动处理：如果成功的 `ResponseMessage.payload` 超过配置阈值，
-provider 会把它发布为签名的 segmented NDN Data，并把内联 response payload 替换为
-`LargeDataReference`。user runtime 识别该 reference 后，会自动 fetch segments、解密、
-验证 size/hash，然后把原始 response payload 交给同一个应用 callback。应用层 response
-API 不需要改变。
+对于超过 inline/single-segment 阈值的 service payload，NDNSF 使用统一的
+large-data reference abstraction。小 request/response payload 仍然内联放在
+`RequestMessage.payload` 和 `ResponseMessage.payload` 里。大的 request input 应该用
+Core large-data helper 准备：runtime 会把字节发布为签名的 segmented NDN Data，并且只把
+`LargeDataReference` 放进 request payload。大的 response 则由 NDNSF Core 自动处理：
+如果成功的 `ResponseMessage.payload` 超过配置阈值，provider 会把它发布为签名的
+segmented NDN Data，并把内联 response payload 替换为 `LargeDataReference`。user
+runtime 识别该 reference 后，会自动 fetch segments、解密、验证 size/hash，然后把原始
+response payload 交给同一个应用 callback。应用层 response API 不需要改变。
 
-大的 response 使用 hybrid message encryption，而不是对整个大 payload 使用 NAC-ABE
-加密。payload 本体用 AES-GCM 加密，并作为 segmented `HybridMessageEnvelope` 保存；
-NAC-ABE 只在 message key 尚未缓存时用于包装这个很小的 message key。这样既保留普通
-`/PERMISSION/<service>` response authorization，又避免在大型 catalog snapshot、model
-artifact、activation、recording 等 response body 上调用性能很差的 NAC-ABE
+大的 request 和 response 使用 hybrid message encryption，而不是对整个大 payload 使用
+NAC-ABE 加密。payload 本体用 AES-GCM 加密，并作为 segmented
+`HybridMessageEnvelope` 保存；NAC-ABE 只在 message key 尚未缓存时用于包装这个很小的
+message key。大的 request 使用 `REQUEST-LARGE` envelope type，自动 large response
+使用 `RESPONSE-LARGE`，避免 large object 的 key state 与外层控制消息 `REQUEST` /
+`RESPONSE` 冲突。这样既保留 service-level authorization，又避免在大型 catalog
+snapshot、model artifact、activation、recording 等 body 上调用性能很差的 NAC-ABE
 `produce/consume`。
 
 NDNSF provider 还会为从 in-memory storage 服务的 Data 保留一个短期 pending
@@ -297,7 +299,7 @@ Data 能匹配这个 Interest 时，provider 会立即回复。这是 large-data
 repo object 和 distributed-inference activation object 的传输优化。它不改变
 Request/ACK/Selection/Response 协议、Data 名字、签名、加密或应用 callback。
 
-Provider collaboration large-data fetch 默认使用 10 秒 Interest lifetime
+Provider collaboration large-data fetch 默认使用 30 秒 Interest lifetime
 （`NDNSF_COLLAB_LARGE_INTEREST_LIFETIME_MS`）。这个默认值刻意比普通低延迟命令
 timeout 更长，因为 distributed-inference role 可能会在上游 role 完成 segments
 发布前，就预取一个确定性 activation name。实验仍然可以通过这个环境变量显式调低
@@ -309,7 +311,9 @@ fetch 输出 SegmentFetcher 级 timing 日志。DI MiniNDN 回归会把这些日
 `collab-large-fetch-stats.json`，这样可以把应用层 dependency wait 和 native segmented
 fetch 时间分开比较。
 
-自动 response reference 的默认阈值是 6000 bytes，可以用环境变量调整或关闭：
+自动 response reference 的默认阈值是 6000 bytes，用来保证内联控制 response 低于常规
+single-segment payload size。Request helper 可以对已知的大 input 选择更严格的阈值。
+Response 阈值可以用环境变量调整或关闭：
 
 ```bash
 NDNSF_RESPONSE_LARGE_DATA_THRESHOLD=4096 ./your-app
@@ -517,13 +521,17 @@ Controller 不再发放 service invocation token。服务调用使用 `ServiceUs
 
 NAC-ABE 仍然是 NDNSF service request/response message、未来 selection payload、content key、IMS 和 SVS-backed runtime publication 的 runtime encryption 机制。
 
-运行时证书选择会区分 encryption certificate 和 signing certificate。由于当前
+运行时证书选择会在启动时区分 encryption certificate 和 signing certificate。由于当前
 NAC-ABE 和 PermissionResponse unwrap 仍要求 identity 具有 RSA-capable
 certificate，每个 user/provider/controller identity 必须至少有一个 RSA encryption
-certificate。如果同一个 identity 还安装了 EC/ECDSA certificate，`ServiceUser` 和
-`ServiceProvider` 会优先用它给 NDN Data、Interest 和 SVS 消息签名，因为高频签名更快。
-如果找不到 EC signing certificate，runtime 会自动回退到 RSA encryption certificate，
-保持旧部署兼容，只是签名性能较慢。已有 constructor 会自动执行这个兼容选择；如果部署者希望显式指定，也可以使用分别传入 `encryptionCert` 和 `signingCert` 的 constructor。
+certificate。如果同一个 identity 还安装了 EC/ECDSA certificate，`ServiceUser`、
+`ServiceProvider` 以及应用内部高频 Data publisher 会在启动时缓存它作为 signing
+certificate，用来给 NDN Data、Interest 和 SVS 消息签名。如果启动时找不到 EC signing
+certificate，该 runtime 会一直回退使用 RSA encryption certificate 签名，直到进程重启。
+已有 constructor 会自动执行这个兼容选择；如果部署者希望显式指定，也可以使用分别传入
+`encryptionCert` 和 `signingCert` 的 constructor。ServiceController/AA 路径为了兼容
+NAC-ABE public parameters 和 DKEY，目前仍保持 RSA-bound，除非后续单独验证它可安全使用
+ECDSA 签名。
 
 ### 3.5 分布式部署中的证书发布
 

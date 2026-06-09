@@ -7,6 +7,8 @@ artifact provisioning, and collaboration generic enough for non-YOLO models.
 
 from __future__ import annotations
 
+import os
+
 import json
 from dataclasses import dataclass, field
 from concurrent.futures import Future
@@ -256,7 +258,14 @@ class APPClient:
         async_workers: int = 4,
         adaptive_admission: bool = False,
     ) -> "APPClient":
+        trace_init = os.environ.get("NDNSF_DI_INIT_TRACE") == "1"
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=load_or_generate_deployment_start",
+                  flush=True)
         deployment = load_or_generate_deployment(config, generated_policy_dir)
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=load_or_generate_deployment_done",
+                  flush=True)
         client = DistributedInferenceClient.connect(
             group=group or deployment.group,
             controller=deployment.controller,
@@ -266,6 +275,8 @@ class APPClient:
             async_workers=async_workers,
             adaptive_admission=adaptive_admission,
         )
+        if trace_init:
+            print("NDNSF_DI_INIT_TRACE stage=client_connect_done", flush=True)
         return cls(deployment, client)
 
     def infer(self, plan: DistributedInferencePlan, payload: bytes, *,

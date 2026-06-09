@@ -1356,6 +1356,32 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
   for (const auto& role : plan.roles) {
     roles.push_back(roleSpecFor(plan, role, "/generated-plan-run", assignment));
   }
+  for (const auto& role : roles) {
+    for (const auto& edge : role.inputs) {
+      const auto expectedPrefix = assignment.providerByRole.at(edge.producerRole) + "/NDNSF/DI/ACTIVATION/";
+      BOOST_CHECK_MESSAGE(edge.plannedDataName.rfind(expectedPrefix, 0) == 0,
+                          "input activation name is not under producer provider namespace: "
+                            << edge.plannedDataName);
+      const auto segments = plannedSegmentNamesForEdge(edge);
+      BOOST_CHECK_EQUAL(segments.size(), edge.expectedSegments);
+      if (edge.expectedSegments > 0) {
+        BOOST_CHECK_EQUAL(segments.front(), plannedSegmentName(edge.plannedDataName, 0));
+        BOOST_CHECK_EQUAL(segments.back(), plannedSegmentName(edge.plannedDataName, edge.expectedSegments - 1));
+      }
+    }
+    for (const auto& edge : role.outputs) {
+      const auto expectedPrefix = assignment.providerByRole.at(edge.producerRole) + "/NDNSF/DI/ACTIVATION/";
+      BOOST_CHECK_MESSAGE(edge.plannedDataName.rfind(expectedPrefix, 0) == 0,
+                          "output activation name is not under producer provider namespace: "
+                            << edge.plannedDataName);
+      const auto segments = plannedSegmentNamesForEdge(edge);
+      BOOST_CHECK_EQUAL(segments.size(), edge.expectedSegments);
+      if (edge.expectedSegments > 0) {
+        BOOST_CHECK_EQUAL(segments.front(), plannedSegmentName(edge.plannedDataName, 0));
+        BOOST_CHECK_EQUAL(segments.back(), plannedSegmentName(edge.plannedDataName, edge.expectedSegments - 1));
+      }
+    }
+  }
 
   const auto merge = roleSpecFor(plan, "/Merge", "/generated-plan-run", assignment);
   BOOST_REQUIRE_GE(merge.inputs.size(), 2);

@@ -513,13 +513,11 @@ def _estimated_segments(byte_count: int) -> int:
     if byte_count <= 0:
         return 0
     # Collaboration publish_large_named uses a 7000-byte segment by default.
-    # Deterministic prefetch should be close to the encrypted segmented object
-    # size: pure payload bytes are too tight near the segment boundary, while
-    # older wire-size guesses left many impossible extra Interests pending.
+    # The model-specific splitter calibrates byte_count with an encoded tensor
+    # bundle, so adding another envelope cushion here over-predicts segments
+    # and leaves impossible extra Interests pending on boundary-sized tensors.
     payload_segment_size = 7000
-    encrypted_envelope_overhead = 512
-    estimated_bytes = byte_count + encrypted_envelope_overhead
-    return max(1, (estimated_bytes + payload_segment_size - 1) // payload_segment_size)
+    return max(1, (byte_count + payload_segment_size - 1) // payload_segment_size)
 
 
 def split_model(output_dir: str | Path,

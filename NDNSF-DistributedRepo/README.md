@@ -57,7 +57,11 @@ DELETE
 ```
 
 Python/NDNSF-DI helpers should move toward `INSERT` for app-owned segmented
-Data packets.
+Data packets. If an application only has raw payload bytes, the payload should
+first be converted into the same Core large-data representation: hybrid
+AES-GCM encrypted, signed segmented Data plus a small reference/manifest. The
+repo stores opaque Data packets and metadata; it is not a separate large
+payload transport.
 
 Objects are described by `RepoObjectManifest`, which contains object name,
 object type, SHA-256, size, segment count, replication factor, selected replica
@@ -71,14 +75,14 @@ application object.
 
 ## App-Owned Segmented Data References
 
-For large objects, the preferred NDN-native path is for the application to
-publish signed and optionally encrypted segmented Data under its own namespace.
-The repo request then carries only a `RepoDataReference`: object name, Data
-prefix, optional segment range/final segment hint, forwarding hint, expected
-size, and expected SHA-256. The repo fetches those Data packets through an
-injected SegmentFetcher adapter, stores each fetched wire packet as opaque
-bytes under `<objectName>/ndn-data/<N>`, and stores a manifest-only parent
-object.
+For large objects, the preferred NDN-native path is for the application or Core
+runtime to publish hybrid-encrypted, signed segmented Data under its own
+namespace. The repo request then carries only a `RepoDataReference`: object
+name, Data prefix, optional segment range/final segment hint, forwarding hint,
+expected size, and expected SHA-256. The repo fetches those Data packets
+through an injected SegmentFetcher adapter, stores each fetched wire packet as
+opaque bytes under `<objectName>/ndn-data/<N>`, and stores a manifest-only
+parent object.
 
 The repo does not decrypt, reinterpret, or re-authorize the application data.
 It only stores opaque Data wire packets and reports operation status:
@@ -470,6 +474,11 @@ Next steps:
    container config and wire the embedded registry into their own components.
 2. Keep remote callers on the normal NDNSF service path with permissions,
    signatures, NAC-ABE, and token/replay protection.
+
+Repo services do not define a separate certificate-selection policy. Remote
+repo providers and clients inherit NDNSF runtime behavior: certificate roles are
+resolved once at startup, RSA is kept for NAC-ABE/permission unwrap, and
+EC/ECDSA is preferred for signing when installed.
 
 Local invocation is only an optimization for trusted same-process composition.
 It must not become a wire-protocol mode and must not let remote callers bypass

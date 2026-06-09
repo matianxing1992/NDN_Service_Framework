@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/validator-null.hpp>
 #include <ndn-cxx/security/transform/public-key.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
@@ -43,6 +44,31 @@ namespace ndn_service_framework
                 os << attributes[i];
             }
             return os.str();
+        }
+
+        ndn::Block
+        makeNacInlineContentBlock(const ndn::Buffer& payload)
+        {
+            try {
+                ndn::Block block(payload);
+                if (block.type() == ndn::tlv::Content) {
+                    return block;
+                }
+            }
+            catch (const std::exception&) {
+            }
+            auto value = std::make_shared<ndn::Buffer>(payload);
+            return ndn::Block(ndn::tlv::Content, value);
+        }
+
+        ndn::Block
+        makeNacInlineContentBlock(ndn::span<const uint8_t> payload)
+        {
+            ndn::Buffer buffer(payload.size());
+            if (!payload.empty()) {
+                std::copy(payload.begin(), payload.end(), buffer.begin());
+            }
+            return makeNacInlineContentBlock(buffer);
         }
 
         std::map<std::string, std::string>
@@ -2959,46 +2985,89 @@ namespace ndn_service_framework
             result.objectId = "object-" + RandomString(16);
         }
 
-        const ndn::Name dataNameWithoutPrefix =
-            makeLargeDataNameWithoutPrefix(ctx.serviceName, ctx.requestId, result.objectId);
-        const ndn::Name nominalDataName =
+        ndn::Name encryptedDataName =
             makeLargeDataName(identity, ctx.serviceName, ctx.requestId, result.objectId);
+        encryptedDataName.appendVersion();
         const std::vector<std::string> attributes = {
             "/SERVICE" + ctx.serviceName.toUri()
         };
 
         try {
-            ndn::nacabe::SPtrVector<ndn::Data> contentData;
-            ndn::nacabe::SPtrVector<ndn::Data> ckData;
-            std::tie(contentData, ckData) =
-                nacProducer.produce(dataNameWithoutPrefix,
-                                    attributes,
-                                    ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
-                                    m_signingInfo);
-            if (contentData.empty()) {
-                result.errorMessage = "NAC-ABE produced no encrypted content Data";
+            const auto messageType = std::string("REQUEST-LARGE");
+            const auto accessAttribute = std::string("/SERVICE") + ctx.serviceName.toUri();
+            auto key = m_hybridMessageCrypto.getOrCreateSendKey(
+                ctx.serviceName, identity, accessAttribute, messageType, m_hybridCryptoCounters);
+
+            HybridMessageEnvelope envelope;
+            envelope.setKeyId(key.keyId);
+            envelope.setEpochId(key.epochId);
+            envelope.setMessageType(messageType);
+
+            if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
+                ndn::nacabe::SPtrVector<ndn::Data> contentData;
+                ndn::nacabe::SPtrVector<ndn::Data> ckData;
+                std::tie(contentData, ckData) =
+                    nacProducer.produce(key.keyName,
+                                        attributes,
+                                        ndn::span<const uint8_t>(key.key.data(), key.key.size()),
+                                        m_signingInfo);
+                auto wrapped = mergeDataContents(contentData);
+                if (wrapped.empty()) {
+                    result.errorMessage = "NAC-ABE produced no wrapped large-data MessageKey";
+                    return result;
+                }
+                envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
+                serveDataWithIMS(contentData, ckData);
+                m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+                ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
+            }
+
+            const std::string adText = encryptedDataName.toUri() + "|" +
+                                       messageType + "|" + ctx.serviceName.toUri();
+            const ndn::Buffer ad(reinterpret_cast<const uint8_t*>(adText.data()),
+                                 adText.size());
+            auto encrypted = hybridAesGcmEncrypt(
+                key.key,
+                ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+                ndn::span<const uint8_t>(ad.data(), ad.size()));
+            envelope.setNonce(encrypted.nonce);
+            envelope.setCipherText(encrypted.ciphertext);
+            envelope.setAuthTag(encrypted.tag);
+
+            auto envelopeBlock = envelope.WireEncode();
+            ndn::Buffer encoded(envelopeBlock.begin(), envelopeBlock.end());
+
+            ndn::Segmenter segmenter(m_keyChain, m_signingInfo);
+            auto segments = segmenter.segment(
+                ndn::span<const uint8_t>(encoded.data(), encoded.size()),
+                encryptedDataName,
+                7000,
+                freshness);
+            if (segments.empty()) {
+                result.errorMessage = "large-data hybrid segmenter produced no segments";
                 return result;
             }
 
-            {
-                std::lock_guard<std::mutex> lock(_cache_mutex);
-                for (const auto& data : contentData) {
+            const bool activePut =
+                !isTruthyEnv("NDNSF_REQUEST_LARGE_DISABLE_ACTIVE_PUT");
+            for (const auto& data : segments) {
+                {
+                    std::lock_guard<std::mutex> lock(_cache_mutex);
                     m_IMS.insert(*data, freshness);
                 }
-                for (const auto& data : ckData) {
-                    m_IMS.insert(*data, freshness);
+                if (activePut) {
+                    m_face.put(*data);
                 }
             }
 
-            result.encryptedDataName = contentData.front()->getName().getPrefix(-1);
-            if (result.encryptedDataName.empty()) {
-                result.encryptedDataName = nominalDataName;
-            }
+            result.encryptedDataName = encryptedDataName;
             NDN_LOG_INFO("LARGE_DATA_PUBLISH_SEGMENTS"
                       << " name=" << result.encryptedDataName.toUri()
                       << " plaintextBytes=" << plaintext.size()
-                      << " contentSegments=" << contentData.size()
-                      << " ckSegments=" << ckData.size());
+                      << " envelopeBytes=" << encoded.size()
+                      << " segments=" << segments.size()
+                      << " wrappedKeyAttached=" << envelope.hasWrappedMessageKey()
+                      << " activePut=" << activePut);
             result.success = true;
         }
         catch (const std::exception& e) {
@@ -3910,15 +3979,17 @@ namespace ndn_service_framework
                                      << " interest_lifetime_ms=" << interestLifetimeMs
                                      << " init_cwnd=" << fetchInitCwnd);
                     }
+                    auto transportValidator = std::make_shared<ndn::security::ValidatorNull>();
                     auto fetcher = ndn::SegmentFetcher::start(m_face,
                                                                interest,
-                                                               nac_validator,
+                                                               *transportValidator,
                                                                options);
                     fetcher->onComplete.connect(
                         [completed,
                          mutex,
                          cv,
                          encodedEnvelope,
+                         transportValidator,
                          dataName,
                          fetchTimingEnabled,
                          fetchStart,
@@ -3948,6 +4019,7 @@ namespace ndn_service_framework
                          mutex,
                          cv,
                          error,
+                         transportValidator,
                          dataName,
                          fetchTimingEnabled,
                          fetchStart,
@@ -4065,7 +4137,7 @@ namespace ndn_service_framework
                  decryptMutex, decryptCv, decryptError]() mutable {
                     nacConsumer.consume(
                         ndn::Name(envelope.getKeyId()),
-                        ndn::Block(envelope.getWrappedMessageKey()),
+                        makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
                         [this, envelope, finishDecrypt](const ndn::Buffer& unwrappedKey) mutable {
                             m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
                                                                   envelope.getEpochId(),
@@ -4501,7 +4573,8 @@ namespace ndn_service_framework
                               << pendingCall->second.collaborationPlan.roles.size());
                     evaluateAckSelection(parsedV2->requestId);
                 }
-                else if (learnedProviderCount > 0 &&
+                else if (!pendingCall->second.isCollaboration &&
+                         learnedProviderCount > 0 &&
                          ackProviders.size() >= learnedProviderCount) {
                     pendingCall->second.ackWindowExpired = true;
                     NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
@@ -4722,7 +4795,8 @@ namespace ndn_service_framework
                               << pendingCall->second.collaborationPlan.roles.size());
                     evaluateAckSelection(requestId);
                 }
-                else if (learnedProviderCount > 0 &&
+                else if (!pendingCall->second.isCollaboration &&
+                         learnedProviderCount > 0 &&
                          ackProviders.size() >= learnedProviderCount) {
                     pendingCall->second.ackWindowExpired = true;
                     NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=ACK_SELECTION_EARLY_LEARNED_PROVIDERS timestamp_us="
@@ -5677,7 +5751,7 @@ namespace ndn_service_framework
                 return;
                 nacConsumer.consume(
                             ndn::Name(subscription.name),
-                            ndn::Block(subscription.data),
+                            makeNacInlineContentBlock(subscription.data),
                             [this, providerName = ackV2->providerName,
                              serviceName = ackV2->serviceName,
                              requestId = ackV2->requestId,
@@ -5822,7 +5896,7 @@ namespace ndn_service_framework
             }
             nacConsumer.consume(
                         ndn::Name(subscription.name),
-                        ndn::Block(subscription.data),
+                        makeNacInlineContentBlock(subscription.data),
                         [this, providerName, ServiceName, FunctionName, seqNum,
                          subscriptionName = ndn::Name(subscription.name),
                          decryptStartUs](const ndn::Buffer& buffer) {
@@ -6064,7 +6138,7 @@ namespace ndn_service_framework
             return;
             nacConsumer.consume(
                         ndn::Name(subscription.name),
-                        ndn::Block(subscription.data),
+                        makeNacInlineContentBlock(subscription.data),
                         onSuccess,
                         onError);
         }else{
@@ -6762,6 +6836,11 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                     ndn::span<const uint8_t>(key.key.data(), key.key.size()),
                                     m_signingInfo);
             auto wrapped = mergeDataContents(contentData);
+            if (wrapped.empty()) {
+                NDN_LOG_ERROR("Hybrid MessageKey wrap produced empty content for "
+                              << messageName.toUri());
+                return;
+            }
             envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
             serveDataWithIMS(contentData, ckData);
             m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
@@ -7062,33 +7141,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
                                {"entryToCacheLookupUs",
                                 std::to_string(timelineSteadyMicroseconds() - decryptEntryUs)}});
         if (!envelope.hasWrappedMessageKey()) {
-            ndn::Name keyDataName = senderPrefix;
-            keyDataName.append(ndn::Name(envelope.getKeyId()));
-            ++m_hybridCryptoCounters.nac_abe_key_unwrap_count;
-            const auto unwrapStartUs = timelineSteadyMicroseconds();
-            logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_start", requestId,
+            logHybridCryptoTiming("user", "hybrid_decrypt_key_missing", requestId,
                                   {{"messageType", envelope.getMessageType()},
-                                   {"source", "fetch"},
-                                   {"keyDataName", keyDataName.toUri()}});
-            nacConsumer.consume(
-                keyDataName,
-                [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
-                    logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_done", requestId,
-                                          {{"messageType", envelope.getMessageType()},
-                                           {"source", "fetch"},
-                                           {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
-                                           {"keyBytes", std::to_string(unwrappedKey.size())}});
-                    m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
-                                                          envelope.getEpochId(),
-                                                          unwrappedKey);
-                    finish(unwrappedKey);
-                },
-                [onError = std::move(onError), keyDataName](const std::string& error) {
-                    if (onError) {
-                        onError("hybrid MessageKey fetch failed " +
-                                keyDataName.toUri() + ": " + error);
-                    }
-                });
+                                   {"source", "missing-attached-key"}});
+            if (onError) {
+                onError("hybrid MessageKey is not cached and not attached");
+            }
             return true;
         }
 
@@ -7097,24 +7155,31 @@ void ServiceUser::finishRequestAckOnEventLoop(
         logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_start", requestId,
                               {{"messageType", envelope.getMessageType()},
                                {"source", "attached"}});
-        nacConsumer.consume(ndn::Name(envelope.getKeyId()),
-                            ndn::Block(envelope.getWrappedMessageKey()),
-                            [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
-                                logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_done", requestId,
-                                                      {{"messageType", envelope.getMessageType()},
-                                                       {"source", "attached"},
-                                                       {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
-                                                       {"keyBytes", std::to_string(unwrappedKey.size())}});
-                                m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
-                                                                      envelope.getEpochId(),
-                                                                      unwrappedKey);
-                                finish(unwrappedKey);
-                            },
-                            [onError = std::move(onError)](const std::string& error) {
-                                if (onError) {
-                                    onError("hybrid MessageKey unwrap failed: " + error);
-                                }
-                            });
+        try {
+            nacConsumer.consume(ndn::Name(envelope.getKeyId()),
+                                makeNacInlineContentBlock(envelope.getWrappedMessageKey()),
+                                [this, envelope, finish = std::move(finish), requestId, unwrapStartUs](const ndn::Buffer& unwrappedKey) mutable {
+                                    logHybridCryptoTiming("user", "hybrid_decrypt_key_unwrap_done", requestId,
+                                                          {{"messageType", envelope.getMessageType()},
+                                                           {"source", "attached"},
+                                                           {"unwrapUs", std::to_string(timelineSteadyMicroseconds() - unwrapStartUs)},
+                                                           {"keyBytes", std::to_string(unwrappedKey.size())}});
+                                    m_hybridMessageCrypto.cacheReceiveKey(envelope.getKeyId(),
+                                                                          envelope.getEpochId(),
+                                                                          unwrappedKey);
+                                    finish(unwrappedKey);
+                                },
+                                [onError = std::move(onError)](const std::string& error) {
+                                    if (onError) {
+                                        onError("hybrid MessageKey unwrap failed: " + error);
+                                    }
+                                });
+        }
+        catch (const std::exception& e) {
+            if (onError) {
+                onError("hybrid MessageKey unwrap failed: " + std::string(e.what()));
+            }
+        }
         return true;
     }
 
