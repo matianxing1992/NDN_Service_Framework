@@ -390,6 +390,57 @@ def parallel_detect_scale_layout_metadata(layout: str | None = None) -> dict:
     }
 
 
+def planner_cost_summary(
+    dependencies: Sequence[InferenceDependency],
+    *,
+    provider_profiles: Sequence[ProviderProfile] | None = None,
+) -> dict:
+    profiles = list(provider_profiles or default_planner_provider_profiles())
+    bottleneck_mbps = min(
+        [max(0.001, float(profile.uplink_mbps)) for profile in profiles] +
+        [max(0.001, float(profile.downlink_mbps)) for profile in profiles],
+    )
+    representative_rtt_ms = max(
+        [float(profile.rtt_ms) for profile in profiles] or [0.0],
+    )
+    edges = []
+    total_bytes = 0
+    total_segments = 0
+    for dep in dependencies:
+        expected_bytes = int(dep.expected_bytes or 0)
+        expected_segments = int(dep.expected_segments or 0)
+        total_bytes += expected_bytes
+        total_segments += expected_segments
+        transfer_ms = representative_rtt_ms + (
+            expected_bytes * 8.0 / (bottleneck_mbps * 1000.0)
+        )
+        edges.append({
+            "producers": list(dep.producers),
+            "consumers": list(dep.consumers),
+            "keyScope": dep.key_scope,
+            "tensors": list(dep.tensors),
+            "expectedBytes": expected_bytes,
+            "expectedSegments": expected_segments,
+            "estimatedTransferMs": transfer_ms,
+        })
+    return {
+        "activationBytesTotal": total_bytes,
+        "activationSegmentsTotal": total_segments,
+        "edgeCount": len(edges),
+        "estimatedTransferProfile": {
+            "representativeRttMs": representative_rtt_ms,
+            "bottleneckMbps": bottleneck_mbps,
+            "note": (
+                "coarse planner estimate from provider profile; measured "
+                "MiniNDN latency also includes NFD, validation, scheduling, "
+                "and retry effects"
+            ),
+        },
+        "dominantEdge": max(edges, key=lambda item: item["expectedBytes"], default={}),
+        "edges": edges,
+    }
+
+
 def roles_for_layout(layout: str | None = None) -> list[str]:
     stages, shards = parse_layout(layout)
     return [
@@ -1377,6 +1428,11 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         chunk_graph,
         chunk_output_payloads,
     )
+    cost_summary = planner_cost_summary(
+        dependencies,
+        provider_profiles=provider_profiles,
+    )
+    chunk_graph["plannerCostSummary"] = cost_summary
 
     graph_summary = output / f"{stem}-{layout}-parallel-detect-scale-onnx-graph-summary.json"
     write_onnx_graph_summary(
@@ -1401,6 +1457,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         "split_source": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
         "chunks": chunk_metadata,
         "dependencies": dependencies,
+        "planner_cost_summary": cost_summary,
         "onnx_graph_summary": graph_summary,
         "onnx_split_candidates": split_candidates,
         "planner_recommendations": planner_recommendations,
@@ -1412,7 +1469,7 @@ def default_planner_provider_profiles() -> list[ProviderProfile]:
     return homogeneous_provider_profiles([
         "/NDNSF-DistributeInference/example/provider/A",
         "/NDNSF-DistributeInference/example/provider/B",
-    ])
+    ], uplink_mbps=1000.0, downlink_mbps=1000.0, rtt_ms=4.0)
 
 
 def load_provider_profiles(path: str | Path) -> list[ProviderProfile]:
@@ -1615,6 +1672,9 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
             "onnx_graph_summary": str(split.get("onnx_graph_summary", "")),
             "onnx_split_candidate_count": len(split.get("onnx_split_candidates") or []),
             "planner_recommendation_count": len(split.get("planner_recommendations") or []),
+            **({
+                "planner_cost_summary": split["planner_cost_summary"]
+            } if split.get("planner_cost_summary") else {}),
         },
     )
     repo_service = SplitServiceSpec(

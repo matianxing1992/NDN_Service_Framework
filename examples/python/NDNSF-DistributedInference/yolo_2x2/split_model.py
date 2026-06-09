@@ -13,6 +13,7 @@ from yolo_2x2_lib import (
     load_provider_profiles,
     make_input,
     parse_args_with_common,
+    planner_cost_summary,
     roles_for_layout,
     run_local_onnx_pipeline,
     run_local_parallel_detect_scale_pipeline,
@@ -98,6 +99,42 @@ def main() -> int:
             f"transfer_ms={item.transfer_ms:.3f}",
             f"compute_imbalance={item.compute_imbalance:.3f}",
             f"score={item.score:.3f}",
+        )
+    cost_summary = split.get("planner_cost_summary")
+    if cost_summary is None:
+        cost_summary = planner_cost_summary(split.get("dependencies") or [])
+    profile = cost_summary.get("estimatedTransferProfile", {})
+    print(
+        "YOLO_LAYOUT_PLANNER_COST",
+        f"layout={layout}",
+        f"activation_bytes_total={int(cost_summary.get('activationBytesTotal', 0))}",
+        f"activation_segments_total={int(cost_summary.get('activationSegmentsTotal', 0))}",
+        f"edge_count={int(cost_summary.get('edgeCount', 0))}",
+        f"rtt_ms={float(profile.get('representativeRttMs', 0.0)):.3f}",
+        f"bottleneck_mbps={float(profile.get('bottleneckMbps', 0.0)):.3f}",
+    )
+    dominant = cost_summary.get("dominantEdge") or {}
+    if dominant:
+        print(
+            "YOLO_LAYOUT_PLANNER_DOMINANT_EDGE",
+            f"layout={layout}",
+            f"key_scope={dominant.get('keyScope', '')}",
+            f"producers={','.join(dominant.get('producers', []))}",
+            f"consumers={','.join(dominant.get('consumers', []))}",
+            f"expected_bytes={int(dominant.get('expectedBytes', 0))}",
+            f"expected_segments={int(dominant.get('expectedSegments', 0))}",
+            f"estimated_transfer_ms={float(dominant.get('estimatedTransferMs', 0.0)):.3f}",
+        )
+    for edge in cost_summary.get("edges", []):
+        print(
+            "YOLO_LAYOUT_PLANNER_EDGE_COST",
+            f"layout={layout}",
+            f"key_scope={edge.get('keyScope', '')}",
+            f"producers={','.join(edge.get('producers', []))}",
+            f"consumers={','.join(edge.get('consumers', []))}",
+            f"expected_bytes={int(edge.get('expectedBytes', 0))}",
+            f"expected_segments={int(edge.get('expectedSegments', 0))}",
+            f"estimated_transfer_ms={float(edge.get('estimatedTransferMs', 0.0)):.3f}",
         )
     service_name = service_name_for_layout(layout)
     service = output.service(service_name)

@@ -1710,6 +1710,19 @@ Data packets，约 7.13 MB NFD out bytes。这个结果还不是好的 distribut
 证据；它说明 Head-to-Merge candidate-filter 边界已经工作，但 640 下剩余的
 Backbone-to-Head feature transfer 和 MiniNDN/NFD transport cost 仍然主导运行时间。
 
+splitter 现在会打印并记录 `YOLO_LAYOUT_PLANNER_COST`、
+`YOLO_LAYOUT_PLANNER_DOMINANT_EDGE` 和 `YOLO_LAYOUT_PLANNER_EDGE_COST`。这些是
+planner-time hard metrics，不是 runtime 猜测：每条 dependency edge 都会报告
+expected activation bytes、planned segment count，以及基于 provider profile 的粗粒度
+transfer estimate。在当前 AI_Lab 默认 profile 下（1 Gbps 链路，并通过 `memphis`
+形成约 4 ms provider-to-provider RTT），640 candidate-filter plan 的四条 activation
+edge 总计约 3.07 MB、441 个 planned segments。dominant edge 是
+`backbone-to-head-shard0`，约 2.46 MB、352 个 planned segments；在不计 NFD
+scheduling、validation、retry 和 application dispatch 的情况下，粗粒度 transfer estimate
+约为 23.67 ms。以后尝试新的 YOLO split 时，应先看这些 cost lines：如果一个 plan
+虽然省了计算，但引入了多 MB 跨节点 activation，那么除非省下的 compute 明显大于
+transfer cost，否则不应认为它是好的 DI plan。
+
 当前 native provider 路径在 DI MiniNDN native-provider 实验中默认使用
 deterministic activation names、active-put segment delivery 和 direct Selection
 prefetch。`NDNSF_COLLAB_LARGE_ACTIVE_PUT=1` 让 Provider 生成 activation segments

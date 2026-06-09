@@ -1917,6 +1917,21 @@ result; it is evidence that the Head-to-Merge candidate-filter boundary works,
 while the remaining Backbone-to-Head feature transfer and MiniNDN/NFD transport
 cost dominate the 640 run.
 
+The splitter now prints and records `YOLO_LAYOUT_PLANNER_COST`,
+`YOLO_LAYOUT_PLANNER_DOMINANT_EDGE`, and `YOLO_LAYOUT_PLANNER_EDGE_COST` lines.
+These are planner-time hard metrics, not runtime guesses: each dependency edge
+reports expected activation bytes, planned segment count, and a coarse transfer
+estimate from the provider profile. On the current AI_Lab default profile
+(1 Gbps links and about 4 ms provider-to-provider RTT through `memphis`), the
+640 candidate-filter plan reports about 3.07 MB and 441 planned segments across
+four activation edges. The dominant edge is `backbone-to-head-shard0`, about
+2.46 MB and 352 planned segments, with a coarse transfer estimate of about
+23.67 ms before NFD scheduling, validation, retries, and application dispatch.
+Use these cost lines as the first filter when trying a new YOLO split: a plan
+that saves compute but introduces a multi-megabyte cross-node activation should
+not be considered a good DI plan unless the saved compute clearly dominates the
+transfer cost.
+
 The current native provider path uses deterministic activation names,
 active-put segment delivery, and direct Selection prefetch by default in the DI
 MiniNDN native-provider experiment. `NDNSF_COLLAB_LARGE_ACTIVE_PUT=1` keeps
