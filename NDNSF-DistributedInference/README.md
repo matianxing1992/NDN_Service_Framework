@@ -2196,11 +2196,11 @@ When comparing later benchmark runs, first check the printed
 low-overhead `yolo26n.pt` run in
 `results/yolo26n_32_2x2_current_default_60s_latest` produced warm p50
 63.57 ms and p95 80.54 ms while MiniNDN edge RTT samples were higher than the
-canonical run. A 20-second narrow timing run in
-`results/yolo26n_32_2x2_current_timing_20s_latest` produced p50 58.55 ms and
+canonical run. A 60-second narrow timing run in
+`results/yolo26n_32_2x2_current_timing_60s_latest` produced p50 62.14 ms and
 showed the same structure as the canonical result: provider dataflow p50 about
-29.50 ms, dependency-fetch-max p50 about 29.27 ms, outer-control residual p50
-about 27.10 ms, and ONNX run sum p50 about 3.46 ms. By contrast,
+30.00 ms, dependency-fetch-max p50 about 28.82 ms, outer-control residual p50
+about 33.34 ms, and ONNX run sum p50 about 2.99 ms. By contrast,
 `yolov8n.pt --input-size 32` in
 `results/yolov8n_32_2x2_current_default_60s_latest` produced output shape
 `(1, 84, 21)` and warm p50 85.98 ms. Do not treat that as a regression from

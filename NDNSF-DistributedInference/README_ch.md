@@ -1966,11 +1966,11 @@ ONNX 执行。
 当前一次低开销 60 秒 `yolo26n.pt` 运行保存在
 `results/yolo26n_32_2x2_current_default_60s_latest`，warm p50 为 63.57 ms，
 p95 为 80.54 ms；该次运行的 MiniNDN edge RTT 样本高于 canonical baseline。
-一次 20 秒窄 timing 运行保存在
-`results/yolo26n_32_2x2_current_timing_20s_latest`，p50 为 58.55 ms，并且结构上
-和 canonical result 一致：provider dataflow p50 约 29.50 ms，
-dependency-fetch-max p50 约 29.27 ms，outer-control residual p50 约 27.10 ms，
-ONNX run sum p50 约 3.46 ms。相比之下，`yolov8n.pt --input-size 32` 在
+一次 60 秒窄 timing 运行保存在
+`results/yolo26n_32_2x2_current_timing_60s_latest`，p50 为 62.14 ms，并且结构上
+和 canonical result 一致：provider dataflow p50 约 30.00 ms，
+dependency-fetch-max p50 约 28.82 ms，outer-control residual p50 约 33.34 ms，
+ONNX run sum p50 约 2.99 ms。相比之下，`yolov8n.pt --input-size 32` 在
 `results/yolov8n_32_2x2_current_default_60s_latest` 中输出 shape 为
 `(1, 84, 21)`，warm p50 为 85.98 ms。不要把它当成相对 `yolo26n.pt`
 tiny-model baseline 的退化；它是更重的模型和输出形状，应作为单独 benchmark line
