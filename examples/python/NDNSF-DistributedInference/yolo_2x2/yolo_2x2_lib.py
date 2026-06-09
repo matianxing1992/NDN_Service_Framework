@@ -1080,42 +1080,88 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             return tuple(saved[index] for index in self.feature_indices)
 
     class YoloDetectHeadShard(nn.Module):
-        def __init__(self, detect, scale_indices: Sequence[int]):
+        def __init__(self,
+                     detect,
+                     scale_indices: Sequence[int],
+                     anchor_offsets: dict[int, tuple[int, int]]):
             super().__init__()
             heads = detect.one2one if getattr(detect, "end2end", False) else detect.one2many
             self.box_head = heads["box_head"]
             self.cls_head = heads["cls_head"]
             self.scale_indices = [int(index) for index in scale_indices]
+            self.anchor_offsets = {
+                int(index): (int(start), int(end))
+                for index, (start, end) in anchor_offsets.items()
+            }
             self.reg_max = int(detect.reg_max)
             self.nc = int(detect.nc)
+            self.max_det = int(detect.max_det)
+            self.dfl = detect.dfl
+            self.register_buffer("anchors_const", detect.anchors.detach().clone())
+            self.register_buffer("strides_const", detect.strides.detach().clone())
 
         def forward(self, *features):
-            outputs = []
+            box_values = []
+            score_values = []
+            anchors = []
+            strides = []
             for scale, feature in zip(self.scale_indices, features):
                 batch = feature.shape[0]
                 boxes = self.box_head[scale](feature).view(batch, 4 * self.reg_max, -1)
                 scores = self.cls_head[scale](feature).view(batch, self.nc, -1)
-                outputs.extend([boxes, scores])
-            return tuple(outputs)
+                box_values.append(boxes)
+                score_values.append(scores)
+                start, end = self.anchor_offsets[scale]
+                anchors.append(self.anchors_const[:, start:end])
+                strides.append(self.strides_const[:, start:end])
+            boxes = torch.cat(tuple(box_values), dim=-1)
+            scores = torch.cat(tuple(score_values), dim=-1)
+            anchor_values = torch.cat(tuple(anchors), dim=-1)
+            stride_values = torch.cat(tuple(strides), dim=-1)
+            dbox = detect.decode_bboxes(
+                self.dfl(boxes),
+                anchor_values.unsqueeze(0),
+            ) * stride_values
+            candidates = torch.cat((dbox, scores.sigmoid()), 1).permute(0, 2, 1)
+            max_score = candidates[..., 4:].max(dim=-1)[0]
+            k = self.max_det if candidates.shape[1] >= self.max_det else candidates.shape[1]
+            _, index = max_score.topk(k, dim=1)
+            return candidates.gather(
+                1,
+                index.unsqueeze(-1).repeat(1, 1, 4 + self.nc),
+            )
 
     class YoloDetectMerge(nn.Module):
         def __init__(self, detect):
             super().__init__()
-            self.detect = detect
-            self.register_buffer("anchors_const", detect.anchors.detach().clone())
-            self.register_buffer("strides_const", detect.strides.detach().clone())
+            self.max_det = int(detect.max_det)
+            self.nc = int(detect.nc)
+            self.agnostic_nms = bool(getattr(detect, "agnostic_nms", False))
 
         def forward(self, *values):
-            boxes = torch.cat(tuple(values[0::2]), dim=-1)
-            scores = torch.cat(tuple(values[1::2]), dim=-1)
-            dbox = self.detect.decode_bboxes(
-                self.detect.dfl(boxes),
-                self.anchors_const.unsqueeze(0),
-            ) * self.strides_const
-            y = torch.cat((dbox, scores.sigmoid()), 1)
-            if getattr(self.detect, "end2end", False):
-                return self.detect.postprocess(y.permute(0, 2, 1))
-            return y
+            candidates = torch.cat(tuple(values), dim=1)
+            boxes, scores = candidates.split([4, self.nc], dim=-1)
+            k = self.max_det if candidates.shape[1] >= self.max_det else candidates.shape[1]
+            if self.agnostic_nms:
+                scores, labels = scores.max(dim=-1, keepdim=True)
+                scores, indices = scores.topk(k, dim=1)
+                labels = labels.gather(1, indices)
+                boxes = boxes.gather(dim=1, index=indices.repeat(1, 1, 4))
+                return torch.cat([boxes, scores, labels.float()], dim=-1)
+            anchor_index = scores.max(dim=-1)[0].topk(k)[1].unsqueeze(-1)
+            selected_scores = scores.gather(dim=1,
+                                            index=anchor_index.repeat(1, 1, self.nc))
+            selected_scores, class_index = selected_scores.flatten(1).topk(k)
+            box_index = anchor_index[
+                torch.arange(candidates.shape[0], device=candidates.device)[..., None],
+                class_index // self.nc,
+            ]
+            selected_boxes = boxes.gather(dim=1, index=box_index.repeat(1, 1, 4))
+            return torch.cat([
+                selected_boxes,
+                selected_scores[..., None],
+                (class_index % self.nc)[..., None].float(),
+            ], dim=-1)
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -1147,6 +1193,12 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
     with torch.no_grad():
         expected = YoloFull(model).eval()(x)
         feature_values = YoloBackboneFeatures(model, feature_indices).eval()(x)
+    anchor_offsets: dict[int, tuple[int, int]] = {}
+    cursor = 0
+    for index, value in enumerate(feature_values):
+        anchors = int(value.shape[-2] * value.shape[-1])
+        anchor_offsets[index] = (cursor, cursor + anchors)
+        cursor += anchors
 
     if not full_model_path.exists():
         torch.onnx.export(
@@ -1194,14 +1246,11 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
     for shard, group in enumerate(scale_groups):
         role = f"/Head/Shard/{shard}"
         input_names = [feature_tensor_names[index] for index in group]
-        output_names = [
-            name
-            for scale in group
-            for name in (f"boxes_scale_{scale}", f"scores_scale_{scale}")
-        ]
+        output_names = [f"candidates_shard_{shard}"]
         input_values = tuple(feature_values[index] for index in group)
         with torch.no_grad():
-            outputs = YoloDetectHeadShard(detect, group).eval()(*input_values)
+            outputs = (YoloDetectHeadShard(detect, group, anchor_offsets)
+                       .eval()(*input_values),)
         for name, value in zip(output_names, outputs):
             head_outputs[name] = value
         chunk_output_payloads[role] = npz_payload({
@@ -1211,7 +1260,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         path = output / f"{stem}-{role.strip('/').replace('/', '-')}-{input_size}.onnx"
         if not path.exists():
             torch.onnx.export(
-                YoloDetectHeadShard(detect, group).eval(),
+                YoloDetectHeadShard(detect, group, anchor_offsets).eval(),
                 input_values,
                 str(path),
                 input_names=input_names,
@@ -1225,7 +1274,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             "input_size": input_size,
             "layout": layout,
             "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
-            "role_type": "detect-head-scale-shard",
+            "role_type": "detect-head-scale-shard-candidate-filter",
             "shard": shard,
             "scale_indices": group,
             "input_tensors": input_names,
@@ -1233,11 +1282,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             "final": False,
         }
 
-    merge_inputs = [
-        name
-        for scale in range(len(feature_indices))
-        for name in (f"boxes_scale_{scale}", f"scores_scale_{scale}")
-    ]
+    merge_inputs = [f"candidates_shard_{shard}" for shard in range(len(scale_groups))]
     merge_values = tuple(head_outputs[name] for name in merge_inputs)
     merge_path = output / f"{stem}-DetectMerge-{layout}-{input_size}.onnx"
     if not merge_path.exists():
@@ -1256,7 +1301,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         "input_size": input_size,
         "layout": layout,
         "layout_semantics": YOLO_PARALLEL_DETECT_SCALE_SEMANTICS,
-        "role_type": "detect-merge-decode",
+        "role_type": "detect-merge-global-topk",
         "input_tensors": merge_inputs,
         "output_tensor": "predictions",
         "final": True,
@@ -1305,11 +1350,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         })
 
     for shard, group in enumerate(scale_groups):
-        tensors = [
-            name
-            for scale in group
-            for name in (f"boxes_scale_{scale}", f"scores_scale_{scale}")
-        ]
+        tensors = [f"candidates_shard_{shard}"]
         expected_bytes = sum(_tensor_nbytes(head_outputs[name]) for name in tensors)
         dep = InferenceDependency(
             producers=[f"/Head/Shard/{shard}"],

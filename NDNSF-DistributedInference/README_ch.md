@@ -378,6 +378,18 @@ fan-in edges 使用 producer-local key scope，例如
 C++ hot path 可以独立预取和保存每个 planned input，而不是把多个 producer
 折叠到同一个 scope。
 
+对于 640 像素 YOLO 实验，Detect-scale shard 模式现在使用 candidate-filter
+边界，而不是把原始 Detect head box/score tensors 发送给 `/Merge`。每个
+`/Head/Shard/*` role 会先解码自己负责的 YOLO Detect scales，根据 class score
+保留 top `max_det` candidate anchors，并发布一个 `candidates_shard_*` tensor。
+`/Merge` 再 concat 这些 candidate tensors 并执行全局 YOLO top-k。这样可以在
+ONNX 浮点误差范围内保持 full-model postprocess 结果一致，同时把 Head-to-Merge
+activation 从多 MB 原始 box/score tensors 降到 640 下每条 head edge 约 101 KB，
+也就是 15 个 planned segments。它还没有解决更大的 Backbone-to-Head feature
+transfer：当前 2x2 plan 中这两条边仍约为 2.46 MB 和 410 KB。因此下一步 splitter
+优化应把切点放得更靠后、在可行时 colocate backbone/head work，或者把
+activation bytes、compute saved 和 transfer cost 作为 planner score 的硬指标。
+
 两阶段 YOLO split：
 
 ```bash
@@ -1685,6 +1697,18 @@ Data packets，即每个 observed request 19.55 个 Data packets；按 measured 
 折算，每次 inference 约 20.20 个 NFD out Data packets，约 451 KB NFD
 `nOutBytes`。和前面一样，byte average 只是近似 transport-size ratio，因为 NFD
 byte counters 包含测量 face 上的所有包类型。
+
+对于 640 像素 YOLO native-provider 实验，使用同一个 AI_Lab 拓扑和同一条
+`--parallel-detect-scale-shards --native-providers` 路径，但额外传入
+`--model yolo26n.pt --input-size 640`。当前 candidate-filter split 已经在本地
+和完整导出的 ONNX 模型对齐验证，max absolute difference 约为 `5.8e-4`；本地
+cached chunk benchmark p50 约为 160.75 ms，而完整本地 ONNX graph p50 约为
+88.97 ms。`results/yolo26n_640_2x2_candidate_split_60s_latest` 中的一次
+代表性 60 秒 MiniNDN 运行输出 `YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK`，warm p50
+为 5331.88 ms，p95 为 10086.67 ms；每个 observed request 约 956 个 NFD out
+Data packets，约 7.13 MB NFD out bytes。这个结果还不是好的 distributed speedup
+证据；它说明 Head-to-Merge candidate-filter 边界已经工作，但 640 下剩余的
+Backbone-to-Head feature transfer 和 MiniNDN/NFD transport cost 仍然主导运行时间。
 
 当前 native provider 路径在 DI MiniNDN native-provider 实验中默认使用
 deterministic activation names、active-put segment delivery 和 direct Selection

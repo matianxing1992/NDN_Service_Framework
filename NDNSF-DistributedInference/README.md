@@ -1640,6 +1640,20 @@ policy and `native-execution-plan.json` keep every fan-in edge scope unique, so
 `/Merge` receives one planned input per head shard and can batch-wait for all
 required inputs.
 
+For the 640-pixel YOLO experiment, the Detect-scale shard mode now uses a
+candidate-filter boundary instead of sending raw Detect head tensors to
+`/Merge`. Each `/Head/Shard/*` role decodes the boxes for its assigned YOLO
+Detect scales, keeps the top `max_det` candidate anchors by class score, and
+publishes one `candidates_shard_*` tensor. `/Merge` concatenates those candidate
+tensors and runs the global YOLO top-k step. This preserves the full-model
+postprocess result within ONNX floating-point tolerance while reducing the
+Head-to-Merge activation from multi-megabyte raw box/score tensors to about
+101 KB, or 15 planned segments, per head edge at 640. It does not solve the
+larger Backbone-to-Head feature transfer: in the current 2x2 plan those edges
+are still roughly 2.46 MB and 410 KB, so the next splitter work should move the
+cut later, colocate backbone and head work when possible, or score candidate
+plans by activation bytes, compute saved, and transfer cost.
+
 The older `split_model.py --parallel-output-shards` mode remains available as a
 minimal fan-in correctness scaffold. It should not be used as a performance
 claim because its Stage-0 shards duplicate upstream YOLO compute.
@@ -1887,6 +1901,21 @@ observed request. The measured-window ratio was 20.20 NFD out Data packets per
 inference and about 451 KB of NFD `nOutBytes` per measured inference. As above,
 the byte average is an approximate transport-size ratio because NFD byte
 counters include all packet types on the measured faces.
+
+For the 640-pixel YOLO native-provider experiment, use the same AI_Lab topology
+and the same `--parallel-detect-scale-shards --native-providers` path, but pass
+`--model yolo26n.pt --input-size 640`. The current candidate-filter split was
+validated locally against the full exported ONNX model with max absolute
+difference about `5.8e-4`, and its local cached chunk benchmark produced about
+160.75 ms p50 versus about 88.97 ms p50 for the full local ONNX graph. A
+representative 60-second MiniNDN run in
+`results/yolo26n_640_2x2_candidate_split_60s_latest` produced
+`YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK`, warm p50 5331.88 ms, p95 10086.67 ms,
+about 956 NFD out Data packets per observed request, and about 7.13 MB of
+NFD out bytes per observed request. This is not yet a good distributed speedup
+result; it is evidence that the Head-to-Merge candidate-filter boundary works,
+while the remaining Backbone-to-Head feature transfer and MiniNDN/NFD transport
+cost dominate the 640 run.
 
 The current native provider path uses deterministic activation names,
 active-put segment delivery, and direct Selection prefetch by default in the DI

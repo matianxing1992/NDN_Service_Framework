@@ -236,6 +236,9 @@ inputBundleFor(const RoleExecutionContext& ctx,
   }
 
   for (const auto& item : ctx.inputsByScope) {
+    if (!item.second.name.empty() && item.second.name == inputName) {
+      return item.second;
+    }
     if (!isEncodedTensorBundle(item.second.payload)) {
       continue;
     }

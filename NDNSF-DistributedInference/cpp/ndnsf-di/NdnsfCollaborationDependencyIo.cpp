@@ -37,7 +37,7 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string&, const Dependen
         edge.plannedDataName);
     }
     TensorBundle bundle;
-    bundle.name = edge.plannedDataName;
+    bundle.name = edge.tensors.size() == 1 ? edge.tensors.front() : edge.plannedDataName;
     bundle.payload.assign(payload->data(), payload->data() + payload->size());
     bundle.expectedSegments = edge.expectedSegments;
     bundle.expectedBytes = edge.expectedBytes;

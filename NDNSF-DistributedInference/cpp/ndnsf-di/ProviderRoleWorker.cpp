@@ -201,6 +201,14 @@ ProviderRoleWorker::outputForEdge(const std::map<std::string, TensorBundle>& out
   }
 
   if (!edge.tensors.empty()) {
+    if (edge.tensors.size() == 1) {
+      const auto tensorOutput = outputsByScope.find(edge.tensors.front());
+      if (tensorOutput != outputsByScope.end()) {
+        TensorBundle bundle = tensorOutput->second;
+        bundle.name = edge.tensors.front();
+        return bundle;
+      }
+    }
     for (const auto& item : outputsByScope) {
       if (isEncodedTensorBundle(item.second.payload)) {
         try {
