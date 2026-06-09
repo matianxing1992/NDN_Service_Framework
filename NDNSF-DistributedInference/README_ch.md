@@ -1976,6 +1976,20 @@ ONNX run sum p50 约 2.99 ms。相比之下，`yolov8n.pt --input-size 32` 在
 tiny-model baseline 的退化；它是更重的模型和输出形状，应作为单独 benchmark line
 跟踪。
 
+分析 outer control 时，应使用窄 `--control-timing` 运行，而不是 packet trace。
+`results/yolo26n_32_2x2_current_control_60s_latest` 得到 warm p50 58.10 ms、
+p95 84.53 ms。该运行显示，SVS propagation 本身不是 p50 主瓶颈：Request SVS 到
+provider 收到 request 约 3.33 ms p50，ACK SVS 到 user pre-decrypt 约
+3.23 ms p50，Selection SVS 到 provider 收到 selection 约 3.26 ms p50，
+Response SVS 到 user observe 约 3.28 ms p50。user 在 request publish 后约
+7.06 ms p50 看到 first ACK，ACK matching 约 0.71 ms p50；selected providers
+在 user put selection Data 后约 3.02 ms p50 观察到 direct Selection prefetch
+Data。更大的 `Selection -> Response` 区间主要包含 final provider execution/dataflow：
+final-provider execution-start-to-done 约 30.77 ms p50，而 selection-received 到
+execution-start、response decrypt 到 callback 在 p50 下都低于 1 ms。因此，下一步优化
+应优先看 final Merge/dataflow 和 activation fetch latency，而不是继续压缩
+SelectionMessage 体积。
+
 另一次 edge RTT 诊断运行保存在
 `results/yolo_2x2_ailab_edge_rtt_60s_latest`。它使用同一个 AI_Lab 拓扑，但额外
 在 generated dependency edges 上启动短 ndnping probe，因此应被视为解释延迟来源

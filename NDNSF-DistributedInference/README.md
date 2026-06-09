@@ -2207,6 +2207,22 @@ about 33.34 ms, and ONNX run sum p50 about 2.99 ms. By contrast,
 the `yolo26n.pt` tiny-model baseline; it is a heavier model/output shape and
 must be tracked as a separate benchmark line.
 
+For outer-control analysis, use a narrow `--control-timing` run rather than
+packet tracing. `results/yolo26n_32_2x2_current_control_60s_latest` produced
+warm p50 58.10 ms and p95 84.53 ms. In that run, SVS propagation was not the
+p50 bottleneck by itself: Request SVS to provider request receive was about
+3.33 ms p50, ACK SVS to user pre-decrypt about 3.23 ms p50, Selection SVS to
+provider selection receive about 3.26 ms p50, and Response SVS to user observe
+about 3.28 ms p50. The user saw first ACK about 7.06 ms after request publish,
+ACK matching took about 0.71 ms p50, and selected providers observed direct
+Selection prefetch Data about 3.02 ms p50 after the user put the selection
+Data. The larger `Selection -> Response` interval mostly contained final
+provider execution/dataflow: final-provider execution-start-to-done was about
+30.77 ms p50, while selection-received-to-execution-start and response decrypt
+to callback were both sub-millisecond at p50. This evidence says the next
+optimization target should be final Merge/dataflow and activation fetch
+latency, not further SelectionMessage size compression.
+
 An edge-RTT diagnostic run is preserved at
 `results/yolo_2x2_ailab_edge_rtt_60s_latest`. It uses the same AI_Lab topology
 but also starts short ndnping probes along the generated dependency edges, so it
