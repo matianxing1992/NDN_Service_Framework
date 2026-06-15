@@ -1,10 +1,12 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
@@ -16,8 +18,10 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <future>
+#include <ndn-cxx/util/sha256.hpp>
 #include <sstream>
 #include <map>
 #include <mutex>
@@ -39,9 +43,25 @@ bundle(std::string name, std::string text)
 }
 
 std::string
+sha256Hex(const std::string& text)
+{
+  ndn::util::Sha256 digest;
+  digest.update(ndn::span<const uint8_t>(
+    reinterpret_cast<const uint8_t*>(text.data()),
+    text.size()));
+  return digest.toString();
+}
+
+std::string
 payloadText(const TensorBundle& value)
 {
   return std::string(value.payload.begin(), value.payload.end());
+}
+
+std::string
+ackPayloadText(const ndn_service_framework::ServiceProvider::AckDecision& decision)
+{
+  return std::string(decision.payload.begin(), decision.payload.end());
 }
 
 std::vector<uint8_t>
@@ -1195,6 +1215,205 @@ BOOST_AUTO_TEST_CASE(NativeServiceManifestBuildsRunnerSpecsByRole)
   BOOST_CHECK_EQUAL(backbone.metadata.at("kind"), "onnx-model");
 }
 
+BOOST_AUTO_TEST_CASE(NativeArtifactMaterializerCachesLocalPayloadReferences)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+                    "ndnsf-di-native-artifact-materializer-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  const auto payloadPath = root / "source.onnx";
+  const std::string payload = "fake-native-onnx-model";
+  {
+    std::ofstream output(payloadPath, std::ios::binary);
+    output << payload;
+  }
+
+  NativeModelRunnerSpec spec;
+  spec.role = "/Backbone";
+  spec.backend = "onnxruntime";
+  spec.kind = "onnx-model";
+  spec.path = "/old/path/backbone.onnx";
+  std::map<std::string, NativeModelRunnerSpec> specs{{spec.role, spec}};
+
+  std::ostringstream json;
+  json << R"JSON({
+    "schemaVersion": 1,
+    "roles": {
+      "/Backbone": {
+        "model": {
+          "filename": "backbone.onnx",
+          "localPayloadPath": ")JSON" << payloadPath.string() << R"JSON(",
+          "repoManifest": {
+            "objectName": "/repo/model/backbone",
+            "objectType": "model-artifact",
+            "sha256": ")JSON" << sha256Hex(payload) << R"JSON(",
+            "size": )JSON" << payload.size() << R"JSON(,
+            "segmentCount": 1,
+            "replicaNodes": ["/repo/A"]
+          },
+          "largeDataReference": {
+            "source": "repo-manifest",
+            "dataName": "/repo/model/backbone"
+          }
+        }
+      }
+    }
+  })JSON";
+  std::istringstream input(json.str());
+  NativeArtifactMaterializerOptions options;
+  options.cacheDir = (root / "cache").string();
+  const auto materialized = materializeNativeModelArtifactsFromReferencesJson(
+    specs,
+    input,
+    options);
+
+  BOOST_REQUIRE(materialized.count("/Backbone") == 1);
+  const auto& updated = materialized.at("/Backbone");
+  BOOST_CHECK_NE(updated.path, spec.path);
+  BOOST_CHECK_EQUAL(updated.metadata.at("materializedFrom"), "artifact-references");
+  BOOST_CHECK(std::filesystem::exists(updated.path));
+  std::ifstream cached(updated.path, std::ios::binary);
+  const std::string cachedPayload{
+    std::istreambuf_iterator<char>(cached),
+    std::istreambuf_iterator<char>()};
+  BOOST_CHECK_EQUAL(cachedPayload, payload);
+}
+
+BOOST_AUTO_TEST_CASE(NativeArtifactMaterializerRejectsHashMismatch)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+                    "ndnsf-di-native-artifact-materializer-hash-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  const auto payloadPath = root / "source.onnx";
+  {
+    std::ofstream output(payloadPath, std::ios::binary);
+    output << "bad-payload";
+  }
+
+  NativeModelRunnerSpec spec;
+  spec.role = "/Backbone";
+  spec.backend = "onnxruntime";
+  spec.kind = "onnx-model";
+  std::map<std::string, NativeModelRunnerSpec> specs{{spec.role, spec}};
+
+  std::ostringstream json;
+  json << R"JSON({
+    "roles": {
+      "/Backbone": {
+        "model": {
+          "filename": "backbone.onnx",
+          "localPayloadPath": ")JSON" << payloadPath.string() << R"JSON(",
+          "repoManifest": {
+            "objectName": "/repo/model/backbone",
+            "objectType": "model-artifact",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "size": 11,
+            "segmentCount": 1
+          }
+        }
+      }
+    }
+  })JSON";
+  std::istringstream input(json.str());
+  BOOST_CHECK_THROW(
+    materializeNativeModelArtifactsFromReferencesJson(specs, input),
+    std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(NativeArtifactMaterializerFetchesRepoOnlyReference)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+                    "ndnsf-di-native-artifact-materializer-repo-fetch-test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  const std::string payload = "repo-backed-native-onnx-model";
+
+  NativeModelRunnerSpec spec;
+  spec.role = "/Backbone";
+  spec.backend = "onnxruntime";
+  spec.kind = "onnx-model";
+  spec.path = "/old/path/backbone.onnx";
+  std::map<std::string, NativeModelRunnerSpec> specs{{spec.role, spec}};
+
+  std::ostringstream json;
+  json << R"JSON({
+    "schemaVersion": 1,
+    "roles": {
+      "/Backbone": {
+        "model": {
+          "filename": "backbone.onnx",
+          "repoManifest": {
+            "objectName": "/repo/model/backbone",
+            "objectType": "model-artifact",
+            "sha256": ")JSON" << sha256Hex(payload) << R"JSON(",
+            "size": )JSON" << payload.size() << R"JSON(,
+            "segmentCount": 1,
+            "replicaNodes": ["/repo/A"]
+          },
+          "largeDataReference": {
+            "source": "repo-manifest",
+            "dataName": "/repo/model/backbone"
+          }
+        }
+      }
+    }
+  })JSON";
+
+  NativeArtifactMaterializerOptions options;
+  options.cacheDir = (root / "cache").string();
+  bool fetched = false;
+  options.repoFetchFromManifest = [&] (const std::string& objectName,
+                                       const std::string& repoManifestJson) {
+    BOOST_CHECK_EQUAL(objectName, "/repo/model/backbone");
+    BOOST_CHECK(repoManifestJson.find("\"segmentCount\":\"1\"") != std::string::npos ||
+                repoManifestJson.find("\"segmentCount\": \"1\"") != std::string::npos ||
+                repoManifestJson.find("\"segmentCount\": 1") != std::string::npos);
+    fetched = true;
+    return std::vector<std::uint8_t>(payload.begin(), payload.end());
+  };
+
+  std::istringstream input(json.str());
+  const auto materialized = materializeNativeModelArtifactsFromReferencesJson(
+    specs,
+    input,
+    options);
+
+  BOOST_CHECK(fetched);
+  const auto& updated = materialized.at("/Backbone");
+  BOOST_CHECK_NE(updated.path, spec.path);
+  BOOST_CHECK_EQUAL(updated.metadata.at("materializedFrom"), "artifact-references");
+  BOOST_CHECK(std::filesystem::exists(updated.path));
+}
+
+BOOST_AUTO_TEST_CASE(NativeArtifactMaterializerRejectsRepoOnlyReferenceWithoutFetcher)
+{
+  NativeModelRunnerSpec spec;
+  spec.role = "/Backbone";
+  spec.backend = "onnxruntime";
+  spec.kind = "onnx-model";
+  std::map<std::string, NativeModelRunnerSpec> specs{{spec.role, spec}};
+
+  std::istringstream input(R"JSON({
+    "roles": {
+      "/Backbone": {
+        "model": {
+          "filename": "backbone.onnx",
+          "repoManifest": {
+            "objectName": "/repo/model/backbone",
+            "sha256": "00",
+            "size": 1
+          }
+        }
+      }
+    }
+  })JSON");
+
+  BOOST_CHECK_THROW(
+    materializeNativeModelArtifactsFromReferencesJson(specs, input),
+    std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonDrivesAsyncFrontierRuntime)
 {
   std::istringstream input(R"JSON({
@@ -1718,9 +1937,43 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderSessionSkelet
                       resultsByRole.at("/Merge").inputTimings.size());
   }
 
-  BOOST_CHECK_THROW(
+BOOST_CHECK_THROW(
     session.registerRunner(NativeModelRunnerSpec{"/Unknown", "onnx-model", "test-backend", "", {}}),
     std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
+{
+  NativeProviderReadinessState readiness;
+
+  readiness.markInstalling("downloading role artifacts");
+  auto installingAck = readiness.makeAckDecision("/Backbone,/Merge");
+  BOOST_CHECK(!installingAck.status);
+  BOOST_CHECK_EQUAL(readiness.statusText(), "installing");
+  BOOST_CHECK(installingAck.message.find("installing") != std::string::npos);
+  BOOST_CHECK(ackPayloadText(installingAck).find("runtimeStatus=installing") !=
+              std::string::npos);
+  BOOST_CHECK(ackPayloadText(installingAck).find("hasModel=0") != std::string::npos);
+
+  readiness.markFailed("artifact hash mismatch");
+  auto failedAck = readiness.makeAckDecision("/Backbone,/Merge");
+  BOOST_CHECK(!failedAck.status);
+  BOOST_CHECK_EQUAL(readiness.statusText(), "failed");
+  BOOST_CHECK(failedAck.message.find("artifact hash mismatch") != std::string::npos);
+  BOOST_CHECK(ackPayloadText(failedAck).find("runtimeStatus=failed") !=
+              std::string::npos);
+  BOOST_CHECK(ackPayloadText(failedAck).find("hasModel=0") != std::string::npos);
+
+  readiness.markReady("native runner specs installed");
+  auto readyAck = readiness.makeAckDecision("/Backbone,/Merge");
+  BOOST_CHECK(readyAck.status);
+  BOOST_CHECK(readiness.isReady());
+  BOOST_CHECK_EQUAL(readiness.statusText(), "ready");
+  BOOST_CHECK(readyAck.message.find("native runner specs installed") !=
+              std::string::npos);
+  BOOST_CHECK(ackPayloadText(readyAck).find("runtimeStatus=ready") !=
+              std::string::npos);
+  BOOST_CHECK(ackPayloadText(readyAck).find("hasModel=1") != std::string::npos);
 }
 
 } // namespace ndnsf::di::test

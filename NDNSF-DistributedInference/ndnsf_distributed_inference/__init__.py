@@ -44,11 +44,30 @@ from .repo import (
     repo_manifest_from_large_data_reference,
     select_replicas,
 )
+from .runtime_compatibility import (
+    RUNTIME_COMPATIBILITY,
+    default_runtime_backend,
+    supported_runtime_backends,
+    validate_runtime_compatibility,
+)
+from .artifact_deployment import (
+    ArtifactProvisioningState,
+    MaterializedArtifact,
+    artifact_references_need_repo_client,
+    load_artifact_references,
+    materialize_role_artifacts,
+    materialized_path,
+    role_artifact_entries,
+)
 from .llm_stub_planner import (
+    LLM_RUNTIME_COMPATIBILITY,
+    default_llm_runtime_backend,
     llm_planner_registry,
     llm_planner_request,
     llm_splitter_output_from_result,
+    llm_supported_runtime_backends,
     llm_stub_plan_from_request,
+    validate_llm_runtime_compatibility,
 )
 from .onnx_graph import (
     OnnxChunkSpec,
@@ -124,6 +143,7 @@ except ImportError:  # pragma: no cover - optional when repo binding is not inst
     GenericRepoClient = None
 
 __all__ = [
+    "ArtifactProvisioningState",
     "ArtifactSpec",
     "ArtifactSecurityPolicy",
     "APPClient",
@@ -144,6 +164,7 @@ __all__ = [
     "InferenceResult",
     "InferenceRole",
     "GenericRepoClient",
+    "MaterializedArtifact",
     "ModelPart",
     "ModelFamily",
     "ModelFormat",
@@ -155,9 +176,16 @@ __all__ = [
     "PlannerResult",
     "ProviderRuntimeContext",
     "LocalDistributedRepo",
+    "RUNTIME_COMPATIBILITY",
+    "default_runtime_backend",
+    "supported_runtime_backends",
+    "validate_runtime_compatibility",
+    "LLM_RUNTIME_COMPATIBILITY",
+    "default_llm_runtime_backend",
     "llm_planner_registry",
     "llm_planner_request",
     "llm_splitter_output_from_result",
+    "llm_supported_runtime_backends",
     "llm_stub_plan_from_request",
     "NetworkDistributedRepoClient",
     "OnnxChunkSpec",
@@ -171,9 +199,14 @@ __all__ = [
     "RepoNodeApp",
     "RepoPlacement",
     "large_data_reference_from_repo_manifest",
+    "artifact_references_need_repo_client",
+    "load_artifact_references",
+    "materialize_role_artifacts",
+    "materialized_path",
     "repo_artifact_reference",
     "repo_manifest_from_artifact_reference",
     "repo_manifest_from_large_data_reference",
+    "role_artifact_entries",
     "RoleDependencyView",
     "RuntimeSpec",
     "SandboxPolicy",
@@ -206,6 +239,7 @@ __all__ = [
     "select_replicas",
     "select_tensor_payload",
     "stage_shard_role",
+    "validate_llm_runtime_compatibility",
     "verify_tensor_payload",
     "write_onnx_graph_summary",
     "write_policy_bundle",

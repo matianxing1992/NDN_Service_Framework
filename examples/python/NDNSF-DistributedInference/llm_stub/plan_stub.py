@@ -27,6 +27,12 @@ def main() -> int:
     parser.add_argument("--model-format", default="hf-transformers",
                         help="artifact format such as hf-transformers, gguf, "
                              "safetensors, onnx, or custom")
+    parser.add_argument("--runtime-backend", default="",
+                        help="LLM runtime backend. If omitted, the planner "
+                             "uses the default backend for the model format. "
+                             "Examples: safetensors->vllm/transformers, "
+                             "gguf->llama.cpp/ollama, "
+                             "tensorrt-engine->tensorrt-llm.")
     parser.add_argument("--service", default="/AI/LLM/StubInference")
     parser.add_argument("--stages", type=int, default=2)
     parser.add_argument("--shards", type=int, default=2)
@@ -34,15 +40,19 @@ def main() -> int:
     parser.add_argument("--policy", default="")
     args = parser.parse_args()
 
-    request = llm_planner_request(
-        planner_kind=args.planner_kind,
-        model_path=args.model,
-        model_format=args.model_format,
-        output_dir=args.out_dir,
-        service=args.service,
-        stages=args.stages,
-        shards=args.shards,
-    )
+    try:
+        request = llm_planner_request(
+            planner_kind=args.planner_kind,
+            model_path=args.model,
+            model_format=args.model_format,
+            runtime_backend=args.runtime_backend,
+            output_dir=args.out_dir,
+            service=args.service,
+            stages=args.stages,
+            shards=args.shards,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     result = llm_planner_registry().plan(request)
     output = llm_splitter_output_from_result(result)
     policy = Path(args.policy) if args.policy else Path(args.out_dir) / "llm_policy.yaml"
@@ -51,6 +61,7 @@ def main() -> int:
         "LLM_STUB_POLICY",
         f"planner_kind={result.normalized_planner_kind()}",
         f"model_format={request.normalized_model_format()}",
+        f"runtime_backend={result.metadata.get('runtimeBackend', '')}",
         f"roles={len(result.split_plan['roles'])}",
         f"dependencies={len(result.split_plan['dependencies'])}",
         f"policy={policy}",

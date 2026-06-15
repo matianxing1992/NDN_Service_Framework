@@ -7,8 +7,11 @@ import subprocess
 
 from ndnsf_distributed_inference import (
     APPProvider,
+    ArtifactProvisioningState,
     ProviderRuntimeContext,
     execute_onnx_dependency_chunk,
+    materialize_role_artifacts,
+    materialized_path,
     prefetch_dependency_inputs,
 )
 
@@ -24,6 +27,45 @@ from yolo_2x2_lib import (
 
 
 ACTIVE_SERVICE = ""
+
+
+def _roles_from_args(provider: APPProvider, service: str, role: str, roles: str):
+    if role:
+        return [role]
+    if isinstance(roles, str) and roles.lower() == "all":
+        return provider.roles_for_service(service)
+    return [part.strip() for part in roles.split(",") if part.strip()]
+
+
+def _install_yolo_artifacts(
+    *,
+    artifact_references: str,
+    artifact_cache_dir: str,
+    roles: list[str],
+    local_artifacts: dict[str, dict],
+) -> None:
+    for role in roles:
+        artifacts = materialize_role_artifacts(
+            artifact_references,
+            role,
+            artifact_cache_dir,
+        )
+        model = materialized_path(artifacts, "model")
+        artifact = artifacts["model"]
+        local_artifacts[role] = {
+            "path": str(model),
+            "artifact": artifact.manifest.object_name,
+            "filename": model.name,
+            "kind": artifact.manifest.object_type or "onnx-model",
+            "backend": "onnxruntime",
+            "metadata": dict(artifact.metadata or {}),
+        }
+    print(
+        "YOLO_ARTIFACTS_MATERIALIZED",
+        f"roles={','.join(roles)}",
+        f"cache={artifact_cache_dir}",
+        flush=True,
+    )
 
 
 def handle_role(ctx: ProviderRuntimeContext) -> None:
@@ -120,6 +162,13 @@ def main() -> int:
                         help="kept for older commands; providers can provision dynamically by default")
     parser.add_argument("--deployed-models", action="store_true",
                         help="load role artifacts from local paths in the service policy")
+    parser.add_argument("--artifact-references", default="",
+                        help="Repo-backed artifact reference file to install before serving ONNX roles")
+    parser.add_argument("--artifact-cache-dir", default="/tmp/ndnsf-di-yolo-artifacts",
+                        help="Provider-local cache for materialized ONNX/runtime artifacts")
+    parser.add_argument("--sync-materialize-before-serve", action="store_true",
+                        help="Wait for artifact installation before registering service capability")
+    parser.add_argument("--install-timeout-s", type=float, default=300.0)
     args = parser.parse_args()
     if args.dry_run:
         print("Run YOLO 2x2 provider", args.provider_id, args.role or args.roles)
@@ -135,20 +184,48 @@ def main() -> int:
         service = yolo_inference_service(provider.deployment)
         global ACTIVE_SERVICE
         ACTIVE_SERVICE = service
+        selected_roles = _roles_from_args(provider, service, args.role, args.roles)
+        local_artifacts: dict[str, dict] = {}
+        readiness = None
+        if args.artifact_references:
+            provisioning = ArtifactProvisioningState(
+                component="yolo onnx artifacts",
+                initial_status="installing",
+                initial_message="materializing ONNX role artifacts",
+            )
+            provisioning.start_install(
+                lambda: _install_yolo_artifacts(
+                    artifact_references=args.artifact_references,
+                    artifact_cache_dir=args.artifact_cache_dir,
+                    roles=selected_roles,
+                    local_artifacts=local_artifacts,
+                ),
+                installing_message="materializing ONNX role artifacts",
+                ready_message="ONNX role artifacts ready",
+                thread_name="ndnsf-di-yolo-artifact-install",
+                start_marker="YOLO_ARTIFACT_INSTALL_STARTED",
+                fail_marker="YOLO_ARTIFACT_INSTALL_FAILED",
+            )
+            readiness = provisioning.ack
+            if args.sync_materialize_before_serve:
+                if not provisioning.wait_ready(args.install_timeout_s):
+                    raise RuntimeError("YOLO artifacts did not become ready")
         service_has_artifacts = bool(provider.deployment.service_policy(service).artifacts)
         dynamic_provisioning = (
             args.dynamic_provisioning or
-            (service_has_artifacts and not args.deployed_models)
+            (service_has_artifacts and not args.deployed_models and not args.artifact_references)
         )
         provider.serve_service(
             service=service,
-            roles=[args.role] if args.role else args.roles,
+            roles=selected_roles,
             handler=handle_role,
             backends=["onnxruntime"],
             temp_dir=args.temp_dir or None,
-            has_model=not dynamic_provisioning,
+            has_model=(not dynamic_provisioning) or bool(args.artifact_references),
             can_provision=dynamic_provisioning,
             allow_executables=dynamic_provisioning,
+            readiness_probe=readiness,
+            local_artifacts=local_artifacts,
         )
         provider.run()
     return 0

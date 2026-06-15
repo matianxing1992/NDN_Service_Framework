@@ -48,6 +48,26 @@ class RegressionCase:
 
 
 CASES = {
+    "runtime-compat": RegressionCase(
+        name="runtime-compat",
+        script=REPO / "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py",
+        success_marker="NDNSF_DI_RUNTIME_COMPATIBILITY_SMOKE_OK",
+        description="planner registry, policy YAML, and LLM stub CLI runtime compatibility contract",
+        use_sudo=False,
+    ),
+    "llama-server-local": RegressionCase(
+        name="llama-server-local",
+        script=REPO / "Experiments/NDNSF_DI_LlamaServer_Smoke.py",
+        success_marker="NDNSF_DI_LLAMA_SERVER_SMOKE_OK",
+        description="Qwen GGUF + llama-server policy/native-plan/provider-adapter smoke",
+        use_sudo=False,
+    ),
+    "llama-server-minindn": RegressionCase(
+        name="llama-server-minindn",
+        script=REPO / "Experiments/NDNSF_DI_LlamaServer_Minindn.py",
+        success_marker="LLAMA_SERVER_MININDN_REPO_BACKED_OK",
+        description="Qwen GGUF + llama-server repo-backed MiniNDN deployment smoke",
+    ),
     "app-api": RegressionCase(
         name="app-api",
         script=REPO / "Experiments/NDNSF_DI_AppApi_Smoke.py",
@@ -78,8 +98,15 @@ CASES = {
             "--parallel-detect-scale-shards",
             "--native-providers",
             "--cold-requests", "1",
-            "--warm-requests", "1",
-            "--ack-timeout-ms", "300",
+            # This case is a repo-backed native-provider artifact deployment
+            # smoke. Continuous warm requests exercise a separate SVS/ACK
+            # stability benchmark and should not gate artifact materialization.
+            "--warm-requests", "0",
+            # This quick regression validates repo-backed native provider
+            # startup and dataflow, not low-latency ACK tuning. Keep a stable
+            # ACK window so all collaboration roles are present before
+            # selection.
+            "--ack-timeout-ms", "1000",
             "--timeout-ms", "10000",
             "--quiet-perf-logs",
         ),
@@ -108,6 +135,8 @@ CASES = {
 def selected_cases(selection: str) -> list[RegressionCase]:
     if selection == "all":
         return [
+            CASES["runtime-compat"],
+            CASES["llama-server-local"],
             CASES["app-api"],
             CASES["onnx-executor"],
             CASES["auto-split"],
@@ -155,7 +184,8 @@ def main() -> int:
         "--case",
         choices=[
             "app-api", "onnx-executor", "auto-split", "yolo-2x2",
-            "yolo-layout", "yolo-layout-local", "all",
+            "yolo-layout", "yolo-layout-local", "runtime-compat",
+            "llama-server-local", "llama-server-minindn", "all",
         ],
         default="auto-split",
         help="Regression case to run. Default keeps the smoke test short.",

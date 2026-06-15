@@ -159,7 +159,8 @@ python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py
 默认 suite 会先对更新过的 NDNSF、Repo、DI 和 UAV MiniNDN 实验脚本做
 syntax/import sanity 检查，然后调用较长旧实验 launcher 的 no-MiniNDN
 quick-smoke 分支。之后它会覆盖 Python HELLO MiniNDN smoke、DistributedRepo 单对象
-MiniNDN quick smoke、DI 本地 YOLO layout smoke，以及 UAV launcher quick smoke。
+MiniNDN quick smoke、DI runtime-compatibility contract smoke、DI Qwen GGUF +
+llama-server 本地 smoke、DI 本地 YOLO layout smoke，以及 UAV launcher quick smoke。
 较慢的 DI native-provider MiniNDN smoke 默认不跑；需要时显式加：
 
 ```bash

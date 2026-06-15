@@ -39,6 +39,11 @@ def main() -> int:
                             "llm-tensor-parallel",
                         ])
     parser.add_argument("--model-format", default="hf-transformers")
+    parser.add_argument("--runtime-backend", default="",
+                        help="Validate the LLM artifact/runtime pairing. "
+                             "Examples: safetensors->vllm, "
+                             "gguf->llama.cpp, "
+                             "tensorrt-engine->tensorrt-llm.")
     parser.add_argument("--model", default="/Model/Llama/Stub")
     parser.add_argument("--service", default="/AI/LLM/StubInference")
     parser.add_argument("--stages", type=int, default=2)
@@ -65,6 +70,7 @@ def main() -> int:
         "--planner-kind", args.planner_kind,
         "--model", args.model,
         "--model-format", args.model_format,
+        "--runtime-backend", args.runtime_backend,
         "--service", args.service,
         "--stages", str(args.stages),
         "--shards", str(args.shards),
@@ -74,7 +80,8 @@ def main() -> int:
 
     run([
         sys.executable,
-        "-m", "ndnsf_distributed_inference.policy",
+        "-c",
+        "from ndnsf_distributed_inference.policy import main; raise SystemExit(main())",
         "--config", str(policy),
         "--out-dir", str(generated),
         "--print-summary",
@@ -92,6 +99,13 @@ def main() -> int:
         raise SystemExit("LLM native plan did not carry requested modelFormat")
     if service.get("plannerKind") != args.planner_kind:
         raise SystemExit("LLM native plan did not carry requested plannerKind")
+    runtime_backend = service.get("planner", {}).get("runtimeBackend", "")
+    if not runtime_backend:
+        raise SystemExit("LLM native plan did not carry planner.runtimeBackend")
+    if args.runtime_backend and runtime_backend != args.runtime_backend:
+        raise SystemExit(
+            "LLM native plan runtimeBackend mismatch: "
+            f"expected {args.runtime_backend}, got {runtime_backend}")
 
     run([
         "build/examples/di-native-plan-schema-smoke",
@@ -106,6 +120,7 @@ def main() -> int:
         "LLM_STUB_NATIVE_PLAN_SMOKE_OK",
         f"planner_kind={args.planner_kind}",
         f"model_format={args.model_format}",
+        f"runtime_backend={runtime_backend}",
         f"roles={len(service.get('roles', []))}",
         f"dependencies={len(service.get('dependencies', []))}",
         f"native_plan={native_plan}",

@@ -19,6 +19,12 @@ from .planner_registry import (
     PlannerRequest,
     PlannerResult,
 )
+from .runtime_compatibility import (
+    RUNTIME_COMPATIBILITY,
+    default_runtime_backend,
+    supported_runtime_backends,
+    validate_runtime_compatibility,
+)
 from .splitter import SplitServiceSpec, SplitterOutput
 
 
@@ -27,6 +33,29 @@ DEFAULT_LLM_CONTROLLER = "/NDNSF-DistributeInference/example/controller"
 DEFAULT_LLM_GROUP = "/NDNSF-DistributeInference/example/group"
 DEFAULT_LLM_USER = "/NDNSF-DistributeInference/example/user"
 DEFAULT_LLM_PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
+
+LLM_RUNTIME_COMPATIBILITY: dict[str, tuple[str, ...]] = dict(
+    RUNTIME_COMPATIBILITY[ModelFamily.LLM.value])
+
+
+def llm_supported_runtime_backends(model_format: str | ModelFormat) -> tuple[str, ...]:
+    return supported_runtime_backends(ModelFamily.LLM, model_format)
+
+
+def default_llm_runtime_backend(model_format: str | ModelFormat) -> str:
+    return default_runtime_backend(ModelFamily.LLM, model_format)
+
+
+def validate_llm_runtime_compatibility(
+    model_format: str | ModelFormat,
+    runtime_backend: str,
+) -> str:
+    return validate_runtime_compatibility(
+        ModelFamily.LLM,
+        model_format,
+        runtime_backend,
+        require_known=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -113,6 +142,8 @@ def _llm_tensor_parallel_shape(shards: int) -> LlmPlannerShape:
 
 def llm_stub_plan_from_request(request: PlannerRequest) -> PlannerResult:
     planner_kind = request.normalized_planner_kind()
+    model_format = request.normalized_model_format()
+    runtime_backend = request.validated_runtime_backend(require_known=True)
     stages = _positive_int(request.option("stages", 2), 2)
     shards = _positive_int(request.option("shards", 2), 2)
 
@@ -129,7 +160,8 @@ def llm_stub_plan_from_request(request: PlannerRequest) -> PlannerResult:
         "service": str(request.option("service", DEFAULT_LLM_SERVICE)),
         "model": str(request.model_path),
         "model_family": request.normalized_model_family(),
-        "model_format": request.normalized_model_format(),
+        "model_format": model_format,
+        "runtime_backend": runtime_backend,
         "planner_kind": planner_kind,
         "roles": list(shape.roles),
         "dependencies": list(shape.dependencies),
@@ -142,6 +174,8 @@ def llm_stub_plan_from_request(request: PlannerRequest) -> PlannerResult:
         score_summary={
             "roleCount": len(shape.roles),
             "dependencyCount": len(shape.dependencies),
+            "modelFormat": model_format,
+            "runtimeBackend": runtime_backend,
             "executionImplemented": False,
         },
         selected_candidate={
@@ -151,7 +185,9 @@ def llm_stub_plan_from_request(request: PlannerRequest) -> PlannerResult:
         metadata={
             "stub": True,
             "executionImplemented": False,
-            "modelFormat": request.normalized_model_format(),
+            "modelFormat": model_format,
+            "runtimeBackend": runtime_backend,
+            "compatibleRuntimeBackends": list(llm_supported_runtime_backends(model_format)),
         },
     )
 
@@ -182,18 +218,22 @@ def llm_planner_request(
     output_dir: str | Path,
     model_format: str | ModelFormat = ModelFormat.HF_TRANSFORMERS,
     service: str = DEFAULT_LLM_SERVICE,
+    runtime_backend: str = "",
     stages: int = 2,
     shards: int = 2,
 ) -> PlannerRequest:
+    selected_backend = validate_llm_runtime_compatibility(model_format, runtime_backend)
     return PlannerRequest(
         planner_kind=planner_kind,
         model_family=ModelFamily.LLM,
         model_format=model_format,
+        runtime_backend=selected_backend,
         model_path=model_path,
         output_dir=str(output_dir),
         layout=str(planner_kind.value if isinstance(planner_kind, PlannerKind) else planner_kind),
         options={
             "service": service,
+            "runtime_backend": selected_backend,
             "stages": int(stages),
             "shards": int(shards),
         },
@@ -233,6 +273,7 @@ def llm_splitter_output_from_result(
             "planner": {
                 "modelFamily": result.normalized_model_family(),
                 "modelFormat": result.request.normalized_model_format(),
+                "runtimeBackend": str(split.get("runtime_backend", "")),
                 "plannerKind": result.normalized_planner_kind(),
                 "schemaVersion": 2,
                 "scoreSummary": dict(result.score_summary),
@@ -240,6 +281,7 @@ def llm_splitter_output_from_result(
                 "stub": True,
             },
             "execution_implemented": False,
+            "runtime_backend": str(split.get("runtime_backend", "")),
             "description": str(split.get("description", "")),
         },
     )

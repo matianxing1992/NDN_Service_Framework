@@ -940,6 +940,8 @@ class APPProvider:
         has_model: bool = False,
         can_provision: bool = True,
         allow_executables: bool = False,
+        readiness_probe: Callable[[], Any] | None = None,
+        local_artifacts: dict[str, dict] | None = None,
     ) -> None:
         if allow_executables:
             self.deployment.require_executable_artifacts_allowed()
@@ -949,7 +951,7 @@ class APPProvider:
             else:
                 roles = [part.strip() for part in roles.split(",") if part.strip()]
         service_policy = self.deployment.service_policy(service)
-        local_artifacts = {
+        policy_artifacts = {
             artifact.role: {
                 "path": artifact.path,
                 "artifact": artifact.artifact_name,
@@ -960,6 +962,10 @@ class APPProvider:
             }
             for artifact in service_policy.artifacts
         }
+        if local_artifacts is not None:
+            for role, artifact in policy_artifacts.items():
+                local_artifacts.setdefault(role, artifact)
+            policy_artifacts = local_artifacts
         self._provider.add_capability_handler(
             service,
             list(roles),
@@ -971,7 +977,8 @@ class APPProvider:
             can_provision=can_provision,
             allow_executables=allow_executables,
             dependency_graph=self.deployment.dependency_graph_for_service(service),
-            local_artifacts=local_artifacts,
+            local_artifacts=policy_artifacts,
+            readiness_probe=readiness_probe,
         )
 
     def serve(
@@ -986,6 +993,8 @@ class APPProvider:
         has_model: bool = False,
         can_provision: bool = True,
         allow_executables: bool = False,
+        readiness_probe: Callable[[], Any] | None = None,
+        local_artifacts: dict[str, dict] | None = None,
     ) -> None:
         self.serve_service(
             service=service,
@@ -997,6 +1006,8 @@ class APPProvider:
             has_model=has_model,
             can_provision=can_provision,
             allow_executables=allow_executables,
+            readiness_probe=readiness_probe,
+            local_artifacts=local_artifacts,
         )
 
     def roles_for_service(self, service: str) -> list[str]:

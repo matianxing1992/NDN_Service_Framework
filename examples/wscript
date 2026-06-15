@@ -153,6 +153,7 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
+        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.cpp',
@@ -200,7 +201,7 @@ def build(bld):
                             'ndn-service-framework/common.cpp',
                             'ndn-service-framework/utils.cpp',
                         ])),
-                includes=['..', '../ndn-service-framework'],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL',
                 cxxflags=['-fPIC'],
                 install_path=None)
@@ -266,6 +267,7 @@ def build(bld):
                         di_native_session_sources +
                         di_native_collaboration_sources +
                         bld.path.parent.ant_glob([
+                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.cpp',
                             'ndn-service-framework/NDNSFMessages.cpp',
                             'ndn-service-framework/BloomFilter.cpp',
@@ -279,7 +281,7 @@ def build(bld):
                             'ndn-service-framework/utils.cpp',
                             'ndn-service-framework/CertificatePublisher.cpp',
                         ])),
-                includes=['..', '../ndn-service-framework'],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='BOOST ONNXRUNTIME NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD OPENSSL',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],

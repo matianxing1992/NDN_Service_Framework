@@ -18,6 +18,7 @@ from .plan import (
     normalize_model_family,
     normalize_planner_kind,
 )
+from .runtime_compatibility import validate_runtime_compatibility
 
 
 @dataclass(frozen=True)
@@ -388,6 +389,34 @@ def validate_service_provider_role_coverage(
                 f"provider: {', '.join(missing)}. Add provider entries for "
                 "these roles or use roles=all for providers that may run any "
                 "service role.")
+
+
+def validate_service_runtime_compatibility(
+    services: tuple[ServicePolicy, ...],
+) -> None:
+    for service in services:
+        descriptor = _service_planner_descriptor(service)
+        planner = descriptor.get("planner", {})
+        runtime_backend = str(
+            planner.get("runtimeBackend") or
+            planner.get("runtime_backend") or
+            service.metadata.get("runtimeBackend") or
+            service.metadata.get("runtime_backend") or
+            ""
+        ).strip()
+        if not runtime_backend:
+            continue
+        try:
+            validate_runtime_compatibility(
+                descriptor["modelFamily"],
+                descriptor["modelFormat"],
+                runtime_backend,
+                require_known=True,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"service {service.name} has invalid runtime compatibility: "
+                f"{exc}") from exc
 
 
 def _artifact_by_role(service: ServicePolicy) -> dict[str, ArtifactPolicy]:
@@ -819,6 +848,13 @@ def _service_planner_descriptor(service: ServicePolicy) -> dict[str, Any]:
         metadata.get("planner_kind") or
         PlannerKind.ONNX_DAG,
     )
+    runtime_backend = str(
+        planner.get("runtimeBackend") or
+        planner.get("runtime_backend") or
+        metadata.get("runtimeBackend") or
+        metadata.get("runtime_backend") or
+        ""
+    ).strip()
     schema_version = int(
         planner.get("schemaVersion") or
         planner.get("schema_version") or
@@ -832,12 +868,14 @@ def _service_planner_descriptor(service: ServicePolicy) -> dict[str, Any]:
         "plannerKind": planner_kind,
         "schemaVersion": schema_version,
         **planner,
+        **({"runtimeBackend": runtime_backend} if runtime_backend else {}),
     }
     return {
         "modelFamily": model_family,
         "modelFormat": model_format,
         "plannerKind": planner_kind,
         "schemaVersion": schema_version,
+        **({"runtimeBackend": runtime_backend} if runtime_backend else {}),
         "planner": merged_planner,
     }
 
@@ -926,6 +964,7 @@ def write_policy_bundle(
     services = parse_services(config)
     validate_runtime_user_authorization(config, services)
     validate_service_provider_role_coverage(services)
+    validate_service_runtime_compatibility(services)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     trust_schema = out / "trust-schema.conf"
@@ -965,6 +1004,7 @@ def load_or_generate_deployment(
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -977,7 +1017,11 @@ def main(argv: list[str] | None = None) -> int:
         help="print user/provider permission, role coverage, and artifact coverage summary",
     )
     args = parser.parse_args(argv)
-    deployment = write_policy_bundle(args.config, args.out_dir)
+    try:
+        deployment = write_policy_bundle(args.config, args.out_dir)
+    except ValueError as exc:
+        print(f"ndnsf-di-policy: {exc}", file=sys.stderr)
+        return 2
     print("Generated trust schema:", deployment.trust_schema)
     print("Generated controller policy:", deployment.policy_file)
     print("Generated native execution plan:",

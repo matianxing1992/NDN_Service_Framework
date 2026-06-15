@@ -179,8 +179,9 @@ The default suite first runs syntax/import sanity for the updated NDNSF, Repo,
 DI, and UAV MiniNDN experiment scripts, then calls the no-MiniNDN quick-smoke
 branches for the longer legacy experiment launchers. It then covers the Python
 HELLO MiniNDN smoke, DistributedRepo single-object MiniNDN quick smoke, DI local
-YOLO layout smoke, and UAV launcher quick smoke. It intentionally skips the
-slower DI native-provider MiniNDN smoke unless requested:
+runtime-compatibility contract smoke, DI Qwen GGUF + llama-server local smoke,
+DI local YOLO layout smoke, and UAV launcher quick smoke. It intentionally
+skips the slower DI native-provider MiniNDN smoke unless requested:
 
 ```bash
 python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py --include-di-minindn

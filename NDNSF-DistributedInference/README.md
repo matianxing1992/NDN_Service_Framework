@@ -186,8 +186,27 @@ in C++, and returns output `TensorBundle`s for the dependency executor. This is
 enough to prove that the native hot path can execute an actual ONNX model
 without crossing the Python wrapper for the role computation. It is still
 intentionally narrow: native tensor-bundle input/output is currently limited to
-float32 tensors, richer shape/type negotiation is future work, and
-repo/largeDataReference artifact materialization is not yet native.
+float32 tensors and richer shape/type negotiation is future work. The Python
+provider path can materialize repo-backed artifacts into a local provider cache.
+The C++ native provider executable now uses the same role-scoped artifact
+reference file in serving mode: it reads `repoManifest` / `largeDataReference`
+metadata, fetches repo-backed segmented Data through the manifest's Data names
+and forwarding hints, verifies size/hash, caches the materialized artifact, and
+runs from the cached path. In serving mode it registers the collaboration
+service before materialization completes and reports `runtimeStatus=installing`,
+`ready`, or `failed` through readiness ACK payloads; normal selection only sees a
+positive ACK after the native runner specs have been installed and the C++
+handler has been attached. `--check-only` remains an offline/local-path check.
+
+Artifact provisioning is a generic provider/session lifecycle, not a
+llama-server-specific behavior. Any large model or runtime bundle may be
+installed asynchronously: ONNX shards, GGUF files, safetensors directories,
+TensorRT engines, runtime executables, or future container bundles. During
+installation the provider can publish negative readiness ACKs with
+`runtimeStatus=installing`; after the artifacts are fetched, verified, cached,
+and any managed runtime is started, the same readiness probe returns ready and
+normal service selection may choose the provider. This keeps expensive
+hundreds-of-MB/GB provisioning out of the hot inference request path.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp` is the
 provider process facade, with implementation in `NativeProviderRuntime.cpp`.
@@ -269,11 +288,23 @@ registers every role in a `NativeProviderSession`:
 build/examples/di-native-provider \
   --plan /tmp/ndnsf-di-yolo-policy/native-execution-plan.json \
   --manifest /tmp/ndnsf-di-yolo-policy/service-manifest.json \
+  --artifact-references /tmp/ndnsf-di-yolo-policy/artifact-references.json \
+  --artifact-cache-dir /tmp/ndnsf-di-native-artifacts \
   --service /AI/YOLO/2x2Inference \
   --provider /NDNSF-DistributeInference/example/provider/A \
   --workers 4 \
   --check-only
 ```
+
+`--artifact-references` is optional. In `--check-only` mode it verifies and
+caches local payload paths. In `--serve` mode it also handles repo-only
+references: the executable waits for permission to `/NDNSF/DistributedRepo`,
+reads each role's embedded `repoManifest`, fetches the signed segmented Data
+named by the manifest with NDN `SegmentFetcher`, applies forwarding hints when
+needed, verifies size/hash, writes the artifact under `--artifact-cache-dir`,
+and rewrites the runner spec to the materialized path. A shared-service JSON
+`FETCH` fallback remains for legacy manifests without segment locations, but
+large model/runtime artifacts should use the manifest-aware segmented Data path.
 
 Its `--serve` mode registers the same native session as an NDNSF collaboration
 provider. It still uses normal NDNSF permissions, tokens, ACK/Selection/Response,
@@ -330,12 +361,12 @@ providers do not need to parse the full deployment YAML.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp` loads the
 generated `service-manifest.json` artifact metadata into `NativeModelRunnerSpec`
-objects. It preserves each role's backend, kind, local artifact path, and scalar
-metadata such as `input_tensors` and `output_tensors`. This lets the C++ runtime
-consume planner/deployment output directly instead of hand-writing runner specs
-in tests. The first implementation intentionally materializes local artifact
-paths only; repo/largeDataReference artifact fetching remains the next native
-provider phase.
+objects. It preserves each role's backend, kind, artifact path/reference, and
+scalar metadata such as `input_tensors` and `output_tensors`. This lets the C++
+runtime consume planner/deployment output directly instead of hand-writing
+runner specs in tests. When the generated manifest points at repo-backed
+artifacts, `NativeArtifactMaterializer` uses the native provider's repo fetch
+adapter to materialize them before runner construction.
 
 `NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp`
 is the first Core-facing adapter. It maps `DependencyIo` to
@@ -375,20 +406,18 @@ Done:
   C++ generated plan + service manifest smoke
   native provider executable check-only path for local artifacts
   native provider executable NDNSF serving path for local artifacts
+  native provider executable repo-backed artifact fetch/materialization
   MiniNDN YOLO 2x2 parallel-detect smoke with native compute providers
   request initial-input injection for source roles
-
-Still missing:
-  C++ artifact materialization from repo/largeDataReference
   service-level Python API wrapper around the native executable
 ```
 
 Therefore the project is past the "headers only" stage: the native C++ runtime
 can execute real ONNX computation locally, validate generated plans, and replace
-YOLO 2x2 parallel-detect compute providers in a MiniNDN smoke. It is not yet
-fully C++-first because controller/user orchestration and artifact deployment
-remain Python-facing, and native providers currently consume local artifact
-paths rather than repo-backed artifact references directly.
+YOLO 2x2 parallel-detect compute providers in a MiniNDN smoke while fetching
+model artifacts from NDNSF-DistributedRepo. It is not yet fully C++-first
+because controller/user orchestration and the user-facing deployment API remain
+Python-facing.
 
 ### 3. Create or Inspect a Policy
 
@@ -571,6 +600,7 @@ the MiniNDN network-level custom-layout regression; `yolo-layout-local` is the
 fast non-MiniNDN layout/policy smoke:
 
 ```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case runtime-compat
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case all
 sudo -E python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout --layout 2x3
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case yolo-layout-local --layout 3x2
@@ -1588,7 +1618,8 @@ PYTHONPATH=NDNSF-DistributedInference \
 python3 examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py \
   --planner-kind llm-prefill-decode \
   --model /Model/Llama/Stub \
-  --model-format hf-transformers \
+  --model-format safetensors \
+  --runtime-backend vllm \
   --out-dir /tmp/ndnsf-di-llm-stub
 ```
 
@@ -1608,6 +1639,154 @@ These are planner/runtime compatibility facts, not NDNSF wire-protocol facts.
 The DI planner may choose different split strategies for the same model family
 depending on whether the artifact is `safetensors`, `gguf`, TensorRT engine, or
 another configured format.
+
+Compatibility validation is not the same as model splitting.  Two models may
+both be valid `safetensors + vLLM` deployments while still needing different
+planning logic because their block layout, attention variants, KV-cache shape,
+MoE routing, tensor-parallel constraints, or supported engine features differ.
+The intended design is therefore layered: the common contract rejects impossible
+artifact/runtime pairs, then a model-family or model-specific planner chooses
+pipeline, prefill/decode, tensor-parallel, expert-parallel, or another strategy.
+Future Llama/Qwen/DeepSeek planners can share the same contract but remain
+separate registry backends when their structure requires it.
+
+The stub planner now validates the requested artifact/runtime pairing before it
+generates a deployment plan. For example, `--model-format safetensors
+--runtime-backend vllm`, `--model-format gguf --runtime-backend llama.cpp`, and
+`--model-format tensorrt-engine --runtime-backend tensorrt-llm` are accepted,
+while `--model-format gguf --runtime-backend vllm` fails with a compatibility
+error. This is validation only; the stub still does not launch vLLM,
+Transformers, llama.cpp, Ollama, or TensorRT-LLM.
+
+The compatibility check is part of the common planner/deployment contract, not
+only the stub script. `PlannerRequest` carries `runtime_backend`, planner
+registry dispatch validates the requested model format/backend pair, and policy
+generation validates any service metadata that declares `runtimeBackend`. This
+means a hand-written or repo-backed deployment policy cannot silently generate
+an LLM plan that pairs a GGUF artifact with vLLM, or a TensorRT engine with a
+non-TensorRT runtime.
+
+Run the focused regression with:
+
+```bash
+python3 Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py
+```
+
+### Qwen GGUF + llama-server example
+
+The first concrete LLM deployment example uses Qwen2.5-0.5B GGUF with
+`llama-server`. This is a replicated LLM serving baseline, not transformer-layer
+model parallelism: each selected provider runs or connects to a local
+OpenAI-compatible llama-server, while NDNSF-DI handles service discovery,
+authorization, provider selection, and deployment metadata.
+
+The intended deployment flow is:
+
+```text
+first setup:
+  download llama-server once for each platform/architecture
+  place Qwen2.5-0.5B-Instruct-Q4_K_M.gguf on a trusted deployer/repo node
+
+NDNSF-DI deployment:
+  publish/replicate model and runtime artifacts as deployment/session artifacts
+  providers materialize them into local cache
+  inference requests carry only prompt/chat payloads
+```
+
+Download or inspect the platform-specific llama.cpp release asset:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/llama_server/download_llama_server.py \
+  --dry-run \
+  --dest third_party/llama.cpp/bin
+```
+
+Download or inspect the Qwen2.5-0.5B GGUF model artifact:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/llama_server/download_qwen_gguf.py \
+  --dry-run \
+  --dest third_party/qwen
+```
+
+Remove `--dry-run` from both download commands when preparing a real provider
+machine. The model command downloads Qwen's `qwen2.5-0.5b-instruct-q4_k_m.gguf`
+from HuggingFace; the runtime command downloads a platform-specific
+`llama-server` executable from llama.cpp releases.
+
+Generate the NDNSF-DI policy:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/llama_server/plan_llama_server.py \
+  --policy /tmp/ndnsf-di-llama-server-policy.yaml \
+  --model third_party/qwen/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  --llama-server third_party/llama.cpp/bin/llama-server
+```
+
+Deploy the runtime executable and GGUF model into DistributedRepo, producing a
+role-scoped artifact reference file:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/llama_server/deploy_artifacts.py \
+  --config /tmp/ndnsf-di-llama-server-policy.yaml \
+  --model third_party/qwen/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  --llama-server third_party/llama.cpp/bin/llama-server \
+  --out /tmp/ndnsf-di-llama-server-artifacts.json
+```
+
+On a provider node, install the repo-backed artifacts into the provider cache
+and let the provider start the materialized `llama-server` automatically:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/llama_server/provider.py \
+  --config /tmp/ndnsf-di-llama-server-policy.yaml \
+  --artifact-references /tmp/ndnsf-di-llama-server-artifacts.json \
+  --artifact-cache-dir /tmp/ndnsf-di-llama-cache \
+  --llama-url http://127.0.0.1:8080
+```
+
+Model/runtime installation is intentionally asynchronous. A provider may join
+the NDNSF service while the GGUF model or `llama-server` executable is still
+being fetched, verified, cached, and started. Its ACK readiness probe reports
+`runtimeStatus=installing` until the managed runtime is ready, so normal
+selection will not choose a half-installed provider. Use
+`--sync-materialize-before-serve` only for deterministic startup tests.
+
+If a node has already installed and started `llama-server` outside NDNSF-DI, it
+can omit `--artifact-references` and keep using `--llama-url` as a
+pre-deployed-runtime fallback.
+
+The user invokes the NDNSF service with a chat payload:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/llama_server/user.py \
+  --config /tmp/ndnsf-di-llama-server-policy.yaml \
+  --prompt "Explain NDNSF-DI in one sentence."
+```
+
+The local no-MiniNDN smoke validates policy/native-plan generation, repo-backed
+artifact materialization, automatic runtime launch, and the provider adapter
+against a fake OpenAI-compatible server:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case llama-server-local
+```
+
+The MiniNDN repo-backed smoke uses `AI_Lab.conf`, stores fake GGUF/runtime
+artifacts in an NDNSF-DistributedRepo node, lets the provider materialize them
+from the repo manifest, starts a managed fake `llama-server`, and invokes the
+LLM service through NDNSF:
+
+```bash
+sudo -E env PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/pythonWrapper:$PWD/Experiments:${PYTHONPATH:-}" \
+  python3 Experiments/NDNSF_DI_LlamaServer_Minindn.py
+```
+
+The same smoke is also available through the DI regression runner:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case llama-server-minindn
+```
 
 The client can publish the manifest through NDNSF:
 
@@ -2459,11 +2638,27 @@ Stable P95 measurements should use multiple sequential requests in the same
 user process, or the 60-second warm window supported by the MiniNDN runner.
 
 The MiniNDN script clears the provider artifact cache before the first command.
-It starts a repo node on `neu`, starts the controller on `memphis`, and then runs a
-controller-side deployer that writes the model shards and runner into the repo.
-Provider logs then show `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`
-for each role's `model` and `runner` artifacts during the cold command,
-followed by `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT` for the warm command.
+It starts a repo node on `neu`, starts the controller on `memphis`, and then runs
+a controller-side deployer that writes the model shards and runner into the
+repo. Python-provider runs show `NDNSF_EXECUTION_ARTIFACT_CACHE_MISS ... source=repo`
+and later `NDNSF_EXECUTION_ARTIFACT_CACHE_HIT`. Native-provider runs show
+`NDNSF_DI_NATIVE_PROVIDER_REPO_SEGMENT_FETCH` followed by
+`NDNSF_DI_NATIVE_PROVIDER_ARTIFACTS_MATERIALIZED` and
+`NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY`, proving that the C++ provider
+materialized repo-backed artifacts, then switched readiness from installing to
+ready before it could be selected. The quick-suite `di-minindn-native` case is
+intentionally cold-only so it gates artifact deployment and native dataflow
+without mixing in the separate warm ACK/SVS stability benchmark.
+
+The YOLO Python provider can also use the generic artifact provisioning
+readiness helper with `--artifact-references` and `--artifact-cache-dir`.
+When enabled, it materializes ONNX role artifacts into a provider-local cache
+in the background and reports `runtimeStatus=installing` until the selected
+roles are ready. The older request-time dynamic provisioning path remains as a
+fallback for compatibility. The native C++ provider now follows the same
+readiness contract in serving mode: the service is registered first, ACKs remain
+negative while artifacts install asynchronously, and the real native
+collaboration handler is attached only after runner construction succeeds.
 
 To run the APP API smoke, the local ONNX executor smoke, and both stable
 MiniNDN split smokes through one entry point:

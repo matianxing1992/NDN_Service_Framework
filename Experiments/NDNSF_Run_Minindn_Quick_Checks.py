@@ -63,6 +63,9 @@ def checks() -> dict[str, QuickCheck]:
                 "Experiments/NDNSF_DI_Yolo2x2_Minindn.py "
                 "Experiments/NDNSF_DI_Yolo2x2_Repo_Minindn.py "
                 "Experiments/NDNSF_DI_YoloSplit_Minindn.py "
+                "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py "
+                "Experiments/NDNSF_DI_LlamaServer_Smoke.py "
+                "Experiments/NDNSF_DI_LlamaServer_Minindn.py "
                 "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py "
                 "Experiments/NDNSF_Python_Hello_Minindn.py "
                 "Experiments/NDNSF_Python_Minindn_Perf.py "
@@ -131,6 +134,43 @@ def checks() -> dict[str, QuickCheck]:
             timeout_s=180,
             description="DI planner/local layout smoke without MiniNDN",
         ),
+        "di-runtime-compat": QuickCheck(
+            name="di-runtime-compat",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "runtime-compat",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=runtime-compat",
+            timeout_s=60,
+            description="DI planner/policy/LLM CLI runtime compatibility contract",
+        ),
+        "di-native-readiness-unit": QuickCheck(
+            name="di-native-readiness-unit",
+            command=(
+                "bash", "-lc",
+                "./waf build --targets=unit-tests && "
+                "build/unit-tests "
+                "--run_test=NativeProviderReadinessAckControlsSelectionEligibility "
+                "--catch_system_errors=no && "
+                "echo NDNSF_DI_NATIVE_READINESS_UNIT_OK",
+            ),
+            marker="NDNSF_DI_NATIVE_READINESS_UNIT_OK",
+            timeout_s=180,
+            description=(
+                "DI native provider readiness lifecycle unit regression "
+                "(installing/failed ACKs stay negative; ready ACK becomes selectable)"
+            ),
+        ),
+        "di-llama-server": QuickCheck(
+            name="di-llama-server",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llama-server-local",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llama-server-local",
+            timeout_s=60,
+            description="DI Qwen GGUF + llama-server policy/native-plan/provider-adapter smoke",
+        ),
         "uav-quick": QuickCheck(
             name="uav-quick",
             command=("python3", "Experiments/NDNSF_UAV_GUI_Minindn.py", "--quick-smoke"),
@@ -147,6 +187,16 @@ def checks() -> dict[str, QuickCheck]:
             marker="NDNSF_DI_REGRESSION_SUITE_OK case=yolo-2x2",
             timeout_s=720,
             description="DI YOLO 2x2 native-provider MiniNDN smoke; slower optional check",
+        ),
+        "di-llama-server-minindn": QuickCheck(
+            name="di-llama-server-minindn",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llama-server-minindn",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llama-server-minindn",
+            timeout_s=300,
+            description="DI Qwen GGUF + llama-server repo-backed MiniNDN smoke; slower optional check",
         ),
     }
 
@@ -194,11 +244,15 @@ def selected_checks(selection: str, include_di_minindn: bool) -> list[QuickCheck
         "script-quick-smokes",
         "ndnsf-python-hello",
         "repo-quick",
+        "di-runtime-compat",
+        "di-native-readiness-unit",
+        "di-llama-server",
         "di-local",
         "uav-quick",
     ]
     if include_di_minindn:
         names.append("di-minindn-native")
+        names.append("di-llama-server-minindn")
     return [all_checks[name] for name in names]
 
 

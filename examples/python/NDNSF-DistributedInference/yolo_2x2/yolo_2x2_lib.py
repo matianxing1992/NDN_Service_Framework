@@ -944,6 +944,20 @@ def _canonical_onnx_io_name(name: str) -> str:
     return str(name)
 
 
+def _onnx_io_matches(path: Path,
+                     input_names: Sequence[str],
+                     output_names: Sequence[str]) -> bool:
+    if not path.exists():
+        return False
+    try:
+        session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    except Exception:
+        return False
+    actual_inputs = [item.name for item in session.get_inputs()]
+    actual_outputs = [item.name for item in session.get_outputs()]
+    return actual_inputs == list(input_names) and actual_outputs == list(output_names)
+
+
 def _encoded_tensor_bundle_nbytes(payload: bytes,
                                   tensors: list[str] | tuple[str, ...]) -> int:
     return len(_npz_payload({
@@ -1084,7 +1098,7 @@ def _split_model_for_request(request: PlannerRequest) -> dict:
     current_ort_values_by_name = {
         "images": x.detach().cpu().numpy().astype(np.float32),
     }
-    if not full_model_path.exists():
+    if not _onnx_io_matches(full_model_path, ["images"], ["predictions"]):
         torch.onnx.export(
             YoloFull(model).eval(),
             x,
@@ -1697,7 +1711,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
     ]
     if not replicate_backbone_shards:
         backbone_path = output / f"{stem}-Backbone-{input_size}.onnx"
-        if not backbone_path.exists():
+        if not _onnx_io_matches(backbone_path, ["images"], feature_tensor_names):
             torch.onnx.export(
                 YoloBackboneFeatures(model, feature_indices).eval(),
                 x,
@@ -1752,7 +1766,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             for name, value in zip(output_names, outputs)
         })
         path = output / f"{stem}-{role.strip('/').replace('/', '-')}-{input_size}.onnx"
-        if not path.exists():
+        if not _onnx_io_matches(path, input_names, output_names):
             torch.onnx.export(
                 shard_model,
                 input_values,
@@ -1782,7 +1796,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
     merge_inputs = [f"candidates_shard_{shard}" for shard in range(len(scale_groups))]
     merge_values = tuple(head_outputs[name] for name in merge_inputs)
     merge_path = output / f"{stem}-DetectMerge-{layout}-{input_size}.onnx"
-    if not merge_path.exists():
+    if not _onnx_io_matches(merge_path, merge_inputs, ["predictions"]):
         torch.onnx.export(
             YoloDetectMerge(detect).eval(),
             merge_values,
@@ -2148,12 +2162,13 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
             } if split.get("planner_selected_candidate") else {}),
         },
     )
+    compute_providers = compute_provider_identities(len(roles))
     repo_service = SplitServiceSpec(
         name=REPO_SERVICE,
         model_name=REPO_SERVICE,
         roles=[],
         dependencies=[],
-        users=[CONTROLLER, USER],
+        users=[CONTROLLER, USER, *compute_providers],
         providers=[{"identity": REPO_PROVIDER, "roles": []}],
     )
     return SplitterOutput(
@@ -2163,7 +2178,7 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
         user=USER,
         provider_prefix=PROVIDER_PREFIX,
         services=[service, repo_service],
-        provider_identities=compute_provider_identities(len(roles)),
+        provider_identities=compute_providers,
         trust_app_roots=["/example"],
         metadata=service.metadata,
     )

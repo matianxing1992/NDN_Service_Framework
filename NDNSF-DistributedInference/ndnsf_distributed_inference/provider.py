@@ -473,6 +473,7 @@ class DistributedInferenceProvider:
         allow_executables: bool = False,
         dependency_graph=None,
         local_artifacts: dict[str, dict] | None = None,
+        readiness_probe: Callable[[], AckDecision | bool] | None = None,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
 
@@ -490,6 +491,22 @@ class DistributedInferenceProvider:
         local_artifacts = dict(local_artifacts or {})
 
         def ack(_payload: bytes) -> AckDecision:
+            if readiness_probe is not None:
+                readiness = readiness_probe()
+                if isinstance(readiness, AckDecision):
+                    if not readiness.status:
+                        return readiness
+                    readiness_payload = bytes(readiness.payload or b"")
+                else:
+                    if not bool(readiness):
+                        return AckDecision(
+                            status=False,
+                            message="inference capability installing",
+                            payload=b"status=installing;",
+                        )
+                    readiness_payload = b""
+            else:
+                readiness_payload = b""
             fields = [
                 "roles=" + ",".join(role_list),
                 "queue=" + str(queue_depth),
@@ -503,13 +520,21 @@ class DistributedInferenceProvider:
             return AckDecision(
                 status=can_provision or has_model,
                 message="inference capability ready",
-                payload=(";".join(fields) + ";").encode(),
+                payload=(";".join(fields) + ";").encode() + readiness_payload,
             )
 
         def wrapped(ctx: CollaborationContext, request: bytes) -> None:
             try:
                 assigned_artifact = str(ctx.assignment.assigned_artifact or "")
-                if assigned_artifact and assigned_artifact != "/":
+                role_has_local_artifact = bool(local_artifacts.get(ctx.assignment.role, {}).get("path"))
+                if has_model and role_has_local_artifact:
+                    execution = self._local_execution(
+                        ctx.assignment.role,
+                        backend=backend_list[0] if backend_list else "",
+                        temp_dir=temp_dir,
+                        local_artifacts=local_artifacts,
+                    )
+                elif assigned_artifact and assigned_artifact != "/":
                     execution = ctx.prepare_execution(
                         temp_root=temp_dir,
                         allow_executables=allow_executables,

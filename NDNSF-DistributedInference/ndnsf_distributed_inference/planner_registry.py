@@ -19,6 +19,7 @@ from .plan import (
     normalize_model_family,
     normalize_planner_kind,
 )
+from .runtime_compatibility import validate_runtime_compatibility
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class PlannerRequest:
     model_path: str
     output_dir: str
     model_format: str | ModelFormat = ModelFormat.UNKNOWN
+    runtime_backend: str = ""
     layout: str = ""
     input_size: int = 0
     provider_profiles: list[Any] = field(default_factory=list)
@@ -50,12 +52,27 @@ class PlannerRequest:
     def normalized_model_format(self) -> str:
         return normalize_model_format(self.model_format)
 
+    def normalized_runtime_backend(self) -> str:
+        return str(self.runtime_backend or self.option("runtime_backend", "")).strip()
+
+    def validated_runtime_backend(self, *, require_known: bool = False) -> str:
+        return validate_runtime_compatibility(
+            self.normalized_model_family(),
+            self.normalized_model_format(),
+            self.normalized_runtime_backend(),
+            require_known=require_known,
+        )
+
     def descriptor(self) -> PlannerDescriptor:
+        runtime_backend = self.validated_runtime_backend()
         return PlannerDescriptor(
             model_family=self.normalized_model_family(),
             model_format=self.normalized_model_format(),
             planner_kind=self.normalized_planner_kind(),
-            metadata=dict(self.metadata or {}),
+            metadata={
+                **dict(self.metadata or {}),
+                **({"runtimeBackend": runtime_backend} if runtime_backend else {}),
+            },
         )
 
     def option(self, name: str, default: Any = None) -> Any:
@@ -135,6 +152,7 @@ class PlannerBackend:
             raise ValueError(
                 "planner request model format does not match backend: "
                 f"{request_format} != {backend_format}")
+        request.validated_runtime_backend()
         if self.handler is None:
             raise NotImplementedError(
                 f"planner backend has no handler: {self.normalized_planner_kind()}")

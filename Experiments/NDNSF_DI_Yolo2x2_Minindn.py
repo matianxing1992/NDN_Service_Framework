@@ -39,6 +39,7 @@ APP_ROOT = "/NDNSF-DistributeInference/example"
 CONTROLLER_IDENTITY = APP_ROOT + "/controller"
 USER_IDENTITY = APP_ROOT + "/user"
 PROVIDER_PREFIX = APP_ROOT + "/provider"
+REPO_SERVICE = "/NDNSF/DistributedRepo"
 AI_LAB_CONTROLLER_NODE = "memphis"
 AI_LAB_USER_NODE = "memphis"
 AI_LAB_REPO_NODE = "neu"
@@ -103,6 +104,11 @@ def native_provider_cmd(argv: list[str],
         "--workers", str(workers),
         "--handler-threads", str(handler_threads),
         "--ack-threads", str(ack_threads),
+        "--artifact-references", str(REPO_MANIFEST),
+        "--artifact-cache-dir", str(OUT / "native-artifact-cache" / provider_id),
+        "--repo-service", REPO_SERVICE,
+        "--repo-fetch-timeout-ms", "60000",
+        "--repo-permission-wait-ms", "3000",
     ]
     quoted = " ".join(perf.shell_quote(item) for item in args)
     return f"cd {perf.shell_quote(REPO)} && exec {quoted}"
