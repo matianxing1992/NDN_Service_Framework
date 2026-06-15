@@ -51,6 +51,10 @@ def main() -> int:
                         help="export a YOLO Detect-scale DAG where every head shard "
                              "replicates backbone/neck compute and only candidate "
                              "tensors cross nodes before merge")
+    parser.add_argument("--auto-parallel-detect-plan", action="store_true",
+                        help="generate shared-backbone and replicated-backbone Detect "
+                             "candidates, score compute plus activation transfer cost, "
+                             "and use the lower estimated-latency plan")
     parser.add_argument("--dynamic-provisioning", action="store_true")
     parser.add_argument("--trust-anchor-file", default="")
     args = parser.parse_args()
@@ -58,11 +62,13 @@ def main() -> int:
         bool(args.parallel_output_shards),
         bool(args.parallel_detect_scale_shards),
         bool(args.parallel_detect_replicated_backbone_shards),
+        bool(args.auto_parallel_detect_plan),
     ])
     if selected_parallel_modes > 1:
         raise SystemExit(
             "--parallel-output-shards, --parallel-detect-scale-shards, and "
-            "--parallel-detect-replicated-backbone-shards are mutually exclusive")
+            "--parallel-detect-replicated-backbone-shards, and "
+            "--auto-parallel-detect-plan are mutually exclusive")
 
     profiles = load_provider_profiles(args.provider_profile) if args.provider_profile else None
     split = split_model(
@@ -76,6 +82,7 @@ def main() -> int:
         parallel_detect_scale_shards=args.parallel_detect_scale_shards,
         parallel_detect_replicated_backbone_shards=(
             args.parallel_detect_replicated_backbone_shards),
+        auto_parallel_detect_plan=args.auto_parallel_detect_plan,
     )
     if args.dynamic_provisioning:
         output = yolo_dynamic_splitter_output(
@@ -150,6 +157,42 @@ def main() -> int:
             f"expected_segments={int(edge.get('expectedSegments', 0))}",
             f"estimated_transfer_ms={float(edge.get('estimatedTransferMs', 0.0)):.3f}",
         )
+    compute_summary = split.get("planner_compute_summary") or {}
+    if compute_summary:
+        print(
+            "YOLO_LAYOUT_PLANNER_COMPUTE",
+            f"layout={layout}",
+            f"critical_compute_ms={float(compute_summary.get('criticalComputeMs', 0.0)):.3f}",
+            f"critical_transfer_ms={float(compute_summary.get('criticalTransferMs', 0.0)):.3f}",
+            f"estimated_total_ms={float(compute_summary.get('estimatedTotalMs', 0.0)):.3f}",
+        )
+        for role, value in sorted((compute_summary.get("roleComputeMs") or {}).items()):
+            print(
+                "YOLO_LAYOUT_PLANNER_ROLE_COMPUTE",
+                f"layout={layout}",
+                f"role={role}",
+                f"compute_ms={float(value):.3f}",
+            )
+    selected_candidate = split.get("planner_selected_candidate") or {}
+    if selected_candidate:
+        print(
+            "YOLO_LAYOUT_PLANNER_SELECTED_CANDIDATE",
+            f"layout={layout}",
+            f"mode={selected_candidate.get('mode', '')}",
+        )
+        for candidate in selected_candidate.get("candidates", []):
+            print(
+                "YOLO_LAYOUT_PLANNER_CANDIDATE",
+                f"layout={layout}",
+                f"mode={candidate.get('mode', '')}",
+                f"selected={str(candidate.get('selected', False)).lower()}",
+                f"estimated_total_ms={float(candidate.get('estimatedTotalMs', 0.0)):.3f}",
+                f"compute_ms={float(candidate.get('criticalComputeMs', 0.0)):.3f}",
+                f"transfer_ms={float(candidate.get('criticalTransferMs', 0.0)):.3f}",
+                f"activation_bytes={int(candidate.get('activationBytesTotal', 0))}",
+                f"activation_segments={int(candidate.get('activationSegmentsTotal', 0))}",
+                f"provider_rtt_ms={float(candidate.get('providerRttMs', 0.0)):.3f}",
+            )
     service_name = service_name_for_layout(layout)
     service = output.service(service_name)
     print(

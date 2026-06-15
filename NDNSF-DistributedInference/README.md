@@ -428,6 +428,14 @@ NDN tradeoff: the plan publishes only two Head-to-Merge activation objects,
 about 202 KB and 30 planned segments total, instead of the shared-backbone
 plan's roughly 3.07 MB and 441 planned segments.
 
+The preferred planner entry point for these two Detect modes is now
+`--auto-parallel-detect-plan`. It generates both the shared-backbone and
+replicated-backbone candidates, estimates each candidate's critical compute
+time, activation bytes, planned segment count, provider RTT, and transfer time,
+then writes `planner-selection.json` and uses the lower estimated-latency plan.
+The printed `YOLO_LAYOUT_PLANNER_CANDIDATE` lines are the audit trail; the
+chosen candidate is also embedded in the generated service metadata.
+
 For a two-stage YOLO split:
 
 ```bash
@@ -615,6 +623,17 @@ python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --input-size 640 \
   --parallel-detect-replicated-backbone-shards \
   --out-dir /tmp/ndnsf-yolo-detect-replicated-2x2
+```
+
+To let the planner choose between shared-backbone and replicated-backbone:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x2 \
+  --model yolo26n.pt \
+  --input-size 640 \
+  --auto-parallel-detect-plan \
+  --out-dir /tmp/ndnsf-yolo-detect-auto-2x2
 ```
 
 ### 8. Common Deployment Mistakes
@@ -1954,10 +1973,12 @@ the current AI_Lab topology and YOLO 640 profile, reducing cross-node activation
 bytes is more valuable than avoiding duplicated backbone compute.
 
 The splitter now prints and records `YOLO_LAYOUT_PLANNER_COST`,
-`YOLO_LAYOUT_PLANNER_DOMINANT_EDGE`, and `YOLO_LAYOUT_PLANNER_EDGE_COST` lines.
+`YOLO_LAYOUT_PLANNER_DOMINANT_EDGE`, `YOLO_LAYOUT_PLANNER_EDGE_COST`,
+`YOLO_LAYOUT_PLANNER_COMPUTE`, and `YOLO_LAYOUT_PLANNER_CANDIDATE` lines.
 These are planner-time hard metrics, not runtime guesses: each dependency edge
 reports expected activation bytes, planned segment count, and a coarse transfer
-estimate from the provider profile. On the current AI_Lab default profile
+estimate from the provider profile, while the compute lines report export-time
+role forward timings as a relative signal. On the current AI_Lab default profile
 (1 Gbps links and about 4 ms provider-to-provider RTT through `memphis`), the
 640 candidate-filter plan reports about 3.07 MB and 441 planned segments across
 four activation edges. The dominant edge is `backbone-to-head-shard0`, about
@@ -1967,6 +1988,15 @@ Use these cost lines as the first filter when trying a new YOLO split: a plan
 that saves compute but introduces a multi-megabyte cross-node activation should
 not be considered a good DI plan unless the saved compute clearly dominates the
 transfer cost.
+
+The first auto-planner smoke uses
+`results/yolo_2x2_auto_parallel_detect_smoke_latest` and the AI_Lab topology.
+For 32-pixel input it selected replicated-backbone in that run, verified the
+native provider MiniNDN path, and produced `YOLO_2X2_NATIVE_PROVIDERS_MININDN_OK`
+with three warm requests at p50 62.54 ms. For 640-pixel input, the local planner
+probe selected replicated-backbone because the shared candidate estimated about
+3.07 MB / 441 planned segments while the replicated candidate estimated about
+202 KB / 30 planned segments.
 
 The current native provider path uses deterministic activation names,
 active-put segment delivery, and direct Selection prefetch by default in the DI

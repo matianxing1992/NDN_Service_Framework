@@ -109,6 +109,8 @@ def main() -> int:
                         help="Validate the YOLO Detect-scale DAG splitter")
     parser.add_argument("--parallel-detect-replicated-backbone-shards", action="store_true",
                         help="Validate the YOLO Detect-scale DAG splitter with replicated backbone shards")
+    parser.add_argument("--auto-parallel-detect-plan", action="store_true",
+                        help="Generate shared/replicated Detect candidates and validate the planner-selected one")
     parser.add_argument("--cpp-native-plan-smoke", action="store_true",
                         help="Run the C++ native runtime smoke against the generated native plan")
     args = parser.parse_args()
@@ -119,14 +121,17 @@ def main() -> int:
         bool(args.parallel_detect_scale_shards),
         bool(args.parallel_detect_replicated_backbone_shards),
         bool(args.parallel_output_shards),
+        bool(args.auto_parallel_detect_plan),
     ])
     if selected_parallel_modes > 1:
         raise SystemExit(
             "--parallel-detect-scale-shards, "
             "--parallel-detect-replicated-backbone-shards, and "
-            "--parallel-output-shards are mutually exclusive")
+            "--parallel-output-shards, and --auto-parallel-detect-plan are mutually exclusive")
     if args.parallel_detect_replicated_backbone_shards:
         mode_suffix = "-parallel-detect-replicated-backbone"
+    elif args.auto_parallel_detect_plan:
+        mode_suffix = "-auto-parallel-detect"
     elif args.parallel_detect_scale_shards:
         mode_suffix = "-parallel-detect-scale"
     elif args.parallel_output_shards:
@@ -161,6 +166,8 @@ def main() -> int:
         split_command.append("--parallel-detect-scale-shards")
     if args.parallel_detect_replicated_backbone_shards:
         split_command.append("--parallel-detect-replicated-backbone-shards")
+    if args.auto_parallel_detect_plan:
+        split_command.append("--auto-parallel-detect-plan")
     split_output = run(split_command, env)
     if "YOLO_LAYOUT_LOCAL_VERIFY" not in split_output or "ok=true" not in split_output:
         raise SystemExit(f"YOLO layout local verification failed for layout={layout}")
@@ -179,6 +186,13 @@ def main() -> int:
             raise SystemExit("parallel-detect replicated-backbone smoke did not generate expected semantics")
         if "stage_shards_parallel=true" not in split_output:
             raise SystemExit("parallel-detect replicated-backbone smoke did not mark stage shards parallel")
+    if args.auto_parallel_detect_plan:
+        if "YOLO_LAYOUT_PLANNER_SELECTED_CANDIDATE" not in split_output:
+            raise SystemExit("auto parallel-detect smoke did not print selected candidate")
+        if "YOLO_LAYOUT_PLANNER_CANDIDATE" not in split_output:
+            raise SystemExit("auto parallel-detect smoke did not print candidate scores")
+        if "stage_shards_parallel=true" not in split_output:
+            raise SystemExit("auto parallel-detect smoke did not mark stage shards parallel")
 
     run([
         sys.executable,
@@ -190,7 +204,9 @@ def main() -> int:
         str(generated_policy_dir),
         "--print-summary",
     ], env)
-    if args.parallel_detect_scale_shards or args.parallel_detect_replicated_backbone_shards:
+    if (args.parallel_detect_scale_shards or
+            args.parallel_detect_replicated_backbone_shards or
+            args.auto_parallel_detect_plan):
         validate_parallel_detect_native_plan(
             policy,
             generated_policy_dir / "native-execution-plan.json",
@@ -265,6 +281,7 @@ def main() -> int:
         f"parallel_output_shards={str(args.parallel_output_shards).lower()} "
         f"parallel_detect_scale_shards={str(args.parallel_detect_scale_shards).lower()} "
         f"parallel_detect_replicated_backbone_shards={str(args.parallel_detect_replicated_backbone_shards).lower()} "
+        f"auto_parallel_detect_plan={str(args.auto_parallel_detect_plan).lower()} "
         f"policy={policy} generated_policy_dir={generated_policy_dir}"
     )
     return 0

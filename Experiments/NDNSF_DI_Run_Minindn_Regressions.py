@@ -174,6 +174,9 @@ def main() -> int:
     parser.add_argument("--parallel-detect-replicated-backbone-shards", action="store_true",
                         help="For --case yolo-layout-local/yolo-layout, validate "
                              "the YOLO Detect-scale splitter with replicated backbone shards")
+    parser.add_argument("--auto-parallel-detect-plan", action="store_true",
+                        help="For --case yolo-layout-local/yolo-layout, generate "
+                             "shared/replicated Detect candidates and run the planner-selected one")
     parser.add_argument("--cold-requests", type=int, default=1,
                         help="Sequential cold requests for --case yolo-layout")
     parser.add_argument("--warm-requests", type=int, default=1,
@@ -198,6 +201,17 @@ def main() -> int:
         for name, case in CASES.items():
             print(f"{name}: {case.description}")
         return 0
+    selected_parallel_modes = sum([
+        bool(args.parallel_output_shards),
+        bool(args.parallel_detect_scale_shards),
+        bool(args.parallel_detect_replicated_backbone_shards),
+        bool(args.auto_parallel_detect_plan),
+    ])
+    if selected_parallel_modes > 1:
+        raise SystemExit(
+            "--parallel-output-shards, --parallel-detect-scale-shards, "
+            "--parallel-detect-replicated-backbone-shards, and "
+            "--auto-parallel-detect-plan are mutually exclusive")
 
     for case in selected_cases(args.case):
         extra_args = ["--layout", args.layout] if case.name.startswith("yolo-layout") else []
@@ -207,6 +221,8 @@ def main() -> int:
             extra_args.append("--parallel-detect-scale-shards")
         if case.name == "yolo-layout-local" and args.parallel_detect_replicated_backbone_shards:
             extra_args.append("--parallel-detect-replicated-backbone-shards")
+        if case.name == "yolo-layout-local" and args.auto_parallel_detect_plan:
+            extra_args.append("--auto-parallel-detect-plan")
         if case.name == "yolo-layout":
             if args.parallel_output_shards:
                 extra_args.append("--parallel-output-shards")
@@ -214,6 +230,8 @@ def main() -> int:
                 extra_args.append("--parallel-detect-scale-shards")
             if args.parallel_detect_replicated_backbone_shards:
                 extra_args.append("--parallel-detect-replicated-backbone-shards")
+            if args.auto_parallel_detect_plan:
+                extra_args.append("--auto-parallel-detect-plan")
             extra_args.extend([
                 "--cold-requests", str(args.cold_requests),
                 "--warm-requests", str(args.warm_requests),

@@ -305,6 +305,18 @@ python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
   --out-dir /tmp/ndnsf-yolo-detect-replicated-2x2
 ```
 
+Or let the planner compare shared-backbone versus replicated-backbone and use
+the lower estimated-latency candidate:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/yolo_2x2/split_model.py \
+  --layout 2x2 \
+  --model yolo26n.pt \
+  --input-size 640 \
+  --auto-parallel-detect-plan \
+  --out-dir /tmp/ndnsf-yolo-detect-auto-2x2
+```
+
 ## Manual Multi-Process Run
 
 MiniNDN is the easiest way to run a full topology, but you can also run the

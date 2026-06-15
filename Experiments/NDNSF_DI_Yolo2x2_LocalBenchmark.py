@@ -66,6 +66,22 @@ def chunk_path(model_dir: Path,
     return path
 
 
+def resolve_auto_parallel_detect_plan(model_dir: Path) -> tuple[Path, bool, bool, dict]:
+    selection_path = model_dir / "planner-selection.json"
+    if not selection_path.exists():
+        raise FileNotFoundError(
+            "--auto-parallel-detect-plan expects planner-selection.json in "
+            f"{model_dir}; generate the model with split_model.py --auto-parallel-detect-plan")
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    mode = str(selection.get("mode", ""))
+    candidate_dir = model_dir / "planner-candidates" / mode
+    if mode == "shared-backbone":
+        return candidate_dir, True, False, selection
+    if mode == "replicated-backbone":
+        return candidate_dir, False, True, selection
+    raise ValueError(f"unknown planner-selected mode in {selection_path}: {mode!r}")
+
+
 def run_cached_pipeline(sessions: dict[str, object],
                         roles: list[str],
                         image: np.ndarray) -> np.ndarray:
@@ -137,15 +153,28 @@ def main() -> int:
     parser.add_argument("--output", default="")
     parser.add_argument("--parallel-detect-scale-shards", action="store_true")
     parser.add_argument("--parallel-detect-replicated-backbone-shards", action="store_true")
+    parser.add_argument("--auto-parallel-detect-plan", action="store_true",
+                        help="Read planner-selection.json from --model-dir and benchmark the selected plan")
     args = parser.parse_args()
-    if args.parallel_detect_scale_shards and args.parallel_detect_replicated_backbone_shards:
+    selected_modes = sum([
+        bool(args.parallel_detect_scale_shards),
+        bool(args.parallel_detect_replicated_backbone_shards),
+        bool(args.auto_parallel_detect_plan),
+    ])
+    if selected_modes > 1:
         raise SystemExit(
-            "--parallel-detect-scale-shards and "
-            "--parallel-detect-replicated-backbone-shards are mutually exclusive")
+            "--parallel-detect-scale-shards, "
+            "--parallel-detect-replicated-backbone-shards, and "
+            "--auto-parallel-detect-plan are mutually exclusive")
 
     layout = args.layout.strip().lower().replace("*", "x")
     model_dir = Path(args.model_dir) if args.model_dir else (
         REPO / f"results/yolo_{layout}_minindn_quick/model")
+    planner_selection = {}
+    if args.auto_parallel_detect_plan:
+        model_dir, args.parallel_detect_scale_shards, args.parallel_detect_replicated_backbone_shards, planner_selection = (
+            resolve_auto_parallel_detect_plan(model_dir)
+        )
     if args.parallel_detect_replicated_backbone_shards:
         roles = parallel_detect_replicated_backbone_roles_for_layout(layout)
     elif args.parallel_detect_scale_shards:
@@ -186,6 +215,8 @@ def main() -> int:
         "parallelDetectScaleShards": bool(args.parallel_detect_scale_shards),
         "parallelDetectReplicatedBackboneShards": bool(
             args.parallel_detect_replicated_backbone_shards),
+        "autoParallelDetectPlan": bool(args.auto_parallel_detect_plan),
+        "plannerSelection": planner_selection,
         "modelDir": str(model_dir),
         "roles": roles,
         "sessionInitMs": session_init_ms,

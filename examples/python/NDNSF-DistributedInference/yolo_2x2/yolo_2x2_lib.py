@@ -32,6 +32,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
@@ -459,6 +460,148 @@ def planner_cost_summary(
     }
 
 
+def _role_compute_summary(
+    *,
+    layout_semantics: str,
+    role_compute_ms: dict[str, float],
+    cost_summary: dict,
+) -> dict:
+    edges = cost_summary.get("edges", [])
+    backbone_to_head_ms = [
+        float(edge.get("estimatedTransferMs", 0.0))
+        for edge in edges
+        if str(edge.get("keyScope", "")).startswith("backbone-to-head")
+    ]
+    head_to_merge_ms = [
+        float(edge.get("estimatedTransferMs", 0.0))
+        for edge in edges
+        if str(edge.get("keyScope", "")).startswith("detect-head-shard")
+    ]
+    head_compute_ms = [
+        float(value)
+        for role, value in role_compute_ms.items()
+        if role.startswith("/Head/Shard/")
+    ]
+    if layout_semantics == YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS:
+        critical_compute_ms = (
+            max(head_compute_ms or [0.0]) +
+            float(role_compute_ms.get(ROLE_MERGE, 0.0))
+        )
+    else:
+        critical_compute_ms = (
+            float(role_compute_ms.get(ROLE_BACKBONE, 0.0)) +
+            max(head_compute_ms or [0.0]) +
+            float(role_compute_ms.get(ROLE_MERGE, 0.0))
+        )
+    critical_transfer_ms = (
+        max(backbone_to_head_ms or [0.0]) +
+        max(head_to_merge_ms or [0.0])
+    )
+    return {
+        "roleComputeMs": {
+            role: float(value)
+            for role, value in sorted(role_compute_ms.items())
+        },
+        "criticalComputeMs": critical_compute_ms,
+        "criticalTransferMs": critical_transfer_ms,
+        "estimatedTotalMs": critical_compute_ms + critical_transfer_ms,
+        "computeNote": (
+            "export-time PyTorch forward timing on one local host; use it as "
+            "a relative planner signal, not as final runtime performance"
+        ),
+        "transferNote": (
+            "critical transfer estimate uses planned activation edges, "
+            "provider RTT, segment count, and bottleneck bandwidth"
+        ),
+    }
+
+
+def _candidate_selection_score(split: dict, *, mode: str) -> dict:
+    cost = split.get("planner_cost_summary") or {}
+    compute = split.get("planner_compute_summary") or {}
+    return {
+        "mode": mode,
+        "layoutSemantics": split.get("layout_semantics", ""),
+        "selected": False,
+        "estimatedTotalMs": float(compute.get("estimatedTotalMs", 0.0)),
+        "criticalComputeMs": float(compute.get("criticalComputeMs", 0.0)),
+        "criticalTransferMs": float(compute.get("criticalTransferMs", 0.0)),
+        "activationBytesTotal": int(cost.get("activationBytesTotal", 0)),
+        "activationSegmentsTotal": int(cost.get("activationSegmentsTotal", 0)),
+        "edgeCount": int(cost.get("edgeCount", 0)),
+        "providerRttMs": float(
+            (cost.get("estimatedTransferProfile") or {}).get("representativeRttMs", 0.0)
+        ),
+        "bottleneckMbps": float(
+            (cost.get("estimatedTransferProfile") or {}).get("bottleneckMbps", 0.0)
+        ),
+        "dominantEdge": (cost.get("dominantEdge") or {}).get("keyScope", ""),
+    }
+
+
+def split_auto_parallel_detect_model(output_dir: str | Path,
+                                     *,
+                                     model_name: str = DEFAULT_MODEL,
+                                     input_size: int = DEFAULT_INPUT_SIZE,
+                                     provider_profiles: list[ProviderProfile] | None = None,
+                                     auto_split: bool = False,
+                                     layout: str = DEFAULT_LAYOUT) -> dict:
+    """Generate comparable YOLO Detect candidates and return the lowest score."""
+
+    del auto_split  # Detect candidate boundaries are fixed for this model family.
+    output = Path(output_dir)
+    candidate_root = output / "planner-candidates"
+    shared = split_parallel_detect_scale_model(
+        candidate_root / "shared-backbone",
+        model_name=model_name,
+        input_size=input_size,
+        provider_profiles=provider_profiles,
+        layout=layout,
+        replicate_backbone_shards=False,
+    )
+    replicated = split_parallel_detect_scale_model(
+        candidate_root / "replicated-backbone",
+        model_name=model_name,
+        input_size=input_size,
+        provider_profiles=provider_profiles,
+        layout=layout,
+        replicate_backbone_shards=True,
+    )
+    scores = [
+        _candidate_selection_score(shared, mode="shared-backbone"),
+        _candidate_selection_score(replicated, mode="replicated-backbone"),
+    ]
+    best_index, best = min(
+        enumerate(scores),
+        key=lambda item: (
+            float(item[1].get("estimatedTotalMs", 0.0)),
+            int(item[1].get("activationBytesTotal", 0)),
+            int(item[1].get("activationSegmentsTotal", 0)),
+        ),
+    )
+    scores[best_index]["selected"] = True
+    selected = replicated if best["mode"] == "replicated-backbone" else shared
+    selection = {
+        "mode": best["mode"],
+        "layout": normalize_layout(layout),
+        "model": str(model_name),
+        "inputSize": int(input_size),
+        "candidates": scores,
+        "selectionRule": (
+            "minimize estimatedTotalMs; ties break by activation bytes and "
+            "planned segment count"
+        ),
+    }
+    selected["planner_candidate_scores"] = scores
+    selected["planner_selected_candidate"] = selection
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "planner-selection.json").write_text(
+        json.dumps(selection, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return selected
+
+
 def roles_for_layout(layout: str | None = None) -> list[str]:
     stages, shards = parse_layout(layout)
     return [
@@ -634,7 +777,24 @@ def split_model(output_dir: str | Path,
                 layout: str = DEFAULT_LAYOUT,
                 parallel_output_shards: bool = False,
                 parallel_detect_scale_shards: bool = False,
-                parallel_detect_replicated_backbone_shards: bool = False) -> dict:
+                parallel_detect_replicated_backbone_shards: bool = False,
+                auto_parallel_detect_plan: bool = False) -> dict:
+    if auto_parallel_detect_plan and (
+            parallel_detect_scale_shards or
+            parallel_detect_replicated_backbone_shards or
+            parallel_output_shards):
+        raise ValueError(
+            "auto_parallel_detect_plan is mutually exclusive with explicit "
+            "parallel split modes")
+    if auto_parallel_detect_plan:
+        return split_auto_parallel_detect_model(
+            output_dir,
+            model_name=model_name,
+            input_size=input_size,
+            provider_profiles=provider_profiles,
+            auto_split=auto_split,
+            layout=layout,
+        )
     if parallel_detect_scale_shards and parallel_detect_replicated_backbone_shards:
         raise ValueError(
             "parallel_detect_scale_shards and "
@@ -1298,11 +1458,14 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
     paths: dict[str, Path] = {}
     chunk_metadata: dict[str, dict] = {}
     chunk_output_payloads: dict[str, bytes] = {}
+    role_compute_ms: dict[str, float] = {}
 
     x = torch.from_numpy(make_input(input_size)).float()
     with torch.no_grad():
         expected = YoloFull(model).eval()(x)
+        started = time.perf_counter()
         feature_values = YoloBackboneFeatures(model, feature_indices).eval()(x)
+        role_compute_ms[ROLE_BACKBONE] = (time.perf_counter() - started) * 1000.0
     anchor_offsets: dict[int, tuple[int, int]] = {}
     cursor = 0
     for index, value in enumerate(feature_values):
@@ -1372,7 +1535,9 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
                 ).eval()
             else:
                 shard_model = YoloDetectHeadShard(detect, group, anchor_offsets).eval()
+            started = time.perf_counter()
             outputs = (shard_model(*input_values),)
+            role_compute_ms[role] = (time.perf_counter() - started) * 1000.0
         for name, value in zip(output_names, outputs):
             head_outputs[name] = value
         chunk_output_payloads[role] = npz_payload({
@@ -1421,6 +1586,10 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
             do_constant_folding=True,
         )
     paths[ROLE_MERGE] = merge_path
+    with torch.no_grad():
+        started = time.perf_counter()
+        _ = YoloDetectMerge(detect).eval()(*merge_values)
+        role_compute_ms[ROLE_MERGE] = (time.perf_counter() - started) * 1000.0
     chunk_metadata[ROLE_MERGE] = {
         "source_model": loaded_name,
         "input_size": input_size,
@@ -1508,7 +1677,13 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         dependencies,
         provider_profiles=provider_profiles,
     )
+    compute_summary = _role_compute_summary(
+        layout_semantics=layout_semantics,
+        role_compute_ms=role_compute_ms,
+        cost_summary=cost_summary,
+    )
     chunk_graph["plannerCostSummary"] = cost_summary
+    chunk_graph["plannerComputeSummary"] = compute_summary
 
     graph_summary = output / f"{stem}-{layout}-parallel-detect-scale-onnx-graph-summary.json"
     write_onnx_graph_summary(
@@ -1534,6 +1709,7 @@ def split_parallel_detect_scale_model(output_dir: str | Path,
         "chunks": chunk_metadata,
         "dependencies": dependencies,
         "planner_cost_summary": cost_summary,
+        "planner_compute_summary": compute_summary,
         "onnx_graph_summary": graph_summary,
         "onnx_split_candidates": split_candidates,
         "planner_recommendations": planner_recommendations,
@@ -1753,6 +1929,15 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
             **({
                 "planner_cost_summary": split["planner_cost_summary"]
             } if split.get("planner_cost_summary") else {}),
+            **({
+                "planner_compute_summary": split["planner_compute_summary"]
+            } if split.get("planner_compute_summary") else {}),
+            **({
+                "planner_candidate_scores": split["planner_candidate_scores"]
+            } if split.get("planner_candidate_scores") else {}),
+            **({
+                "planner_selected_candidate": split["planner_selected_candidate"]
+            } if split.get("planner_selected_candidate") else {}),
         },
     )
     repo_service = SplitServiceSpec(
