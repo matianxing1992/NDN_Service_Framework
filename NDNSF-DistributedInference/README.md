@@ -1592,6 +1592,23 @@ python3 examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py \
   --out-dir /tmp/ndnsf-di-llm-stub
 ```
 
+For LLM deployments, "model plus inference engine" is the real execution unit,
+but compatibility is not as uniform as ONNX plus ONNX Runtime. NDNSF-DI records
+the model format explicitly so planners and runtimes can reject invalid
+combinations early. Common combinations are:
+
+| Model format | Typical engines | Notes |
+| --- | --- | --- |
+| `safetensors` / HuggingFace layout | Transformers, vLLM | Broadest server-side compatibility; vLLM is common for OpenAI-compatible serving. |
+| `gguf` | llama.cpp, Ollama | Common local deployment format; not a direct vLLM input. |
+| TensorRT-LLM engine | TensorRT-LLM runtime | High performance, but requires model conversion/build steps. |
+| MLX format | MLX-LM | Apple local inference ecosystem. |
+
+These are planner/runtime compatibility facts, not NDNSF wire-protocol facts.
+The DI planner may choose different split strategies for the same model family
+depending on whether the artifact is `safetensors`, `gguf`, TensorRT engine, or
+another configured format.
+
 The client can publish the manifest through NDNSF:
 
 ```python

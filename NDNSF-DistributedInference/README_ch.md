@@ -1430,6 +1430,20 @@ python3 examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py \
   --out-dir /tmp/ndnsf-di-llm-stub
 ```
 
+对 LLM 部署来说，“模型 + 推理引擎”才是真正的执行单元，但它不像 ONNX +
+ONNX Runtime 那样统一。NDNSF-DI 会显式记录 model format，这样 planner 和 runtime
+可以尽早拒绝不兼容组合。常见组合包括：
+
+| Model format | 常见推理引擎 | 说明 |
+| --- | --- | --- |
+| `safetensors` / HuggingFace layout | Transformers, vLLM | 服务器侧兼容性最广；vLLM 常用于 OpenAI-compatible serving。 |
+| `gguf` | llama.cpp, Ollama | 常见本地部署格式；不能直接作为 vLLM 输入。 |
+| TensorRT-LLM engine | TensorRT-LLM runtime | 性能高，但需要模型转换和 engine build。 |
+| MLX format | MLX-LM | Apple 本地推理生态。 |
+
+这些是 planner/runtime 兼容性事实，不是 NDNSF wire protocol 事实。同一个 LLM
+model family 可能因为 artifact 是 `safetensors`、`gguf`、TensorRT engine 或其它配置格式，而选择不同 planner/runtime 路径。
+
 Client 可以通过 NDNSF 发布 manifest：
 
 ```python

@@ -237,6 +237,16 @@ def build(bld):
                 linkflags=['-pthread'],
                 install_path=None)
 
+    bld.program(name='di-native-plan-schema-smoke',
+                target='di-native-plan-schema-smoke',
+                source=(["DI_NativePlanSchemaSmoke.cpp"] +
+                        di_native_session_sources),
+                includes=['..', '../ndn-service-framework'],
+                use='BOOST',
+                cxxflags=['-fPIC', '-pthread'],
+                linkflags=['-pthread'],
+                install_path=None)
+
     bld.program(name='di-native-plan-onnx-smoke',
                 target='di-native-plan-onnx-smoke',
                 source=(["DI_NativePlanOnnxSmoke.cpp"] +
