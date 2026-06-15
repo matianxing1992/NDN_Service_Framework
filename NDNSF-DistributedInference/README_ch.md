@@ -1383,10 +1383,52 @@ artifact-security 状态。这个命令使用和生成部署文件相同的 pars
 Service manifest 是 service-to-model 和 service-to-dependency 映射的 canonical JSON 形式。`.sha256` 文件只是部署工具的本地 fingerprint，不是安全签名。安全性来自把 manifest 作为 NDN Data 发布并验证 Data signature。
 
 `native-execution-plan.json` 比 service manifest 更窄。它是交给 C++ hot path 的
-handoff artifact，只包含构造 native `RoleSpec` 所需的字段：service name、roles、
+handoff artifact，并使用 execution-plan schema v2。plan 会在 role graph 之前记录
+`modelFamily` 和 `plannerKind`，这样 runtime 可以区分 generic ONNX DAG plan、
+YOLO-specific plan 和未来的 LLM plan，而不需要以后再次拆 role/dependency schema。
+当前 YOLO planner 会输出 `modelFamily: yolo-onnx`，以及
+`yolo-detect-auto`、`yolo-detect-shared-backbone`、
+`yolo-detect-replicated-backbone` 等 planner kind。
+
+Native plan 仍然只包含构造 native `RoleSpec` 所需的字段：service name、roles、
 dependency producers/consumers、key scopes、topic prefixes、deterministic
-object-name templates、expected segment counts 和 expected byte counts。它由
-policy 生成；部署者应该修改 policy 或 splitter 输入，而不是手工改这个文件。
+object-name templates、expected segment counts、expected byte counts，以及 planner
+identity metadata。它由 policy 生成；部署者应该修改 policy 或 splitter 输入，而不是手工改这个文件。LLM planner kind 只是 schema 预留，本 checkpoint 不实现 LLM
+推理执行。
+
+Planner dispatch 通过 `PlannerBackendRegistry` 集中管理。每个 planner backend
+以 `plannerKind` 为 key，并声明自己的 `modelFamily`；具体模型包把自己的 splitter
+实现放在 backend 后面。当前 YOLO 示例会在一个 YOLO registry 中注册 sequential
+chunks、output-channel shards、shared-backbone Detect shards、replicated-backbone
+Detect shards 和 auto Detect planning。未来接 LLM planner 时，应新增 LLM model
+family 的 backend，而不是把 LLM 条件分支塞进 YOLO 或 deployment 路径。
+
+Planner backend 使用统一的 `PlannerRequest` / `PlannerResult` contract。
+`PlannerRequest` 携带 model family、model format、planner kind、model path、
+output directory、layout、input size、provider profiles 和 backend options。`PlannerResult` 携带
+模型特定的 split plan，以及标准化的 score summary 和 selected-candidate metadata。
+当前 YOLO splitter 已经通过这个 contract 进入，虽然底层 YOLO 切分算法仍然是
+model-specific。这样 deployment 路径保持稳定，未来 LLM planner 可以返回不同形状的
+split plan，而不需要拆现有 YOLO 路径。
+
+Model family 和 model format 是两件事。YOLO 当前使用
+`modelFamily: yolo-onnx` 和 `modelFormat: onnx`；LLM plan 可以使用
+`modelFamily: llm`，同时把 `modelFormat` 配成 `hf-transformers`、`gguf`、
+`safetensors`、`onnx` 或部署自定义格式。format 是 planner/runtime metadata，
+不会强迫所有模型家族都走 ONNX。
+
+仓库现在包含一个 stub LLM planner，用于验证 planner dispatch。它可以生成 abstract
+pipeline、prefill/decode 或 tensor-parallel roles/dependencies，但不执行 LLM 推理，
+不管理 KV cache，也不做 token streaming：
+
+```bash
+PYTHONPATH=NDNSF-DistributedInference \
+python3 examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py \
+  --planner-kind llm-prefill-decode \
+  --model /Model/Llama/Stub \
+  --model-format hf-transformers \
+  --out-dir /tmp/ndnsf-di-llm-stub
+```
 
 Client 可以通过 NDNSF 发布 manifest：
 

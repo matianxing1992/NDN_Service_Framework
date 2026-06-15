@@ -59,7 +59,19 @@ from ndnsf_distributed_inference import (
     repo_manifest_from_large_data_reference,
     write_onnx_graph_summary,
 )
-from ndnsf_distributed_inference.plan import ArtifactSpec, RuntimeSpec
+from ndnsf_distributed_inference.plan import (
+    ArtifactSpec,
+    ModelFamily,
+    ModelFormat,
+    PlannerKind,
+    RuntimeSpec,
+)
+from ndnsf_distributed_inference.planner_registry import (
+    PlannerBackend,
+    PlannerBackendRegistry,
+    PlannerRequest,
+    PlannerResult,
+)
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact,
     SplitServiceSpec,
@@ -407,6 +419,188 @@ def parallel_detect_replicated_backbone_layout_metadata(layout: str | None = Non
         ),
     })
     return metadata
+
+
+def planner_kind_for_layout_semantics(layout_semantics: str, split: dict | None = None) -> str:
+    if split and split.get("planner_selected_candidate"):
+        return PlannerKind.YOLO_DETECT_AUTO.value
+    if layout_semantics == YOLO_PARALLEL_DETECT_REPLICATED_BACKBONE_SEMANTICS:
+        return PlannerKind.YOLO_DETECT_REPLICATED_BACKBONE.value
+    if layout_semantics == YOLO_PARALLEL_DETECT_SCALE_SEMANTICS:
+        return PlannerKind.YOLO_DETECT_SHARED_BACKBONE.value
+    if layout_semantics == YOLO_PARALLEL_OUTPUT_SEMANTICS:
+        return PlannerKind.YOLO_OUTPUT_CHANNEL_SHARDS.value
+    return PlannerKind.YOLO_SEQUENTIAL_CHUNKS.value
+
+
+def planner_descriptor_metadata(layout_semantics: str, split: dict | None = None) -> dict:
+    planner_kind = planner_kind_for_layout_semantics(layout_semantics, split)
+    planner = {
+        "modelFamily": ModelFamily.YOLO_ONNX.value,
+        "modelFormat": ModelFormat.ONNX.value,
+        "plannerKind": planner_kind,
+        "schemaVersion": 2,
+        "layoutSemantics": layout_semantics,
+    }
+    if split:
+        if split.get("planner_selected_candidate"):
+            planner["selectedCandidate"] = split["planner_selected_candidate"]
+        if split.get("planner_cost_summary"):
+            planner["costSummary"] = split["planner_cost_summary"]
+        if split.get("planner_compute_summary"):
+            planner["computeSummary"] = split["planner_compute_summary"]
+    return {
+        "model_family": ModelFamily.YOLO_ONNX.value,
+        "model_format": ModelFormat.ONNX.value,
+        "planner_kind": planner_kind,
+        "execution_plan_schema_version": 2,
+        "planner": planner,
+    }
+
+
+def yolo_planner_registry() -> PlannerBackendRegistry:
+    registry = PlannerBackendRegistry()
+    registry.register(PlannerBackend(
+        planner_kind=PlannerKind.YOLO_SEQUENTIAL_CHUNKS,
+        model_family=ModelFamily.YOLO_ONNX,
+        model_format=ModelFormat.ONNX,
+        name="YOLO sequential ONNX chunks",
+        description="Historical YOLO ONNX module-list chunk planner.",
+        metadata={
+            "splitOptions": {},
+        },
+        handler=yolo_plan_from_request,
+    ))
+    registry.register(PlannerBackend(
+        planner_kind=PlannerKind.YOLO_OUTPUT_CHANNEL_SHARDS,
+        model_family=ModelFamily.YOLO_ONNX,
+        model_format=ModelFormat.ONNX,
+        name="YOLO output-channel shard prototype",
+        description="Parallel output-channel shard correctness prototype.",
+        metadata={
+            "splitOptions": {"parallel_output_shards": True},
+        },
+        handler=yolo_plan_from_request,
+    ))
+    registry.register(PlannerBackend(
+        planner_kind=PlannerKind.YOLO_DETECT_SHARED_BACKBONE,
+        model_family=ModelFamily.YOLO_ONNX,
+        model_format=ModelFormat.ONNX,
+        name="YOLO Detect shared-backbone planner",
+        description="Shared backbone/neck with parallel Detect scale heads.",
+        metadata={
+            "splitOptions": {"parallel_detect_scale_shards": True},
+        },
+        handler=yolo_plan_from_request,
+    ))
+    registry.register(PlannerBackend(
+        planner_kind=PlannerKind.YOLO_DETECT_REPLICATED_BACKBONE,
+        model_family=ModelFamily.YOLO_ONNX,
+        model_format=ModelFormat.ONNX,
+        name="YOLO Detect replicated-backbone planner",
+        description="Replicated backbone/neck with lower cross-node activation.",
+        metadata={
+            "splitOptions": {
+                "parallel_detect_replicated_backbone_shards": True,
+            },
+        },
+        handler=yolo_plan_from_request,
+    ))
+    registry.register(PlannerBackend(
+        planner_kind=PlannerKind.YOLO_DETECT_AUTO,
+        model_family=ModelFamily.YOLO_ONNX,
+        model_format=ModelFormat.ONNX,
+        name="YOLO Detect auto planner",
+        description="Scores shared and replicated Detect plans by compute and transfer cost.",
+        metadata={
+            "splitOptions": {"auto_parallel_detect_plan": True},
+        },
+        handler=yolo_plan_from_request,
+    ))
+    return registry
+
+
+def yolo_planner_kind_from_options(*,
+                                   parallel_output_shards: bool = False,
+                                   parallel_detect_scale_shards: bool = False,
+                                   parallel_detect_replicated_backbone_shards: bool = False,
+                                   auto_parallel_detect_plan: bool = False) -> str:
+    selected = [
+        bool(parallel_output_shards),
+        bool(parallel_detect_scale_shards),
+        bool(parallel_detect_replicated_backbone_shards),
+        bool(auto_parallel_detect_plan),
+    ]
+    if sum(selected) > 1:
+        raise ValueError(
+            "YOLO planner modes are mutually exclusive; select one planner kind")
+    if auto_parallel_detect_plan:
+        return PlannerKind.YOLO_DETECT_AUTO.value
+    if parallel_detect_replicated_backbone_shards:
+        return PlannerKind.YOLO_DETECT_REPLICATED_BACKBONE.value
+    if parallel_detect_scale_shards:
+        return PlannerKind.YOLO_DETECT_SHARED_BACKBONE.value
+    if parallel_output_shards:
+        return PlannerKind.YOLO_OUTPUT_CHANNEL_SHARDS.value
+    return PlannerKind.YOLO_SEQUENTIAL_CHUNKS.value
+
+
+def yolo_planner_split_options(planner_kind: str | PlannerKind) -> dict:
+    backend = yolo_planner_registry().get(planner_kind)
+    return dict((backend.metadata or {}).get("splitOptions", {}) or {})
+
+
+def yolo_planner_request_from_options(
+    *,
+    output_dir: str | Path,
+    model_name: str = DEFAULT_MODEL,
+    input_size: int = DEFAULT_INPUT_SIZE,
+    provider_profiles: list[ProviderProfile] | None = None,
+    auto_split: bool = False,
+    layout: str = DEFAULT_LAYOUT,
+    parallel_output_shards: bool = False,
+    parallel_detect_scale_shards: bool = False,
+    parallel_detect_replicated_backbone_shards: bool = False,
+    auto_parallel_detect_plan: bool = False,
+) -> PlannerRequest:
+    planner_kind = yolo_planner_kind_from_options(
+        parallel_output_shards=parallel_output_shards,
+        parallel_detect_scale_shards=parallel_detect_scale_shards,
+        parallel_detect_replicated_backbone_shards=(
+            parallel_detect_replicated_backbone_shards),
+        auto_parallel_detect_plan=auto_parallel_detect_plan,
+    )
+    return PlannerRequest(
+        planner_kind=planner_kind,
+        model_family=ModelFamily.YOLO_ONNX,
+        model_format=ModelFormat.ONNX,
+        model_path=str(model_name),
+        output_dir=str(output_dir),
+        layout=normalize_layout(layout),
+        input_size=int(input_size),
+        provider_profiles=list(provider_profiles or []),
+        options={
+            "auto_split": bool(auto_split),
+            **yolo_planner_split_options(planner_kind),
+        },
+        metadata={
+            "layoutNotation": "ROWSxCOLS",
+        },
+    )
+
+
+def yolo_plan_from_request(request: PlannerRequest) -> PlannerResult:
+    split = _split_model_for_request(request)
+    return PlannerResult(
+        request=request,
+        split_plan=split,
+        score_summary=dict(split.get("planner_cost_summary") or {}),
+        selected_candidate=dict(split.get("planner_selected_candidate") or {}),
+        metadata={
+            "layoutSemantics": str(split.get("layout_semantics", "")),
+            "localVerifyRequired": True,
+        },
+    )
 
 
 def planner_cost_summary(
@@ -779,14 +973,31 @@ def split_model(output_dir: str | Path,
                 parallel_detect_scale_shards: bool = False,
                 parallel_detect_replicated_backbone_shards: bool = False,
                 auto_parallel_detect_plan: bool = False) -> dict:
-    if auto_parallel_detect_plan and (
-            parallel_detect_scale_shards or
-            parallel_detect_replicated_backbone_shards or
-            parallel_output_shards):
-        raise ValueError(
-            "auto_parallel_detect_plan is mutually exclusive with explicit "
-            "parallel split modes")
-    if auto_parallel_detect_plan:
+    request = yolo_planner_request_from_options(
+        output_dir=output_dir,
+        model_name=model_name,
+        input_size=input_size,
+        provider_profiles=provider_profiles,
+        auto_split=auto_split,
+        layout=layout,
+        parallel_output_shards=parallel_output_shards,
+        parallel_detect_scale_shards=parallel_detect_scale_shards,
+        parallel_detect_replicated_backbone_shards=(
+            parallel_detect_replicated_backbone_shards),
+        auto_parallel_detect_plan=auto_parallel_detect_plan,
+    )
+    return yolo_planner_registry().plan(request).split_plan
+
+
+def _split_model_for_request(request: PlannerRequest) -> dict:
+    output_dir = request.output_dir
+    model_name = request.model_path
+    input_size = request.input_size or DEFAULT_INPUT_SIZE
+    provider_profiles = list(request.provider_profiles or [])
+    auto_split = bool(request.option("auto_split", False))
+    layout = request.layout or DEFAULT_LAYOUT
+
+    if request.option("auto_parallel_detect_plan", False):
         return split_auto_parallel_detect_model(
             output_dir,
             model_name=model_name,
@@ -795,11 +1006,7 @@ def split_model(output_dir: str | Path,
             auto_split=auto_split,
             layout=layout,
         )
-    if parallel_detect_scale_shards and parallel_detect_replicated_backbone_shards:
-        raise ValueError(
-            "parallel_detect_scale_shards and "
-            "parallel_detect_replicated_backbone_shards are mutually exclusive")
-    if parallel_detect_scale_shards:
+    if request.option("parallel_detect_scale_shards", False):
         return split_parallel_detect_scale_model(
             output_dir,
             model_name=model_name,
@@ -808,7 +1015,7 @@ def split_model(output_dir: str | Path,
             auto_split=auto_split,
             layout=layout,
         )
-    if parallel_detect_replicated_backbone_shards:
+    if request.option("parallel_detect_replicated_backbone_shards", False):
         return split_parallel_detect_scale_model(
             output_dir,
             model_name=model_name,
@@ -818,7 +1025,7 @@ def split_model(output_dir: str | Path,
             layout=layout,
             replicate_backbone_shards=True,
         )
-    if parallel_output_shards:
+    if request.option("parallel_output_shards", False):
         return split_parallel_output_model(
             output_dir,
             model_name=model_name,
@@ -1906,6 +2113,7 @@ def yolo_splitter_output(split: dict) -> SplitterOutput:
             "source_model": str(split["model"]),
             "input_size": int(split["input_size"]),
             "layout": layout,
+            **planner_descriptor_metadata(layout_semantics, split),
             **layout_metadata,
             "chunk_count": len(roles),
             "split": int(split["split"]),

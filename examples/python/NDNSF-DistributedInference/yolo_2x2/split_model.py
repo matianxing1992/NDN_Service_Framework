@@ -23,6 +23,8 @@ from yolo_2x2_lib import (
     full_forward,
     yolo_dynamic_splitter_output,
     service_name_for_layout,
+    yolo_planner_kind_from_options,
+    yolo_planner_registry,
     yolo_splitter_output,
 )
 
@@ -58,19 +60,23 @@ def main() -> int:
     parser.add_argument("--dynamic-provisioning", action="store_true")
     parser.add_argument("--trust-anchor-file", default="")
     args = parser.parse_args()
-    selected_parallel_modes = sum([
-        bool(args.parallel_output_shards),
-        bool(args.parallel_detect_scale_shards),
-        bool(args.parallel_detect_replicated_backbone_shards),
-        bool(args.auto_parallel_detect_plan),
-    ])
-    if selected_parallel_modes > 1:
-        raise SystemExit(
-            "--parallel-output-shards, --parallel-detect-scale-shards, and "
-            "--parallel-detect-replicated-backbone-shards, and "
-            "--auto-parallel-detect-plan are mutually exclusive")
+    try:
+        planner_kind = yolo_planner_kind_from_options(
+            parallel_output_shards=args.parallel_output_shards,
+            parallel_detect_scale_shards=args.parallel_detect_scale_shards,
+            parallel_detect_replicated_backbone_shards=(
+                args.parallel_detect_replicated_backbone_shards),
+            auto_parallel_detect_plan=args.auto_parallel_detect_plan,
+        )
+    except ValueError as exc:
+        available = ", ".join(
+            backend.normalized_planner_kind()
+            for backend in yolo_planner_registry().backends()
+        )
+        raise SystemExit(f"{exc}; available YOLO planners: {available}") from exc
 
     profiles = load_provider_profiles(args.provider_profile) if args.provider_profile else None
+    print("YOLO_LAYOUT_PLANNER_KIND", f"planner_kind={planner_kind}")
     split = split_model(
         args.out_dir,
         args.model,

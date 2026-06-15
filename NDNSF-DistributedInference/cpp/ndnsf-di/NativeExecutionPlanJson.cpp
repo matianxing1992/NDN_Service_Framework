@@ -56,7 +56,7 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
   boost::property_tree::ptree root;
   boost::property_tree::read_json(input, root);
   const auto version = root.get<int>("version", 0);
-  if (version != 1) {
+  if (version != 1 && version != 2) {
     throw std::invalid_argument("unsupported native execution plan version");
   }
 
@@ -74,6 +74,12 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
     }
 
     NativeExecutionPlan plan;
+    plan.version = version;
+    plan.serviceName = serviceName;
+    plan.modelName = service.get<std::string>("model", "");
+    plan.modelFamily = service.get<std::string>("modelFamily", "generic-onnx");
+    plan.modelFormat = service.get<std::string>("modelFormat", "unknown");
+    plan.plannerKind = service.get<std::string>("plannerKind", "onnx-dag");
     plan.roles = stringArrayFromJson(service, "roles");
     const auto dependencies = service.get_child_optional("dependencies");
     if (dependencies) {

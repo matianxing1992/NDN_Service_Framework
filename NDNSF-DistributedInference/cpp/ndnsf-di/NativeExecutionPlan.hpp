@@ -43,6 +43,12 @@ struct NativeDependencySpec
 
 struct NativeExecutionPlan
 {
+  int version = 1;
+  std::string serviceName;
+  std::string modelName;
+  std::string modelFamily = "generic-onnx";
+  std::string modelFormat = "unknown";
+  std::string plannerKind = "onnx-dag";
   std::vector<std::string> roles;
   std::vector<NativeDependencySpec> dependencies;
 };

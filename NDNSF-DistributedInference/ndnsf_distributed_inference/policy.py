@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .plan import DependencyGraph, InferenceDependency
+from .plan import (
+    DependencyGraph,
+    InferenceDependency,
+    ModelFamily,
+    ModelFormat,
+    PlannerKind,
+    normalize_model_format,
+    normalize_model_family,
+    normalize_planner_kind,
+)
 
 
 @dataclass(frozen=True)
@@ -749,6 +758,7 @@ def service_manifest(services: tuple[ServicePolicy, ...]) -> dict[str, Any]:
             {
                 "name": service.name,
                 "model": service.model_name,
+                "metadata": dict(service.metadata or {}),
                 "roles": list(service.roles),
                 "dependencies": [
                     {
@@ -784,6 +794,54 @@ def service_manifest(services: tuple[ServicePolicy, ...]) -> dict[str, Any]:
     }
 
 
+def _service_planner_descriptor(service: ServicePolicy) -> dict[str, Any]:
+    metadata = dict(service.metadata or {})
+    raw_planner = metadata.get("planner", {})
+    planner = dict(raw_planner or {}) if isinstance(raw_planner, dict) else {}
+    model_family = normalize_model_family(
+        planner.get("modelFamily") or
+        planner.get("model_family") or
+        metadata.get("modelFamily") or
+        metadata.get("model_family") or
+        ModelFamily.GENERIC_ONNX,
+    )
+    model_format = normalize_model_format(
+        planner.get("modelFormat") or
+        planner.get("model_format") or
+        metadata.get("modelFormat") or
+        metadata.get("model_format") or
+        ModelFormat.UNKNOWN,
+    )
+    planner_kind = normalize_planner_kind(
+        planner.get("plannerKind") or
+        planner.get("planner_kind") or
+        metadata.get("plannerKind") or
+        metadata.get("planner_kind") or
+        PlannerKind.ONNX_DAG,
+    )
+    schema_version = int(
+        planner.get("schemaVersion") or
+        planner.get("schema_version") or
+        metadata.get("execution_plan_schema_version") or
+        metadata.get("schemaVersion") or
+        2
+    )
+    merged_planner = {
+        "modelFamily": model_family,
+        "modelFormat": model_format,
+        "plannerKind": planner_kind,
+        "schemaVersion": schema_version,
+        **planner,
+    }
+    return {
+        "modelFamily": model_family,
+        "modelFormat": model_format,
+        "plannerKind": planner_kind,
+        "schemaVersion": schema_version,
+        "planner": merged_planner,
+    }
+
+
 def native_execution_plan_spec(services: tuple[ServicePolicy, ...]) -> dict[str, Any]:
     """Return the minimal native C++ hot-path execution plan.
 
@@ -794,11 +852,12 @@ def native_execution_plan_spec(services: tuple[ServicePolicy, ...]) -> dict[str,
     """
 
     return {
-        "version": 1,
+        "version": 2,
         "services": [
             {
                 "service": service.name,
                 "model": service.model_name,
+                **_service_planner_descriptor(service),
                 "roles": list(service.roles),
                 "dependencies": [
                     {

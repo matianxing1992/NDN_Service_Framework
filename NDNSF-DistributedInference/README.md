@@ -1539,12 +1539,58 @@ for deployment tooling; it is not a security signature. Security comes from
 publishing the manifest as NDN Data and validating the Data signature.
 
 `native-execution-plan.json` is narrower than the service manifest. It is the
-handoff artifact for the C++ hot path and contains only the fields needed to
-construct native `RoleSpec` objects: service name, roles, dependency
-producers/consumers, key scopes, topic prefixes, deterministic object-name
-templates, expected segment counts, and expected byte counts. It is generated
+handoff artifact for the C++ hot path and uses execution-plan schema v2. The
+plan records `modelFamily` and `plannerKind` before the role graph so the
+runtime can distinguish generic ONNX DAG plans, YOLO-specific plans, and future
+LLM plans without changing the role/dependency schema again. The current YOLO
+planner emits `modelFamily: yolo-onnx` and planner kinds such as
+`yolo-detect-auto`, `yolo-detect-shared-backbone`, or
+`yolo-detect-replicated-backbone`.
+
+The native plan still contains only fields needed to construct native
+`RoleSpec` objects: service name, roles, dependency producers/consumers, key
+scopes, topic prefixes, deterministic object-name templates, expected segment
+counts, expected byte counts, and planner identity metadata. It is generated
 from the policy; deployment operators should edit the policy or splitter
-inputs, not this file.
+inputs, not this file. LLM planner kinds are reserved in the schema, but LLM
+inference execution is not implemented in this checkpoint.
+
+Planner dispatch is centralized through `PlannerBackendRegistry`. A planner
+backend is keyed by `plannerKind` and declares its `modelFamily`; model-specific
+packages keep their own splitter code behind that backend. The current YOLO
+example registers sequential chunks, output-channel shards, shared-backbone
+Detect shards, replicated-backbone Detect shards, and auto Detect planning in
+one YOLO registry. A future LLM planner should add a new backend for the LLM
+model family instead of adding YOLO-specific conditionals to the deployment
+path.
+
+Planner backends use a common `PlannerRequest` / `PlannerResult` contract.
+`PlannerRequest` carries model family, model format, planner kind, model path,
+output directory, layout, input size, provider profiles, and backend options.
+`PlannerResult` carries the model-specific split plan plus normalized score
+summary and selected-candidate metadata. The YOLO splitter now enters through
+this contract even though the underlying YOLO splitting algorithms are still
+model-specific. This keeps the deployment path stable while allowing future
+LLM planners to return a different split plan shape.
+
+Model family and model format are separate. YOLO currently uses
+`modelFamily: yolo-onnx` with `modelFormat: onnx`; an LLM plan may use
+`modelFamily: llm` with `modelFormat: hf-transformers`, `gguf`,
+`safetensors`, `onnx`, or a deployment-specific custom format. The format is
+planner/runtime metadata and does not force every model family to use ONNX.
+
+The repository includes a stub LLM planner for dispatch testing. It generates
+abstract pipeline, prefill/decode, or tensor-parallel roles and dependencies,
+but it does not execute LLM inference, manage KV cache, or stream tokens:
+
+```bash
+PYTHONPATH=NDNSF-DistributedInference \
+python3 examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py \
+  --planner-kind llm-prefill-decode \
+  --model /Model/Llama/Stub \
+  --model-format hf-transformers \
+  --out-dir /tmp/ndnsf-di-llm-stub
+```
 
 The client can publish the manifest through NDNSF:
 

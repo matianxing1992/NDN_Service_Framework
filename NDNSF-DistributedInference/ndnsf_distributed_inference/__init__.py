@@ -17,6 +17,10 @@ from .plan import (
     DependencyEdge,
     InferenceDependency,
     InferenceRole,
+    ModelFamily,
+    ModelFormat,
+    PlannerDescriptor,
+    PlannerKind,
     RoleDependencyView,
     RuntimeSpec,
     nxm_stage_frontier_dependencies,
@@ -39,6 +43,12 @@ from .repo import (
     repo_manifest_from_artifact_reference,
     repo_manifest_from_large_data_reference,
     select_replicas,
+)
+from .llm_stub_planner import (
+    llm_planner_registry,
+    llm_planner_request,
+    llm_splitter_output_from_result,
+    llm_stub_plan_from_request,
 )
 from .onnx_graph import (
     OnnxChunkSpec,
@@ -92,6 +102,13 @@ from .policy import (
     native_execution_plan_spec,
     write_policy_bundle,
 )
+from .planner_registry import (
+    PlannerBackend,
+    PlannerBackendRegistry,
+    PlannerRequest,
+    PlannerResult,
+    default_planner_registry,
+)
 from .split_planner import (
     ProviderProfile,
     SequentialSplitCandidate,
@@ -128,8 +145,20 @@ __all__ = [
     "InferenceRole",
     "GenericRepoClient",
     "ModelPart",
+    "ModelFamily",
+    "ModelFormat",
+    "PlannerDescriptor",
+    "PlannerBackend",
+    "PlannerBackendRegistry",
+    "PlannerKind",
+    "PlannerRequest",
+    "PlannerResult",
     "ProviderRuntimeContext",
     "LocalDistributedRepo",
+    "llm_planner_registry",
+    "llm_planner_request",
+    "llm_splitter_output_from_result",
+    "llm_stub_plan_from_request",
     "NetworkDistributedRepoClient",
     "OnnxChunkSpec",
     "OnnxGraphSummary",
@@ -162,6 +191,7 @@ __all__ = [
     "encode_tensor_bundle",
     "execute_onnx_dependency_chunk",
     "estimate_split_candidates",
+    "default_planner_registry",
     "homogeneous_provider_profiles",
     "load_npz_payload",
     "load_config",

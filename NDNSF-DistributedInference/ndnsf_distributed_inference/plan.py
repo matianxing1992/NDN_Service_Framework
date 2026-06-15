@@ -8,10 +8,100 @@ generic NDNSF Python collaboration API.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 from ndnsf import CollaborationDependency, CollaborationRole
 from .repo import large_data_reference_from_repo_manifest
+
+
+class ModelFamily(str, Enum):
+    """Model/application family understood by DI planners.
+
+    This is planning metadata, not an execution backend.  It lets the same
+    deployment/runtime code dispatch to YOLO-, generic ONNX-, or future
+    LLM-specific planners without encoding model-family assumptions into the
+    native execution-plan schema.
+    """
+
+    GENERIC_ONNX = "generic-onnx"
+    YOLO_ONNX = "yolo-onnx"
+    LLM = "llm"
+
+
+class ModelFormat(str, Enum):
+    """Artifact/model container format consumed by a planner/runtime."""
+
+    UNKNOWN = "unknown"
+    ONNX = "onnx"
+    GGUF = "gguf"
+    SAFETENSORS = "safetensors"
+    HF_TRANSFORMERS = "hf-transformers"
+    CUSTOM = "custom"
+
+
+class PlannerKind(str, Enum):
+    """Planner strategy used to produce role/dependency metadata."""
+
+    ONNX_DAG = "onnx-dag"
+    YOLO_SEQUENTIAL_CHUNKS = "yolo-sequential-chunks"
+    YOLO_DETECT_AUTO = "yolo-detect-auto"
+    YOLO_DETECT_SHARED_BACKBONE = "yolo-detect-shared-backbone"
+    YOLO_DETECT_REPLICATED_BACKBONE = "yolo-detect-replicated-backbone"
+    YOLO_OUTPUT_CHANNEL_SHARDS = "yolo-output-channel-shards"
+    LLM_PIPELINE = "llm-pipeline"
+    LLM_PREFILL_DECODE = "llm-prefill-decode"
+    LLM_TENSOR_PARALLEL = "llm-tensor-parallel"
+
+
+def _enum_value(value: str | Enum | None, default: str) -> str:
+    if value is None:
+        return default
+    if isinstance(value, Enum):
+        return str(value.value)
+    text = str(value).strip()
+    return text or default
+
+
+def normalize_model_family(value: str | ModelFamily | None) -> str:
+    return _enum_value(value, ModelFamily.GENERIC_ONNX.value)
+
+
+def normalize_model_format(value: str | ModelFormat | None) -> str:
+    return _enum_value(value, ModelFormat.UNKNOWN.value)
+
+
+def normalize_planner_kind(value: str | PlannerKind | None) -> str:
+    return _enum_value(value, PlannerKind.ONNX_DAG.value)
+
+
+@dataclass(frozen=True)
+class PlannerDescriptor:
+    """Stable planner identity embedded into generated execution plans."""
+
+    model_family: str | ModelFamily = ModelFamily.GENERIC_ONNX
+    model_format: str | ModelFormat = ModelFormat.UNKNOWN
+    planner_kind: str | PlannerKind = PlannerKind.ONNX_DAG
+    schema_version: int = 2
+    metadata: dict = field(default_factory=dict)
+
+    def normalized_model_family(self) -> str:
+        return normalize_model_family(self.model_family)
+
+    def normalized_model_format(self) -> str:
+        return normalize_model_format(self.model_format)
+
+    def normalized_planner_kind(self) -> str:
+        return normalize_planner_kind(self.planner_kind)
+
+    def to_metadata(self) -> dict:
+        return {
+            "modelFamily": self.normalized_model_family(),
+            "modelFormat": self.normalized_model_format(),
+            "plannerKind": self.normalized_planner_kind(),
+            "schemaVersion": int(self.schema_version),
+            **dict(self.metadata or {}),
+        }
 
 
 def stage_shard_role(stage: int, shard: int) -> str:
@@ -318,6 +408,7 @@ class DistributedInferencePlan:
     roles: list[InferenceRole]
     dependencies: list[InferenceDependency] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    planner: PlannerDescriptor = field(default_factory=PlannerDescriptor)
 
     def role_map(self) -> dict[str, InferenceRole]:
         return {role.role: role for role in self.roles}

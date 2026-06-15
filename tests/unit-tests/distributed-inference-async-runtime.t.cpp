@@ -1029,11 +1029,14 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanReturnsNoStaticSegmentsForDynamicEdges)
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
 {
   std::istringstream input(R"JSON({
-    "version": 1,
+    "version": 2,
     "services": [
       {
         "service": "/AI/Toy/Inference",
         "model": "/Model/Toy/v1",
+        "modelFamily": "yolo-onnx",
+        "modelFormat": "onnx",
+        "plannerKind": "yolo-detect-auto",
         "roles": ["/Stage/0", "/Stage/1"],
         "dependencies": [
           {
@@ -1058,6 +1061,12 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanLoadsFromGeneratedJsonShape)
   })JSON");
 
   const auto plan = nativeExecutionPlanForServiceFromJson(input, "/AI/Toy/Inference");
+  BOOST_CHECK_EQUAL(plan.version, 2);
+  BOOST_CHECK_EQUAL(plan.serviceName, "/AI/Toy/Inference");
+  BOOST_CHECK_EQUAL(plan.modelName, "/Model/Toy/v1");
+  BOOST_CHECK_EQUAL(plan.modelFamily, "yolo-onnx");
+  BOOST_CHECK_EQUAL(plan.modelFormat, "onnx");
+  BOOST_CHECK_EQUAL(plan.plannerKind, "yolo-detect-auto");
   BOOST_REQUIRE_EQUAL(plan.roles.size(), 2);
   BOOST_REQUIRE_EQUAL(plan.dependencies.size(), 1);
   BOOST_CHECK_EQUAL(plan.dependencies[0].keyScope, "stage0-to-stage1");
