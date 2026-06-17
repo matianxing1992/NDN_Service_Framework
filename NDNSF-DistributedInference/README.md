@@ -1741,6 +1741,14 @@ model parallelism: each selected provider runs or connects to a local
 OpenAI-compatible llama-server, while NDNSF-DI handles service discovery,
 authorization, provider selection, and deployment metadata.
 
+This example is now treated as a secondary deployment/provisioning reference,
+not the active path for context handling or model-split optimization.
+`llama-server` exposes a useful OpenAI-compatible serving surface, but it does
+not give NDNSF-DI a clean stage-by-stage hidden-state API. Current Qwen context
+and pipeline work should therefore use the Qwen ONNX backend described below.
+The GGUF/llama-server path remains useful for artifact provisioning,
+asynchronous runtime readiness, and replicated-provider serving checks.
+
 The intended deployment flow is:
 
 ```text
@@ -1826,46 +1834,12 @@ python3 examples/python/NDNSF-DistributedInference/llama_server/user.py \
   --prompt "Explain NDNSF-DI in one sentence."
 ```
 
-For context-aware LLM calls, NDNSF-DI uses an application-level
-`LLMRequest v1` payload contract rather than adding LLM concepts to NDNSF Core.
-The request is still carried as the normal NDNSF service payload, and oversized
-context bytes still use the existing NDNSF large-data reference mechanism.
-
-```json
-{
-  "schema": "ndnsf-di-llm-request-v1",
-  "sessionId": "conversation-or-run-id",
-  "messages": [
-    {"role": "user", "content": "current question"}
-  ],
-  "inlineContext": "small optional context",
-  "contextReferences": [
-    {
-      "label": "paper-section-3",
-      "referencePayloadBase64": "base64(ndnsf large-data reference payload)"
-    }
-  ],
-  "contextDelta": "new facts since the previous turn",
-  "cachePolicy": {
-    "reuseProviderSession": true,
-    "allowKvCache": true
-  },
-  "generationConfig": {
-    "model": "qwen2.5-0.5b",
-    "maxTokens": 64,
-    "temperature": 0.2
-  }
-}
-```
-
-`contextReferences` are immutable references to previously published context
-objects; `contextDelta` is the new append-only update for the current turn.
-Providers materialize referenced context, combine it with the delta and current
-messages, and then call the selected runtime backend. A future provider may use
-`sessionId` to reuse prefill or KV-cache state, but the first implementation
-keeps the semantics conservative: context is reconstructed from explicit
-inline bytes, references, and deltas. This keeps old context useful without
-requiring callers to resend a growing conversation string.
+Context-aware LLM request design is intentionally paused for this path. The
+next context API should be designed around the ONNX Qwen pipeline, where token
+IDs, attention masks, hidden states, and future KV-cache tensors are explicit
+large-data objects. Core NDNSF already handles oversized payloads through
+hybrid encrypted segmented Data and references, so the DI API should not create
+a second context-transfer protocol.
 
 The local no-MiniNDN smoke validates policy/native-plan generation, repo-backed
 artifact materialization, automatic runtime launch, and the provider adapter
@@ -2139,6 +2113,31 @@ roles, artifacts, dependency edges, deterministic hidden-state names, and
 large-data references. The splitter is model-specific, however. YOLO uses a
 YOLO/ONNX graph splitter, while Qwen uses a transformer layer-range splitter
 that exports one ONNX stage per contiguous decoder-layer range.
+
+This is the active Qwen direction. Context support should extend this ONNX
+pipeline contract rather than the llama-server/GGUF baseline. The near-term
+shape is:
+
+```text
+current turn input:
+  token_ids
+  attention_mask
+  optional position_ids
+
+reusable context state:
+  previous token ids or encoded prompt reference
+  future KV-cache tensor references
+  session id / cache epoch metadata
+
+stage exchange:
+  deterministic hidden-state Data names
+  explicit tensor bundle metadata
+  NDNSF large-data references when payloads exceed one segment
+```
+
+The initial implementation should remain conservative: support full-context
+token/attention tensors first, then add append-only context deltas and KV-cache
+reuse once the ONNX stage runtime exposes the required tensors cleanly.
 
 The current example exports three Qwen ONNX stages:
 

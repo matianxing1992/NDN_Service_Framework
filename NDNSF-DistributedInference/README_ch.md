@@ -1560,6 +1560,12 @@ python3 Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py
 provider 运行或连接本地 OpenAI-compatible llama-server，NDNSF-DI 负责 service
 discovery、authorization、provider selection 和 deployment metadata。
 
+这个例子现在只作为次要的 deployment/provisioning 参考，不再作为 context 处理或
+model split 优化的主线。`llama-server` 提供了有用的 OpenAI-compatible serving
+接口，但它没有给 NDNSF-DI 一个干净的逐 stage hidden-state API。当前 Qwen context
+和 pipeline 工作应转到下面的 Qwen ONNX backend。GGUF/llama-server 路径仍然适合
+验证 artifact provisioning、异步 runtime readiness 和 replicated-provider serving。
+
 推荐部署流程是：
 
 ```text
@@ -1641,43 +1647,11 @@ python3 examples/python/NDNSF-DistributedInference/llama_server/user.py \
   --prompt "Explain NDNSF-DI in one sentence."
 ```
 
-对于需要上下文的 LLM 调用，NDNSF-DI 使用应用层 `LLMRequest v1` payload
-contract，而不是把 LLM 会话语义加到 NDNSF Core。请求仍然是普通 NDNSF service
-payload；过大的 context bytes 仍然使用现有 NDNSF large-data reference 机制。
-
-```json
-{
-  "schema": "ndnsf-di-llm-request-v1",
-  "sessionId": "conversation-or-run-id",
-  "messages": [
-    {"role": "user", "content": "current question"}
-  ],
-  "inlineContext": "small optional context",
-  "contextReferences": [
-    {
-      "label": "paper-section-3",
-      "referencePayloadBase64": "base64(ndnsf large-data reference payload)"
-    }
-  ],
-  "contextDelta": "new facts since the previous turn",
-  "cachePolicy": {
-    "reuseProviderSession": true,
-    "allowKvCache": true
-  },
-  "generationConfig": {
-    "model": "qwen2.5-0.5b",
-    "maxTokens": 64,
-    "temperature": 0.2
-  }
-}
-```
-
-`contextReferences` 是指向既有 context object 的不可变引用；`contextDelta`
-是当前轮新增的 append-only 更新。Provider 会 materialize 这些 reference，把它们和
-delta、当前 messages 合并后再调用选中的 runtime backend。未来 provider 可以利用
-`sessionId` 复用 prefill 或 KV-cache；第一版实现保持保守语义：上下文由显式
-inline bytes、references 和 deltas 重建。这样旧 context 仍然有价值，caller 也不必
-每轮重发一个不断增长的 conversation 字符串。
+这条路径上的 context-aware LLM request 设计暂时暂停。下一版 context API 应围绕
+ONNX Qwen pipeline 设计，因为那里 token IDs、attention masks、hidden states 和未来
+KV-cache tensors 都可以作为显式 large-data objects 表达。NDNSF Core 已经会用
+hybrid encrypted segmented Data 和 references 处理超大 payload，因此 DI API 不应再
+创造第二套 context 传输协议。
 
 本地 no-MiniNDN smoke 会用 fake OpenAI-compatible server 验证 policy/native-plan、
 repo-backed artifact materialization、自动 runtime launch 和 provider adapter：
@@ -1933,6 +1907,29 @@ Qwen 也可以导出为多个 ONNX stages。这在 NDNSF-DI runtime 层面和 YO
 deterministic hidden-state names 和 large-data references。但 splitter 不是同一个：
 YOLO 使用 YOLO/ONNX graph splitter，而 Qwen 使用 transformer layer-range splitter，
 为连续 decoder-layer 区间导出一个 ONNX stage。
+
+这是当前 Qwen 主线。Context support 应扩展这个 ONNX pipeline contract，而不是
+llama-server/GGUF baseline。近期形态是：
+
+```text
+current turn input:
+  token_ids
+  attention_mask
+  optional position_ids
+
+reusable context state:
+  previous token ids or encoded prompt reference
+  future KV-cache tensor references
+  session id / cache epoch metadata
+
+stage exchange:
+  deterministic hidden-state Data names
+  explicit tensor bundle metadata
+  NDNSF large-data references when payloads exceed one segment
+```
+
+第一版实现应保持保守：先支持完整 context 的 token/attention tensors；等 ONNX stage
+runtime 能清楚暴露所需 tensors 后，再加入 append-only context delta 和 KV-cache 复用。
 
 当前示例导出三个 Qwen ONNX stages：
 
