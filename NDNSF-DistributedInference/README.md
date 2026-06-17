@@ -1580,10 +1580,14 @@ planner emits `modelFamily: yolo-onnx` and planner kinds such as
 The native plan still contains only fields needed to construct native
 `RoleSpec` objects: service name, roles, dependency producers/consumers, key
 scopes, topic prefixes, deterministic object-name templates, expected segment
-counts, expected byte counts, and planner identity metadata. It is generated
-from the policy; deployment operators should edit the policy or splitter
-inputs, not this file. LLM planner kinds are reserved in the schema, but LLM
-inference execution is not implemented in this checkpoint.
+counts, expected byte counts, and planner identity metadata. For LLM pipeline
+plans, schema v2 also carries explicit `executionMode`, `llmPipeline`, and
+`roleMetadata` fields so each role can declare its stage index, stage count,
+optional transformer layer range, input kind, and output kind without changing
+the generic dependency representation. It is generated from the policy;
+deployment operators should edit the policy or splitter inputs, not this file.
+LLM pipeline execution is still a stub: the schema is ready for sequential
+stage execution, but real transformer-stage runtimes are future work.
 
 Planner dispatch is centralized through `PlannerBackendRegistry`. A planner
 backend is keyed by `plannerKind` and declares its `modelFamily`; model-specific
@@ -1611,17 +1615,65 @@ planner/runtime metadata and does not force every model family to use ONNX.
 
 The repository includes a stub LLM planner for dispatch testing. It generates
 abstract pipeline, prefill/decode, or tensor-parallel roles and dependencies,
-but it does not execute LLM inference, manage KV cache, or stream tokens:
+but it does not execute LLM inference, manage KV cache, or stream tokens. The
+pipeline mode models ordered stage execution, where each provider owns one
+stage and passes a hidden-state reference to the next stage:
 
 ```bash
 PYTHONPATH=NDNSF-DistributedInference \
 python3 examples/python/NDNSF-DistributedInference/llm_stub/plan_stub.py \
-  --planner-kind llm-prefill-decode \
+  --planner-kind llm-pipeline \
   --model /Model/Llama/Stub \
-  --model-format safetensors \
-  --runtime-backend vllm \
+  --model-format gguf \
+  --runtime-backend llama.cpp \
+  --stages 3 \
+  --layers 24 \
   --out-dir /tmp/ndnsf-di-llm-stub
 ```
+
+To verify that the generated schema can drive ordered provider-stage
+execution, run the local pipeline smoke:
+
+```bash
+python3 Experiments/NDNSF_DI_LlmPipeline_Smoke.py \
+  --stages 3 \
+  --layers 24
+```
+
+This smoke still uses a fake in-memory LLM runtime. It validates
+`Stage0 -> Stage1 -> ... -> StageN` dependency execution from the generated
+`native-execution-plan.json`, including `roleMetadata` layer ranges and
+hidden-state dependency names, without claiming real transformer inference.
+
+For a local preflight check of true layer-by-layer execution, the optional
+Transformers smoke can compare a full decoder-only forward pass with staged
+execution over contiguous layer ranges:
+
+```bash
+NDNSF_DI_TRANSFORMERS_MODEL=/path/to/local/qwen-or-llama-hf-model \
+python3 Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py \
+  --stages 2
+```
+
+This smoke currently targets Llama/Qwen-style HuggingFace
+`AutoModelForCausalLM` models with `model.layers`. If `transformers` or a local
+model path is unavailable, it prints a skipped marker. Passing this smoke is
+the local runtime prerequisite before wiring a real layer-pipeline LLM provider
+into MiniNDN.
+
+For a dependency-light regression, the same script can construct a tiny random
+`LlamaForCausalLM` locally and compare full-model logits with two pipeline
+stages:
+
+```bash
+python3 Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py \
+  --self-test-tiny-llama \
+  --stages 2
+```
+
+This case is included in the quick suite as
+`di-transformers-pipeline-local`. It validates real transformer block
+execution semantics without downloading a large Qwen/Llama checkpoint.
 
 For LLM deployments, "model plus inference engine" is the real execution unit,
 but compatibility is not as uniform as ONNX plus ONNX Runtime. NDNSF-DI records
@@ -1666,6 +1718,15 @@ means a hand-written or repo-backed deployment policy cannot silently generate
 an LLM plan that pairs a GGUF artifact with vLLM, or a TensorRT engine with a
 non-TensorRT runtime.
 
+The LLM example deliberately reuses the same DI deployment machinery as the
+YOLO examples. Artifact deployment, asynchronous readiness, repo-backed
+materialization, native-plan generation, and dependency references remain
+framework mechanisms. LLM-specific code is limited to planner/runtime adapters:
+for the current Qwen example, `ndnsf_distributed_inference.llm_runtime` provides
+an OpenAI-compatible inference-payload adapter, repo-materialized llama-server
+process management, and GGUF/runtime artifact materialization helpers. This
+keeps `llama-server` from becoming a second, parallel deployment system.
+
 Run the focused regression with:
 
 ```bash
@@ -1690,7 +1751,7 @@ first setup:
 NDNSF-DI deployment:
   publish/replicate model and runtime artifacts as deployment/session artifacts
   providers materialize them into local cache
-  inference requests carry only prompt/chat payloads
+  inference requests carry only OpenAI-compatible inference payloads
 ```
 
 Download or inspect the platform-specific llama.cpp release asset:
@@ -1756,13 +1817,55 @@ If a node has already installed and started `llama-server` outside NDNSF-DI, it
 can omit `--artifact-references` and keep using `--llama-url` as a
 pre-deployed-runtime fallback.
 
-The user invokes the NDNSF service with a chat payload:
+The user invokes the NDNSF LLM inference service with an OpenAI-compatible
+payload:
 
 ```bash
 python3 examples/python/NDNSF-DistributedInference/llama_server/user.py \
   --config /tmp/ndnsf-di-llama-server-policy.yaml \
   --prompt "Explain NDNSF-DI in one sentence."
 ```
+
+For context-aware LLM calls, NDNSF-DI uses an application-level
+`LLMRequest v1` payload contract rather than adding LLM concepts to NDNSF Core.
+The request is still carried as the normal NDNSF service payload, and oversized
+context bytes still use the existing NDNSF large-data reference mechanism.
+
+```json
+{
+  "schema": "ndnsf-di-llm-request-v1",
+  "sessionId": "conversation-or-run-id",
+  "messages": [
+    {"role": "user", "content": "current question"}
+  ],
+  "inlineContext": "small optional context",
+  "contextReferences": [
+    {
+      "label": "paper-section-3",
+      "referencePayloadBase64": "base64(ndnsf large-data reference payload)"
+    }
+  ],
+  "contextDelta": "new facts since the previous turn",
+  "cachePolicy": {
+    "reuseProviderSession": true,
+    "allowKvCache": true
+  },
+  "generationConfig": {
+    "model": "qwen2.5-0.5b",
+    "maxTokens": 64,
+    "temperature": 0.2
+  }
+}
+```
+
+`contextReferences` are immutable references to previously published context
+objects; `contextDelta` is the new append-only update for the current turn.
+Providers materialize referenced context, combine it with the delta and current
+messages, and then call the selected runtime backend. A future provider may use
+`sessionId` to reuse prefill or KV-cache state, but the first implementation
+keeps the semantics conservative: context is reconstructed from explicit
+inline bytes, references, and deltas. This keeps old context useful without
+requiring callers to resend a growing conversation string.
 
 The local no-MiniNDN smoke validates policy/native-plan generation, repo-backed
 artifact materialization, automatic runtime launch, and the provider adapter
@@ -1775,7 +1878,7 @@ python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case llama-server-loca
 The MiniNDN repo-backed smoke uses `AI_Lab.conf`, stores fake GGUF/runtime
 artifacts in an NDNSF-DistributedRepo node, lets the provider materialize them
 from the repo manifest, starts a managed fake `llama-server`, and invokes the
-LLM service through NDNSF:
+LLM inference service through NDNSF:
 
 ```bash
 sudo -E env PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/pythonWrapper:$PWD/Experiments:${PYTHONPATH:-}" \
@@ -1787,6 +1890,291 @@ The same smoke is also available through the DI regression runner:
 ```bash
 python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case llama-server-minindn
 ```
+
+For a real Qwen2.5-0.5B GGUF + real llama.cpp `llama-server` validation run,
+prepare the artifacts first:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/llama_server/download_qwen_gguf.py \
+  --dest third_party/qwen
+
+git clone --depth 1 https://github.com/ggml-org/llama.cpp.git third_party/llama.cpp-src
+cmake -S third_party/llama.cpp-src -B third_party/llama.cpp-build \
+  -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF
+cmake --build third_party/llama.cpp-build --target llama-server -j"$(nproc)"
+mkdir -p third_party/llama.cpp-local/bin
+cp -a third_party/llama.cpp-build/bin/llama-server third_party/llama.cpp-local/bin/
+cp -a third_party/llama.cpp-build/bin/lib*.so* third_party/llama.cpp-local/bin/
+```
+
+Then run the MiniNDN real-runtime smoke:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case llama-server-real-minindn
+```
+
+The recorded run used `AI_Lab.conf`, materialized the real Qwen GGUF model and
+a self-extracting llama-server runtime bundle on the provider, then invoked the
+LLM service through NDNSF-DI:
+
+```text
+LLAMA_SERVER_REAL_MININDN_OK artifact_source=local-reference \
+  local_cold_ms=753.51 local_warm_ms=377.33 distributed_ms=704.77
+```
+
+For steady-state performance comparisons, use repeated requests in one user
+process rather than a single smoke request:
+
+```bash
+sudo -E env PYTHONPATH="$PWD/NDNSF-DistributedInference:$PWD/pythonWrapper:$PWD/Experiments:${PYTHONPATH:-}" \
+  python3 Experiments/NDNSF_DI_LlamaServer_Minindn.py \
+    --real-artifacts \
+    --artifact-source local-reference \
+    --output-dir results/llama_server_real_minindn_simple_quiet_60s_latest \
+    --model-path third_party/qwen/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+    --llama-runtime-dir third_party/llama.cpp-local/bin \
+    --prompt 'Say hello in five words.' \
+    --max-tokens 16 \
+    --provider-start-timeout-s 300 \
+    --timeout-ms 180000 \
+    --ack-timeout-ms 1500 \
+    --local-measured-requests 10 \
+    --warmup-requests 2 \
+    --measured-duration-s 60 \
+    --request-interval-ms 1000 \
+    --llama-server-extra-arg=--ctx-size \
+    --llama-server-extra-arg=512 \
+    --llama-server-extra-arg=--threads \
+    --llama-server-extra-arg=2 \
+    --llama-server-extra-arg=--parallel \
+    --llama-server-extra-arg=1 \
+    --llama-server-extra-arg=--no-webui
+```
+
+The 60-second run writes `llama-user-measured.csv` and
+`llama-real-benchmark-summary.json`. A representative current run is
+`results/llama_server_real_minindn_simple_quiet_60s_20260615_190340`:
+
+```text
+local direct llama-server p50:        351.83 ms
+distributed NDNSF-DI p50:             458.68 ms
+provider llama.cpp p50:               383.88 ms
+estimated NDNSF/provider overhead p50: 83.21 ms
+```
+
+This is a replicated-provider LLM serving baseline, not transformer-layer
+model parallelism. The provider-side llama.cpp timing still dominates the
+request. NDNSF-DI adds roughly 80 ms p50 in this MiniNDN setup for service
+discovery/ACK/selection, security checks, provider proxying, NFD/SVS
+propagation, and Python callback dispatch. The simple predeployed-service path
+is used for this single-role/no-dependency LLM service; multi-role YOLO and
+future LLM pipeline plans still use the collaboration path.
+
+The run intentionally used `artifact_source=local-reference` for the 469 MB
+GGUF model. A full repo-backed ingest attempt correctly exercised the repo path
+but exposed a current control-plane limitation: the model was segmented into
+122,851 repo packets and did not finish within the 180 s deployment window.
+That is now a separate DistributedRepo/DI provisioning task: add bulk artifact
+ingest or larger native segmented storage before making multi-hundred-MB LLM
+models use repo transfer in the fast regression.
+
+### Distributed LLM pipeline validation
+
+NDNSF-DI also includes a small LLM pipeline validation example. It is not a
+real Qwen layer split yet. Instead, it proves that the same framework mechanisms
+used by YOLO can drive a sequential multi-stage LLM-style plan across multiple
+providers:
+
+```text
+User prompt
+  -> /LLM/Pipeline/Stage/0 provider
+  -> /LLM/Pipeline/Stage/1 provider
+  -> /LLM/Pipeline/Stage/2 provider
+  -> final response to user
+```
+
+The example reuses the common planner schema v2, role assignment, deterministic
+dependency references, NDNSF discovery/selection, provider readiness, and
+MiniNDN deployment. Only the stage computation is fake validation logic. This
+keeps the boundary honest: the example demonstrates distributed LLM pipeline
+support in NDNSF-DI, while a future Qwen/Llama/DeepSeek planner can replace the
+fake stage runtime with real transformer block execution.
+
+Run the local schema/execution smoke:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case llm-pipeline-local
+```
+
+Run the MiniNDN distributed pipeline smoke on `AI_Lab.conf`:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py --case llm-pipeline-minindn
+```
+
+Recent validation runs reported:
+
+```text
+LLM_PIPELINE_MININDN_OK local_ms=12.46 distributed_ms=251.10 stages=3
+LLM_PIPELINE_MININDN_OK local_ms=5.85 distributed_ms=573.21 stages=3
+```
+
+This is a correctness smoke, not an optimized steady-state benchmark. The user
+logs for these single-request runs show roughly 11-12 ms of scope-key setup and
+about 238-562 ms of request/dataflow time. The spread is expected for a cold
+single MiniNDN run; the next performance step is to add a warm repeated LLM
+pipeline benchmark and then compare it with a real small-model stage runtime.
+
+The next validation step replaces the fake stage computation with a real tiny
+HuggingFace `LlamaForCausalLM` block pipeline. The planner writes one
+`llm-stage-weights` package per role. Each package carries the stage metadata
+and the subset of model weights needed by that role, and each provider preloads
+its package before serving the stage. Stage outputs are serialized
+hidden-state tensors and fetched by the next provider using the same
+deterministic dependency reference mechanism as the fake pipeline:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case llm-pipeline-transformers-minindn
+```
+
+Current representative result:
+
+```text
+LLM_PIPELINE_MININDN_OK local_ms=6.49 distributed_ms=254.57 \
+  stages=3 runtime=tiny-transformers
+```
+
+For a repeated MiniNDN timing check, run:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case llm-pipeline-transformers-benchmark
+```
+
+The benchmark keeps the same controller and providers alive, sends warmup
+requests first, then reports measured p50/p95 and writes
+`llm-pipeline-user-measured.csv` under the result directory. Use this case, or
+the same script with `--measured-duration-s 60`, before drawing performance
+conclusions from the tiny transformer pipeline.
+
+Latest short benchmark result:
+
+```text
+LLM_PIPELINE_MININDN_BENCHMARK count=5 local_ms=30.71 avg_ms=109.72 \
+  p50_ms=99.35 p95_ms=139.96 stages=3 runtime=tiny-transformers
+```
+
+This proves the NDNSF-DI pipeline can carry real transformer hidden states
+across providers and produce the same final top token as local staged
+execution, while using the same policy artifact mechanism that YOLO and
+llama-server deployments use. It is still a tiny synthetic Llama model, not a
+Qwen checkpoint split. The remaining work for a useful LLM split is
+model-specific stage export, tokenizer-aware planning, KV-cache handling, a
+production tensor-bundle codec for hidden states, and warm multi-request
+benchmarking.
+
+### Real Qwen local pipeline proof
+
+The next strict proof uses a real HuggingFace Qwen checkpoint locally. It loads
+`Qwen/Qwen2.5-0.5B-Instruct`, exports three stage-weight packages, executes the
+packages as `layers 0-8`, `8-16`, and `16-24`, and compares the final logits
+against a normal full-model forward pass:
+
+```bash
+python3 Experiments/NDNSF_DI_QwenPipeline_LocalProof.py \
+  --model Qwen/Qwen2.5-0.5B-Instruct \
+  --allow-download \
+  --stages 3 \
+  --output-dir results/qwen_pipeline_local_proof_latest
+```
+
+Recorded result:
+
+```text
+NDNSF_DI_QWEN_PIPELINE_PROOF_OK model=Qwen/Qwen2.5-0.5B-Instruct \
+  stages=3 ranges=[[0, 8], [8, 16], [16, 24]] full_ms=265.75 \
+  export_ms=2794.76 artifact_pipeline_ms=22360.06 max_diff=0 top_token=38444
+```
+
+This proves that a real Qwen HF model can be partitioned into stage artifacts
+and re-executed stage by stage without changing the next-token result. The
+large `artifact_pipeline_ms` is a local proof cost: the script reloads a stage
+model for each stage to validate artifact independence. The next step is to
+move these Qwen stage packages into the existing MiniNDN provider lifecycle so
+each provider preloads one stage and exchanges hidden-state references through
+NDNSF-DI.
+
+The same stage packages now run through MiniNDN with one Qwen stage per
+provider:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case llm-pipeline-qwen-minindn
+```
+
+Recorded MiniNDN result after switching providers to lightweight stage modules
+that instantiate only the needed embedding/layers/norm/head components:
+
+```text
+LLM_PIPELINE_MININDN_OK local_ms=276.58 distributed_ms=1065.43 \
+  stages=3 runtime=qwen-transformers
+```
+
+This is the first end-to-end Qwen pipeline proof: the user sends token IDs,
+Stage 0 runs layers 0-8, Stage 1 runs layers 8-16, Stage 2 runs layers 16-24,
+and the final provider returns the same expected top token (`38444`). It is a
+correctness result, not an optimized performance result. The current provider
+loader now uses lightweight stage modules instead of a full Qwen model
+structure, but it still uses Python/Transformers execution and `torch.save`
+hidden-state payloads. Future work should add a production tensor-bundle codec,
+warm repeated benchmarking, and eventually a native/C++ or optimized runtime
+path for stage execution.
+
+### Real Qwen ONNX pipeline example
+
+Qwen can also be exported into multiple ONNX stages. This is similar to the
+YOLO ONNX examples at the NDNSF-DI runtime level: the policy still contains
+roles, artifacts, dependency edges, deterministic hidden-state names, and
+large-data references. The splitter is model-specific, however. YOLO uses a
+YOLO/ONNX graph splitter, while Qwen uses a transformer layer-range splitter
+that exports one ONNX stage per contiguous decoder-layer range.
+
+The current example exports three Qwen ONNX stages:
+
+```text
+Stage 0: token IDs -> embedding -> layers 0-8 -> hidden-state npz
+Stage 1: hidden-state npz -> layers 8-16 -> hidden-state npz
+Stage 2: hidden-state npz -> layers 16-24 -> logits/top token
+```
+
+The MiniNDN script supports this runtime with `--runtime qwen-onnx`:
+
+```bash
+sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
+  --runtime qwen-onnx \
+  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
+  --topology-file Experiments/Topology/AI_Lab.conf \
+  --warmup-requests 3 \
+  --measured-duration-s 60 \
+  --request-interval-ms 200
+```
+
+Recorded 60-second result on `AI_Lab.conf`:
+
+```text
+LLM_PIPELINE_MININDN_BENCHMARK count=119 local_ms=268.44 \
+  avg_ms=289.02 p50_ms=287.14 p95_ms=358.52 stages=3 runtime=qwen-onnx
+LLM_PIPELINE_QWEN_PROFILE_STAGE stage=0 compute_p50_ms=31.80 total_p50_ms=38.15
+LLM_PIPELINE_QWEN_PROFILE_STAGE stage=1 compute_p50_ms=45.94 fetch_p50_ms=56.07 total_p50_ms=115.32
+LLM_PIPELINE_QWEN_PROFILE_STAGE stage=2 compute_p50_ms=66.59 fetch_p50_ms=131.34 total_p50_ms=206.44
+```
+
+This proves that the Qwen ONNX model can be split into stage artifacts and run
+across MiniNDN providers through the same NDNSF-DI dependency path used by YOLO.
+It is still a pipeline-parallel proof for one next-token forward pass; it does
+not yet include KV-cache-aware decode, tensor-parallel attention/MLP sharding,
+or an optimized native C++ provider for the Qwen ONNX stages.
 
 The client can publish the manifest through NDNSF:
 
