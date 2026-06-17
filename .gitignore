@@ -20,6 +20,7 @@ pythonWrapper/*.egg-info/
 # Generated/local outputs
 docs/
 results/
+third_party/
 RELEASE/*
 !RELEASE/README.md
 !RELEASE/usermanual.md

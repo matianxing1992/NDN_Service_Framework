@@ -4,20 +4,27 @@
 This uses tiny fake artifacts by default. The point is not LLM quality; it is
 the deployment shape: repo node stores runtime/model artifacts, the provider
 materializes them inside MiniNDN, starts a local llama-server-compatible
-adapter, and the user invokes the LLM service through NDNSF.
+adapter, and the user invokes the LLM inference service through NDNSF.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
+import hashlib
+import io
+import json
 import os
 import pwd
 import re
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
+from urllib import request
 
 import yaml  # type: ignore
 
@@ -81,7 +88,7 @@ def log(message: str) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="MiniNDN smoke for repo-backed llama-server DI service")
+        description="MiniNDN smoke for repo-backed llama-server LLM inference service")
     parser.add_argument("--topology-file", default=str(TOPO))
     parser.add_argument("--output-dir", default=str(OUT))
     parser.add_argument("--nlsr-wait-s", type=float, default=8.0)
@@ -91,6 +98,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=60000)
     parser.add_argument("--prompt", default="Say hello from NDNSF-DI MiniNDN.")
+    parser.add_argument("--real-artifacts", action="store_true",
+                        help="Use a real llama-server bundle and GGUF model instead of tiny fake artifacts")
+    parser.add_argument("--artifact-source", choices=["repo", "local-reference"],
+                        default="repo",
+                        help="Where provider materialization fetches artifacts from. "
+                             "'repo' stores artifacts in DistributedRepo; "
+                             "'local-reference' uses localPayloadPath for large real-model smoke.")
+    parser.add_argument("--model-path",
+                        default=str(REPO / "third_party/qwen/qwen2.5-0.5b-instruct-q4_k_m.gguf"))
+    parser.add_argument("--llama-runtime-dir",
+                        default=str(REPO / "third_party/llama.cpp-local/bin"))
+    parser.add_argument("--llama-server-extra-arg", action="append", default=[],
+                        help="Extra arg passed to managed llama-server on provider")
+    parser.add_argument("--max-tokens", type=int, default=16)
+    parser.add_argument("--local-baseline-port", type=int, default=18182)
+    parser.add_argument("--measured-duration-s", type=float, default=0.0,
+                        help="Measured distributed duration. 0 keeps single-request smoke behavior")
+    parser.add_argument("--measured-requests", type=int, default=1,
+                        help="Measured distributed request count when --measured-duration-s is 0")
+    parser.add_argument("--warmup-requests", type=int, default=1,
+                        help="Local baseline warmup requests before measured local loop")
+    parser.add_argument("--local-measured-requests", type=int, default=5,
+                        help="Local direct llama-server measured request count for real-artifact benchmark")
+    parser.add_argument("--request-interval-ms", type=float, default=1000.0,
+                        help="Minimum interval between distributed request starts in measured mode")
+    parser.add_argument("--ndn-log", default="ndn_service_framework.*=WARN",
+                        help="NDN_LOG value for MiniNDN app processes")
     return parser
 
 
@@ -208,18 +242,69 @@ HTTPServer((args.host, args.port), Handler).serve_forever()
     path.chmod(0o755)
 
 
-def prepare_policy_and_artifacts() -> tuple[Path, Path]:
+def write_llama_server_bundle(runtime_dir: Path, output: Path) -> Path:
+    runtime_dir = runtime_dir.resolve()
+    server = runtime_dir / "llama-server"
+    if not server.exists():
+        raise FileNotFoundError(f"llama-server not found under {runtime_dir}")
+    files = [
+        path for path in runtime_dir.iterdir()
+        if path.name == "llama-server" or path.name.startswith("lib")
+    ]
+    if not files:
+        raise RuntimeError(f"no llama-server runtime files found under {runtime_dir}")
+    tar_bytes = io.BytesIO()
+    with tarfile.open(fileobj=tar_bytes, mode="w:gz") as tf:
+        for path in files:
+            tf.add(path, arcname=path.name, recursive=False)
+    encoded = base64.b64encode(tar_bytes.getvalue()).decode("ascii")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+self="$0"
+bundle_dir="$(dirname "$self")/.llama-server-unpacked-$(sha256sum "$self" | awk '{print $1}' | cut -c1-16)"
+server="$bundle_dir/llama-server"
+if [ ! -x "$server" ]; then
+  rm -rf "$bundle_dir"
+  mkdir -p "$bundle_dir"
+  awk '/^__NDNSF_LLAMA_BUNDLE_BELOW__$/ { found=1; next } found { print }' "$self" | base64 -d | tar -xzf - -C "$bundle_dir"
+  chmod +x "$server" || true
+fi
+export LD_LIBRARY_PATH="$bundle_dir:${LD_LIBRARY_PATH:-}"
+exec "$server" "$@"
+exit 0
+__NDNSF_LLAMA_BUNDLE_BELOW__
+""" + encoded + "\n",
+        encoding="utf-8",
+    )
+    output.chmod(0o755)
+    return output
+
+
+def prepare_policy_and_artifacts(args) -> tuple[Path, Path]:
     OUT.mkdir(parents=True, exist_ok=True)
-    fake_model = OUT / "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
-    fake_runtime = OUT / "llama-server"
-    fake_model.write_bytes(b"fake qwen gguf model for MiniNDN repo-backed smoke\n")
-    write_fake_llama_server(fake_runtime)
+    if args.real_artifacts:
+        model_path = Path(args.model_path).expanduser().resolve()
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"real Qwen GGUF model not found: {model_path}. "
+                "Run examples/python/NDNSF-DistributedInference/llama_server/download_qwen_gguf.py first.")
+        runtime = write_llama_server_bundle(
+            Path(args.llama_runtime_dir).expanduser().resolve(),
+            OUT / "llama-server-bundle",
+        )
+    else:
+        model_path = OUT / "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+        runtime = OUT / "llama-server"
+        model_path.write_bytes(b"fake qwen gguf model for MiniNDN repo-backed smoke\n")
+        write_fake_llama_server(runtime)
     subprocess.run([
         sys.executable,
         str(LLAMA_DIR / "plan_llama_server.py"),
         "--policy", str(CONFIG),
-        "--model", str(fake_model),
-        "--llama-server", str(fake_runtime),
+        "--model", str(model_path),
+        "--llama-server", str(runtime),
         "--providers", "1",
     ], cwd=str(REPO), check=True)
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
@@ -250,7 +335,225 @@ def prepare_policy_and_artifacts() -> tuple[Path, Path]:
         }],
     })
     CONFIG.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    return fake_model, fake_runtime
+    return model_path, runtime
+
+
+def percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * (pct / 100.0)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = rank - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def summarize_values(values: list[float]) -> dict[str, float | int]:
+    return {
+        "count": len(values),
+        "avg_ms": sum(values) / len(values) if values else 0.0,
+        "min_ms": min(values) if values else 0.0,
+        "p50_ms": percentile(values, 50),
+        "p95_ms": percentile(values, 95),
+        "max_ms": max(values) if values else 0.0,
+    }
+
+
+def parse_user_csv(path: Path) -> dict:
+    rows = []
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as file:
+            rows = list(csv.DictReader(file))
+    elapsed = [float(row["elapsed_ms"]) for row in rows if row.get("elapsed_ms")]
+    provider = [
+        float(row["provider_total_ms"])
+        for row in rows
+        if row.get("provider_total_ms") not in (None, "")
+    ]
+    overhead = [
+        max(0.0, float(row["elapsed_ms"]) - float(row["provider_total_ms"]))
+        for row in rows
+        if row.get("elapsed_ms") and row.get("provider_total_ms") not in (None, "")
+    ]
+    return {
+        "rows": rows,
+        "elapsed": summarize_values(elapsed),
+        "provider": summarize_values(provider),
+        "estimated_ndnsf_overhead": summarize_values(overhead),
+    }
+
+
+def run_local_real_baseline(runtime: Path, model: Path, *, prompt: str,
+                            max_tokens: int, port: int,
+                            extra_args: list[str],
+                            warmup_requests: int = 1,
+                            measured_requests: int = 5) -> tuple[float, float, dict]:
+    log_path = OUT / "llama-local-real.log"
+    proc = subprocess.Popen(
+        [
+            str(runtime),
+            "-m", str(model),
+            "--host", "127.0.0.1",
+            "--port", str(port),
+            "--ctx-size", "512",
+            "--threads", "2",
+            "--parallel", "1",
+            "--no-webui",
+            *extra_args,
+        ],
+        cwd=str(REPO),
+        stdout=log_path.open("wb"),
+        stderr=subprocess.STDOUT,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            try:
+                with request.urlopen(base_url + "/health", timeout=1) as response:
+                    if response.status < 500:
+                        break
+            except Exception:
+                if proc.poll() is not None:
+                    raise RuntimeError(
+                        f"local llama-server exited early; log={log_path}")
+                time.sleep(0.5)
+        else:
+            raise RuntimeError(f"local llama-server did not become ready; log={log_path}")
+
+        def infer() -> float:
+            body = {
+                "model": "qwen2.5-0.5b",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": int(max_tokens),
+                "temperature": 0.0,
+                "stream": False,
+            }
+            req = request.Request(
+                base_url + "/v1/chat/completions",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            start = time.perf_counter()
+            with request.urlopen(req, timeout=180) as response:
+                response.read()
+            return (time.perf_counter() - start) * 1000.0
+
+        cold = infer()
+        warm_values = []
+        for _ in range(max(0, int(warmup_requests))):
+            warm_values.append(infer())
+        measured_values = [infer() for _ in range(max(1, int(measured_requests)))]
+        warm = measured_values[0]
+        summary = {
+            "cold_ms": cold,
+            "warmup_ms": warm_values,
+            "measured": summarize_values(measured_values),
+            "measured_values_ms": measured_values,
+        }
+        (OUT / "llama-local-real-baseline.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        print(
+            "LLAMA_SERVER_LOCAL_REAL_BASELINE",
+            f"cold_ms={cold:.2f}",
+            f"warm_ms={warm:.2f}",
+            f"measured_avg_ms={summary['measured']['avg_ms']:.2f}",
+            f"measured_p50_ms={summary['measured']['p50_ms']:.2f}",
+            f"measured_p95_ms={summary['measured']['p95_ms']:.2f}",
+            f"log={log_path}",
+        )
+        return cold, warm, summary
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+
+
+def _local_artifact_entry(path: Path, *, object_name: str, object_type: str,
+                          object_id: str, kind: str, executable: bool,
+                          metadata: dict) -> dict:
+    payload = path.read_bytes()
+    manifest = {
+        "objectName": object_name,
+        "objectType": object_type,
+        "objectClass": object_type,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size": len(payload),
+        "segmentCount": 1,
+        "replicationFactor": 1,
+        "minReplicationFactor": 1,
+        "maxReplicationFactor": 1,
+        "policyEpoch": "/Policy/llama-server-qwen/v1",
+        "metadata": {
+            **metadata,
+            "localPayloadPath": str(path),
+        },
+    }
+    return {
+        "source": "local-reference",
+        "localPayloadPath": str(path),
+        "repoManifest": manifest,
+        "objectType": object_type,
+        "objectId": object_id,
+        "filename": path.name,
+        "kind": kind,
+        "executable": executable,
+        "metadata": {
+            **metadata,
+            "localPayloadPath": str(path),
+        },
+    }
+
+
+def write_local_artifact_references(model: Path, runtime: Path, out: Path) -> Path:
+    refs = {
+        "schemaVersion": 1,
+        "roles": {
+            "/LLM/LlamaServer": {
+                "model": _local_artifact_entry(
+                    model,
+                    object_name="/local/NDNSF-DI/ARTIFACT/AI/LLM/Qwen2.5-0.5B/model",
+                    object_type="model-artifact",
+                    object_id="/Model/Qwen2.5-0.5B-Instruct-Q4_K_M/GGUF",
+                    kind="model",
+                    executable=False,
+                    metadata={
+                        "modelFamily": "llm",
+                        "modelFormat": "gguf",
+                        "runtimeBackend": "llama.cpp",
+                        "filename": model.name,
+                    },
+                ),
+                "runner": _local_artifact_entry(
+                    runtime,
+                    object_name="/local/NDNSF-DI/ARTIFACT/AI/LLM/Qwen2.5-0.5B/runtime/llama-server",
+                    object_type="runtime-executable",
+                    object_id="/Runtime/llama.cpp/llama-server",
+                    kind="runtime",
+                    executable=True,
+                    metadata={
+                        "runtimeBackend": "llama.cpp",
+                        "entrypoint": "llama-server",
+                        "filename": runtime.name,
+                    },
+                ),
+            },
+        },
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(refs, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"LLAMA_SERVER_LOCAL_ARTIFACT_REFERENCES_OK out={out}")
+    return out
 
 
 def generate_policy_bundle(env: dict[str, str]) -> None:
@@ -266,13 +569,29 @@ def generate_policy_bundle(env: dict[str, str]) -> None:
 
 def main() -> int:
     global OUT, CONFIG, ARTIFACT_REFS
+    global GEN_POLICY
     args = build_parser().parse_args()
     sys.argv = [sys.argv[0]]
     setLogLevel("info")
     OUT = Path(args.output_dir).expanduser().resolve()
     CONFIG = OUT / "llama_server_policy.yaml"
     ARTIFACT_REFS = OUT / "llama-server-artifacts.json"
-    fake_model, fake_runtime = prepare_policy_and_artifacts()
+    GEN_POLICY = str(OUT / "generated-policy")
+    model_path, runtime_path = prepare_policy_and_artifacts(args)
+    local_cold_ms = None
+    local_warm_ms = None
+    local_summary = {}
+    if args.real_artifacts:
+        local_cold_ms, local_warm_ms, local_summary = run_local_real_baseline(
+            runtime_path,
+            model_path,
+            prompt=args.prompt,
+            max_tokens=args.max_tokens,
+            port=args.local_baseline_port,
+            extra_args=args.llama_server_extra_arg,
+            warmup_requests=args.warmup_requests,
+            measured_requests=args.local_measured_requests,
+        )
     base_env = {
         **os.environ,
         "PYTHONFAULTHANDLER": "1",
@@ -284,7 +603,9 @@ def main() -> int:
             str(REPO / "Experiments"),
             os.environ.get("PYTHONPATH", ""),
         ]),
-        "NDN_LOG": "ndn_service_framework.*=INFO",
+        "NDN_LOG": args.ndn_log,
+        "NDNSF_DI_CLIENT_TIMING": "0",
+        "NDNSF_DI_PROVIDER_TIMING": "0",
         "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
     }
     base_env.pop("NDN_CLIENT_TRANSPORT", None)
@@ -444,30 +765,37 @@ def main() -> int:
         log(f"Waiting {args.repo_start_wait_s:.1f}s for repo provider")
         time.sleep(args.repo_start_wait_s)
 
-        deploy_log = OUT / "deploy-artifacts.log"
-        deploy_out = deploy_log.open("wb")
-        deploy_proc = getPopen(
-            ndn.net[CONTROLLER_NODE],
-            base + perf.shell_quote(LLAMA_DIR / "deploy_artifacts.py") +
-            common +
-            " --model {} --llama-server {} --out {} --repo-service {}".format(
-                perf.shell_quote(fake_model),
-                perf.shell_quote(fake_runtime),
-                perf.shell_quote(ARTIFACT_REFS),
-                perf.shell_quote(REPO_SERVICE),
-            ),
-            envDict=node_env[CONTROLLER_NODE],
-            shell=True,
-            stdout=deploy_out,
-            stderr=subprocess.STDOUT,
-        )
-        processes.append((deploy_proc, deploy_out, deploy_log))
-        deploy_proc.wait(timeout=180)
-        deploy_text = deploy_log.read_text(errors="replace")
-        print(deploy_text)
-        if deploy_proc.returncode != 0 or "LLAMA_SERVER_ARTIFACT_DEPLOY_OK" not in deploy_text:
-            raise RuntimeError(f"llama-server artifact deploy failed; log={deploy_log}")
+        if args.artifact_source == "local-reference":
+            write_local_artifact_references(model_path, runtime_path, ARTIFACT_REFS)
+        else:
+            deploy_log = OUT / "deploy-artifacts.log"
+            deploy_out = deploy_log.open("wb")
+            deploy_proc = getPopen(
+                ndn.net[CONTROLLER_NODE],
+                base + perf.shell_quote(LLAMA_DIR / "deploy_artifacts.py") +
+                common +
+                " --model {} --llama-server {} --out {} --repo-service {}".format(
+                    perf.shell_quote(model_path),
+                    perf.shell_quote(runtime_path),
+                    perf.shell_quote(ARTIFACT_REFS),
+                    perf.shell_quote(REPO_SERVICE),
+                ),
+                envDict=node_env[CONTROLLER_NODE],
+                shell=True,
+                stdout=deploy_out,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append((deploy_proc, deploy_out, deploy_log))
+            deploy_proc.wait(timeout=180)
+            deploy_text = deploy_log.read_text(errors="replace")
+            print(deploy_text)
+            if deploy_proc.returncode != 0 or "LLAMA_SERVER_ARTIFACT_DEPLOY_OK" not in deploy_text:
+                raise RuntimeError(f"llama-server artifact deploy failed; log={deploy_log}")
 
+        extra_arg_flags = "".join(
+            " --llama-server-extra-arg=" + perf.shell_quote(arg)
+            for arg in args.llama_server_extra_arg
+        )
         provider_proc, provider_log = start_process(
             ndn, LLM_PROVIDER_NODE, "llama-provider",
             base + perf.shell_quote(LLAMA_DIR / "provider.py") + common +
@@ -475,6 +803,7 @@ def main() -> int:
             f"--artifact-references {perf.shell_quote(ARTIFACT_REFS)} "
             f"--artifact-cache-dir {perf.shell_quote(OUT / 'llama-provider-cache')} "
             "--llama-url http://127.0.0.1:18081 "
+            f"{extra_arg_flags} "
             "--handler-workers 2",
             node_env[LLM_PROVIDER_NODE], processes,
         )
@@ -483,35 +812,95 @@ def main() -> int:
             raise RuntimeError(f"llama provider did not start managed server; log={provider_log}")
 
         user_log = OUT / "llama-user.log"
+        user_csv = OUT / "llama-user-measured.csv"
         user_out = user_log.open("wb")
+        measured_flags = (
+            " --requests {} --duration-s {} --interval-ms {} --csv {} --quiet-per-request".format(
+                max(1, int(args.measured_requests)),
+                float(args.measured_duration_s),
+                float(args.request_interval_ms),
+                perf.shell_quote(user_csv),
+            )
+        )
         user_proc = getPopen(
             ndn.net[USER_NODE],
             base + perf.shell_quote(LLAMA_DIR / "user.py") + common +
-            " --prompt {} --ack-timeout-ms {} --timeout-ms {}".format(
+            " --prompt {} --max-tokens {} --temperature 0.0 --ack-timeout-ms {} --timeout-ms {}".format(
                 perf.shell_quote(args.prompt),
+                args.max_tokens,
                 args.ack_timeout_ms,
                 args.timeout_ms,
-            ),
+            ) + measured_flags,
             envDict=node_env[USER_NODE],
             shell=True,
             stdout=user_out,
             stderr=subprocess.STDOUT,
         )
         processes.append((user_proc, user_out, user_log))
-        user_proc.wait(timeout=180)
+        expected_user_timeout = max(
+            180,
+            int(args.measured_duration_s + args.timeout_ms / 1000.0 + 120),
+            int(max(1, args.measured_requests) * (args.timeout_ms / 1000.0 + 5) + 120),
+        )
+        user_proc.wait(timeout=expected_user_timeout)
         user_text = user_log.read_text(errors="replace")
         print(user_text)
         provider_text = provider_log.read_text(errors="replace")
         if user_proc.returncode != 0 or "LLAMA_SERVER_USER_RESPONSE" not in user_text:
             raise RuntimeError(f"llama user failed; log={user_log}")
-        if "MiniNDN managed llama-server" not in user_text:
+        if not args.real_artifacts and "MiniNDN managed llama-server" not in user_text:
             raise RuntimeError(f"unexpected llama response; log={user_log}")
         if "LLAMA_SERVER_ARTIFACTS_MATERIALIZED" not in provider_text:
             raise RuntimeError(f"provider did not materialize artifacts; log={provider_log}")
         if "LLAMA_SERVER_PROVIDER_RESPONSE" not in provider_text:
-            raise RuntimeError(f"provider did not handle chat request; log={provider_log}")
+            raise RuntimeError(f"provider did not handle LLM inference request; log={provider_log}")
+        timing_match = re.search(r"LLAMA_SERVER_USER_TIMING .*elapsed_ms=([0-9.]+)", user_text)
+        distributed_ms = float(timing_match.group(1)) if timing_match else -1.0
+        distributed_summary = parse_user_csv(user_csv)
+        if distributed_ms < 0 and distributed_summary["rows"]:
+            distributed_ms = float(distributed_summary["rows"][0]["elapsed_ms"])
+        benchmark_summary = {
+            "artifact_source": args.artifact_source,
+            "prompt": args.prompt,
+            "max_tokens": args.max_tokens,
+            "ack_timeout_ms": args.ack_timeout_ms,
+            "timeout_ms": args.timeout_ms,
+            "local": local_summary,
+            "distributed": distributed_summary,
+            "logs": {
+                "user": str(user_log),
+                "provider": str(provider_log),
+                "csv": str(user_csv),
+            },
+        }
+        summary_path = OUT / "llama-real-benchmark-summary.json"
+        summary_path.write_text(
+            json.dumps(benchmark_summary, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        if distributed_summary["elapsed"]["count"]:
+            print(
+                "LLAMA_SERVER_BENCHMARK_SUMMARY",
+                f"distributed_count={distributed_summary['elapsed']['count']}",
+                f"distributed_p50_ms={distributed_summary['elapsed']['p50_ms']:.2f}",
+                f"distributed_p95_ms={distributed_summary['elapsed']['p95_ms']:.2f}",
+                f"provider_p50_ms={distributed_summary['provider']['p50_ms']:.2f}",
+                f"overhead_p50_ms={distributed_summary['estimated_ndnsf_overhead']['p50_ms']:.2f}",
+                f"summary={summary_path}",
+            )
+        mode_marker = (
+            "LLAMA_SERVER_REAL_MININDN_REPO_BACKED_OK"
+            if args.real_artifacts and args.artifact_source == "repo" else
+            "LLAMA_SERVER_REAL_MININDN_OK"
+            if args.real_artifacts else
+            "LLAMA_SERVER_MININDN_REPO_BACKED_OK"
+        )
         print(
-            "LLAMA_SERVER_MININDN_REPO_BACKED_OK "
+            f"{mode_marker} "
+            f"artifact_source={args.artifact_source} "
+            f"local_cold_ms={local_cold_ms if local_cold_ms is not None else -1:.2f} "
+            f"local_warm_ms={local_warm_ms if local_warm_ms is not None else -1:.2f} "
+            f"distributed_ms={distributed_ms:.2f} "
             f"policy={CONFIG} artifacts={ARTIFACT_REFS} user_log={user_log} "
             f"provider_log={provider_log}"
         )

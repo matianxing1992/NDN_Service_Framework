@@ -63,6 +63,24 @@ class LlmPlannerShape:
     roles: list[str]
     dependencies: list[InferenceDependency]
     description: str
+    execution_mode: str
+    role_metadata: dict[str, dict[str, Any]]
+
+
+def _layer_range(stage_index: int, stage_count: int, total_layers: int) -> dict[str, Any]:
+    if total_layers <= 0:
+        return {
+            "known": False,
+            "start": None,
+            "endExclusive": None,
+        }
+    start = (stage_index * total_layers) // stage_count
+    end = ((stage_index + 1) * total_layers) // stage_count
+    return {
+        "known": True,
+        "start": start,
+        "endExclusive": end,
+    }
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -73,8 +91,29 @@ def _positive_int(value: Any, default: int) -> int:
     return max(1, parsed)
 
 
-def _llm_pipeline_shape(stages: int) -> LlmPlannerShape:
+def _non_negative_int(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0, parsed)
+
+
+def _llm_pipeline_shape(stages: int, total_layers: int = 0) -> LlmPlannerShape:
     roles = [f"/LLM/Pipeline/Stage/{index}" for index in range(stages)]
+    role_metadata = {
+        role: {
+            "roleKind": "llm-pipeline-stage",
+            "executionMode": "pipeline-parallel",
+            "stageIndex": index,
+            "stageCount": stages,
+            "layerRange": _layer_range(index, stages, total_layers),
+            "inputKind": "prompt-tokens" if index == 0 else "hidden-state",
+            "outputKind": "token-logits" if index == stages - 1 else "hidden-state",
+            "stateful": True,
+        }
+        for index, role in enumerate(roles)
+    }
     dependencies = [
         InferenceDependency(
             producers=[roles[index]],
@@ -93,6 +132,8 @@ def _llm_pipeline_shape(stages: int) -> LlmPlannerShape:
         roles=roles,
         dependencies=dependencies,
         description="abstract LLM pipeline parallel plan",
+        execution_mode="pipeline-parallel",
+        role_metadata=role_metadata,
     )
 
 
@@ -114,6 +155,27 @@ def _llm_prefill_decode_shape() -> LlmPlannerShape:
             )
         ],
         description="abstract LLM prefill/decode split plan",
+        execution_mode="prefill-decode",
+        role_metadata={
+            "/LLM/Prefill": {
+                "roleKind": "llm-prefill",
+                "executionMode": "prefill-decode",
+                "stageIndex": 0,
+                "stageCount": 2,
+                "inputKind": "prompt-tokens",
+                "outputKind": "kv-cache",
+                "stateful": True,
+            },
+            "/LLM/Decode": {
+                "roleKind": "llm-decode",
+                "executionMode": "prefill-decode",
+                "stageIndex": 1,
+                "stageCount": 2,
+                "inputKind": "kv-cache",
+                "outputKind": "token-stream",
+                "stateful": True,
+            },
+        },
     )
 
 
@@ -137,6 +199,28 @@ def _llm_tensor_parallel_shape(shards: int) -> LlmPlannerShape:
             for index, role in enumerate(shard_roles)
         ],
         description="abstract LLM tensor-parallel shard plan",
+        execution_mode="tensor-parallel",
+        role_metadata={
+            **{
+                role: {
+                    "roleKind": "llm-tensor-shard",
+                    "executionMode": "tensor-parallel",
+                    "shardIndex": index,
+                    "shardCount": shards,
+                    "inputKind": "hidden-state",
+                    "outputKind": "partial-logits",
+                    "stateful": True,
+                }
+                for index, role in enumerate(shard_roles)
+            },
+            merge_role: {
+                "roleKind": "llm-tensor-merge",
+                "executionMode": "tensor-parallel",
+                "inputKind": "partial-logits",
+                "outputKind": "token-logits",
+                "stateful": True,
+            },
+        },
     )
 
 
@@ -146,9 +230,10 @@ def llm_stub_plan_from_request(request: PlannerRequest) -> PlannerResult:
     runtime_backend = request.validated_runtime_backend(require_known=True)
     stages = _positive_int(request.option("stages", 2), 2)
     shards = _positive_int(request.option("shards", 2), 2)
+    layers = _non_negative_int(request.option("layers", 0), 0)
 
     if planner_kind == PlannerKind.LLM_PIPELINE.value:
-        shape = _llm_pipeline_shape(stages)
+        shape = _llm_pipeline_shape(stages, layers)
     elif planner_kind == PlannerKind.LLM_PREFILL_DECODE.value:
         shape = _llm_prefill_decode_shape()
     elif planner_kind == PlannerKind.LLM_TENSOR_PARALLEL.value:
@@ -167,6 +252,10 @@ def llm_stub_plan_from_request(request: PlannerRequest) -> PlannerResult:
         "dependencies": list(shape.dependencies),
         "layout": request.layout or planner_kind,
         "description": shape.description,
+        "execution_mode": shape.execution_mode,
+        "role_metadata": dict(shape.role_metadata),
+        "stage_count": stages if planner_kind == PlannerKind.LLM_PIPELINE.value else 0,
+        "layer_count": layers if planner_kind == PlannerKind.LLM_PIPELINE.value else 0,
     }
     return PlannerResult(
         request=request,
@@ -177,6 +266,9 @@ def llm_stub_plan_from_request(request: PlannerRequest) -> PlannerResult:
             "modelFormat": model_format,
             "runtimeBackend": runtime_backend,
             "executionImplemented": False,
+            "executionMode": shape.execution_mode,
+            "stageCount": stages if planner_kind == PlannerKind.LLM_PIPELINE.value else 0,
+            "layerCount": layers if planner_kind == PlannerKind.LLM_PIPELINE.value else 0,
         },
         selected_candidate={
             "mode": planner_kind,
@@ -221,6 +313,7 @@ def llm_planner_request(
     runtime_backend: str = "",
     stages: int = 2,
     shards: int = 2,
+    layers: int = 0,
 ) -> PlannerRequest:
     selected_backend = validate_llm_runtime_compatibility(model_format, runtime_backend)
     return PlannerRequest(
@@ -236,6 +329,7 @@ def llm_planner_request(
             "runtime_backend": selected_backend,
             "stages": int(stages),
             "shards": int(shards),
+            "layers": int(layers),
         },
     )
 
@@ -270,6 +364,14 @@ def llm_splitter_output_from_result(
             "model_format": result.request.normalized_model_format(),
             "planner_kind": result.normalized_planner_kind(),
             "execution_plan_schema_version": 2,
+            "executionMode": str(split.get("execution_mode", "")),
+            "roleMetadata": dict(split.get("role_metadata", {}) or {}),
+            "llmPipeline": {
+                "stageCount": int(split.get("stage_count", 0) or 0),
+                "layerCount": int(split.get("layer_count", 0) or 0),
+                "sequentialStages": result.normalized_planner_kind() ==
+                    PlannerKind.LLM_PIPELINE.value,
+            },
             "planner": {
                 "modelFamily": result.normalized_model_family(),
                 "modelFormat": result.request.normalized_model_format(),
@@ -279,6 +381,7 @@ def llm_splitter_output_from_result(
                 "scoreSummary": dict(result.score_summary),
                 "selectedCandidate": dict(result.selected_candidate),
                 "stub": True,
+                "executionMode": str(split.get("execution_mode", "")),
             },
             "execution_implemented": False,
             "runtime_backend": str(split.get("runtime_backend", "")),

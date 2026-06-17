@@ -5,10 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
-import time
-from pathlib import Path
-from urllib.parse import urlparse
 
 from ndnsf import ServiceUser
 from ndnsf_distributed_inference import (
@@ -18,9 +14,13 @@ from ndnsf_distributed_inference import (
     NetworkDistributedRepoClient,
     ProviderRuntimeContext,
     artifact_references_need_repo_client,
-    materialize_role_artifacts,
-    materialized_path,
 )
+from ndnsf_distributed_inference.llm_runtime import (
+    ManagedLlamaServerRuntime,
+    materialize_llm_runtime_artifacts,
+)
+
+from pathlib import Path
 
 from llama_server_lib import ROLE, SERVICE, call_llama_server_chat
 
@@ -65,74 +65,7 @@ def make_llama_server_handler(state: ArtifactProvisioningState, base_url: str):
     return handler
 
 
-class ManagedLlamaServer:
-    def __init__(self, executable: Path, model: Path, base_url: str,
-                 extra_args: list[str] | None = None):
-        self.executable = executable
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.extra_args = list(extra_args or [])
-        self.process: subprocess.Popen | None = None
-
-    def start(self) -> None:
-        parsed = urlparse(self.base_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 8080
-        command = [
-            str(self.executable),
-            "-m", str(self.model),
-            "--host", host,
-            "--port", str(port),
-            *self.extra_args,
-        ]
-        self.process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        self._wait_ready()
-        print(
-            "LLAMA_SERVER_MANAGED_STARTED",
-            f"pid={self.process.pid}",
-            f"url={self.base_url}",
-            f"model={self.model}",
-            flush=True,
-        )
-
-    def stop(self) -> None:
-        if self.process is None:
-            return
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=5)
-        self.process = None
-
-    def _wait_ready(self, timeout_s: float = 15.0) -> None:
-        import urllib.request
-
-        deadline = time.time() + timeout_s
-        last_error: Exception | None = None
-        while time.time() < deadline:
-            if self.process is not None and self.process.poll() is not None:
-                output = ""
-                if self.process.stdout is not None:
-                    output = self.process.stdout.read() or ""
-                raise RuntimeError(
-                    f"llama-server exited before becoming ready: {output}"
-                )
-            try:
-                with urllib.request.urlopen(self.base_url + "/health", timeout=0.5) as response:
-                    if response.status < 500:
-                        return
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-            time.sleep(0.1)
-        raise RuntimeError(f"llama-server did not become ready: {last_error}")
+ManagedLlamaServer = ManagedLlamaServerRuntime
 
 
 def materialize_llama_server_artifacts(
@@ -142,14 +75,12 @@ def materialize_llama_server_artifacts(
     role: str = ROLE,
     repo_client=None,
 ) -> tuple[Path, Path]:
-    artifacts = materialize_role_artifacts(
-        artifact_references,
-        role,
-        cache_dir,
+    model, runtime = materialize_llm_runtime_artifacts(
+        artifact_references=artifact_references,
+        role=role,
+        cache_dir=cache_dir,
         repo_client=repo_client,
     )
-    model = materialized_path(artifacts, "model")
-    runtime = materialized_path(artifacts, "runner", "runtime")
     print(
         "LLAMA_SERVER_ARTIFACTS_MATERIALIZED",
         f"role={role}",
@@ -230,6 +161,12 @@ def install_llama_server_runtime(
         extra_args=extra_args,
     )
     managed.start()
+    print(
+        "LLAMA_SERVER_MANAGED_STARTED",
+        f"url={base_url.rstrip('/')}",
+        f"model={model_path}",
+        flush=True,
+    )
     return managed
 
 

@@ -64,6 +64,10 @@ def checks() -> dict[str, QuickCheck]:
                 "Experiments/NDNSF_DI_Yolo2x2_Repo_Minindn.py "
                 "Experiments/NDNSF_DI_YoloSplit_Minindn.py "
                 "Experiments/NDNSF_DI_RuntimeCompatibility_Smoke.py "
+                "Experiments/NDNSF_DI_LlmPipeline_Smoke.py "
+                "Experiments/NDNSF_DI_LlmPipeline_Minindn.py "
+                "Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py "
+                "Experiments/NDNSF_DI_QwenPipeline_LocalProof.py "
                 "Experiments/NDNSF_DI_LlamaServer_Smoke.py "
                 "Experiments/NDNSF_DI_LlamaServer_Minindn.py "
                 "Experiments/NDNSF_DistributedRepo_Generic_Minindn.py "
@@ -144,6 +148,27 @@ def checks() -> dict[str, QuickCheck]:
             timeout_s=60,
             description="DI planner/policy/LLM CLI runtime compatibility contract",
         ),
+        "di-llm-pipeline": QuickCheck(
+            name="di-llm-pipeline",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llm-pipeline-local",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-local",
+            timeout_s=60,
+            description="DI LLM pipeline schema v2 and fake multi-stage execution smoke",
+        ),
+        "di-transformers-pipeline-local": QuickCheck(
+            name="di-transformers-pipeline-local",
+            command=(
+                "python3", "Experiments/NDNSF_DI_TransformersPipeline_LocalSmoke.py",
+                "--self-test-tiny-llama",
+                "--stages", "2",
+            ),
+            marker="NDNSF_DI_TRANSFORMERS_PIPELINE_SMOKE_OK",
+            timeout_s=60,
+            description="DI local Transformers layer-pipeline correctness smoke with tiny Llama",
+        ),
         "di-native-readiness-unit": QuickCheck(
             name="di-native-readiness-unit",
             command=(
@@ -198,6 +223,46 @@ def checks() -> dict[str, QuickCheck]:
             timeout_s=300,
             description="DI Qwen GGUF + llama-server repo-backed MiniNDN smoke; slower optional check",
         ),
+        "di-llm-pipeline-minindn": QuickCheck(
+            name="di-llm-pipeline-minindn",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llm-pipeline-minindn",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-minindn",
+            timeout_s=300,
+            description="DI distributed LLM pipeline MiniNDN smoke with local/distributed timing; slower optional check",
+        ),
+        "di-llm-transformers-minindn": QuickCheck(
+            name="di-llm-transformers-minindn",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llm-pipeline-transformers-minindn",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-transformers-minindn",
+            timeout_s=360,
+            description="DI tiny Transformers block pipeline MiniNDN smoke; slower optional check",
+        ),
+        "di-llm-transformers-benchmark": QuickCheck(
+            name="di-llm-transformers-benchmark",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llm-pipeline-transformers-benchmark",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-transformers-benchmark",
+            timeout_s=420,
+            description="DI tiny Transformers block pipeline repeated MiniNDN benchmark; slower optional check",
+        ),
+        "di-llm-qwen-minindn": QuickCheck(
+            name="di-llm-qwen-minindn",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llm-pipeline-qwen-minindn",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-qwen-minindn",
+            timeout_s=720,
+            description="DI real Qwen HF stage-package pipeline MiniNDN proof; slow optional check",
+        ),
     }
 
 
@@ -245,6 +310,8 @@ def selected_checks(selection: str, include_di_minindn: bool) -> list[QuickCheck
         "ndnsf-python-hello",
         "repo-quick",
         "di-runtime-compat",
+        "di-llm-pipeline",
+        "di-transformers-pipeline-local",
         "di-native-readiness-unit",
         "di-llama-server",
         "di-local",
@@ -253,6 +320,8 @@ def selected_checks(selection: str, include_di_minindn: bool) -> list[QuickCheck
     if include_di_minindn:
         names.append("di-minindn-native")
         names.append("di-llama-server-minindn")
+        names.append("di-llm-pipeline-minindn")
+        names.append("di-llm-transformers-minindn")
     return [all_checks[name] for name in names]
 
 

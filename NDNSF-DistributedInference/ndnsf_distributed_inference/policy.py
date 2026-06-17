@@ -896,6 +896,15 @@ def native_execution_plan_spec(services: tuple[ServicePolicy, ...]) -> dict[str,
                 "service": service.name,
                 "model": service.model_name,
                 **_service_planner_descriptor(service),
+                **({
+                    "executionMode": service.metadata.get("executionMode")
+                } if service.metadata.get("executionMode") else {}),
+                **({
+                    "roleMetadata": dict(service.metadata.get("roleMetadata", {}) or {})
+                } if service.metadata.get("roleMetadata") else {}),
+                **({
+                    "llmPipeline": dict(service.metadata.get("llmPipeline", {}) or {})
+                } if service.metadata.get("llmPipeline") else {}),
                 "roles": list(service.roles),
                 "dependencies": [
                     {

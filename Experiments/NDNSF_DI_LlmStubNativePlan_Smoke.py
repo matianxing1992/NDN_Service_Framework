@@ -48,6 +48,7 @@ def main() -> int:
     parser.add_argument("--service", default="/AI/LLM/StubInference")
     parser.add_argument("--stages", type=int, default=2)
     parser.add_argument("--shards", type=int, default=2)
+    parser.add_argument("--layers", type=int, default=0)
     parser.add_argument("--out-dir", default="/tmp/ndnsf-di-llm-stub-native-plan-smoke")
     args = parser.parse_args()
 
@@ -74,6 +75,7 @@ def main() -> int:
         "--service", args.service,
         "--stages", str(args.stages),
         "--shards", str(args.shards),
+        "--layers", str(args.layers),
         "--out-dir", str(out),
         "--policy", str(policy),
     ], env)
@@ -106,6 +108,30 @@ def main() -> int:
         raise SystemExit(
             "LLM native plan runtimeBackend mismatch: "
             f"expected {args.runtime_backend}, got {runtime_backend}")
+    if args.planner_kind == "llm-pipeline":
+        if service.get("executionMode") != "pipeline-parallel":
+            raise SystemExit("LLM pipeline plan missing executionMode=pipeline-parallel")
+        role_metadata = service.get("roleMetadata", {})
+        if len(role_metadata) != args.stages:
+            raise SystemExit(
+                f"LLM pipeline roleMetadata mismatch: expected {args.stages}, "
+                f"got {len(role_metadata)}")
+        for index in range(args.stages):
+            role = f"/LLM/Pipeline/Stage/{index}"
+            metadata = role_metadata.get(role)
+            if not metadata:
+                raise SystemExit(f"LLM pipeline missing metadata for {role}")
+            if metadata.get("stageIndex") != index:
+                raise SystemExit(f"LLM pipeline stageIndex mismatch for {role}")
+            if metadata.get("stageCount") != args.stages:
+                raise SystemExit(f"LLM pipeline stageCount mismatch for {role}")
+            if metadata.get("roleKind") != "llm-pipeline-stage":
+                raise SystemExit(f"LLM pipeline roleKind mismatch for {role}")
+        pipeline = service.get("llmPipeline", {})
+        if pipeline.get("stageCount") != args.stages:
+            raise SystemExit("LLM pipeline stage count metadata mismatch")
+        if args.layers and pipeline.get("layerCount") != args.layers:
+            raise SystemExit("LLM pipeline layer count metadata mismatch")
 
     run([
         "build/examples/di-native-plan-schema-smoke",
@@ -123,6 +149,7 @@ def main() -> int:
         f"runtime_backend={runtime_backend}",
         f"roles={len(service.get('roles', []))}",
         f"dependencies={len(service.get('dependencies', []))}",
+        f"execution_mode={service.get('executionMode', '')}",
         f"native_plan={native_plan}",
     )
     return 0

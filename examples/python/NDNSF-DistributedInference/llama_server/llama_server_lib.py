@@ -8,11 +8,10 @@ request to its local OpenAI-compatible llama-server endpoint.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
-from urllib import error, request
 
 from ndnsf_distributed_inference import (
     ModelFamily,
@@ -21,6 +20,11 @@ from ndnsf_distributed_inference import (
     SplitServiceSpec,
     SplitterOutput,
     repo_artifact_reference,
+)
+from ndnsf_distributed_inference.llm_runtime import (
+    call_openai_chat_runtime,
+    decode_openai_chat_response,
+    encode_openai_chat_request,
 )
 
 
@@ -148,21 +152,17 @@ def encode_chat_request(
     max_tokens: int = 64,
     temperature: float = 0.2,
 ) -> bytes:
-    messages: list[dict[str, str]] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-    return json.dumps({
-        "model": model,
-        "messages": messages,
-        "max_tokens": int(max_tokens),
-        "temperature": float(temperature),
-        "stream": False,
-    }, sort_keys=True).encode("utf-8")
+    return encode_openai_chat_request(
+        prompt,
+        model=model,
+        system=system,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
 
 
 def decode_chat_response(payload: bytes) -> dict[str, Any]:
-    return json.loads(payload.decode("utf-8"))
+    return decode_openai_chat_response(payload)
 
 
 def call_llama_server_chat(
@@ -173,24 +173,11 @@ def call_llama_server_chat(
 ) -> bytes:
     """POST an OpenAI-compatible chat-completion request to llama-server."""
 
-    body = json.loads(payload.decode("utf-8"))
-    if body.get("stream"):
-        raise ValueError("streaming llama-server responses are not supported by this example")
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    req = request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    return call_openai_chat_runtime(
+        payload,
+        base_url=base_url,
+        timeout_s=timeout_s,
     )
-    try:
-        with request.urlopen(req, timeout=timeout_s) as response:
-            return response.read()
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"llama-server HTTP {exc.code}: {detail}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(f"failed to reach llama-server at {base_url}: {exc}") from exc
 
 
 def write_policy(path: str | Path, **kwargs: Any) -> Path:

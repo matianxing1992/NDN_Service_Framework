@@ -13,6 +13,7 @@
 #include <random>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <ndn-cxx/security/validation-error.hpp>
@@ -3197,6 +3198,9 @@ namespace ndn_service_framework
                 if (fetchTimingEnabled) {
                     NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=start"
                                  << " mode=exact-segments"
+                                 << " timestamp_us=" << nowMicroseconds()
+                                 << " start_epoch_ms="
+                                 << epochMs(std::chrono::system_clock::now())
                                  << " requestId=" << requestId.toUri()
                                  << " keyScope=" << keyScope
                                  << " dataName=" << dataName.toUri()
@@ -3433,14 +3437,14 @@ namespace ndn_service_framework
                                 const auto receivedAt = i < state->dataReceived.size() ?
                                     state->dataReceived[i] :
                                     std::chrono::steady_clock::time_point{};
-                                const double interestToAcceptedMs =
+                                const double interestToValidatedMs =
                                     issuedAt == std::chrono::steady_clock::time_point{} ?
                                     0.0 : elapsedMsSince(issuedAt, acceptedAt);
-                                const double dataToAcceptedMs =
+                                const double dataToValidatedMs =
                                     receivedAt == std::chrono::steady_clock::time_point{} ?
                                     0.0 : elapsedMsSince(receivedAt, acceptedAt);
                                 NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
-                                             << " event=segment_accepted"
+                                             << " event=segment_validated"
                                              << " mode=exact-segments"
                                              << " timestamp_us=" << nowMicroseconds()
                                              << " requestId=" << requestId.toUri()
@@ -3448,12 +3452,12 @@ namespace ndn_service_framework
                                              << " dataName=" << dataName.toUri()
                                              << " segment=" << i
                                              << " segmentName=" << data.getName().toUri()
-                                             << " fetch_start_to_accepted_ms="
+                                             << " fetch_start_to_validated_ms="
                                              << elapsedMsSince(fetchStart, acceptedAt)
-                                             << " interest_to_accepted_ms="
-                                             << interestToAcceptedMs
-                                             << " data_to_accepted_ms="
-                                             << dataToAcceptedMs);
+                                             << " interest_to_validated_ms="
+                                             << interestToValidatedMs
+                                             << " data_to_validated_ms="
+                                             << dataToValidatedMs);
                             }
                             const auto content = data.getContent();
                             state->contents[i] = ndn::Buffer(content.value_begin(),
@@ -3568,6 +3572,10 @@ namespace ndn_service_framework
             options.interestLifetime = ndn::time::milliseconds(interestLifetimeMs);
             if (fetchTimingEnabled) {
                 NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=start"
+                             << " mode=segment-fetcher"
+                             << " timestamp_us=" << nowMicroseconds()
+                             << " start_epoch_ms="
+                             << epochMs(std::chrono::system_clock::now())
                              << " requestId=" << requestId.toUri()
                              << " keyScope=" << keyScope
                              << " dataName=" << dataName.toUri()
@@ -3578,8 +3586,11 @@ namespace ndn_service_framework
             auto transportValidator = std::make_shared<ndn::security::ValidatorNull>();
             auto fetcher = ndn::SegmentFetcher::start(m_face, interest, *transportValidator, options);
             if (fetchTimingEnabled) {
+                auto segmentReceivedAt = std::make_shared<
+                    std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
                 fetcher->afterSegmentReceived.connect(
-                    [fetchStats, transportValidator](const ndn::Data& data) {
+                    [fetchStats, transportValidator, fetchStart, requestId, keyScope, dataName,
+                     segmentReceivedAt](const ndn::Data& data) {
                         const auto now = std::chrono::steady_clock::now();
                         if (fetchStats->receivedSegments == 0) {
                             fetchStats->firstSegmentReceived = now;
@@ -3588,11 +3599,71 @@ namespace ndn_service_framework
                         fetchStats->lastSegmentReceived = now;
                         ++fetchStats->receivedSegments;
                         fetchStats->receivedWireBytes += data.wireEncode().size();
+                        const auto segmentName = data.getName().toUri();
+                        (*segmentReceivedAt)[segmentName] = now;
+                        uint64_t segmentNo = 0;
+                        bool hasSegmentNo = false;
+                        if (!data.getName().empty() && data.getName()[-1].isSegment()) {
+                            segmentNo = data.getName()[-1].toSegment();
+                            hasSegmentNo = true;
+                        }
+                        uint64_t finalSegment = 0;
+                        bool hasFinalSegment = false;
+                        const auto& finalBlock = data.getFinalBlock();
+                        if (finalBlock && finalBlock->isSegment()) {
+                            finalSegment = finalBlock->toSegment();
+                            hasFinalSegment = true;
+                        }
+                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
+                                     << " event=segment_received"
+                                     << " mode=segment-fetcher"
+                                     << " timestamp_us=" << nowMicroseconds()
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << dataName.toUri()
+                                     << " segment=" << (hasSegmentNo ? segmentNo : 0)
+                                     << " has_segment=" << (hasSegmentNo ? 1 : 0)
+                                     << " final_segment="
+                                     << (hasFinalSegment ? finalSegment : 0)
+                                     << " has_final_segment="
+                                     << (hasFinalSegment ? 1 : 0)
+                                     << " segmentName=" << segmentName
+                                     << " fetch_start_to_data_ms="
+                                     << elapsedMsSince(fetchStart, now)
+                                     << " interest_to_data_ms=0"
+                                     << " wire_bytes=" << data.wireEncode().size());
                     });
                 fetcher->afterSegmentValidated.connect(
-                    [fetchStats, transportValidator](const ndn::Data&) {
-                        fetchStats->lastSegmentValidated = std::chrono::steady_clock::now();
+                    [fetchStats, transportValidator, fetchStart, requestId, keyScope, dataName,
+                     segmentReceivedAt](const ndn::Data& data) {
+                        const auto now = std::chrono::steady_clock::now();
+                        fetchStats->lastSegmentValidated = now;
                         ++fetchStats->validatedSegments;
+                        const auto segmentName = data.getName().toUri();
+                        const auto receivedIt = segmentReceivedAt->find(segmentName);
+                        const double dataToValidatedMs =
+                            receivedIt == segmentReceivedAt->end() ?
+                            0.0 : elapsedMsSince(receivedIt->second, now);
+                        uint64_t segmentNo = 0;
+                        bool hasSegmentNo = false;
+                        if (!data.getName().empty() && data.getName()[-1].isSegment()) {
+                            segmentNo = data.getName()[-1].toSegment();
+                            hasSegmentNo = true;
+                        }
+                        NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING"
+                                     << " event=segment_validated"
+                                     << " mode=segment-fetcher"
+                                     << " timestamp_us=" << nowMicroseconds()
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << dataName.toUri()
+                                     << " segment=" << (hasSegmentNo ? segmentNo : 0)
+                                     << " has_segment=" << (hasSegmentNo ? 1 : 0)
+                                     << " segmentName=" << segmentName
+                                     << " fetch_start_to_validated_ms="
+                                     << elapsedMsSince(fetchStart, now)
+                                     << " interest_to_validated_ms=0"
+                                     << " data_to_validated_ms=" << dataToValidatedMs);
                     });
                 fetcher->afterSegmentNacked.connect(
                     [fetchStats, transportValidator] {
@@ -3699,6 +3770,7 @@ namespace ndn_service_framework
         }
 
         try {
+            const auto decryptStart = std::chrono::steady_clock::now();
             ndn::Block block(*encoded);
             HybridMessageEnvelope envelope;
             envelope.WireDecode(block);
@@ -3714,6 +3786,20 @@ namespace ndn_service_framework
                                      ndn::span<const uint8_t>(ad.data(), ad.size()),
                                      plaintext)) {
                 return std::nullopt;
+            }
+            if (fetchTimingEnabled) {
+                const auto decryptEnd = std::chrono::steady_clock::now();
+                NDN_LOG_WARN("NDNSF_COLLAB_LARGE_FETCH_TIMING event=decrypt"
+                             << " timestamp_us=" << nowMicroseconds()
+                             << " requestId=" << requestId.toUri()
+                             << " keyScope=" << keyScope
+                             << " dataName=" << dataName.toUri()
+                             << " encoded_bytes=" << encoded->size()
+                             << " plaintext_bytes=" << plaintext.size()
+                             << " decrypt_ms="
+                             << elapsedMsSince(decryptStart, decryptEnd)
+                             << " fetch_start_to_decrypt_done_ms="
+                             << elapsedMsSince(fetchStart, decryptEnd));
             }
             return plaintext;
         }

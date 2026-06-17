@@ -479,6 +479,13 @@ class APPClient:
         service_policy = self.deployment.service_policy(service)
         role_names = list(service_policy.roles)
         dependencies = list(service_policy.dependencies)
+        if len(role_names) == 1 and not dependencies:
+            return self._client.infer_simple_service(
+                service,
+                payload,
+                ack_timeout_ms=ack_timeout_ms,
+                timeout_ms=timeout_ms,
+            )
         key_scopes: dict[str, set[str]] = {}
         role_scopes: dict[str, list[str]] = {role: [] for role in role_names}
         for dep in dependencies:
@@ -732,6 +739,15 @@ class APPClient:
         service_policy = self.deployment.service_policy(service)
         role_names = list(service_policy.roles)
         dependencies = list(service_policy.dependencies)
+        if len(role_names) == 1 and not dependencies:
+            return self._client.infer_simple_service_async(
+                service,
+                payload,
+                ack_timeout_ms=ack_timeout_ms,
+                timeout_ms=timeout_ms,
+                on_result=on_result,
+                on_error=on_error,
+            )
         key_scopes: dict[str, set[str]] = {}
         role_scopes: dict[str, list[str]] = {role: [] for role in role_names}
         for dep in dependencies:
@@ -979,6 +995,10 @@ class APPProvider:
             dependency_graph=self.deployment.dependency_graph_for_service(service),
             local_artifacts=policy_artifacts,
             readiness_probe=readiness_probe,
+            register_simple_service=(
+                len(list(roles)) == 1 and
+                not list(self.deployment.service_policy(service).dependencies)
+            ),
         )
 
     def serve(

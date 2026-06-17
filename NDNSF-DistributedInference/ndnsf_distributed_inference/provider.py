@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
+import os
 from pathlib import Path
 import tempfile
 from time import perf_counter, time
@@ -16,6 +17,7 @@ from ndnsf import (
     ExecutionArtifactSpec,
     ExecutionContext,
     ServiceProvider,
+    ServiceResponse,
 )
 
 from .plan import RoleDependencyView
@@ -330,6 +332,7 @@ class DistributedInferenceProvider:
 
     def _run_handler(self, handler: InferenceHandler,
                      context: ProviderRuntimeContext) -> None:
+        trace_handler_timing = os.environ.get("NDNSF_DI_PROVIDER_TIMING", "1") != "0"
         submitted_at = perf_counter()
         submitted_epoch_ms = int(time() * 1000)
 
@@ -337,30 +340,32 @@ class DistributedInferenceProvider:
             started_at = perf_counter()
             started_epoch_ms = int(time() * 1000)
             queue_wait_ms = _elapsed_ms(submitted_at)
-            print(
-                "NDNSF_DI_PROVIDER_HANDLER_TIMING "
-                f"event=start "
-                f"session={context.ndnsf.session_id} "
-                f"role={context.role} "
-                f"queue_wait_ms={queue_wait_ms:.2f} "
-                f"submitted_epoch_ms={submitted_epoch_ms} "
-                f"start_epoch_ms={started_epoch_ms}",
-                flush=True,
-            )
+            if trace_handler_timing:
+                print(
+                    "NDNSF_DI_PROVIDER_HANDLER_TIMING "
+                    f"event=start "
+                    f"session={context.ndnsf.session_id} "
+                    f"role={context.role} "
+                    f"queue_wait_ms={queue_wait_ms:.2f} "
+                    f"submitted_epoch_ms={submitted_epoch_ms} "
+                    f"start_epoch_ms={started_epoch_ms}",
+                    flush=True,
+                )
             try:
                 handler(context)
             finally:
                 ended_epoch_ms = int(time() * 1000)
-                print(
-                    "NDNSF_DI_PROVIDER_HANDLER_TIMING "
-                    f"event=end "
-                    f"session={context.ndnsf.session_id} "
-                    f"role={context.role} "
-                    f"handler_ms={_elapsed_ms(started_at):.2f} "
-                    f"start_epoch_ms={started_epoch_ms} "
-                    f"end_epoch_ms={ended_epoch_ms}",
-                    flush=True,
-                )
+                if trace_handler_timing:
+                    print(
+                        "NDNSF_DI_PROVIDER_HANDLER_TIMING "
+                        f"event=end "
+                        f"session={context.ndnsf.session_id} "
+                        f"role={context.role} "
+                        f"handler_ms={_elapsed_ms(started_at):.2f} "
+                        f"start_epoch_ms={started_epoch_ms} "
+                        f"end_epoch_ms={ended_epoch_ms}",
+                        flush=True,
+                    )
 
         if self._handler_executor is None:
             run()
@@ -474,6 +479,7 @@ class DistributedInferenceProvider:
         dependency_graph=None,
         local_artifacts: dict[str, dict] | None = None,
         readiness_probe: Callable[[], AckDecision | bool] | None = None,
+        register_simple_service: bool = False,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
 
@@ -522,6 +528,51 @@ class DistributedInferenceProvider:
                 message="inference capability ready",
                 payload=(";".join(fields) + ";").encode() + readiness_payload,
             )
+
+        class SimpleResponseContext:
+            session_id = "simple-service"
+
+            def __init__(self) -> None:
+                self.response = ServiceResponse(status=False, error="no response published")
+
+            def publish_final_response(self, payload: bytes) -> None:
+                self.response = ServiceResponse(status=True, payload=bytes(payload))
+
+            def fail(self, error: str) -> None:
+                self.response = ServiceResponse(status=False, error=str(error))
+
+        if register_simple_service:
+            if len(role_list) != 1:
+                raise ValueError("simple service mirror requires exactly one role")
+            simple_role = role_list[0]
+
+            def simple_handler(request: bytes) -> ServiceResponse:
+                try:
+                    readiness = ack(request)
+                    if not readiness.status:
+                        return ServiceResponse(status=False, error=readiness.message)
+                    execution = self._local_execution(
+                        simple_role,
+                        backend=backend_list[0] if backend_list else "",
+                        temp_dir=temp_dir,
+                        local_artifacts=local_artifacts,
+                    )
+                    simple_ctx = SimpleResponseContext()
+                    self._run_handler(handler, ProviderRuntimeContext(
+                        ndnsf=simple_ctx,
+                        execution=execution,
+                        request=request,
+                        role=simple_role,
+                        dependencies=RoleDependencyView(simple_role),
+                        prefetcher=None,
+                    ))
+                    return simple_ctx.response
+                except Exception as exc:  # noqa: BLE001
+                    return ServiceResponse(status=False, error=str(exc))
+
+            self.provider.add_handler(service, simple_handler)
+            self.provider.set_ack_handler(service, ack)
+            return
 
         def wrapped(ctx: CollaborationContext, request: bytes) -> None:
             try:

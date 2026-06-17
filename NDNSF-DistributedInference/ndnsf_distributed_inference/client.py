@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -130,6 +131,10 @@ def _jsonable(value):
 
 def _elapsed_ms(start: float) -> float:
     return (perf_counter() - start) * 1000.0
+
+
+def _client_timing_enabled() -> bool:
+    return os.environ.get("NDNSF_DI_CLIENT_TIMING", "1") != "0"
 
 
 class DistributedInferenceClient:
@@ -274,16 +279,17 @@ class DistributedInferenceClient:
         )
         request_ms = _elapsed_ms(request_start)
         total_ms = _elapsed_ms(total_start)
-        print(
-            "NDNSF_DI_CLIENT_INFERENCE_TIMING "
-            f"service={plan.service} "
-            f"mode=dynamic "
-            f"plan_ms={plan_ms:.2f} "
-            f"request_ms={request_ms:.2f} "
-            f"total_ms={total_ms:.2f} "
-            f"status={'true' if response.status else 'false'}",
-            flush=True,
-        )
+        if _client_timing_enabled():
+            print(
+                "NDNSF_DI_CLIENT_INFERENCE_TIMING "
+                f"service={plan.service} "
+                f"mode=dynamic "
+                f"plan_ms={plan_ms:.2f} "
+                f"request_ms={request_ms:.2f} "
+                f"total_ms={total_ms:.2f} "
+                f"status={'true' if response.status else 'false'}",
+                flush=True,
+            )
         return InferenceResult(
             status=response.status,
             payload=response.payload,
@@ -335,16 +341,17 @@ class DistributedInferenceClient:
             timeout_ms=timeout_ms,
         )
         request_ms = _elapsed_ms(request_start)
-        print(
-            "NDNSF_DI_CLIENT_INFERENCE_TIMING "
-            f"service={session.plan.service} "
-            f"mode=plan-session "
-            f"fingerprint={session.fingerprint[:16]} "
-            f"request_ms={request_ms:.2f} "
-            f"total_ms={request_ms:.2f} "
-            f"status={'true' if response.status else 'false'}",
-            flush=True,
-        )
+        if _client_timing_enabled():
+            print(
+                "NDNSF_DI_CLIENT_INFERENCE_TIMING "
+                f"service={session.plan.service} "
+                f"mode=plan-session "
+                f"fingerprint={session.fingerprint[:16]} "
+                f"request_ms={request_ms:.2f} "
+                f"total_ms={request_ms:.2f} "
+                f"status={'true' if response.status else 'false'}",
+                flush=True,
+            )
         return InferenceResult(
             status=response.status,
             payload=response.payload,
@@ -378,15 +385,16 @@ class DistributedInferenceClient:
             timeout_ms=timeout_ms,
         )
         request_ms = _elapsed_ms(request_start)
-        print(
-            "NDNSF_DI_CLIENT_PREFLIGHT_TIMING "
-            f"service={session.plan.service} "
-            f"mode=plan-session "
-            f"fingerprint={session.fingerprint[:16]} "
-            f"request_ms={request_ms:.2f} "
-            f"status={'true' if response.status else 'false'}",
-            flush=True,
-        )
+        if _client_timing_enabled():
+            print(
+                "NDNSF_DI_CLIENT_PREFLIGHT_TIMING "
+                f"service={session.plan.service} "
+                f"mode=plan-session "
+                f"fingerprint={session.fingerprint[:16]} "
+                f"request_ms={request_ms:.2f} "
+                f"status={'true' if response.status else 'false'}",
+                flush=True,
+            )
         return InferenceResult(
             status=response.status,
             payload=response.payload,
@@ -528,21 +536,91 @@ class DistributedInferenceClient:
         )
         request_ms = _elapsed_ms(request_start)
         total_ms = _elapsed_ms(total_start)
-        print(
-            "NDNSF_DI_CLIENT_INFERENCE_TIMING "
-            f"service={service} "
-            f"mode=deployed "
-            f"scope_key_ms={scope_ms:.2f} "
-            f"request_ms={request_ms:.2f} "
-            f"total_ms={total_ms:.2f} "
-            f"status={'true' if response.status else 'false'}",
-            flush=True,
-        )
+        if _client_timing_enabled():
+            print(
+                "NDNSF_DI_CLIENT_INFERENCE_TIMING "
+                f"service={service} "
+                f"mode=deployed "
+                f"scope_key_ms={scope_ms:.2f} "
+                f"request_ms={request_ms:.2f} "
+                f"total_ms={total_ms:.2f} "
+                f"status={'true' if response.status else 'false'}",
+                flush=True,
+            )
         return InferenceResult(
             status=response.status,
             payload=response.payload,
             error=response.error,
         )
+
+    def infer_simple_service(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+    ) -> InferenceResult:
+        """Request a predeployed single-role service without DI assignment.
+
+        This is the low-overhead path for replicated provider serving, such as
+        one llama-server provider selected for one chat completion. Multi-role
+        dependency graphs still use ``infer_deployed_service``.
+        """
+
+        request_start = perf_counter()
+        response = self.user.request_service(
+            service,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+        request_ms = _elapsed_ms(request_start)
+        if _client_timing_enabled():
+            print(
+                "NDNSF_DI_CLIENT_INFERENCE_TIMING "
+                f"service={service} "
+                f"mode=simple-service "
+                f"request_ms={request_ms:.2f} "
+                f"total_ms={request_ms:.2f} "
+                f"status={'true' if response.status else 'false'}",
+                flush=True,
+            )
+        return InferenceResult(
+            status=response.status,
+            payload=response.payload,
+            error=response.error,
+        )
+
+    def infer_simple_service_async(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        ack_timeout_ms: int = 500,
+        timeout_ms: int = 30000,
+        on_result: Callable[[InferenceResult], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> Future:
+        future = self._executor.submit(
+            self.infer_simple_service,
+            service,
+            payload,
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+        )
+        if on_result is not None or on_error is not None:
+            def _done(done: Future) -> None:
+                try:
+                    result = done.result()
+                except BaseException as exc:  # noqa: BLE001
+                    if on_error is not None:
+                        on_error(exc)
+                    return
+                if on_result is not None:
+                    on_result(result)
+            future.add_done_callback(_done)
+        return future
 
     def infer_deployed_service_async(
         self,

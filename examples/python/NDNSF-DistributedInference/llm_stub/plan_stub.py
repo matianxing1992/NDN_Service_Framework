@@ -36,6 +36,9 @@ def main() -> int:
     parser.add_argument("--service", default="/AI/LLM/StubInference")
     parser.add_argument("--stages", type=int, default=2)
     parser.add_argument("--shards", type=int, default=2)
+    parser.add_argument("--layers", type=int, default=0,
+                        help="Optional transformer layer count for llm-pipeline "
+                             "stage metadata. Use 0 when unknown.")
     parser.add_argument("--out-dir", default="/tmp/ndnsf-di-llm-stub")
     parser.add_argument("--policy", default="")
     args = parser.parse_args()
@@ -50,6 +53,7 @@ def main() -> int:
             service=args.service,
             stages=args.stages,
             shards=args.shards,
+            layers=args.layers,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
