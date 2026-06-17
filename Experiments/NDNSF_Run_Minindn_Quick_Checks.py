@@ -263,6 +263,19 @@ def checks() -> dict[str, QuickCheck]:
             timeout_s=720,
             description="DI real Qwen HF stage-package pipeline MiniNDN proof; slow optional check",
         ),
+        "di-llm-qwen-onnx-delta-minindn": QuickCheck(
+            name="di-llm-qwen-onnx-delta-minindn",
+            command=(
+                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
+                "--case", "llm-pipeline-qwen-onnx-delta-minindn",
+            ),
+            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-qwen-onnx-delta-minindn",
+            timeout_s=720,
+            description=(
+                "DI Qwen ONNX context API MiniNDN regression: full context "
+                "then non-empty append delta, checked against local ONNX stages"
+            ),
+        ),
     }
 
 
@@ -322,6 +335,7 @@ def selected_checks(selection: str, include_di_minindn: bool) -> list[QuickCheck
         names.append("di-llama-server-minindn")
         names.append("di-llm-pipeline-minindn")
         names.append("di-llm-transformers-minindn")
+        names.append("di-llm-qwen-onnx-delta-minindn")
     return [all_checks[name] for name in names]
 
 

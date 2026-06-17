@@ -1989,6 +1989,31 @@ sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
   --publish-input-reference
 ```
 
+如果要验证真正的非空 append-delta correctness，可以追加一个或多个 token IDs，并将
+分布式结果和本地重新计算的 full-context ONNX pipeline 结果对比：
+
+```bash
+sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
+  --runtime qwen-onnx \
+  --reuse-existing-policy \
+  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
+  --topology-file Experiments/Topology/AI_Lab.conf \
+  --measured-requests 2 \
+  --context-input-mode append-token-delta-after-first \
+  --delta-token-ids 2 \
+  --publish-input-reference
+```
+
+同一个回归已经接入 DI regression suite 和可选 MiniNDN quick-suite case：
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case llm-pipeline-qwen-onnx-delta-minindn
+
+python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py \
+  --case di-llm-qwen-onnx-delta-minindn
+```
+
 在 `AI_Lab.conf` 上记录的 60 秒结果：
 
 ```text

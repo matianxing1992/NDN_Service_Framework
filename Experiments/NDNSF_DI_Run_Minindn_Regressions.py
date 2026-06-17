@@ -162,6 +162,31 @@ CASES = {
             "--timeout-ms", "180000",
         ),
     ),
+    "llm-pipeline-qwen-onnx-delta-minindn": RegressionCase(
+        name="llm-pipeline-qwen-onnx-delta-minindn",
+        script=REPO / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+        success_marker="LLM_PIPELINE_MININDN_OK",
+        description=(
+            "Qwen ONNX MiniNDN context API regression: full context followed "
+            "by a non-empty append delta, checked against local ONNX stages"
+        ),
+        extra_args=(
+            "--runtime", "qwen-onnx",
+            "--reuse-existing-policy",
+            "--output-dir", "results/qwen_onnx_pipeline_minindn_smoke2",
+            "--topology-file", "Experiments/Topology/AI_Lab.conf",
+            "--warmup-requests", "0",
+            "--measured-requests", "2",
+            "--measured-duration-s", "0",
+            "--request-interval-ms", "0",
+            "--provider-start-timeout-s", "300",
+            "--timeout-ms", "180000",
+            "--ack-timeout-ms", "1500",
+            "--context-input-mode", "append-token-delta-after-first",
+            "--delta-token-ids", "2",
+            "--publish-input-reference",
+        ),
+    ),
     "app-api": RegressionCase(
         name="app-api",
         script=REPO / "Experiments/NDNSF_DI_AppApi_Smoke.py",

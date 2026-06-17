@@ -2202,6 +2202,33 @@ sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
   --publish-input-reference
 ```
 
+To validate real append-delta correctness, append one or more token IDs and
+compare the distributed result with a locally recomputed full-context ONNX
+pipeline result:
+
+```bash
+sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
+  --runtime qwen-onnx \
+  --reuse-existing-policy \
+  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
+  --topology-file Experiments/Topology/AI_Lab.conf \
+  --measured-requests 2 \
+  --context-input-mode append-token-delta-after-first \
+  --delta-token-ids 2 \
+  --publish-input-reference
+```
+
+The same regression is wired into the DI regression suite and the optional
+MiniNDN quick-suite case:
+
+```bash
+python3 Experiments/NDNSF_DI_Run_Minindn_Regressions.py \
+  --case llm-pipeline-qwen-onnx-delta-minindn
+
+python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py \
+  --case di-llm-qwen-onnx-delta-minindn
+```
+
 Recorded 60-second result on `AI_Lab.conf`:
 
 ```text

@@ -16,10 +16,13 @@ from llm_pipeline_lib import (
     SERVICE,
     TINY_TRANSFORMERS_RUNTIME,
     decode_payload,
+    decode_qwen_pipeline_context,
     encode_qwen_pipeline_delta,
     encode_qwen_pipeline_context,
     encode_prompt,
+    merge_qwen_pipeline_delta,
     parse_common_args,
+    run_qwen_onnx_stage,
     run_local_pipeline,
     run_local_tiny_transformer_pipeline,
 )
@@ -40,6 +43,54 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
+def _parse_delta_token_ids(raw: str) -> list[int]:
+    values = [part.strip() for part in raw.split(",") if part.strip()]
+    if not values:
+        return []
+    return [int(value, 0) for value in values]
+
+
+def _empty_delta_like(input_ids):
+    return [[] for _ in input_ids]
+
+
+class _LocalQwenOnnxRunner:
+    def __init__(self, service_policy, stages: int):
+        import onnxruntime as ort
+
+        self._stages = int(stages)
+        artifacts = [
+            artifact for artifact in service_policy.artifacts
+            if artifact.kind == "onnx-model" and
+            (artifact.metadata or {}).get("runtime") == QWEN_ONNX_RUNTIME
+        ]
+        artifacts.sort(key=lambda item: int((item.metadata or {}).get("stageIndex", 0)))
+        if len(artifacts) != self._stages:
+            raise RuntimeError(
+                f"expected {self._stages} Qwen ONNX artifacts, found {len(artifacts)}")
+        self._runners = [
+            (
+                artifact.role,
+                dict(artifact.metadata or {}),
+                ort.InferenceSession(artifact.path, providers=["CPUExecutionProvider"]),
+            )
+            for artifact in artifacts
+        ]
+
+    def run(self, context_payload: bytes) -> dict:
+        payload = context_payload
+        for role, metadata, session in self._runners:
+            payload = run_qwen_onnx_stage(
+                payload,
+                role=role,
+                stages=self._stages,
+                session=session,
+                metadata=metadata,
+                compute_delay_ms=0.0,
+            )
+        return decode_payload(payload)
+
+
 def main() -> int:
     parser = parse_common_args("Run validation LLM pipeline user")
     parser.add_argument("--prompt", default="Explain NDNSF-DI pipeline inference.")
@@ -57,13 +108,18 @@ def main() -> int:
     parser.add_argument("--context-epoch", type=int, default=0)
     parser.add_argument(
         "--context-input-mode",
-        choices=("full", "append-empty-delta-after-first"),
+        choices=("full", "append-empty-delta-after-first", "append-token-delta-after-first"),
         default="full",
         help=(
-            "Qwen context request shape. append-empty-delta-after-first sends "
-            "one full context, then append-only empty deltas to validate "
-            "session/epoch handling without changing the expected output."
+            "Qwen context request shape. append-empty-delta-after-first keeps "
+            "the expected output fixed; append-token-delta-after-first appends "
+            "real token IDs and computes a per-request local ONNX expected token."
         ),
+    )
+    parser.add_argument(
+        "--delta-token-ids",
+        default="2",
+        help="Comma-separated token IDs used by append-token-delta-after-first.",
     )
     parser.add_argument(
         "--publish-input-reference",
@@ -136,6 +192,15 @@ def main() -> int:
         generated_policy_dir=args.generated_policy_dir,
         group=args.group,
     )
+    local_qwen_onnx = None
+    if (
+        args.runtime == QWEN_ONNX_RUNTIME and
+        args.context_input_mode == "append-token-delta-after-first"
+    ):
+        local_qwen_onnx = _LocalQwenOnnxRunner(
+            client.deployment.service_policy(SERVICE),
+            stages=args.stages,
+        )
     metrics_path = Path(args.metrics_csv) if args.metrics_csv else None
     metrics_file = None
     if metrics_path:
@@ -157,6 +222,8 @@ def main() -> int:
     )
     qwen_cached_epoch = args.context_epoch
     qwen_sent_full_context = False
+    qwen_full_context_doc = None
+    delta_token_ids = _parse_delta_token_ids(args.delta_token_ids)
     try:
         while True:
             phase = "warmup" if index < args.warmup_requests else "measured"
@@ -170,16 +237,30 @@ def main() -> int:
             if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
                 request_id = f"{args.request_id}-{index}"
                 if (
-                    args.context_input_mode == "append-empty-delta-after-first" and
+                    args.context_input_mode in {
+                        "append-empty-delta-after-first",
+                        "append-token-delta-after-first",
+                    } and
                     qwen_sent_full_context
                 ):
-                    empty_delta = [[] for _ in qwen_summary["inputIds"]]
+                    if qwen_full_context_doc is None:
+                        raise RuntimeError("Qwen delta mode has no local full-context cache")
+                    delta_ids = (
+                        _empty_delta_like(qwen_full_context_doc["inputIds"])
+                        if args.context_input_mode == "append-empty-delta-after-first" else
+                        [list(delta_token_ids) for _ in qwen_full_context_doc["inputIds"]]
+                    )
                     request_payload = encode_qwen_pipeline_delta(
-                        empty_delta,
+                        delta_ids,
                         request_id=request_id,
                         session_id=qwen_session_id,
                         base_context_epoch=qwen_cached_epoch,
                         context_epoch=qwen_cached_epoch + 1,
+                    )
+                    delta_doc = decode_qwen_pipeline_context(request_payload)
+                    qwen_full_context_doc = merge_qwen_pipeline_delta(
+                        qwen_full_context_doc,
+                        delta_doc,
                     )
                     qwen_cached_epoch += 1
                 else:
@@ -190,7 +271,22 @@ def main() -> int:
                         session_id=qwen_session_id,
                         context_epoch=qwen_cached_epoch,
                     )
+                    qwen_full_context_doc = decode_qwen_pipeline_context(request_payload)
                     qwen_sent_full_context = True
+                expected_doc = local_doc
+                if (
+                    args.runtime == QWEN_ONNX_RUNTIME and
+                    local_qwen_onnx is not None and
+                    qwen_full_context_doc is not None
+                ):
+                    expected_doc = local_qwen_onnx.run(encode_qwen_pipeline_context(
+                        qwen_full_context_doc["inputIds"],
+                        attention_mask=qwen_full_context_doc.get("attentionMask"),
+                        position_ids=qwen_full_context_doc.get("positionIds"),
+                        request_id=f"{request_id}-expected",
+                        session_id=qwen_session_id,
+                        context_epoch=int(qwen_full_context_doc.get("contextEpoch", 0) or 0),
+                    ))
                 if args.publish_input_reference:
                     request_payload = client.publish_large_payload_reference(
                         SERVICE,
@@ -204,6 +300,7 @@ def main() -> int:
                     args.prompt,
                     request_id=f"{args.request_id}-{index}",
                 )
+                expected_doc = local_doc
             started = time.perf_counter()
             result = client.distributed_inference(
                 SERVICE,
@@ -229,12 +326,12 @@ def main() -> int:
                 return 2
             response = decode_payload(result.payload)
             if args.runtime in (TINY_TRANSFORMERS_RUNTIME, QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
-                matches = response.get("topToken") == local_doc.get("topToken")
+                matches = response.get("topToken") == expected_doc.get("topToken")
             else:
-                matches = response.get("lineage") == local_doc.get("lineage")
+                matches = response.get("lineage") == expected_doc.get("lineage")
             if not matches:
                 print("LLM_PIPELINE_USER_LINEAGE_MISMATCH")
-                print("local", json.dumps(local_doc, sort_keys=True))
+                print("local", json.dumps(expected_doc, sort_keys=True))
                 print("distributed", json.dumps(response, sort_keys=True))
                 return 3
             if phase == "measured":
@@ -251,6 +348,7 @@ def main() -> int:
                 f"distributed_ms={distributed_ms:.2f}",
                 f"stages={args.stages}",
                 f"runtime={args.runtime}",
+                f"expectedTopToken={expected_doc.get('topToken', '')}",
                 f"lineage={','.join(response.get('lineage', []))}",
                 json.dumps(response, sort_keys=True),
             )
