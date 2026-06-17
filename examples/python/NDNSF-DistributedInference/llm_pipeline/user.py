@@ -16,6 +16,7 @@ from llm_pipeline_lib import (
     SERVICE,
     TINY_TRANSFORMERS_RUNTIME,
     decode_payload,
+    encode_qwen_pipeline_delta,
     encode_qwen_pipeline_context,
     encode_prompt,
     parse_common_args,
@@ -55,6 +56,16 @@ def main() -> int:
     parser.add_argument("--session-id", default="")
     parser.add_argument("--context-epoch", type=int, default=0)
     parser.add_argument(
+        "--context-input-mode",
+        choices=("full", "append-empty-delta-after-first"),
+        default="full",
+        help=(
+            "Qwen context request shape. append-empty-delta-after-first sends "
+            "one full context, then append-only empty deltas to validate "
+            "session/epoch handling without changing the expected output."
+        ),
+    )
+    parser.add_argument(
         "--publish-input-reference",
         action="store_true",
         help=(
@@ -77,11 +88,14 @@ def main() -> int:
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
         if not qwen_summary:
             raise SystemExit("--qwen-runtime-summary is required for Qwen runtimes")
+        session_id = args.session_id or (
+            args.request_id if args.context_input_mode != "full" else ""
+        )
         payload = encode_qwen_pipeline_context(
             qwen_summary["inputIds"],
             attention_mask=qwen_summary.get("attentionMask"),
             request_id=args.request_id,
-            session_id=args.session_id,
+            session_id=session_id,
             context_epoch=args.context_epoch,
         )
     else:
@@ -138,6 +152,11 @@ def main() -> int:
     )
     total_limit = args.warmup_requests + max(1, args.measured_requests)
     index = 0
+    qwen_session_id = args.session_id or (
+        args.request_id if args.context_input_mode != "full" else ""
+    )
+    qwen_cached_epoch = args.context_epoch
+    qwen_sent_full_context = False
     try:
         while True:
             phase = "warmup" if index < args.warmup_requests else "measured"
@@ -149,13 +168,29 @@ def main() -> int:
                 break
 
             if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
-                request_payload = encode_qwen_pipeline_context(
-                    qwen_summary["inputIds"],
-                    attention_mask=qwen_summary.get("attentionMask"),
-                    request_id=f"{args.request_id}-{index}",
-                    session_id=args.session_id,
-                    context_epoch=args.context_epoch + measured_count,
-                )
+                request_id = f"{args.request_id}-{index}"
+                if (
+                    args.context_input_mode == "append-empty-delta-after-first" and
+                    qwen_sent_full_context
+                ):
+                    empty_delta = [[] for _ in qwen_summary["inputIds"]]
+                    request_payload = encode_qwen_pipeline_delta(
+                        empty_delta,
+                        request_id=request_id,
+                        session_id=qwen_session_id,
+                        base_context_epoch=qwen_cached_epoch,
+                        context_epoch=qwen_cached_epoch + 1,
+                    )
+                    qwen_cached_epoch += 1
+                else:
+                    request_payload = encode_qwen_pipeline_context(
+                        qwen_summary["inputIds"],
+                        attention_mask=qwen_summary.get("attentionMask"),
+                        request_id=request_id,
+                        session_id=qwen_session_id,
+                        context_epoch=qwen_cached_epoch,
+                    )
+                    qwen_sent_full_context = True
                 if args.publish_input_reference:
                     request_payload = client.publish_large_payload_reference(
                         SERVICE,

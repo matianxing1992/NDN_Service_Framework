@@ -380,6 +380,47 @@ def encode_qwen_pipeline_context(
     }, sort_keys=True).encode("utf-8")
 
 
+def encode_qwen_pipeline_delta(
+    delta_input_ids: Any,
+    *,
+    delta_attention_mask: Any = None,
+    request_id: str = "manual",
+    session_id: str,
+    base_context_epoch: int,
+    context_epoch: int,
+    kv_cache_reference: dict[str, Any] | None = None,
+) -> bytes:
+    """Encode an append-only context delta for a cached Qwen ONNX session.
+
+    The delta is not a standalone inference input.  Stage 0 must have a cached
+    full context for ``session_id`` at ``base_context_epoch`` and expands this
+    payload into a full-context object before running the ONNX stage.
+    """
+
+    serializable_delta_ids = _serializable_tensor(delta_input_ids)
+    serializable_delta_attention = (
+        _serializable_tensor(delta_attention_mask)
+        if delta_attention_mask is not None else
+        _ones_like_nested(serializable_delta_ids)
+    )
+    return json.dumps({
+        "schema": "ndnsf-di-qwen-pipeline-context-v1",
+        "requestId": request_id,
+        "sessionId": session_id,
+        "contextEpoch": int(context_epoch),
+        "baseContextEpoch": int(base_context_epoch),
+        "contextMode": "append-delta",
+        "inputIds": None,
+        "attentionMask": None,
+        "positionIds": None,
+        "delta": {
+            "inputIds": serializable_delta_ids,
+            "attentionMask": serializable_delta_attention,
+        },
+        "kvCacheReference": kv_cache_reference,
+    }, sort_keys=True).encode("utf-8")
+
+
 def encode_qwen_input_ids(input_ids: Any, *, request_id: str = "manual") -> bytes:
     """Compatibility wrapper for older Qwen pipeline callers."""
 
@@ -388,6 +429,29 @@ def encode_qwen_input_ids(input_ids: Any, *, request_id: str = "manual") -> byte
 
 def decode_qwen_pipeline_context(payload: bytes) -> dict[str, Any]:
     doc = decode_payload(payload)
+    mode = doc.get("contextMode", "full")
+    if mode == "append-delta":
+        delta = doc.get("delta") or {}
+        if not doc.get("sessionId"):
+            raise ValueError("append-delta Qwen context requires sessionId")
+        if "inputIds" not in delta:
+            raise ValueError("append-delta Qwen context requires delta.inputIds")
+        delta_attention = delta.get("attentionMask")
+        if delta_attention is None:
+            delta_attention = _ones_like_nested(delta["inputIds"])
+        return {
+            **doc,
+            "contextMode": "append-delta",
+            "sessionId": doc.get("sessionId", ""),
+            "contextEpoch": int(doc.get("contextEpoch", 0) or 0),
+            "baseContextEpoch": int(doc.get("baseContextEpoch", 0) or 0),
+            "delta": {
+                **delta,
+                "attentionMask": delta_attention,
+            },
+        }
+    if mode != "full":
+        raise ValueError(f"unsupported Qwen context mode: {mode}")
     if "inputIds" not in doc:
         raise ValueError("Qwen pipeline context requires inputIds")
     input_ids = doc["inputIds"]
@@ -404,6 +468,54 @@ def decode_qwen_pipeline_context(payload: bytes) -> dict[str, Any]:
         "contextMode": doc.get("contextMode", "full"),
         "sessionId": doc.get("sessionId", ""),
         "contextEpoch": int(doc.get("contextEpoch", 0) or 0),
+    }
+
+
+def _concat_nested_rows(left: Any, right: Any) -> Any:
+    if not left:
+        return right
+    if not right:
+        return left
+    if isinstance(left[0], list):
+        if not isinstance(right[0], list) or len(left) != len(right):
+            raise ValueError("append-delta batch shape does not match cached context")
+        return [list(base) + list(delta) for base, delta in zip(left, right)]
+    if isinstance(right[0], list):
+        raise ValueError("append-delta rank does not match cached context")
+    return list(left) + list(right)
+
+
+def merge_qwen_pipeline_delta(base_doc: dict[str, Any],
+                              delta_doc: dict[str, Any]) -> dict[str, Any]:
+    """Merge an append-only delta into a cached full Qwen context document."""
+
+    if base_doc.get("contextMode", "full") != "full":
+        raise ValueError("base Qwen context cache must contain a full context")
+    if delta_doc.get("contextMode") != "append-delta":
+        raise ValueError("delta Qwen context must use append-delta mode")
+    base_epoch = int(base_doc.get("contextEpoch", 0) or 0)
+    expected_epoch = int(delta_doc.get("baseContextEpoch", 0) or 0)
+    if base_epoch != expected_epoch:
+        raise ValueError(
+            f"Qwen context epoch mismatch: cached {base_epoch}, delta expects {expected_epoch}")
+    delta = delta_doc.get("delta") or {}
+    input_ids = _concat_nested_rows(base_doc["inputIds"], delta["inputIds"])
+    attention_mask = _concat_nested_rows(
+        base_doc["attentionMask"],
+        delta.get("attentionMask") or _ones_like_nested(delta["inputIds"]),
+    )
+    position_ids = _position_ids_for_nested(input_ids)
+    return {
+        **base_doc,
+        "requestId": delta_doc.get("requestId", base_doc.get("requestId", "")),
+        "sessionId": delta_doc.get("sessionId", base_doc.get("sessionId", "")),
+        "contextEpoch": int(delta_doc.get("contextEpoch", expected_epoch + 1) or 0),
+        "inputIds": input_ids,
+        "attentionMask": attention_mask,
+        "positionIds": position_ids,
+        "contextMode": "full",
+        "delta": None,
+        "kvCacheReference": delta_doc.get("kvCacheReference"),
     }
 
 

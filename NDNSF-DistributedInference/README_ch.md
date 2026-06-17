@@ -1936,6 +1936,14 @@ runtime 能清楚暴露所需 tensors 后，再加入 append-only context delta 
 `LargeDataReference` payload。这样 context 语义留在 NDNSF-DI，分段、混合加密、
 digest 检查和 fetch 仍由 NDNSF Core 统一处理。
 
+同一个 schema 也预留 `contextMode=append-delta`，用于 append-only 更新。delta
+请求携带 `sessionId`、`baseContextEpoch`、`contextEpoch`，以及
+`delta.inputIds`/`delta.attentionMask`。Stage 0 会把 delta 和缓存的 full context
+合并；如果 session 不存在或 epoch 不匹配，会直接拒绝请求。当前回归模式会在第一轮 full
+context 后发送空 delta，这样可以验证 cache/epoch 路径，但不改变 expected token
+输出。未来 KV-cache 复用应继续使用已有 `kvCacheReference` 字段，并明确 cache epoch
+和失效规则；不应再发明另一套 context 传输路径。
+
 当前示例导出三个 Qwen ONNX stages：
 
 ```text
@@ -1965,6 +1973,19 @@ sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
   --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
   --topology-file Experiments/Topology/AI_Lab.conf \
   --measured-requests 1 \
+  --publish-input-reference
+```
+
+如果要验证 append-only context-delta 处理，同时保持 expected top token 不变：
+
+```bash
+sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
+  --runtime qwen-onnx \
+  --reuse-existing-policy \
+  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
+  --topology-file Experiments/Topology/AI_Lab.conf \
+  --measured-requests 2 \
+  --context-input-mode append-empty-delta-after-first \
   --publish-input-reference
 ```
 

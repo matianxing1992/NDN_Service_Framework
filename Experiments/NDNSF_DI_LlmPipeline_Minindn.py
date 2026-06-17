@@ -122,6 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--context-input-mode",
+        choices=("full", "append-empty-delta-after-first"),
+        default="full",
+        help="Qwen context request shape for full-context or append-delta validation.",
+    )
+    parser.add_argument(
         "--large-fetch-timing",
         action="store_true",
         help=(
@@ -849,6 +855,7 @@ def main() -> int:
             " --prompt {} --stages {} --compute-delay-ms {} "
             "--runtime {} --transformer-layers {} "
             "--qwen-runtime-summary {} "
+            "--context-input-mode {} "
             "--ack-timeout-ms {} --timeout-ms {} "
             "--warmup-requests {} --measured-requests {} "
             "--measured-duration-s {} --request-interval-ms {} "
@@ -859,6 +866,7 @@ def main() -> int:
                 args.runtime,
                 args.transformer_layers,
                 perf.shell_quote(OUT / "qwen-pipeline-runtime.json"),
+                args.context_input_mode,
                 args.ack_timeout_ms,
                 args.timeout_ms,
                 args.warmup_requests,

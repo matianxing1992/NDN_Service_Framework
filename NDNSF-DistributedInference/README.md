@@ -2146,6 +2146,16 @@ only the standard `LargeDataReference` payload. This keeps context semantics in
 NDNSF-DI while leaving segmentation, hybrid encryption, digest checking, and
 fetching to NDNSF Core.
 
+The same schema also reserves `contextMode=append-delta` for append-only
+updates. A delta request carries `sessionId`, `baseContextEpoch`,
+`contextEpoch`, and `delta.inputIds`/`delta.attentionMask`. Stage 0 expands the
+delta against its cached full context and rejects the request if the session is
+missing or the epoch does not match. The current regression mode sends an empty
+delta after the first full context so the cache/epoch path can be tested without
+changing the expected token output. Future KV-cache reuse should use the
+existing `kvCacheReference` field with explicit cache epoch and invalidation
+rules; it should not invent another context transport path.
+
 The current example exports three Qwen ONNX stages:
 
 ```text
@@ -2175,6 +2185,20 @@ sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
   --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
   --topology-file Experiments/Topology/AI_Lab.conf \
   --measured-requests 1 \
+  --publish-input-reference
+```
+
+To validate append-only context-delta handling while preserving the expected
+top token:
+
+```bash
+sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
+  --runtime qwen-onnx \
+  --reuse-existing-policy \
+  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
+  --topology-file Experiments/Topology/AI_Lab.conf \
+  --measured-requests 2 \
+  --context-input-mode append-empty-delta-after-first \
   --publish-input-reference
 ```
 

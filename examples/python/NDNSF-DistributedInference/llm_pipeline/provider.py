@@ -15,8 +15,11 @@ from llm_pipeline_lib import (
     SERVICE,
     TINY_TRANSFORMERS_RUNTIME,
     create_tiny_transformer_model,
+    decode_qwen_pipeline_context,
     encode_final_response,
+    encode_qwen_pipeline_context,
     encode_stage_payload,
+    merge_qwen_pipeline_delta,
     parse_common_args,
     qwen_transformer_model_from_stage_package,
     qwen_transformer_stage_spec_from_execution,
@@ -28,6 +31,9 @@ from llm_pipeline_lib import (
     tiny_transformer_model_from_stage_package,
     tiny_transformer_stage_spec_from_execution,
 )
+
+
+_QWEN_CONTEXT_CACHE: dict[str, dict] = {}
 
 
 def _selected_roles(raw_roles: str, provider: APPProvider) -> set[str]:
@@ -143,7 +149,7 @@ def _elapsed_ms(start: float) -> float:
 def _materialize_first_stage_request(ctx: ProviderRuntimeContext) -> tuple[bytes, float, bool]:
     reference = parse_large_data_reference_payload(ctx.request)
     if reference is None:
-        return ctx.request, 0.0, False
+        return _resolve_qwen_context_request(ctx.request), 0.0, False
     fetch_start = time.perf_counter()
     payload = ctx.ndnsf.fetch_encrypted_large_data(reference.data_name, SERVICE)
     if payload is None:
@@ -154,7 +160,33 @@ def _materialize_first_stage_request(ctx: ProviderRuntimeContext) -> tuple[bytes
         if actual != expected:
             raise RuntimeError(
                 f"Qwen context reference digest mismatch: expected {expected}, got {actual}")
-    return payload, _elapsed_ms(fetch_start), True
+    return _resolve_qwen_context_request(payload), _elapsed_ms(fetch_start), True
+
+
+def _resolve_qwen_context_request(payload: bytes) -> bytes:
+    try:
+        doc = decode_qwen_pipeline_context(payload)
+    except Exception:
+        return payload
+    mode = doc.get("contextMode", "full")
+    session_id = str(doc.get("sessionId", ""))
+    if mode == "append-delta":
+        if not session_id:
+            raise RuntimeError("append-delta Qwen context requires a sessionId")
+        base = _QWEN_CONTEXT_CACHE.get(session_id)
+        if base is None:
+            raise RuntimeError(f"append-delta Qwen context has no cached base for {session_id}")
+        doc = merge_qwen_pipeline_delta(base, doc)
+    if doc.get("contextMode", "full") == "full" and session_id:
+        _QWEN_CONTEXT_CACHE[session_id] = dict(doc)
+    return encode_qwen_pipeline_context(
+        doc["inputIds"],
+        attention_mask=doc.get("attentionMask"),
+        position_ids=doc.get("positionIds"),
+        request_id=str(doc.get("requestId", "")),
+        session_id=session_id,
+        context_epoch=int(doc.get("contextEpoch", 0) or 0),
+    )
 
 
 def _print_qwen_stage_timing(**fields) -> None:
