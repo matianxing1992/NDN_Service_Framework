@@ -2138,6 +2138,13 @@ stage exchange:
 The initial implementation should remain conservative: support full-context
 token/attention tensors first, then add append-only context deltas and KV-cache
 reuse once the ONNX stage runtime exposes the required tensors cleanly.
+The current API object is `ndnsf-di-qwen-pipeline-context-v1`: it carries
+`inputIds`, `attentionMask`, optional `positionIds`, `sessionId`, and
+`contextEpoch`. Small contexts may be sent inline. Large contexts should be
+published through the existing NDNSF large-data path, and the request carries
+only the standard `LargeDataReference` payload. This keeps context semantics in
+NDNSF-DI while leaving segmentation, hybrid encryption, digest checking, and
+fetching to NDNSF Core.
 
 The current example exports three Qwen ONNX stages:
 
@@ -2157,6 +2164,18 @@ sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
   --warmup-requests 3 \
   --measured-duration-s 60 \
   --request-interval-ms 200
+```
+
+To force the full-context input through the standard large-data/reference path:
+
+```bash
+sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
+  --runtime qwen-onnx \
+  --reuse-existing-policy \
+  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
+  --topology-file Experiments/Topology/AI_Lab.conf \
+  --measured-requests 1 \
+  --publish-input-reference
 ```
 
 Recorded 60-second result on `AI_Lab.conf`:

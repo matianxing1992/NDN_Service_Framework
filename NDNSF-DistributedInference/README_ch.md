@@ -1930,6 +1930,11 @@ stage exchange:
 
 第一版实现应保持保守：先支持完整 context 的 token/attention tensors；等 ONNX stage
 runtime 能清楚暴露所需 tensors 后，再加入 append-only context delta 和 KV-cache 复用。
+当前 API 对象是 `ndnsf-di-qwen-pipeline-context-v1`：它携带 `inputIds`、
+`attentionMask`、可选 `positionIds`、`sessionId` 和 `contextEpoch`。小 context
+可以 inline 发送；大 context 应通过已有 NDNSF large-data 路径发布，请求里只携带标准
+`LargeDataReference` payload。这样 context 语义留在 NDNSF-DI，分段、混合加密、
+digest 检查和 fetch 仍由 NDNSF Core 统一处理。
 
 当前示例导出三个 Qwen ONNX stages：
 
@@ -1949,6 +1954,18 @@ sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
   --warmup-requests 3 \
   --measured-duration-s 60 \
   --request-interval-ms 200
+```
+
+如果要强制完整 context 输入走标准 large-data/reference 路径：
+
+```bash
+sudo -n python3 Experiments/NDNSF_DI_LlmPipeline_Minindn.py \
+  --runtime qwen-onnx \
+  --reuse-existing-policy \
+  --output-dir results/qwen_onnx_pipeline_minindn_smoke2 \
+  --topology-file Experiments/Topology/AI_Lab.conf \
+  --measured-requests 1 \
+  --publish-input-reference
 ```
 
 在 `AI_Lab.conf` 上记录的 60 秒结果：

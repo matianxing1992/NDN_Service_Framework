@@ -114,6 +114,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument(
+        "--publish-input-reference",
+        action="store_true",
+        help=(
+            "For Qwen runtimes, publish token_ids/attention_mask context as "
+            "NDNSF large-data and send the standard reference payload."
+        ),
+    )
+    parser.add_argument(
         "--large-fetch-timing",
         action="store_true",
         help=(
@@ -844,7 +852,7 @@ def main() -> int:
             "--ack-timeout-ms {} --timeout-ms {} "
             "--warmup-requests {} --measured-requests {} "
             "--measured-duration-s {} --request-interval-ms {} "
-            "--metrics-csv {}".format(
+            "--metrics-csv {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
                 args.compute_delay_ms,
@@ -858,6 +866,7 @@ def main() -> int:
                 args.measured_duration_s,
                 args.request_interval_ms,
                 perf.shell_quote(metrics_csv),
+                "--publish-input-reference" if args.publish_input_reference else "",
             ),
             envDict=node_env[USER_NODE],
             shell=True,

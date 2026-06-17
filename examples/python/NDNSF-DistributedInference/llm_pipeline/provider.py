@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 
+from ndnsf import parse_large_data_reference_payload
 from ndnsf_distributed_inference import APPProvider, ProviderRuntimeContext
 
 from llm_pipeline_lib import (
@@ -136,6 +138,23 @@ def _planned_output_name(ctx: ProviderRuntimeContext) -> str:
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000.0
+
+
+def _materialize_first_stage_request(ctx: ProviderRuntimeContext) -> tuple[bytes, float, bool]:
+    reference = parse_large_data_reference_payload(ctx.request)
+    if reference is None:
+        return ctx.request, 0.0, False
+    fetch_start = time.perf_counter()
+    payload = ctx.ndnsf.fetch_encrypted_large_data(reference.data_name, SERVICE)
+    if payload is None:
+        raise RuntimeError(f"failed to fetch Qwen context reference {reference.data_name}")
+    if reference.digest.startswith("sha256:"):
+        actual = hashlib.sha256(payload).hexdigest()
+        expected = reference.digest[len("sha256:"):]
+        if actual != expected:
+            raise RuntimeError(
+                f"Qwen context reference digest mismatch: expected {expected}, got {actual}")
+    return payload, _elapsed_ms(fetch_start), True
 
 
 def _print_qwen_stage_timing(**fields) -> None:
@@ -328,7 +347,9 @@ def handle_qwen_transformer_stage(ctx: ProviderRuntimeContext, *,
         prefetch_submit_ms = _elapsed_ms(prefetch_submit_start)
 
     if is_first:
-        input_payload = ctx.request
+        input_payload, input_reference_fetch_ms, used_input_reference = (
+            _materialize_first_stage_request(ctx)
+        )
         ref_wait_ms = 0.0
         fetch_ms = 0.0
         input_wait_ms = 0.0
@@ -348,6 +369,8 @@ def handle_qwen_transformer_stage(ctx: ProviderRuntimeContext, *,
         used_planned_name = prefetch_result.used_planned_name
         expected_segments = prefetch_result.expected_segments
         expected_bytes = prefetch_result.expected_bytes
+        input_reference_fetch_ms = 0.0
+        used_input_reference = False
 
     runner_timing: dict[str, float | int | str] = {}
     output = run_qwen_transformer_stage(
@@ -377,6 +400,8 @@ def handle_qwen_transformer_stage(ctx: ProviderRuntimeContext, *,
             output_bytes=len(output),
             prefetch_submit_ms=prefetch_submit_ms,
             input_wait_ms=input_wait_ms,
+            input_reference_fetch_ms=input_reference_fetch_ms,
+            used_input_reference=int(bool(used_input_reference)),
             ref_wait_ms=ref_wait_ms,
             fetch_ms=fetch_ms,
             used_planned_name=int(bool(used_planned_name)),
@@ -418,6 +443,8 @@ def handle_qwen_transformer_stage(ctx: ProviderRuntimeContext, *,
         output_bytes=len(output),
         prefetch_submit_ms=prefetch_submit_ms,
         input_wait_ms=input_wait_ms,
+        input_reference_fetch_ms=input_reference_fetch_ms,
+        used_input_reference=int(bool(used_input_reference)),
         ref_wait_ms=ref_wait_ms,
         fetch_ms=fetch_ms,
         used_planned_name=int(bool(used_planned_name)),
@@ -473,7 +500,9 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
         prefetch_submit_ms = _elapsed_ms(prefetch_submit_start)
 
     if is_first:
-        input_payload = ctx.request
+        input_payload, input_reference_fetch_ms, used_input_reference = (
+            _materialize_first_stage_request(ctx)
+        )
         ref_wait_ms = 0.0
         fetch_ms = 0.0
         input_wait_ms = 0.0
@@ -493,6 +522,8 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
         used_planned_name = prefetch_result.used_planned_name
         expected_segments = prefetch_result.expected_segments
         expected_bytes = prefetch_result.expected_bytes
+        input_reference_fetch_ms = 0.0
+        used_input_reference = False
 
     runner_timing: dict[str, float | int | str] = {}
     output = run_qwen_onnx_stage(
@@ -518,6 +549,8 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
             output_bytes=len(output),
             prefetch_submit_ms=prefetch_submit_ms,
             input_wait_ms=input_wait_ms,
+            input_reference_fetch_ms=input_reference_fetch_ms,
+            used_input_reference=int(bool(used_input_reference)),
             ref_wait_ms=ref_wait_ms,
             fetch_ms=fetch_ms,
             used_planned_name=int(bool(used_planned_name)),
@@ -554,6 +587,8 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
         output_bytes=len(output),
         prefetch_submit_ms=prefetch_submit_ms,
         input_wait_ms=input_wait_ms,
+        input_reference_fetch_ms=input_reference_fetch_ms,
+        used_input_reference=int(bool(used_input_reference)),
         ref_wait_ms=ref_wait_ms,
         fetch_ms=fetch_ms,
         used_planned_name=int(bool(used_planned_name)),

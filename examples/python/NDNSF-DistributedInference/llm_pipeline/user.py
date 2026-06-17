@@ -16,7 +16,7 @@ from llm_pipeline_lib import (
     SERVICE,
     TINY_TRANSFORMERS_RUNTIME,
     decode_payload,
-    encode_qwen_input_ids,
+    encode_qwen_pipeline_context,
     encode_prompt,
     parse_common_args,
     run_local_pipeline,
@@ -52,6 +52,16 @@ def main() -> int:
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
     parser.add_argument("--qwen-runtime-summary", default="")
+    parser.add_argument("--session-id", default="")
+    parser.add_argument("--context-epoch", type=int, default=0)
+    parser.add_argument(
+        "--publish-input-reference",
+        action="store_true",
+        help=(
+            "Publish Qwen token_ids/attention_mask context through NDNSF "
+            "large-data and send only the standard reference payload."
+        ),
+    )
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=60000)
     parser.add_argument("--warmup-requests", type=int, default=0)
@@ -67,9 +77,12 @@ def main() -> int:
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
         if not qwen_summary:
             raise SystemExit("--qwen-runtime-summary is required for Qwen runtimes")
-        payload = encode_qwen_input_ids(
+        payload = encode_qwen_pipeline_context(
             qwen_summary["inputIds"],
+            attention_mask=qwen_summary.get("attentionMask"),
             request_id=args.request_id,
+            session_id=args.session_id,
+            context_epoch=args.context_epoch,
         )
     else:
         payload = encode_prompt(args.prompt, request_id=args.request_id)
@@ -136,10 +149,21 @@ def main() -> int:
                 break
 
             if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
-                request_payload = encode_qwen_input_ids(
+                request_payload = encode_qwen_pipeline_context(
                     qwen_summary["inputIds"],
+                    attention_mask=qwen_summary.get("attentionMask"),
                     request_id=f"{args.request_id}-{index}",
+                    session_id=args.session_id,
+                    context_epoch=args.context_epoch + measured_count,
                 )
+                if args.publish_input_reference:
+                    request_payload = client.publish_large_payload_reference(
+                        SERVICE,
+                        request_payload,
+                        object_label="qwen-context-input",
+                        object_type="application/x-ndnsf-di-qwen-context+json",
+                        freshness_ms=120000,
+                    )
             else:
                 request_payload = encode_prompt(
                     args.prompt,

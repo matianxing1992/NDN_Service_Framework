@@ -312,16 +312,99 @@ def qwen_onnx_stage_spec(*, role: str,
     return spec
 
 
-def encode_qwen_input_ids(input_ids: Any, *, request_id: str = "manual") -> bytes:
-    if hasattr(input_ids, "detach"):
-        serializable_ids = input_ids.detach().cpu().tolist()
-    else:
-        serializable_ids = input_ids
+def _serializable_tensor(value: Any) -> Any:
+    if hasattr(value, "detach"):
+        return value.detach().cpu().tolist()
+    return value
+
+
+def _ones_like_nested(value: Any) -> Any:
+    if hasattr(value, "detach"):
+        import torch
+
+        return torch.ones_like(value, dtype=torch.long).cpu().tolist()
+    if not value:
+        return value
+    if isinstance(value[0], list):
+        return [[1 for _ in row] for row in value]
+    return [1 for _ in value]
+
+
+def _position_ids_for_nested(value: Any) -> Any:
+    serializable = _serializable_tensor(value)
+    if not serializable:
+        return serializable
+    if isinstance(serializable[0], list):
+        return [list(range(len(row))) for row in serializable]
+    return list(range(len(serializable)))
+
+
+def encode_qwen_pipeline_context(
+    input_ids: Any,
+    *,
+    attention_mask: Any = None,
+    position_ids: Any = None,
+    request_id: str = "manual",
+    session_id: str = "",
+    context_epoch: int = 0,
+) -> bytes:
+    """Encode the formal Qwen ONNX full-context input object.
+
+    This object is the DI-level context contract.  Transport is intentionally
+    separate: callers may pass the returned bytes inline when small, or publish
+    it through NDNSF large-data and pass the standard reference payload.
+    """
+
+    serializable_ids = _serializable_tensor(input_ids)
+    serializable_attention = (
+        _serializable_tensor(attention_mask)
+        if attention_mask is not None else
+        _ones_like_nested(serializable_ids)
+    )
+    serializable_position = (
+        _serializable_tensor(position_ids)
+        if position_ids is not None else
+        _position_ids_for_nested(serializable_ids)
+    )
     return json.dumps({
-        "schema": "ndnsf-di-qwen-pipeline-input-v1",
+        "schema": "ndnsf-di-qwen-pipeline-context-v1",
         "requestId": request_id,
+        "sessionId": session_id,
+        "contextEpoch": int(context_epoch),
         "inputIds": serializable_ids,
+        "attentionMask": serializable_attention,
+        "positionIds": serializable_position,
+        "contextMode": "full",
+        "delta": None,
+        "kvCacheReference": None,
     }, sort_keys=True).encode("utf-8")
+
+
+def encode_qwen_input_ids(input_ids: Any, *, request_id: str = "manual") -> bytes:
+    """Compatibility wrapper for older Qwen pipeline callers."""
+
+    return encode_qwen_pipeline_context(input_ids, request_id=request_id)
+
+
+def decode_qwen_pipeline_context(payload: bytes) -> dict[str, Any]:
+    doc = decode_payload(payload)
+    if "inputIds" not in doc:
+        raise ValueError("Qwen pipeline context requires inputIds")
+    input_ids = doc["inputIds"]
+    attention_mask = doc.get("attentionMask")
+    position_ids = doc.get("positionIds")
+    if attention_mask is None:
+        attention_mask = _ones_like_nested(input_ids)
+    if position_ids is None:
+        position_ids = _position_ids_for_nested(input_ids)
+    return {
+        **doc,
+        "attentionMask": attention_mask,
+        "positionIds": position_ids,
+        "contextMode": doc.get("contextMode", "full"),
+        "sessionId": doc.get("sessionId", ""),
+        "contextEpoch": int(doc.get("contextEpoch", 0) or 0),
+    }
 
 
 def write_qwen_transformer_stage_artifacts(
@@ -392,9 +475,15 @@ def write_qwen_transformer_stage_artifacts(
         ))
     if prompt:
         with torch.no_grad():
-            input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"]
+            tokens = tokenizer(prompt, return_tensors="pt")
+            input_ids = tokens["input_ids"]
+            attention_mask = tokens.get("attention_mask", torch.ones_like(input_ids))
             started = time.perf_counter()
-            logits = full_model(input_ids=input_ids, use_cache=False).logits
+            logits = full_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=False,
+            ).logits
             full_ms = (time.perf_counter() - started) * 1000.0
             top_token = int(torch.argmax(logits[:, -1, :], dim=-1).item())
         runtime_summary = {
@@ -405,6 +494,7 @@ def write_qwen_transformer_stage_artifacts(
             "layerCount": layer_count,
             "layerRanges": [list(item) for item in split_layer_ranges(layer_count, stages)],
             "inputIds": input_ids.cpu().tolist(),
+            "attentionMask": attention_mask.cpu().tolist(),
             "expectedTopToken": top_token,
             "fullMs": full_ms,
         }
@@ -601,7 +691,8 @@ def write_qwen_onnx_stage_artifacts(
     full_model.eval()
     layer_count = _model_layer_count(full_model)
     prompt_for_sample = prompt or "Explain NDNSF-DI pipeline inference."
-    sample_input_ids = tokenizer(prompt_for_sample, return_tensors="pt")["input_ids"]
+    sample_tokens = tokenizer(prompt_for_sample, return_tensors="pt")
+    sample_input_ids = sample_tokens["input_ids"]
     full_state = full_model.state_dict()
     artifacts: list[SplitArtifact] = []
     for role in roles:
@@ -656,9 +747,15 @@ def write_qwen_onnx_stage_artifacts(
         ))
     if prompt:
         with torch.no_grad():
-            input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"]
+            tokens = tokenizer(prompt, return_tensors="pt")
+            input_ids = tokens["input_ids"]
+            attention_mask = tokens.get("attention_mask", torch.ones_like(input_ids))
             started = time.perf_counter()
-            logits = full_model(input_ids=input_ids, use_cache=False).logits
+            logits = full_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=False,
+            ).logits
             full_ms = (time.perf_counter() - started) * 1000.0
             top_token = int(torch.argmax(logits[:, -1, :], dim=-1).item())
         runtime_summary = {
@@ -670,6 +767,7 @@ def write_qwen_onnx_stage_artifacts(
             "layerCount": layer_count,
             "layerRanges": [list(item) for item in split_layer_ranges(layer_count, stages)],
             "inputIds": input_ids.cpu().tolist(),
+            "attentionMask": attention_mask.cpu().tolist(),
             "expectedTopToken": top_token,
             "fullMs": full_ms,
         }
@@ -1255,22 +1353,32 @@ def run_qwen_onnx_stage(
     decode_start = time.perf_counter()
     if stage_index == 0:
         try:
-            input_doc = decode_payload(input_payload)
-            if "inputIds" in input_doc:
-                input_ids = np.asarray(input_doc["inputIds"], dtype=np.int64)
-            else:
+            input_doc = decode_qwen_pipeline_context(input_payload)
+            input_ids = np.asarray(input_doc["inputIds"], dtype=np.int64)
+            attention_mask = np.asarray(input_doc["attentionMask"], dtype=np.int64)
+            position_ids = np.asarray(input_doc["positionIds"], dtype=np.int64)
+            request_id = str(input_doc.get("requestId", ""))
+            session_id = str(input_doc.get("sessionId", ""))
+            context_epoch = int(input_doc.get("contextEpoch", 0) or 0)
+        except Exception:
+            try:
+                input_doc = decode_payload(input_payload)
                 token_values = [1]
                 token_values.extend(((ord(ch) % 240) + 3)
                                     for ch in str(input_doc.get("prompt", ""))[:14])
                 token_values.append(2)
                 input_ids = np.asarray([token_values], dtype=np.int64)
-            request_id = str(input_doc.get("requestId", ""))
-        except Exception:
-            token_values = [1]
-            token_values.extend(((byte % 240) + 3) for byte in input_payload[:14])
-            token_values.append(2)
-            input_ids = np.asarray([token_values], dtype=np.int64)
-            request_id = ""
+                request_id = str(input_doc.get("requestId", ""))
+            except Exception:
+                token_values = [1]
+                token_values.extend(((byte % 240) + 3) for byte in input_payload[:14])
+                token_values.append(2)
+                input_ids = np.asarray([token_values], dtype=np.int64)
+                request_id = ""
+            attention_mask = np.ones_like(input_ids, dtype=np.int64)
+            position_ids = np.arange(input_ids.shape[1], dtype=np.int64).reshape(1, -1)
+            session_id = ""
+            context_epoch = 0
         hidden_size = int(metadata.get("hiddenSize", 0) or 0)
         if hidden_size <= 0:
             hidden_shape = session.get_inputs()[1].shape
@@ -1286,16 +1394,25 @@ def run_qwen_onnx_stage(
         if schema != "ndnsf-di-qwen-onnx-hidden-v1":
             raise ValueError("unexpected ONNX hidden-state payload schema")
         input_ids = incoming["input_ids"].astype(np.int64)
+        attention_mask = incoming.get(
+            "attention_mask",
+            np.ones_like(input_ids, dtype=np.int64),
+        ).astype(np.int64)
+        position_ids = incoming.get(
+            "position_ids",
+            np.arange(input_ids.shape[1], dtype=np.int64).reshape(1, -1),
+        ).astype(np.int64)
         hidden_states = incoming["hidden_states"].astype(np.float32)
         expected_start = int(incoming["next_layer"].item())
         request_id = _safe_array_text(incoming.get("request_id", ""))
+        session_id = _safe_array_text(incoming.get("session_id", ""))
+        context_epoch = int(incoming.get("context_epoch", np.asarray(0)).item())
     record("decode_ms", (time.perf_counter() - decode_start) * 1000.0)
     record("embed_ms", 0.0)
     if expected_start != start:
         raise ValueError(
             f"stage {stage_index} expected layer {start}, got {expected_start}")
     record("request_id", request_id)
-    position_ids = np.arange(input_ids.shape[1], dtype=np.int64).reshape(1, -1)
     run_start = time.perf_counter()
     available_inputs = {item.name for item in session.get_inputs()}
     feed = {}
@@ -1305,6 +1422,8 @@ def run_qwen_onnx_stage(
         feed["hidden_states"] = hidden_states
     if "position_ids" in available_inputs:
         feed["position_ids"] = position_ids
+    if "attention_mask" in available_inputs:
+        feed["attention_mask"] = attention_mask
     outputs = session.run(None, feed)
     record("layers_ms", (time.perf_counter() - run_start) * 1000.0)
     record("mask_ms", 0.0)
@@ -1314,9 +1433,13 @@ def run_qwen_onnx_stage(
             "schema": np.asarray("ndnsf-di-qwen-onnx-hidden-v1"),
             "hidden_states": np.asarray(outputs[0], dtype=np.float32),
             "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
             "next_layer": np.asarray(end, dtype=np.int64),
             "stage_index": np.asarray(stage_index, dtype=np.int64),
             "request_id": np.asarray(request_id),
+            "session_id": np.asarray(session_id),
+            "context_epoch": np.asarray(context_epoch, dtype=np.int64),
         })
         record("encode_ms", (time.perf_counter() - encode_start) * 1000.0)
         record("final_head_ms", 0.0)
