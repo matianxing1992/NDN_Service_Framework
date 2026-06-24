@@ -113,16 +113,172 @@ private:
 
 } // namespace
 
+double
+prefetchMs(const ProviderRoleResult& result)
+{
+  double total = 0.0;
+  for (const auto& timing : result.inputTimings) {
+    total += durationMs(timing.prefetchStartedAt, timing.fetchCompletedAt);
+  }
+  return total;
+}
+
+double
+publishMs(const ProviderRoleResult& result)
+{
+  double total = 0.0;
+  for (const auto& timing : result.outputTimings) {
+    total += durationMs(timing.outputReadyAt, timing.publishDoneAt);
+  }
+  return total;
+}
+
+double
+executeMs(const ProviderRoleResult& result)
+{
+  if (result.outputTimings.empty()) {
+    return durationMs(result.timing.startedAt, result.timing.finishedAt);
+  }
+  auto outputReadyAt = result.outputTimings.front().outputReadyAt;
+  for (const auto& timing : result.outputTimings) {
+    if (timing.outputReadyAt > outputReadyAt) {
+      outputReadyAt = timing.outputReadyAt;
+    }
+  }
+  return durationMs(result.timing.startedAt, outputReadyAt);
+}
+
+std::size_t
+inputBytes(const ProviderRoleResult& result)
+{
+  std::size_t total = 0;
+  for (const auto& timing : result.inputTimings) {
+    total += timing.bytes;
+  }
+  return total;
+}
+
+std::size_t
+outputBytes(const ProviderRoleResult& result)
+{
+  std::size_t total = 0;
+  for (const auto& timing : result.outputTimings) {
+    total += timing.bytes;
+  }
+  if (total == 0) {
+    for (const auto& item : result.outputsByScope) {
+      total += item.second.payload.size();
+    }
+  }
+  return total;
+}
+
+std::string
+tracerProviderForRole(const std::string& assignmentName, const std::string& role)
+{
+  const std::string prefix = assignmentName == "alternate" ?
+    "/NDNSF-DI/Tracer/alt-provider" : "/NDNSF-DI/Tracer/provider";
+
+  if (role == "/Backbone") {
+    return prefix + "/backbone";
+  }
+  if (role == "/Head/Shard/0") {
+    return prefix + "/head0";
+  }
+  if (role == "/Head/Shard/1") {
+    return prefix + "/head1";
+  }
+  if (role == "/Merge") {
+    return prefix + "/merge";
+  }
+  throw std::runtime_error("unknown tracer role for assignment: " + role);
+}
+
+std::string
+csvEscape(const std::string& value)
+{
+  if (value.find_first_of(",\"\n") == std::string::npos) {
+    return value;
+  }
+  std::string escaped = "\"";
+  for (const auto ch : value) {
+    if (ch == '"') {
+      escaped += "\"\"";
+    }
+    else {
+      escaped += ch;
+    }
+  }
+  escaped += "\"";
+  return escaped;
+}
+
+void
+writeTimingCsv(const std::string& path,
+               const std::string& sessionId,
+               const NativeProviderAssignment& assignment,
+               const std::map<std::string, ProviderRoleResult>& resultsByRole)
+{
+  std::ofstream output(path);
+  if (!output.good()) {
+    throw std::runtime_error("cannot open timing csv: " + path);
+  }
+  output << "sessionId,provider,role,inputBytes,outputBytes,prefetchMs,executeMs,publishMs,endToEndMs,status\n";
+  output.setf(std::ios::fixed);
+  output.precision(3);
+  for (const auto& item : resultsByRole) {
+    const auto& result = item.second;
+    const auto provider = providerForRole(assignment, item.first, "/example/provider");
+    output << csvEscape(sessionId) << ","
+           << csvEscape(provider) << ","
+           << csvEscape(item.first) << ","
+           << inputBytes(result) << ","
+           << outputBytes(result) << ","
+           << prefetchMs(result) << ","
+           << executeMs(result) << ","
+           << publishMs(result) << ","
+           << durationMs(result.timing.queuedAt, result.timing.finishedAt) << ","
+           << "ok\n";
+  }
+}
+
 int
 main(int argc, char** argv)
 {
-  if (argc < 3 || argc > 4) {
+  if (argc < 3) {
     std::cerr << "usage: " << argv[0]
-              << " <native-execution-plan.json> <service-manifest.json> [service-name]\n";
+              << " <native-execution-plan.json> <service-manifest.json>"
+              << " [service-name] [--timing-csv <path>] [--assignment default|alternate]\n";
     return 2;
   }
 
-  const std::string serviceName = argc == 4 ? argv[3] : "/AI/YOLO/2x2Inference";
+  std::string serviceName = "/AI/YOLO/2x2Inference";
+  std::string timingCsv;
+  std::string assignmentName = "default";
+  for (int i = 3; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--timing-csv") {
+      if (i + 1 >= argc) {
+        std::cerr << "--timing-csv requires a path\n";
+        return 2;
+      }
+      timingCsv = argv[++i];
+    }
+    else if (arg == "--assignment") {
+      if (i + 1 >= argc) {
+        std::cerr << "--assignment requires default or alternate\n";
+        return 2;
+      }
+      assignmentName = argv[++i];
+      if (assignmentName != "default" && assignmentName != "alternate") {
+        std::cerr << "unknown assignment: " << assignmentName << "\n";
+        return 2;
+      }
+    }
+    else {
+      serviceName = arg;
+    }
+  }
 
   std::ifstream planInput(argv[1]);
   if (!planInput.good()) {
@@ -141,7 +297,7 @@ main(int argc, char** argv)
 
   NativeProviderAssignment assignment;
   for (const auto& role : plan.roles) {
-    assignment.providerByRole[role] = "/example/provider/" + trimSlashes(role);
+    assignment.providerByRole[role] = tracerProviderForRole(assignmentName, role);
   }
 
   auto io = std::make_shared<InMemoryDependencyIo>();
@@ -187,12 +343,14 @@ main(int argc, char** argv)
     session.registerRunner(std::move(item.second));
   }
 
+  const std::string sessionId = "native-plan-manifest-smoke";
   std::vector<std::future<ProviderRoleResult>> futures;
   for (const auto& role : plan.roles) {
-    futures.push_back(session.executeRoleAsync("native-plan-manifest-smoke", role));
+    futures.push_back(session.executeRoleAsync(sessionId, role));
   }
 
   std::size_t finalOutputCount = 0;
+  std::map<std::string, ProviderRoleResult> resultsByRole;
   for (auto& future : futures) {
     auto result = future.get();
     for (const auto& item : result.outputsByScope) {
@@ -200,10 +358,14 @@ main(int argc, char** argv)
         finalOutputCount += decodeTensorBundle(item.second.payload).size();
       }
     }
+    resultsByRole.emplace(result.timing.role, std::move(result));
   }
 
   if (io->publishedScopes().empty() || finalOutputCount == 0) {
     throw std::logic_error("native plan/manifest smoke produced no dependency output");
+  }
+  if (!timingCsv.empty()) {
+    writeTimingCsv(timingCsv, sessionId, assignment, resultsByRole);
   }
 
   std::cout << "NDNSF_DI_NATIVE_PLAN_MANIFEST_SMOKE_OK roles="

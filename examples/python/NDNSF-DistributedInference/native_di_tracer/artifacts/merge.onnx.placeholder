@@ -1,0 +1,3 @@
+native-di-tracer placeholder artifact
+role=/Merge
+backend=onnxruntime

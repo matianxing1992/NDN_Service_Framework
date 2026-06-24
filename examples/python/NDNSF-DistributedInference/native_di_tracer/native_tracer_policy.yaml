@@ -1,0 +1,171 @@
+# Minimal native distributed-inference tracer policy.
+#
+# This is intentionally smaller than the YOLO 2x2 demo but keeps the same shape
+# expected by generated-plan C++ tests:
+#   /Backbone -> /Head/Shard/0, /Head/Shard/1 -> /Merge -> final-response
+application: native-di-tracer
+controller: /NDNSF-DI/Tracer/controller
+group: /NDNSF-DI/Tracer/group
+
+runtime:
+  user_identity: /NDNSF-DI/Tracer/user
+  provider_prefix: /NDNSF-DI/Tracer/provider
+
+trust:
+  app_roots:
+    - /NDNSF-DI/Tracer
+
+artifact_security:
+  allowlist: []
+  sandbox:
+    kind: ""
+
+authorization_summary:
+  users:
+    - identity: /NDNSF-DI/Tracer/user
+      services:
+        - /Inference/NativeTracer
+  providers:
+    - identity: /NDNSF-DI/Tracer/provider/backbone
+      services:
+        - service: /Inference/NativeTracer
+          roles:
+            - /Backbone
+    - identity: /NDNSF-DI/Tracer/provider/head0
+      services:
+        - service: /Inference/NativeTracer
+          roles:
+            - /Head/Shard/0
+    - identity: /NDNSF-DI/Tracer/provider/head1
+      services:
+        - service: /Inference/NativeTracer
+          roles:
+            - /Head/Shard/1
+    - identity: /NDNSF-DI/Tracer/provider/merge
+      services:
+        - service: /Inference/NativeTracer
+          roles:
+            - /Merge
+
+services:
+  - name: /Inference/NativeTracer
+    model: /Model/NativeTracer/Toy/v1
+    users:
+      - /NDNSF-DI/Tracer/user
+    providers:
+      - identity: /NDNSF-DI/Tracer/provider/backbone
+        roles: [/Backbone]
+      - identity: /NDNSF-DI/Tracer/provider/head0
+        roles: [/Head/Shard/0]
+      - identity: /NDNSF-DI/Tracer/provider/head1
+        roles: [/Head/Shard/1]
+      - identity: /NDNSF-DI/Tracer/provider/merge
+        roles: [/Merge]
+    roles:
+      - /Backbone
+      - /Head/Shard/0
+      - /Head/Shard/1
+      - /Merge
+    dependencies:
+      - producers: [/Backbone]
+        consumers: [/Head/Shard/0]
+        key_scope: backbone-to-head0
+        topic_prefix: /activation
+        object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
+        expected_segments: 1
+        expected_bytes: 256
+        tensors: [features]
+      - producers: [/Backbone]
+        consumers: [/Head/Shard/1]
+        key_scope: backbone-to-head1
+        topic_prefix: /activation
+        object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
+        expected_segments: 1
+        expected_bytes: 256
+        tensors: [features]
+      - producers: [/Head/Shard/0]
+        consumers: [/Merge]
+        key_scope: head0-to-merge
+        topic_prefix: /activation
+        object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
+        expected_segments: 1
+        expected_bytes: 128
+        tensors: [detections0]
+      - producers: [/Head/Shard/1]
+        consumers: [/Merge]
+        key_scope: head1-to-merge
+        topic_prefix: /activation
+        object_name_template: "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}"
+        expected_segments: 1
+        expected_bytes: 128
+        tensors: [detections1]
+    artifacts:
+      - role: /Backbone
+        path: artifacts/backbone.onnx.placeholder
+        artifact: /Artifact/NativeTracer/Backbone
+        filename: backbone.onnx.placeholder
+        kind: model
+        backend: onnxruntime
+        metadata:
+          output_tensors: features
+          outputScope.0: backbone-to-head0
+          outputScope.1: backbone-to-head1
+      - role: /Head/Shard/0
+        path: artifacts/head-shard-0.onnx.placeholder
+        artifact: /Artifact/NativeTracer/Head0
+        filename: head-shard-0.onnx.placeholder
+        kind: model
+        backend: onnxruntime
+        metadata:
+          input_tensors: features
+          output_tensors: detections0
+          outputScope.0: head0-to-merge
+      - role: /Head/Shard/1
+        path: artifacts/head-shard-1.onnx.placeholder
+        artifact: /Artifact/NativeTracer/Head1
+        filename: head-shard-1.onnx.placeholder
+        kind: model
+        backend: onnxruntime
+        metadata:
+          input_tensors: features
+          output_tensors: detections1
+          outputScope.0: head1-to-merge
+      - role: /Merge
+        path: artifacts/merge.onnx.placeholder
+        artifact: /Artifact/NativeTracer/Merge
+        filename: merge.onnx.placeholder
+        kind: model
+        backend: onnxruntime
+        metadata:
+          input_tensors: detections0,detections1
+          output_tensors: predictions
+          outputScope.0: final-response
+    input:
+      codec: tensor-bundle
+      fields:
+        image:
+          dtype: float32
+          shape: [1, 3, 32, 32]
+          layout: NCHW
+    output:
+      codec: tensor-bundle
+      fields:
+        predictions:
+          dtype: float32
+    metadata:
+      modelFamily: yolo-onnx
+      modelFormat: onnx
+      plannerKind: yolo-detect-auto
+      runtimeBackend: onnxruntime
+      executionMode: native-tracer
+      roleMetadata:
+        /Backbone:
+          stage: backbone
+        /Head/Shard/0:
+          stage: head
+          shard: 0
+        /Head/Shard/1:
+          stage: head
+          shard: 1
+        /Merge:
+          stage: merge

@@ -233,7 +233,7 @@ def build(bld):
                 source=(["DI_NativePlanManifestSmoke.cpp"] +
                         di_native_session_sources),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST',
+                use='BOOST NDN_CXX NDN_SVS',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
@@ -243,7 +243,7 @@ def build(bld):
                 source=(["DI_NativePlanSchemaSmoke.cpp"] +
                         di_native_session_sources),
                 includes=['..', '../ndn-service-framework'],
-                use='BOOST',
+                use='BOOST NDN_CXX NDN_SVS',
                 cxxflags=['-fPIC', '-pthread'],
                 linkflags=['-pthread'],
                 install_path=None)
