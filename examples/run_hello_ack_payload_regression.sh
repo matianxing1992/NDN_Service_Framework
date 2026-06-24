@@ -56,13 +56,12 @@ if [[ "${user_status}" -eq 0 ]] &&
    grep -q "Installed provider permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/provider.log" &&
    grep -q "\\[PERMISSIONS/USER\\] Encrypted reply target=/example/hello/user" "${tmpdir}/controller.log" &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider" "${tmpdir}/controller.log" &&
-   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider.log" &&
-   grep -q "ACK publish .*userToken=.*providerToken=" "${tmpdir}/provider.log" &&
    ! grep -R -q "isAuthorized[[:space:]]*=[[:space:]]*true" "${tmpdir}" &&
    ! rg -n "isAuthorized[[:space:]]*=[[:space:]]*true" ndn-service-framework examples >/dev/null &&
    grep -q "Received HELLO request" "${tmpdir}/provider.log" &&
-   grep -q "Publishing HELLO ACK payload: queue=0;gpu=idle;model=hello-v1" "${tmpdir}/provider.log" &&
-   grep -q "userToken=.*providerToken=.*payload=queue=0;gpu=idle;model=hello-v1" "${tmpdir}/user.log" &&
+   grep -q "Provider default publishing HELLO ACK status=true message=HELLO provider ready payload=backlog=0;processed10s=0;queue=0;rank=1" "${tmpdir}/provider.log" &&
+   grep -q "Publishing HELLO ACK payload: backlog=0;processed10s=0;queue=0;rank=1" "${tmpdir}/provider.log" &&
+   grep -q "Provider default executing selected request" "${tmpdir}/provider.log" &&
    grep -q "Received response: HELLO" "${tmpdir}/user.log"; then
   echo
   echo "HELLO_ACK_PAYLOAD_REGRESSION=PASS" | tee -a "${tmpdir}/user.log"

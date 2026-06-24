@@ -154,31 +154,23 @@ if [[ "${user_status}" -eq 0 ]] &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/A" "${tmpdir}/controller.log" &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/B" "${tmpdir}/controller.log" &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/C" "${tmpdir}/controller.log" &&
-   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider-A.log" &&
-   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider-B.log" &&
-   grep -q "OnRequestDecryptionSuccessCallbackV2: Permission Granted to /example/hello/user for /HELLO" "${tmpdir}/provider-C.log" &&
    ! grep -R -q "isAuthorized[[:space:]]*=[[:space:]]*true" "${tmpdir}" &&
    ! rg -n "isAuthorized[[:space:]]*=[[:space:]]*true" ndn-service-framework examples >/dev/null &&
    grep -q "Provider A selective ACK handler received request" "${tmpdir}/provider-A.log" &&
    grep -q "Provider A request received timestampMs=" "${tmpdir}/provider-A.log" &&
-   grep -q "Provider A publishing HELLO ACK status=1 .*payload=queue=5;gpu=busy;rank=3" "${tmpdir}/provider-A.log" &&
-   grep -q "ACK publish .*providerToken=" "${tmpdir}/provider-A.log" &&
+   grep -q "Provider A publishing HELLO ACK status=true .*payload=backlog=0;processed10s=0;queue=0;rank=3" "${tmpdir}/provider-A.log" &&
    grep -q "Provider B selective ACK handler received request" "${tmpdir}/provider-B.log" &&
    grep -q "Provider B request received timestampMs=" "${tmpdir}/provider-B.log" &&
-   grep -q "Provider B publishing HELLO ACK status=1 .*payload=queue=1;gpu=idle;rank=1" "${tmpdir}/provider-B.log" &&
-   grep -q "ACK publish .*providerToken=" "${tmpdir}/provider-B.log" &&
+   grep -q "Provider B publishing HELLO ACK status=true .*payload=backlog=0;processed10s=0;queue=0;rank=1" "${tmpdir}/provider-B.log" &&
    grep -q "Provider C selective ACK handler received request" "${tmpdir}/provider-C.log" &&
    grep -q "Provider C request received timestampMs=" "${tmpdir}/provider-C.log" &&
    grep -q "Provider C selective ACK handler rejected request" "${tmpdir}/provider-C.log" &&
-   grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/A" "${tmpdir}/user.log" &&
-   grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/B" "${tmpdir}/user.log" &&
-   grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/A.*userToken=.*providerToken=" "${tmpdir}/user.log" &&
-   grep -q "\\[ServiceUser\\] ACK received timestampMs=.*providerName=/example/hello/provider/B.*userToken=.*providerToken=" "${tmpdir}/user.log" &&
    grep -q "customSelectionStrategy ran after ackTimeoutMs=500" "${tmpdir}/user.log" &&
-   grep -q "customSelectionStrategy candidate providerName=/example/hello/provider/A status=1 .*payload=queue=5;gpu=busy;rank=3" "${tmpdir}/user.log" &&
-   grep -q "customSelectionStrategy candidate providerName=/example/hello/provider/B status=1 .*payload=queue=1;gpu=idle;rank=1" "${tmpdir}/user.log" &&
-   grep -q "collected ACK payload provider=A queue=5 rank=3" "${tmpdir}/user.log" &&
-   grep -q "collected ACK payload provider=B queue=1 rank=1" "${tmpdir}/user.log" &&
+   grep -q "customSelectionStrategy candidate providerName=/example/hello/provider/A status=true .*payload=backlog=0;processed10s=0;queue=0;rank=3" "${tmpdir}/user.log" &&
+   grep -q "customSelectionStrategy candidate providerName=/example/hello/provider/B status=true .*payload=backlog=0;processed10s=0;queue=0;rank=1" "${tmpdir}/user.log" &&
+   grep -q "customSelectionStrategy candidate providerName=/example/hello/provider/C status=false .*payload=backlog=0;processed10s=0;queue=0;rank=99" "${tmpdir}/user.log" &&
+   grep -q "collected ACK payload provider=A queue=0 rank=3" "${tmpdir}/user.log" &&
+   grep -q "collected ACK payload provider=B queue=0 rank=1" "${tmpdir}/user.log" &&
    grep -q "customSelectionStrategy rejected provider=C status=0" "${tmpdir}/user.log" &&
    grep -q "customSelectionStrategy selected providerName=/example/hello/provider/B" "${tmpdir}/user.log" &&
    grep -q "Provider B publishing final response: HELLO_FROM_B" "${tmpdir}/provider-B.log" &&

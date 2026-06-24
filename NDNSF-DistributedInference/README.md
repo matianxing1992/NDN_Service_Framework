@@ -2156,6 +2156,48 @@ changing the expected token output. Future KV-cache reuse should use the
 existing `kvCacheReference` field with explicit cache epoch and invalidation
 rules; it should not invent another context transport path.
 
+#### KV-cache reference lifecycle
+
+`kvCacheReference` is a performance hint for future Qwen ONNX pipeline
+runtimes, not a replacement for `inputIds`/`attentionMask` correctness. The
+cache owner is the provider role that produced the cached tensors. In the
+current layer pipeline this normally means Stage 0 owns prompt/input embedding
+state, while later stages may own per-stage hidden/KV tensors once their ONNX
+artifacts expose them. A cache entry is scoped by:
+
+```text
+sessionId
+stage role
+contextEpoch
+model artifact hash
+planner/native-plan hash
+security scope or key epoch
+```
+
+Epochs are monotonic within one `sessionId`. A full-context request at epoch
+`E` installs or replaces the cache for that epoch. An append-delta request must
+name `baseContextEpoch=E` and `contextEpoch=E+1` or higher. Providers must
+reject stale, skipped, or conflicting epochs unless the request also carries a
+full-context fallback payload that can rebuild the cache deterministically.
+
+Cache miss fallback is explicit:
+
+```text
+1. If kvCacheReference is present and valid, use it.
+2. If it is missing/stale/evicted but the request carries full inputIds and
+   attentionMask, rebuild from full context and install the new epoch.
+3. If the request is delta-only and the cache is missing or stale, fail with a
+   cache-miss status so the user can resend a full-context request.
+```
+
+Provider cache eviction is local policy. A provider may evict by TTL, memory
+pressure, maximum sessions, maximum bytes, artifact update, key epoch change,
+or provider restart. Eviction must not change wire security semantics: cached
+tensors are derived from request data and must be scoped to the same service,
+security epoch, model artifact, and provider role. Repo-backed or remote
+KV-cache storage is not part of the first design; if added later, it should use
+the same large-data reference and digest rules as activation objects.
+
 The current example exports three Qwen ONNX stages:
 
 ```text

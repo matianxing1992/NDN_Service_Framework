@@ -23,7 +23,7 @@ cd "${repo_root}"
 export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
 export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
 export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
-export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=INFO}"
+export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=DEBUG}"
 
 ./build/examples/App_ServiceController >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
@@ -51,7 +51,7 @@ tail -n 180 "${tmpdir}/user.log"
 
 if [[ "${user_status}" -eq 0 ]] &&
    grep -q "GetAttributesByName: messageName=.*/NDNSF/REQUEST/HELLO/.* attributes=/SERVICE/HELLO" "${tmpdir}/user.log" &&
-   grep -q "GetAttributesByName: messageName=.*/NDNSF/SELECTION/%2Fexample%2Fhello%2Fprovider/HELLO/.* attributes=/SERVICE/HELLO" "${tmpdir}/user.log" &&
+   grep -q "GetAttributesByName: messageName=.*/NDNSF/SELECTION/HELLO/.* attributes=/SERVICE/HELLO" "${tmpdir}/user.log" &&
    grep -q "GetAttributesByName: messageName=.*/NDNSF/ACK/%2Fexample%2Fhello%2Fuser/HELLO/.* attributes=/PERMISSION/HELLO" "${tmpdir}/provider.log" &&
    grep -q "GetAttributesByName: messageName=.*/NDNSF/RESPONSE/%2Fexample%2Fhello%2Fuser/HELLO/.* attributes=/PERMISSION/HELLO" "${tmpdir}/provider.log" &&
    grep -q "Received response: HELLO" "${tmpdir}/user.log"; then

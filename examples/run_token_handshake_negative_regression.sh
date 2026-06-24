@@ -8,7 +8,7 @@ cd "${repo_root}"
 export LD_LIBRARY_PATH="${repo_root}/build:${LD_LIBRARY_PATH:-}"
 
 ./build/unit-tests \
-  --run_test=GenericDynamicApi/TokenHandshakeNegativeRegression \
+  --run_test=GenericDynamicApi/TokensAndReplay/TokenHandshakeNegativeRegression \
   >"${tmpdir}/unit-tests.log" 2>&1
 status=$?
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
+import shutil
 import time
 from dataclasses import dataclass
 from io import BytesIO
@@ -37,6 +39,40 @@ DEFAULT_PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
 TINY_TRANSFORMERS_RUNTIME = "tiny-transformers"
 QWEN_TRANSFORMERS_RUNTIME = "qwen-transformers"
 QWEN_ONNX_RUNTIME = "qwen-onnx"
+
+
+def _is_loadable_torch_file(torch: Any, path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        torch.load(path, map_location="cpu")
+        return True
+    except Exception:
+        return False
+
+
+def _safe_torch_save(torch: Any, package: dict[str, Any], path: Path) -> None:
+    """Atomically write a torch artifact and avoid reusing partial files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if _is_loadable_torch_file(torch, path):
+        return
+    if path.exists():
+        path.unlink()
+
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    try:
+        torch.save(package, tmp_path)
+        os.replace(tmp_path, path)
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        usage = shutil.disk_usage(path.parent)
+        free_gib = usage.free / (1024 ** 3)
+        raise RuntimeError(
+            f"failed to write torch artifact {path}; "
+            f"free space in {path.parent} is {free_gib:.2f} GiB"
+        ) from exc
 
 
 def role_name(index: int) -> str:
@@ -199,7 +235,7 @@ def write_tiny_transformer_stage_artifacts(
             "config": _tiny_transformer_config_dict(layer_count, spec.get("seed", 7)),
             "state_dict": _stage_state_dict(full_state, spec),
         }
-        torch.save(package, path)
+        _safe_torch_save(torch, package, path)
         artifacts.append(SplitArtifact(
             role=role,
             path=str(path),
@@ -567,7 +603,7 @@ def write_qwen_transformer_stage_artifacts(
             "attnImplementation": getattr(full_model.config, "_attn_implementation", ""),
             "state_dict": _stage_state_dict(full_state, spec),
         }
-        torch.save(package, path)
+        _safe_torch_save(torch, package, path)
         artifacts.append(SplitArtifact(
             role=role,
             path=str(path),
@@ -827,7 +863,7 @@ def write_qwen_onnx_stage_artifacts(
             "attnImplementation": getattr(full_model.config, "_attn_implementation", ""),
             "state_dict": _stage_state_dict(full_state, spec),
         }
-        torch.save(package, pt_path)
+        _safe_torch_save(torch, package, pt_path)
         stage_model = qwen_transformer_model_from_stage_package(pt_path)
         filename = f"stage-{spec['stageIndex']}-qwen.onnx"
         onnx_path = root / filename

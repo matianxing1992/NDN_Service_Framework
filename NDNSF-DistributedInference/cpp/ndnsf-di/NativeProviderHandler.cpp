@@ -269,9 +269,6 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
   if (found != result.outputsByScope.end()) {
     return found->second.payload;
   }
-  if (result.outputsByScope.size() == 1) {
-    return result.outputsByScope.begin()->second.payload;
-  }
   return std::nullopt;
 }
 
