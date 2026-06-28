@@ -691,11 +691,14 @@ namespace ndn_service_framework{
 
             void onPermissionResponseData(const ndn::Interest& interest,
                                            const ndn::Data& data);
-            void onPermissionResponseTimeout(const ndn::Interest& interest);
-            void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix);
+            void onPermissionResponseTimeout(const ndn::Interest& interest,
+                                             int attempt = 1);
+            void fetchPolicyManifestFromController(const ndn::Name& controllerPrefix,
+                                                   int attempt = 1);
             void onPolicyManifestData(const ndn::Interest& interest,
                                       const ndn::Data& data);
-            void onPolicyManifestTimeout(const ndn::Interest& interest);
+            void onPolicyManifestTimeout(const ndn::Interest& interest,
+                                         int attempt = 1);
             bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
 
             void OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription);

@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -37,6 +38,7 @@
 #include <string>
 #include <string_view>
 #include <chrono>
+#include <cstring>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -86,6 +88,8 @@ struct Options
   bool serve = false;
   bool noServeCertificates = false;
   bool disableTokens = false;
+  bool wiringCheckOnly = false;
+  bool tracerDeterministicRunner = false;
 };
 
 std::size_t
@@ -128,6 +132,76 @@ splitCsv(const std::string& value)
     }
   }
   return items;
+}
+
+std::vector<std::string>
+splitNames(const std::string& value)
+{
+  std::vector<std::string> names;
+  std::stringstream input(value);
+  std::string current;
+  while (std::getline(input, current, ',')) {
+    if (!current.empty()) {
+      names.push_back(current);
+    }
+  }
+  return names;
+}
+
+std::vector<std::string>
+outputScopesFromMetadata(const NativeModelRunnerSpec& spec)
+{
+  std::vector<std::string> scopes;
+  auto direct = spec.metadata.find("outputScope");
+  if (direct != spec.metadata.end() && !direct->second.empty()) {
+    scopes.push_back(direct->second);
+  }
+  for (std::size_t index = 0;; ++index) {
+    auto found = spec.metadata.find("outputScope." + std::to_string(index));
+    if (found == spec.metadata.end()) {
+      break;
+    }
+    if (!found->second.empty()) {
+      scopes.push_back(found->second);
+    }
+  }
+  if (scopes.empty()) {
+    scopes.push_back("final-response");
+  }
+  return scopes;
+}
+
+std::vector<std::uint8_t>
+float32Payload(const std::vector<float>& values)
+{
+  std::vector<std::uint8_t> payload(values.size() * sizeof(float));
+  std::memcpy(payload.data(), values.data(), payload.size());
+  return payload;
+}
+
+std::shared_ptr<NativeModelRunner>
+makeTracerDeterministicRunner(const NativeModelRunnerSpec& spec)
+{
+  return makeNativeModelRunner(
+    [spec] (const RoleExecutionContext&) {
+      auto outputNames = splitNames(spec.metadata.count("output_tensors") ?
+                                    spec.metadata.at("output_tensors") : "");
+      if (outputNames.empty()) {
+        outputNames.push_back("output");
+      }
+      std::vector<NamedTensor> outputs;
+      outputs.reserve(outputNames.size());
+      float value = 1.0f;
+      for (const auto& name : outputNames) {
+        outputs.push_back(makeFloat32Tensor(name, {1, 1}, float32Payload({value})));
+        value += 1.0f;
+      }
+      std::map<std::string, TensorBundle> byScope;
+      for (const auto& scope : outputScopesFromMetadata(spec)) {
+        byScope.emplace(scope, makeEncodedTensorBundle(scope, outputs));
+      }
+      return byScope;
+    });
 }
 
 std::string
@@ -397,6 +471,12 @@ parseArgs(int argc, char** argv)
     else if (arg == "--disable-tokens") {
       options.disableTokens = true;
     }
+    else if (arg == "--wiring-check-only") {
+      options.wiringCheckOnly = true;
+    }
+    else if (arg == "--tracer-deterministic-runner") {
+      options.tracerDeterministicRunner = true;
+    }
     else {
       throw std::invalid_argument("unknown argument: " + arg);
     }
@@ -407,6 +487,9 @@ parseArgs(int argc, char** argv)
   }
   if (options.manifestPath.empty()) {
     throw std::invalid_argument("--manifest is required");
+  }
+  if (options.wiringCheckOnly && !options.checkOnly) {
+    throw std::invalid_argument("--wiring-check-only requires --check-only");
   }
   return options;
 }
@@ -606,7 +689,8 @@ printUsage(const char* program)
     << "[--trust-schema <path>] [--artifact-references <json>] "
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
     << "[--repo-fetch-timeout-ms <ms>] [--repo-ack-timeout-ms <ms>] "
-    << "[--repo-permission-wait-ms <ms>]\n";
+    << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
+    << "[--tracer-deterministic-runner]\n";
 }
 
 } // namespace
@@ -633,7 +717,24 @@ main(int argc, char** argv)
 
     auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
     registerOnnxRuntimeBackend(*factory);
+    if (options.wiringCheckOnly || options.tracerDeterministicRunner) {
+      factory->registerBackend(
+        "onnxruntime",
+        [tracerDeterministicRunner = options.tracerDeterministicRunner]
+        (const NativeModelRunnerSpec& spec) {
+          if (tracerDeterministicRunner) {
+            return makeTracerDeterministicRunner(spec);
+          }
+          return makeNativeModelRunner(
+            [] (const RoleExecutionContext&) {
+              return std::map<std::string, TensorBundle>{};
+            });
+        });
+    }
     std::cout << "NDNSF_DI_NATIVE_PROVIDER_BACKENDS_READY onnxruntime=1"
+              << " wiringCheckOnly=" << (options.wiringCheckOnly ? 1 : 0)
+              << " tracerDeterministicRunner="
+              << (options.tracerDeterministicRunner ? 1 : 0)
               << std::endl;
 
     if (options.serve) {
@@ -693,7 +794,13 @@ main(int argc, char** argv)
         allowedRoles,
         [rolesText = joinRoles(allowedRoles), provisioningState](
           const ndn_service_framework::RequestMessage&) {
-          return provisioningState->makeAckDecision(rolesText);
+          auto decision = provisioningState->makeAckDecision(rolesText);
+          std::cout << "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION"
+                    << " roles=" << rolesText
+                    << " status=" << (decision.status ? 1 : 0)
+                    << " message=\"" << decision.message << "\""
+                    << std::endl;
+          return decision;
         },
         [provisioningState, readyHandler, readyHandlerMutex](
           ndn_service_framework::ServiceProvider::CollaborationContext& ctx,

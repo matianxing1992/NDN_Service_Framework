@@ -30,6 +30,8 @@ RELEASE/*
 !RELEASE/*.closure.gz
 *.pt
 *.onnx
+examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/qwen-native-tracer-*.onnx.sha256
+examples/python/NDNSF-DistributedInference/native_di_tracer/artifacts/qwen-native-tracer-artifacts-summary.json
 
 # Local experiment virtual environments
 Experiments/pythonEnv/
@@ -40,3 +42,11 @@ README_ch.md
 # Local UAV roadmap drafts (do not commit)
 NDNSF-UAV-APP/ROADMAP.md
 NDNSF-UAV-APP/ROADMAP_ch.md
+
+# Local agent/Codex tooling state
+AGENTS.md
+.agents/
+.codex/
+.planning/
+.codegraph/
+.specify/integrations/codex.manifest.json

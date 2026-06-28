@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 from ndnsf_distributed_inference import write_policy_bundle
@@ -15,6 +16,7 @@ from ndnsf_distributed_inference import write_policy_bundle
 SERVICE = "/Inference/NativeTracer"
 ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = ROOT / "native_tracer_policy.yaml"
+GENERATE_QWEN_ARTIFACTS = ROOT / "generate_qwen_native_tracer_artifacts.py"
 REQUIRED_ROLES = {"/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"}
 REQUIRED_OUTPUTS = {
     "/Backbone": {"backbone-to-head0", "backbone-to-head1"},
@@ -44,6 +46,25 @@ def verify_sidecar(path: Path) -> None:
     observed = sha256_file(path)
     if observed != expected:
         raise RuntimeError(f"sha256 mismatch for {path}: {observed} != {expected}")
+
+
+def ensure_qwen_artifacts(config_path: Path) -> None:
+    if config_path.resolve() != CONFIG_FILE.resolve():
+        return
+    required = [
+        ROOT / "artifacts/qwen-native-tracer-backbone.onnx",
+        ROOT / "artifacts/qwen-native-tracer-head0.onnx",
+        ROOT / "artifacts/qwen-native-tracer-head1.onnx",
+        ROOT / "artifacts/qwen-native-tracer-merge.onnx",
+    ]
+    if all(path.exists() and path.with_suffix(path.suffix + ".sha256").exists()
+           for path in required):
+        return
+    subprocess.run(
+        ["python3", str(GENERATE_QWEN_ARTIFACTS)],
+        cwd=str(ROOT),
+        check=True,
+    )
 
 
 def validate_bundle(out_dir: Path) -> dict:
@@ -105,7 +126,9 @@ def validate_bundle(out_dir: Path) -> dict:
         if artifact["role"] == FINAL_RESPONSE_ROLE and FINAL_RESPONSE_SCOPE not in metadata.values():
             raise RuntimeError("merge artifact metadata must expose final-response scope")
         for scope in REQUIRED_OUTPUTS.get(artifact["role"], set()):
-            if scope not in metadata.values():
+            if scope not in metadata.values() and not (
+                metadata.get("forceOutputBundle") and metadata.get("outputBundleScope")
+            ):
                 raise RuntimeError(
                     f"artifact metadata for {artifact['role']} does not expose {scope}")
 
@@ -129,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     out_dir = Path(args.out)
+    ensure_qwen_artifacts(Path(args.config))
     deployment = write_policy_bundle(args.config, out_dir)
     summary = validate_bundle(out_dir)
     summary.update({

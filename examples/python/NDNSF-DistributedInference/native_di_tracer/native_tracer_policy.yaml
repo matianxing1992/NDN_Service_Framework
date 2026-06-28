@@ -1,4 +1,4 @@
-# Minimal native distributed-inference tracer policy.
+# Minimal native distributed-inference tracer policy with Qwen-derived ONNX stages.
 #
 # This is intentionally smaller than the YOLO 2x2 demo but keeps the same shape
 # expected by generated-plan C++ tests:
@@ -49,7 +49,7 @@ authorization_summary:
 
 services:
   - name: /Inference/NativeTracer
-    model: /Model/NativeTracer/Toy/v1
+    model: /Model/NativeTracer/Qwen2.5-0.5B-Minimal/v1
     users:
       - /NDNSF-DI/Tracer/user
     providers:
@@ -101,43 +101,55 @@ services:
         tensors: [detections1]
     artifacts:
       - role: /Backbone
-        path: artifacts/backbone.onnx.placeholder
+        path: artifacts/qwen-native-tracer-backbone.onnx
         artifact: /Artifact/NativeTracer/Backbone
-        filename: backbone.onnx.placeholder
+        filename: qwen-native-tracer-backbone.onnx
         kind: model
         backend: onnxruntime
         metadata:
+          sourceModel: Qwen/Qwen2.5-0.5B-Instruct
+          input_tensors: images
+          inputShape: 1,3,2,2
           output_tensors: features
-          outputScope.0: backbone-to-head0
-          outputScope.1: backbone-to-head1
+          forceOutputBundle: true
+          outputBundleScope: backbone-output
       - role: /Head/Shard/0
-        path: artifacts/head-shard-0.onnx.placeholder
+        path: artifacts/qwen-native-tracer-head0.onnx
         artifact: /Artifact/NativeTracer/Head0
-        filename: head-shard-0.onnx.placeholder
+        filename: qwen-native-tracer-head0.onnx
         kind: model
         backend: onnxruntime
         metadata:
+          sourceModel: Qwen/Qwen2.5-0.5B-Instruct
           input_tensors: features
+          inputShape: 1,16
           output_tensors: detections0
           outputScope.0: head0-to-merge
       - role: /Head/Shard/1
-        path: artifacts/head-shard-1.onnx.placeholder
+        path: artifacts/qwen-native-tracer-head1.onnx
         artifact: /Artifact/NativeTracer/Head1
-        filename: head-shard-1.onnx.placeholder
+        filename: qwen-native-tracer-head1.onnx
         kind: model
         backend: onnxruntime
         metadata:
+          sourceModel: Qwen/Qwen2.5-0.5B-Instruct
           input_tensors: features
+          inputShape: 1,16
           output_tensors: detections1
           outputScope.0: head1-to-merge
       - role: /Merge
-        path: artifacts/merge.onnx.placeholder
+        path: artifacts/qwen-native-tracer-merge.onnx
         artifact: /Artifact/NativeTracer/Merge
-        filename: merge.onnx.placeholder
+        filename: qwen-native-tracer-merge.onnx
         kind: model
         backend: onnxruntime
         metadata:
+          sourceModel: Qwen/Qwen2.5-0.5B-Instruct
           input_tensors: detections0,detections1
+          inputShape.0: 1,8
+          inputShape.1: 1,8
+          inputScope.detections0: head0-to-merge
+          inputScope.detections1: head1-to-merge
           output_tensors: predictions
           outputScope.0: final-response
     input:
@@ -145,7 +157,7 @@ services:
       fields:
         image:
           dtype: float32
-          shape: [1, 3, 32, 32]
+          shape: [1, 3, 2, 2]
           layout: NCHW
     output:
       codec: tensor-bundle
@@ -158,6 +170,7 @@ services:
       plannerKind: yolo-detect-auto
       runtimeBackend: onnxruntime
       executionMode: native-tracer
+      sourceModel: Qwen/Qwen2.5-0.5B-Instruct
       roleMetadata:
         /Backbone:
           stage: backbone

@@ -1685,6 +1685,8 @@ def app_env(output_dir, session_base, args):
         "NDN_LOG": ndn_log,
         "NDNSF_SVS_MAX_SUPPRESSION_MS": os.environ.get("NDNSF_SVS_MAX_SUPPRESSION_MS", "1"),
     }
+    if args.workload_mode == "open-loop" and getattr(args, "rate_rps", None) is not None:
+        env["NDNSF_SVS_EXPECTED_RPS"] = "{:.3f}".format(float(args.rate_rps))
     if args.performance_mode:
         env["NDNSF_SVS_MAX_APP_PARAMS_BYTES"] = os.environ.get(
             "NDNSF_SVS_MAX_APP_PARAMS_BYTES", "4096")
@@ -1694,7 +1696,18 @@ def app_env(output_dir, session_base, args):
             "NDNSF_SVS_PARALLEL_PRODUCTION", "4")
     if "NDNSF_SVS_PERIODIC_SYNC_MS" in os.environ:
         env["NDNSF_SVS_PERIODIC_SYNC_MS"] = os.environ["NDNSF_SVS_PERIODIC_SYNC_MS"]
-    for name in ("NDNSF_HANDLER_THREADS", "NDNSF_ACK_THREADS"):
+    for name in (
+            "NDNSF_HANDLER_THREADS",
+            "NDNSF_ACK_THREADS",
+            "NDNSF_SVS_PUBLICATION_FETCH_RETRIES",
+            "NDNSF_SVS_PUBLICATION_FETCH_INNER_RETRIES",
+            "NDNSF_SVS_PUBLICATION_FETCH_LIFETIME_MS",
+            "NDNSF_SVS_PUBLICATION_FETCH_BACKOFF_MS",
+            "NDNSF_SVS_PUBLICATION_FETCH_MAX_BACKOFF_MS",
+            "NDNSF_SVS_PUBLICATION_FETCH_WINDOW",
+            "NDNSF_SVS_ADAPTIVE_FETCH_WINDOW",
+            "NDNSF_SVS_ADAPTIVE_FETCH_MIN_WINDOW",
+            "NDNSF_SVS_ADAPTIVE_FETCH_MAX_WINDOW"):
         if name in os.environ:
             env[name] = os.environ[name]
     if getattr(args, "ack_threads", -1) >= 0:

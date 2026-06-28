@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <ctime>
 #include <cstdlib>
 #include <iostream>
@@ -222,6 +223,71 @@ namespace ndn_service_framework
             catch (const std::exception&) {
                 return fallback;
             }
+        }
+
+        bool
+        envIsSet(const char* name)
+        {
+            const char* value = std::getenv(name);
+            return value != nullptr && *value != '\0';
+        }
+
+        double
+        doubleEnvOrDefault(const char* name, double fallback)
+        {
+            const char* value = std::getenv(name);
+            if (value == nullptr || *value == '\0') {
+                return fallback;
+            }
+            try {
+                return std::stod(value);
+            }
+            catch (const std::exception&) {
+                return fallback;
+            }
+        }
+
+        int
+        adaptiveSvsPublicationFetchWindow(int fallback)
+        {
+            const double expectedRps =
+                doubleEnvOrDefault("NDNSF_SVS_EXPECTED_RPS", 0.0);
+            if (expectedRps <= 0.0 ||
+                (envIsSet("NDNSF_SVS_ADAPTIVE_FETCH_WINDOW") &&
+                 !isTruthyEnv("NDNSF_SVS_ADAPTIVE_FETCH_WINDOW"))) {
+                return fallback;
+            }
+
+            const int minWindow =
+                std::max(1, intEnvOrDefault("NDNSF_SVS_ADAPTIVE_FETCH_MIN_WINDOW", 32));
+            const int maxWindow =
+                std::max(minWindow, intEnvOrDefault("NDNSF_SVS_ADAPTIVE_FETCH_MAX_WINDOW", 128));
+            const int scaledWindow =
+                static_cast<int>(std::ceil(expectedRps * 0.64));
+            return std::max(minWindow, std::min(maxWindow, scaledWindow));
+        }
+
+        int
+        permissionFetchMaxAttempts()
+        {
+            const int defaultAttempts =
+                std::max(1, intEnvOrDefault("NDNSF_PERMISSION_FETCH_RETRIES", 19) + 1);
+            return std::max(1, intEnvOrDefault("NDNSF_PERMISSION_FETCH_MAX_ATTEMPTS",
+                                               defaultAttempts));
+        }
+
+        int
+        permissionFetchLifetimeMs()
+        {
+            return std::max(500, intEnvOrDefault("NDNSF_PERMISSION_FETCH_LIFETIME_MS", 4000));
+        }
+
+        int
+        permissionFetchRetryBackoffMs(int attempt)
+        {
+            const int baseMs =
+                std::max(0, intEnvOrDefault("NDNSF_PERMISSION_FETCH_RETRY_BACKOFF_MS", 250));
+            return baseMs * std::max(1, attempt);
         }
 
         size_t
@@ -837,6 +903,41 @@ namespace ndn_service_framework
         #else
         opts.useTimestamp = false;
         #endif
+        opts.publicationFetchRetries =
+            std::max(0, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_RETRIES",
+                                        opts.publicationFetchRetries));
+        opts.publicationFetchInnerRetries =
+            std::max(0, intEnvOrDefault("NDNSF_SVS_PUBLICATION_FETCH_INNER_RETRIES",
+                                        opts.publicationFetchInnerRetries));
+        opts.publicationFetchInterestLifetime =
+            ndn::time::milliseconds(std::max(100, intEnvOrDefault(
+                "NDNSF_SVS_PUBLICATION_FETCH_LIFETIME_MS",
+                static_cast<int>(opts.publicationFetchInterestLifetime.count()))));
+        opts.publicationFetchFailureBackoff =
+            ndn::time::milliseconds(std::max(0, intEnvOrDefault(
+                "NDNSF_SVS_PUBLICATION_FETCH_BACKOFF_MS",
+                static_cast<int>(opts.publicationFetchFailureBackoff.count()))));
+        opts.publicationFetchMaxBackoff =
+            ndn::time::milliseconds(std::max(0, intEnvOrDefault(
+                "NDNSF_SVS_PUBLICATION_FETCH_MAX_BACKOFF_MS",
+                static_cast<int>(opts.publicationFetchMaxBackoff.count()))));
+        const int adaptiveFetchWindow =
+            adaptiveSvsPublicationFetchWindow(static_cast<int>(opts.publicationFetchWindow));
+        opts.publicationFetchWindow =
+            static_cast<uint16_t>(std::max(1, intEnvOrDefault(
+                "NDNSF_SVS_PUBLICATION_FETCH_WINDOW",
+                adaptiveFetchWindow)));
+        NDN_LOG_WARN("NDNSF_SVS_PUBLICATION_FETCH_CONFIG role=provider retries="
+                     << opts.publicationFetchRetries
+                     << " innerRetries=" << opts.publicationFetchInnerRetries
+                     << " lifetimeMs=" << opts.publicationFetchInterestLifetime.count()
+                     << " backoffMs=" << opts.publicationFetchFailureBackoff.count()
+                     << " maxBackoffMs=" << opts.publicationFetchMaxBackoff.count()
+                     << " window=" << opts.publicationFetchWindow
+                     << " expectedRps="
+                     << doubleEnvOrDefault("NDNSF_SVS_EXPECTED_RPS", 0.0)
+                     << " explicitWindow="
+                     << (envIsSet("NDNSF_SVS_PUBLICATION_FETCH_WINDOW") ? "true" : "false"));
 
         ndn::Name node_id(identity);
         node_id.append("provider");
@@ -6315,12 +6416,45 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             });
     }
 
-    void ServiceProvider::onPermissionResponseTimeout(const ndn::Interest& interest)
+    void ServiceProvider::onPermissionResponseTimeout(const ndn::Interest& interest,
+                                                      int attempt)
     {
-        NDN_LOG_ERROR("PermissionResponse timeout: " << interest.getName());
+        const int maxAttempts = permissionFetchMaxAttempts();
+        if (attempt >= maxAttempts) {
+            NDN_LOG_ERROR("PermissionResponse timeout: " << interest.getName()
+                          << " attempt=" << attempt
+                          << "/" << maxAttempts
+                          << " final=1");
+            return;
+        }
+
+        const int nextAttempt = attempt + 1;
+        const int backoffMs = permissionFetchRetryBackoffMs(attempt);
+        NDN_LOG_WARN("PermissionResponse timeout: " << interest.getName()
+                     << " attempt=" << attempt
+                     << "/" << maxAttempts
+                     << " retryAttempt=" << nextAttempt
+                     << " backoffMs=" << backoffMs);
+        m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
+            [this, interest, nextAttempt] {
+                ndn::Interest retryInterest(interest);
+                retryInterest.refreshNonce();
+                retryInterest.setInterestLifetime(
+                    ndn::time::milliseconds(permissionFetchLifetimeMs()));
+                m_face.expressInterest(
+                    retryInterest,
+                    std::bind(&ServiceProvider::onPermissionResponseData, this, _1, _2),
+                    [this, nextAttempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                        onPermissionResponseTimeout(interest, nextAttempt);
+                    },
+                    [this, nextAttempt](const ndn::Interest& interest) {
+                        onPermissionResponseTimeout(interest, nextAttempt);
+                    });
+            });
     }
 
-    void ServiceProvider::fetchPolicyManifestFromController(const ndn::Name& controllerPrefix)
+    void ServiceProvider::fetchPolicyManifestFromController(const ndn::Name& controllerPrefix,
+                                                            int attempt)
     {
         ndn::Name interestName(controllerPrefix);
         interestName.append(ndn::Name("/NDNSF/POLICY-MANIFEST"));
@@ -6328,16 +6462,20 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         ndn::Interest interest(interestName);
         interest.setCanBePrefix(false);
         interest.setMustBeFresh(true);
-        interest.setInterestLifetime(ndn::time::seconds(4));
+        interest.setInterestLifetime(ndn::time::milliseconds(permissionFetchLifetimeMs()));
 
-        NDN_LOG_INFO("Fetch policy manifest: " << interestName);
+        NDN_LOG_INFO("Fetch policy manifest: " << interestName
+                     << " attempt=" << attempt
+                     << "/" << permissionFetchMaxAttempts());
         m_face.expressInterest(
             interest,
             std::bind(&ServiceProvider::onPolicyManifestData, this, _1, _2),
-            [this](const ndn::Interest& interest, const ndn::lp::Nack&) {
-                onPolicyManifestTimeout(interest);
+            [this, attempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                onPolicyManifestTimeout(interest, attempt);
             },
-            std::bind(&ServiceProvider::onPolicyManifestTimeout, this, _1));
+            [this, attempt](const ndn::Interest& interest) {
+                onPolicyManifestTimeout(interest, attempt);
+            });
     }
 
     void ServiceProvider::onPolicyManifestData(const ndn::Interest& interest,
@@ -6378,9 +6516,41 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             });
     }
 
-    void ServiceProvider::onPolicyManifestTimeout(const ndn::Interest& interest)
+    void ServiceProvider::onPolicyManifestTimeout(const ndn::Interest& interest,
+                                                  int attempt)
     {
-        NDN_LOG_ERROR("PolicyManifest timeout: " << interest.getName());
+        const int maxAttempts = permissionFetchMaxAttempts();
+        if (attempt >= maxAttempts) {
+            NDN_LOG_ERROR("PolicyManifest timeout: " << interest.getName()
+                          << " attempt=" << attempt
+                          << "/" << maxAttempts
+                          << " final=1");
+            return;
+        }
+
+        const int nextAttempt = attempt + 1;
+        const int backoffMs = permissionFetchRetryBackoffMs(attempt);
+        NDN_LOG_WARN("PolicyManifest timeout: " << interest.getName()
+                     << " attempt=" << attempt
+                     << "/" << maxAttempts
+                     << " retryAttempt=" << nextAttempt
+                     << " backoffMs=" << backoffMs);
+        m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
+            [this, interest, nextAttempt] {
+                ndn::Interest retryInterest(interest);
+                retryInterest.refreshNonce();
+                retryInterest.setInterestLifetime(
+                    ndn::time::milliseconds(permissionFetchLifetimeMs()));
+                m_face.expressInterest(
+                    retryInterest,
+                    std::bind(&ServiceProvider::onPolicyManifestData, this, _1, _2),
+                    [this, nextAttempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                        onPolicyManifestTimeout(interest, nextAttempt);
+                    },
+                    [this, nextAttempt](const ndn::Interest& interest) {
+                        onPolicyManifestTimeout(interest, nextAttempt);
+                    });
+            });
     }
 
 // void ServiceProvider::PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer &buffer)
@@ -7583,16 +7753,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         ndn::Interest interest(interestName);
         interest.setCanBePrefix(true);
         interest.setMustBeFresh(true);
-        interest.setInterestLifetime(ndn::time::seconds(4));
+        interest.setInterestLifetime(ndn::time::milliseconds(permissionFetchLifetimeMs()));
 
-        NDN_LOG_INFO("Fetch provider permissions: " << interestName);
+        NDN_LOG_INFO("Fetch provider permissions: " << interestName
+                     << " attempt=1/" << permissionFetchMaxAttempts());
         m_face.expressInterest(
             interest,
             std::bind(&ServiceProvider::onPermissionResponseData, this, _1, _2),
             [this](const ndn::Interest& interest, const ndn::lp::Nack&) {
-                onPermissionResponseTimeout(interest);
+                onPermissionResponseTimeout(interest, 1);
             },
-            std::bind(&ServiceProvider::onPermissionResponseTimeout, this, _1));
+            [this](const ndn::Interest& interest) {
+                onPermissionResponseTimeout(interest, 1);
+            });
     }
 
     void ServiceProvider::applyPermissionResponse(const PermissionResponse& response)

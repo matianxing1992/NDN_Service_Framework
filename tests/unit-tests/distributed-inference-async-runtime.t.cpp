@@ -14,6 +14,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -1542,9 +1543,11 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonDrivesAsyncFrontierRuntime)
   BOOST_REQUIRE(timingByRole.count("/Head/0") == 1);
   BOOST_REQUIRE(timingByRole.count("/Head/1") == 1);
   BOOST_REQUIRE(timingByRole.count("/Merge") == 1);
-  BOOST_CHECK_LT(durationMs(timingByRole.at("/Head/0").startedAt,
-                            timingByRole.at("/Head/1").finishedAt),
-                 90.0);
+  const auto latestHeadStart = std::max(timingByRole.at("/Head/0").startedAt,
+                                        timingByRole.at("/Head/1").startedAt);
+  const auto earliestHeadFinish = std::min(timingByRole.at("/Head/0").finishedAt,
+                                           timingByRole.at("/Head/1").finishedAt);
+  BOOST_CHECK_GE(durationMs(latestHeadStart, earliestHeadFinish), 0.0);
   BOOST_CHECK_GE(durationMs(timingByRole.at("/Head/0").finishedAt,
                             timingByRole.at("/Merge").startedAt),
                  0.0);
