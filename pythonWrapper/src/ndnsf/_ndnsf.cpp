@@ -131,6 +131,32 @@ largeDataReferenceToDict(const nsf::LargeDataReference& reference)
   return output;
 }
 
+py::dict
+networkTelemetrySnapshotToDict(const nsf::NetworkTelemetrySnapshot& snapshot)
+{
+  py::dict output;
+  output["provider_name"] = snapshot.providerName.toUri();
+  output["service_name"] = snapshot.serviceName.toUri();
+  output["peer_name"] = snapshot.peerName.toUri();
+  output["edge_name"] = snapshot.edgeName;
+  output["kind"] = nsf::toString(snapshot.kind);
+  output["rtt_ms"] = snapshot.rttMs;
+  output["first_byte_ms"] = snapshot.firstByteMs;
+  output["elapsed_ms"] = snapshot.elapsedMs;
+  output["encoded_bytes"] = snapshot.encodedBytes;
+  output["wire_bytes"] = snapshot.wireBytes;
+  output["goodput_mbps"] = snapshot.goodputMbps;
+  output["received_segments"] = snapshot.receivedSegments;
+  output["timeout_count"] = snapshot.timeoutCount;
+  output["nack_count"] = snapshot.nackCount;
+  output["sample_count"] = snapshot.sampleCount;
+  output["last_updated_ms"] = snapshot.lastUpdatedMs;
+  output["confidence"] = snapshot.confidence;
+  output["stale"] = snapshot.stale;
+  output["data_name"] = snapshot.dataName.toUri();
+  return output;
+}
+
 std::shared_ptr<const nsf::AckSelectionPolicy>
 selectionPolicyByName(const std::string& strategy)
 {
@@ -166,6 +192,7 @@ struct PyAckCandidate
   bool status = false;
   std::string message;
   py::bytes payload;
+  py::object telemetry = py::none();
 };
 
 struct PyLargeDataPublishResult
@@ -927,6 +954,184 @@ rolesFromAckPayload(const ndn::Buffer& payload)
   return roles;
 }
 
+double
+numericFieldFromText(const std::string& text, const std::string& key)
+{
+  const auto value = fieldFromText(text, key);
+  if (value.empty()) {
+    return 0.0;
+  }
+  try {
+    return std::stod(value);
+  }
+  catch (...) {
+    return 0.0;
+  }
+}
+
+struct CapacityAckScore
+{
+  double pendingWork = 0.0;
+  double readyQueue = 0.0;
+  double waitingInputs = 0.0;
+  double activeWorkers = 0.0;
+  double idleWorkers = 0.0;
+  double workers = 0.0;
+};
+
+CapacityAckScore
+capacityScoreFromAckPayload(const ndn::Buffer& payload)
+{
+  const auto text = bytesToString(payload);
+  return CapacityAckScore{
+    numericFieldFromText(text, "queue"),
+    numericFieldFromText(text, "readyQueue"),
+    numericFieldFromText(text, "waitingInputs"),
+    numericFieldFromText(text, "activeWorkers"),
+    numericFieldFromText(text, "idleWorkers"),
+    numericFieldFromText(text, "workers"),
+  };
+}
+
+bool
+isBetterCapacityAck(const nsf::AckCandidate& current,
+                    const nsf::AckCandidate& best,
+                    const std::map<std::string, size_t>& providerAssignments,
+                    const std::map<std::string, size_t>& admissionBias)
+{
+  const auto currentProvider = current.providerName.toUri();
+  const auto bestProvider = best.providerName.toUri();
+  const auto currentAssignments =
+    (providerAssignments.count(currentProvider) ? providerAssignments.at(currentProvider) : 0) +
+    (admissionBias.count(currentProvider) ? admissionBias.at(currentProvider) : 0);
+  const auto bestAssignments =
+    (providerAssignments.count(bestProvider) ? providerAssignments.at(bestProvider) : 0) +
+    (admissionBias.count(bestProvider) ? admissionBias.at(bestProvider) : 0);
+  if (currentAssignments != bestAssignments) {
+    return currentAssignments < bestAssignments;
+  }
+
+  const auto currentScore = capacityScoreFromAckPayload(current.ack.getPayload());
+  const auto bestScore = capacityScoreFromAckPayload(best.ack.getPayload());
+
+  const auto currentPressure =
+    currentScore.pendingWork +
+    currentScore.readyQueue +
+    currentScore.waitingInputs +
+    currentScore.activeWorkers;
+  const auto bestPressure =
+    bestScore.pendingWork +
+    bestScore.readyQueue +
+    bestScore.waitingInputs +
+    bestScore.activeWorkers;
+  if (currentPressure != bestPressure) {
+    return currentPressure < bestPressure;
+  }
+  if (currentScore.readyQueue != bestScore.readyQueue) {
+    return currentScore.readyQueue < bestScore.readyQueue;
+  }
+  if (currentScore.waitingInputs != bestScore.waitingInputs) {
+    return currentScore.waitingInputs < bestScore.waitingInputs;
+  }
+  if (currentScore.activeWorkers != bestScore.activeWorkers) {
+    return currentScore.activeWorkers < bestScore.activeWorkers;
+  }
+  if (currentScore.idleWorkers != bestScore.idleWorkers) {
+    return currentScore.idleWorkers > bestScore.idleWorkers;
+  }
+  if (currentScore.workers != bestScore.workers) {
+    return currentScore.workers > bestScore.workers;
+  }
+  return false;
+}
+
+std::map<std::string, size_t>
+admissionBiasFromEnv()
+{
+  std::map<std::string, size_t> output;
+  const char* raw = std::getenv("NDNSF_COLLAB_ADMISSION_BIAS");
+  if (raw == nullptr || *raw == '\0') {
+    return output;
+  }
+  const std::string text(raw);
+  size_t begin = 0;
+  while (begin <= text.size()) {
+    const auto end = text.find(';', begin);
+    const auto item = text.substr(
+      begin,
+      end == std::string::npos ? std::string::npos : end - begin);
+    const auto delimiter = item.rfind('=');
+    if (delimiter != std::string::npos && delimiter > 0) {
+      const auto provider = item.substr(0, delimiter);
+      try {
+        const auto value = std::stoul(item.substr(delimiter + 1));
+        output[provider] = static_cast<size_t>(value);
+      }
+      catch (...) {
+      }
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    begin = end + 1;
+  }
+  return output;
+}
+
+std::map<std::string, std::string>
+roleProviderPreferenceFromEnv()
+{
+  std::map<std::string, std::string> output;
+  const char* raw = std::getenv("NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE");
+  if (raw == nullptr || *raw == '\0') {
+    return output;
+  }
+  const std::string text(raw);
+  size_t begin = 0;
+  while (begin <= text.size()) {
+    const auto end = text.find(';', begin);
+    const auto item = text.substr(
+      begin,
+      end == std::string::npos ? std::string::npos : end - begin);
+    const auto delimiter = item.find("=>");
+    if (delimiter != std::string::npos && delimiter > 0) {
+      const auto role = item.substr(0, delimiter);
+      const auto provider = item.substr(delimiter + 2);
+      if (!provider.empty()) {
+        output[role] = provider;
+      }
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    begin = end + 1;
+  }
+  return output;
+}
+
+std::string
+preferredProviderForRole(const std::map<std::string, std::string>& preferences,
+                         const std::string& role)
+{
+  auto found = preferences.find(role);
+  if (found != preferences.end()) {
+    return found->second;
+  }
+  if (!role.empty() && role.front() == '/') {
+    found = preferences.find(role.substr(1));
+    if (found != preferences.end()) {
+      return found->second;
+    }
+  }
+  else if (!role.empty()) {
+    found = preferences.find("/" + role);
+    if (found != preferences.end()) {
+      return found->second;
+    }
+  }
+  return "";
+}
+
 PyCollaborationData
 toPyCollaborationData(const nsf::ServiceProvider::CollaborationData& data)
 {
@@ -970,6 +1175,8 @@ public:
     }
 
     std::map<std::string, size_t> providerAssignments;
+    const auto admissionBias = admissionBiasFromEnv();
+    const auto roleProviderPreference = roleProviderPreferenceFromEnv();
     for (const auto& role : roles) {
       auto candidatesForRole = candidatesByRole.find(role.role);
       if (candidatesForRole == candidatesByRole.end() ||
@@ -977,11 +1184,25 @@ public:
         continue;
       }
       auto best = candidatesForRole->second.begin();
+      const auto preferredProvider = preferredProviderForRole(roleProviderPreference, role.role);
+      if (!preferredProvider.empty()) {
+        auto preferredIt = std::find_if(
+          candidatesForRole->second.begin(),
+          candidatesForRole->second.end(),
+          [&preferredProvider] (const nsf::AckCandidate& candidate) {
+            return candidate.providerName.toUri() == preferredProvider;
+          });
+        if (preferredIt != candidatesForRole->second.end()) {
+          best = preferredIt;
+        }
+      }
       for (auto it = candidatesForRole->second.begin();
            it != candidatesForRole->second.end(); ++it) {
-        const auto bestCount = providerAssignments[best->providerName.toUri()];
-        const auto thisCount = providerAssignments[it->providerName.toUri()];
-        if (thisCount < bestCount) {
+        if (!preferredProvider.empty() &&
+            best->providerName.toUri() == preferredProvider) {
+          continue;
+        }
+        if (isBetterCapacityAck(*it, *best, providerAssignments, admissionBias)) {
           best = it;
         }
       }
@@ -1828,17 +2049,16 @@ PyServiceResponse
     return output;
   }
 
-  PyServiceResponse
-  requestCollaboration(const std::string& serviceName,
-                       const py::bytes& initialPayload,
-                       const std::vector<std::map<std::string, py::object>>& roles,
-                       const std::map<std::string, std::vector<std::string>>& keyScopes,
-                       const std::vector<std::map<std::string, py::object>>& dependencies,
-                       const std::map<std::string, std::string>& artifactDataNames,
-                       const std::map<std::string, std::string>& scopeKeyDataNames,
-                       const std::map<std::string, std::vector<std::string>>& roleScopes,
-                       int ackTimeoutMs,
-                       int timeoutMs)
+  nsf::CollaborationPlan
+  buildCollaborationPlan(const std::string& serviceName,
+                         const std::vector<std::map<std::string, py::object>>& roles,
+                         const std::map<std::string, std::vector<std::string>>& keyScopes,
+                         const std::vector<std::map<std::string, py::object>>& dependencies,
+                         const std::map<std::string, std::string>& artifactDataNames,
+                         const std::map<std::string, std::string>& scopeKeyDataNames,
+                         const std::map<std::string, std::vector<std::string>>& roleScopes,
+                         int ackTimeoutMs,
+                         int timeoutMs)
   {
     nsf::CollaborationPlan plan;
     plan.ackCollectionTimeMs = ackTimeoutMs;
@@ -1926,6 +2146,30 @@ PyServiceResponse
       std::move(nativeArtifactDataNames),
       std::move(nativeScopeKeyDataNames),
       roleScopes);
+    return plan;
+  }
+
+  PyServiceResponse
+  requestCollaboration(const std::string& serviceName,
+                       const py::bytes& initialPayload,
+                       const std::vector<std::map<std::string, py::object>>& roles,
+                       const std::map<std::string, std::vector<std::string>>& keyScopes,
+                       const std::vector<std::map<std::string, py::object>>& dependencies,
+                       const std::map<std::string, std::string>& artifactDataNames,
+                       const std::map<std::string, std::string>& scopeKeyDataNames,
+                       const std::map<std::string, std::vector<std::string>>& roleScopes,
+                       int ackTimeoutMs,
+                       int timeoutMs)
+  {
+    auto plan = buildCollaborationPlan(serviceName,
+                                       roles,
+                                       keyScopes,
+                                       dependencies,
+                                       artifactDataNames,
+                                       scopeKeyDataNames,
+                                       roleScopes,
+                                       ackTimeoutMs,
+                                       timeoutMs);
 
     PyServiceResponse output;
     std::mutex mutex;
@@ -1990,6 +2234,66 @@ PyServiceResponse
     return output;
   }
 
+  void
+  requestCollaborationAsync(const std::string& serviceName,
+                            const py::bytes& initialPayload,
+                            const std::vector<std::map<std::string, py::object>>& roles,
+                            const std::map<std::string, std::vector<std::string>>& keyScopes,
+                            const std::vector<std::map<std::string, py::object>>& dependencies,
+                            const std::map<std::string, std::string>& artifactDataNames,
+                            const std::map<std::string, std::string>& scopeKeyDataNames,
+                            const std::map<std::string, std::vector<std::string>>& roleScopes,
+                            py::function onResponse,
+                            py::function onTimeout,
+                            int ackTimeoutMs,
+                            int timeoutMs)
+  {
+    start();
+    auto payload = toBuffer(initialPayload);
+    auto plan = buildCollaborationPlan(serviceName,
+                                       roles,
+                                       keyScopes,
+                                       dependencies,
+                                       artifactDataNames,
+                                       scopeKeyDataNames,
+                                       roleScopes,
+                                       ackTimeoutMs,
+                                       timeoutMs);
+    auto responseCallback = keepPyFunction(std::move(onResponse));
+    auto timeoutCallback = keepPyFunction(std::move(onTimeout));
+    boost::asio::post(m_face.getIoContext(),
+      [this, serviceName, payload, plan = std::move(plan),
+       responseCallback = std::move(responseCallback),
+       timeoutCallback = std::move(timeoutCallback)]() mutable {
+        m_user->RequestCollaboration(
+          ndn::Name(serviceName),
+          payload,
+          std::move(plan),
+          [responseCallback](const nsf::ResponseMessage& response) mutable {
+            py::gil_scoped_acquire gil;
+            PyServiceResponse output;
+            output.status = response.getStatus();
+            output.payload = toPyBytes(response.getPayload());
+            output.error = response.getErrorInfo();
+            try {
+              (*responseCallback)(output);
+            }
+            catch (const py::error_already_set& e) {
+              PyErr_WriteUnraisable(e.value().ptr());
+            }
+          },
+          [timeoutCallback](const ndn::Name& requestId) mutable {
+            py::gil_scoped_acquire gil;
+            try {
+              (*timeoutCallback)(requestId.toUri());
+            }
+            catch (const py::error_already_set& e) {
+              PyErr_WriteUnraisable(e.value().ptr());
+            }
+          });
+      });
+  }
+
   PyServiceResponse
   requestServiceSelect(const std::string& serviceName,
                        const py::bytes& requestPayload,
@@ -2021,6 +2325,9 @@ PyServiceResponse
           item.status = candidate.ack.getStatus();
           item.message = candidate.ack.getMessage();
           item.payload = toPyBytes(candidate.ack.getPayload());
+          if (candidate.telemetry) {
+            item.telemetry = networkTelemetrySnapshotToDict(*candidate.telemetry);
+          }
           pyCandidates.append(py::cast(item));
         }
 
@@ -2253,7 +2560,8 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("request_id", &PyAckCandidate::requestId)
     .def_readwrite("status", &PyAckCandidate::status)
     .def_readwrite("message", &PyAckCandidate::message)
-    .def_readwrite("payload", &PyAckCandidate::payload);
+    .def_readwrite("payload", &PyAckCandidate::payload)
+    .def_readwrite("telemetry", &PyAckCandidate::telemetry);
 
   py::class_<PyLargeDataPublishResult>(m, "LargeDataPublishResult")
     .def(py::init<>())
@@ -2510,6 +2818,19 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("artifact_data_names"),
          py::arg("scope_key_data_names"),
          py::arg("role_scopes"),
+         py::arg("ack_timeout_ms") = 300,
+         py::arg("timeout_ms") = 10000)
+    .def("request_collaboration_async", &NativeServiceUser::requestCollaborationAsync,
+         py::arg("service"),
+         py::arg("payload"),
+         py::arg("roles"),
+         py::arg("key_scopes"),
+         py::arg("dependencies"),
+         py::arg("artifact_data_names"),
+         py::arg("scope_key_data_names"),
+         py::arg("role_scopes"),
+         py::arg("on_response"),
+         py::arg("on_timeout"),
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 10000)
     .def("start", &NativeServiceUser::start)

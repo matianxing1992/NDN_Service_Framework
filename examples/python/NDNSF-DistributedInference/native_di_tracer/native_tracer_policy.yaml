@@ -46,6 +46,14 @@ authorization_summary:
         - service: /Inference/NativeTracer
           roles:
             - /Merge
+    - identity: /NDNSF-DI/Tracer/provider/single
+      services:
+        - service: /Inference/NativeTracer
+          roles:
+            - /Backbone
+            - /Head/Shard/0
+            - /Head/Shard/1
+            - /Merge
 
 services:
   - name: /Inference/NativeTracer
@@ -61,6 +69,8 @@ services:
         roles: [/Head/Shard/1]
       - identity: /NDNSF-DI/Tracer/provider/merge
         roles: [/Merge]
+      - identity: /NDNSF-DI/Tracer/provider/single
+        roles: [/Backbone, /Head/Shard/0, /Head/Shard/1, /Merge]
     roles:
       - /Backbone
       - /Head/Shard/0
@@ -171,6 +181,9 @@ services:
       runtimeBackend: onnxruntime
       executionMode: native-tracer
       sourceModel: Qwen/Qwen2.5-0.5B-Instruct
+      diPlanVersion: di-plan-v2
+      optimizationModel: native-tracer-qwen-minimal
+      optimizationScope: planner-cost-and-candidate-evidence
       roleMetadata:
         /Backbone:
           stage: backbone

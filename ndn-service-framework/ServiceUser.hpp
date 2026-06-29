@@ -9,6 +9,7 @@
 #include "NDNSFMessages.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
+#include "NetworkTelemetry.hpp"
 #include "TimelineTrace.hpp"
 
 #include <functional>
@@ -38,6 +39,7 @@ namespace ndn_service_framework{
         ndn::Name serviceName;
         ndn::Name requestId;
         ndn_service_framework::RequestAckMessage ack;
+        std::optional<ndn_service_framework::NetworkTelemetrySnapshot> telemetry;
     };
 
     using ProviderId = ndn::Name;
@@ -761,6 +763,8 @@ namespace ndn_service_framework{
             };
 
             void PublishCompactServiceSelectionMessageV2(const std::vector<StoredAck>& selectedAcks);
+            ndn_service_framework::AckSelectionCandidate
+            makeAckSelectionCandidate(const StoredAck& storedAck) const;
 
             struct PendingCall
             {
@@ -1022,6 +1026,7 @@ namespace ndn_service_framework{
             ndn::time::milliseconds m_pendingCallTimeoutGrace{500};
             bool m_performanceMode = false;
             RuntimeDiagnostics m_runtimeDiagnostics;
+            NetworkTelemetryStore m_networkTelemetry;
             AdaptiveAdmissionOptions m_adaptiveAdmissionOptions;
             size_t m_adaptiveAdmissionWindow = 16;
             size_t m_adaptiveAdmissionSlowStartThreshold = 512;

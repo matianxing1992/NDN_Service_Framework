@@ -6,6 +6,7 @@
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -33,6 +34,15 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
 
 ndn_service_framework::ServiceProvider::CollaborationHandler
 makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config);
+
+struct NativeProviderCollaborationRuntime
+{
+  ndn_service_framework::ServiceProvider::CollaborationHandler handler;
+  std::function<ProviderRoleWorkerSnapshot()> capacitySnapshot;
+};
+
+NativeProviderCollaborationRuntime
+makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config);
 
 } // namespace ndnsf::di
 

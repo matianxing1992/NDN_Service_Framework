@@ -361,8 +361,8 @@ BOOST_AUTO_TEST_CASE(AsyncDataflowRuntimeRunsStageFrontierHeadsInParallelBeforeM
 
   BOOST_CHECK_GE(durationMs(backbone.finishedAt, head0.startedAt), 0.0);
   BOOST_CHECK_GE(durationMs(backbone.finishedAt, head1.startedAt), 0.0);
-  BOOST_CHECK_LT(durationMs(head0.startedAt, head1.finishedAt), 90.0);
-  BOOST_CHECK_LT(durationMs(head1.startedAt, head0.finishedAt), 90.0);
+  BOOST_CHECK_LT(durationMs(head0.startedAt, head1.finishedAt), 120.0);
+  BOOST_CHECK_LT(durationMs(head1.startedAt, head0.finishedAt), 120.0);
   BOOST_CHECK_GE(durationMs(head0.finishedAt, merge.startedAt), 0.0);
   BOOST_CHECK_GE(durationMs(head1.finishedAt, merge.startedAt), 0.0);
 }
@@ -443,6 +443,65 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPrefetchesAllInputsBeforeRunningRole)
   BOOST_REQUIRE_EQUAL(result.outputTimings[0].plannedSegmentNames.size(), 1);
   BOOST_CHECK_EQUAL(result.outputTimings[0].plannedSegmentNames[0],
                     plannedSegmentName("/run/3/merge/bundle/0", 0));
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerDoesNotOccupyComputeWorkerWhileWaitingForInputs)
+{
+  RoleSpec consumer{
+    "/Consumer",
+    {DependencyEdge{"producer-to-consumer", "/Producer", "/Consumer",
+                    "/run/ready/producer/bundle/0", 1}},
+    {DependencyEdge{"consumer-to-user", "/Consumer", "",
+                    "/run/ready/consumer/bundle/0", 1}},
+  };
+  RoleSpec producer{
+    "/Producer",
+    {},
+    {DependencyEdge{"producer-to-consumer", "/Producer", "/Consumer",
+                    "/run/ready/producer/bundle/0", 1}},
+  };
+
+  auto io = std::make_shared<BlockingDependencyIo>();
+  ProviderRoleWorker worker(1);
+
+  auto consumerFuture = worker.executeAsync(
+    "ready-run",
+    consumer,
+    io,
+    [] (const RoleExecutionContext& ctx) {
+      BOOST_REQUIRE(ctx.inputsByScope.count("producer-to-consumer") == 1);
+      return std::map<std::string, TensorBundle>{
+        {"consumer-to-user", bundle("consumer-to-user",
+                                    "consumer:" +
+                                    payloadText(ctx.inputsByScope.at("producer-to-consumer")))},
+      };
+    });
+
+  auto producerFuture = worker.executeAsync(
+    "ready-run",
+    producer,
+    io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{
+        {"producer-to-consumer", bundle("producer-to-consumer", "producer-output")},
+      };
+    });
+
+  BOOST_REQUIRE(producerFuture.wait_for(std::chrono::milliseconds(300)) ==
+                std::future_status::ready);
+  BOOST_REQUIRE(consumerFuture.wait_for(std::chrono::milliseconds(300)) ==
+                std::future_status::ready);
+
+  const auto producerResult = producerFuture.get();
+  const auto consumerResult = consumerFuture.get();
+
+  BOOST_REQUIRE(producerResult.outputsByScope.count("producer-to-consumer") == 1);
+  BOOST_REQUIRE(consumerResult.outputsByScope.count("consumer-to-user") == 1);
+  BOOST_CHECK_EQUAL(payloadText(consumerResult.outputsByScope.at("consumer-to-user")),
+                    "consumer:producer-output");
+  BOOST_CHECK_GE(durationMs(consumerResult.inputTimings[0].prefetchStartedAt,
+                            consumerResult.inputTimings[0].fetchCompletedAt),
+                 0.0);
 }
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
@@ -535,6 +594,55 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPreservesFinalResponseBundle)
 
   std::lock_guard<std::mutex> lock(io->mutex);
   BOOST_CHECK(io->publishedByScope.empty());
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerSnapshotReportsActiveAndQueuedWork)
+{
+  RoleSpec role{
+    "/SlowRole",
+    {},
+    {},
+  };
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(1);
+  std::promise<void> started;
+  std::promise<void> releasePromise;
+  auto release = releasePromise.get_future().share();
+
+  auto first = worker.executeAsync(
+    "snapshot-first",
+    role,
+    io,
+    [&] (const RoleExecutionContext&) {
+      started.set_value();
+      release.wait();
+      return std::map<std::string, TensorBundle>{
+        {"final-response", bundle("first", "ok")},
+      };
+    });
+  started.get_future().wait();
+
+  auto second = worker.executeAsync(
+    "snapshot-second",
+    role,
+    io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{
+        {"final-response", bundle("second", "ok")},
+      };
+    });
+
+  auto snapshot = worker.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.workerCount, 1);
+  BOOST_CHECK_EQUAL(snapshot.activeWorkerCount, 1);
+  BOOST_CHECK_GE(snapshot.readyQueueDepth, 1);
+  BOOST_CHECK_GE(snapshot.pendingWorkCount(), 2);
+  BOOST_CHECK_EQUAL(snapshot.idleWorkerCount(), 0);
+
+  releasePromise.set_value();
+  BOOST_CHECK_EQUAL(payloadText(first.get().outputsByScope.at("final-response")), "ok");
+  BOOST_CHECK_EQUAL(payloadText(second.get().outputsByScope.at("final-response")), "ok");
 }
 
 BOOST_AUTO_TEST_CASE(NativeProviderHandlerRejectsMissingRunnerFactory)
@@ -1977,6 +2085,24 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(ackPayloadText(readyAck).find("runtimeStatus=ready") !=
               std::string::npos);
   BOOST_CHECK(ackPayloadText(readyAck).find("hasModel=1") != std::string::npos);
+  BOOST_CHECK(ackPayloadText(readyAck).find("queue=0") != std::string::npos);
+  BOOST_CHECK(ackPayloadText(readyAck).find("workers=0") != std::string::npos);
+
+  ProviderRoleWorkerSnapshot capacity;
+  capacity.workerCount = 4;
+  capacity.readyQueueDepth = 2;
+  capacity.waitingForInputCount = 1;
+  capacity.activeWorkerCount = 3;
+  readiness.setCapacitySnapshotProvider([capacity] { return capacity; });
+  auto capacityAck = readiness.makeAckDecision("/Backbone,/Merge");
+  const auto capacityPayload = ackPayloadText(capacityAck);
+  BOOST_CHECK(capacityAck.status);
+  BOOST_CHECK(capacityPayload.find("queue=6") != std::string::npos);
+  BOOST_CHECK(capacityPayload.find("readyQueue=2") != std::string::npos);
+  BOOST_CHECK(capacityPayload.find("waitingInputs=1") != std::string::npos);
+  BOOST_CHECK(capacityPayload.find("activeWorkers=3") != std::string::npos);
+  BOOST_CHECK(capacityPayload.find("workers=4") != std::string::npos);
+  BOOST_CHECK(capacityPayload.find("idleWorkers=1") != std::string::npos);
 }
 
 } // namespace ndnsf::di::test

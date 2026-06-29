@@ -4623,6 +4623,14 @@ namespace ndn_service_framework
 
             pendingCall->second.providerTokens[parsedV2->providerName.toUri()] =
                 ackMessage.getProviderToken();
+            const uint64_t ackStartUs = pendingCall->second.publishedAtUs != 0 ?
+                pendingCall->second.publishedAtUs : pendingCall->second.createdAtUs;
+            if (ackStartUs != 0 && ackReceiveUs >= ackStartUs) {
+                m_networkTelemetry.updateAckRtt(
+                    parsedV2->providerName,
+                    parsedV2->serviceName,
+                    static_cast<double>(ackReceiveUs - ackStartUs) / 1000.0);
+            }
             pendingCall->second.requestAcks.push_back(
                 StoredAck{parsedV2->providerName,
                           parsedV2->serviceName,
@@ -4848,6 +4856,14 @@ namespace ndn_service_framework
 
         pendingCall->second.providerTokens[providerName.toUri()] =
             ackMessage.getProviderToken();
+        const uint64_t ackStartUs = pendingCall->second.publishedAtUs != 0 ?
+            pendingCall->second.publishedAtUs : pendingCall->second.createdAtUs;
+        if (ackStartUs != 0 && ackReceiveUs >= ackStartUs) {
+            m_networkTelemetry.updateAckRtt(
+                providerName,
+                unifiedServiceName,
+                static_cast<double>(ackReceiveUs - ackStartUs) / 1000.0);
+        }
         pendingCall->second.requestAcks.push_back(
             StoredAck{providerName,
                       unifiedServiceName,
@@ -4999,7 +5015,12 @@ namespace ndn_service_framework
 
     ndn::Name ServiceUser::makeRequestId()
     {
-        return ndn::Name(ndn::time::toIsoString(ndn::time::system_clock::now()));
+        std::ostringstream os;
+        os << ndn::time::toIsoString(ndn::time::system_clock::now())
+           << "-"
+           << std::hex
+           << ndn::random::generateSecureWord64();
+        return ndn::Name(os.str());
     }
 
     ndn::Name ServiceUser::makeUnifiedServiceName(const ndn::Name& serviceName,
@@ -5059,6 +5080,20 @@ namespace ndn_service_framework
         return providers->second.size();
     }
 
+    ndn_service_framework::AckSelectionCandidate
+    ServiceUser::makeAckSelectionCandidate(const StoredAck& storedAck) const
+    {
+        ndn_service_framework::AckSelectionCandidate candidate;
+        candidate.providerName = storedAck.providerName;
+        candidate.serviceName = storedAck.serviceName;
+        candidate.requestId = storedAck.requestId;
+        candidate.ack = storedAck.message;
+        candidate.telemetry =
+            m_networkTelemetry.getServicePath(storedAck.providerName,
+                                              storedAck.serviceName);
+        return candidate;
+    }
+
     bool ServiceUser::collaborationAckRoleCoverageSatisfied(
         const ndn::Name& requestId,
         const PendingCall& pendingCall) const
@@ -5074,10 +5109,7 @@ namespace ndn_service_framework
 
         std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
         for (const auto& storedAck : pendingCall.requestAcks) {
-            candidates.push_back({storedAck.providerName,
-                                  storedAck.serviceName,
-                                  storedAck.requestId,
-                                  storedAck.message});
+            candidates.push_back(makeAckSelectionCandidate(storedAck));
         }
         const auto selected =
             pendingCall.collaborationPlan.participantSelector->select(
@@ -5290,10 +5322,7 @@ namespace ndn_service_framework
             pendingCall.collaborationPlan.participantSelector) {
             std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
             for (const auto& storedAck : pendingCall.requestAcks) {
-                candidates.push_back({storedAck.providerName,
-                                      storedAck.serviceName,
-                                      storedAck.requestId,
-                                      storedAck.message});
+                candidates.push_back(makeAckSelectionCandidate(storedAck));
             }
 
             const auto selectedParticipants =
@@ -5364,10 +5393,7 @@ namespace ndn_service_framework
 
             std::vector<ndn_service_framework::AckSelectionCandidate> candidates;
             for (const auto& storedAck : pendingCall.requestAcks) {
-                candidates.push_back({storedAck.providerName,
-                                      storedAck.serviceName,
-                                      storedAck.requestId,
-                                      storedAck.message});
+                candidates.push_back(makeAckSelectionCandidate(storedAck));
             }
 
             const auto selectedCandidates = pendingCall.ackCandidatesHandler(candidates);

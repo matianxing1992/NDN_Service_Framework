@@ -1,1 +1,4 @@
-{"feature_directory":"specs/003-native-di-real-minindn"}
+{
+  "feature": "specs/027-llm-resource-aware-planning",
+  "feature_directory": "specs/027-llm-resource-aware-planning"
+}

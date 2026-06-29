@@ -1,0 +1,13 @@
+{
+  "modelId": "qwen-small-native-tracer",
+  "revision": "minindn-demo-v1",
+  "modelFamily": "llm",
+  "layers": 24,
+  "memoryPerLayerMb": 320.0,
+  "fixedRuntimeMemoryMb": 1024.0,
+  "kvCacheMemoryMb": 512.0,
+  "activationBoundaryMb": 48.0,
+  "flopsPerLayerTflop": 0.045,
+  "minimumStageLayers": 1,
+  "plannerVersion": "llm-resource-aware-v1"
+}

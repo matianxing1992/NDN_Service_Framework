@@ -378,6 +378,9 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
   size_t ackCountBeforeAck = 0;
   size_t ackCountAfterAck = 0;
   ndn::Name selectedProviderAfterAck;
+  ndn::Name deferredResponseName;
+  std::vector<uint8_t> deferredResponseWire;
+  bool responseReady = false;
 
   provider.addHandler<DynamicRequest, DynamicResponse>(
     serviceName,
@@ -423,9 +426,10 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
                                                    parsedRequest->serviceName,
                                                    parsedRequest->requestId);
       auto responseBlock = response.WireEncode();
-      providerPubSub.publish(responseName,
-                             ndn::span<const uint8_t>(responseBlock.data(), responseBlock.size()));
-      responsePublished = true;
+      deferredResponseName = responseName;
+      deferredResponseWire.assign(responseBlock.data(),
+                                  responseBlock.data() + responseBlock.size());
+      responseReady = true;
     },
     true);
 
@@ -437,9 +441,17 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
         userReceivedAck = true;
         ackCountBeforeAck = user.getPendingRequestAckCount(parsedAck->requestId);
         ndn::Block ackBlock(publication.data);
-        BOOST_CHECK(user.handleRequestAckByName(publication.name, ackBlock));
+        const bool ackHandled = user.handleRequestAckByName(publication.name, ackBlock);
+        BOOST_CHECK(ackHandled);
         ackCountAfterAck = user.getPendingRequestAckCount(parsedAck->requestId);
         selectedProviderAfterAck = user.getSelectedProvider(parsedAck->requestId);
+        if (ackHandled && responseReady && !responsePublished) {
+          providerPubSub.publish(
+            deferredResponseName,
+            ndn::span<const uint8_t>(deferredResponseWire.data(),
+                                     deferredResponseWire.size()));
+          responsePublished = true;
+        }
         return;
       }
 

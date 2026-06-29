@@ -4,9 +4,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
+#include <future>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 
@@ -233,6 +237,29 @@ logProviderTiming(const std::string& sessionId,
   }
 }
 
+void
+logProviderCapacity(const std::string& sessionId,
+                    const std::string& role,
+                    const char* event,
+                    const ProviderRoleWorkerSnapshot& snapshot)
+{
+  if (!nativeTraceEnabled()) {
+    return;
+  }
+  std::cout << "\nNDNSF_DI_PROVIDER_CAPACITY"
+            << " event=" << event
+            << " session=" << sessionId
+            << " role=" << role
+            << " workers=" << snapshot.workerCount
+            << " active_workers=" << snapshot.activeWorkerCount
+            << " idle_workers=" << snapshot.idleWorkerCount()
+            << " ready_queue=" << snapshot.readyQueueDepth
+            << " waiting_inputs=" << snapshot.waitingForInputCount
+            << " pending_work=" << snapshot.pendingWorkCount()
+            << " stopping=" << (snapshot.stopping ? "true" : "false")
+            << std::endl;
+}
+
 std::map<std::string, TensorBundle>
 initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
                          const ndn_service_framework::RequestMessage& request)
@@ -254,6 +281,129 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
   return {{"request-input", std::move(bundle)}};
 }
 
+class LocalDependencyIo final : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string& sessionId, const DependencyEdge& edge) final
+  {
+    auto promise = std::make_shared<std::promise<TensorBundle>>();
+    auto future = promise->get_future();
+    const auto itemKey = key(sessionId, edge);
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const auto found = m_available.find(itemKey);
+      if (found != m_available.end()) {
+        promise->set_value(found->second);
+        return future;
+      }
+      m_waiters[itemKey].push_back(std::move(promise));
+    }
+    return future;
+  }
+
+  void
+  publishOutput(const std::string& sessionId,
+                const DependencyEdge& edge,
+                const TensorBundle& bundle) final
+  {
+    std::vector<std::shared_ptr<std::promise<TensorBundle>>> ready;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const auto itemKey = key(sessionId, edge);
+      m_available[itemKey] = bundle;
+      const auto found = m_waiters.find(itemKey);
+      if (found != m_waiters.end()) {
+        ready = std::move(found->second);
+        m_waiters.erase(found);
+      }
+    }
+    for (auto& promise : ready) {
+      promise->set_value(bundle);
+    }
+  }
+
+private:
+  static std::string
+  key(const std::string& sessionId, const DependencyEdge& edge)
+  {
+    return sessionId + "|" + edge.plannedDataName;
+  }
+
+private:
+  std::mutex m_mutex;
+  std::map<std::string, TensorBundle> m_available;
+  std::map<std::string, std::vector<std::shared_ptr<std::promise<TensorBundle>>>> m_waiters;
+};
+
+bool
+allPlanRolesAssignedToLocal(const NativeExecutionPlan& plan,
+                            const NativeProviderAssignment& assignment,
+                            const std::string& localProvider)
+{
+  if (localProvider.empty()) {
+    return false;
+  }
+  for (const auto& role : plan.roles) {
+    if (providerForRole(assignment, role, localProvider) != localProvider) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::optional<std::vector<uint8_t>>
+executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
+                                const NativeProviderHandlerConfig& config,
+                                const std::string& sessionId,
+                                const NativeProviderAssignment& assignment,
+                                const std::string& localProvider,
+                                const std::map<std::string, TensorBundle>& initialInputs,
+                                std::chrono::steady_clock::time_point submittedSteady,
+                                long long submittedEpoch)
+{
+  auto io = std::make_shared<LocalDependencyIo>();
+  std::vector<std::pair<std::string, std::future<ProviderRoleResult>>> futures;
+  futures.reserve(state.plan.roles.size());
+  for (const auto& role : state.plan.roles) {
+    auto roleSpec = roleSpecFor(state.plan,
+                                role,
+                                sessionId,
+                                assignment,
+                                localProvider);
+    futures.emplace_back(
+      role,
+      state.runtime.executeRoleAsync(
+        sessionId,
+        roleSpec,
+        io,
+        roleSpec.inputs.empty() ? initialInputs : std::map<std::string, TensorBundle>{}));
+  }
+
+  std::optional<std::vector<uint8_t>> finalPayload;
+  for (auto& item : futures) {
+    auto roleSpec = roleSpecFor(state.plan,
+                                item.first,
+                                sessionId,
+                                assignment,
+                                localProvider);
+    auto result = item.second.get();
+    logProviderTiming(sessionId,
+                      item.first,
+                      result,
+                      submittedSteady,
+                      submittedEpoch);
+    auto payload = nativeProviderFinalResponsePayload(
+      roleSpec,
+      result,
+      config.finalResponseScope);
+    if (payload) {
+      finalPayload = std::move(payload);
+    }
+  }
+  return finalPayload;
+}
+
 } // namespace
 
 std::optional<std::vector<uint8_t>>
@@ -272,8 +422,8 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
   return std::nullopt;
 }
 
-ndn_service_framework::ServiceProvider::CollaborationHandler
-makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
+NativeProviderCollaborationRuntime
+makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
 {
   if (!config.runnerFactory) {
     throw std::invalid_argument(
@@ -281,9 +431,13 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
   }
   auto state = std::make_shared<NativeProviderHandlerState>(config);
 
-  return [config = std::move(config), state = std::move(state)] (
-           ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
-           const ndn_service_framework::RequestMessage& request) mutable {
+  NativeProviderCollaborationRuntime runtime;
+  runtime.capacitySnapshot = [state] {
+    return state->runtime.snapshot();
+  };
+  runtime.handler = [config = std::move(config), state = std::move(state)] (
+	           ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+	           const ndn_service_framework::RequestMessage& request) mutable {
     try {
       auto assignment = state->baseAssignment;
       for (const auto& item : ctx.assignment().roleProviders) {
@@ -305,44 +459,77 @@ makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
                                         ctx.sessionId(),
                                         assignment,
                                         ctx.localProvider().toUri());
-      auto initialInputs = roleSpec.inputs.empty()
+      const bool localFullPlan =
+        roleSpec.outputs.empty() &&
+        allPlanRolesAssignedToLocal(state->plan,
+                                    assignment,
+                                    ctx.localProvider().toUri());
+      auto initialInputs = (localFullPlan || roleSpec.inputs.empty())
         ? initialInputsFromRequest(ctx, request)
         : std::map<std::string, TensorBundle>{};
       const auto submittedSteady = std::chrono::steady_clock::now();
       const auto submittedEpoch = epochMs();
-      auto result = state->runtime.executeRoleAsync(
-        ctx.sessionId(),
-        roleSpec,
-        std::move(io),
-        std::move(initialInputs)).get();
-      logProviderTiming(ctx.sessionId(), role, result, submittedSteady, submittedEpoch);
+      logProviderCapacity(ctx.sessionId(),
+                          role,
+                          "before_submit",
+                          state->runtime.snapshot());
+      std::optional<std::vector<uint8_t>> finalPayload;
+      if (localFullPlan) {
+        finalPayload = executeLocalPlanAndFinalPayload(*state,
+                                                       config,
+                                                       ctx.sessionId(),
+                                                       assignment,
+                                                       ctx.localProvider().toUri(),
+                                                       initialInputs,
+                                                       submittedSteady,
+                                                       submittedEpoch);
+      }
+      else {
+        auto result = state->runtime.executeRoleAsync(
+          ctx.sessionId(),
+          roleSpec,
+          std::move(io),
+          std::move(initialInputs)).get();
+        logProviderTiming(ctx.sessionId(), role, result, submittedSteady, submittedEpoch);
 
-      const auto finalPayload = nativeProviderFinalResponsePayload(
-        roleSpec,
-        result,
-        config.finalResponseScope);
+        finalPayload = nativeProviderFinalResponsePayload(
+          roleSpec,
+          result,
+          config.finalResponseScope);
+      }
+      logProviderCapacity(ctx.sessionId(),
+                          role,
+                          "after_complete",
+                          state->runtime.snapshot());
       if (nativeTraceEnabled()) {
         std::cout << "\nNDNSF_DI_NATIVE_FINAL_RESPONSE_DECISION"
                   << " session=" << ctx.sessionId()
                   << " role=" << role
                   << " role_outputs=" << roleSpec.outputs.size()
-                  << " result_outputs=" << result.outputsByScope.size()
+                  << " local_full_plan="
+                  << (allPlanRolesAssignedToLocal(state->plan,
+                                                  assignment,
+                                                  ctx.localProvider().toUri()) ?
+                      "true" : "false")
                   << " final_scope=" << config.finalResponseScope
                   << " has_payload=" << (finalPayload ? "true" : "false");
-        for (const auto& item : result.outputsByScope) {
-          std::cout << " output_scope=" << item.first
-                    << " output_bytes=" << item.second.payload.size();
-        }
         std::cout << std::endl;
       }
       if (finalPayload) {
         ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
       }
     }
-    catch (const std::exception& exc) {
-      ctx.fail(exc.what());
-    }
-  };
+	    catch (const std::exception& exc) {
+	      ctx.fail(exc.what());
+	    }
+	  };
+  return runtime;
+}
+
+ndn_service_framework::ServiceProvider::CollaborationHandler
+makeNativeProviderCollaborationHandler(NativeProviderHandlerConfig config)
+{
+  return makeNativeProviderCollaborationRuntime(std::move(config)).handler;
 }
 
 } // namespace ndnsf::di

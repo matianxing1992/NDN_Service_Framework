@@ -51,6 +51,12 @@ NativeProviderRuntime::executeRoleAsync(std::string sessionId,
                                std::move(initialInputsByScope));
 }
 
+ProviderRoleWorkerSnapshot
+NativeProviderRuntime::snapshot() const
+{
+  return m_worker.snapshot();
+}
+
 std::shared_ptr<NativeModelRunner>
 NativeProviderRuntime::findRunner(const std::string& role) const
 {

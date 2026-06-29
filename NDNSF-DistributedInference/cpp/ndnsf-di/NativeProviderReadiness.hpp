@@ -1,8 +1,11 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_NATIVE_PROVIDER_READINESS_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_PROVIDER_READINESS_HPP
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+
 #include "ndn-service-framework/ServiceProvider.hpp"
 
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -26,6 +29,10 @@ public:
   std::string statusText() const;
   std::string message() const;
 
+  using CapacitySnapshotProvider = std::function<ProviderRoleWorkerSnapshot()>;
+
+  void setCapacitySnapshotProvider(CapacitySnapshotProvider provider);
+
   ndn_service_framework::ServiceProvider::AckDecision
   makeAckDecision(const std::string& rolesText) const;
 
@@ -37,6 +44,7 @@ private:
   mutable std::mutex m_mutex;
   Status m_status = Status::Installing;
   std::string m_message = "installing native model/runtime artifacts";
+  CapacitySnapshotProvider m_capacitySnapshotProvider;
 };
 
 } // namespace ndnsf::di

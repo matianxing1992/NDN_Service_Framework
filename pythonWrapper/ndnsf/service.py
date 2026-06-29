@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from . import _ndnsf
 
@@ -56,6 +56,7 @@ class AckCandidate:
     status: bool
     message: str = ""
     payload: bytes = b""
+    telemetry: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -1452,6 +1453,10 @@ class ServiceUser:
                     status=bool(candidate.status),
                     message=str(candidate.message),
                     payload=bytes(candidate.payload),
+                    telemetry=(
+                        None if candidate.telemetry is None
+                        else dict(candidate.telemetry)
+                    ),
                 )
                 for candidate in native_candidates
             ]))
@@ -1638,6 +1643,39 @@ class ServiceUser:
             timeout_ms,
         )
         return _from_native_response(response)
+
+    def request_collaboration_async(
+        self,
+        service: str,
+        payload: bytes,
+        *,
+        roles: list[CollaborationRole | dict],
+        key_scopes: dict[str, list[str]],
+        dependencies: Optional[list[CollaborationDependency | dict]] = None,
+        artifact_data_names: Optional[dict[str, str]] = None,
+        scope_key_data_names: Optional[dict[str, str]] = None,
+        role_scopes: Optional[dict[str, list[str]]] = None,
+        on_response: Callable[[ServiceResponse], None],
+        on_timeout: Callable[[str], None],
+        ack_timeout_ms: int = 300,
+        timeout_ms: int = 10000,
+    ) -> None:
+        """Submit a generic multi-provider collaboration without blocking."""
+
+        self._native.request_collaboration_async(
+            service,
+            bytes(payload),
+            [_role_to_dict(role) for role in roles],
+            {str(scope): list(scope_roles) for scope, scope_roles in key_scopes.items()},
+            [_dependency_to_dict(dep) for dep in (dependencies or [])],
+            dict(artifact_data_names or {}),
+            dict(scope_key_data_names or {}),
+            {str(role): list(scopes) for role, scopes in (role_scopes or {}).items()},
+            on_response,
+            on_timeout,
+            ack_timeout_ms,
+            timeout_ms,
+        )
 
     def start(self) -> None:
         """Start the user's background Face event loop for async requests."""

@@ -3258,6 +3258,8 @@ namespace ndn_service_framework
         const size_t exactSegmentWindow = static_cast<size_t>(
             std::max(1, intEnvOrDefault("NDNSF_COLLAB_LARGE_EXACT_SEGMENT_WINDOW", 64)));
         const bool fetchTimingEnabled = isTruthyEnv("NDNSF_COLLAB_LARGE_FETCH_TIMING");
+        const bool telemetryExportEnabled =
+            isTruthyEnv("NDNSF_NETWORK_TELEMETRY_EXPORT");
         const bool exactSegmentFetch =
             expectedSegments > 0 &&
             boolEnvOrDefault("NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH", true);
@@ -3868,6 +3870,53 @@ namespace ndn_service_framework
             NDN_LOG_ERROR("Failed fetching collaboration large Data "
                           << dataName.toUri() << ": " << *error);
             return std::nullopt;
+        }
+
+        const auto fetchComplete = std::chrono::steady_clock::now();
+        const double elapsedMs = elapsedMsSince(fetchStart, fetchComplete);
+        const double firstSegmentMs = fetchStats->receivedSegments == 0 ? 0.0 :
+            elapsedMsSince(fetchStart, fetchStats->firstSegmentReceived);
+        ndn::Name producerProvider;
+        if (auto parsed = parseCollaborationDataName(dataName)) {
+            producerProvider = parsed->producerName;
+        }
+        m_networkTelemetry.updateLargeDataFetch(
+            identity,
+            producerProvider,
+            keyScope,
+            dataName,
+            elapsedMs,
+            firstSegmentMs,
+            encoded->size(),
+            fetchStats->receivedWireBytes,
+            fetchStats->receivedSegments,
+            fetchStats->timeouts,
+            fetchStats->nacks);
+        if (telemetryExportEnabled) {
+            const auto snapshot =
+                m_networkTelemetry.getDependencyEdge(identity, producerProvider, keyScope);
+            const double goodputMbps =
+                networkTelemetryGoodputMbps(fetchStats->receivedWireBytes, elapsedMs);
+            NDN_LOG_WARN("NDNSF_NETWORK_TELEMETRY"
+                         << " event=large_data_fetch"
+                         << " sample_kind="
+                         << toString(NetworkTelemetrySampleKind::LargeDataFetch)
+                         << " consumerProvider=" << identity.toUri()
+                         << " producerProvider=" << producerProvider.toUri()
+                         << " keyScope=" << keyScope
+                         << " dataName=" << dataName.toUri()
+                         << " elapsed_ms=" << elapsedMs
+                         << " first_byte_ms=" << firstSegmentMs
+                         << " encoded_bytes=" << encoded->size()
+                         << " wire_bytes=" << fetchStats->receivedWireBytes
+                         << " received_segments=" << fetchStats->receivedSegments
+                         << " segment_timeouts=" << fetchStats->timeouts
+                         << " nacks=" << fetchStats->nacks
+                         << " goodput_mbps=" << goodputMbps
+                         << " confidence="
+                         << (snapshot ? snapshot->confidence : 0.0)
+                         << " sample_count="
+                         << (snapshot ? snapshot->sampleCount : 0));
         }
 
         try {
@@ -5013,7 +5062,12 @@ namespace ndn_service_framework
                               {"mode", "hybrid"}});
         }
 
-        if (m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId)) {
+        const bool requestScopedReceiver =
+            messageType == "ACK" || messageType == "RESPONSE";
+        const bool attachWrappedKey =
+            requestScopedReceiver ||
+            m_hybridMessageCrypto.shouldAttachWrappedKey(key.keyId);
+        if (attachWrappedKey) {
             if (m_timelineTrace) {
                 logTimelineTrace("provider", "wrapped_key_attached", requestId,
                                  {{"value", "true"},
@@ -5038,7 +5092,9 @@ namespace ndn_service_framework
             }
             envelope.setWrappedMessageKey(ndn::Buffer(wrapped.data(), wrapped.size()));
             serveDataWithIMS(contentData, ckData);
-            m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+            if (!requestScopedReceiver) {
+                m_hybridMessageCrypto.markSendKeyWrapped(key.keyId);
+            }
             ++m_hybridCryptoCounters.nac_abe_key_wrap_count;
             const auto wrapEndUs = timelineSteadyMicroseconds();
             if (m_timelineTrace) {

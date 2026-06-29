@@ -31,6 +31,9 @@ public:
                    std::shared_ptr<DependencyIo> io,
                    std::map<std::string, TensorBundle> initialInputsByScope = {});
 
+  ProviderRoleWorkerSnapshot
+  snapshot() const;
+
 private:
   std::shared_ptr<NativeModelRunner>
   findRunner(const std::string& role) const;

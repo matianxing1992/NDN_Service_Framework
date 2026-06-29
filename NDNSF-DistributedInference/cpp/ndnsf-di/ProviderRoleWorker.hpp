@@ -8,9 +8,11 @@
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <exception>
 #include <future>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -51,6 +53,25 @@ struct ProviderRoleResult
   std::vector<OutputPublishTiming> outputTimings;
 };
 
+struct ProviderRoleWorkerSnapshot
+{
+  std::size_t workerCount = 0;
+  std::size_t readyQueueDepth = 0;
+  std::size_t waitingForInputCount = 0;
+  std::size_t activeWorkerCount = 0;
+  bool stopping = false;
+
+  std::size_t pendingWorkCount() const
+  {
+    return readyQueueDepth + waitingForInputCount + activeWorkerCount;
+  }
+
+  std::size_t idleWorkerCount() const
+  {
+    return workerCount > activeWorkerCount ? workerCount - activeWorkerCount : 0;
+  }
+};
+
 class DependencyIo
 {
 public:
@@ -85,6 +106,9 @@ public:
                std::shared_ptr<NativeModelRunner> runner,
                std::map<std::string, TensorBundle> initialInputsByScope = {});
 
+  ProviderRoleWorkerSnapshot
+  snapshot() const;
+
 private:
   struct WorkItem
   {
@@ -93,8 +117,16 @@ private:
     std::shared_ptr<DependencyIo> io;
     std::shared_ptr<NativeModelRunner> runner;
     std::map<std::string, TensorBundle> initialInputsByScope;
+    std::vector<InputFetchTiming> inputTimings;
     std::shared_ptr<std::promise<ProviderRoleResult>> promise;
     std::chrono::steady_clock::time_point queuedAt;
+  };
+
+  struct PendingInput
+  {
+    DependencyEdge edge;
+    std::future<TensorBundle> future;
+    InputFetchTiming timing;
   };
 
   void
@@ -103,18 +135,31 @@ private:
   void
   execute(const WorkItem& item);
 
+  void
+  scheduleWhenInputsReady(WorkItem item, std::vector<PendingInput> pendingInputs);
+
+  void
+  enqueueReady(WorkItem item);
+
+  static void
+  failPromise(const std::shared_ptr<std::promise<ProviderRoleResult>>& promise,
+              std::exception_ptr failure);
+
   static ProviderRoleResult
-  runRole(const WorkItem& item);
+  runReadyRole(const WorkItem& item);
 
   static TensorBundle
   outputForEdge(const std::map<std::string, TensorBundle>& outputsByScope,
                 const DependencyEdge& edge);
 
 private:
-  std::mutex m_mutex;
+  mutable std::mutex m_mutex;
   std::condition_variable m_cv;
   std::deque<WorkItem> m_queue;
   std::vector<std::thread> m_workers;
+  std::vector<std::thread> m_inputWaiters;
+  std::size_t m_waitingForInputs = 0;
+  std::size_t m_activeWorkers = 0;
   bool m_stopping = false;
 };
 

@@ -11,6 +11,7 @@
 #include "NDNSFMessages.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
+#include "NetworkTelemetry.hpp"
 #include "TimelineTrace.hpp"
 
 #include <functional>
@@ -808,6 +809,7 @@ namespace ndn_service_framework{
             ndn::security::Certificate attrAuthorityCertificate;
             ndn::nacabe::Consumer nacConsumer;
             //ndn::nacabe::Producer nacProducer;
+            NetworkTelemetryStore m_networkTelemetry;
             ndn::nacabe::CacheProducer nacProducer;
             ndn::security::SigningInfo m_signingInfo;
             bool m_timelineTrace = false;

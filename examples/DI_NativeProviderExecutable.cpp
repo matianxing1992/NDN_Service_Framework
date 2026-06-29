@@ -918,10 +918,11 @@ main(int argc, char** argv)
             config.runnerSpecs = std::move(runners);
             config.workerCount = options.workers;
 
-            auto handler = makeNativeProviderCollaborationHandler(std::move(config));
+            auto runtime = makeNativeProviderCollaborationRuntime(std::move(config));
+            provisioningState->setCapacitySnapshotProvider(runtime.capacitySnapshot);
             {
               std::lock_guard<std::mutex> lock(*readyHandlerMutex);
-              *readyHandler = std::move(handler);
+              *readyHandler = std::move(runtime.handler);
             }
             provisioningState->markReady("native model/runtime artifacts ready");
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"

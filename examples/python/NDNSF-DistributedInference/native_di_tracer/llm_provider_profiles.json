@@ -1,0 +1,45 @@
+{
+  "profileId": "minindn-preconfigured-llm-v1",
+  "providers": [
+    {
+      "provider": "/NDNSF-DI/Tracer/provider/qwen-stage0",
+      "node": "ucla",
+      "gpuMemoryMb": 12288,
+      "ramMemoryMb": 32768,
+      "flopsTflops": 18.0,
+      "llmStageCapacityMb": 9216,
+      "llmMaxStageLayers": 18,
+      "modelFamilies": ["llm"]
+    },
+    {
+      "provider": "/NDNSF-DI/Tracer/provider/qwen-stage1",
+      "node": "arizona",
+      "gpuMemoryMb": 8192,
+      "ramMemoryMb": 24576,
+      "flopsTflops": 12.0,
+      "llmStageCapacityMb": 6144,
+      "llmMaxStageLayers": 12,
+      "modelFamilies": ["llm"]
+    },
+    {
+      "provider": "/NDNSF-DI/Tracer/provider/qwen-stage2",
+      "node": "wustl",
+      "gpuMemoryMb": 8192,
+      "ramMemoryMb": 24576,
+      "flopsTflops": 10.0,
+      "llmStageCapacityMb": 6144,
+      "llmMaxStageLayers": 12,
+      "modelFamilies": ["llm"]
+    },
+    {
+      "provider": "/NDNSF-DI/Tracer/provider/qwen-stage3",
+      "node": "neu",
+      "gpuMemoryMb": 6144,
+      "ramMemoryMb": 16384,
+      "flopsTflops": 7.5,
+      "llmStageCapacityMb": 4096,
+      "llmMaxStageLayers": 8,
+      "modelFamilies": ["llm"]
+    }
+  ]
+}

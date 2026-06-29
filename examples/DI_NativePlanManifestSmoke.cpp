@@ -5,6 +5,7 @@
 
 #include <fstream>
 #include <future>
+#include <chrono>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -31,6 +33,30 @@ splitNames(const std::string& value)
     }
   }
   return names;
+}
+
+std::size_t
+metadataSizeValue(const NativeModelRunnerSpec& spec,
+                  const std::string& key,
+                  std::size_t fallback = 0)
+{
+  const auto found = spec.metadata.find(key);
+  if (found == spec.metadata.end() || found->second.empty()) {
+    return fallback;
+  }
+  return static_cast<std::size_t>(std::stoull(found->second));
+}
+
+double
+metadataDoubleValue(const NativeModelRunnerSpec& spec,
+                    const std::string& key,
+                    double fallback = 0.0)
+{
+  const auto found = spec.metadata.find(key);
+  if (found == spec.metadata.end() || found->second.empty()) {
+    return fallback;
+  }
+  return std::stod(found->second);
 }
 
 std::vector<NamedTensor>
@@ -176,6 +202,9 @@ outputBytes(const ProviderRoleResult& result)
 std::string
 tracerProviderForRole(const std::string& assignmentName, const std::string& role)
 {
+  if (assignmentName == "single-provider") {
+    return "/NDNSF-DI/Tracer/provider/single";
+  }
   const std::string prefix = assignmentName == "alternate" ?
     "/NDNSF-DI/Tracer/alt-provider" : "/NDNSF-DI/Tracer/provider";
 
@@ -248,7 +277,8 @@ main(int argc, char** argv)
   if (argc < 3) {
     std::cerr << "usage: " << argv[0]
               << " <native-execution-plan.json> <service-manifest.json>"
-              << " [service-name] [--timing-csv <path>] [--assignment default|alternate]\n";
+              << " [service-name] [--timing-csv <path>]"
+              << " [--assignment default|alternate|single-provider]\n";
     return 2;
   }
 
@@ -266,11 +296,13 @@ main(int argc, char** argv)
     }
     else if (arg == "--assignment") {
       if (i + 1 >= argc) {
-        std::cerr << "--assignment requires default or alternate\n";
+        std::cerr << "--assignment requires default, alternate, or single-provider\n";
         return 2;
       }
       assignmentName = argv[++i];
-      if (assignmentName != "default" && assignmentName != "alternate") {
+      if (assignmentName != "default" &&
+          assignmentName != "alternate" &&
+          assignmentName != "single-provider") {
         std::cerr << "unknown assignment: " << assignmentName << "\n";
         return 2;
       }
@@ -318,6 +350,11 @@ main(int argc, char** argv)
               (void)findTensor(availableInputs, name);
             }
           }
+          const auto executionDelayMs = metadataDoubleValue(spec, "executionDelayMs");
+          if (executionDelayMs > 0.0) {
+            std::this_thread::sleep_for(
+              std::chrono::duration<double, std::milli>(executionDelayMs));
+          }
 
           auto outputNames = splitNames(spec.metadata.count("output_tensors") ?
                                         spec.metadata.at("output_tensors") : "");
@@ -331,6 +368,19 @@ main(int argc, char** argv)
           for (const auto& name : outputNames) {
             outputs.push_back(makeFloat32Tensor(name, {1, 1}, float32Payload({value})));
             value += 1.0f;
+          }
+          const auto padBytes = metadataSizeValue(spec, "outputBundlePadBytes");
+          if (padBytes > 0) {
+            auto padName = spec.metadata.count("outputBundlePadTensor") ?
+              spec.metadata.at("outputBundlePadTensor") : "__ndnsf_padding";
+            NamedTensor padding;
+            padding.name = std::move(padName);
+            padding.elementType = TensorElementType::Float32;
+            padding.shape = {static_cast<std::int64_t>((padBytes + sizeof(float) - 1) /
+                                                       sizeof(float))};
+            padding.payload.assign(padding.shape.front() * sizeof(float), 0);
+            padding.payload.resize(padBytes, 0);
+            outputs.push_back(std::move(padding));
           }
           return std::map<std::string, TensorBundle>{
             {"onnx-output-bundle", makeEncodedTensorBundle("onnx-output-bundle", outputs)},

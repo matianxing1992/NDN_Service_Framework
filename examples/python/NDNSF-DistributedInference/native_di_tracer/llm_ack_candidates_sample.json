@@ -1,0 +1,29 @@
+{
+  "profileId": "minindn-ack-derived-llm-v1",
+  "candidates": [
+    {
+      "providerName": "/NDNSF-DI/Tracer/provider/backbone",
+      "node": "ucla",
+      "status": true,
+      "payload": "roles=/LLM/Stage/0;queue=0;readyQueue=0;waitingInputs=0;activeWorkers=0;workers=1;idleWorkers=1;hasModel=1;gpuMemoryMb=12288;ramMemoryMb=32768;flopsTflops=18.0;llmStageCapacityMb=9216;llmMaxStageLayers=18;modelFamilies=llm,onnxruntime;canProvision=0;backends=onnxruntime;runtimeStatus=ready;"
+    },
+    {
+      "providerName": "/NDNSF-DI/Tracer/provider/head0",
+      "node": "arizona",
+      "status": true,
+      "payload": "roles=/LLM/Stage/1;queue=0;readyQueue=0;waitingInputs=0;activeWorkers=0;workers=1;idleWorkers=1;hasModel=1;gpuMemoryMb=8192;ramMemoryMb=24576;flopsTflops=12.0;llmStageCapacityMb=6144;llmMaxStageLayers=12;modelFamilies=llm,onnxruntime;canProvision=0;backends=onnxruntime;runtimeStatus=ready;"
+    },
+    {
+      "providerName": "/NDNSF-DI/Tracer/provider/head1",
+      "node": "wustl",
+      "status": true,
+      "payload": "roles=/LLM/Stage/2;queue=0;readyQueue=0;waitingInputs=0;activeWorkers=0;workers=1;idleWorkers=1;hasModel=1;gpuMemoryMb=8192;ramMemoryMb=24576;flopsTflops=10.0;llmStageCapacityMb=6144;llmMaxStageLayers=12;modelFamilies=llm,onnxruntime;canProvision=0;backends=onnxruntime;runtimeStatus=ready;"
+    },
+    {
+      "providerName": "/NDNSF-DI/Tracer/provider/merge",
+      "node": "neu",
+      "status": true,
+      "payload": "roles=/LLM/Stage/3;queue=0;readyQueue=0;waitingInputs=0;activeWorkers=0;workers=1;idleWorkers=1;hasModel=1;gpuMemoryMb=6144;ramMemoryMb=16384;flopsTflops=7.5;llmStageCapacityMb=4096;llmMaxStageLayers=8;modelFamilies=llm,onnxruntime;canProvision=0;backends=onnxruntime;runtimeStatus=ready;"
+    }
+  ]
+}

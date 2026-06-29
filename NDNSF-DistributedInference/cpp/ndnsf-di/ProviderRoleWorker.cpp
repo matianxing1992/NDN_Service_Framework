@@ -26,6 +26,11 @@ ProviderRoleWorker::~ProviderRoleWorker()
     m_stopping = true;
   }
   m_cv.notify_all();
+  for (auto& waiter : m_inputWaiters) {
+    if (waiter.joinable()) {
+      waiter.join();
+    }
+  }
   for (auto& worker : m_workers) {
     if (worker.joinable()) {
       worker.join();
@@ -72,18 +77,120 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
     std::move(io),
     std::move(runner),
     std::move(initialInputsByScope),
+    {},
     promise,
     std::chrono::steady_clock::now(),
   };
+
+  std::vector<PendingInput> pendingInputs;
+  pendingInputs.reserve(item.role.inputs.size());
+  try {
+    for (const auto& edge : item.role.inputs) {
+      InputFetchTiming timing;
+      timing.producerRole = edge.producerRole;
+      timing.scope = edge.scope;
+      timing.plannedDataName = edge.plannedDataName;
+      timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
+      timing.expectedSegments = edge.expectedSegments;
+      timing.expectedBytes = edge.expectedBytes;
+      timing.prefetchStartedAt = std::chrono::steady_clock::now();
+      pendingInputs.push_back(PendingInput{
+        edge,
+        item.io->prefetchInput(item.sessionId, edge),
+        std::move(timing),
+      });
+    }
+  }
+  catch (...) {
+    promise->set_exception(std::current_exception());
+    return future;
+  }
+
+  if (pendingInputs.empty()) {
+    enqueueReady(std::move(item));
+  }
+  else {
+    scheduleWhenInputsReady(std::move(item), std::move(pendingInputs));
+  }
+  return future;
+}
+
+void
+ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
+                                            std::vector<PendingInput> pendingInputs)
+{
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_stopping) {
-      throw std::logic_error("ProviderRoleWorker is stopping");
+      failPromise(item.promise,
+                  std::make_exception_ptr(std::logic_error(
+                    "ProviderRoleWorker is stopping")));
+      return;
+    }
+    ++m_waitingForInputs;
+  }
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_inputWaiters.emplace_back(
+    [this, item = std::move(item), pendingInputs = std::move(pendingInputs)] () mutable {
+      try {
+        for (auto& pending : pendingInputs) {
+          auto bundle = pending.future.get();
+          pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
+          pending.timing.bytes = bundle.payload.size();
+          item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
+          item.inputTimings.push_back(std::move(pending.timing));
+        }
+        enqueueReady(std::move(item));
+      }
+      catch (...) {
+        failPromise(item.promise, std::current_exception());
+      }
+      std::lock_guard<std::mutex> lock(m_mutex);
+      if (m_waitingForInputs > 0) {
+        --m_waitingForInputs;
+      }
+    });
+}
+
+void
+ProviderRoleWorker::enqueueReady(WorkItem item)
+{
+  item.queuedAt = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_stopping) {
+      failPromise(item.promise,
+                  std::make_exception_ptr(std::logic_error(
+                    "ProviderRoleWorker is stopping")));
+      return;
     }
     m_queue.push_back(std::move(item));
   }
   m_cv.notify_one();
-  return future;
+}
+
+ProviderRoleWorkerSnapshot
+ProviderRoleWorker::snapshot() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ProviderRoleWorkerSnapshot snapshot;
+  snapshot.workerCount = m_workers.size();
+  snapshot.readyQueueDepth = m_queue.size();
+  snapshot.waitingForInputCount = m_waitingForInputs;
+  snapshot.activeWorkerCount = m_activeWorkers;
+  snapshot.stopping = m_stopping;
+  return snapshot;
+}
+
+void
+ProviderRoleWorker::failPromise(const std::shared_ptr<std::promise<ProviderRoleResult>>& promise,
+                                std::exception_ptr failure)
+{
+  try {
+    promise->set_exception(failure);
+  }
+  catch (const std::future_error&) {
+  }
 }
 
 void
@@ -99,8 +206,15 @@ ProviderRoleWorker::workerLoop()
       }
       item = std::move(m_queue.front());
       m_queue.pop_front();
+      ++m_activeWorkers;
     }
     execute(item);
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      if (m_activeWorkers > 0) {
+        --m_activeWorkers;
+      }
+    }
   }
 }
 
@@ -108,7 +222,7 @@ void
 ProviderRoleWorker::execute(const WorkItem& item)
 {
   try {
-    item.promise->set_value(runRole(item));
+    item.promise->set_value(runReadyRole(item));
   }
   catch (...) {
     item.promise->set_exception(std::current_exception());
@@ -116,41 +230,17 @@ ProviderRoleWorker::execute(const WorkItem& item)
 }
 
 ProviderRoleResult
-ProviderRoleWorker::runRole(const WorkItem& item)
+ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
   const auto workerStartedAt = std::chrono::steady_clock::now();
-  std::vector<std::future<TensorBundle>> futures;
-  std::vector<InputFetchTiming> inputTimings;
-  futures.reserve(item.role.inputs.size());
-  inputTimings.reserve(item.role.inputs.size());
-
-  for (const auto& edge : item.role.inputs) {
-    InputFetchTiming timing;
-    timing.producerRole = edge.producerRole;
-    timing.scope = edge.scope;
-    timing.plannedDataName = edge.plannedDataName;
-    timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
-    timing.expectedSegments = edge.expectedSegments;
-    timing.expectedBytes = edge.expectedBytes;
-    timing.prefetchStartedAt = std::chrono::steady_clock::now();
-    futures.push_back(item.io->prefetchInput(item.sessionId, edge));
-    inputTimings.push_back(timing);
-  }
-
   std::map<std::string, TensorBundle> inputsByScope = item.initialInputsByScope;
-  for (std::size_t i = 0; i < futures.size(); ++i) {
-    auto bundle = futures[i].get();
-    inputTimings[i].fetchCompletedAt = std::chrono::steady_clock::now();
-    inputTimings[i].bytes = bundle.payload.size();
-    inputsByScope[item.role.inputs[i].scope] = std::move(bundle);
-  }
 
   ProviderRoleResult result;
   result.timing.role = item.role.role;
   result.timing.queuedAt = item.queuedAt;
   result.timing.workerStartedAt = workerStartedAt;
   result.timing.startedAt = std::chrono::steady_clock::now();
-  result.inputTimings = std::move(inputTimings);
+  result.inputTimings = item.inputTimings;
 
   RoleExecutionContext ctx;
   ctx.sessionId = item.sessionId;

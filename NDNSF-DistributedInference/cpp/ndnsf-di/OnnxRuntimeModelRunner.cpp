@@ -23,6 +23,7 @@
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 namespace ndnsf::di {
 namespace {
@@ -116,6 +117,40 @@ metadataValue(const NativeModelRunnerSpec& spec,
     }
   }
   return "";
+}
+
+std::size_t
+metadataSizeValue(const NativeModelRunnerSpec& spec,
+                  const std::vector<std::string>& keys,
+                  std::size_t fallback = 0)
+{
+  const auto value = metadataValue(spec, keys);
+  if (value.empty()) {
+    return fallback;
+  }
+  try {
+    return static_cast<std::size_t>(std::stoull(value));
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("invalid ONNX Runtime runner size metadata: " + value);
+  }
+}
+
+double
+metadataDoubleValue(const NativeModelRunnerSpec& spec,
+                    const std::vector<std::string>& keys,
+                    double fallback = 0.0)
+{
+  const auto value = metadataValue(spec, keys);
+  if (value.empty()) {
+    return fallback;
+  }
+  try {
+    return std::stod(value);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("invalid ONNX Runtime runner double metadata: " + value);
+  }
 }
 
 std::vector<std::string>
@@ -382,6 +417,15 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     outputNamePtrs.data(),
     outputNamePtrs.size());
   const auto runDone = std::chrono::steady_clock::now();
+  const auto executionDelayMs = metadataDoubleValue(
+    m_spec,
+    {"executionDelayMs", "execution_delay_ms", "roleExecutionDelayMs",
+     "role_execution_delay_ms"});
+  if (executionDelayMs > 0.0) {
+    std::this_thread::sleep_for(
+      std::chrono::duration<double, std::milli>(executionDelayMs));
+  }
+  const auto delayDone = std::chrono::steady_clock::now();
 
   std::vector<NamedTensor> namedOutputs;
   namedOutputs.reserve(outputs.size());
@@ -418,6 +462,26 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     result.emplace(scope, std::move(bundle));
   }
   else {
+    const auto padBytes = metadataSizeValue(
+      m_spec,
+      {"outputBundlePadBytes", "output_bundle_pad_bytes", "padOutputBytes",
+       "pad_output_bytes"});
+    if (padBytes > 0) {
+      NamedTensor padding;
+      padding.name = metadataValue(
+        m_spec,
+        {"outputBundlePadTensor", "output_bundle_pad_tensor",
+         "padTensorName", "pad_tensor_name"});
+      if (padding.name.empty()) {
+        padding.name = "__ndnsf_padding";
+      }
+      padding.elementType = TensorElementType::Float32;
+      padding.shape = {static_cast<std::int64_t>((padBytes + sizeof(float) - 1) /
+                                                 sizeof(float))};
+      padding.payload.assign(padding.shape.front() * sizeof(float), 0);
+      padding.payload.resize(padBytes, 0);
+      namedOutputs.push_back(std::move(padding));
+    }
     TensorBundle bundle = makeEncodedTensorBundle("onnx-output-bundle", namedOutputs);
     const auto bundleScope = metadataValue(
       m_spec,
@@ -434,7 +498,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
               << " collect_ms=" << elapsedMs(collectStart, runStart)
               << " session_ms=0"
               << " run_ms=" << elapsedMs(runStart, runDone)
-              << " publish_ms=" << elapsedMs(runDone, packageDone)
+              << " delay_ms=" << elapsedMs(runDone, delayDone)
+              << " publish_ms=" << elapsedMs(delayDone, packageDone)
               << " session_cache=hit"
               << std::endl;
   }
