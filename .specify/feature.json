@@ -1,4 +1,4 @@
 {
-  "feature": "specs/027-llm-resource-aware-planning",
-  "feature_directory": "specs/027-llm-resource-aware-planning"
+  "feature": "specs/040-di-runtime-v1-long-context",
+  "feature_directory": "specs/040-di-runtime-v1-long-context"
 }
