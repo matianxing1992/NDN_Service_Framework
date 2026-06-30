@@ -11,6 +11,8 @@ from ndnsf_distributed_inference.runtime_v1 import (
     BoundedDependencyTransferQueues,
     ContextObjectKind,
     DependencyTransferItem,
+    ExactForwardCacheEntry,
+    ExactForwardCacheManager,
     FailureAction,
     KvCacheTelemetry,
     LongContextManager,
@@ -26,6 +28,7 @@ from ndnsf_distributed_inference.runtime_v1 import (
     choose_cache_placement,
     compress_payload,
     encode_ack_metadata,
+    exact_forward_cache_key_for_stage,
     generate_fallback_plans,
     make_plan_lease,
     parse_ack_metadata,
@@ -88,6 +91,132 @@ class RuntimeV1ContractsTest(unittest.TestCase):
         telemetry = manager.telemetry()
         self.assertEqual(telemetry.hits, 1)
         self.assertEqual(telemetry.misses, 1)
+
+    def test_exact_forward_cache_hits_only_identical_forward_scope(self) -> None:
+        model = ModelManifestV1(
+            model_id="qwen-test",
+            revision="r1",
+            tokenizer_id="qwen-tokenizer",
+            layers=14,
+            kv_cache_bytes_per_token_per_layer=64,
+        )
+        stage = {
+            "stageId": "stage-0",
+            "role": "/LLM/Stage/0",
+            "layerStart": 0,
+            "layerEnd": 6,
+        }
+        key = exact_forward_cache_key_for_stage(
+            model,
+            stage,
+            token_ids=[101, 102, 103],
+            plan_hash="plan-a",
+            split_layout_hash="layout-a",
+            runtime_backend="onnxruntime",
+            dtype="float16",
+            quantization="none",
+            security_epoch="epoch-1",
+        )
+        manager = ExactForwardCacheManager(budget_mb=64)
+        manager.put(ExactForwardCacheEntry(
+            key=key,
+            provider="llm-4gb",
+            object_name=key.data_name(provider="/llm-4gb"),
+            byte_count=1024,
+            token_count=3,
+        ))
+
+        self.assertIsNotNone(manager.get(key))
+        token_miss = exact_forward_cache_key_for_stage(
+            model,
+            stage,
+            token_ids=[101, 102, 104],
+            plan_hash="plan-a",
+            split_layout_hash="layout-a",
+            runtime_backend="onnxruntime",
+            dtype="float16",
+            quantization="none",
+            security_epoch="epoch-1",
+        )
+        stage_miss = exact_forward_cache_key_for_stage(
+            model,
+            {**stage, "layerEnd": 7},
+            token_ids=[101, 102, 103],
+            plan_hash="plan-a",
+            split_layout_hash="layout-a",
+            runtime_backend="onnxruntime",
+            dtype="float16",
+            quantization="none",
+            security_epoch="epoch-1",
+        )
+        plan_miss = exact_forward_cache_key_for_stage(
+            model,
+            stage,
+            token_ids=[101, 102, 103],
+            plan_hash="plan-b",
+            split_layout_hash="layout-b",
+            runtime_backend="onnxruntime",
+            dtype="float16",
+            quantization="none",
+            security_epoch="epoch-1",
+        )
+        self.assertIsNone(manager.get(token_miss))
+        self.assertIsNone(manager.get(stage_miss))
+        self.assertIsNone(manager.get(plan_miss))
+
+        telemetry = manager.telemetry()
+        self.assertEqual(telemetry.hits, 1)
+        self.assertEqual(telemetry.misses, 3)
+        self.assertEqual(telemetry.resident_exact_cache_key_digests, (key.digest(),))
+
+    def test_exact_forward_cache_uses_provider_local_object_names(self) -> None:
+        model = ModelManifestV1(
+            model_id="qwen-test",
+            revision="r1",
+            tokenizer_id="qwen-tokenizer",
+            layers=14,
+        )
+        stage = {
+            "stageId": "stage-0",
+            "role": "/LLM/Stage/0",
+            "layerStart": 0,
+            "layerEnd": 6,
+        }
+        key = exact_forward_cache_key_for_stage(
+            model,
+            stage,
+            token_ids=[1, 2, 3],
+            plan_hash="plan-a",
+            split_layout_hash="layout-a",
+            runtime_backend="onnxruntime",
+            security_epoch="epoch-1",
+        )
+        provider_name = key.data_name(provider="/llm-4gb")
+        other_provider_name = key.data_name(provider="/llm-8gb")
+        self.assertNotEqual(provider_name, other_provider_name)
+        self.assertTrue(provider_name.startswith("/llm-4gb/EXACT-FORWARD-CACHE/"))
+
+        manager = ExactForwardCacheManager()
+        manager.put(ExactForwardCacheEntry(
+            key=key,
+            provider="llm-4gb",
+            object_name=provider_name,
+            byte_count=512,
+            token_count=3,
+        ))
+        self.assertIsNotNone(manager.get(key))
+        self.assertEqual(manager.telemetry().resident_exact_cache_key_digests, (key.digest(),))
+
+    def test_ack_metadata_does_not_advertise_provider_local_cache_keys(self) -> None:
+        telemetry = RuntimeTelemetryV1(
+            provider="llm-8gb",
+            runtime_backend="onnxruntime",
+            kv_cache=KvCacheTelemetry(
+                resident_exact_cache_key_digests=("exact-key-a", "exact-key-b"),
+            ),
+        )
+        fields = parse_ack_metadata(encode_ack_metadata(telemetry.to_ack_fields()))
+        self.assertNotIn("residentExactCacheKeyDigests", fields)
 
     def test_cache_placement_prefers_resident_prefix(self) -> None:
         providers = [
@@ -282,6 +411,11 @@ class RuntimeV1ContractsTest(unittest.TestCase):
             self.assertEqual(evidence["status"], "available")
             self.assertTrue(evidence["allocationMatchesPolicy"])
             self.assertEqual(evidence["cacheProvider"], "llm-4gb")
+            self.assertTrue(evidence["exactForwardCacheHit"])
+            self.assertIn("exactForwardCacheKeyDigest", evidence)
+            self.assertEqual(evidence["exactForwardCacheSource"], "provider-local")
+            self.assertTrue(evidence["exactForwardCacheObjectName"].startswith(
+                "/llm-4gb/EXACT-FORWARD-CACHE/"))
             self.assertGreater(evidence["timeToFirstTokenMs"], 0)
             self.assertTrue(Path(evidence["leasePath"]).exists())
             self.assertTrue(Path(evidence["telemetryCsv"]).exists())

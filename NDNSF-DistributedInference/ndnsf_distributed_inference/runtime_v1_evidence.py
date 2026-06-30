@@ -6,10 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from .runtime_v1 import (
+    ExactForwardCacheEntry,
+    ExactForwardCacheManager,
     KvCacheTelemetry,
     ModelManifestV1,
     RuntimeTelemetryV1,
     build_local_llm_plan,
+    exact_forward_cache_key_for_stage,
     export_telemetry_csv,
     load_provider_profiles,
     read_json,
@@ -53,9 +56,9 @@ def _decision_table(lease_layout: dict[str, Any], *, prefix_id: str,
             "reason": "Only use shard splits when no provider can fit a complete stage.",
         },
         {
-            "choice": "cached-prefix-reuse",
+            "choice": "exact-forward-cache",
             "selected": bool(prefix_id),
-            "reason": "Keep reusable prefix or session KV state close to the selected provider.",
+            "reason": "Reuse only when token prefix, model, plan, stage definition, runtime, and security epoch match.",
         },
         {
             "choice": "streaming-decode",
@@ -101,6 +104,35 @@ def write_minindn_runtime_v1_evidence(*,
     )
     allocation = lease.layout.get("summary", {}).get("layerAllocation", {})
     cache_provider = lease.cache_placement.provider if lease.cache_placement else ""
+    plan_hash = lease.plan_key.digest()
+    split_layout_hash = lease.plan_id
+    cache_stage = next(
+        (stage for stage in lease.layout.get("stages", [])
+         if str(stage.get("provider", "")) == cache_provider),
+        (lease.layout.get("stages") or [{}])[0],
+    )
+    exact_cache_key = exact_forward_cache_key_for_stage(
+        model,
+        cache_stage,
+        token_ids=range(context_tokens),
+        plan_hash=plan_hash,
+        split_layout_hash=split_layout_hash,
+        runtime_backend="minindn-native-tracer",
+        dtype="float16",
+        quantization="none",
+        security_epoch="minindn",
+    )
+    exact_cache = ExactForwardCacheManager()
+    if prefix_id and cache_provider:
+        exact_cache.put(ExactForwardCacheEntry(
+            key=exact_cache_key,
+            provider=cache_provider,
+            object_name=exact_cache_key.data_name(provider=f"/{cache_provider}"),
+            byte_count=int(model.kv_cache_mb(context_tokens, max(1, int(cache_stage.get("layerCount", 1)))) *
+                           1024 * 1024),
+            token_count=context_tokens,
+        ))
+    exact_cache_hit = exact_cache.get(exact_cache_key) is not None
     telemetry: dict[str, RuntimeTelemetryV1] = {}
     for provider in providers:
         assigned_layers = int(allocation.get(provider.provider, 0))
@@ -109,8 +141,8 @@ def write_minindn_runtime_v1_evidence(*,
         misses = 0
         if provider.provider == cache_provider:
             kv_used = model.kv_cache_mb(context_tokens, max(1, assigned_layers))
-            hits = 1 if prefix_id else 0
-            misses = 0 if prefix_id else 1
+            hits = 1 if exact_cache_hit else 0
+            misses = 0 if exact_cache_hit else 1
         telemetry[provider.provider] = RuntimeTelemetryV1(
             provider=provider.provider,
             active_workers=min(max(1, provider.max_workers), 1),
@@ -125,6 +157,10 @@ def write_minindn_runtime_v1_evidence(*,
                 max_context_tokens=provider.max_context_tokens,
                 resident_prefix_ids=(prefix_id,) if prefix_id and provider.provider == cache_provider else (),
                 resident_session_ids=(session_id,) if session_id and provider.provider == cache_provider else (),
+                resident_exact_cache_key_digests=(
+                    (exact_cache_key.digest(),)
+                    if exact_cache_hit and provider.provider == cache_provider else ()
+                ),
                 hits=hits,
                 misses=misses,
             ),
@@ -175,6 +211,11 @@ def write_minindn_runtime_v1_evidence(*,
         "generatedTokens": generated_tokens,
         "cacheProvider": cache_provider,
         "cacheExpectedHit": bool(lease.cache_placement.expected_hit) if lease.cache_placement else False,
+        "exactForwardCacheKeyDigest": exact_cache_key.digest(),
+        "exactForwardCacheHit": exact_cache_hit,
+        "exactForwardCacheObjectName": exact_cache_key.data_name(
+            provider=f"/{cache_provider}" if cache_provider else ""),
+        "exactForwardCacheSource": "provider-local",
         "fallbackPlanIds": list(lease.fallback_plan_ids),
         "timeToFirstTokenMs": plain_generation["time_to_first_token_ms"],
         "interTokenMs": plain_generation["inter_token_ms"],

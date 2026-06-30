@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace ndnsf::di {
@@ -51,6 +52,8 @@ struct ProviderRoleResult
   RoleTiming timing;
   std::vector<InputFetchTiming> inputTimings;
   std::vector<OutputPublishTiming> outputTimings;
+  bool exactForwardCacheHit = false;
+  std::string exactForwardCacheKey;
 };
 
 struct ProviderRoleWorkerSnapshot
@@ -145,8 +148,18 @@ private:
   failPromise(const std::shared_ptr<std::promise<ProviderRoleResult>>& promise,
               std::exception_ptr failure);
 
-  static ProviderRoleResult
+  ProviderRoleResult
   runReadyRole(const WorkItem& item);
+
+  std::map<std::string, TensorBundle>
+  getCachedOutputs(const std::string& key);
+
+  void
+  putCachedOutputs(std::string key, std::map<std::string, TensorBundle> outputs);
+
+  static std::string
+  exactForwardCacheKeyFor(const WorkItem& item,
+                          const std::map<std::string, TensorBundle>& inputsByScope);
 
   static TensorBundle
   outputForEdge(const std::map<std::string, TensorBundle>& outputsByScope,
@@ -158,6 +171,10 @@ private:
   std::deque<WorkItem> m_queue;
   std::vector<std::thread> m_workers;
   std::vector<std::thread> m_inputWaiters;
+  std::mutex m_exactForwardCacheMutex;
+  std::unordered_map<std::string, std::map<std::string, TensorBundle>> m_exactForwardCache;
+  std::vector<std::string> m_exactForwardCacheOrder;
+  std::size_t m_exactForwardCacheMaxEntries = 128;
   std::size_t m_waitingForInputs = 0;
   std::size_t m_activeWorkers = 0;
   bool m_stopping = false;

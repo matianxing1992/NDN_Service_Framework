@@ -59,6 +59,12 @@ class TransferQueueKind(str, Enum):
     PUBLISH = "publish"
 
 
+class ExactForwardCacheKind(str, Enum):
+    KV_BLOCK = "kv-block"
+    HIDDEN_STATE = "hidden-state"
+    LOGITS = "logits"
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -167,6 +173,7 @@ class KvCacheTelemetry:
     max_context_tokens: int = 0
     resident_prefix_ids: tuple[str, ...] = ()
     resident_session_ids: tuple[str, ...] = ()
+    resident_exact_cache_key_digests: tuple[str, ...] = ()
     hits: int = 0
     misses: int = 0
     evictions: int = 0
@@ -189,6 +196,9 @@ class KvCacheTelemetry:
             resident_session_ids=tuple(_string_list(payload.get(
                 "residentSessionIds",
                 payload.get("resident_session_ids", ())))),
+            resident_exact_cache_key_digests=tuple(_string_list(payload.get(
+                "residentExactCacheKeyDigests",
+                payload.get("resident_exact_cache_key_digests", ())))),
             hits=int(payload.get("hits", 0) or 0),
             misses=int(payload.get("misses", 0) or 0),
             evictions=int(payload.get("evictions", 0) or 0),
@@ -402,6 +412,218 @@ class ModelManifestV1:
             max(0, int(self.kv_cache_bytes_per_token_per_layer)) /
             (1024.0 * 1024.0)
         )
+
+
+def exact_token_prefix_digest(token_ids: Iterable[int], *,
+                              tokenizer_id: str = "",
+                              length: int = 24) -> str:
+    """Digest token IDs, not text meaning, for strict forward-cache lookup."""
+
+    normalized = [int(token_id) for token_id in token_ids]
+    if any(token_id < 0 for token_id in normalized):
+        raise ValueError("token IDs must be non-negative integers")
+    return stable_digest({
+        "schema": "ndnsf-di-exact-token-prefix-v1",
+        "tokenizerId": tokenizer_id,
+        "tokenIds": normalized,
+    }, length=length)
+
+
+@dataclass(frozen=True)
+class StageDefinitionV1:
+    role: str
+    stage_id: str = ""
+    layer_start: int = 0
+    layer_end: int = -1
+    model_id: str = ""
+    model_revision: str = ""
+    plan_hash: str = ""
+    split_layout_hash: str = ""
+    runtime_backend: str = ""
+    export_artifact_hash: str = ""
+
+    @property
+    def layer_count(self) -> int:
+        if self.layer_end < self.layer_start:
+            return 0
+        return self.layer_end - self.layer_start + 1
+
+    def digest(self) -> str:
+        return stable_digest(self, length=24)
+
+
+@dataclass(frozen=True)
+class ExactForwardCacheKey:
+    token_prefix_digest: str
+    tokenizer_id: str
+    model_id: str
+    model_revision: str = ""
+    model_artifact_hash: str = ""
+    plan_hash: str = ""
+    split_layout_hash: str = ""
+    stage_definition_digest: str = ""
+    role: str = ""
+    layer_start: int = 0
+    layer_end: int = -1
+    runtime_backend: str = ""
+    export_artifact_hash: str = ""
+    position_state_digest: str = ""
+    dtype: str = ""
+    quantization: str = ""
+    security_epoch: str = ""
+    cache_epoch: str = ""
+    cache_kind: ExactForwardCacheKind = ExactForwardCacheKind.KV_BLOCK
+
+    def digest(self) -> str:
+        return stable_digest(self, length=24)
+
+    def data_name(self, *, provider: str = "") -> str:
+        prefix = provider.rstrip("/") if provider else "/NDNSF/DI/PROVIDER-LOCAL"
+        return f"{prefix}/EXACT-FORWARD-CACHE/{self.digest()}"
+
+
+@dataclass(frozen=True)
+class ExactForwardCacheEntry:
+    key: ExactForwardCacheKey
+    provider: str
+    object_name: str = ""
+    byte_count: int = 0
+    token_count: int = 0
+    created_at_ms: int = field(default_factory=now_ms)
+    expires_at_ms: int = 0
+    local_only: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def key_digest(self) -> str:
+        return self.key.digest()
+
+    def is_valid(self, *, now_ms_value: int | None = None) -> bool:
+        current = now_ms() if now_ms_value is None else int(now_ms_value)
+        return not self.expires_at_ms or current < self.expires_at_ms
+
+
+class ExactForwardCacheManager:
+    def __init__(self, *, budget_mb: float = 0.0):
+        self.budget_mb = float(budget_mb)
+        self._entries: dict[str, ExactForwardCacheEntry] = {}
+        self._hits = 0
+        self._misses = 0
+        self._evictions = 0
+
+    @property
+    def used_mb(self) -> float:
+        return sum(entry.byte_count for entry in self._entries.values()) / (1024.0 * 1024.0)
+
+    def put(self, entry: ExactForwardCacheEntry) -> None:
+        self._entries[entry.key_digest] = entry
+        self._evict_if_needed()
+
+    def get(self, key: ExactForwardCacheKey, *,
+            now_ms_value: int | None = None) -> ExactForwardCacheEntry | None:
+        digest = key.digest()
+        entry = self._entries.get(digest)
+        if entry is None or entry.key != key or not entry.is_valid(now_ms_value=now_ms_value):
+            if entry is not None and not entry.is_valid(now_ms_value=now_ms_value):
+                self._entries.pop(digest, None)
+                self._evictions += 1
+            self._misses += 1
+            return None
+        self._hits += 1
+        return entry
+
+    def telemetry(self) -> KvCacheTelemetry:
+        return KvCacheTelemetry(
+            budget_mb=self.budget_mb,
+            used_mb=self.used_mb,
+            resident_exact_cache_key_digests=tuple(sorted(self._entries)),
+            hits=self._hits,
+            misses=self._misses,
+            evictions=self._evictions,
+        )
+
+    def _evict_if_needed(self) -> None:
+        if self.budget_mb <= 0:
+            return
+        while self.used_mb > self.budget_mb and self._entries:
+            oldest_key = min(
+                self._entries,
+                key=lambda item: self._entries[item].created_at_ms,
+            )
+            self._entries.pop(oldest_key, None)
+            self._evictions += 1
+
+
+def stage_definition_from_plan_stage(stage: dict[str, Any], *,
+                                     model: ModelManifestV1,
+                                     plan_hash: str = "",
+                                     split_layout_hash: str = "",
+                                     runtime_backend: str = "",
+                                     export_artifact_hash: str = "") -> StageDefinitionV1:
+    raw_layer_start = stage.get("layerStart", stage.get("layer_start", 0))
+    raw_layer_end = stage.get("layerEnd", stage.get("layer_end", -1))
+    return StageDefinitionV1(
+        role=str(stage.get("role", "")),
+        stage_id=str(stage.get("stageId", stage.get("stage_id", ""))),
+        layer_start=int(0 if raw_layer_start is None else raw_layer_start),
+        layer_end=int(-1 if raw_layer_end is None else raw_layer_end),
+        model_id=model.model_id,
+        model_revision=model.revision,
+        plan_hash=plan_hash,
+        split_layout_hash=split_layout_hash,
+        runtime_backend=runtime_backend,
+        export_artifact_hash=export_artifact_hash,
+    )
+
+
+def exact_forward_cache_key_for_stage(model: ModelManifestV1,
+                                      stage: dict[str, Any] | StageDefinitionV1,
+                                      *,
+                                      token_ids: Iterable[int],
+                                      plan_hash: str,
+                                      split_layout_hash: str = "",
+                                      model_artifact_hash: str = "",
+                                      runtime_backend: str = "",
+                                      export_artifact_hash: str = "",
+                                      position_state: dict[str, Any] | None = None,
+                                      dtype: str = "",
+                                      quantization: str = "",
+                                      security_epoch: str = "",
+                                      cache_epoch: str = "",
+                                      cache_kind: ExactForwardCacheKind = ExactForwardCacheKind.KV_BLOCK
+                                      ) -> ExactForwardCacheKey:
+    stage_definition = (
+        stage if isinstance(stage, StageDefinitionV1)
+        else stage_definition_from_plan_stage(
+            stage,
+            model=model,
+            plan_hash=plan_hash,
+            split_layout_hash=split_layout_hash,
+            runtime_backend=runtime_backend,
+            export_artifact_hash=export_artifact_hash,
+        )
+    )
+    return ExactForwardCacheKey(
+        token_prefix_digest=exact_token_prefix_digest(token_ids, tokenizer_id=model.tokenizer_id),
+        tokenizer_id=model.tokenizer_id,
+        model_id=model.model_id,
+        model_revision=model.revision,
+        model_artifact_hash=model_artifact_hash,
+        plan_hash=plan_hash,
+        split_layout_hash=split_layout_hash,
+        stage_definition_digest=stage_definition.digest(),
+        role=stage_definition.role,
+        layer_start=stage_definition.layer_start,
+        layer_end=stage_definition.layer_end,
+        runtime_backend=runtime_backend,
+        export_artifact_hash=export_artifact_hash,
+        position_state_digest=stable_digest(position_state or {}, length=24),
+        dtype=dtype,
+        quantization=quantization,
+        security_epoch=security_epoch,
+        cache_epoch=cache_epoch,
+        cache_kind=cache_kind,
+    )
 
 
 @dataclass(frozen=True)
@@ -1102,7 +1324,7 @@ def export_telemetry_csv(path: str | Path, telemetry: Iterable[RuntimeTelemetryV
             "provider", "timestamp_ms", "queue", "ready_queue",
             "waiting_dependencies", "active_workers", "free_memory_mb",
             "model_loaded", "runtime_backend", "kv_budget_mb", "kv_used_mb",
-            "kv_hits", "kv_misses", "kv_evictions",
+            "kv_hits", "kv_misses", "kv_evictions", "exact_cache_key_digests",
         ])
         writer.writeheader()
         for item in telemetry:
@@ -1121,6 +1343,7 @@ def export_telemetry_csv(path: str | Path, telemetry: Iterable[RuntimeTelemetryV
                 "kv_hits": item.kv_cache.hits,
                 "kv_misses": item.kv_cache.misses,
                 "kv_evictions": item.kv_cache.evictions,
+                "exact_cache_key_digests": ",".join(item.kv_cache.resident_exact_cache_key_digests),
             })
 
 
@@ -1168,13 +1391,40 @@ def runtime_v1_smoke() -> dict[str, Any]:
         provider="llm-8gb",
         token_count=1024,
     ), pin=True)
+    smoke_stage = {
+        "stageId": "stage-2",
+        "role": "/LLM/Stage/2",
+        "layerStart": 12,
+        "layerEnd": 27,
+    }
+    exact_cache = ExactForwardCacheManager(budget_mb=2048)
+    exact_key = exact_forward_cache_key_for_stage(
+        model,
+        smoke_stage,
+        token_ids=range(1024),
+        plan_hash="runtime-v1-smoke-plan",
+        split_layout_hash="proportional-2-4-8",
+        runtime_backend="minindn-native-tracer",
+        dtype="float16",
+        quantization="none",
+        security_epoch="smoke",
+    )
+    exact_cache.put(ExactForwardCacheEntry(
+        key=exact_key,
+        provider="llm-8gb",
+        object_name=exact_key.data_name(provider="/llm-8gb"),
+        byte_count=int(model.kv_cache_mb(1024, 16) * 1024 * 1024),
+        token_count=1024,
+    ))
+    exact_cache.get(exact_key)
     telemetry = {
         "llm-8gb": RuntimeTelemetryV1(
             provider="llm-8gb",
             kv_cache=KvCacheTelemetry(
                 budget_mb=2048,
-                used_mb=256,
+                used_mb=exact_cache.telemetry().used_mb,
                 resident_prefix_ids=("uav-mission-prefix",),
+                resident_exact_cache_key_digests=(exact_key.digest(),),
                 hits=1,
             ),
         )
@@ -1189,6 +1439,11 @@ def runtime_v1_smoke() -> dict[str, Any]:
         "allocation": proportional_layer_allocation(providers, 28),
         "cachePlacement": to_plain(placement),
         "cacheTelemetry": to_plain(manager.telemetry()),
+        "exactForwardCache": {
+            "keyDigest": exact_key.digest(),
+            "hitRequires": "exact token prefix, model, plan, stage definition, runtime, and security epoch",
+            "telemetry": to_plain(exact_cache.telemetry()),
+        },
     }
 
 

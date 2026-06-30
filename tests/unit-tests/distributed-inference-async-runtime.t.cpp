@@ -988,6 +988,59 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPublishesEdgeTensorSubsetFromBundle)
   }
 }
 
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerUsesProviderLocalExactForwardCache)
+{
+  RoleSpec role;
+  role.role = "/LLM/Stage/0";
+  role.outputs = {
+    DependencyEdge{"stage0-to-stage1", "/LLM/Stage/0", "/LLM/Stage/1",
+                   "/run/cache/stage0", 1},
+  };
+
+  int runCount = 0;
+  auto runner = makeNativeModelRunner(
+    [&runCount] (const RoleExecutionContext& ctx) {
+      ++runCount;
+      BOOST_REQUIRE(ctx.inputsByScope.count("prompt") == 1);
+      return std::map<std::string, TensorBundle>{
+        {"stage0-to-stage1",
+         bundle("stage0-output", "forward:" + payloadText(ctx.inputsByScope.at("prompt")))},
+      };
+    });
+
+  auto io = std::make_shared<FakeDependencyIo>();
+  ProviderRoleWorker worker(1);
+  auto first = worker.executeAsync(
+    "request-1",
+    role,
+    io,
+    runner,
+    {{"prompt", bundle("prompt", "same-token-prefix")}}).get();
+  auto second = worker.executeAsync(
+    "request-2",
+    role,
+    io,
+    runner,
+    {{"prompt", bundle("prompt", "same-token-prefix")}}).get();
+
+  BOOST_CHECK_EQUAL(runCount, 1);
+  BOOST_CHECK(!first.exactForwardCacheHit);
+  BOOST_CHECK(second.exactForwardCacheHit);
+  BOOST_CHECK_EQUAL(first.exactForwardCacheKey, second.exactForwardCacheKey);
+  BOOST_CHECK_EQUAL(payloadText(second.outputsByScope.at("stage0-to-stage1")),
+                    "forward:same-token-prefix");
+
+  auto third = worker.executeAsync(
+    "request-3",
+    role,
+    io,
+    runner,
+    {{"prompt", bundle("prompt", "different-token-prefix")}}).get();
+  BOOST_CHECK_EQUAL(runCount, 2);
+  BOOST_CHECK(!third.exactForwardCacheHit);
+  BOOST_CHECK_NE(second.exactForwardCacheKey, third.exactForwardCacheKey);
+}
+
 BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendAcceptsEncodedTensorBundleInput)
 {
   const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MODEL");

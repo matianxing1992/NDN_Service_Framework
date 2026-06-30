@@ -3,12 +3,55 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
-#include <stdexcept>
 #include <future>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace ndnsf::di {
+
+namespace {
+
+void
+appendUint64(std::ostringstream& os, std::uint64_t value)
+{
+  os.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+void
+appendString(std::ostringstream& os, const std::string& value)
+{
+  appendUint64(os, static_cast<std::uint64_t>(value.size()));
+  os.write(value.data(), static_cast<std::streamsize>(value.size()));
+}
+
+void
+appendBytes(std::ostringstream& os, const std::vector<std::uint8_t>& value)
+{
+  appendUint64(os, static_cast<std::uint64_t>(value.size()));
+  if (!value.empty()) {
+    os.write(reinterpret_cast<const char*>(value.data()),
+             static_cast<std::streamsize>(value.size()));
+  }
+}
+
+std::string
+fnv1a64Hex(const std::string& value)
+{
+  std::uint64_t hash = 1469598103934665603ULL;
+  for (const auto ch : value) {
+    hash ^= static_cast<unsigned char>(ch);
+    hash *= 1099511628211ULL;
+  }
+  std::ostringstream out;
+  out << std::hex << std::setw(16) << std::setfill('0') << hash;
+  return out.str();
+}
+
+} // namespace
 
 ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount)
 {
@@ -214,6 +257,79 @@ ProviderRoleWorker::failPromise(const std::shared_ptr<std::promise<ProviderRoleR
   }
 }
 
+std::string
+ProviderRoleWorker::exactForwardCacheKeyFor(
+  const WorkItem& item,
+  const std::map<std::string, TensorBundle>& inputsByScope)
+{
+  std::ostringstream os;
+  appendString(os, "ndnsf-di-provider-local-exact-forward-cache-v1");
+  appendUint64(os, reinterpret_cast<std::uintptr_t>(item.runner.get()));
+  appendString(os, item.role.role);
+  appendUint64(os, static_cast<std::uint64_t>(item.role.inputs.size()));
+  for (const auto& edge : item.role.inputs) {
+    appendString(os, edge.scope);
+    appendString(os, edge.producerRole);
+    appendString(os, edge.consumerRole);
+    appendString(os, edge.plannedDataName);
+    appendUint64(os, static_cast<std::uint64_t>(edge.expectedSegments));
+    appendUint64(os, static_cast<std::uint64_t>(edge.expectedBytes));
+    appendUint64(os, static_cast<std::uint64_t>(edge.tensors.size()));
+    for (const auto& tensor : edge.tensors) {
+      appendString(os, tensor);
+    }
+  }
+  appendUint64(os, static_cast<std::uint64_t>(item.role.outputs.size()));
+  for (const auto& edge : item.role.outputs) {
+    appendString(os, edge.scope);
+    appendString(os, edge.producerRole);
+    appendString(os, edge.consumerRole);
+    appendUint64(os, static_cast<std::uint64_t>(edge.tensors.size()));
+    for (const auto& tensor : edge.tensors) {
+      appendString(os, tensor);
+    }
+  }
+  appendUint64(os, static_cast<std::uint64_t>(inputsByScope.size()));
+  for (const auto& input : inputsByScope) {
+    appendString(os, input.first);
+    appendString(os, input.second.name);
+    appendUint64(os, static_cast<std::uint64_t>(input.second.expectedSegments));
+    appendUint64(os, static_cast<std::uint64_t>(input.second.expectedBytes));
+    appendBytes(os, input.second.payload);
+  }
+  return fnv1a64Hex(os.str());
+}
+
+std::map<std::string, TensorBundle>
+ProviderRoleWorker::getCachedOutputs(const std::string& key)
+{
+  std::lock_guard<std::mutex> lock(m_exactForwardCacheMutex);
+  const auto found = m_exactForwardCache.find(key);
+  if (found == m_exactForwardCache.end()) {
+    return {};
+  }
+  return found->second;
+}
+
+void
+ProviderRoleWorker::putCachedOutputs(std::string key,
+                                     std::map<std::string, TensorBundle> outputs)
+{
+  if (m_exactForwardCacheMaxEntries == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(m_exactForwardCacheMutex);
+  if (m_exactForwardCache.find(key) == m_exactForwardCache.end()) {
+    m_exactForwardCacheOrder.push_back(key);
+  }
+  m_exactForwardCache[std::move(key)] = std::move(outputs);
+  while (m_exactForwardCacheOrder.size() > m_exactForwardCacheMaxEntries) {
+    const auto evictKey = m_exactForwardCacheOrder.front();
+    m_exactForwardCacheOrder.erase(m_exactForwardCacheOrder.begin());
+    m_exactForwardCache.erase(evictKey);
+  }
+}
+
 void
 ProviderRoleWorker::workerLoop()
 {
@@ -266,8 +382,15 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   RoleExecutionContext ctx;
   ctx.sessionId = item.sessionId;
   ctx.role = item.role.role;
-  ctx.inputsByScope = std::move(inputsByScope);
-  result.outputsByScope = item.runner->run(ctx);
+  ctx.inputsByScope = inputsByScope;
+
+  result.exactForwardCacheKey = exactForwardCacheKeyFor(item, inputsByScope);
+  result.outputsByScope = getCachedOutputs(result.exactForwardCacheKey);
+  result.exactForwardCacheHit = !result.outputsByScope.empty();
+  if (!result.exactForwardCacheHit) {
+    result.outputsByScope = item.runner->run(ctx);
+    putCachedOutputs(result.exactForwardCacheKey, result.outputsByScope);
+  }
 
   const auto outputReadyAt = std::chrono::steady_clock::now();
   result.outputTimings.reserve(item.role.outputs.size());
