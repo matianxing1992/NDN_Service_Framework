@@ -1,0 +1,19 @@
+{
+  "modelId": "qwen-tiny-proportional-demo",
+  "revision": "minindn-2-4-8-proportional-v1",
+  "modelFamily": "llm",
+  "layers": 28,
+  "memoryPerLayerMb": 96.0,
+  "fixedRuntimeMemoryMb": 256.0,
+  "kvCacheMemoryMb": 128.0,
+  "activationBoundaryMb": 32.0,
+  "flopsPerLayerTflop": 0.030,
+  "contextWindowTokens": 16384,
+  "tokenizerId": "qwen-tokenizer-demo",
+  "kvCacheBytesPerTokenPerLayer": 128,
+  "supportsPrefill": true,
+  "supportsDecode": true,
+  "supportsStreaming": true,
+  "minimumStageLayers": 1,
+  "plannerVersion": "llm-resource-aware-v2"
+}

@@ -1,0 +1,41 @@
+{
+  "profileId": "minindn-llm-2gb-4gb-8gb-v1",
+  "providers": [
+    {
+      "provider": "/NDNSF-DI/Tracer/provider/llm-2gb",
+      "node": "arizona",
+      "gpuMemoryMb": 2048,
+      "ramMemoryMb": 8192,
+      "flopsTflops": 4.0,
+      "llmStageCapacityMb": 2048,
+      "llmMaxStageLayers": 4,
+      "maxContextTokens": 4096,
+      "kvCacheBudgetMb": 512,
+      "modelFamilies": ["llm"]
+    },
+    {
+      "provider": "/NDNSF-DI/Tracer/provider/llm-4gb",
+      "node": "wustl",
+      "gpuMemoryMb": 4096,
+      "ramMemoryMb": 16384,
+      "flopsTflops": 8.0,
+      "llmStageCapacityMb": 4096,
+      "llmMaxStageLayers": 8,
+      "maxContextTokens": 8192,
+      "kvCacheBudgetMb": 1024,
+      "modelFamilies": ["llm"]
+    },
+    {
+      "provider": "/NDNSF-DI/Tracer/provider/llm-8gb",
+      "node": "ucla",
+      "gpuMemoryMb": 8192,
+      "ramMemoryMb": 32768,
+      "flopsTflops": 16.0,
+      "llmStageCapacityMb": 8192,
+      "llmMaxStageLayers": 16,
+      "maxContextTokens": 16384,
+      "kvCacheBudgetMb": 2048,
+      "modelFamilies": ["llm"]
+    }
+  ]
+}

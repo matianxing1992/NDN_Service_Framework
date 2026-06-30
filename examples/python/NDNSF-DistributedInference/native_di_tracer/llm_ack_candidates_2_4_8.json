@@ -1,0 +1,23 @@
+{
+  "profileId": "minindn-ack-llm-2gb-4gb-8gb-v1",
+  "candidates": [
+    {
+      "providerName": "/NDNSF-DI/Tracer/provider/llm-2gb",
+      "node": "arizona",
+      "status": true,
+      "payload": "roles=/LLM/Stage/0;queue=0;readyQueue=0;waitingInputs=0;activeWorkers=0;workers=1;idleWorkers=1;hasModel=1;gpuMemoryMb=2048;ramMemoryMb=8192;flopsTflops=4.0;llmStageCapacityMb=2048;llmMaxStageLayers=4;maxContextTokens=4096;kvCacheBudgetMb=512;kvCacheUsedMb=0;kvCacheHits=0;kvCacheMisses=0;kvCacheEvictions=0;modelFamilies=llm;canProvision=0;backends=onnxruntime;runtimeStatus=ready;"
+    },
+    {
+      "providerName": "/NDNSF-DI/Tracer/provider/llm-4gb",
+      "node": "wustl",
+      "status": true,
+      "payload": "roles=/LLM/Stage/1;queue=0;readyQueue=0;waitingInputs=0;activeWorkers=0;workers=1;idleWorkers=1;hasModel=1;gpuMemoryMb=4096;ramMemoryMb=16384;flopsTflops=8.0;llmStageCapacityMb=4096;llmMaxStageLayers=8;maxContextTokens=8192;kvCacheBudgetMb=1024;kvCacheUsedMb=0;kvCacheHits=0;kvCacheMisses=0;kvCacheEvictions=0;modelFamilies=llm;canProvision=0;backends=onnxruntime;runtimeStatus=ready;"
+    },
+    {
+      "providerName": "/NDNSF-DI/Tracer/provider/llm-8gb",
+      "node": "ucla",
+      "status": true,
+      "payload": "roles=/LLM/Stage/2;queue=0;readyQueue=0;waitingInputs=0;activeWorkers=0;workers=1;idleWorkers=1;hasModel=1;gpuMemoryMb=8192;ramMemoryMb=32768;flopsTflops=16.0;llmStageCapacityMb=8192;llmMaxStageLayers=16;maxContextTokens=16384;kvCacheBudgetMb=2048;kvCacheUsedMb=256;kvCacheHits=1;kvCacheMisses=0;kvCacheEvictions=0;modelFamilies=llm;canProvision=0;backends=onnxruntime;runtimeStatus=ready;"
+    }
+  ]
+}
