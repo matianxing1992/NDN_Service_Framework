@@ -223,6 +223,81 @@ tracerProviderForRole(const std::string& assignmentName, const std::string& role
   throw std::runtime_error("unknown tracer role for assignment: " + role);
 }
 
+std::vector<std::string>
+splitSimpleCsvLine(const std::string& line)
+{
+  std::vector<std::string> fields;
+  std::string current;
+  bool quoted = false;
+  for (std::size_t index = 0; index < line.size(); ++index) {
+    const auto ch = line[index];
+    if (ch == '"') {
+      if (quoted && index + 1 < line.size() && line[index + 1] == '"') {
+        current.push_back('"');
+        ++index;
+      }
+      else {
+        quoted = !quoted;
+      }
+    }
+    else if (ch == ',' && !quoted) {
+      fields.push_back(current);
+      current.clear();
+    }
+    else {
+      current.push_back(ch);
+    }
+  }
+  fields.push_back(current);
+  return fields;
+}
+
+std::size_t
+columnIndex(const std::vector<std::string>& headers, const std::string& name)
+{
+  const auto found = std::find(headers.begin(), headers.end(), name);
+  if (found == headers.end()) {
+    throw std::runtime_error("assignment CSV missing column: " + name);
+  }
+  return static_cast<std::size_t>(std::distance(headers.begin(), found));
+}
+
+NativeProviderAssignment
+assignmentFromCsv(const std::string& path, const NativeExecutionPlan& plan)
+{
+  std::ifstream input(path);
+  if (!input.good()) {
+    throw std::runtime_error("cannot open assignment CSV: " + path);
+  }
+  std::string line;
+  if (!std::getline(input, line)) {
+    throw std::runtime_error("assignment CSV is empty: " + path);
+  }
+  const auto headers = splitSimpleCsvLine(line);
+  const auto roleColumn = columnIndex(headers, "role");
+  const auto providerColumn = columnIndex(headers, "provider");
+
+  NativeProviderAssignment assignment;
+  while (std::getline(input, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    const auto fields = splitSimpleCsvLine(line);
+    if (fields.size() <= std::max(roleColumn, providerColumn)) {
+      throw std::runtime_error("assignment CSV row has too few columns: " + line);
+    }
+    if (!fields[roleColumn].empty() && !fields[providerColumn].empty()) {
+      assignment.providerByRole[fields[roleColumn]] = fields[providerColumn];
+    }
+  }
+  for (const auto& role : plan.roles) {
+    if (assignment.providerByRole.count(role) == 0) {
+      throw std::runtime_error("assignment CSV missing role: " + role);
+    }
+  }
+  return assignment;
+}
+
 std::string
 csvEscape(const std::string& value)
 {
@@ -278,13 +353,15 @@ main(int argc, char** argv)
     std::cerr << "usage: " << argv[0]
               << " <native-execution-plan.json> <service-manifest.json>"
               << " [service-name] [--timing-csv <path>]"
-              << " [--assignment default|alternate|single-provider]\n";
+              << " [--assignment default|alternate|single-provider]"
+              << " [--assignment-csv <path>]\n";
     return 2;
   }
 
   std::string serviceName = "/AI/YOLO/2x2Inference";
   std::string timingCsv;
   std::string assignmentName = "default";
+  std::string assignmentCsv;
   for (int i = 3; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--timing-csv") {
@@ -302,10 +379,18 @@ main(int argc, char** argv)
       assignmentName = argv[++i];
       if (assignmentName != "default" &&
           assignmentName != "alternate" &&
-          assignmentName != "single-provider") {
+          assignmentName != "single-provider" &&
+          assignmentName != "llm-proportional") {
         std::cerr << "unknown assignment: " << assignmentName << "\n";
         return 2;
       }
+    }
+    else if (arg == "--assignment-csv") {
+      if (i + 1 >= argc) {
+        std::cerr << "--assignment-csv requires a path\n";
+        return 2;
+      }
+      assignmentCsv = argv[++i];
     }
     else {
       serviceName = arg;
@@ -328,8 +413,13 @@ main(int argc, char** argv)
     manifestInput, serviceName);
 
   NativeProviderAssignment assignment;
-  for (const auto& role : plan.roles) {
-    assignment.providerByRole[role] = tracerProviderForRole(assignmentName, role);
+  if (!assignmentCsv.empty()) {
+    assignment = assignmentFromCsv(assignmentCsv, plan);
+  }
+  else {
+    for (const auto& role : plan.roles) {
+      assignment.providerByRole[role] = tracerProviderForRole(assignmentName, role);
+    }
   }
 
   auto io = std::make_shared<InMemoryDependencyIo>();
@@ -411,8 +501,11 @@ main(int argc, char** argv)
     resultsByRole.emplace(result.timing.role, std::move(result));
   }
 
-  if (io->publishedScopes().empty() || finalOutputCount == 0) {
+  if (!plan.dependencies.empty() && io->publishedScopes().empty()) {
     throw std::logic_error("native plan/manifest smoke produced no dependency output");
+  }
+  if (finalOutputCount == 0) {
+    throw std::logic_error("native plan/manifest smoke produced no final output");
   }
   if (!timingCsv.empty()) {
     writeTimingCsv(timingCsv, sessionId, assignment, resultsByRole);

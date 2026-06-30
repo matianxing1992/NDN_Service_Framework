@@ -2,8 +2,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <stdexcept>
+#include <future>
 #include <utility>
 
 namespace ndnsf::di {
@@ -108,6 +110,25 @@ ProviderRoleWorker::executeAsync(std::string sessionId,
 
   if (pendingInputs.empty()) {
     enqueueReady(std::move(item));
+  }
+  else if (std::all_of(pendingInputs.begin(), pendingInputs.end(),
+                       [] (const PendingInput& pending) {
+                         return pending.future.wait_for(std::chrono::milliseconds(0)) ==
+                                std::future_status::ready;
+                       })) {
+    try {
+      for (auto& pending : pendingInputs) {
+        auto bundle = pending.future.get();
+        pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
+        pending.timing.bytes = bundle.payload.size();
+        item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
+        item.inputTimings.push_back(std::move(pending.timing));
+      }
+      enqueueReady(std::move(item));
+    }
+    catch (...) {
+      promise->set_exception(std::current_exception());
+    }
   }
   else {
     scheduleWhenInputsReady(std::move(item), std::move(pendingInputs));

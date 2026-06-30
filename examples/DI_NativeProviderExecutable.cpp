@@ -179,11 +179,28 @@ float32Payload(const std::vector<float>& values)
   return payload;
 }
 
+double
+metadataDoubleValue(const NativeModelRunnerSpec& spec,
+                    const std::string& key,
+                    double fallback = 0.0)
+{
+  const auto found = spec.metadata.find(key);
+  if (found == spec.metadata.end() || found->second.empty()) {
+    return fallback;
+  }
+  return std::stod(found->second);
+}
+
 std::shared_ptr<NativeModelRunner>
 makeTracerDeterministicRunner(const NativeModelRunnerSpec& spec)
 {
   return makeNativeModelRunner(
     [spec] (const RoleExecutionContext&) {
+      const auto executionDelayMs = metadataDoubleValue(spec, "executionDelayMs");
+      if (executionDelayMs > 0.0) {
+        std::this_thread::sleep_for(
+          std::chrono::duration<double, std::milli>(executionDelayMs));
+      }
       auto outputNames = splitNames(spec.metadata.count("output_tensors") ?
                                     spec.metadata.at("output_tensors") : "");
       if (outputNames.empty()) {

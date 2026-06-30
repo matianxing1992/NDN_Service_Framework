@@ -979,6 +979,20 @@ struct CapacityAckScore
   double workers = 0.0;
 };
 
+double
+capacityPressure(const CapacityAckScore& score)
+{
+  const auto componentPressure =
+    score.readyQueue + score.waitingInputs + score.activeWorkers;
+  if (score.pendingWork > 0.0 && componentPressure > 0.0) {
+    return score.pendingWork;
+  }
+  if (score.pendingWork > 0.0) {
+    return score.pendingWork;
+  }
+  return componentPressure;
+}
+
 CapacityAckScore
 capacityScoreFromAckPayload(const ndn::Buffer& payload)
 {
@@ -1014,16 +1028,8 @@ isBetterCapacityAck(const nsf::AckCandidate& current,
   const auto currentScore = capacityScoreFromAckPayload(current.ack.getPayload());
   const auto bestScore = capacityScoreFromAckPayload(best.ack.getPayload());
 
-  const auto currentPressure =
-    currentScore.pendingWork +
-    currentScore.readyQueue +
-    currentScore.waitingInputs +
-    currentScore.activeWorkers;
-  const auto bestPressure =
-    bestScore.pendingWork +
-    bestScore.readyQueue +
-    bestScore.waitingInputs +
-    bestScore.activeWorkers;
+  const auto currentPressure = capacityPressure(currentScore);
+  const auto bestPressure = capacityPressure(bestScore);
   if (currentPressure != bestPressure) {
     return currentPressure < bestPressure;
   }

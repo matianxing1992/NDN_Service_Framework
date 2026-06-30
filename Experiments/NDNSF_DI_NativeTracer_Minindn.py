@@ -9,6 +9,7 @@ import json
 import math
 import os
 import signal
+import statistics
 import subprocess
 import sys
 import time
@@ -16,9 +17,11 @@ from pathlib import Path
 from typing import Optional
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 sys.path.insert(0, str(REPO / "Experiments"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
+from ndnsf_distributed_inference.runtime_v1_evidence import write_minindn_runtime_v1_evidence  # noqa: E402
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
 from minindn.apps.nfd import Nfd  # noqa: E402
@@ -30,6 +33,9 @@ from minindn.util import getPopen  # noqa: E402
 TOPO = REPO / "Experiments/Topology/AI_Lab.conf"
 TRACER_DIR = REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer"
 PLAN_TRACER = TRACER_DIR / "plan_tracer.py"
+LLM_BUNDLE_GENERATOR = TRACER_DIR / "generate_llm_proportional_native_bundle.py"
+RUNTIME_V1_MODEL_SPEC = TRACER_DIR / "llm_model_spec_qwen_tiny_proportional.json"
+RUNTIME_V1_PROVIDER_PROFILES = TRACER_DIR / "llm_provider_profiles_2_4_8.json"
 USER_DRIVER = TRACER_DIR / "user_driver.py"
 PROVIDER_EXE = REPO / "build/examples/di-native-provider"
 PLAN_SCHEMA_EXE = REPO / "build/examples/di-native-plan-schema-smoke"
@@ -80,6 +86,30 @@ CAPACITY_POOL_EXTRA_PROVIDERS = [
 ]
 
 LLM_PROVIDER_RESOURCE_PROFILES = {
+    "/NDNSF-DI/Tracer/provider/llm-2gb": {
+        "gpuMemoryMb": "2048",
+        "ramMemoryMb": "8192",
+        "flopsTflops": "4.0",
+        "llmStageCapacityMb": "2048",
+        "llmMaxStageLayers": "4",
+        "modelFamilies": "llm,onnxruntime",
+    },
+    "/NDNSF-DI/Tracer/provider/llm-4gb": {
+        "gpuMemoryMb": "4096",
+        "ramMemoryMb": "16384",
+        "flopsTflops": "8.0",
+        "llmStageCapacityMb": "4096",
+        "llmMaxStageLayers": "8",
+        "modelFamilies": "llm,onnxruntime",
+    },
+    "/NDNSF-DI/Tracer/provider/llm-8gb": {
+        "gpuMemoryMb": "8192",
+        "ramMemoryMb": "32768",
+        "flopsTflops": "16.0",
+        "llmStageCapacityMb": "8192",
+        "llmMaxStageLayers": "16",
+        "modelFamilies": "llm,onnxruntime",
+    },
     "/NDNSF-DI/Tracer/provider/backbone": {
         "gpuMemoryMb": "12288",
         "ramMemoryMb": "32768",
@@ -162,6 +192,20 @@ def assignment_for(name: str) -> dict[str, tuple[str, str]]:
     raise ValueError(f"unknown assignment: {name}")
 
 
+def assignment_from_rows(rows: list[dict[str, str]]) -> dict[str, tuple[str, str]]:
+    assignment: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        role = row["role"]
+        node = row["node"]
+        provider = row["provider"]
+        if not role or not node or not provider:
+            raise ValueError(f"incomplete assignment row: {row}")
+        assignment[role] = (node, provider)
+    if not assignment:
+        raise ValueError("assignment rows are empty")
+    return assignment
+
+
 def runtime_candidate_for_assignment(name: str) -> str:
     if name == "single-provider":
         return "single-provider-serial"
@@ -224,9 +268,11 @@ def write_assignment_csv(path: Path,
                          roles: list[str],
                          assignment: dict[str, tuple[str, str]]) -> list[dict[str, str]]:
     rows = []
-    for role in REQUIRED_ROLES:
+    for role in roles:
         if role not in roles:
             raise RuntimeError(f"generated plan is missing required role: {role}")
+        if role not in assignment:
+            raise RuntimeError(f"assignment {assignment_name} is missing role: {role}")
         node, provider = assignment[role]
         rows.append({
             "assignment": assignment_name,
@@ -241,6 +287,16 @@ def write_assignment_csv(path: Path,
         ])
         writer.writeheader()
         writer.writerows(rows)
+    return rows
+
+
+def write_assignment_csv_rows(path: Path,
+                              rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    required = ["assignment", "role", "provider", "node", "service"]
+    with path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=required)
+        writer.writeheader()
+        writer.writerows([{key: row[key] for key in required} for row in rows])
     return rows
 
 
@@ -313,6 +369,31 @@ def run_plan_tracer(policy_dir: Path,
     return json.loads(summary_path.read_text(encoding="utf-8"))
 
 
+def run_llm_proportional_bundle(policy_dir: Path,
+                                out_dir: Path,
+                                logs_dir: Path,
+                                env: dict[str, str],
+                                planner_mode: str,
+                                assignment_label: str,
+                                role_execution_delay_ms: float,
+                                stage_execution_delay_scale: float,
+                                target_rps: float,
+                                provider_workers: int) -> dict[str, object]:
+    summary_path = out_dir / "policy-summary.json"
+    run_logged("generate-llm-proportional-bundle", [
+        "python3", str(LLM_BUNDLE_GENERATOR),
+        "--out", str(policy_dir),
+        "--summary-json", str(summary_path),
+        "--planner-mode", planner_mode,
+        "--assignment-label", assignment_label,
+        "--stage-execution-delay-ms", str(role_execution_delay_ms),
+        "--stage-execution-delay-scale", str(stage_execution_delay_scale),
+        "--target-rps", str(target_rps),
+        "--provider-workers", str(provider_workers),
+    ], logs_dir, env)
+    return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
 def grouped_provider_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     grouped: dict[tuple[str, str], dict[str, str]] = {}
     for row in rows:
@@ -354,6 +435,7 @@ def validate_prerequisites() -> None:
         str(path) for path in (
             TOPO,
             PLAN_TRACER,
+            LLM_BUNDLE_GENERATOR,
             USER_DRIVER,
             PROVIDER_EXE,
             PLAN_SCHEMA_EXE,
@@ -434,17 +516,22 @@ def run_local_execution_baseline(policy_dir: Path,
                                  logs_dir: Path,
                                  env: dict[str, str],
                                  assignment_name: str,
-                                 assignment_rows: list[dict[str, str]]) -> dict[str, object]:
+                                 assignment_rows: list[dict[str, str]],
+                                 *,
+                                 model_family: str = "yolo-onnx",
+                                 model_format: str = "onnx",
+                                 planner_kind: str = "yolo-detect-auto",
+                                 assignment_csv: Optional[Path] = None) -> dict[str, object]:
     timing_csv = out_dir / "local-execution-timing.csv"
     run_logged("local-plan-schema-smoke", [
         str(PLAN_SCHEMA_EXE),
         str(policy_dir / "native-execution-plan.json"),
         SERVICE,
-        "yolo-onnx",
-        "onnx",
-        "yolo-detect-auto",
+        model_family,
+        model_format,
+        planner_kind,
     ], logs_dir, env)
-    run_logged("local-plan-manifest-smoke", [
+    manifest_args = [
         str(PLAN_MANIFEST_EXE),
         str(policy_dir / "native-execution-plan.json"),
         str(policy_dir / "service-manifest.json"),
@@ -453,7 +540,10 @@ def run_local_execution_baseline(policy_dir: Path,
         str(timing_csv),
         "--assignment",
         assignment_name,
-    ], logs_dir, env)
+    ]
+    if assignment_csv is not None:
+        manifest_args.extend(["--assignment-csv", str(assignment_csv)])
+    run_logged("local-plan-manifest-smoke", manifest_args, logs_dir, env)
     timing = validate_local_timing_csv(timing_csv, assignment_rows)
     run_logged("local-provider-session-smoke", [
         str(PROVIDER_SESSION_EXE),
@@ -471,7 +561,9 @@ def run_local_execution_baseline(policy_dir: Path,
     }
 
 
-def provider_check_command(row: dict[str, str], policy_dir: Path) -> str:
+def provider_check_command(row: dict[str, str],
+                           policy_dir: Path,
+                           deterministic_runner: bool = False) -> str:
     args = [
         str(PROVIDER_EXE),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -487,10 +579,14 @@ def provider_check_command(row: dict[str, str], policy_dir: Path) -> str:
         "--wiring-check-only",
         "--no-serve-certificates",
     ]
+    if deterministic_runner:
+        args.append("--tracer-deterministic-runner")
     return f"cd {perf.shell_quote(str(TRACER_DIR))} && exec {shell_join(args)}"
 
 
-def provider_serve_command(row: dict[str, str], policy_dir: Path) -> str:
+def provider_serve_command(row: dict[str, str],
+                           policy_dir: Path,
+                           deterministic_runner: bool = False) -> str:
     args = [
         str(PROVIDER_EXE),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -506,6 +602,8 @@ def provider_serve_command(row: dict[str, str], policy_dir: Path) -> str:
         "--ack-threads", "2",
         "--serve",
     ]
+    if deterministic_runner:
+        args.append("--tracer-deterministic-runner")
     return f"cd {perf.shell_quote(str(TRACER_DIR))} && exec {shell_join(args)}"
 
 
@@ -527,6 +625,9 @@ def user_driver_command(policy_dir: Path,
                         requests: int,
                         concurrency: int,
                         submission_spacing_ms: int,
+                        target_rps: float = 0.0,
+                        open_loop_duration_s: float = 0.0,
+                        open_loop_driver_mode: str = "child",
                         burst_admission_providers: Optional[list[str]] = None) -> str:
     args = [
         "python3", str(USER_DRIVER),
@@ -543,6 +644,12 @@ def user_driver_command(policy_dir: Path,
         "--concurrency", str(concurrency),
         "--submission-spacing-ms", str(submission_spacing_ms),
     ]
+    if open_loop_duration_s > 0.0:
+        args.extend([
+            "--target-rps", str(target_rps),
+            "--open-loop-duration-s", str(open_loop_duration_s),
+            "--open-loop-driver-mode", open_loop_driver_mode,
+        ])
     if burst_admission_providers:
         args.extend([
             "--burst-admission-providers",
@@ -551,8 +658,13 @@ def user_driver_command(policy_dir: Path,
     return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
 
 
-def user_driver_wait_timeout_s(requests: int, concurrency: int, request_timeout_ms: int = 60000) -> int:
+def user_driver_wait_timeout_s(requests: int,
+                               concurrency: int,
+                               request_timeout_ms: int = 60000,
+                               open_loop_duration_s: float = 0.0) -> int:
     waves = max(1, math.ceil(max(1, requests) / max(1, concurrency)))
+    if open_loop_duration_s > 0.0:
+        return max(90, int(math.ceil(open_loop_duration_s + (request_timeout_ms / 1000.0) + 45.0)))
     return max(90, int(math.ceil(((request_timeout_ms + 3000) / 1000.0) * waves + 35.0)))
 
 
@@ -601,6 +713,158 @@ def observed_role_timings(log_paths: list[Path]) -> set[str]:
                 if part.startswith("role="):
                     roles.add(part[len("role="):])
     return roles
+
+
+def parse_trace_fields(line: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for part in line.split():
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        fields[key] = value.strip()
+    return fields
+
+
+def float_field(fields: dict[str, str], key: str, fallback: float = 0.0) -> float:
+    try:
+        return float(fields.get(key, fallback))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def int_field(fields: dict[str, str], key: str, fallback: int = 0) -> int:
+    try:
+        return int(float(fields.get(key, fallback)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def metric_stats(values: list[float]) -> dict[str, float | int]:
+    if not values:
+        return {
+            "count": 0,
+            "mean": 0.0,
+            "stddev": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+        }
+    return {
+        "count": len(values),
+        "mean": round(statistics.mean(values), 3),
+        "stddev": round(statistics.stdev(values), 3) if len(values) > 1 else 0.0,
+        "min": round(min(values), 3),
+        "max": round(max(values), 3),
+    }
+
+
+def summarize_provider_metrics(provider_log_rows: list[dict[str, object]]) -> dict[str, object]:
+    providers: dict[str, dict[str, object]] = {}
+    for row in provider_log_rows:
+        provider = str(row["provider"])
+        path = Path(str(row["log"]))
+        item = providers.setdefault(provider, {
+            "provider": provider,
+            "node": row.get("node", ""),
+            "configuredRoles": set(),
+            "log": str(path),
+            "sessions": set(),
+            "roles": set(),
+            "roleEventCount": 0,
+            "queueWaitMsValues": [],
+            "inputFetchWaitMsValues": [],
+            "runnerPublishMsValues": [],
+            "handlerMsValues": [],
+            "totalMsValues": [],
+            "firstWorkerStartEpochMs": None,
+            "lastEndEpochMs": None,
+            "workerCount": 1,
+            "maxActiveWorkers": 0,
+            "maxReadyQueue": 0,
+            "maxWaitingInputs": 0,
+            "maxPendingWork": 0,
+            "inputFetchEvents": 0,
+            "outputPublishEvents": 0,
+            "inputBytes": 0,
+            "outputBytes": 0,
+        })
+        item["configuredRoles"].update(str(row.get("role", "")).split(","))
+        for line in read_log_text(path).splitlines():
+            if "NDNSF_DI_PROVIDER_HANDLER_TIMING" in line and " event=end " in line:
+                fields = parse_trace_fields(line)
+                item["roleEventCount"] += 1
+                if fields.get("session"):
+                    item["sessions"].add(fields["session"])
+                if fields.get("role"):
+                    item["roles"].add(fields["role"])
+                item["queueWaitMsValues"].append(float_field(fields, "queue_wait_ms"))
+                item["inputFetchWaitMsValues"].append(float_field(fields, "input_fetch_wait_ms"))
+                item["runnerPublishMsValues"].append(float_field(fields, "runner_publish_ms"))
+                item["handlerMsValues"].append(float_field(fields, "handler_ms"))
+                item["totalMsValues"].append(float_field(fields, "total_ms"))
+                worker_start = int_field(fields, "worker_start_epoch_ms", 0)
+                end_epoch = int_field(fields, "end_epoch_ms", 0)
+                if worker_start > 0:
+                    current = item["firstWorkerStartEpochMs"]
+                    item["firstWorkerStartEpochMs"] = worker_start if current is None else min(current, worker_start)
+                if end_epoch > 0:
+                    current = item["lastEndEpochMs"]
+                    item["lastEndEpochMs"] = end_epoch if current is None else max(current, end_epoch)
+            elif "NDNSF_DI_PROVIDER_CAPACITY" in line:
+                fields = parse_trace_fields(line)
+                item["workerCount"] = max(int(item["workerCount"]), int_field(fields, "workers", 1))
+                item["maxActiveWorkers"] = max(int(item["maxActiveWorkers"]), int_field(fields, "active_workers"))
+                item["maxReadyQueue"] = max(int(item["maxReadyQueue"]), int_field(fields, "ready_queue"))
+                item["maxWaitingInputs"] = max(int(item["maxWaitingInputs"]), int_field(fields, "waiting_inputs"))
+                item["maxPendingWork"] = max(int(item["maxPendingWork"]), int_field(fields, "pending_work"))
+            elif "NDNSF_DI_DEPENDENCY_INPUT_TIMING" in line:
+                fields = parse_trace_fields(line)
+                item["inputFetchEvents"] += 1
+                item["inputBytes"] += int_field(fields, "bytes")
+            elif "NDNSF_DI_DEPENDENCY_OUTPUT_TIMING" in line:
+                fields = parse_trace_fields(line)
+                item["outputPublishEvents"] += 1
+                item["outputBytes"] += int_field(fields, "bytes")
+
+    result: dict[str, object] = {}
+    for provider, item in sorted(providers.items()):
+        handler_values = list(item["handlerMsValues"])
+        busy_ms = sum(handler_values)
+        first_start = item["firstWorkerStartEpochMs"]
+        last_end = item["lastEndEpochMs"]
+        window_ms = max(0.0, float(last_end - first_start)) if first_start and last_end else 0.0
+        worker_count = max(1, int(item["workerCount"]))
+        utilization = busy_ms / (window_ms * worker_count) if window_ms > 0 else 0.0
+        result[provider] = {
+            "provider": provider,
+            "node": item["node"],
+            "configuredRoles": sorted(role for role in item["configuredRoles"] if role),
+            "observedRoles": sorted(item["roles"]),
+            "uniqueSessionCount": len(item["sessions"]),
+            "roleEventCount": item["roleEventCount"],
+            "workerCount": worker_count,
+            "observedWindowMs": round(window_ms, 3),
+            "busyHandlerMs": round(busy_ms, 3),
+            "estimatedUtilization": round(utilization, 6),
+            "queueWaitMs": metric_stats(item["queueWaitMsValues"]),
+            "inputFetchWaitMs": metric_stats(item["inputFetchWaitMsValues"]),
+            "runnerPublishMs": metric_stats(item["runnerPublishMsValues"]),
+            "handlerMs": metric_stats(item["handlerMsValues"]),
+            "totalMs": metric_stats(item["totalMsValues"]),
+            "capacityMax": {
+                "activeWorkers": item["maxActiveWorkers"],
+                "readyQueue": item["maxReadyQueue"],
+                "waitingInputs": item["maxWaitingInputs"],
+                "pendingWork": item["maxPendingWork"],
+            },
+            "dependencyIo": {
+                "inputFetchEvents": item["inputFetchEvents"],
+                "outputPublishEvents": item["outputPublishEvents"],
+                "inputBytes": item["inputBytes"],
+                "outputBytes": item["outputBytes"],
+            },
+            "log": item["log"],
+        }
+    return result
 
 
 def node_client_conf(home: Path, node_name: str) -> Path:
@@ -818,6 +1082,14 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
             f"runtimeCandidate={optimization.get('runtimeCandidate', '')}",
             f"candidateCount={optimization['candidateCount']}",
         ])
+    runtime_v1 = summary.get("runtimeV1", {})
+    if isinstance(runtime_v1, dict) and runtime_v1.get("status") == "available":
+        lines.extend([
+            f"runtimeV1PlanId={runtime_v1.get('planId', '')}",
+            f"runtimeV1Summary={runtime_v1.get('summaryPath', '')}",
+            f"runtimeV1Report={runtime_v1.get('reportPath', '')}",
+            f"runtimeV1CacheProvider={runtime_v1.get('cacheProvider', '')}",
+        ])
     if summary.get("failureReason"):
         lines.append(f"failureReason={summary['failureReason']}")
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n",
@@ -846,6 +1118,10 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
         "optimizationEvidence": {
             "status": "not-started",
             "reason": "policy bundle has not generated planner optimization evidence yet",
+        },
+        "runtimeV1": {
+            "status": "not-started",
+            "reason": "Runtime v1 MiniNDN evidence has not been generated yet",
         },
         "assignmentCsv": str(out_dir / "assignment.csv"),
         "logs": str(logs_dir),
@@ -899,8 +1175,21 @@ def main() -> int:
     parser.add_argument("--quick-smoke", action="store_true")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--assignment",
-                        choices=["default", "alternate", "single-provider", "capacity-pool", "auto"],
+                        choices=[
+                            "default", "alternate", "single-provider",
+                            "capacity-pool", "auto", "llm-proportional",
+                        ],
                         default="default")
+    parser.add_argument("--policy-bundle",
+                        choices=["native-tracer", "llm-proportional"],
+                        default="native-tracer",
+                        help="Select the policy bundle generator")
+    parser.add_argument("--llm-planner-mode",
+                        choices=["greedy", "proportional"],
+                        default="proportional",
+                        help="Planner mode for --policy-bundle llm-proportional")
+    parser.add_argument("--tracer-deterministic-runner", action="store_true",
+                        help="Run provider ONNX roles through the deterministic runner")
     parser.add_argument("--provider-check-timeout", type=int, default=45)
     parser.add_argument("--local-execution-only", action="store_true",
                         help="Generate policy and run local native execution evidence without MiniNDN")
@@ -912,19 +1201,35 @@ def main() -> int:
                         help="Add ignored padding bytes to Backbone encoded activation bundles")
     parser.add_argument("--role-execution-delay-ms", type=float, default=0.0,
                         help="Add controlled per-role execution delay to NativeTracer artifacts")
+    parser.add_argument("--llm-stage-execution-delay-scale", type=float, default=1.0,
+                        help="Scale LLM estimated per-stage compute delay when no fixed role delay is set")
     parser.add_argument("--requests", type=int, default=1,
                         help="Number of closed-loop NativeTracer requests")
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Maximum outstanding NativeTracer requests")
     parser.add_argument("--target-rps", type=float, default=0.0,
-                        help="Optional target request rate for planner cost evidence")
+                        help="Optional target request rate for planner cost evidence and open-loop workloads")
+    parser.add_argument("--open-loop-duration-s", type=float, default=0.0,
+                        help="Submit NativeTracer requests at --target-rps for this many seconds")
+    parser.add_argument("--open-loop-driver-mode",
+                        choices=["child", "threaded", "process-pool"],
+                        default="child",
+                        help="User-driver implementation for open-loop workloads")
     parser.add_argument("--submission-spacing-ms", type=int, default=250,
                         help="Delay between concurrent NativeTracer user submissions")
+    parser.add_argument("--runtime-v1-context-tokens", type=int, default=1024,
+                        help="Context length recorded in Runtime v1 MiniNDN evidence")
+    parser.add_argument("--runtime-v1-generated-tokens", type=int, default=32,
+                        help="Generated-token count recorded in Runtime v1 MiniNDN evidence")
+    parser.add_argument("--runtime-v1-prefix-id", default="",
+                        help="Optional reusable prefix id recorded in Runtime v1 cache evidence")
     args = parser.parse_args()
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
     if args.role_execution_delay_ms < 0:
         raise SystemExit("--role-execution-delay-ms must be non-negative")
+    if args.llm_stage_execution_delay_scale < 0:
+        raise SystemExit("--llm-stage-execution-delay-scale must be non-negative")
     if args.requests <= 0:
         raise SystemExit("--requests must be positive")
     if args.concurrency <= 0:
@@ -933,8 +1238,16 @@ def main() -> int:
         args.concurrency = args.requests
     if args.target_rps < 0.0:
         raise SystemExit("--target-rps must be non-negative")
+    if args.open_loop_duration_s < 0.0:
+        raise SystemExit("--open-loop-duration-s must be non-negative")
+    if args.open_loop_duration_s > 0.0 and args.target_rps <= 0.0:
+        raise SystemExit("--open-loop-duration-s requires --target-rps")
     if args.submission_spacing_ms < 0:
         raise SystemExit("--submission-spacing-ms must be non-negative")
+    if args.runtime_v1_context_tokens <= 0:
+        raise SystemExit("--runtime-v1-context-tokens must be positive")
+    if args.runtime_v1_generated_tokens < 0:
+        raise SystemExit("--runtime-v1-generated-tokens must be non-negative")
 
     if args.quick_smoke:
         validate_prerequisites()
@@ -973,7 +1286,27 @@ def main() -> int:
         auto_recommended_candidate = ""
         auto_recommended_estimated_ms = None
         policy_summary = None
-        if requested_assignment == "auto":
+        if args.policy_bundle == "llm-proportional":
+            if requested_assignment == "auto":
+                raise RuntimeError("--assignment auto is only supported for --policy-bundle native-tracer")
+            if requested_assignment == "default":
+                requested_assignment = "llm-proportional"
+                resolved_assignment = "llm-proportional"
+            if requested_assignment != "llm-proportional":
+                raise RuntimeError(
+                    "--policy-bundle llm-proportional requires --assignment llm-proportional")
+            policy_summary = run_llm_proportional_bundle(
+                policy_dir,
+                out_dir,
+                logs_dir,
+                env,
+                args.llm_planner_mode,
+                resolved_assignment,
+                args.role_execution_delay_ms,
+                args.llm_stage_execution_delay_scale,
+                args.target_rps,
+                1)
+        elif requested_assignment == "auto":
             probe_dir = out_dir / "policy-bundle-auto-probe"
             probe_dir.mkdir(parents=True, exist_ok=True)
             probe_summary = run_plan_tracer(
@@ -1003,58 +1336,85 @@ def main() -> int:
                 "resolvedAssignment": resolved_assignment,
             }
 
-        active_assignment = assignment_for(resolved_assignment)
-        policy_summary = run_plan_tracer(
-            policy_dir,
-            out_dir,
-            logs_dir,
-            env,
-            resolved_assignment,
-            runtime_candidate_for_assignment(resolved_assignment),
-            args.role_execution_delay_ms,
-            args.activation_pad_bytes,
-            args.concurrency,
-            args.target_rps,
-            "plan-tracer")
+        if args.policy_bundle == "llm-proportional":
+            active_assignment = assignment_from_rows(
+                list(policy_summary.get("assignmentRows", [])))
+        else:
+            active_assignment = assignment_for(resolved_assignment)
+            policy_summary = run_plan_tracer(
+                policy_dir,
+                out_dir,
+                logs_dir,
+                env,
+                resolved_assignment,
+                runtime_candidate_for_assignment(resolved_assignment),
+                args.role_execution_delay_ms,
+                args.activation_pad_bytes,
+                args.concurrency,
+                args.target_rps,
+                "plan-tracer")
         add_worker_user_policies(policy_dir / "controller.policies", args.requests)
         summary["assignmentRequested"] = requested_assignment
         summary["assignmentResolved"] = resolved_assignment
         summary["assignment"] = resolved_assignment
-        final_policy_recommended = policy_summary.get(
-            "plannerRecommendedCandidate", policy_summary["selectedCandidate"])
-        effective_recommended = auto_recommended_candidate or final_policy_recommended
-        summary["optimizationEvidence"] = {
-            "status": "available",
-            "path": policy_summary["optimizationEvidence"],
-            "csv": policy_summary["optimizationEvidenceCsv"],
-            "sha256": policy_summary["optimizationEvidenceSha256"],
-            "contractVersion": policy_summary["optimizationContractVersion"],
-            "candidateCount": policy_summary["candidateCount"],
-            "selectedCandidate": policy_summary["selectedCandidate"],
-            "runtimeCandidate": runtime_candidate_for_assignment(resolved_assignment),
-            "selectedCandidateEstimatedMs": policy_summary["selectedCandidateEstimatedMs"],
-            "plannerRecommendedCandidate": effective_recommended,
-            "plannerRecommendedCandidateEstimatedMs": (
-                auto_recommended_estimated_ms
-                if auto_recommended_estimated_ms is not None else
-                policy_summary.get(
-                    "plannerRecommendedCandidateEstimatedMs",
-                    policy_summary["selectedCandidateEstimatedMs"])),
-            "finalPolicyRecommendedCandidate": final_policy_recommended,
-            "bestEstimatedCandidate": policy_summary["bestEstimatedCandidate"],
-            "activationPadBytes": policy_summary.get("activationPadBytes", args.activation_pad_bytes),
-            "targetRps": policy_summary.get("targetRps", args.target_rps),
-            "roleExecutionDelayMs": policy_summary.get(
-                "roleExecutionDelayMs", args.role_execution_delay_ms),
-            "workloadConcurrency": policy_summary.get("workloadConcurrency", args.concurrency),
-        }
+        if args.policy_bundle == "llm-proportional":
+            summary["optimizationEvidence"] = {
+                "status": "llm-proportional-bundle",
+                "planId": policy_summary.get("planId", ""),
+                "plannerMode": policy_summary.get("plannerMode", "proportional"),
+                "stageCount": len(policy_summary.get("stages", [])),
+                "layerAllocation": policy_summary.get("summary", {}).get("layerAllocation", {}),
+                "targetRps": policy_summary.get("targetRps", args.target_rps),
+                "prediction": policy_summary.get("prediction", {}),
+                "predictedBottleneckProvider": (
+                    policy_summary.get("summary", {}).get("predictedBottleneckProvider", "")),
+                "maxPredictedUtilization": (
+                    policy_summary.get("summary", {}).get("maxPredictedUtilization", 0.0)),
+                "predictionLimitKind": (
+                    policy_summary.get("summary", {}).get("predictionLimitKind", "")),
+            }
+        else:
+            final_policy_recommended = policy_summary.get(
+                "plannerRecommendedCandidate", policy_summary["selectedCandidate"])
+            effective_recommended = auto_recommended_candidate or final_policy_recommended
+            summary["optimizationEvidence"] = {
+                "status": "available",
+                "path": policy_summary["optimizationEvidence"],
+                "csv": policy_summary["optimizationEvidenceCsv"],
+                "sha256": policy_summary["optimizationEvidenceSha256"],
+                "contractVersion": policy_summary["optimizationContractVersion"],
+                "candidateCount": policy_summary["candidateCount"],
+                "selectedCandidate": policy_summary["selectedCandidate"],
+                "runtimeCandidate": runtime_candidate_for_assignment(resolved_assignment),
+                "selectedCandidateEstimatedMs": policy_summary["selectedCandidateEstimatedMs"],
+                "plannerRecommendedCandidate": effective_recommended,
+                "plannerRecommendedCandidateEstimatedMs": (
+                    auto_recommended_estimated_ms
+                    if auto_recommended_estimated_ms is not None else
+                    policy_summary.get(
+                        "plannerRecommendedCandidateEstimatedMs",
+                        policy_summary["selectedCandidateEstimatedMs"])),
+                "finalPolicyRecommendedCandidate": final_policy_recommended,
+                "bestEstimatedCandidate": policy_summary["bestEstimatedCandidate"],
+                "activationPadBytes": policy_summary.get("activationPadBytes", args.activation_pad_bytes),
+                "targetRps": policy_summary.get("targetRps", args.target_rps),
+                "roleExecutionDelayMs": policy_summary.get(
+                    "roleExecutionDelayMs", args.role_execution_delay_ms),
+                "workloadConcurrency": policy_summary.get("workloadConcurrency", args.concurrency),
+            }
 
         roles = load_plan_roles(policy_dir / "native-execution-plan.json")
-        assignment_rows = write_assignment_csv(
-            out_dir / "assignment.csv",
-            resolved_assignment,
-            roles,
-            active_assignment)
+        assignment_csv = out_dir / "assignment.csv"
+        if args.policy_bundle == "llm-proportional":
+            assignment_rows = write_assignment_csv_rows(
+                assignment_csv,
+                list(policy_summary.get("assignmentRows", [])))
+        else:
+            assignment_rows = write_assignment_csv(
+                assignment_csv,
+                resolved_assignment,
+                roles,
+                active_assignment)
         launch_rows = launch_rows_for_assignment(resolved_assignment, assignment_rows)
         provider_rows = grouped_provider_rows(launch_rows)
         summary["providerLaunchRows"] = launch_rows
@@ -1066,16 +1426,34 @@ def main() -> int:
             for row in provider_rows
             if llm_provider_resource_profile(row["provider"])
         }
+        if args.policy_bundle == "llm-proportional":
+            summary["runtimeV1"] = write_minindn_runtime_v1_evidence(
+                out_dir=out_dir / "runtime-v1",
+                model_path=RUNTIME_V1_MODEL_SPEC,
+                provider_profiles_path=RUNTIME_V1_PROVIDER_PROFILES,
+                target_rps=args.target_rps,
+                context_tokens=args.runtime_v1_context_tokens,
+                generated_tokens=args.runtime_v1_generated_tokens,
+                prefix_id=args.runtime_v1_prefix_id,
+                policy_summary=policy_summary,
+            )
         local_execution_assignment = (
             "default" if resolved_assignment == "capacity-pool" else
             resolved_assignment)
+        model_family = str(policy_summary.get("modelFamily", "yolo-onnx"))
+        model_format = str(policy_summary.get("modelFormat", "onnx"))
+        planner_kind = str(policy_summary.get("plannerKind", "yolo-detect-auto"))
         summary["localExecution"] = run_local_execution_baseline(
             policy_dir,
             out_dir,
             logs_dir,
             env,
             local_execution_assignment,
-            assignment_rows)
+            assignment_rows,
+            model_family=model_family,
+            model_format=model_format,
+            planner_kind=planner_kind,
+            assignment_csv=assignment_csv if args.policy_bundle == "llm-proportional" else None)
         summary["dependencyExecution"] = {
             "status": "local-baseline-executed",
             "reason": (
@@ -1142,9 +1520,14 @@ def main() -> int:
                     f"controller exited before user execution; see {controller_log}")
 
             provider_logs = []
+            provider_log_rows = []
             for row in provider_rows:
                 node = ndn.net[row["node"]]
-                command = provider_serve_command(row, policy_dir)
+                command = provider_serve_command(
+                    row,
+                    policy_dir,
+                    args.tracer_deterministic_runner or
+                    args.policy_bundle == "llm-proportional")
                 proc, path = start_node_command(
                     node,
                     "provider-serve-" + safe_log_component(row["role"]) +
@@ -1156,6 +1539,12 @@ def main() -> int:
                     Path(row["homeDir"]),
                     llm_provider_resource_env(row["provider"]))
                 provider_logs.append(path)
+                provider_log_rows.append({
+                    "log": str(path),
+                    "provider": row["provider"],
+                    "node": row["node"],
+                    "role": row["role"],
+                })
             wait_for_log_patterns(provider_logs,
                                   ["NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"],
                                   args.provider_check_timeout,
@@ -1168,6 +1557,9 @@ def main() -> int:
                                     args.requests,
                                     args.concurrency,
                                     args.submission_spacing_ms if args.concurrency > 1 else 0,
+                                    args.target_rps,
+                                    args.open_loop_duration_s,
+                                    args.open_loop_driver_mode,
                                     [
                                         "/NDNSF-DI/Tracer/provider/backbone",
                                         "/NDNSF-DI/Tracer/provider/single",
@@ -1176,7 +1568,10 @@ def main() -> int:
                 env,
                 procs)
             try:
-                user_proc.wait(timeout=user_driver_wait_timeout_s(args.requests, args.concurrency))
+                user_proc.wait(timeout=user_driver_wait_timeout_s(
+                    args.requests,
+                    args.concurrency,
+                    open_loop_duration_s=args.open_loop_duration_s))
             except Exception:
                 user_proc.kill()
                 user_proc.wait(timeout=3)
@@ -1186,7 +1581,8 @@ def main() -> int:
                     f"NativeTracer user execution failed rc={user_proc.returncode} "
                     f"result={user_result}; see {user_log}")
             roles = observed_role_timings(provider_logs)
-            missing_roles = sorted(set(REQUIRED_ROLES) - roles)
+            expected_roles = set(load_plan_roles(policy_dir / "native-execution-plan.json"))
+            missing_roles = sorted(expected_roles - roles)
             if missing_roles:
                 raise RuntimeError(
                     f"missing provider role timing logs for {missing_roles}; logs={provider_logs}")
@@ -1198,6 +1594,7 @@ def main() -> int:
                 }
                 for path in provider_logs
             ]
+            summary["providerUtilization"] = summarize_provider_metrics(provider_log_rows)
             summary["securityBootstrap"] = {
                 "status": "executed",
                 "reason": "ServiceController and user/provider permission fetch path ran during full-network execution",
@@ -1217,6 +1614,13 @@ def main() -> int:
                 "p50Ms": user_result.get("p50Ms", user_result.get("elapsedMs", 0.0)),
                 "p95Ms": user_result.get("p95Ms", user_result.get("elapsedMs", 0.0)),
                 "throughputRps": user_result.get("throughputRps", 0.0),
+                "targetRps": user_result.get("targetRps", args.target_rps),
+                "openLoopDurationS": user_result.get("openLoopDurationS", args.open_loop_duration_s),
+                "openLoopDriverMode": user_result.get("mode", args.open_loop_driver_mode),
+                "scheduledRequestCount": user_result.get("scheduledRequestCount", args.requests),
+                "submittedCount": user_result.get("submittedCount", user_result.get("successCount", 1)),
+                "localBackpressureCount": user_result.get("localBackpressureCount", 0),
+                "offeredRps": user_result.get("offeredRps", 0.0),
             }
             summary["dependencyExecution"] = {
                 "status": "executed",
@@ -1228,7 +1632,11 @@ def main() -> int:
 
         for row in provider_rows:
             node = ndn.net[row["node"]]
-            command = provider_check_command(row, policy_dir)
+            command = provider_check_command(
+                row,
+                policy_dir,
+                args.tracer_deterministic_runner or
+                args.policy_bundle == "llm-proportional")
             start_node_command(node,
                                "provider-check-" + safe_log_component(row["role"]) +
                                "--" + safe_log_component(row["provider"]),

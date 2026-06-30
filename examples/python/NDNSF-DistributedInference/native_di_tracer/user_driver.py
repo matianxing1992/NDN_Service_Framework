@@ -146,10 +146,21 @@ def percentile_nearest_rank(values: list[float], percentile: float) -> float:
     return float(ordered[min(rank, len(ordered)) - 1])
 
 
-def summarize_workload(results: list[dict], makespan_ms: float, service: str, concurrency: int) -> dict:
+def open_loop_planned_requests(args) -> int:
+    return max(1, min(
+        args.requests,
+        int(math.ceil(args.open_loop_duration_s * args.target_rps)),
+    ))
+
+
+def summarize_workload(results: list[dict],
+                       makespan_ms: float,
+                       service: str,
+                       concurrency: int,
+                       metadata: Optional[dict] = None) -> dict:
     latencies = [float(item.get("elapsedMs", 0.0)) for item in results]
     successes = [item for item in results if item.get("status") == "executed"]
-    return {
+    summary = {
         "status": "executed" if len(successes) == len(results) else "failed",
         "service": service,
         "requestCount": len(results),
@@ -173,6 +184,9 @@ def summarize_workload(results: list[dict], makespan_ms: float, service: str, co
         ),
         "requests": results,
     }
+    if metadata:
+        summary.update(metadata)
+    return summary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -192,12 +206,24 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Maximum outstanding collaboration requests")
     parser.add_argument("--submission-spacing-ms", type=int, default=0,
                         help="Delay between child request submissions in concurrent mode")
+    parser.add_argument("--target-rps", type=float, default=0.0,
+                        help="Open-loop offered request rate; requires --open-loop-duration-s")
+    parser.add_argument("--open-loop-duration-s", type=float, default=0.0,
+                        help="Submit requests on a fixed schedule for this many seconds")
+    parser.add_argument("--open-loop-driver-mode",
+                        choices=["child", "threaded", "process-pool"],
+                        default="child",
+                        help="Open-loop user driver implementation")
     parser.add_argument("--burst-admission-providers", default="",
                         help=("Comma-separated provider names used to seed "
                               "per-child burst admission bias"))
     parser.add_argument("--worker-child", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--request-index", type=int, default=1,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--worker-request-indices", default="",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--schedule-start-epoch", type=float, default=0.0,
                         help=argparse.SUPPRESS)
     parser.add_argument("--scope-key-data-names-json", default="",
                         help=argparse.SUPPRESS)
@@ -381,6 +407,173 @@ def run_async_requests(user: ServiceUser,
     return [results[index] for index in sorted(results)]
 
 
+def run_open_loop_requests(user: ServiceUser,
+                           args,
+                           roles: list[dict],
+                           key_scopes: dict[str, list[str]],
+                           dependencies: list[dict],
+                           scope_key_data_names: dict[str, str],
+                           role_scopes: dict[str, list[str]]) -> tuple[list[dict], dict]:
+    planned = open_loop_planned_requests(args)
+    condition = threading.Condition()
+    starts: dict[int, float] = {}
+    results: dict[int, dict] = {}
+    state = {
+        "inFlight": 0,
+        "submitted": 0,
+        "dropped": 0,
+        "completed": 0,
+    }
+    schedule_start = time.perf_counter()
+
+    def make_result(index: int,
+                    response_status: bool,
+                    payload: bytes,
+                    error: str,
+                    elapsed_ms: float,
+                    mode: str = "open-loop") -> dict:
+        return {
+            "status": "executed" if response_status else "failed",
+            "service": args.service,
+            "requestIndex": index,
+            "requestCount": planned,
+            "concurrency": args.concurrency,
+            "mode": mode,
+            "targetRps": args.target_rps,
+            "openLoopDurationS": args.open_loop_duration_s,
+            "responseStatus": bool(response_status),
+            "payloadBytes": len(payload),
+            "error": error,
+            "elapsedMs": elapsed_ms,
+        }
+
+    def record_result(index: int, response_status: bool, payload: bytes, error: str) -> None:
+        elapsed_ms = (time.perf_counter() - starts.get(index, time.perf_counter())) * 1000.0
+        result = make_result(index, response_status, payload, error, elapsed_ms)
+        print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " + json.dumps(result, sort_keys=True), flush=True)
+        with condition:
+            results[index] = result
+            state["inFlight"] -= 1
+            state["completed"] += 1
+            condition.notify_all()
+
+    def submit_one_locked(index: int) -> None:
+        starts[index] = time.perf_counter()
+        state["inFlight"] += 1
+        state["submitted"] += 1
+        print(
+            "NDNSF_DI_NATIVE_TRACER_USER_SUBMIT "
+            + json.dumps({
+                "mode": "open-loop",
+                "requestIndex": index,
+                "requestCount": planned,
+                "concurrency": args.concurrency,
+                "targetRps": args.target_rps,
+                "openLoopDurationS": args.open_loop_duration_s,
+                "scheduledOffsetMs": round((starts[index] - schedule_start) * 1000.0, 3),
+            }, sort_keys=True),
+            flush=True,
+        )
+
+        def on_response(response) -> None:
+            record_result(index, bool(response.status), bytes(response.payload), str(response.error))
+
+        def on_timeout(request_id: str) -> None:
+            record_result(index, False, b"", "timeout: " + str(request_id))
+
+        try:
+            user.request_collaboration_async(
+                args.service,
+                encode_tensor_bundle(),
+                roles=roles,
+                key_scopes=key_scopes,
+                dependencies=dependencies,
+                scope_key_data_names=scope_key_data_names,
+                role_scopes=role_scopes,
+                on_response=on_response,
+                on_timeout=on_timeout,
+                ack_timeout_ms=args.ack_timeout_ms,
+                timeout_ms=args.timeout_ms,
+            )
+        except Exception as exc:
+            state["inFlight"] -= 1
+            state["completed"] += 1
+            results[index] = make_result(
+                index,
+                False,
+                b"",
+                str(exc),
+                (time.perf_counter() - starts[index]) * 1000.0)
+            print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
+                  json.dumps(results[index], sort_keys=True), flush=True)
+            condition.notify_all()
+
+    print(
+        "NDNSF_DI_NATIVE_TRACER_USER_OPEN_LOOP "
+        + json.dumps({
+            "requestCount": planned,
+            "requestCap": args.requests,
+            "concurrency": args.concurrency,
+            "targetRps": args.target_rps,
+            "openLoopDurationS": args.open_loop_duration_s,
+        }, sort_keys=True),
+        flush=True,
+    )
+    for index in range(1, planned + 1):
+        target_time = schedule_start + ((index - 1) / args.target_rps)
+        delay = target_time - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+        with condition:
+            if state["inFlight"] >= args.concurrency:
+                state["dropped"] += 1
+                state["completed"] += 1
+                result = make_result(
+                    index,
+                    False,
+                    b"",
+                    "local-open-loop-backpressure",
+                    0.0,
+                    mode="open-loop-dropped")
+                results[index] = result
+                print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
+                      json.dumps(result, sort_keys=True), flush=True)
+                condition.notify_all()
+                continue
+            submit_one_locked(index)
+
+    deadline = max(
+        schedule_start + args.open_loop_duration_s + (args.timeout_ms / 1000.0) + 20.0,
+        time.perf_counter() + (args.timeout_ms / 1000.0) + 5.0,
+    )
+    with condition:
+        while state["completed"] < planned and time.perf_counter() < deadline:
+            condition.wait(timeout=0.1)
+
+    for index in range(1, planned + 1):
+        if index not in results:
+            result = make_result(
+                index,
+                False,
+                b"",
+                "local workload deadline",
+                (time.perf_counter() - starts.get(index, time.perf_counter())) * 1000.0,
+            )
+            print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " + json.dumps(result, sort_keys=True), flush=True)
+            results[index] = result
+
+    metadata = {
+        "mode": "open-loop",
+        "targetRps": args.target_rps,
+        "openLoopDurationS": args.open_loop_duration_s,
+        "scheduledRequestCount": planned,
+        "submittedCount": int(state["submitted"]),
+        "localBackpressureCount": int(state["dropped"]),
+        "offeredRps": planned / args.open_loop_duration_s if args.open_loop_duration_s > 0 else 0.0,
+    }
+    return [results[index] for index in sorted(results)], metadata
+
+
 def run_threaded_requests(users: list[ServiceUser],
                           args,
                           roles: list[dict],
@@ -440,6 +633,184 @@ def run_threaded_requests(users: list[ServiceUser],
     return sorted(results, key=lambda item: int(item.get("requestIndex", 0)))
 
 
+def run_threaded_open_loop_requests(users: list[ServiceUser],
+                                    args,
+                                    roles: list[dict],
+                                    key_scopes: dict[str, list[str]],
+                                    dependencies: list[dict],
+                                    scope_key_data_names: dict[str, str],
+                                    role_scopes: dict[str, list[str]]) -> tuple[list[dict], dict]:
+    planned = open_loop_planned_requests(args)
+    schedule_start = time.perf_counter()
+    results: list[dict] = []
+    available_workers = list(range(len(users)))
+    active: dict[concurrent.futures.Future, int] = {}
+
+    def make_drop(index: int) -> dict:
+        return {
+            "status": "failed",
+            "service": args.service,
+            "requestIndex": index,
+            "requestCount": planned,
+            "concurrency": args.concurrency,
+            "mode": "open-loop-threaded-dropped",
+            "targetRps": args.target_rps,
+            "openLoopDurationS": args.open_loop_duration_s,
+            "responseStatus": False,
+            "payloadBytes": 0,
+            "error": "local-open-loop-backpressure",
+            "elapsedMs": 0.0,
+        }
+
+    def request_on_worker(worker_index: int, request_index: int) -> dict:
+        print(
+            "NDNSF_DI_NATIVE_TRACER_USER_SUBMIT "
+            + json.dumps({
+                "mode": "open-loop-threaded-service-user",
+                "workerIndex": worker_index + 1,
+                "requestIndex": request_index,
+                "requestCount": planned,
+                "concurrency": args.concurrency,
+                "targetRps": args.target_rps,
+                "openLoopDurationS": args.open_loop_duration_s,
+                "scheduledOffsetMs": round((time.perf_counter() - schedule_start) * 1000.0, 3),
+            }, sort_keys=True),
+            flush=True,
+        )
+        result = run_one_request(
+            users[worker_index],
+            args,
+            roles,
+            key_scopes,
+            dependencies,
+            scope_key_data_names,
+            role_scopes,
+            request_index)
+        result["requestCount"] = planned
+        result["mode"] = "open-loop-threaded-service-user"
+        result["workerIndex"] = worker_index + 1
+        result["targetRps"] = args.target_rps
+        result["openLoopDurationS"] = args.open_loop_duration_s
+        return result
+
+    def collect_completed(timeout: float = 0.0) -> None:
+        if not active:
+            return
+        done, _pending = concurrent.futures.wait(
+            list(active.keys()),
+            timeout=timeout,
+            return_when=concurrent.futures.FIRST_COMPLETED)
+        for future in done:
+            worker_index = active.pop(future)
+            available_workers.append(worker_index)
+            result = future.result()
+            print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
+                  json.dumps(result, sort_keys=True), flush=True)
+            results.append(result)
+
+    print(
+        "NDNSF_DI_NATIVE_TRACER_USER_OPEN_LOOP "
+        + json.dumps({
+            "mode": "threaded-service-user",
+            "requestCount": planned,
+            "requestCap": args.requests,
+            "concurrency": args.concurrency,
+            "targetRps": args.target_rps,
+            "openLoopDurationS": args.open_loop_duration_s,
+        }, sort_keys=True),
+        flush=True,
+    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(users)) as executor:
+        for index in range(1, planned + 1):
+            target_time = schedule_start + ((index - 1) / args.target_rps)
+            while True:
+                collect_completed(timeout=0.0)
+                delay = target_time - time.perf_counter()
+                if delay <= 0:
+                    break
+                time.sleep(min(delay, 0.02))
+            collect_completed(timeout=0.0)
+            if not available_workers:
+                result = make_drop(index)
+                print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
+                      json.dumps(result, sort_keys=True), flush=True)
+                results.append(result)
+                continue
+            worker_index = available_workers.pop(0)
+            active[executor.submit(request_on_worker, worker_index, index)] = worker_index
+        while active:
+            collect_completed(timeout=0.1)
+
+    dropped = [
+        item for item in results
+        if item.get("error") == "local-open-loop-backpressure"
+    ]
+    metadata = {
+        "mode": "open-loop-threaded-service-user",
+        "targetRps": args.target_rps,
+        "openLoopDurationS": args.open_loop_duration_s,
+        "scheduledRequestCount": planned,
+        "submittedCount": len(results) - len(dropped),
+        "localBackpressureCount": len(dropped),
+        "offeredRps": planned / args.open_loop_duration_s if args.open_loop_duration_s > 0 else 0.0,
+    }
+    return sorted(results, key=lambda item: int(item.get("requestIndex", 0))), metadata
+
+
+def parse_request_indices(raw: str) -> list[int]:
+    indices = [
+        int(item.strip())
+        for item in raw.split(",")
+        if item.strip()
+    ]
+    return sorted(index for index in indices if index > 0)
+
+
+def run_worker_request_batch(user: ServiceUser,
+                             args,
+                             roles: list[dict],
+                             key_scopes: dict[str, list[str]],
+                             dependencies: list[dict],
+                             scope_key_data_names: dict[str, str],
+                             role_scopes: dict[str, list[str]]) -> list[dict]:
+    indices = parse_request_indices(args.worker_request_indices)
+    if not indices:
+        indices = [args.request_index]
+    results: list[dict] = []
+    for index in indices:
+        if args.schedule_start_epoch > 0.0 and args.target_rps > 0.0:
+            target_time = args.schedule_start_epoch + ((index - 1) / args.target_rps)
+            delay = target_time - time.time()
+            if delay > 0:
+                time.sleep(delay)
+        result = run_one_request(
+            user,
+            args,
+            roles,
+            key_scopes,
+            dependencies,
+            scope_key_data_names,
+            role_scopes,
+            index)
+        result["requestCount"] = open_loop_planned_requests(args) if args.open_loop_duration_s > 0 else args.requests
+        result["mode"] = (
+            "open-loop-process-pool-worker"
+            if args.open_loop_duration_s > 0 else
+            "child-process-service-user")
+        result["targetRps"] = args.target_rps if args.open_loop_duration_s > 0 else 0.0
+        result["openLoopDurationS"] = args.open_loop_duration_s
+        print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
+              json.dumps(result, sort_keys=True), flush=True)
+        results.append(result)
+    print("NDNSF_DI_NATIVE_TRACER_USER_WORKER_BATCH " + json.dumps({
+        "mode": "open-loop-process-pool-worker",
+        "requestIndices": indices,
+        "successCount": sum(1 for item in results if item.get("status") == "executed"),
+        "failureCount": sum(1 for item in results if item.get("status") != "executed"),
+    }, sort_keys=True), flush=True)
+    return results
+
+
 def run_child_process_requests(args,
                                scope_key_data_names: dict[str, str]) -> list[dict]:
     script = Path(__file__).resolve()
@@ -472,8 +843,28 @@ def run_child_process_requests(args,
         provider = admission_providers[(index - 1) % len(admission_providers)]
         return f"/Backbone=>{provider};Backbone=>{provider}"
 
+    open_loop = args.open_loop_duration_s > 0.0
+    planned = open_loop_planned_requests(args) if open_loop else args.requests
+    schedule_start = time.perf_counter()
+
+    def make_open_loop_drop(index: int) -> dict:
+        return {
+            "status": "failed",
+            "service": args.service,
+            "requestIndex": index,
+            "requestCount": planned,
+            "concurrency": args.concurrency,
+            "mode": "open-loop-dropped",
+            "targetRps": args.target_rps,
+            "openLoopDurationS": args.open_loop_duration_s,
+            "responseStatus": False,
+            "payloadBytes": 0,
+            "error": "local-open-loop-backpressure",
+            "elapsedMs": 0.0,
+        }
+
     def run_child(index: int) -> dict:
-        if args.submission_spacing_ms > 0:
+        if not open_loop and args.submission_spacing_ms > 0:
             time.sleep(((index - 1) * args.submission_spacing_ms) / 1000.0)
         child_home = Path(tempfile.mkdtemp(prefix=f"ndnsf-di-user-{index}-"))
         parent_ndn_dir = Path(os.environ.get("HOME", "")).expanduser() / ".ndn"
@@ -521,9 +912,11 @@ def run_child_process_requests(args,
                 "admissionBias": admission_bias,
                 "roleProviderPreference": role_provider_preference,
                 "requestIndex": index,
-                "requestCount": args.requests,
+                "requestCount": planned,
                 "concurrency": args.concurrency,
-                "mode": "child-process-service-user",
+                "mode": "open-loop-child-process-service-user" if open_loop else "child-process-service-user",
+                "targetRps": args.target_rps if open_loop else 0.0,
+                "openLoopDurationS": args.open_loop_duration_s if open_loop else 0.0,
             }, sort_keys=True),
             flush=True,
         )
@@ -569,6 +962,11 @@ def run_child_process_requests(args,
         for line in child_output.splitlines():
             if line.startswith("NDNSF_DI_NATIVE_TRACER_USER_REQUEST "):
                 result = json.loads(line.split(" ", 1)[1])
+                result["requestCount"] = planned
+                if open_loop:
+                    result["mode"] = "open-loop-child-process-service-user"
+                    result["targetRps"] = args.target_rps
+                    result["openLoopDurationS"] = args.open_loop_duration_s
                 result["childReturncode"] = completed.returncode
                 if result.get("status") != "executed":
                     result["childOutput"] = child_output[-4000:]
@@ -590,6 +988,57 @@ def run_child_process_requests(args,
         }
 
     results: list[dict] = []
+    if open_loop:
+        print(
+            "NDNSF_DI_NATIVE_TRACER_USER_OPEN_LOOP "
+            + json.dumps({
+                "mode": "child-process-service-user",
+                "requestCount": planned,
+                "requestCap": args.requests,
+                "concurrency": args.concurrency,
+                "targetRps": args.target_rps,
+                "openLoopDurationS": args.open_loop_duration_s,
+            }, sort_keys=True),
+            flush=True,
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            active: dict[concurrent.futures.Future, int] = {}
+
+            def collect_completed(timeout: float = 0.0) -> None:
+                if not active:
+                    return
+                done, _pending = concurrent.futures.wait(
+                    list(active.keys()),
+                    timeout=timeout,
+                    return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in done:
+                    active.pop(future, None)
+                    result = future.result()
+                    print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
+                          json.dumps(result, sort_keys=True), flush=True)
+                    results.append(result)
+
+            for index in range(1, planned + 1):
+                target_time = schedule_start + ((index - 1) / args.target_rps)
+                while True:
+                    collect_completed(timeout=0.0)
+                    delay = target_time - time.perf_counter()
+                    if delay <= 0:
+                        break
+                    time.sleep(min(delay, 0.05))
+                collect_completed(timeout=0.0)
+                if len(active) >= args.concurrency:
+                    result = make_open_loop_drop(index)
+                    print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
+                          json.dumps(result, sort_keys=True), flush=True)
+                    results.append(result)
+                    continue
+                active[executor.submit(run_child, index)] = index
+
+            while active:
+                collect_completed(timeout=0.1)
+        return sorted(results, key=lambda item: int(item.get("requestIndex", 0)))
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         futures = [
             executor.submit(run_child, index)
@@ -602,6 +1051,156 @@ def run_child_process_requests(args,
     return sorted(results, key=lambda item: int(item.get("requestIndex", 0)))
 
 
+def run_process_pool_open_loop_requests(args,
+                                        scope_key_data_names: dict[str, str]) -> tuple[list[dict], dict]:
+    script = Path(__file__).resolve()
+    planned = open_loop_planned_requests(args)
+    worker_count = min(args.concurrency, planned)
+    schedule_start_epoch = time.time() + 5.0
+    scope_json = json.dumps(scope_key_data_names, sort_keys=True)
+    child_log_dir = (Path(args.plan).resolve().parents[1] / "logs") if args.plan else None
+    if child_log_dir is not None:
+        child_log_dir.mkdir(parents=True, exist_ok=True)
+
+    assignments: list[list[int]] = [[] for _ in range(worker_count)]
+    for index in range(1, planned + 1):
+        assignments[(index - 1) % worker_count].append(index)
+
+    parent_ndn_dir = Path(os.environ.get("HOME", "")).expanduser() / ".ndn"
+    children: list[tuple[subprocess.Popen, Path, Path, list[int]]] = []
+    print(
+        "NDNSF_DI_NATIVE_TRACER_USER_OPEN_LOOP "
+        + json.dumps({
+            "mode": "process-pool-service-user",
+            "requestCount": planned,
+            "requestCap": args.requests,
+            "concurrency": args.concurrency,
+            "workerCount": worker_count,
+            "targetRps": args.target_rps,
+            "openLoopDurationS": args.open_loop_duration_s,
+            "scheduleStartEpoch": schedule_start_epoch,
+        }, sort_keys=True),
+        flush=True,
+    )
+    for worker_offset, indices in enumerate(assignments, start=1):
+        child_home = Path(tempfile.mkdtemp(prefix=f"ndnsf-di-user-pool-{worker_offset}-"))
+        child_ndn_dir = child_home / ".ndn"
+        if parent_ndn_dir.exists():
+            shutil.copytree(parent_ndn_dir, child_ndn_dir)
+        child_env = os.environ.copy()
+        child_env["HOME"] = str(child_home)
+        if (child_ndn_dir / "client.conf").exists():
+            child_env["NDN_CLIENT_CONF"] = str(child_ndn_dir / "client.conf")
+        command = [
+            sys.executable,
+            str(script),
+            "--plan", args.plan,
+            "--service", args.service,
+            "--group", args.group,
+            "--controller", args.controller,
+            "--user", f"{args.user}/worker/{worker_offset}",
+            "--trust-schema", args.trust_schema,
+            "--ack-timeout-ms", str(args.ack_timeout_ms),
+            "--timeout-ms", str(args.timeout_ms),
+            "--permission-wait-ms", str(args.permission_wait_ms),
+            "--requests", str(planned),
+            "--concurrency", str(args.concurrency),
+            "--target-rps", str(args.target_rps),
+            "--open-loop-duration-s", str(args.open_loop_duration_s),
+            "--open-loop-driver-mode", "child",
+            "--worker-child",
+            "--request-index", str(indices[0]),
+            "--worker-request-indices", ",".join(str(index) for index in indices),
+            "--schedule-start-epoch", str(schedule_start_epoch),
+            "--scope-key-data-names-json", scope_json,
+        ]
+        child_log = (
+            child_log_dir / f"user-worker-pool-{worker_offset}.log"
+            if child_log_dir is not None else
+            Path(tempfile.mktemp(prefix=f"ndnsf-di-user-pool-{worker_offset}-", suffix=".log"))
+        )
+        print(
+            "NDNSF_DI_NATIVE_TRACER_USER_SUBMIT "
+            + json.dumps({
+                "mode": "open-loop-process-pool-service-user",
+                "workerIndex": worker_offset,
+                "requestIndices": indices,
+                "requestCount": planned,
+                "concurrency": args.concurrency,
+                "targetRps": args.target_rps,
+                "openLoopDurationS": args.open_loop_duration_s,
+            }, sort_keys=True),
+            flush=True,
+        )
+        output = child_log.open("w", encoding="utf-8", errors="replace")
+        output.write("RUN " + " ".join(command) + "\n")
+        output.flush()
+        proc = subprocess.Popen(
+            command,
+            text=True,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            env=child_env,
+        )
+        output.close()
+        children.append((proc, child_log, child_home, indices))
+
+    results_by_index: dict[int, dict] = {}
+    deadline = time.time() + args.open_loop_duration_s + (args.timeout_ms / 1000.0) + 35.0
+    for proc, child_log, child_home, indices in children:
+        timeout = max(1.0, deadline - time.time())
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        child_output = child_log.read_text(encoding="utf-8", errors="replace")
+        for line in child_output.splitlines():
+            if line.startswith("NDNSF_DI_NATIVE_TRACER_USER_REQUEST "):
+                result = json.loads(line.split(" ", 1)[1])
+                result["mode"] = "open-loop-process-pool-service-user"
+                result["workerReturncode"] = proc.returncode
+                results_by_index[int(result.get("requestIndex", 0))] = result
+        for index in indices:
+            if index not in results_by_index:
+                results_by_index[index] = {
+                    "status": "failed",
+                    "service": args.service,
+                    "requestIndex": index,
+                    "requestCount": planned,
+                    "concurrency": args.concurrency,
+                    "mode": "open-loop-process-pool-service-user",
+                    "targetRps": args.target_rps,
+                    "openLoopDurationS": args.open_loop_duration_s,
+                    "responseStatus": False,
+                    "payloadBytes": 0,
+                    "error": "process-pool worker did not emit request result",
+                    "elapsedMs": 0.0,
+                    "workerReturncode": proc.returncode,
+                    "workerLog": str(child_log),
+                }
+        try:
+            shutil.rmtree(child_home)
+        except Exception:
+            pass
+
+    results = [results_by_index[index] for index in sorted(results_by_index)]
+    dropped = [
+        item for item in results
+        if item.get("error") == "local-open-loop-backpressure"
+    ]
+    metadata = {
+        "mode": "open-loop-process-pool-service-user",
+        "targetRps": args.target_rps,
+        "openLoopDurationS": args.open_loop_duration_s,
+        "scheduledRequestCount": planned,
+        "submittedCount": len(results) - len(dropped),
+        "localBackpressureCount": len(dropped),
+        "offeredRps": planned / args.open_loop_duration_s if args.open_loop_duration_s > 0 else 0.0,
+    }
+    return results, metadata
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.requests <= 0:
@@ -610,6 +1209,13 @@ def main() -> int:
         raise SystemExit("--concurrency must be positive")
     if args.concurrency > args.requests:
         args.concurrency = args.requests
+    if args.target_rps < 0.0:
+        raise SystemExit("--target-rps must be non-negative")
+    if args.open_loop_duration_s < 0.0:
+        raise SystemExit("--open-loop-duration-s must be non-negative")
+    open_loop = args.target_rps > 0.0 or args.open_loop_duration_s > 0.0
+    if open_loop and (args.target_rps <= 0.0 or args.open_loop_duration_s <= 0.0):
+        raise SystemExit("--target-rps and --open-loop-duration-s must be set together")
     if args.plan:
         service_plan = load_service_plan(Path(args.plan), args.service)
     elif args.dry_run:
@@ -654,6 +1260,16 @@ def main() -> int:
         if not args.scope_key_data_names_json:
             raise SystemExit("--scope-key-data-names-json is required for worker children")
         scope_key_data_names = json.loads(args.scope_key_data_names_json)
+        if args.worker_request_indices:
+            results = run_worker_request_batch(
+                user,
+                args,
+                roles,
+                key_scopes,
+                dependencies,
+                scope_key_data_names,
+                role_scopes)
+            return 0 if all(item["status"] == "executed" for item in results) else 1
         result = run_one_request(
             user,
             args,
@@ -674,7 +1290,79 @@ def main() -> int:
     )
     workload_start = time.perf_counter()
     results = []
-    if args.concurrency == 1:
+    workload_metadata = {}
+    if open_loop:
+        print(
+            "NDNSF_DI_NATIVE_TRACER_USER_CONCURRENCY "
+            + json.dumps({
+                "mode": (
+                    "open-loop-threaded-service-user"
+                    if args.open_loop_driver_mode == "threaded" else
+                    "open-loop-process-pool-service-user"
+                    if args.open_loop_driver_mode == "process-pool" else
+                    "open-loop-child-process-service-user"),
+                "requestCount": args.requests,
+                "concurrency": args.concurrency,
+                "targetRps": args.target_rps,
+                "openLoopDurationS": args.open_loop_duration_s,
+            }, sort_keys=True),
+            flush=True,
+        )
+        if args.open_loop_driver_mode == "threaded":
+            worker_users = [
+                ServiceUser(
+                    group=args.group,
+                    controller=args.controller,
+                    user=f"{args.user}/worker/{index}",
+                    trust_schema=args.trust_schema,
+                    permission_wait_ms=args.permission_wait_ms,
+                    serve_certificates=True,
+                )
+                for index in range(1, args.concurrency + 1)
+            ]
+            for worker_user in worker_users:
+                allowed_worker = [entry.service for entry in worker_user.get_allowed_services()]
+                if args.service not in allowed_worker:
+                    raise RuntimeError(
+                        f"missing worker permission for {args.service}; "
+                        f"user={worker_user.user}; allowed={allowed_worker}")
+            results, workload_metadata = run_threaded_open_loop_requests(
+                worker_users,
+                args,
+                roles,
+                key_scopes,
+                dependencies,
+                scope_key_data_names,
+                role_scopes)
+        elif args.open_loop_driver_mode == "process-pool":
+            user.start()
+            try:
+                results, workload_metadata = run_process_pool_open_loop_requests(
+                    args, scope_key_data_names)
+            finally:
+                user.stop()
+        else:
+            user.start()
+            try:
+                results = run_child_process_requests(args, scope_key_data_names)
+                dropped = [
+                    item for item in results
+                    if item.get("error") == "local-open-loop-backpressure"
+                ]
+                workload_metadata = {
+                    "mode": "open-loop-child-process-service-user",
+                    "targetRps": args.target_rps,
+                    "openLoopDurationS": args.open_loop_duration_s,
+                    "scheduledRequestCount": len(results),
+                    "submittedCount": len(results) - len(dropped),
+                    "localBackpressureCount": len(dropped),
+                    "offeredRps": (
+                        len(results) / args.open_loop_duration_s
+                        if args.open_loop_duration_s > 0 else 0.0),
+                }
+            finally:
+                user.stop()
+    elif args.concurrency == 1:
         for index in range(1, args.requests + 1):
             result = run_one_request(
                 user,
@@ -707,7 +1395,7 @@ def main() -> int:
             user.stop()
 
     makespan_ms = (time.perf_counter() - workload_start) * 1000.0
-    workload = summarize_workload(results, makespan_ms, args.service, args.concurrency)
+    workload = summarize_workload(results, makespan_ms, args.service, args.concurrency, workload_metadata)
     print("NDNSF_DI_NATIVE_TRACER_USER_WORKLOAD " + json.dumps(workload, sort_keys=True), flush=True)
     print("NDNSF_DI_NATIVE_TRACER_USER_EXECUTION " + json.dumps(workload, sort_keys=True), flush=True)
     return 0 if workload["status"] == "executed" else 1
