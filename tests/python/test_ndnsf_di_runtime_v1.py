@@ -23,8 +23,16 @@ from ndnsf_distributed_inference.runtime_v1 import (
     RolePipelineScheduler,
     RoleWorkItem,
     RetryPolicy,
+    SemanticCacheAckHint,
+    SemanticCacheDisposition,
+    SemanticPatternMeta,
+    SemanticPatternRank,
+    SemanticServiceCacheEntry,
+    SemanticServiceCacheKey,
+    SemanticServiceCacheManager,
     TransferQueueKind,
     adaptive_segment_size,
+    choose_semantic_cache_provider,
     choose_cache_placement,
     compress_payload,
     encode_ack_metadata,
@@ -32,9 +40,13 @@ from ndnsf_distributed_inference.runtime_v1 import (
     generate_fallback_plans,
     make_plan_lease,
     parse_ack_metadata,
+    parse_semantic_cache_ack_hint,
     prefix_state,
     proportional_layer_allocation,
     runtime_v1_smoke,
+    rank_semantic_patterns,
+    semantic_cache_ack_fields,
+    semantic_cache_token_saving_ratio,
     simulate_prefill_decode,
     validate_linear_llm_plan,
     write_runtime_report,
@@ -206,6 +218,244 @@ class RuntimeV1ContractsTest(unittest.TestCase):
         ))
         self.assertIsNotNone(manager.get(key))
         self.assertEqual(manager.telemetry().resident_exact_cache_key_digests, (key.digest(),))
+
+    def test_semantic_service_cache_hits_only_same_scope_and_confidence(self) -> None:
+        key = SemanticServiceCacheKey(
+            service_name="/LLM/Qwen/Chat",
+            model_id="qwen-small",
+            tokenizer_id="qwen-tokenizer",
+            policy_epoch="/Policy/chat/v1",
+            semantic_pattern_id="weather-question",
+            response_schema="chat-completion-v1",
+        )
+        manager = SemanticServiceCacheManager(budget_mb=1, min_admission_score=0)
+        admitted = manager.put(SemanticServiceCacheEntry(
+            key=key,
+            provider="llm-8gb",
+            response_payload=b"cached answer",
+            confidence_threshold=0.85,
+            estimated_output_tokens=100,
+            estimated_saved_decode_tokens=100,
+            byte_count=64,
+        ))
+        self.assertTrue(admitted)
+        self.assertIsNotNone(manager.get(key, confidence=0.91))
+        self.assertIsNone(manager.get(key, confidence=0.7))
+        policy_miss = SemanticServiceCacheKey(
+            service_name="/LLM/Qwen/Chat",
+            model_id="qwen-small",
+            tokenizer_id="qwen-tokenizer",
+            policy_epoch="/Policy/chat/v2",
+            semantic_pattern_id="weather-question",
+            response_schema="chat-completion-v1",
+        )
+        self.assertIsNone(manager.get(policy_miss, confidence=0.95))
+        telemetry = manager.telemetry()
+        self.assertEqual(telemetry["hits"], 1)
+        self.assertEqual(telemetry["misses"], 2)
+
+    def test_semantic_service_cache_admission_and_eviction_are_token_saving_aware(self) -> None:
+        manager = SemanticServiceCacheManager(budget_mb=0.0001, min_admission_score=5000)
+        low_value_key = SemanticServiceCacheKey(
+            service_name="/LLM/Qwen/Chat",
+            model_id="qwen",
+            tokenizer_id="tok",
+            policy_epoch="epoch",
+            semantic_pattern_id="short",
+        )
+        self.assertFalse(manager.put(SemanticServiceCacheEntry(
+            key=low_value_key,
+            response_payload=b"x" * 64,
+            estimated_output_tokens=1,
+            estimated_saved_decode_tokens=1,
+            byte_count=64,
+            reuse_likelihood=0.1,
+        )))
+
+        high_value = SemanticServiceCacheEntry(
+            key=SemanticServiceCacheKey(
+                service_name="/LLM/Qwen/Chat",
+                model_id="qwen",
+                tokenizer_id="tok",
+                policy_epoch="epoch",
+                semantic_pattern_id="long",
+            ),
+            response_payload=b"x" * 96,
+            estimated_output_tokens=500,
+            estimated_saved_decode_tokens=500,
+            byte_count=96,
+            reuse_likelihood=1.0,
+        )
+        medium_value = SemanticServiceCacheEntry(
+            key=SemanticServiceCacheKey(
+                service_name="/LLM/Qwen/Chat",
+                model_id="qwen",
+                tokenizer_id="tok",
+                policy_epoch="epoch",
+                semantic_pattern_id="medium",
+            ),
+            response_payload=b"y" * 96,
+            estimated_output_tokens=100,
+            estimated_saved_decode_tokens=100,
+            byte_count=96,
+            reuse_likelihood=1.0,
+        )
+        self.assertTrue(manager.put(high_value))
+        self.assertTrue(manager.put(medium_value))
+        self.assertIsNotNone(manager.get(high_value.key, confidence=0.95))
+        self.assertIsNone(manager.get(medium_value.key, confidence=0.95))
+        telemetry = manager.telemetry()
+        self.assertEqual(telemetry["rejections"], 1)
+        self.assertGreaterEqual(telemetry["evictions"], 1)
+
+    def test_semantic_pattern_metadata_ranks_by_token_saving(self) -> None:
+        patterns = rank_semantic_patterns([
+            SemanticPatternMeta(
+                pattern_id="short",
+                query_count=10,
+                estimated_saved_tokens=20,
+                token_saving_ratio=0.05,
+            ),
+            SemanticPatternMeta(
+                pattern_id="long",
+                query_count=3,
+                estimated_saved_tokens=500,
+                token_saving_ratio=0.7,
+            ),
+            SemanticPatternMeta(
+                pattern_id="medium",
+                query_count=5,
+                estimated_saved_tokens=150,
+                token_saving_ratio=0.3,
+            ),
+            SemanticPatternMeta(
+                pattern_id="tiny",
+                query_count=50,
+                estimated_saved_tokens=5,
+                token_saving_ratio=0.01,
+            ),
+        ])
+        self.assertEqual([pattern.pattern_id for pattern in patterns], [
+            "long",
+            "medium",
+            "short",
+            "tiny",
+        ])
+        self.assertEqual(patterns[0].rank, SemanticPatternRank.HIGH)
+        self.assertEqual(patterns[1].rank, SemanticPatternRank.MID)
+        self.assertEqual(patterns[2].rank, SemanticPatternRank.LOW)
+        self.assertEqual(patterns[3].rank, SemanticPatternRank.UNKNOWN)
+        self.assertAlmostEqual(
+            semantic_cache_token_saving_ratio(saved_tokens=25, total_tokens=100),
+            0.25,
+        )
+
+    def test_semantic_cache_entry_from_pattern_uses_rank_and_saved_tokens(self) -> None:
+        key = SemanticServiceCacheKey(
+            service_name="/LLM/Qwen/Chat",
+            model_id="qwen",
+            tokenizer_id="tok",
+            policy_epoch="epoch",
+            semantic_pattern_id="faq-long",
+        )
+        manager = SemanticServiceCacheManager(min_admission_score=0)
+        manager.register_patterns([
+            SemanticPatternMeta(
+                pattern_id="faq-long",
+                conversation_round=2,
+                query_count=9,
+                estimated_saved_tokens=600,
+                token_saving_ratio=0.6,
+            ),
+            SemanticPatternMeta(
+                pattern_id="small-talk",
+                conversation_round=1,
+                query_count=30,
+                estimated_saved_tokens=10,
+                token_saving_ratio=0.02,
+            ),
+        ])
+        entry = manager.entry_from_pattern(
+            key=key,
+            response_payload=b"cached response",
+            estimated_output_tokens=100,
+            byte_count=128,
+        )
+        self.assertEqual(entry.conversation_round, 2)
+        self.assertEqual(entry.pattern_rank, SemanticPatternRank.HIGH)
+        self.assertEqual(entry.estimated_saved_decode_tokens, 600)
+        self.assertGreater(entry.cache_benefit_score, 0)
+        self.assertTrue(manager.put(entry))
+        hint = manager.hint_for(key, confidence=0.95)
+        self.assertEqual(hint.pattern_rank, SemanticPatternRank.HIGH)
+        self.assertEqual(hint.token_saving_ratio, 0.6)
+        telemetry = manager.telemetry()
+        self.assertEqual(telemetry["patternCount"], 2)
+        self.assertEqual(telemetry["highRankPatterns"], 1)
+
+    def test_semantic_cache_ack_hint_is_coarse_and_private(self) -> None:
+        hint = SemanticCacheAckHint(
+            disposition=SemanticCacheDisposition.HIT,
+            confidence=0.93,
+            estimated_saved_decode_tokens=512,
+            policy_epoch="/Policy/chat/v1",
+            pattern_rank=SemanticPatternRank.HIGH,
+            token_saving_ratio=0.6,
+        )
+        fields = parse_ack_metadata(encode_ack_metadata(semantic_cache_ack_fields(hint)))
+        self.assertEqual(fields["semanticCache"], "hit")
+        self.assertEqual(fields["semanticCacheConfidenceBucket"], "high")
+        self.assertEqual(fields["semanticCacheEstimatedSavedTokens"], "512")
+        self.assertEqual(fields["semanticCachePatternRank"], "high")
+        self.assertEqual(fields["semanticCacheTokenSavingRatioBucket"], "high")
+        self.assertNotIn("semanticPatternId", fields)
+        self.assertNotIn("prompt", fields)
+        self.assertNotIn("embedding", fields)
+        parsed = parse_semantic_cache_ack_hint(fields)
+        self.assertEqual(parsed.disposition, SemanticCacheDisposition.HIT)
+        self.assertEqual(parsed.estimated_saved_decode_tokens, 512)
+        self.assertEqual(parsed.pattern_rank, SemanticPatternRank.HIGH)
+
+    def test_semantic_cache_provider_selection_prefers_hit_and_saved_tokens(self) -> None:
+        provider = choose_semantic_cache_provider({
+            "provider-a": semantic_cache_ack_fields(SemanticCacheAckHint(
+                disposition=SemanticCacheDisposition.CANDIDATE,
+                confidence=0.8,
+                estimated_saved_decode_tokens=800,
+                pattern_rank=SemanticPatternRank.HIGH,
+            )),
+            "provider-b": semantic_cache_ack_fields(SemanticCacheAckHint(
+                disposition=SemanticCacheDisposition.HIT,
+                confidence=0.95,
+                estimated_saved_decode_tokens=200,
+                pattern_rank=SemanticPatternRank.LOW,
+            )),
+            "provider-c": semantic_cache_ack_fields(SemanticCacheAckHint(
+                disposition=SemanticCacheDisposition.MISS,
+                confidence=0.0,
+                estimated_saved_decode_tokens=1000,
+            )),
+        })
+        self.assertEqual(provider, "provider-b")
+
+    def test_semantic_cache_hint_reports_candidate_below_threshold(self) -> None:
+        key = SemanticServiceCacheKey(
+            service_name="/LLM/Qwen/Chat",
+            model_id="qwen",
+            tokenizer_id="tok",
+            policy_epoch="epoch",
+            semantic_pattern_id="mission",
+        )
+        manager = SemanticServiceCacheManager(min_admission_score=0)
+        manager.put(SemanticServiceCacheEntry(
+            key=key,
+            confidence_threshold=0.9,
+            estimated_saved_decode_tokens=300,
+            byte_count=32,
+        ))
+        hint = manager.hint_for(key, confidence=0.82)
+        self.assertEqual(hint.disposition, SemanticCacheDisposition.CANDIDATE)
+        self.assertEqual(hint.estimated_saved_decode_tokens, 300)
 
     def test_ack_metadata_does_not_advertise_provider_local_cache_keys(self) -> None:
         telemetry = RuntimeTelemetryV1(

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import time
 
 from ndnsf import ServiceUser
 from ndnsf_distributed_inference import (
@@ -13,7 +15,11 @@ from ndnsf_distributed_inference import (
     ArtifactProvisioningState,
     NetworkDistributedRepoClient,
     ProviderRuntimeContext,
+    SemanticPatternMeta,
+    SemanticServiceCacheKey,
+    SemanticServiceCacheManager,
     artifact_references_need_repo_client,
+    semantic_cache_token_saving_ratio,
 )
 from ndnsf_distributed_inference.llm_runtime import (
     ManagedLlamaServerRuntime,
@@ -23,6 +29,153 @@ from ndnsf_distributed_inference.llm_runtime import (
 from pathlib import Path
 
 from llama_server_lib import ROLE, SERVICE, call_llama_server_chat
+
+
+MODEL_ID = "qwen2.5-0.5b"
+TOKENIZER_ID = "qwen-tokenizer"
+POLICY_EPOCH = "/Policy/llama-server/v1"
+RESPONSE_SCHEMA = "openai-chat-completion-v1"
+
+
+def _prompt_from_openai_payload(payload: bytes) -> tuple[str, str, int]:
+    try:
+        doc = json.loads(payload.decode("utf-8"))
+    except Exception:
+        return payload.decode("utf-8", errors="replace"), MODEL_ID, 64
+    messages = doc.get("messages", [])
+    prompt_parts = [
+        str(item.get("content", ""))
+        for item in messages
+        if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    prompt = "\n".join(part for part in prompt_parts if part)
+    return (
+        prompt or json.dumps(doc, sort_keys=True),
+        str(doc.get("model", MODEL_ID) or MODEL_ID),
+        int(doc.get("max_tokens", 64) or 64),
+    )
+
+
+def semantic_pattern_for_prompt(prompt: str) -> tuple[str, float]:
+    text = prompt.lower()
+    if any(word in text for word in ("weather", "rain", "forecast")):
+        return "weather-forecast", 0.94
+    if "cache" in text or "semantic" in text:
+        return "semantic-cache", 0.93
+    if "distributed inference" in text or "provider" in text:
+        return "distributed-inference", 0.92
+    return "general-chat", 0.80
+
+
+def estimate_prompt_tokens(prompt: str) -> int:
+    return max(1, len([part for part in prompt.replace("?", " ").split() if part]))
+
+
+def default_semantic_patterns() -> list[SemanticPatternMeta]:
+    raw = [
+        ("semantic-cache", 2, 9, 720),
+        ("distributed-inference", 2, 7, 640),
+        ("weather-forecast", 1, 8, 384),
+        ("general-chat", 1, 20, 64),
+    ]
+    return [
+        SemanticPatternMeta(
+            pattern_id=pattern_id,
+            conversation_round=round_no,
+            query_count=query_count,
+            total_prompt_tokens=max(1, query_count * 8),
+            total_output_tokens=max(1, query_count * 96),
+            estimated_saved_tokens=saved_tokens,
+            proportion_ratio=query_count / 44.0,
+            token_saving_ratio=semantic_cache_token_saving_ratio(
+                saved_tokens=saved_tokens,
+                total_tokens=max(1, query_count * 104),
+            ),
+        )
+        for pattern_id, round_no, query_count, saved_tokens in raw
+    ]
+
+
+class LlamaServerSemanticCache:
+    def __init__(self, *, enabled: bool = False, budget_mb: float = 32.0):
+        self.enabled = bool(enabled)
+        self.cache = SemanticServiceCacheManager(
+            budget_mb=budget_mb,
+            min_admission_score=0.0,
+        )
+        self.cache.register_patterns(default_semantic_patterns())
+        self.requests = 0
+        self.hits = 0
+        self.misses = 0
+        self.saved_tokens = 0
+        self.total_tokens = 0
+
+    def key_for_payload(self, payload: bytes) -> tuple[SemanticServiceCacheKey, float, int, int]:
+        prompt, model, max_tokens = _prompt_from_openai_payload(payload)
+        pattern_id, confidence = semantic_pattern_for_prompt(prompt)
+        prompt_tokens = estimate_prompt_tokens(prompt)
+        output_tokens = max(1, max_tokens)
+        key = SemanticServiceCacheKey(
+            service_name=SERVICE,
+            model_id=model,
+            tokenizer_id=TOKENIZER_ID,
+            policy_epoch=POLICY_EPOCH,
+            semantic_pattern_id=pattern_id,
+            response_schema=RESPONSE_SCHEMA,
+            app_namespace="llama-server-provider",
+        )
+        return key, confidence, prompt_tokens, output_tokens
+
+    def lookup(self, payload: bytes) -> tuple[bytes | None, dict]:
+        self.requests += 1
+        key, confidence, prompt_tokens, output_tokens = self.key_for_payload(payload)
+        self.total_tokens += prompt_tokens + output_tokens
+        if not self.enabled:
+            self.misses += 1
+            return None, {
+                "status": "disabled",
+                "pattern": key.semantic_pattern_id,
+                "confidence": confidence,
+                "savedTokens": 0,
+            }
+        entry = self.cache.get(key, confidence=confidence)
+        if entry is None:
+            self.misses += 1
+            return None, {
+                "status": "miss",
+                "pattern": key.semantic_pattern_id,
+                "confidence": confidence,
+                "savedTokens": 0,
+            }
+        self.hits += 1
+        self.saved_tokens += output_tokens
+        return entry.response_payload, {
+            "status": "hit",
+            "pattern": key.semantic_pattern_id,
+            "confidence": confidence,
+            "savedTokens": output_tokens,
+        }
+
+    def admit(self, request_payload: bytes, response_payload: bytes) -> bool:
+        if not self.enabled:
+            return False
+        key, _, prompt_tokens, output_tokens = self.key_for_payload(request_payload)
+        entry = self.cache.entry_from_pattern(
+            key=key,
+            response_payload=response_payload,
+            provider="/provider/llama-server",
+            confidence_threshold=0.88,
+            estimated_prompt_tokens=prompt_tokens,
+            estimated_output_tokens=output_tokens,
+            byte_count=len(response_payload),
+        )
+        return self.cache.put(entry)
+
+    def token_saving_ratio(self) -> float:
+        return semantic_cache_token_saving_ratio(
+            saved_tokens=self.saved_tokens,
+            total_tokens=self.total_tokens,
+        )
 
 
 def handle_llama_server(ctx: ProviderRuntimeContext) -> None:
@@ -42,24 +195,48 @@ def handle_llama_server(ctx: ProviderRuntimeContext) -> None:
     )
 
 
-def make_llama_server_handler(state: ArtifactProvisioningState, base_url: str):
+def make_llama_server_handler(state: ArtifactProvisioningState, base_url: str,
+                              semantic_cache: LlamaServerSemanticCache | None = None):
     def handler(ctx: ProviderRuntimeContext) -> None:
         try:
             state.require_ready()
         except Exception as exc:  # noqa: BLE001
             ctx.ndnsf.fail(str(exc))
             return
+        cache = semantic_cache or LlamaServerSemanticCache(enabled=False)
+        lookup_start = time.perf_counter()
+        cached_response, cache_meta = cache.lookup(ctx.request)
+        lookup_ms = (time.perf_counter() - lookup_start) * 1000.0
+        if cached_response is not None:
+            ctx.ndnsf.publish_final_response(cached_response)
+            print(
+                "LLAMA_SERVER_PROVIDER_SEMANTIC_CACHE",
+                "status=hit",
+                f"pattern={cache_meta['pattern']}",
+                f"savedTokens={cache_meta['savedTokens']}",
+                f"lookup_ms={lookup_ms:.3f}",
+                f"hit_ratio={cache.hits / max(1, cache.requests):.3f}",
+                f"token_saving_ratio={cache.token_saving_ratio():.3f}",
+                flush=True,
+            )
+            return
         try:
             response = call_llama_server_chat(ctx.request, base_url=base_url)
         except Exception as exc:  # noqa: BLE001
             ctx.ndnsf.fail(f"llama-server request failed: {exc}")
             return
+        admitted = cache.admit(ctx.request, response)
         ctx.ndnsf.publish_final_response(response)
         print(
             "LLAMA_SERVER_PROVIDER_RESPONSE",
             f"role={ctx.role}",
             f"bytes={len(response)}",
             f"url={base_url}",
+            f"semanticCache={cache_meta['status']}",
+            f"semanticPattern={cache_meta['pattern']}",
+            f"semanticAdmitted={int(bool(admitted))}",
+            f"hit_ratio={cache.hits / max(1, cache.requests):.3f}",
+            f"token_saving_ratio={cache.token_saving_ratio():.3f}",
             flush=True,
         )
     return handler
@@ -191,6 +368,9 @@ def main() -> int:
     parser.add_argument("--materialize-only", action="store_true")
     parser.add_argument("--llama-server-extra-arg", action="append", default=[])
     parser.add_argument("--handler-workers", type=int, default=2)
+    parser.add_argument("--enable-semantic-cache", action="store_true",
+                        help="Enable provider-local semantic response cache for llama-server")
+    parser.add_argument("--semantic-cache-budget-mb", type=float, default=32.0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -201,6 +381,7 @@ def main() -> int:
             f"roles={args.roles}",
             f"url={args.llama_url}",
             f"artifact_references={args.artifact_references or '(none)'}",
+            f"semantic_cache={int(bool(args.enable_semantic_cache))}",
         )
         return 0
 
@@ -268,10 +449,14 @@ def main() -> int:
         runtime_state.mark_ready("external llama-server endpoint")
 
     try:
+        semantic_cache = LlamaServerSemanticCache(
+            enabled=args.enable_semantic_cache,
+            budget_mb=args.semantic_cache_budget_mb,
+        )
         provider.serve_service(
             service=SERVICE,
             roles=args.roles,
-            handler=make_llama_server_handler(runtime_state, args.llama_url),
+            handler=make_llama_server_handler(runtime_state, args.llama_url, semantic_cache),
             backends=["llama.cpp"],
             has_model=True,
             can_provision=False,
