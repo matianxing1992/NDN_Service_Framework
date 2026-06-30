@@ -176,6 +176,37 @@ public:
   std::vector<std::string> publishedNames;
 };
 
+class ImmediateDependencyIo : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string& sessionId, const DependencyEdge& edge) override
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    sessions.push_back(sessionId);
+    prefetchedScopes.push_back(edge.scope);
+    std::promise<TensorBundle> promise;
+    promise.set_value(bundle(edge.scope, "immediate:" + edge.scope));
+    return promise.get_future();
+  }
+
+  void
+  publishOutput(const std::string& sessionId,
+                const DependencyEdge& edge,
+                const TensorBundle& value) override
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    sessions.push_back(sessionId);
+    publishedByScope[edge.scope] = value;
+  }
+
+public:
+  std::mutex mutex;
+  std::vector<std::string> sessions;
+  std::vector<std::string> prefetchedScopes;
+  std::map<std::string, TensorBundle> publishedByScope;
+};
+
 class EchoNativeRunner : public NativeModelRunner
 {
 public:
@@ -502,6 +533,44 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerDoesNotOccupyComputeWorkerWhileWaitingFor
   BOOST_CHECK_GE(durationMs(consumerResult.inputTimings[0].prefetchStartedAt,
                             consumerResult.inputTimings[0].fetchCompletedAt),
                  0.0);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerEnqueuesImmediatelyWhenInputsAreReady)
+{
+  RoleSpec role{
+    "/ReadyInput",
+    {DependencyEdge{"source-to-ready", "/Source", "/ReadyInput",
+                    "/run/immediate/source/bundle/0", 1}},
+    {DependencyEdge{"ready-to-user", "/ReadyInput", "",
+                    "/run/immediate/ready/bundle/0", 1}},
+  };
+
+  auto io = std::make_shared<ImmediateDependencyIo>();
+  ProviderRoleWorker worker(1);
+
+  auto future = worker.executeAsync(
+    "immediate-run",
+    role,
+    io,
+    [] (const RoleExecutionContext& ctx) {
+      BOOST_REQUIRE(ctx.inputsByScope.count("source-to-ready") == 1);
+      return std::map<std::string, TensorBundle>{
+        {"ready-to-user", bundle("ready-to-user",
+                                 "ready:" +
+                                 payloadText(ctx.inputsByScope.at("source-to-ready")))},
+      };
+    });
+
+  const auto snapshot = worker.snapshot();
+  BOOST_CHECK_EQUAL(snapshot.waitingForInputCount, 0);
+
+  BOOST_REQUIRE(future.wait_for(std::chrono::milliseconds(200)) ==
+                std::future_status::ready);
+  const auto result = future.get();
+  BOOST_REQUIRE_EQUAL(result.inputTimings.size(), 1);
+  BOOST_CHECK_EQUAL(result.inputTimings[0].scope, "source-to-ready");
+  BOOST_CHECK_EQUAL(payloadText(result.outputsByScope.at("ready-to-user")),
+                    "ready:immediate:source-to-ready");
 }
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerAcceptsNativeModelRunnerObject)
