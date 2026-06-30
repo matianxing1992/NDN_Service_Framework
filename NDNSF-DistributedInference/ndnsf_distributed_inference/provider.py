@@ -21,6 +21,11 @@ from ndnsf import (
 )
 
 from .plan import RoleDependencyView
+from .runtime_v1 import (
+    ProviderProfileV1,
+    RuntimeTelemetryV1,
+    encode_ack_metadata,
+)
 
 
 @dataclass(frozen=True)
@@ -479,6 +484,8 @@ class DistributedInferenceProvider:
         dependency_graph=None,
         local_artifacts: dict[str, dict] | None = None,
         readiness_probe: Callable[[], AckDecision | bool] | None = None,
+        provider_profile: ProviderProfileV1 | dict | None = None,
+        runtime_telemetry: Callable[[], RuntimeTelemetryV1 | dict] | RuntimeTelemetryV1 | dict | None = None,
         register_simple_service: bool = False,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
@@ -513,20 +520,35 @@ class DistributedInferenceProvider:
                     readiness_payload = b""
             else:
                 readiness_payload = b""
-            fields = [
-                "roles=" + ",".join(role_list),
-                "queue=" + str(queue_depth),
-                "hasModel=" + ("1" if has_model else "0"),
-                "canProvision=" + ("1" if can_provision else "0"),
-            ]
+            fields: dict[str, object] = {
+                "roles": role_list,
+                "queue": queue_depth,
+                "hasModel": has_model,
+                "canProvision": can_provision,
+            }
             if len(role_list) == 1:
-                fields.append("role=" + role_list[0])
+                fields["role"] = role_list[0]
             if backend_list:
-                fields.append("backends=" + ",".join(backend_list))
+                fields["backends"] = backend_list
+            if provider_profile is not None:
+                profile = (
+                    provider_profile
+                    if isinstance(provider_profile, ProviderProfileV1)
+                    else ProviderProfileV1.from_dict(dict(provider_profile))
+                )
+                fields.update(profile.to_ack_fields())
+            if runtime_telemetry is not None:
+                telemetry_value = runtime_telemetry() if callable(runtime_telemetry) else runtime_telemetry
+                telemetry = (
+                    telemetry_value
+                    if isinstance(telemetry_value, RuntimeTelemetryV1)
+                    else RuntimeTelemetryV1.from_dict(dict(telemetry_value))
+                )
+                fields.update(telemetry.to_ack_fields())
             return AckDecision(
                 status=can_provision or has_model,
                 message="inference capability ready",
-                payload=(";".join(fields) + ";").encode() + readiness_payload,
+                payload=encode_ack_metadata(fields) + readiness_payload,
             )
 
         class SimpleResponseContext:

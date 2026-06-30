@@ -1,0 +1,35 @@
+{
+  "profiles": [
+    {
+      "name": "short-context",
+      "contextTokens": 1024,
+      "targetRps": 4,
+      "cacheAware": false,
+      "description": "Short-context baseline for Runtime v1 contract checks."
+    },
+    {
+      "name": "long-context",
+      "contextTokens": 8192,
+      "targetRps": 4,
+      "cacheAware": true,
+      "description": "Long-context shared-prefix profile with cache-aware placement."
+    },
+    {
+      "name": "provider-failure",
+      "contextTokens": 4096,
+      "targetRps": 2,
+      "cacheAware": true,
+      "failure": "drop-largest-provider",
+      "description": "Fallback profile used when the largest provider is unavailable."
+    },
+    {
+      "name": "high-rtt",
+      "contextTokens": 4096,
+      "targetRps": 2,
+      "cacheAware": true,
+      "rttMs": 80,
+      "bandwidthMbps": 100,
+      "description": "High-RTT profile for dependency-transfer sensitivity."
+    }
+  ]
+}
