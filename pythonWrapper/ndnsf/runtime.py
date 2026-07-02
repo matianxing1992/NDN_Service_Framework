@@ -222,10 +222,14 @@ class NdnRuntime:
         self,
         *,
         policy_file: str,
+        bootstrap_token_file: str = "",
         extra_args: Iterable[str] = (),
         env: Optional[Mapping[str, str]] = None,
     ) -> NdnProcess:
-        args = ["--policy-file", policy_file, *extra_args]
+        args = ["--policy-file", policy_file]
+        if bootstrap_token_file:
+            args.extend(["--bootstrap-token-file", bootstrap_token_file])
+        args.extend(extra_args)
         return self.start_process("controller", "App_ServiceController", args, env=env)
 
     def configure_local_strategy(

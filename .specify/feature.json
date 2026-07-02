@@ -1,4 +1,4 @@
 {
-  "feature": "specs/043-semantic-service-cache",
-  "feature_directory": "specs/043-semantic-service-cache"
+  "feature": "specs/045-token-certificate-bootstrap",
+  "feature_directory": "specs/045-token-certificate-bootstrap"
 }

@@ -1,3 +1,4 @@
+#include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 
@@ -265,9 +266,15 @@ main(int argc, char** argv)
       argc, argv, "--provider-request-delay-ms", 0);
     const std::string providerLifecycleCsv =
       getOption(argc, argv, "--provider-lifecycle-csv", "");
+    const std::string bootstrapToken =
+      getOption(argc, argv, "--bootstrap-token", "");
 
     auto providerCert = getOrCreateIdentity(keyChain, providerIdentity);
     auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
+    if (!bootstrapToken.empty()) {
+      providerCert = ndn_service_framework::ensureControllerSignedCertificate(
+        face, keyChain, CONTROLLER_PREFIX, providerIdentity, bootstrapToken);
+    }
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
     keyChainInitLock.unlock();
 

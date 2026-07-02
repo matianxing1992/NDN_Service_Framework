@@ -1,4 +1,5 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
+#include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -1458,7 +1459,8 @@ public:
                         const std::string& trustSchema,
                         size_t handlerThreads,
                         size_t ackThreads,
-                        bool serveCertificates)
+                        bool serveCertificates,
+                        const std::string& bootstrapToken)
     : m_group(group)
     , m_controller(controller)
     , m_providerPrefix(providerPrefix)
@@ -1470,6 +1472,10 @@ public:
   {
     m_providerCert = getOrCreateIdentity(m_keyChain, m_providerIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
+    if (!bootstrapToken.empty()) {
+      m_providerCert = nsf::ensureControllerSignedCertificate(
+        m_face, m_keyChain, m_controller, m_providerIdentity, bootstrapToken);
+    }
     {
       std::lock_guard<std::mutex> lock(g_keyChainMutex);
       m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_providerIdentity));
@@ -1715,7 +1721,8 @@ public:
                           const std::string& policyFile,
                           const std::string& trustSchema,
                           const std::vector<std::string>& bootstrapIdentities,
-                          bool serveCertificates)
+                          bool serveCertificates,
+                          const std::string& bootstrapTokenFile)
     : m_controllerPrefix(controllerPrefix)
     , m_policyFile(policyFile)
     , m_trustSchema(trustSchema)
@@ -1751,6 +1758,9 @@ public:
     m_controller = std::make_unique<nsf::ServiceController>(
       m_face, m_controllerCert, m_validator, m_policyFile);
     m_controller->setControllerPrefix(m_controllerPrefix);
+    if (!bootstrapTokenFile.empty()) {
+      m_controller->setBootstrapTokenFile(bootstrapTokenFile);
+    }
   }
 
   ~NativeServiceController()
@@ -1845,7 +1855,8 @@ public:
                     size_t handlerThreads,
                     size_t ackThreads,
                     bool adaptiveAdmission,
-                    bool serveCertificates)
+                    bool serveCertificates,
+                    const std::string& bootstrapToken)
     : m_group(group)
     , m_controller(controller)
     , m_userIdentity(userIdentity)
@@ -1854,6 +1865,10 @@ public:
   {
     m_userCert = getOrCreateIdentity(m_keyChain, m_userIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
+    if (!bootstrapToken.empty()) {
+      m_userCert = nsf::ensureControllerSignedCertificate(
+        m_face, m_keyChain, m_controller, m_userIdentity, bootstrapToken);
+    }
     {
       std::lock_guard<std::mutex> lock(g_keyChainMutex);
       m_keyChain.setDefaultIdentity(m_keyChain.getPib().getIdentity(m_userIdentity));
@@ -2730,12 +2745,14 @@ PYBIND11_MODULE(_ndnsf, m)
                   const std::string&,
                   const std::string&,
                   const std::vector<std::string>&,
-                  bool>(),
+                  bool,
+                  const std::string&>(),
          py::arg("controller_prefix") = "/example/hello/controller",
          py::arg("policy_file") = "examples/hello.policies",
          py::arg("trust_schema") = "examples/trust-schema.conf",
          py::arg("bootstrap_identities") = std::vector<std::string>{},
-         py::arg("serve_certificates") = true)
+         py::arg("serve_certificates") = true,
+         py::arg("bootstrap_token_file") = "")
     .def("start", &NativeServiceController::start)
     .def("run", &NativeServiceController::run, py::call_guard<py::gil_scoped_release>())
     .def("stop", &NativeServiceController::stop);
@@ -2748,7 +2765,8 @@ PYBIND11_MODULE(_ndnsf, m)
                   const std::string&,
                   size_t,
                   size_t,
-                  bool>(),
+                  bool,
+                  const std::string&>(),
          py::arg("provider_id") = "",
          py::arg("group") = "/example/hello/group",
          py::arg("controller") = "/example/hello/controller",
@@ -2756,7 +2774,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("trust_schema") = "examples/trust-schema.conf",
          py::arg("handler_threads") = 4,
          py::arg("ack_threads") = 2,
-         py::arg("serve_certificates") = true)
+         py::arg("serve_certificates") = true,
+         py::arg("bootstrap_token") = "")
     .def("add_service", &NativeServiceProvider::addService,
          py::arg("service"),
          py::arg("request_handler"),
@@ -2779,7 +2798,8 @@ PYBIND11_MODULE(_ndnsf, m)
                   size_t,
                   size_t,
                   bool,
-                  bool>(),
+                  bool,
+                  const std::string&>(),
          py::arg("group") = "/example/hello/group",
          py::arg("controller") = "/example/hello/controller",
          py::arg("user") = "/example/hello/user",
@@ -2788,7 +2808,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("handler_threads") = 2,
          py::arg("ack_threads") = 2,
          py::arg("adaptive_admission") = false,
-         py::arg("serve_certificates") = true)
+         py::arg("serve_certificates") = true,
+         py::arg("bootstrap_token") = "")
     .def("request_service", &NativeServiceUser::requestService,
          py::arg("service"),
          py::arg("payload"),

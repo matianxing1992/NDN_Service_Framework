@@ -1,3 +1,4 @@
+#include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
@@ -679,9 +680,14 @@ main(int argc, char** argv)
     const std::string outputCsv = getOption(argc, argv, "--output-csv", "");
     const std::string benchmarkStrategyText = getOption(argc, argv, "--strategy", "custom-selection");
     const std::string expectedResponse = getOption(argc, argv, "--expect-response", "");
+    const std::string bootstrapToken = getOption(argc, argv, "--bootstrap-token", "");
 
     auto userCert = getOrCreateIdentity(keyChain, USER_IDENTITY);
     auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
+    if (!bootstrapToken.empty()) {
+      userCert = ndn_service_framework::ensureControllerSignedCertificate(
+        face, keyChain, CONTROLLER_PREFIX, USER_IDENTITY, bootstrapToken);
+    }
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(USER_IDENTITY));
     getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
     getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));

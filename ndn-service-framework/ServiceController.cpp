@@ -1,12 +1,15 @@
 #include "ServiceController.hpp"
+#include "CertificateBootstrap.hpp"
 #include "utils.hpp"
 
 #include <ndn-cxx/security/transform.hpp>
+#include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <string_view>
 
 namespace ndn_service_framework {
@@ -161,6 +164,15 @@ void ServiceController::setControllerPrefix(const ndn::Name& prefix)
 
   m_controllerPrefix = prefix;
   m_hasCustomControllerPrefix = true;
+}
+
+void
+ServiceController::setBootstrapTokenFile(const std::string& path)
+{
+  if (m_isRegistered) {
+    throw std::logic_error("Cannot change bootstrap token file after start()");
+  }
+  loadBootstrapTokenFile(path);
 }
 
 void ServiceController::start()
@@ -337,6 +349,9 @@ void ServiceController::registerInterestHandlers()
   m_prefixPolicyManifest = m_controllerPrefix;
   m_prefixPolicyManifest.append("NDNSF").append("POLICY-MANIFEST");
 
+  m_prefixCertificateBootstrap = m_controllerPrefix;
+  m_prefixCertificateBootstrap.append("NDNSF").append("CERTBOOTSTRAP");
+
   m_face.setInterestFilter(
     m_prefixServiceAccess,
     [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
@@ -387,12 +402,23 @@ void ServiceController::registerInterestHandlers()
       NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
     });
 
+  m_face.setInterestFilter(
+    m_prefixCertificateBootstrap,
+    [this](const ndn::InterestFilter& f, const ndn::Interest& i) {
+      this->onCertificateBootstrapInterest(f, i);
+    },
+    ndn::RegisterPrefixSuccessCallback(),
+    [](const ndn::Name& p, const std::string& reason) {
+      NDN_LOG_ERROR("Failed to register prefix " << p << " reason=" << reason);
+    });
+
   NDN_LOG_INFO("ServiceController listening on:\n"
             << "  " << m_prefixServiceAccess 
             << "  " << m_prefixServiceProvision 
             << "  " << m_prefixUserPermissions 
             << "  " << m_prefixProviderPermissions
-            << "  " << m_prefixPolicyManifest);
+            << "  " << m_prefixPolicyManifest
+            << "  " << m_prefixCertificateBootstrap);
 
   m_isRegistered = true;
 }
@@ -497,6 +523,11 @@ ServiceController::buildPolicyManifest() const
 ndn::security::Certificate
 ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity) const
 {
+  if (auto issued = m_bootstrapIssuedCertificates.find(targetIdentity.toUri());
+      issued != m_bootstrapIssuedCertificates.end()) {
+    return issued->second;
+  }
+
   auto cert = m_keyChain.getPib()
                 .getIdentity(targetIdentity)
                 .getDefaultKey()
@@ -506,6 +537,75 @@ ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity)
                              cert.getName().toUri());
   }
   return cert;
+}
+
+void
+ServiceController::loadBootstrapTokenFile(const std::string& path)
+{
+  if (path.empty()) {
+    return;
+  }
+
+  std::ifstream input(path);
+  if (!input) {
+    throw std::runtime_error("Cannot open bootstrap token file: " + path);
+  }
+
+  std::string line;
+  size_t lineNo = 0;
+  while (std::getline(input, line)) {
+    ++lineNo;
+    const auto commentPos = line.find('#');
+    if (commentPos != std::string::npos) {
+      line = line.substr(0, commentPos);
+    }
+
+    std::istringstream parser(line);
+    std::string identity;
+    std::string token;
+    std::string role;
+    if (!(parser >> identity >> token)) {
+      continue;
+    }
+    parser >> role;
+
+    try {
+      ndn::Name identityName(identity);
+      if (identityName.empty() || token.empty()) {
+        throw std::runtime_error("empty identity or token");
+      }
+      m_bootstrapTokens[identityName.toUri()] = BootstrapTokenEntry{token, role, false};
+    }
+    catch (const std::exception& e) {
+      throw std::runtime_error("Invalid bootstrap token file entry " + path +
+                               ":" + std::to_string(lineNo) + ": " + e.what());
+    }
+  }
+
+  NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_TOKEN_FILE path=" << path
+               << " entries=" << m_bootstrapTokens.size());
+}
+
+void
+ServiceController::sendCertificateBootstrapResponse(const ndn::Interest& interest,
+                                                    bool status,
+                                                    const std::string& message,
+                                                    const ndn::security::Certificate* issuedCertificate)
+{
+  CertificateBootstrapResponse response;
+  response.status = status;
+  response.message = message;
+  if (issuedCertificate != nullptr) {
+    response.issuedCertificate = *issuedCertificate;
+    response.hasIssuedCertificate = true;
+  }
+
+  ndn::Data data(interest.getName());
+  data.setFreshnessPeriod(ndn::time::milliseconds(0));
+  data.setContent(response.wireEncode());
+  m_keyChain.sign(data, ndn::security::SigningInfo(
+    ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
+  m_face.put(data);
 }
 
 // ===================== Signer cert extraction =====================
@@ -805,6 +905,88 @@ void ServiceController::onPolicyManifestInterest(const ndn::InterestFilter&,
 
   NDN_LOG_INFO("[POLICY-MANIFEST] Reply data=" << data.getName()
                << " payload=" << manifest.toString());
+}
+
+void
+ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
+                                                  const ndn::Interest& interest)
+{
+  if (!m_prefixCertificateBootstrap.isPrefixOf(interest.getName()) ||
+      interest.getName().size() <= m_prefixCertificateBootstrap.size()) {
+    return;
+  }
+
+  const ndn::Name targetIdentity = stripTrailingParametersDigest(
+    interest.getName().getSubName(m_prefixCertificateBootstrap.size()));
+  const std::string targetUri = targetIdentity.toUri();
+
+  try {
+    const auto tokenIt = m_bootstrapTokens.find(targetUri);
+    if (tokenIt == m_bootstrapTokens.end()) {
+      const std::string message = "no bootstrap token configured for " + targetUri;
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=no-token");
+      sendCertificateBootstrapResponse(interest, false, message, nullptr);
+      return;
+    }
+
+    auto& tokenEntry = tokenIt->second;
+    if (tokenEntry.consumed) {
+      const std::string message = "bootstrap token already consumed for " + targetUri;
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=token-consumed");
+      sendCertificateBootstrapResponse(interest, false, message, nullptr);
+      return;
+    }
+
+    const auto& params = interest.getApplicationParameters();
+    if (!params.isValid()) {
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=missing-parameters");
+      sendCertificateBootstrapResponse(interest, false, "missing bootstrap request parameters", nullptr);
+      return;
+    }
+
+    CertificateBootstrapRequest request;
+    if (!request.wireDecode(params)) {
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=malformed-request");
+      sendCertificateBootstrapResponse(interest, false, "malformed bootstrap request", nullptr);
+      return;
+    }
+
+    if (request.token != tokenEntry.token) {
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=token-mismatch");
+      sendCertificateBootstrapResponse(interest, false, "bootstrap token mismatch", nullptr);
+      return;
+    }
+
+    if (request.certificateRequest.getIdentity() != targetIdentity) {
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=request-identity-mismatch"
+                   << " certIdentity=" << request.certificateRequest.getIdentity());
+      sendCertificateBootstrapResponse(interest, false, "certificate request identity mismatch", nullptr);
+      return;
+    }
+
+    auto issued = m_keyChain.makeCertificate(
+      request.certificateRequest,
+      ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                                 m_controllerPrefix));
+    tokenEntry.consumed = true;
+    m_bootstrapIssuedCertificates[targetUri] = issued;
+
+    NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_ISSUED identity=" << targetUri
+                 << " cert=" << issued.getName().toUri()
+                 << " role=" << tokenEntry.role);
+    sendCertificateBootstrapResponse(interest, true, "issued", &issued);
+  }
+  catch (const std::exception& e) {
+    NDN_LOG_ERROR("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                  << " reason=exception error=" << e.what());
+    sendCertificateBootstrapResponse(interest, false, e.what(), nullptr);
+  }
 }
 
 } // namespace ndn_service_framework

@@ -1197,6 +1197,7 @@ class ServiceProvider:
         handler_threads: int = 4,
         ack_threads: int = 2,
         serve_certificates: bool = True,
+        bootstrap_token: str = "",
         binary: str = "",
         binary_dir=None,
         library_dirs=None,
@@ -1216,6 +1217,7 @@ class ServiceProvider:
             handler_threads=handler_threads,
             ack_threads=ack_threads,
             serve_certificates=serve_certificates,
+            bootstrap_token=bootstrap_token,
         )
         self._handlers: dict[str, Callable[[bytes], bytes | ServiceResponse]] = {}
         self._ack_handlers: dict[str, Callable[[bytes], bool | AckDecision]] = {}
@@ -1338,6 +1340,7 @@ class ServiceController:
         trust_schema: str = "examples/trust-schema.conf",
         bootstrap_identities: Optional[list[str]] = None,
         serve_certificates: bool = True,
+        bootstrap_token_file: str = "",
         binary: str = "",
         binary_dir=None,
         library_dirs=None,
@@ -1351,6 +1354,7 @@ class ServiceController:
             trust_schema=trust_schema,
             bootstrap_identities=list(bootstrap_identities or []),
             serve_certificates=serve_certificates,
+            bootstrap_token_file=bootstrap_token_file,
         )
 
     def start(self) -> None:
@@ -1385,6 +1389,7 @@ class ServiceUser:
         ack_threads: int = 2,
         adaptive_admission: bool = False,
         serve_certificates: bool = True,
+        bootstrap_token: str = "",
         binary: str = "",
         binary_dir=None,
         library_dirs=None,
@@ -1406,6 +1411,7 @@ class ServiceUser:
             ack_threads=ack_threads,
             adaptive_admission=adaptive_admission,
             serve_certificates=serve_certificates,
+            bootstrap_token=bootstrap_token,
         )
 
     def request_service(

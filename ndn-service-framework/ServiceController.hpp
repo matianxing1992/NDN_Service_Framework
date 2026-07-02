@@ -63,6 +63,7 @@ public:
                     const std::string& configFilePath);
 
   void setControllerPrefix(const ndn::Name& prefix);
+  void setBootstrapTokenFile(const std::string& path);
   void start();
   void run();
 
@@ -100,6 +101,11 @@ private:
 
   ndn::Block encryptForCertificate(const ndn::security::Certificate& cert,
                                   const ndn::Block& plaintext) const;
+  void loadBootstrapTokenFile(const std::string& path);
+  void sendCertificateBootstrapResponse(const ndn::Interest& interest,
+                                        bool status,
+                                        const std::string& message,
+                                        const ndn::security::Certificate* issuedCertificate);
 
   // ===== handlers =====
   void onServiceAccessInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
@@ -107,8 +113,16 @@ private:
   void onUserPermissionsInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
   void onProviderPermissionsInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
   void onPolicyManifestInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
+  void onCertificateBootstrapInterest(const ndn::InterestFilter&, const ndn::Interest& interest);
 
 private:
+  struct BootstrapTokenEntry
+  {
+    std::string token;
+    std::string role;
+    bool consumed = false;
+  };
+
   std::string m_configFilePath;
 
   ndn::Face& m_face;
@@ -131,6 +145,7 @@ private:
   ndn::Name m_prefixUserPermissions;
   ndn::Name m_prefixProviderPermissions;
   ndn::Name m_prefixPolicyManifest;
+  ndn::Name m_prefixCertificateBootstrap;
   size_t m_policyEpoch = 1;
   size_t m_requiredKeyEpoch = 1;
   uint64_t m_policyValidFromMs = 0;
@@ -146,6 +161,8 @@ private:
   // fast lookup tables
   std::map<std::string, std::vector<std::string>> m_userAllowedServices;     // userUri -> services
   std::map<std::string, std::vector<std::string>> m_providerAllowedServices; // providerUri -> services
+  std::map<std::string, BootstrapTokenEntry> m_bootstrapTokens;
+  std::map<std::string, ndn::security::Certificate> m_bootstrapIssuedCertificates;
 };
 
 } // namespace ndn_service_framework

@@ -33,14 +33,19 @@ class ControllerConfig:
     policy_file: str
     name: str = "controller"
     binary: str = "App_ServiceController"
+    bootstrap_token_file: str = ""
     extra_args: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
 
     def as_application(self) -> ApplicationConfig:
+        bootstrap_args = (
+            ("--bootstrap-token-file", self.bootstrap_token_file)
+            if self.bootstrap_token_file else ()
+        )
         return ApplicationConfig(
             name=self.name,
             binary=self.binary,
-            args=("--policy-file", self.policy_file, *self.extra_args),
+            args=("--policy-file", self.policy_file, *bootstrap_args, *self.extra_args),
             env=self.env,
         )
 
@@ -58,10 +63,15 @@ class ProviderConfig:
     args: tuple[str, ...] = ()
     service: str = ""
     role: str = ""
+    bootstrap_token: str = ""
     env: Mapping[str, str] = field(default_factory=dict)
 
     def as_application(self) -> ApplicationConfig:
-        return ApplicationConfig(self.name, self.binary, self.args, self.env)
+        bootstrap_args = (
+            ("--bootstrap-token", self.bootstrap_token)
+            if self.bootstrap_token else ()
+        )
+        return ApplicationConfig(self.name, self.binary, (*bootstrap_args, *self.args), self.env)
 
 
 @dataclass(frozen=True)
@@ -72,10 +82,15 @@ class UserConfig:
     binary: str
     args: tuple[str, ...] = ()
     service: str = ""
+    bootstrap_token: str = ""
     env: Mapping[str, str] = field(default_factory=dict)
 
     def as_application(self) -> ApplicationConfig:
-        return ApplicationConfig(self.name, self.binary, self.args, self.env)
+        bootstrap_args = (
+            ("--bootstrap-token", self.bootstrap_token)
+            if self.bootstrap_token else ()
+        )
+        return ApplicationConfig(self.name, self.binary, (*bootstrap_args, *self.args), self.env)
 
 
 class NDNSFSession:

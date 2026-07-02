@@ -1,0 +1,6 @@
+# identity token role
+/example/hello/user user-token-045 user
+/example/hello/provider provider-token-045 provider
+/example/hello/provider/A provider-a-token-045 provider
+/example/hello/provider/B provider-b-token-045 provider
+/example/hello/provider/C provider-c-token-045 provider

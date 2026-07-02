@@ -66,22 +66,26 @@ main(int argc, char** argv)
     const bool serveCertificates = !hasFlag(argc, argv, "--no-serve-certificates");
     const std::string policyFile = getOption(argc, argv, "--policy-file", "examples/hello.policies");
     const std::string trustSchema = getOption(argc, argv, "--trust-schema", "examples/trust-schema.conf");
+    const std::string bootstrapTokenFile = getOption(argc, argv, "--bootstrap-token-file", "");
     const ndn::Name controllerPrefix(
       getOption(argc, argv, "--controller-prefix", DEFAULT_CONTROLLER_PREFIX.toUri()));
 
     auto controllerCert = getOrCreateIdentity(keyChain, controllerPrefix);
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(controllerPrefix));
-    getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
-    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));
-    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("B"));
-    getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("C"));
-    getOrCreateIdentity(keyChain, USER_IDENTITY);
+    if (bootstrapTokenFile.empty()) {
+      getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
+      getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));
+      getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("B"));
+      getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("C"));
+      getOrCreateIdentity(keyChain, USER_IDENTITY);
+    }
 
     validator.load(trustSchema);
 
     std::cout << "[App_ServiceController] authority identity="
               << controllerCert.getIdentity().toUri()
               << " serveCertificates=" << serveCertificates
+              << " bootstrapTokenFile=" << (bootstrapTokenFile.empty() ? "<none>" : bootstrapTokenFile)
               << " dkeyPrefix="
               << ndn::Name(controllerCert.getIdentity()).append("DKEY").toUri()
               << std::endl;
@@ -98,6 +102,7 @@ main(int argc, char** argv)
       validator,
       policyFile);
     controller.setControllerPrefix(controllerPrefix);
+    controller.setBootstrapTokenFile(bootstrapTokenFile);
 
     std::cout << "ServiceController started..." << std::endl;
     controller.run();
