@@ -603,7 +603,7 @@ ServiceController::loadBootstrapTokenFile(const std::string& path)
       if (identityName.empty() || token.empty()) {
         throw std::runtime_error("empty identity or token");
       }
-      m_bootstrapTokens[identityName.toUri()] = BootstrapTokenEntry{token, role, false};
+      m_bootstrapTokens[identityName.toUri()] = BootstrapTokenEntry{token, role};
     }
     catch (const std::exception& e) {
       throw std::runtime_error("Invalid bootstrap token file entry " + path +
@@ -959,14 +959,7 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
       return;
     }
 
-    auto& tokenEntry = tokenIt->second;
-    if (tokenEntry.consumed) {
-      const std::string message = "bootstrap token already consumed for " + targetUri;
-      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
-                   << " reason=token-consumed");
-      sendCertificateBootstrapResponse(interest, false, message, nullptr);
-      return;
-    }
+    const auto& tokenEntry = tokenIt->second;
 
     const auto& params = interest.getApplicationParameters();
     if (!params.isValid()) {
@@ -1044,7 +1037,6 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
       request.certificateRequest,
       ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
                                  m_controllerPrefix));
-    tokenEntry.consumed = true;
     m_bootstrapIssuedCertificates[targetUri] = issued;
 
     NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_ISSUED identity=" << targetUri

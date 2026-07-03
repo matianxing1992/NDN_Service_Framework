@@ -120,7 +120,6 @@ private:
   {
     std::string token;
     std::string role;
-    bool consumed = false;
   };
 
   std::string m_configFilePath;

@@ -33,6 +33,17 @@ getOption(int argc, char** argv, const std::string& option, const std::string& f
   return fallback;
 }
 
+bool
+hasFlag(int argc, char** argv, const std::string& option)
+{
+  for (int i = 1; i < argc; ++i) {
+    if (argv[i] == option) {
+      return true;
+    }
+  }
+  return false;
+}
+
 ndn::security::Certificate
 getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
 {
@@ -88,8 +99,9 @@ main(int argc, char** argv)
     const ndn::Name identity(getOption(argc, argv, "--identity", USER_IDENTITY.toUri()));
     const ndn::Name controllerPrefix(getOption(argc, argv, "--controller", CONTROLLER_PREFIX.toUri()));
     const std::string token = getOption(argc, argv, "--bootstrap-token", "user-token-045");
+    const bool validRequest = hasFlag(argc, argv, "--valid-request");
     const auto expected = getOption(argc, argv, "--expect-message",
-                                    "certificate bootstrap proof invalid");
+                                    validRequest ? "issued" : "certificate bootstrap proof invalid");
 
     ndn::Face face;
     ndn::security::KeyChain keyChain;
@@ -114,7 +126,9 @@ main(int argc, char** argv)
     }
 
     request.proofSignature = ndn::Buffer(proofSignature->begin(), proofSignature->end());
-    request.proofSignature[0] ^= 0x01;
+    if (!validRequest) {
+      request.proofSignature[0] ^= 0x01;
+    }
 
     auto controllerCert = getControllerCertificate(keyChain, controllerPrefix);
     auto encryptedRequest = encryptCertificateBootstrapRequestForCertificate(request, controllerCert);
@@ -136,7 +150,8 @@ main(int argc, char** argv)
         CertificateBootstrapResponse response;
         if (response.wireDecode(data.getContent())) {
           message = response.message;
-          matched = !response.status && message.find(expected) != std::string::npos;
+          matched = (response.status == validRequest) &&
+                    message.find(expected) != std::string::npos;
         }
         else {
           message = "malformed response";
@@ -157,12 +172,18 @@ main(int argc, char** argv)
       face.processEvents(ndn::time::milliseconds(50));
     }
 
-    std::cout << "TAMPERED_BOOTSTRAP_RESPONSE=" << message << std::endl;
+    std::cout << (validRequest ? "VALID_BOOTSTRAP_RESPONSE=" : "TAMPERED_BOOTSTRAP_RESPONSE=")
+              << message << std::endl;
     if (!matched) {
-      std::cerr << "Expected refusal containing: " << expected << std::endl;
+      std::cerr << "Expected response containing: " << expected << std::endl;
       return 1;
     }
-    std::cout << "TAMPERED_BOOTSTRAP_PROOF_REJECTED=OK" << std::endl;
+    if (validRequest) {
+      std::cout << "PRECONFIGURED_TOKEN_BOOTSTRAP_ACCEPTED=OK" << std::endl;
+    }
+    else {
+      std::cout << "TAMPERED_BOOTSTRAP_PROOF_REJECTED=OK" << std::endl;
+    }
     return 0;
   }
   catch (const std::exception& e) {

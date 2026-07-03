@@ -693,7 +693,7 @@ The operator gives the controller a token file:
 /example/hello/user user-token-045 user
 ```
 
-Each row binds exactly one identity name to one one-time bootstrap token. A
+Each row binds exactly one identity name to one preconfigured bootstrap token. A
 user/provider only supplies its normal configured identity plus the token; it
 does not pass a second bootstrap name. The controller accepts issuance only when
 all of these names match:
@@ -713,18 +713,22 @@ RSA-wrapped AES-CBC envelope. The controller decrypts the request, verifies the
 name-bound token, verifies the requester proof against the public key in the
 certificate request, and only then issues a controller-signed certificate.
 
-Rejected requests do not consume the token. The regression suite checks wrong
-tokens, wrong names, and encrypted requests with tampered requester proofs. A
-tampered proof is rejected with:
+The identity-token map is a stable controller configuration. Successful
+issuance does not rewrite the map, so restarting the controller with the same
+token file produces the same mapping, and the same running controller can sign
+again for the same identity if the requester proves possession of the requested
+certificate key. The regression suite checks wrong tokens, wrong names,
+encrypted requests with tampered requester proofs, and repeated valid probes
+against the same preconfigured token. A tampered proof is rejected with:
 
 ```text
 NDNSF_CERT_BOOTSTRAP_REFUSED ... reason=request-proof-invalid
 ```
 
-After a certificate is issued, later user/provider startup first checks the
+After a certificate is issued, normal user/provider startup first checks the
 local KeyChain for an already installed certificate signed by the controller
 identity. If one exists, startup reuses it and skips token bootstrap. This keeps
-normal restarts from consuming tokens or requiring controller signing again.
+normal restarts from requiring controller signing again.
 
 This built-in controller signer uses the same `<identity> <token> [role]`
 token-file shape as the local NDNCERT token challenge support. That lets a
@@ -804,7 +808,7 @@ The current HELLO examples are exercised by the regression scripts below.
 
 `run_token_handshake_negative_regression.sh` verifies rejection of ACKs and responses with wrong `UserToken` values, selection messages with wrong `ProviderToken` values, and replayed ProviderTokens.
 
-`run_token_certificate_bootstrap_regression.sh` verifies encrypted name-bound token certificate bootstrap, requester proof validation, wrong token/name rejection, tampered proof rejection with `request-proof-invalid`, certificate reuse, and that the same valid token still works after a rejected tampered request.
+`run_token_certificate_bootstrap_regression.sh` verifies encrypted name-bound token certificate bootstrap, requester proof validation, wrong token/name rejection, tampered proof rejection with `request-proof-invalid`, repeated valid probes against the same preconfigured identity-token map, and local certificate reuse.
 
 ### 3.8 Python wrapper and higher-level application packages
 

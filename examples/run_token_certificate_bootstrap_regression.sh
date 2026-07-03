@@ -66,6 +66,18 @@ timeout 12s ./build/examples/App_CertificateBootstrapTamper \
   >"${tmpdir}/tampered-proof-user.log" 2>&1
 tampered_status=$?
 
+timeout 12s ./build/examples/App_CertificateBootstrapTamper \
+  --bootstrap-token user-token-045 \
+  --valid-request \
+  >"${tmpdir}/valid-token-probe-1.log" 2>&1
+valid_probe_1_status=$?
+
+timeout 12s ./build/examples/App_CertificateBootstrapTamper \
+  --bootstrap-token user-token-045 \
+  --valid-request \
+  >"${tmpdir}/valid-token-probe-2.log" 2>&1
+valid_probe_2_status=$?
+
 ./build/examples/App_Provider \
   --bootstrap-token provider-token-045 \
   >"${tmpdir}/provider.log" 2>&1 &
@@ -97,6 +109,8 @@ echo "tmpdir=${tmpdir}"
 echo "wrong_status=${wrong_status}"
 echo "wrong_name_status=${wrong_name_status}"
 echo "tampered_status=${tampered_status}"
+echo "valid_probe_1_status=${valid_probe_1_status}"
+echo "valid_probe_2_status=${valid_probe_2_status}"
 echo "user_status=${user_status}"
 echo "reuse_status=${reuse_status}"
 echo "user_issued_count=${user_issued_count}"
@@ -112,6 +126,12 @@ tail -n 100 "${tmpdir}/wrong-name-user.log"
 echo
 echo "--- tampered proof user ---"
 tail -n 100 "${tmpdir}/tampered-proof-user.log"
+echo
+echo "--- valid token probe 1 ---"
+tail -n 100 "${tmpdir}/valid-token-probe-1.log"
+echo
+echo "--- valid token probe 2 ---"
+tail -n 100 "${tmpdir}/valid-token-probe-2.log"
 echo
 echo "--- provider ---"
 tail -n 140 "${tmpdir}/provider.log"
@@ -130,13 +150,17 @@ fi
 if [[ "${wrong_status}" -ne 0 ]] &&
    [[ "${wrong_name_status}" -ne 0 ]] &&
    [[ "${tampered_status}" -eq 0 ]] &&
+   [[ "${valid_probe_1_status}" -eq 0 ]] &&
+   [[ "${valid_probe_2_status}" -eq 0 ]] &&
    [[ "${user_status}" -eq 0 ]] &&
    [[ "${reuse_status}" -eq 0 ]] &&
-   [[ "${user_issued_count}" -eq 1 ]] &&
+   [[ "${user_issued_count}" -eq 3 ]] &&
    grep -q "NDNSF_CERT_BOOTSTRAP_REFUSED identity=/example/hello/user reason=token-mismatch" "${tmpdir}/controller.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_REFUSED identity=/example/hello/provider reason=token-mismatch" "${tmpdir}/controller.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_REFUSED identity=/example/hello/user reason=request-proof-invalid" "${tmpdir}/controller.log" &&
    grep -q "TAMPERED_BOOTSTRAP_PROOF_REJECTED=OK" "${tmpdir}/tampered-proof-user.log" &&
+   grep -q "PRECONFIGURED_TOKEN_BOOTSTRAP_ACCEPTED=OK" "${tmpdir}/valid-token-probe-1.log" &&
+   grep -q "PRECONFIGURED_TOKEN_BOOTSTRAP_ACCEPTED=OK" "${tmpdir}/valid-token-probe-2.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_ISSUED identity=/example/hello/provider" "${tmpdir}/controller.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_ISSUED identity=/example/hello/user" "${tmpdir}/controller.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_INSTALLED identity=/example/hello/provider" "${tmpdir}/provider.log" &&
