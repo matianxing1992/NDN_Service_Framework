@@ -4,6 +4,7 @@
 
 #include <ndn-cxx/security/transform.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/logger.hpp>
 
 #include <cstdlib>
@@ -128,6 +129,34 @@ stripTrailingParametersDigest(ndn::Name name)
     name = name.getPrefix(-1);
   }
   return name;
+}
+
+ndn::Name
+stripCertificateBootstrapInterestSuffix(const ndn::Name& name)
+{
+  for (size_t i = 0; i < name.size(); ++i) {
+    if (name[i].isParametersSha256Digest()) {
+      return name.getPrefix(i);
+    }
+  }
+  return stripTrailingParametersDigest(name);
+}
+
+ndn::Block
+makeCertificateBootstrapProofData(const CertificateBootstrapRequest& request)
+{
+  ndn::Block block(bootstrap_tlv::CertificateBootstrapProofData);
+  block.push_back(request.identity.wireEncode());
+  block.push_back(ndn::makeStringBlock(tlv::TokenType, request.token));
+  ndn::Block certBlock(bootstrap_tlv::CertificateRequest);
+  certBlock.push_back(request.certificateRequest.wireEncode());
+  certBlock.encode();
+  block.push_back(certBlock);
+  block.push_back(ndn::makeBinaryBlock(bootstrap_tlv::ProofNonce,
+                                       request.proofNonce.begin(),
+                                       request.proofNonce.end()));
+  block.encode();
+  return block;
 }
 
 } // namespace
@@ -916,7 +945,7 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
     return;
   }
 
-  const ndn::Name targetIdentity = stripTrailingParametersDigest(
+  const ndn::Name targetIdentity = stripCertificateBootstrapInterestSuffix(
     interest.getName().getSubName(m_prefixCertificateBootstrap.size()));
   const std::string targetUri = targetIdentity.toUri();
 
@@ -948,10 +977,24 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
     }
 
     CertificateBootstrapRequest request;
-    if (!request.wireDecode(params)) {
+    bool encryptedRequest = false;
+    EncryptedCertificateBootstrapRequest encrypted;
+    if (encrypted.wireDecode(params)) {
+      try {
+        request = decryptCertificateBootstrapRequestWithKeyChain(encrypted, m_keyChain);
+        encryptedRequest = true;
+      }
+      catch (const std::exception& e) {
+        NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                     << " reason=decrypt-failed error=" << e.what());
+        sendCertificateBootstrapResponse(interest, false, "encrypted bootstrap request decrypt failed", nullptr);
+        return;
+      }
+    }
+    else {
       NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
-                   << " reason=malformed-request");
-      sendCertificateBootstrapResponse(interest, false, "malformed bootstrap request", nullptr);
+                   << " reason=unencrypted-or-malformed-request");
+      sendCertificateBootstrapResponse(interest, false, "encrypted bootstrap request required", nullptr);
       return;
     }
 
@@ -978,6 +1021,25 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
       return;
     }
 
+    if (request.proofNonce.empty() || request.proofSignature.empty()) {
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=missing-proof");
+      sendCertificateBootstrapResponse(interest, false, "certificate bootstrap proof missing", nullptr);
+      return;
+    }
+
+    auto proofData = makeCertificateBootstrapProofData(request);
+    proofData.encode();
+    if (!ndn::security::verifySignature(
+          ndn::InputBuffers{ndn::span<const uint8_t>(proofData.data(), proofData.size())},
+          bufferToSpan(request.proofSignature),
+          request.certificateRequest.getPublicKey())) {
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=request-proof-invalid");
+      sendCertificateBootstrapResponse(interest, false, "certificate bootstrap proof invalid", nullptr);
+      return;
+    }
+
     auto issued = m_keyChain.makeCertificate(
       request.certificateRequest,
       ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
@@ -987,7 +1049,9 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
 
     NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_ISSUED identity=" << targetUri
                  << " cert=" << issued.getName().toUri()
-                 << " role=" << tokenEntry.role);
+                 << " role=" << tokenEntry.role
+                 << " encryptedRequest=" << (encryptedRequest ? "true" : "false")
+                 << " requesterProof=true");
     sendCertificateBootstrapResponse(interest, true, "issued", &issued);
   }
   catch (const std::exception& e) {

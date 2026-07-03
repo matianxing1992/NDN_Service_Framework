@@ -2,15 +2,90 @@
 
 #include "NDNSFMessages.hpp"
 
+#include <ndn-cxx/encoding/buffer-stream.hpp>
 #include <ndn-cxx/encoding/block-helpers.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
+#include <ndn-cxx/security/transform.hpp>
 #include <ndn-cxx/util/logger.hpp>
+#include <ndn-cxx/util/random.hpp>
 
 #include <stdexcept>
 
 namespace ndn_service_framework {
 
 NDN_LOG_INIT(ndn_service_framework.CertificateBootstrap);
+
+namespace {
+
+ndn::span<const uint8_t>
+bufferToSpan(const ndn::Buffer& buffer)
+{
+  return ndn::span<const uint8_t>(buffer.data(), buffer.size());
+}
+
+ndn::span<uint8_t>
+mutableBufferToSpan(ndn::Buffer& buffer)
+{
+  return ndn::span<uint8_t>(buffer.data(), buffer.size());
+}
+
+ndn::Buffer
+runAesCbc(ndn::span<const uint8_t> input,
+          ndn::span<const uint8_t> key,
+          ndn::span<const uint8_t> iv,
+          ndn::CipherOperator op)
+{
+  ndn::OBufferStream output;
+  ndn::security::transform::bufferSource(input) >>
+    ndn::security::transform::blockCipher(ndn::BlockCipherAlgorithm::AES_CBC,
+                                          op,
+                                          key,
+                                          iv) >>
+    ndn::security::transform::streamSink(output);
+
+  const auto result = output.buf();
+  return ndn::Buffer(result->begin(), result->end());
+}
+
+ndn::Block
+makeCertificateBootstrapProofData(const CertificateBootstrapRequest& request)
+{
+  ndn::Block block(bootstrap_tlv::CertificateBootstrapProofData);
+  block.push_back(request.identity.wireEncode());
+  block.push_back(ndn::makeStringBlock(tlv::TokenType, request.token));
+  ndn::Block certBlock(bootstrap_tlv::CertificateRequest);
+  certBlock.push_back(request.certificateRequest.wireEncode());
+  certBlock.encode();
+  block.push_back(certBlock);
+  block.push_back(ndn::makeBinaryBlock(bootstrap_tlv::ProofNonce,
+                                       request.proofNonce.begin(),
+                                       request.proofNonce.end()));
+  block.encode();
+  return block;
+}
+
+ndn::security::Certificate
+getLocalControllerCertificateForBootstrap(ndn::security::KeyChain& keyChain,
+                                          const ndn::Name& controllerPrefix)
+{
+  try {
+    auto cert = keyChain.getPib()
+      .getIdentity(controllerPrefix)
+      .getDefaultKey()
+      .getDefaultCertificate();
+    if (!cert.isValid()) {
+      throw std::runtime_error("controller certificate is not valid");
+    }
+    return cert;
+  }
+  catch (const std::exception& e) {
+    throw std::runtime_error("Cannot encrypt certificate bootstrap request because "
+                             "the local KeyChain has no usable Controller certificate for " +
+                             controllerPrefix.toUri() + ": " + e.what());
+  }
+}
+
+} // namespace
 
 ndn::Block
 CertificateBootstrapRequest::wireEncode() const
@@ -22,6 +97,16 @@ CertificateBootstrapRequest::wireEncode() const
   certBlock.push_back(certificateRequest.wireEncode());
   certBlock.encode();
   block.push_back(certBlock);
+  if (!proofNonce.empty()) {
+    block.push_back(ndn::makeBinaryBlock(bootstrap_tlv::ProofNonce,
+                                         proofNonce.begin(),
+                                         proofNonce.end()));
+  }
+  if (!proofSignature.empty()) {
+    block.push_back(ndn::makeBinaryBlock(bootstrap_tlv::ProofSignature,
+                                         proofSignature.begin(),
+                                         proofSignature.end()));
+  }
   block.encode();
   return block;
 }
@@ -38,6 +123,8 @@ CertificateBootstrapRequest::wireDecode(const ndn::Block& block)
   parsed.parse();
   identity.clear();
   token.clear();
+  proofNonce.clear();
+  proofSignature.clear();
   bool hasIdentity = false;
   bool hasCertificate = false;
 
@@ -57,6 +144,12 @@ CertificateBootstrapRequest::wireDecode(const ndn::Block& block)
       }
       certificateRequest = ndn::security::Certificate(certWrapper.elements().front());
       hasCertificate = true;
+    }
+    else if (element.type() == bootstrap_tlv::ProofNonce) {
+      proofNonce = ndn::Buffer(element.value(), element.value_size());
+    }
+    else if (element.type() == bootstrap_tlv::ProofSignature) {
+      proofSignature = ndn::Buffer(element.value(), element.value_size());
     }
   }
 
@@ -112,6 +205,131 @@ CertificateBootstrapResponse::wireDecode(const ndn::Block& block)
   }
 
   return !status || hasIssuedCertificate;
+}
+
+ndn::Block
+EncryptedCertificateBootstrapRequest::wireEncode() const
+{
+  ndn::Block block(bootstrap_tlv::EncryptedCertificateBootstrapRequest);
+  block.push_back(ndn::makeStringBlock(tlv::RecipientCertNameType, recipientCertName));
+  block.push_back(ndn::makeStringBlock(tlv::AlgorithmType, algorithm));
+  block.push_back(ndn::makeBinaryBlock(tlv::EncryptedAesKeyType,
+                                       encryptedAesKey.begin(),
+                                       encryptedAesKey.end()));
+  block.push_back(ndn::makeBinaryBlock(tlv::IvType, iv.begin(), iv.end()));
+  block.push_back(ndn::makeBinaryBlock(tlv::CipherTextType,
+                                       cipherText.begin(),
+                                       cipherText.end()));
+  block.encode();
+  return block;
+}
+
+bool
+EncryptedCertificateBootstrapRequest::wireDecode(const ndn::Block& block)
+{
+  auto parsed = block.type() == bootstrap_tlv::EncryptedCertificateBootstrapRequest ?
+    block : block.blockFromValue();
+  if (parsed.type() != bootstrap_tlv::EncryptedCertificateBootstrapRequest) {
+    return false;
+  }
+
+  parsed.parse();
+  recipientCertName.clear();
+  algorithm.clear();
+  encryptedAesKey.clear();
+  iv.clear();
+  cipherText.clear();
+
+  for (const auto& element : parsed.elements()) {
+    if (element.type() == tlv::RecipientCertNameType) {
+      recipientCertName = ndn::readString(element);
+    }
+    else if (element.type() == tlv::AlgorithmType) {
+      algorithm = ndn::readString(element);
+    }
+    else if (element.type() == tlv::EncryptedAesKeyType) {
+      encryptedAesKey = ndn::Buffer(element.value(), element.value_size());
+    }
+    else if (element.type() == tlv::IvType) {
+      iv = ndn::Buffer(element.value(), element.value_size());
+    }
+    else if (element.type() == tlv::CipherTextType) {
+      cipherText = ndn::Buffer(element.value(), element.value_size());
+    }
+  }
+
+  return !recipientCertName.empty() &&
+         algorithm == "RSA-WRAPPED-AES-CBC" &&
+         !encryptedAesKey.empty() &&
+         !iv.empty() &&
+         !cipherText.empty();
+}
+
+EncryptedCertificateBootstrapRequest
+encryptCertificateBootstrapRequestForCertificate(const CertificateBootstrapRequest& request,
+                                                 const ndn::security::Certificate& recipientCert)
+{
+  ndn::security::transform::PublicKey recipientPublicKey;
+  recipientPublicKey.loadPkcs8(recipientCert.getPublicKey());
+  if (recipientPublicKey.getKeyType() != ndn::KeyType::RSA) {
+    throw std::invalid_argument("Certificate bootstrap encryption requires an RSA Controller certificate");
+  }
+
+  ndn::Block plaintext = request.wireEncode();
+  plaintext.encode();
+
+  ndn::Buffer aesKey(32);
+  ndn::Buffer iv(16);
+  ndn::random::generateSecureBytes(mutableBufferToSpan(aesKey));
+  ndn::random::generateSecureBytes(mutableBufferToSpan(iv));
+
+  ndn::Buffer cipherText = runAesCbc(ndn::span<const uint8_t>(plaintext.data(), plaintext.size()),
+                                     bufferToSpan(aesKey),
+                                     bufferToSpan(iv),
+                                     ndn::CipherOperator::ENCRYPT);
+  auto encryptedAesKey = recipientPublicKey.encrypt(bufferToSpan(aesKey));
+
+  EncryptedCertificateBootstrapRequest encrypted;
+  encrypted.recipientCertName = recipientCert.getName().toUri();
+  encrypted.algorithm = "RSA-WRAPPED-AES-CBC";
+  encrypted.encryptedAesKey = ndn::Buffer(encryptedAesKey->begin(), encryptedAesKey->end());
+  encrypted.iv = iv;
+  encrypted.cipherText = cipherText;
+  return encrypted;
+}
+
+CertificateBootstrapRequest
+decryptCertificateBootstrapRequestWithKeyChain(const EncryptedCertificateBootstrapRequest& encryptedRequest,
+                                               const ndn::security::KeyChain& keyChain)
+{
+  if (encryptedRequest.algorithm != "RSA-WRAPPED-AES-CBC") {
+    throw std::invalid_argument("Unsupported encrypted certificate bootstrap algorithm: " +
+                                encryptedRequest.algorithm);
+  }
+
+  const ndn::Name recipientCertName(encryptedRequest.recipientCertName);
+  const ndn::Name recipientKeyName = ndn::security::extractKeyNameFromCertName(recipientCertName);
+  auto aesKey = keyChain.getTpm().decrypt(bufferToSpan(encryptedRequest.encryptedAesKey),
+                                          recipientKeyName);
+  if (aesKey == nullptr) {
+    throw std::runtime_error("Cannot decrypt certificate bootstrap AES key with Controller KeyChain");
+  }
+
+  ndn::Buffer plaintext = runAesCbc(bufferToSpan(encryptedRequest.cipherText),
+                                    ndn::span<const uint8_t>(aesKey->data(), aesKey->size()),
+                                    bufferToSpan(encryptedRequest.iv),
+                                    ndn::CipherOperator::DECRYPT);
+
+  auto [ok, block] = ndn::Block::fromBuffer(bufferToSpan(plaintext));
+  if (!ok) {
+    throw std::runtime_error("Decrypted certificate bootstrap request is not a valid TLV block");
+  }
+
+  CertificateBootstrapRequest request;
+  if (!request.wireDecode(block)) {
+    throw std::runtime_error("Decrypted TLV block is not a CertificateBootstrapRequest");
+  }
+  return request;
 }
 
 ndn::Name
@@ -176,12 +394,27 @@ requestControllerSignedCertificate(ndn::Face& face,
   request.identity = bootstrapIdentity;
   request.token = token;
   request.certificateRequest = localCertificate;
+  request.proofNonce = ndn::Buffer(32);
+  ndn::random::generateSecureBytes(mutableBufferToSpan(request.proofNonce));
+  auto proofData = makeCertificateBootstrapProofData(request);
+  proofData.encode();
+  auto proofSignature = keyChain.getTpm().sign(
+    ndn::InputBuffers{ndn::span<const uint8_t>(proofData.data(), proofData.size())},
+    key.getName(),
+    ndn::DigestAlgorithm::SHA256);
+  if (proofSignature == nullptr) {
+    throw std::runtime_error("Cannot sign certificate bootstrap proof with local KeyChain");
+  }
+  request.proofSignature = ndn::Buffer(proofSignature->begin(), proofSignature->end());
+  auto controllerCert = getLocalControllerCertificateForBootstrap(keyChain, controllerPrefix);
+  auto encryptedRequest = encryptCertificateBootstrapRequestForCertificate(request, controllerCert);
 
   ndn::Interest interest(makeCertificateBootstrapName(controllerPrefix, bootstrapIdentity));
   interest.setMustBeFresh(true);
   interest.setCanBePrefix(false);
   interest.setInterestLifetime(timeout);
-  interest.setApplicationParameters(request.wireEncode());
+  interest.setApplicationParameters(encryptedRequest.wireEncode());
+  keyChain.sign(interest, ndn::security::signingByIdentity(certificateIdentity));
 
   bool done = false;
   bool ok = false;
@@ -204,7 +437,8 @@ requestControllerSignedCertificate(ndn::Face& face,
           keyChain.setDefaultCertificate(key, issuedCertificate);
           ok = true;
           NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_INSTALLED identity=" << certificateIdentity.toUri()
-                       << " cert=" << issuedCertificate.getName().toUri());
+                       << " cert=" << issuedCertificate.getName().toUri()
+                       << " encryptedRequest=true requesterProof=true");
         }
       }
       catch (const std::exception& e) {

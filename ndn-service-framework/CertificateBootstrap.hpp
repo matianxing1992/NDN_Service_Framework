@@ -14,6 +14,10 @@ enum {
   CertificateBootstrapResponse = 0xF511,
   CertificateRequest = 0xF512,
   IssuedCertificate = 0xF513,
+  EncryptedCertificateBootstrapRequest = 0xF514,
+  ProofNonce = 0xF515,
+  ProofSignature = 0xF516,
+  CertificateBootstrapProofData = 0xF517,
 };
 }
 
@@ -22,6 +26,8 @@ struct CertificateBootstrapRequest
   ndn::Name identity;
   std::string token;
   ndn::security::Certificate certificateRequest;
+  ndn::Buffer proofNonce;
+  ndn::Buffer proofSignature;
 
   ndn::Block wireEncode() const;
   bool wireDecode(const ndn::Block& block);
@@ -37,6 +43,26 @@ struct CertificateBootstrapResponse
   ndn::Block wireEncode() const;
   bool wireDecode(const ndn::Block& block);
 };
+
+struct EncryptedCertificateBootstrapRequest
+{
+  std::string recipientCertName;
+  std::string algorithm;
+  ndn::Buffer encryptedAesKey;
+  ndn::Buffer iv;
+  ndn::Buffer cipherText;
+
+  ndn::Block wireEncode() const;
+  bool wireDecode(const ndn::Block& block);
+};
+
+EncryptedCertificateBootstrapRequest
+encryptCertificateBootstrapRequestForCertificate(const CertificateBootstrapRequest& request,
+                                                 const ndn::security::Certificate& recipientCert);
+
+CertificateBootstrapRequest
+decryptCertificateBootstrapRequestWithKeyChain(const EncryptedCertificateBootstrapRequest& encryptedRequest,
+                                               const ndn::security::KeyChain& keyChain);
 
 ndn::Name
 makeCertificateBootstrapName(const ndn::Name& controllerPrefix,
