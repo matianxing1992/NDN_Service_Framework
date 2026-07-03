@@ -678,6 +678,79 @@ Do not export/import a safebag in this flow; the node private key never leaves
 the node. Use safebags only when a deployment intentionally generates keys on
 one machine and transfers private keys to another machine.
 
+Automatic ServiceController certificate bootstrap:
+
+For experiments and managed deployments, the `ServiceController` can also act
+as a built-in certificate signer. This keeps the same security intent as the
+manual flow: each user or provider generates its own private key locally, and
+only a certificate request is sent to the controller. The controller never sees
+requester private keys.
+
+The operator gives the controller a token file:
+
+```text
+/example/hello/provider provider-token-045 provider
+/example/hello/user user-token-045 user
+```
+
+Each row binds exactly one identity name to one one-time bootstrap token. A
+user/provider only supplies its normal configured identity plus the token; it
+does not pass a second bootstrap name. The controller accepts issuance only when
+all of these names match:
+
+```text
+CERTBOOTSTRAP Interest name identity
+CertificateBootstrapRequest.identity
+token-file identity
+certificate request identity
+```
+
+The token-bearing request is protected before it is sent. The requester signs a
+proof over the requested identity, token, certificate request, and nonce using
+the private key that corresponds to the certificate request. Then it encrypts
+the whole bootstrap request to the controller certificate with an
+RSA-wrapped AES-CBC envelope. The controller decrypts the request, verifies the
+name-bound token, verifies the requester proof against the public key in the
+certificate request, and only then issues a controller-signed certificate.
+
+Rejected requests do not consume the token. The regression suite checks wrong
+tokens, wrong names, and encrypted requests with tampered requester proofs. A
+tampered proof is rejected with:
+
+```text
+NDNSF_CERT_BOOTSTRAP_REFUSED ... reason=request-proof-invalid
+```
+
+After a certificate is issued, later user/provider startup first checks the
+local KeyChain for an already installed certificate signed by the controller
+identity. If one exists, startup reuses it and skips token bootstrap. This keeps
+normal restarts from consuming tokens or requiring controller signing again.
+
+This built-in controller signer uses the same `<identity> <token> [role]`
+token-file shape as the local NDNCERT token challenge support. That lets a
+deployment start with `ServiceController`-integrated signing for simple NDNSF
+experiments and later move the same token inventory to a standalone NDNCERT CA
+when a full certificate-management service is needed.
+
+Minimal C++ example flags:
+
+```bash
+./build/examples/App_ServiceController \
+  --bootstrap-token-file examples/hello.bootstrap-tokens
+
+./build/examples/App_Provider \
+  --bootstrap-token provider-token-045
+
+./build/examples/App_User \
+  --bootstrap-token user-token-045
+```
+
+The full local regression is:
+
+```bash
+./examples/run_token_certificate_bootstrap_regression.sh
+```
+
 ### 3.6 Examples
 
 `/examples/generic-dynamic-user-provider.cpp` is the minimal generic dynamic example. It uses `ServiceProvider::addHandler<RequestT, ResponseT>` and `ServiceUser::RequestService<RequestT, ResponseT>` directly, without generated service users, generated service providers, generated services, or stubs. It uses local/mock request publication so it can demonstrate the request/response flow without requiring real NFD/network.
