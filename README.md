@@ -266,12 +266,18 @@ For daily use, the unified runtime wrapper is shorter and keeps the canonical
 profile default:
 
 ```bash
+python3 tools/ndnsf_runtime.py di validate
+python3 tools/ndnsf_runtime.py di print
 python3 tools/ndnsf_runtime.py di doctor
 python3 tools/ndnsf_runtime.py di run -- --out /tmp/ndnsf-di-run
 python3 tools/ndnsf_runtime.py di campaign -- --runs 1 --workloads c1:1:1
 python3 tools/ndnsf_runtime.py di sweep -- --target-rps-list 0,1,2
 python3 tools/ndnsf_runtime.py di search -- --target-rps-list 1,5,10
 ```
+
+Use `profile validate --require-di` or `di validate` before long experiments to
+catch misspelled JSON keys, wrong field types, and unsupported enum values
+before they silently fall back to defaults.
 
 ## 3. How-to
 

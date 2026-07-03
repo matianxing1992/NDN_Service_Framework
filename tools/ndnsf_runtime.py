@@ -37,6 +37,70 @@ DI_REQUIRED_BINARIES = [
     "di-native-plan-manifest-smoke",
     "di-native-provider-session-smoke",
 ]
+ROOT_PROFILE_KEYS = {"name", "controller", "provider", "user", "service_name", "env", "distributed_inference"}
+CONTROLLER_KEYS = {"prefix", "policy_file", "trust_schema", "bootstrap_token_file"}
+IDENTITY_KEYS = {"identity"}
+DI_KEYS = {"native_tracer"}
+NATIVE_TRACER_KEYS = {
+    "enabled",
+    "harness",
+    "topology",
+    "tracer_dir",
+    "out",
+    "assignment",
+    "policy_bundle",
+    "llm_planner_mode",
+    "requests",
+    "concurrency",
+    "target_rps",
+    "open_loop_duration_s",
+    "open_loop_driver_mode",
+    "submission_spacing_ms",
+    "provider_check_timeout",
+    "local_execution_only",
+    "full_network",
+    "runtime_v1_context_tokens",
+    "runtime_v1_generated_tokens",
+    "runtime_v1_prefix_id",
+    "provider_admission_max_queue",
+    "provider_admission_max_active_workers",
+    "provider_admission_min_free_memory_mb",
+    "core_trace",
+    "tracer_deterministic_runner",
+}
+NATIVE_TRACER_STRING_FIELDS = {
+    "harness",
+    "topology",
+    "tracer_dir",
+    "out",
+    "assignment",
+    "policy_bundle",
+    "llm_planner_mode",
+    "open_loop_driver_mode",
+    "runtime_v1_prefix_id",
+}
+NATIVE_TRACER_BOOL_FIELDS = {
+    "enabled",
+    "local_execution_only",
+    "full_network",
+    "core_trace",
+    "tracer_deterministic_runner",
+}
+NATIVE_TRACER_INT_FIELDS = {
+    "requests",
+    "concurrency",
+    "submission_spacing_ms",
+    "provider_check_timeout",
+    "runtime_v1_context_tokens",
+    "runtime_v1_generated_tokens",
+    "provider_admission_max_queue",
+    "provider_admission_max_active_workers",
+}
+NATIVE_TRACER_FLOAT_FIELDS = {
+    "target_rps",
+    "open_loop_duration_s",
+    "provider_admission_min_free_memory_mb",
+}
 
 
 def now_ms() -> int:
@@ -198,6 +262,111 @@ def repo_root_from(start: Path) -> Path:
         if (candidate / "README.md").exists() and (candidate / "ndn-service-framework").is_dir():
             return candidate
     raise RuntimeError(f"Cannot locate NDNSF repository root from {start}")
+
+
+def load_profile_json(path: str | Path) -> dict[str, Any]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def unknown_keys(payload: dict[str, Any], allowed: set[str], prefix: str) -> list[str]:
+    return [f"{prefix}.{key}" for key in sorted(set(payload) - allowed)]
+
+
+def require_object(payload: dict[str, Any], key: str, errors: list[str]) -> dict[str, Any]:
+    value = payload.get(key, {})
+    if value in ({}, None):
+        return {}
+    if not isinstance(value, dict):
+        errors.append(f"{key} must be an object")
+        return {}
+    return value
+
+
+def validate_string(payload: dict[str, Any], key: str, prefix: str, errors: list[str]) -> None:
+    if key in payload and not isinstance(payload[key], str):
+        errors.append(f"{prefix}.{key} must be a string")
+
+
+def validate_bool(payload: dict[str, Any], key: str, prefix: str, errors: list[str]) -> None:
+    if key in payload and not isinstance(payload[key], bool):
+        errors.append(f"{prefix}.{key} must be a boolean")
+
+
+def validate_int(payload: dict[str, Any], key: str, prefix: str, errors: list[str]) -> None:
+    if key in payload and (not isinstance(payload[key], int) or isinstance(payload[key], bool)):
+        errors.append(f"{prefix}.{key} must be an integer")
+
+
+def validate_float(payload: dict[str, Any], key: str, prefix: str, errors: list[str]) -> None:
+    if key in payload and (not isinstance(payload[key], (int, float)) or isinstance(payload[key], bool)):
+        errors.append(f"{prefix}.{key} must be a number")
+
+
+def validate_profile_payload(payload: dict[str, Any], require_di: bool = False) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(payload, dict):
+        return {"valid": False, "errors": ["profile root must be an object"], "warnings": warnings}
+
+    errors.extend(unknown_keys(payload, ROOT_PROFILE_KEYS, "profile"))
+    controller = require_object(payload, "controller", errors)
+    provider = require_object(payload, "provider", errors)
+    user = require_object(payload, "user", errors)
+    distributed = require_object(payload, "distributed_inference", errors)
+    env = payload.get("env", {})
+
+    errors.extend(unknown_keys(controller, CONTROLLER_KEYS, "controller"))
+    errors.extend(unknown_keys(provider, IDENTITY_KEYS, "provider"))
+    errors.extend(unknown_keys(user, IDENTITY_KEYS, "user"))
+    errors.extend(unknown_keys(distributed, DI_KEYS, "distributed_inference"))
+    if "env" in payload and not isinstance(env, dict):
+        errors.append("env must be an object")
+    elif isinstance(env, dict):
+        for key, value in sorted(env.items()):
+            if not isinstance(key, str) or not isinstance(value, str):
+                errors.append(f"env.{key} must map string to string")
+
+    for key in ["name", "service_name"]:
+        validate_string(payload, key, "profile", errors)
+    for key in CONTROLLER_KEYS:
+        validate_string(controller, key, "controller", errors)
+    validate_string(provider, "identity", "provider", errors)
+    validate_string(user, "identity", "user", errors)
+
+    native = distributed.get("native_tracer", {})
+    if native in ({}, None):
+        if require_di:
+            errors.append("distributed_inference.native_tracer is required for DI profiles")
+        native = {}
+    elif not isinstance(native, dict):
+        errors.append("distributed_inference.native_tracer must be an object")
+        native = {}
+    errors.extend(unknown_keys(native, NATIVE_TRACER_KEYS, "distributed_inference.native_tracer"))
+    for key in NATIVE_TRACER_STRING_FIELDS:
+        validate_string(native, key, "distributed_inference.native_tracer", errors)
+    for key in NATIVE_TRACER_BOOL_FIELDS:
+        validate_bool(native, key, "distributed_inference.native_tracer", errors)
+    for key in NATIVE_TRACER_INT_FIELDS:
+        validate_int(native, key, "distributed_inference.native_tracer", errors)
+    for key in NATIVE_TRACER_FLOAT_FIELDS:
+        validate_float(native, key, "distributed_inference.native_tracer", errors)
+
+    assignment = native.get("assignment")
+    if assignment and assignment not in {"default", "alternate", "single-provider", "capacity-pool", "auto", "llm-proportional"}:
+        errors.append("distributed_inference.native_tracer.assignment has unsupported value")
+    policy_bundle = native.get("policy_bundle")
+    if policy_bundle and policy_bundle not in {"native-tracer", "llm-proportional"}:
+        errors.append("distributed_inference.native_tracer.policy_bundle has unsupported value")
+    planner_mode = native.get("llm_planner_mode")
+    if planner_mode and planner_mode not in {"greedy", "proportional"}:
+        errors.append("distributed_inference.native_tracer.llm_planner_mode has unsupported value")
+    driver_mode = native.get("open_loop_driver_mode")
+    if driver_mode and driver_mode not in {"child", "threaded", "process-pool"}:
+        errors.append("distributed_inference.native_tracer.open_loop_driver_mode has unsupported value")
+
+    if require_di and native and native.get("enabled") is not True:
+        warnings.append("distributed_inference.native_tracer.enabled is not true")
+    return {"valid": not errors, "errors": errors, "warnings": warnings}
 
 
 def parse_policy_identities(policy_file: Path) -> list[tuple[str, str]]:
@@ -493,6 +662,27 @@ def run_doctor(args: argparse.Namespace) -> int:
         return 0 if ready else 1
 
 
+def run_profile_validate(args: argparse.Namespace) -> int:
+    payload = load_profile_json(args.profile)
+    result = validate_profile_payload(payload, require_di=args.require_di)
+    result["profile"] = str(args.profile)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result["valid"] else 1
+
+
+def run_profile_print(args: argparse.Namespace) -> int:
+    repo_root = repo_root_from(Path.cwd())
+    validation = validate_profile_payload(load_profile_json(args.profile), require_di=args.require_di)
+    profile = RuntimeProfile.from_json(args.profile)
+    payload = {
+        "profile": str(args.profile),
+        "validation": validation,
+        "resolved": profile.resolved(repo_root),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if validation["valid"] else 1
+
+
 def clean_remainder(args: list[str]) -> list[str]:
     if args and args[0] == "--":
         return args[1:]
@@ -568,6 +758,20 @@ def add_di_launcher_args(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="NDNSF runtime profile doctor")
     sub = parser.add_subparsers(dest="command", required=True)
+    profile_parser = sub.add_parser("profile", help="validate and print runtime profiles")
+    profile_sub = profile_parser.add_subparsers(dest="profile_command", required=True)
+    profile_validate = profile_sub.add_parser("validate", help="validate a runtime profile schema")
+    profile_validate.add_argument("--profile", default=str(DEFAULT_PROFILE))
+    profile_validate.add_argument("--require-di", action="store_true",
+                                  help="require distributed_inference.native_tracer")
+    profile_validate.set_defaults(func=run_profile_validate)
+
+    profile_print = profile_sub.add_parser("print", help="print a resolved runtime profile")
+    profile_print.add_argument("--profile", default=str(DEFAULT_PROFILE))
+    profile_print.add_argument("--require-di", action="store_true",
+                               help="require distributed_inference.native_tracer")
+    profile_print.set_defaults(func=run_profile_print)
+
     doctor = sub.add_parser("doctor", help="validate a runtime profile and emit structured events")
     doctor.add_argument("--profile", default=str(DEFAULT_PROFILE))
     doctor.add_argument("--fix", action="store_true", help="create missing generated files such as bootstrap tokens")
@@ -588,6 +792,14 @@ def build_parser() -> argparse.ArgumentParser:
     di_doctor.add_argument("--log-dir", default="")
     di_doctor.add_argument("--check-commands", action="store_true")
     di_doctor.set_defaults(func=run_doctor)
+
+    di_validate = di_sub.add_parser("validate", help="validate the DI NativeTracer runtime profile")
+    di_validate.add_argument("--profile", default=str(DEFAULT_DI_PROFILE))
+    di_validate.set_defaults(func=run_profile_validate, require_di=True)
+
+    di_print = di_sub.add_parser("print", help="print the resolved DI NativeTracer runtime profile")
+    di_print.add_argument("--profile", default=str(DEFAULT_DI_PROFILE))
+    di_print.set_defaults(func=run_profile_print, require_di=True)
 
     di_run = di_sub.add_parser("run", help="launch the NativeTracer harness")
     add_di_launcher_args(di_run)

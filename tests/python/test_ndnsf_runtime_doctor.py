@@ -89,6 +89,75 @@ class RuntimeDoctorTests(unittest.TestCase):
             payload = json.loads(proc.stdout)
             self.assertFalse(payload["token_file"]["exists"])
 
+    def test_profile_validate_reports_unknown_native_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            profile = {
+                "distributed_inference": {
+                    "native_tracer": {
+                        "enabled": True,
+                        "llm_planner_mode_typo": "proportional",
+                    }
+                }
+            }
+            profile_path = tmpdir / "bad-profile.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(TOOL),
+                    "profile",
+                    "validate",
+                    "--profile",
+                    str(profile_path),
+                    "--require-di",
+                ],
+                cwd=REPO,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertNotEqual(proc.returncode, 0)
+            payload = json.loads(proc.stdout)
+            self.assertFalse(payload["valid"])
+            self.assertIn(
+                "distributed_inference.native_tracer.llm_planner_mode_typo",
+                payload["errors"],
+            )
+
+    def test_di_validate_and_print_default_profile(self) -> None:
+        validate_proc = subprocess.run(
+            ["python3", str(TOOL), "di", "validate"],
+            cwd=REPO,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(validate_proc.returncode, 0, validate_proc.stderr + validate_proc.stdout)
+        validate_payload = json.loads(validate_proc.stdout)
+        self.assertTrue(validate_payload["valid"])
+        self.assertEqual(validate_payload["errors"], [])
+
+        print_proc = subprocess.run(
+            ["python3", str(TOOL), "di", "print"],
+            cwd=REPO,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(print_proc.returncode, 0, print_proc.stderr + print_proc.stdout)
+        payload = json.loads(print_proc.stdout)
+        native = payload["resolved"]["distributed_inference"]["native_tracer"]
+        self.assertTrue(payload["validation"]["valid"])
+        self.assertTrue(native["enabled"])
+        self.assertTrue(Path(native["harness"]).is_absolute())
+        self.assertEqual(payload["resolved"]["service_name"], "/Inference/NativeTracer")
+
     def test_doctor_resolves_native_tracer_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
