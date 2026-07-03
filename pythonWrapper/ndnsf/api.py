@@ -64,15 +64,12 @@ class ProviderConfig:
     service: str = ""
     role: str = ""
     bootstrap_token: str = ""
-    bootstrap_name: str = ""
     env: Mapping[str, str] = field(default_factory=dict)
 
     def as_application(self) -> ApplicationConfig:
         bootstrap_args = ()
         if self.bootstrap_token:
             bootstrap_args = ("--bootstrap-token", self.bootstrap_token)
-            if self.bootstrap_name:
-                bootstrap_args = (*bootstrap_args, "--bootstrap-name", self.bootstrap_name)
         return ApplicationConfig(self.name, self.binary, (*bootstrap_args, *self.args), self.env)
 
 
@@ -85,15 +82,12 @@ class UserConfig:
     args: tuple[str, ...] = ()
     service: str = ""
     bootstrap_token: str = ""
-    bootstrap_name: str = ""
     env: Mapping[str, str] = field(default_factory=dict)
 
     def as_application(self) -> ApplicationConfig:
         bootstrap_args = ()
         if self.bootstrap_token:
             bootstrap_args = ("--bootstrap-token", self.bootstrap_token)
-            if self.bootstrap_name:
-                bootstrap_args = (*bootstrap_args, "--bootstrap-name", self.bootstrap_name)
         return ApplicationConfig(self.name, self.binary, (*bootstrap_args, *self.args), self.env)
 
 

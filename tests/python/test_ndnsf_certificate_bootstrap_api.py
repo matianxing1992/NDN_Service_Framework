@@ -27,15 +27,12 @@ class CertificateBootstrapApiTest(unittest.TestCase):
             name="provider",
             binary="App_Provider",
             bootstrap_token="provider-token-045",
-            bootstrap_name="/example/hello/provider",
             args=("--provider-id", "A"),
         ).as_application()
 
         self.assertEqual(app.args, (
             "--bootstrap-token",
             "provider-token-045",
-            "--bootstrap-name",
-            "/example/hello/provider",
             "--provider-id",
             "A",
         ))
@@ -45,15 +42,12 @@ class CertificateBootstrapApiTest(unittest.TestCase):
             name="user",
             binary="App_User",
             bootstrap_token="user-token-045",
-            bootstrap_name="/example/hello/user",
             args=("--service", "/HELLO"),
         ).as_application()
 
         self.assertEqual(app.args, (
             "--bootstrap-token",
             "user-token-045",
-            "--bootstrap-name",
-            "/example/hello/user",
             "--service",
             "/HELLO",
         ))

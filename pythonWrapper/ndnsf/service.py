@@ -1216,7 +1216,6 @@ class ServiceProvider:
         ack_threads: int = 2,
         serve_certificates: bool = True,
         bootstrap_token: str = "",
-        bootstrap_name: str = "",
         binary: str = "",
         binary_dir=None,
         library_dirs=None,
@@ -1237,8 +1236,6 @@ class ServiceProvider:
             ack_threads=ack_threads,
             serve_certificates=serve_certificates,
             bootstrap_token=bootstrap_token,
-            bootstrap_name=bootstrap_name or (
-                f"{provider_prefix}/{provider_id}" if provider_id else provider_prefix),
         )
         self._handlers: dict[str, Callable[[bytes], bytes | ServiceResponse]] = {}
         self._ack_handlers: dict[str, Callable[[bytes], bool | AckDecision]] = {}
@@ -1411,7 +1408,6 @@ class ServiceUser:
         adaptive_admission: bool = False,
         serve_certificates: bool = True,
         bootstrap_token: str = "",
-        bootstrap_name: str = "",
         binary: str = "",
         binary_dir=None,
         library_dirs=None,
@@ -1434,7 +1430,6 @@ class ServiceUser:
             adaptive_admission=adaptive_admission,
             serve_certificates=serve_certificates,
             bootstrap_token=bootstrap_token,
-            bootstrap_name=bootstrap_name or user,
         )
 
     def request_service(

@@ -52,7 +52,6 @@ done
 
 timeout 12s ./build/examples/App_User \
   --bootstrap-token wrong-token \
-  --bootstrap-name /example/hello/user \
   >"${tmpdir}/wrong-user.log" 2>&1
 wrong_status=$?
 
@@ -64,7 +63,6 @@ wrong_name_status=$?
 
 ./build/examples/App_Provider \
   --bootstrap-token provider-token-045 \
-  --bootstrap-name /example/hello/provider \
   >"${tmpdir}/provider.log" 2>&1 &
 provider_pid=$!
 
@@ -78,13 +76,11 @@ done
 
 timeout 30s ./build/examples/App_User \
   --bootstrap-token user-token-045 \
-  --bootstrap-name /example/hello/user \
   >"${tmpdir}/user.log" 2>&1
 user_status=$?
 
 timeout 30s ./build/examples/App_User \
   --bootstrap-token user-token-045 \
-  --bootstrap-name /example/hello/user \
   >"${tmpdir}/user-reuse.log" 2>&1
 reuse_status=$?
 sleep 1
