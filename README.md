@@ -190,7 +190,18 @@ python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py --include-di-minindn
 ### 2.2 Runtime doctor and structured profile
 
 For local development, CI, and MiniNDN nodes, use the stdlib-only runtime doctor
-to check a complete NDNSF runtime profile before debugging individual logs:
+to check a complete NDNSF runtime profile before debugging individual logs.
+
+For NDNSF-DI experiments, use the shorter workflow document as the single entry
+point:
+
+- [NDNSF-DI Runtime Workflow](docs/NDNSF-DI-runtime-workflow.md)
+
+The DI workflow covers profile validation, resolved config printing, doctor
+preflight, dry-runs, single NativeTracer runs, LLM campaigns, rate sweeps, and
+RPS searches.
+
+For the HELLO/token-bootstrap path:
 
 ```bash
 python3 tools/ndnsf_runtime.py doctor \
@@ -210,74 +221,6 @@ When `--fix` is set and the configured bootstrap token file is missing, the
 doctor generates it from the policy identities using 8-character tokens. This
 matches the ServiceController first-start token generation behavior and gives
 tests a single place to inspect the resolved runtime state.
-
-The same tool can preflight the NativeTracer distributed-inference harness
-before a MiniNDN run:
-
-```bash
-python3 tools/ndnsf_runtime.py doctor \
-  --profile examples/di-native-tracer.runtime.json \
-  --event-log /tmp/ndnsf-di-runtime-events.jsonl \
-  --write-resolved /tmp/ndnsf-di-runtime-resolved.json
-```
-
-The DI profile records the `/Inference/NativeTracer` harness path, topology,
-Qwen tiny proportional model artifacts, provider profiles, runtime knobs, and a
-ready-to-run MiniNDN command. The doctor checks those files, the required
-NativeTracer smoke binaries, and the expected `memphis/ucla/arizona/wustl/neu`
-topology nodes, then emits a `DI_NATIVE_TRACER_PREFLIGHT` event.
-
-The NativeTracer harness can also consume the same profile directly. Command
-line flags still override profile defaults:
-
-```bash
-python3 Experiments/NDNSF_DI_NativeTracer_Minindn.py \
-  --runtime-profile examples/di-native-tracer.runtime.json \
-  --out /tmp/ndnsf-di-profile-run
-```
-
-To run from the resolved doctor output instead, pass
-`--runtime-resolved /tmp/ndnsf-di-runtime-resolved.json`.
-
-The LLM full-network campaign runner uses the same profile mechanism:
-
-```bash
-python3 examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_full_network_campaign.py \
-  --runtime-profile examples/di-native-tracer.runtime.json \
-  --runs 1 \
-  --workloads c1:1:1
-```
-
-For comparison campaigns, pass explicit overrides such as
-`--modes greedy,proportional`, `--target-rps-series`, or `--out-root`; those
-flags take precedence over profile defaults.
-
-Planner-only sweep helpers also accept the same profile:
-
-```bash
-python3 examples/python/NDNSF-DistributedInference/native_di_tracer/run_rate_sweep_campaign.py \
-  --runtime-profile examples/di-native-tracer.runtime.json
-
-python3 examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_proportional_rps_search.py \
-  --runtime-profile examples/di-native-tracer.runtime.json
-```
-
-For daily use, the unified runtime wrapper is shorter and keeps the canonical
-profile default:
-
-```bash
-python3 tools/ndnsf_runtime.py di validate
-python3 tools/ndnsf_runtime.py di print
-python3 tools/ndnsf_runtime.py di doctor
-python3 tools/ndnsf_runtime.py di run -- --out /tmp/ndnsf-di-run
-python3 tools/ndnsf_runtime.py di campaign -- --runs 1 --workloads c1:1:1
-python3 tools/ndnsf_runtime.py di sweep -- --target-rps-list 0,1,2
-python3 tools/ndnsf_runtime.py di search -- --target-rps-list 1,5,10
-```
-
-Use `profile validate --require-di` or `di validate` before long experiments to
-catch misspelled JSON keys, wrong field types, and unsupported enum values
-before they silently fall back to defaults.
 
 ## 3. How-to
 
