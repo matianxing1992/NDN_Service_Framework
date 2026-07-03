@@ -17,7 +17,11 @@ import threading
 import time
 from typing import Any
 
-from ndnsf import AckDecision
+from ndnsf import (
+    AckDecision,
+    NEGATIVE_ACK_REASON_INTERNAL_ERROR,
+    NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
+)
 
 from .repo import NetworkDistributedRepoClient, RepoObjectManifest, repo_manifest_from_large_data_reference
 
@@ -165,10 +169,23 @@ class ArtifactProvisioningState:
         with self._lock:
             status = self._status
             message = self._message
+        reason = (
+            NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE
+            if status == "installing"
+            else NEGATIVE_ACK_REASON_INTERNAL_ERROR
+            if status == "failed"
+            else ""
+        )
+        payload = (
+            f"runtimeStatus={status};component={self.component};"
+            f"runtimeMessage={message};"
+        )
+        if reason:
+            payload += f"negativeAckReason={reason};"
         return AckDecision(
             status=status == "ready",
-            message=f"{self.component} {status}: {message}",
-            payload=f"runtimeStatus={status};component={self.component};".encode(),
+            message=(f"{self.component} ready: {message}" if status == "ready" else reason),
+            payload=payload.encode(),
         )
 
     def require_ready(self) -> None:

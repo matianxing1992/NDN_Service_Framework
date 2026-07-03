@@ -8,6 +8,7 @@ controller_pid=""
 provider_a_pid=""
 provider_b_pid=""
 provider_c_pid=""
+nfd_started="false"
 
 cleanup() {
   for pid in "${provider_a_pid}" "${provider_b_pid}" "${provider_c_pid}" "${controller_pid}"; do
@@ -16,6 +17,9 @@ cleanup() {
       wait "${pid}" 2>/dev/null || true
     fi
   done
+  if [[ "${nfd_started}" == "true" ]]; then
+    nfd-stop >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -25,6 +29,12 @@ export NDNSF_DISABLE_NDNSD=1
 export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
 export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
 export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=INFO}"
+
+if ! pgrep -x nfd >/dev/null 2>&1; then
+  nfd-start >"${tmpdir}/nfd.log" 2>&1
+  nfd_started="true"
+  sleep 2
+fi
 
 nfdc strategy set /example/hello/group /localhost/nfd/strategy/multicast/v=5 >/dev/null 2>&1 || true
 
@@ -105,7 +115,7 @@ fi
 
 start_provider A true "Provider A ready" "queue=5;gpu=busy;rank=3" "HELLO_FROM_A"
 start_provider B true "Provider B ready" "queue=1;gpu=idle;rank=1" "HELLO_FROM_B"
-start_provider C reject "Provider C rejects request" "queue=99;gpu=busy;rank=99" "HELLO_FROM_C"
+start_provider C reject "PROVIDER_BUSY" "queue=99;gpu=busy;rank=99" "HELLO_FROM_C"
 
 echo "All providers subscribed before user request"
 timeout 35s ./build/examples/App_User \
@@ -138,6 +148,11 @@ tail -n 160 "${tmpdir}/provider-C.log"
 echo
 echo "--- user ---"
 tail -n 220 "${tmpdir}/user.log"
+if [[ -f "${tmpdir}/nfd.log" ]]; then
+  echo
+  echo "--- nfd ---"
+  tail -n 80 "${tmpdir}/nfd.log"
+fi
 
 if [[ "${user_status}" -eq 0 ]] &&
    grep -q "Fetch user permissions: /example/hello/controller/NDNSF/PERMISSIONS/USER/example/hello/user" "${tmpdir}/user.log" &&

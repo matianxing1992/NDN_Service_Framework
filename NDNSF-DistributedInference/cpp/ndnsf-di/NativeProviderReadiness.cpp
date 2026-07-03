@@ -1,8 +1,13 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 
+#include "ndn-service-framework/NegativeAckReason.hpp"
+
 #include <cstdlib>
 #include <cstdint>
+#include <charconv>
+#include <optional>
 #include <sstream>
+#include <system_error>
 #include <utility>
 
 namespace ndnsf::di {
@@ -21,6 +26,92 @@ appendEnvField(std::ostringstream& payload, const char* envName, const char* fie
   if (value != nullptr && value[0] != '\0') {
     payload << fieldName << "=" << value << ";";
   }
+}
+
+std::optional<long long>
+envInteger(const char* envName)
+{
+  const char* value = std::getenv(envName);
+  if (value == nullptr || value[0] == '\0') {
+    return std::nullopt;
+  }
+  long long parsed = 0;
+  const std::string text(value);
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto result = std::from_chars(begin, end, parsed);
+  if (result.ec != std::errc() || result.ptr != end) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+std::optional<double>
+envDouble(const char* envName)
+{
+  const char* value = std::getenv(envName);
+  if (value == nullptr || value[0] == '\0') {
+    return std::nullopt;
+  }
+  char* end = nullptr;
+  const double parsed = std::strtod(value, &end);
+  if (end == value || (end != nullptr && *end != '\0')) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+std::string
+reasonForStatus(const std::string& status)
+{
+  if (status == "installing") {
+    return ndn_service_framework::negative_ack_reason::ModelUnavailable;
+  }
+  if (status == "failed") {
+    return ndn_service_framework::negative_ack_reason::InternalError;
+  }
+  return "";
+}
+
+struct AdmissionDecision
+{
+  bool accepted = true;
+  std::string reason;
+  std::string limit;
+  std::string threshold;
+};
+
+AdmissionDecision
+evaluateNativeAdmission(const ProviderRoleWorkerSnapshot& capacity)
+{
+  if (const auto maxActive = envInteger("NDNSF_DI_PROVIDER_ADMISSION_MAX_ACTIVE_WORKERS");
+      maxActive.has_value() && *maxActive >= 0 &&
+      capacity.activeWorkerCount >= static_cast<std::size_t>(*maxActive)) {
+    return {false,
+            ndn_service_framework::negative_ack_reason::ProviderBusy,
+            "activeWorkers",
+            std::to_string(*maxActive)};
+  }
+  if (const auto maxQueue = envInteger("NDNSF_DI_PROVIDER_ADMISSION_MAX_QUEUE");
+      maxQueue.has_value() && *maxQueue >= 0 &&
+      capacity.pendingWorkCount() >= static_cast<std::size_t>(*maxQueue)) {
+    return {false,
+            ndn_service_framework::negative_ack_reason::QueueFull,
+            "queue",
+            std::to_string(*maxQueue)};
+  }
+  const auto minFreeMemory = envDouble("NDNSF_DI_PROVIDER_ADMISSION_MIN_FREE_MEMORY_MB");
+  const auto freeMemory = envDouble("NDNSF_DI_PROVIDER_FREE_MEMORY_MB")
+                         .value_or(envDouble("NDNSF_DI_PROVIDER_GPU_MEMORY_MB").value_or(0.0));
+  if (minFreeMemory.has_value() && *minFreeMemory > 0.0 && freeMemory < *minFreeMemory) {
+    std::ostringstream threshold;
+    threshold << *minFreeMemory;
+    return {false,
+            ndn_service_framework::negative_ack_reason::GpuBusy,
+            "freeMemoryMb",
+            threshold.str()};
+  }
+  return {};
 }
 
 } // namespace
@@ -109,10 +200,28 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText) cons
   appendEnvField(payload, "NDNSF_DI_PROVIDER_MODEL_FAMILIES", "modelFamilies");
   payload << ";canProvision=0;backends=onnxruntime;runtimeStatus="
           << status << ";";
+  const auto negativeAckReason = reasonForStatus(status);
+  if (!ready && !negativeAckReason.empty()) {
+    payload << "negativeAckReason=" << negativeAckReason << ";";
+  }
+
+  auto admission = AdmissionDecision{};
+  if (ready) {
+    admission = evaluateNativeAdmission(capacity);
+    if (!admission.accepted) {
+      payload << "negativeAckReason=" << admission.reason
+              << ";status=admission-rejected"
+              << ";admissionPolicy=native-provider-telemetry"
+              << ";admissionLimit=" << admission.limit
+              << ";admissionThreshold=" << admission.threshold << ";";
+    }
+  }
 
   ndn_service_framework::ServiceProvider::AckDecision decision;
-  decision.status = ready;
-  decision.message = "native DI provider " + status + ": " + message;
+  decision.status = ready && admission.accepted;
+  decision.message = !ready ? negativeAckReason :
+                     (!admission.accepted ? admission.reason :
+                      "native DI provider ready: " + message);
   decision.payload = toBuffer(payload.str());
   return decision;
 }

@@ -4655,6 +4655,17 @@ namespace ndn_service_framework
                       << " providerTokenPresent="
                       << !ackMessage.getProviderToken().empty()
                       << " userTokenMatched=1");
+            if (!ackMessage.getStatus()) {
+                recordNegativeAck(pendingCall->second,
+                                  parsedV2->requestId,
+                                  parsedV2->providerName,
+                                  ackMessage);
+                completeAckDecrypt();
+                if (maybeEarlyStopAllKnownProvidersNegative(parsedV2->requestId)) {
+                    return true;
+                }
+                return true;
+            }
             const auto& storedAck = pendingCall->second.requestAcks.back();
             if (pendingCall->second.isCollaboration ||
                 pendingCall->second.acksHandler ||
@@ -4888,6 +4899,16 @@ namespace ndn_service_framework
                   << " providerTokenPresent="
                   << !ackMessage.getProviderToken().empty()
                   << " userTokenMatched=1");
+        if (!ackMessage.getStatus()) {
+            recordNegativeAck(pendingCall->second,
+                              requestId,
+                              providerName,
+                              ackMessage);
+            if (maybeEarlyStopAllKnownProvidersNegative(requestId)) {
+                return true;
+            }
+            return true;
+        }
         const auto& storedAck = pendingCall->second.requestAcks.back();
         if (pendingCall->second.isCollaboration ||
             pendingCall->second.acksHandler ||
@@ -5092,6 +5113,90 @@ namespace ndn_service_framework
             m_networkTelemetry.getServicePath(storedAck.providerName,
                                               storedAck.serviceName);
         return candidate;
+    }
+
+    void ServiceUser::recordNegativeAck(
+        PendingCall& pendingCall,
+        const ndn::Name& requestId,
+        const ndn::Name& providerName,
+        const ndn_service_framework::RequestAckMessage& ackMessage)
+    {
+        if (ackMessage.getStatus()) {
+            return;
+        }
+
+        addUniqueName(pendingCall.negativeAckProviders, providerName);
+        pendingCall.negativeAckReasons[providerName.toUri()] = ackMessage.getMessage();
+        if (!ackMessage.getMessage().empty() &&
+            !negative_ack_reason::isRecommended(ackMessage.getMessage())) {
+            NDN_LOG_WARN("Negative ACK uses non-recommended reason code provider="
+                         << providerName.toUri()
+                         << " requestId=" << requestId.toUri()
+                         << " reason=" << ackMessage.getMessage());
+        }
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=NEGATIVE_ACK_RECORDED timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " reason="
+                  << (ackMessage.getMessage().empty() ? "-" : ackMessage.getMessage())
+                  << " negativeAckCount=" << pendingCall.negativeAckProviders.size()
+                  << " knownProviderCount=" << pendingCall.providers.size());
+    }
+
+    bool ServiceUser::maybeEarlyStopAllKnownProvidersNegative(const ndn::Name& requestId)
+    {
+        auto pendingCall = m_pendingCalls.find(requestId);
+        if (pendingCall == m_pendingCalls.end()) {
+            return false;
+        }
+
+        auto& call = pendingCall->second;
+        if (call.providers.empty() ||
+            call.hasResponse ||
+            call.timedOut ||
+            call.providerSelected ||
+            !call.selectedProvider.empty()) {
+            return false;
+        }
+
+        for (const auto& storedAck : call.requestAcks) {
+            if (storedAck.message.getStatus()) {
+                return false;
+            }
+        }
+
+        for (const auto& provider : call.providers) {
+            if (!containsName(call.negativeAckProviders, provider)) {
+                return false;
+            }
+        }
+
+        std::string reasons;
+        for (const auto& provider : call.providers) {
+            if (!reasons.empty()) {
+                reasons += ",";
+            }
+            const auto providerUri = provider.toUri();
+            const auto reason = call.negativeAckReasons.find(providerUri);
+            reasons += providerUri + "=" +
+                       (reason == call.negativeAckReasons.end() ||
+                        reason->second.empty() ? "-" : reason->second);
+        }
+
+        call.ackWindowExpired = true;
+        call.timedOut = true;
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=NEGATIVE_ACK_EARLY_STOP_ALL_KNOWN_PROVIDERS timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " knownProviderCount=" << call.providers.size()
+                  << " negativeAckCount=" << call.negativeAckProviders.size()
+                  << " reasons=" << reasons);
+        NDN_LOG_INFO("[ServiceUser] all known providers rejected requestId="
+                  << requestId.toUri()
+                  << " reasons=" << reasons);
+        finalizeTimedOutPendingCall(requestId);
+        return true;
     }
 
     bool ServiceUser::collaborationAckRoleCoverageSatisfied(

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -399,6 +400,35 @@ providerLabel(const ndn::Name& providerName)
   return providerName[-1].toUri();
 }
 
+std::vector<ndn::Name>
+parseKnownProviderIds(const std::string& csv)
+{
+  std::vector<ndn::Name> providers;
+  std::stringstream stream(csv);
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    item.erase(item.begin(), std::find_if(item.begin(), item.end(), [](unsigned char ch) {
+      return !std::isspace(ch);
+    }));
+    item.erase(std::find_if(item.rbegin(), item.rend(), [](unsigned char ch) {
+      return !std::isspace(ch);
+    }).base(), item.end());
+    if (item.empty()) {
+      continue;
+    }
+    if (item == "default") {
+      providers.push_back(PROVIDER_IDENTITY);
+    }
+    else if (item.front() == '/') {
+      providers.emplace_back(item);
+    }
+    else {
+      providers.push_back(ndn::Name(PROVIDER_IDENTITY).append(item));
+    }
+  }
+  return providers;
+}
+
 std::string
 csvEscape(const std::string& value)
 {
@@ -681,6 +711,8 @@ main(int argc, char** argv)
     const std::string benchmarkStrategyText = getOption(argc, argv, "--strategy", "custom-selection");
     const std::string expectedResponse = getOption(argc, argv, "--expect-response", "");
     const std::string bootstrapToken = getOption(argc, argv, "--bootstrap-token", "");
+    const auto knownProviders =
+      parseKnownProviderIds(getOption(argc, argv, "--known-provider-ids", ""));
 
     auto userCert = getOrCreateIdentity(keyChain, USER_IDENTITY);
     auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
@@ -2137,6 +2169,16 @@ main(int argc, char** argv)
       NDN_LOG_INFO( "Sending HELLO request...");
       NDN_LOG_INFO( "[App_User] selected providerName="
                 << PROVIDER_IDENTITY.toUri());
+      if (!knownProviders.empty()) {
+        std::ostringstream knownProvidersText;
+        for (const auto& provider : knownProviders) {
+          if (knownProvidersText.tellp() > 0) {
+            knownProvidersText << ",";
+          }
+          knownProvidersText << provider.toUri();
+        }
+        NDN_LOG_INFO( "[App_User] known providers=" << knownProvidersText.str());
+      }
       NDN_LOG_INFO( "[App_User] selected serviceName=/HELLO");
       NDN_LOG_INFO( "[App_User] final request name="
                    "/example/hello/user/NDNSF/REQUEST/HELLO/<requestId>"
@@ -2169,7 +2211,7 @@ main(int argc, char** argv)
         });
 
       if (useCustomSelection) {
-        auto selectionPolicy = std::make_shared<FunctionalAckSelectionPolicy>(
+        auto selectCandidates =
           [ackTimeoutMs](const std::vector<ndnsf::AckCandidate>& candidates) {
             NDN_LOG_INFO( "customSelectionStrategy ran after ackTimeoutMs="
                       << ackTimeoutMs
@@ -2224,25 +2266,69 @@ main(int argc, char** argv)
               return std::vector<ndnsf::ProviderId>{selected.front().providerName};
             }
             return std::vector<ndnsf::ProviderId>{};
-          });
-        user.RequestService(
-          ndn::Name("/HELLO"),
-          request.getPayload(),
-          ackTimeoutMs,
-          selectionPolicy,
-          20000,
-          onResponse,
-          onTimeout);
+          };
+        if (!knownProviders.empty()) {
+          ndn_service_framework::ServiceUser::AckCandidatesHandler handler =
+            [selectCandidates](const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+              const auto selectedProviders = selectCandidates(candidates);
+              std::vector<ndn_service_framework::AckSelectionCandidate> selected;
+              for (const auto& provider : selectedProviders) {
+                for (const auto& candidate : candidates) {
+                  if (candidate.providerName.equals(provider) &&
+                      candidate.ack.getStatus()) {
+                    selected.push_back(candidate);
+                    break;
+                  }
+                }
+              }
+              return selected;
+            };
+          user.RequestService(
+            knownProviders,
+            ndn::Name("/HELLO"),
+            request,
+            ackTimeoutMs,
+            std::move(handler),
+            20000,
+            onTimeout,
+            onResponse,
+            ndn_service_framework::tlv::FirstResponding);
+        }
+        else {
+          auto selectionPolicy = std::make_shared<FunctionalAckSelectionPolicy>(
+            std::move(selectCandidates));
+          user.RequestService(
+            ndn::Name("/HELLO"),
+            request.getPayload(),
+            ackTimeoutMs,
+            selectionPolicy,
+            20000,
+            onResponse,
+            onTimeout);
+        }
       }
       else {
-        user.RequestService(
-          ndn::Name("/HELLO"),
-          request.getPayload(),
-          ackTimeoutMs,
-          ndnsf::strategy::RandomSelection,
-          20000,
-          onResponse,
-          onTimeout);
+        if (!knownProviders.empty()) {
+          user.RequestService(
+            knownProviders,
+            ndn::Name("/HELLO"),
+            request,
+            ackTimeoutMs,
+            ndn_service_framework::ServiceUser::AckSelectionStrategy::RandomSelection,
+            20000,
+            onTimeout,
+            onResponse);
+        }
+        else {
+          user.RequestService(
+            ndn::Name("/HELLO"),
+            request.getPayload(),
+            ackTimeoutMs,
+            ndnsf::strategy::RandomSelection,
+            20000,
+            onResponse,
+            onTimeout);
+        }
       }
     });
 

@@ -27,7 +27,11 @@ from .plan import (
     nxm_stage_roles,
     stage_shard_role,
 )
-from .provider import DistributedInferenceProvider, ProviderRuntimeContext
+from .provider import (
+    DistributedInferenceProvider,
+    ProviderAdmissionPolicy,
+    ProviderRuntimeContext,
+)
 from .repo import (
     DistributedRepo,
     LocalDistributedRepo,
@@ -248,6 +252,7 @@ __all__ = [
     "PlannerKind",
     "PlannerRequest",
     "PlannerResult",
+    "ProviderAdmissionPolicy",
     "ProviderRuntimeContext",
     "LocalDistributedRepo",
     "OpenAIChatRequest",

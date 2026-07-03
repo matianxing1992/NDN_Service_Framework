@@ -16,6 +16,10 @@ from ndnsf import (
     ExecutionArtifact,
     ExecutionArtifactSpec,
     ExecutionContext,
+    NEGATIVE_ACK_REASON_GPU_BUSY,
+    NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
+    NEGATIVE_ACK_REASON_PROVIDER_BUSY,
+    NEGATIVE_ACK_REASON_QUEUE_FULL,
     ServiceProvider,
     ServiceResponse,
 )
@@ -37,6 +41,43 @@ class LargePrefetchResult:
     expected_segments: int = 0
     expected_bytes: int = 0
     used_planned_name: bool = False
+
+
+@dataclass(frozen=True)
+class ProviderAdmissionPolicy:
+    """Optional provider-local policy for converting telemetry into negative ACKs."""
+
+    max_queue: int | None = None
+    max_active_workers: int | None = None
+    min_free_memory_mb: float | None = None
+    max_queue_wait_ewma_ms: float | None = None
+    require_model_loaded: bool = False
+
+    def evaluate(self, telemetry: RuntimeTelemetryV1) -> tuple[bool, str, dict[str, object]]:
+        diagnostics: dict[str, object] = {
+            "admissionPolicy": "provider-telemetry",
+        }
+        if self.require_model_loaded and not telemetry.model_loaded:
+            diagnostics["admissionLimit"] = "modelLoaded"
+            return False, NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE, diagnostics
+        if self.min_free_memory_mb is not None and telemetry.free_memory_mb < self.min_free_memory_mb:
+            diagnostics["admissionLimit"] = "freeMemoryMb"
+            diagnostics["admissionThreshold"] = self.min_free_memory_mb
+            return False, NEGATIVE_ACK_REASON_GPU_BUSY, diagnostics
+        if self.max_active_workers is not None and telemetry.active_workers >= self.max_active_workers:
+            diagnostics["admissionLimit"] = "activeWorkers"
+            diagnostics["admissionThreshold"] = self.max_active_workers
+            return False, NEGATIVE_ACK_REASON_PROVIDER_BUSY, diagnostics
+        if self.max_queue is not None and telemetry.aggregate_queue >= self.max_queue:
+            diagnostics["admissionLimit"] = "queue"
+            diagnostics["admissionThreshold"] = self.max_queue
+            return False, NEGATIVE_ACK_REASON_QUEUE_FULL, diagnostics
+        if (self.max_queue_wait_ewma_ms is not None and
+                telemetry.queue_wait_ewma_ms >= self.max_queue_wait_ewma_ms):
+            diagnostics["admissionLimit"] = "queueWaitEwmaMs"
+            diagnostics["admissionThreshold"] = self.max_queue_wait_ewma_ms
+            return False, NEGATIVE_ACK_REASON_PROVIDER_BUSY, diagnostics
+        return True, "", diagnostics
 
 
 class DependencyPrefetcher:
@@ -486,6 +527,7 @@ class DistributedInferenceProvider:
         readiness_probe: Callable[[], AckDecision | bool] | None = None,
         provider_profile: ProviderProfileV1 | dict | None = None,
         runtime_telemetry: Callable[[], RuntimeTelemetryV1 | dict] | RuntimeTelemetryV1 | dict | None = None,
+        admission_policy: ProviderAdmissionPolicy | None = None,
         register_simple_service: bool = False,
     ) -> None:
         """Register one provider as capable of serving multiple inference roles.
@@ -514,8 +556,11 @@ class DistributedInferenceProvider:
                     if not bool(readiness):
                         return AckDecision(
                             status=False,
-                            message="inference capability installing",
-                            payload=b"status=installing;",
+                            message=NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
+                            payload=(
+                                b"status=installing;"
+                                b"negativeAckReason=MODEL_UNAVAILABLE;"
+                            ),
                         )
                     readiness_payload = b""
             else:
@@ -537,6 +582,7 @@ class DistributedInferenceProvider:
                     else ProviderProfileV1.from_dict(dict(provider_profile))
                 )
                 fields.update(profile.to_ack_fields())
+            telemetry: RuntimeTelemetryV1 | None = None
             if runtime_telemetry is not None:
                 telemetry_value = runtime_telemetry() if callable(runtime_telemetry) else runtime_telemetry
                 telemetry = (
@@ -545,8 +591,27 @@ class DistributedInferenceProvider:
                     else RuntimeTelemetryV1.from_dict(dict(telemetry_value))
                 )
                 fields.update(telemetry.to_ack_fields())
+            if not (can_provision or has_model):
+                fields["negativeAckReason"] = NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE
+                fields["status"] = "model-unavailable"
+                return AckDecision(
+                    status=False,
+                    message=NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
+                    payload=encode_ack_metadata(fields) + readiness_payload,
+                )
+            if admission_policy is not None and telemetry is not None:
+                accepted, reason, diagnostics = admission_policy.evaluate(telemetry)
+                fields.update(diagnostics)
+                if not accepted:
+                    fields["negativeAckReason"] = reason
+                    fields["status"] = "admission-rejected"
+                    return AckDecision(
+                        status=False,
+                        message=reason,
+                        payload=encode_ack_metadata(fields) + readiness_payload,
+                    )
             return AckDecision(
-                status=can_provision or has_model,
+                status=True,
                 message="inference capability ready",
                 payload=encode_ack_metadata(fields) + readiness_payload,
             )

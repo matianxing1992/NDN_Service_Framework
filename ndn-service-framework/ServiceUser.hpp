@@ -10,6 +10,7 @@
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
 #include "NetworkTelemetry.hpp"
+#include "NegativeAckReason.hpp"
 #include "TimelineTrace.hpp"
 
 #include <functional>
@@ -809,6 +810,7 @@ namespace ndn_service_framework{
                 std::vector<StoredAck> requestAcks;
                 std::vector<StoredAck> customSelectedAcks;
                 std::vector<ndn::Name> successfulAckProviders;
+                std::vector<ndn::Name> negativeAckProviders;
                 std::vector<ndn::Name> selectionPublishedProviders;
                 std::vector<ndn::Name> expectedResponseProviders;
                 std::vector<ndn::Name> responseProviders;
@@ -816,6 +818,7 @@ namespace ndn_service_framework{
                 std::vector<ndn::Name> largeResponseReferenceProvidersInFlight;
                 ndn::Name selectedProvider;
                 std::map<std::string, std::string> providerTokens;
+                std::map<std::string, std::string> negativeAckReasons;
                 bool isCollaboration = false;
                 CollaborationPlan collaborationPlan;
                 std::map<std::string, ndn::Buffer> collaborationAssignments;
@@ -859,6 +862,11 @@ namespace ndn_service_framework{
             bool evaluateCustomAckSelection(PendingCall& pendingCall);
 
             bool evaluateBuiltInAckSelection(PendingCall& pendingCall);
+            void recordNegativeAck(PendingCall& pendingCall,
+                                   const ndn::Name& requestId,
+                                   const ndn::Name& providerName,
+                                   const ndn_service_framework::RequestAckMessage& ackMessage);
+            bool maybeEarlyStopAllKnownProvidersNegative(const ndn::Name& requestId);
             bool hasReachedLatePipelineStage(const PendingCall& pendingCall) const;
             void recordObservedAckProvider(const ndn::Name& serviceName,
                                            const ndn::Name& providerName,

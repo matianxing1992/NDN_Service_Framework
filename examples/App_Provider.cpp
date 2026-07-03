@@ -1,5 +1,6 @@
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
+#include "ndn-service-framework/NegativeAckReason.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <ndn-cxx/face.hpp>
@@ -251,7 +252,8 @@ main(int argc, char** argv)
       getOption(argc, argv, "--ack-status", "true"));
     const std::string ackMessage = getOption(
       argc, argv, "--ack-message",
-      ackStatus ? "HELLO provider ready" : "HELLO provider rejected");
+      ackStatus ? "HELLO provider ready" :
+                  ndn_service_framework::negative_ack_reason::ProviderBusy);
     const std::string responseText = getOption(
       argc, argv, "--response-payload", "HELLO");
     const int providerAckMaxPending = parseIntOption(

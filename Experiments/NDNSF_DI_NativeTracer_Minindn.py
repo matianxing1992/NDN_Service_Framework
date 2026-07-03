@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 import json
 import math
 import os
+import re
 import signal
 import statistics
 import subprocess
@@ -48,6 +50,10 @@ CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
 IDENTITY_SAFEBAG_PASSPHRASE = "ndnsf-di-native-tracer"
 REQUIRED_ROLES = ["/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"]
+NEGATIVE_ACK_RECORDED_RE = re.compile(r"event=NEGATIVE_ACK_RECORDED\b.*?\breason=([^\s,]+)")
+NATIVE_ACK_DECISION_RE = re.compile(
+    r"NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION\b.*?\bstatus=0\b.*?\bmessage=\"([^\"]*)\"")
+NEGATIVE_ACK_PAYLOAD_RE = re.compile(r"\bnegativeAckReason=([^;\s]+)")
 
 
 def user_worker_identities(requests: int) -> list[str]:
@@ -244,6 +250,19 @@ def llm_provider_resource_env(provider: str) -> dict[str, str]:
         "NDNSF_DI_PROVIDER_LLM_MAX_STAGE_LAYERS": profile["llmMaxStageLayers"],
         "NDNSF_DI_PROVIDER_MODEL_FAMILIES": profile["modelFamilies"],
     }
+
+
+def provider_admission_env(args) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if args.provider_admission_max_queue >= 0:
+        env["NDNSF_DI_PROVIDER_ADMISSION_MAX_QUEUE"] = str(args.provider_admission_max_queue)
+    if args.provider_admission_max_active_workers >= 0:
+        env["NDNSF_DI_PROVIDER_ADMISSION_MAX_ACTIVE_WORKERS"] = str(
+            args.provider_admission_max_active_workers)
+    if args.provider_admission_min_free_memory_mb > 0:
+        env["NDNSF_DI_PROVIDER_ADMISSION_MIN_FREE_MEMORY_MB"] = str(
+            args.provider_admission_min_free_memory_mb)
+    return env
 
 
 def shell_join(items: list[str]) -> str:
@@ -1045,6 +1064,74 @@ def wait_provider_checks(procs, timeout_s: int = 45) -> list[dict[str, object]]:
     return results
 
 
+def collect_negative_ack_reason_counters(logs_dir: Path) -> dict[str, object]:
+    """Collect stable negative-ACK reason counters from NativeTracer logs."""
+
+    user_reasons: Counter[str] = Counter()
+    provider_reasons: Counter[str] = Counter()
+    payload_reasons: Counter[str] = Counter()
+    scanned_logs = 0
+    for path in sorted(logs_dir.glob("*.log")):
+        scanned_logs += 1
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for match in NEGATIVE_ACK_RECORDED_RE.finditer(text):
+            reason = match.group(1).strip()
+            if reason:
+                user_reasons[reason] += 1
+        for match in NATIVE_ACK_DECISION_RE.finditer(text):
+            reason = match.group(1).strip()
+            if reason:
+                provider_reasons[reason] += 1
+        for match in NEGATIVE_ACK_PAYLOAD_RE.finditer(text):
+            reason = match.group(1).strip()
+            if reason:
+                payload_reasons[reason] += 1
+    return {
+        "userRecorded": dict(sorted(user_reasons.items())),
+        "providerDecisions": dict(sorted(provider_reasons.items())),
+        "payloadReasons": dict(sorted(payload_reasons.items())),
+        "scannedLogs": scanned_logs,
+    }
+
+
+def build_failure_breakdown(user_result: dict[str, object],
+                            negative_ack: dict[str, object]) -> dict[str, object]:
+    requests = user_result.get("requests", [])
+    if not isinstance(requests, list):
+        requests = []
+    failed_requests = [
+        item for item in requests
+        if isinstance(item, dict) and item.get("status") != "executed"
+    ]
+    timeout_count = sum(
+        1 for item in failed_requests
+        if str(item.get("error", "")).startswith("timeout:")
+    )
+    user_recorded = negative_ack.get("userRecorded", {})
+    provider_decisions = negative_ack.get("providerDecisions", {})
+    payload_reasons = negative_ack.get("payloadReasons", {})
+    negative_ack_count = (
+        sum(int(value) for value in user_recorded.values())
+        if isinstance(user_recorded, dict) else 0
+    )
+    return {
+        "requestCount": int(user_result.get("requestCount", len(requests)) or 0),
+        "successCount": int(user_result.get("successCount", 0) or 0),
+        "failureCount": int(user_result.get("failureCount", len(failed_requests)) or 0),
+        "timeoutCount": timeout_count,
+        "otherFailureCount": max(0, len(failed_requests) - timeout_count),
+        "negativeAckEventCount": negative_ack_count,
+        "negativeAckReasons": user_recorded if isinstance(user_recorded, dict) else {},
+        "providerNegativeAckReasons": (
+            provider_decisions if isinstance(provider_decisions, dict) else {}
+        ),
+        "payloadNegativeAckReasons": payload_reasons if isinstance(payload_reasons, dict) else {},
+    }
+
+
 def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "summary.json").write_text(
@@ -1068,6 +1155,7 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
         f"roleExecutionDelayMs={summary.get('roleExecutionDelayMs', 0.0)}",
         f"requestCount={summary.get('requestCount', 1)}",
         f"concurrency={summary.get('concurrency', 1)}",
+        f"providerAdmissionPolicy={summary.get('providerAdmissionPolicy', {})}",
         f"localExecution={summary['localExecution']['status']}",
         f"securityBootstrap={summary['securityBootstrap']['status']}",
         f"userExecution={summary['userExecution']['status']}",
@@ -1092,6 +1180,23 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
         ])
     if summary.get("failureReason"):
         lines.append(f"failureReason={summary['failureReason']}")
+    failure_breakdown = summary.get("failureBreakdown", {})
+    if isinstance(failure_breakdown, dict) and failure_breakdown:
+        lines.append(
+            "failureBreakdown="
+            f"timeouts:{failure_breakdown.get('timeoutCount', 0)};"
+            f"other:{failure_breakdown.get('otherFailureCount', 0)};"
+            f"negativeAckEvents:{failure_breakdown.get('negativeAckEventCount', 0)};"
+            f"negativeAckReasons:{failure_breakdown.get('negativeAckReasons', {})}"
+        )
+    negative_ack = summary.get("negativeAckReasonCounters", {})
+    if isinstance(negative_ack, dict):
+        lines.append(
+            "negativeAckReasonCounters="
+            f"userRecorded:{negative_ack.get('userRecorded', {})};"
+            f"providerDecisions:{negative_ack.get('providerDecisions', {})};"
+            f"payloadReasons:{negative_ack.get('payloadReasons', {})}"
+        )
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n",
                                          encoding="utf-8")
     marker = "SUCCESS" if summary["status"] == "SUCCESS" else "FAILURE"
@@ -1147,6 +1252,19 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
                 "network dependency exchange through NdnsfCollaborationDependencyIo "
                 "is gated until the native tracer user request driver is available"
             ),
+        },
+        "negativeAckReasonCounters": {
+            "userRecorded": {},
+            "providerDecisions": {},
+            "payloadReasons": {},
+            "scannedLogs": 0,
+        },
+        "failureBreakdown": {},
+        "providerAdmissionPolicy": {
+            "maxQueue": args.provider_admission_max_queue,
+            "maxActiveWorkers": args.provider_admission_max_active_workers,
+            "minFreeMemoryMb": args.provider_admission_min_free_memory_mb,
+            "enabled": bool(provider_admission_env(args)),
         },
         "assignment": args.assignment,
         "assignmentRequested": args.assignment,
@@ -1223,6 +1341,12 @@ def main() -> int:
                         help="Generated-token count recorded in Runtime v1 MiniNDN evidence")
     parser.add_argument("--runtime-v1-prefix-id", default="",
                         help="Optional reusable prefix id recorded in Runtime v1 cache evidence")
+    parser.add_argument("--provider-admission-max-queue", type=int, default=-1,
+                        help="Opt-in native provider negative ACK when pending work reaches this queue size")
+    parser.add_argument("--provider-admission-max-active-workers", type=int, default=-1,
+                        help="Opt-in native provider negative ACK when active workers reach this count")
+    parser.add_argument("--provider-admission-min-free-memory-mb", type=float, default=0.0,
+                        help="Opt-in native provider negative ACK when advertised free memory is below this value")
     args = parser.parse_args()
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
@@ -1248,6 +1372,12 @@ def main() -> int:
         raise SystemExit("--runtime-v1-context-tokens must be positive")
     if args.runtime_v1_generated_tokens < 0:
         raise SystemExit("--runtime-v1-generated-tokens must be non-negative")
+    if args.provider_admission_max_queue < -1:
+        raise SystemExit("--provider-admission-max-queue must be -1 or non-negative")
+    if args.provider_admission_max_active_workers < -1:
+        raise SystemExit("--provider-admission-max-active-workers must be -1 or non-negative")
+    if args.provider_admission_min_free_memory_mb < 0:
+        raise SystemExit("--provider-admission-min-free-memory-mb must be non-negative")
 
     if args.quick_smoke:
         validate_prerequisites()
@@ -1269,6 +1399,8 @@ def main() -> int:
     env["PYTHONPATH"] = ":".join([
         str(REPO / "NDNSF-DistributedInference"),
         str(REPO / "pythonWrapper"),
+        str(REPO / "Experiments"),
+        str(REPO),
         env.get("PYTHONPATH", ""),
     ])
     env["LD_LIBRARY_PATH"] = ":".join([
@@ -1528,6 +1660,8 @@ def main() -> int:
                     policy_dir,
                     args.tracer_deterministic_runner or
                     args.policy_bundle == "llm-proportional")
+                provider_env = llm_provider_resource_env(row["provider"])
+                provider_env.update(provider_admission_env(args))
                 proc, path = start_node_command(
                     node,
                     "provider-serve-" + safe_log_component(row["role"]) +
@@ -1537,7 +1671,7 @@ def main() -> int:
                     env,
                     procs,
                     Path(row["homeDir"]),
-                    llm_provider_resource_env(row["provider"]))
+                    provider_env)
                 provider_logs.append(path)
                 provider_log_rows.append({
                     "log": str(path),
@@ -1576,6 +1710,40 @@ def main() -> int:
                 user_proc.kill()
                 user_proc.wait(timeout=3)
             user_result = parse_user_execution(user_log)
+            summary["userExecution"] = {
+                "status": "executed" if user_result.get("status") == "executed" else "failed",
+                "reason": (
+                    "NativeTracer user driver returned a successful NDNSF collaboration response"
+                    if user_result.get("status") == "executed" else
+                    "NativeTracer user driver completed with one or more failed requests"
+                ),
+                "log": str(user_log),
+                "payloadBytes": user_result.get("payloadBytes", 0),
+                "elapsedMs": user_result.get("elapsedMs", 0.0),
+                "requestCount": user_result.get("requestCount", args.requests),
+                "concurrency": user_result.get("concurrency", args.concurrency),
+                "successCount": user_result.get("successCount", 1),
+                "failureCount": user_result.get("failureCount", 0),
+                "makespanMs": user_result.get("makespanMs", user_result.get("elapsedMs", 0.0)),
+                "meanMs": user_result.get("meanMs", user_result.get("elapsedMs", 0.0)),
+                "p50Ms": user_result.get("p50Ms", user_result.get("elapsedMs", 0.0)),
+                "p95Ms": user_result.get("p95Ms", user_result.get("elapsedMs", 0.0)),
+                "throughputRps": user_result.get("throughputRps", 0.0),
+                "targetRps": user_result.get("targetRps", args.target_rps),
+                "openLoopDurationS": user_result.get("openLoopDurationS", args.open_loop_duration_s),
+                "openLoopDriverMode": user_result.get("mode", args.open_loop_driver_mode),
+                "scheduledRequestCount": user_result.get("scheduledRequestCount", args.requests),
+                "submittedCount": user_result.get("submittedCount", user_result.get("successCount", 1)),
+                "localBackpressureCount": user_result.get("localBackpressureCount", 0),
+                "offeredRps": user_result.get("offeredRps", 0.0),
+                "requests": user_result.get("requests", []),
+            }
+            negative_ack_counters = collect_negative_ack_reason_counters(logs_dir)
+            summary["negativeAckReasonCounters"] = negative_ack_counters
+            summary["failureBreakdown"] = build_failure_breakdown(
+                user_result,
+                negative_ack_counters,
+            )
             if user_proc.returncode != 0 or user_result.get("status") != "executed":
                 raise RuntimeError(
                     f"NativeTracer user execution failed rc={user_proc.returncode} "
@@ -1599,29 +1767,6 @@ def main() -> int:
                 "status": "executed",
                 "reason": "ServiceController and user/provider permission fetch path ran during full-network execution",
             }
-            summary["userExecution"] = {
-                "status": "executed",
-                "reason": "NativeTracer user driver returned a successful NDNSF collaboration response",
-                "log": str(user_log),
-                "payloadBytes": user_result.get("payloadBytes", 0),
-                "elapsedMs": user_result.get("elapsedMs", 0.0),
-                "requestCount": user_result.get("requestCount", args.requests),
-                "concurrency": user_result.get("concurrency", args.concurrency),
-                "successCount": user_result.get("successCount", 1),
-                "failureCount": user_result.get("failureCount", 0),
-                "makespanMs": user_result.get("makespanMs", user_result.get("elapsedMs", 0.0)),
-                "meanMs": user_result.get("meanMs", user_result.get("elapsedMs", 0.0)),
-                "p50Ms": user_result.get("p50Ms", user_result.get("elapsedMs", 0.0)),
-                "p95Ms": user_result.get("p95Ms", user_result.get("elapsedMs", 0.0)),
-                "throughputRps": user_result.get("throughputRps", 0.0),
-                "targetRps": user_result.get("targetRps", args.target_rps),
-                "openLoopDurationS": user_result.get("openLoopDurationS", args.open_loop_duration_s),
-                "openLoopDriverMode": user_result.get("mode", args.open_loop_driver_mode),
-                "scheduledRequestCount": user_result.get("scheduledRequestCount", args.requests),
-                "submittedCount": user_result.get("submittedCount", user_result.get("successCount", 1)),
-                "localBackpressureCount": user_result.get("localBackpressureCount", 0),
-                "offeredRps": user_result.get("offeredRps", 0.0),
-            }
             summary["dependencyExecution"] = {
                 "status": "executed",
                 "reason": "all NativeTracer roles emitted provider handler timing in serve mode",
@@ -1637,6 +1782,8 @@ def main() -> int:
                 policy_dir,
                 args.tracer_deterministic_runner or
                 args.policy_bundle == "llm-proportional")
+            provider_env = llm_provider_resource_env(row["provider"])
+            provider_env.update(provider_admission_env(args))
             start_node_command(node,
                                "provider-check-" + safe_log_component(row["role"]) +
                                "--" + safe_log_component(row["provider"]),
@@ -1645,7 +1792,7 @@ def main() -> int:
                                env,
                                procs,
                                Path(row["homeDir"]),
-                               llm_provider_resource_env(row["provider"]))
+                               provider_env)
         provider_results = wait_provider_checks(procs, args.provider_check_timeout)
         summary["providerChecks"] = provider_results
         failed = [item for item in provider_results if item["returncode"] != 0]
@@ -1668,6 +1815,13 @@ def main() -> int:
                 Minindn.cleanUp()
         except Exception:
             pass
+        summary["negativeAckReasonCounters"] = collect_negative_ack_reason_counters(logs_dir)
+        if not summary.get("failureBreakdown") and isinstance(summary.get("userExecution"), dict):
+            user_execution = summary["userExecution"]
+            summary["failureBreakdown"] = build_failure_breakdown(
+                user_execution,
+                summary["negativeAckReasonCounters"],
+            )
         write_summary(out_dir, summary)
         print((out_dir / "summary.txt").read_text(encoding="utf-8"))
     return 0 if summary["status"] == "SUCCESS" else 1

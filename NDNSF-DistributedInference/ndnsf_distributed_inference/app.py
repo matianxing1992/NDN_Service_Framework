@@ -38,6 +38,7 @@ from .policy import DistributedInferenceDeployment, load_or_generate_deployment
 from .provider import (
     DistributedInferenceProvider,
     InferenceHandler,
+    ProviderAdmissionPolicy,
     ProviderRuntimeContext,
 )
 from .repo import repo_manifest_from_large_data_reference
@@ -958,6 +959,7 @@ class APPProvider:
         allow_executables: bool = False,
         readiness_probe: Callable[[], Any] | None = None,
         local_artifacts: dict[str, dict] | None = None,
+        admission_policy: ProviderAdmissionPolicy | None = None,
     ) -> None:
         if allow_executables:
             self.deployment.require_executable_artifacts_allowed()
@@ -995,6 +997,7 @@ class APPProvider:
             dependency_graph=self.deployment.dependency_graph_for_service(service),
             local_artifacts=policy_artifacts,
             readiness_probe=readiness_probe,
+            admission_policy=admission_policy,
             register_simple_service=(
                 len(list(roles)) == 1 and
                 not list(self.deployment.service_policy(service).dependencies)
@@ -1015,6 +1018,7 @@ class APPProvider:
         allow_executables: bool = False,
         readiness_probe: Callable[[], Any] | None = None,
         local_artifacts: dict[str, dict] | None = None,
+        admission_policy: ProviderAdmissionPolicy | None = None,
     ) -> None:
         self.serve_service(
             service=service,
@@ -1028,6 +1032,7 @@ class APPProvider:
             allow_executables=allow_executables,
             readiness_probe=readiness_probe,
             local_artifacts=local_artifacts,
+            admission_policy=admission_policy,
         )
 
     def roles_for_service(self, service: str) -> list[str]:
