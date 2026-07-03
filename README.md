@@ -239,6 +239,19 @@ python3 Experiments/NDNSF_DI_NativeTracer_Minindn.py \
 To run from the resolved doctor output instead, pass
 `--runtime-resolved /tmp/ndnsf-di-runtime-resolved.json`.
 
+The LLM full-network campaign runner uses the same profile mechanism:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_full_network_campaign.py \
+  --runtime-profile examples/di-native-tracer.runtime.json \
+  --runs 1 \
+  --workloads c1:1:1
+```
+
+For comparison campaigns, pass explicit overrides such as
+`--modes greedy,proportional`, `--target-rps-series`, or `--out-root`; those
+flags take precedence over profile defaults.
+
 ## 3. How-to
 
 ### 3.1 Generic dynamic API, preferred for new applications

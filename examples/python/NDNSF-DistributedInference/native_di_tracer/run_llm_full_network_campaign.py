@@ -17,6 +17,21 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[4]
 HARNESS = REPO / "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
 MODES = ["greedy", "proportional"]
+CAMPAIGN_PROFILE_FIELDS = {
+    "out": "out_root",
+    "llm_planner_mode": "modes",
+    "provider_check_timeout": "provider_check_timeout",
+    "role_execution_delay_ms": "role_execution_delay_ms",
+    "llm_stage_execution_delay_scale": "stage_execution_delay_scale",
+    "target_rps": "target_rps",
+    "open_loop_duration_s": "open_loop_duration_s",
+    "open_loop_driver_mode": "open_loop_driver_mode",
+    "submission_spacing_ms": "submission_spacing_ms",
+    "runtime_v1_context_tokens": "runtime_v1_context_tokens",
+    "runtime_v1_generated_tokens": "runtime_v1_generated_tokens",
+    "runtime_v1_prefix_id": "runtime_v1_prefix_id",
+    "core_trace": "core_trace",
+}
 
 
 def parse_workloads(raw: str) -> list[tuple[str, int, int]]:
@@ -50,6 +65,43 @@ def parse_workloads(raw: str) -> list[tuple[str, int, int]]:
     if not workloads:
         raise SystemExit("--workloads must contain at least one workload")
     return workloads
+
+
+def load_json_file(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    with Path(path).expanduser().open(encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def native_tracer_section(payload: dict[str, Any]) -> dict[str, Any]:
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+    distributed = profile.get("distributed_inference", {})
+    native = distributed.get("native_tracer", {})
+    if not isinstance(native, dict):
+        return {}
+    return native if native.get("enabled", False) else {}
+
+
+def runtime_profile_defaults(runtime_profile: str, runtime_resolved: str) -> dict[str, Any]:
+    defaults: dict[str, Any] = {}
+    for source in [runtime_profile, runtime_resolved]:
+        section = native_tracer_section(load_json_file(source))
+        for key, dest in CAMPAIGN_PROFILE_FIELDS.items():
+            if key not in section:
+                continue
+            value = section[key]
+            if dest == "out_root":
+                defaults[dest] = str(Path(str(value)) / "campaign")
+            elif dest == "modes":
+                defaults[dest] = str(value)
+            else:
+                defaults[dest] = value
+    return defaults
+
+
+def default_value(defaults: dict[str, Any], key: str, fallback):
+    return defaults.get(key, fallback)
 
 
 def parse_target_rps_series(raw: str, fallback: float) -> list[float]:
@@ -144,6 +196,8 @@ def run_harness(mode: str,
                 target_rps: float,
                 open_loop_duration_s: float,
                 open_loop_driver_mode: str,
+                runtime_profile: str,
+                runtime_resolved: str,
                 extra_args: list[str]) -> dict[str, Any]:
     run_dir = out_root / mode / workload_label / f"run-{run_index:02d}"
     clean_dir(run_dir)
@@ -161,6 +215,10 @@ def run_harness(mode: str,
         "--out", str(run_dir),
         *extra_args,
     ]
+    if runtime_profile:
+        command.extend(["--runtime-profile", runtime_profile])
+    if runtime_resolved:
+        command.extend(["--runtime-resolved", runtime_resolved])
     if open_loop_duration_s > 0.0:
         command.extend([
             "--target-rps", str(target_rps),
@@ -436,30 +494,52 @@ def summarize_provider_utilization(items: list[dict[str, Any]]) -> dict[str, Any
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-root", required=True)
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--runtime-profile", default="",
+                            help="Load campaign defaults from an NDNSF runtime profile JSON")
+    pre_parser.add_argument("--runtime-resolved", default="",
+                            help="Load campaign defaults from a runtime doctor resolved JSON")
+    pre_args, _ = pre_parser.parse_known_args(argv)
+    profile_defaults = runtime_profile_defaults(
+        pre_args.runtime_profile,
+        pre_args.runtime_resolved)
+
+    parser = argparse.ArgumentParser(description=__doc__, parents=[pre_parser])
+    parser.add_argument("--out-root", default=default_value(profile_defaults, "out_root", ""))
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--workloads", default="c1:1:1")
-    parser.add_argument("--modes", default="greedy,proportional")
-    parser.add_argument("--provider-check-timeout", type=int, default=60)
-    parser.add_argument("--role-execution-delay-ms", type=float, default=0.0)
-    parser.add_argument("--stage-execution-delay-scale", type=float, default=1.0)
-    parser.add_argument("--target-rps", type=float, default=0.0,
+    parser.add_argument("--modes", default=default_value(profile_defaults, "modes", "greedy,proportional"))
+    parser.add_argument("--provider-check-timeout", type=int,
+                        default=default_value(profile_defaults, "provider_check_timeout", 60))
+    parser.add_argument("--role-execution-delay-ms", type=float,
+                        default=default_value(profile_defaults, "role_execution_delay_ms", 0.0))
+    parser.add_argument("--stage-execution-delay-scale", type=float,
+                        default=default_value(profile_defaults, "stage_execution_delay_scale", 1.0))
+    parser.add_argument("--target-rps", type=float,
+                        default=default_value(profile_defaults, "target_rps", 0.0),
                         help="Open-loop offered request rate when --open-loop-duration-s is set")
     parser.add_argument("--target-rps-series", default="",
                         help="Comma-separated open-loop offered rates; overrides --target-rps loop list")
-    parser.add_argument("--open-loop-duration-s", type=float, default=0.0,
+    parser.add_argument("--open-loop-duration-s", type=float,
+                        default=default_value(profile_defaults, "open_loop_duration_s", 0.0),
                         help="Run each workload as fixed-rate open-loop for this many seconds")
     parser.add_argument("--open-loop-driver-mode",
                         choices=["child", "threaded", "process-pool"],
-                        default="child",
+                        default=default_value(profile_defaults, "open_loop_driver_mode", "child"),
                         help="User driver implementation for open-loop workloads")
-    parser.add_argument("--submission-spacing-ms", type=int, default=0)
-    parser.add_argument("--runtime-v1-context-tokens", type=int, default=1024)
-    parser.add_argument("--runtime-v1-generated-tokens", type=int, default=32)
-    parser.add_argument("--runtime-v1-prefix-id", default="")
-    parser.add_argument("--core-trace", action="store_true")
+    parser.add_argument("--submission-spacing-ms", type=int,
+                        default=default_value(profile_defaults, "submission_spacing_ms", 0))
+    parser.add_argument("--runtime-v1-context-tokens", type=int,
+                        default=default_value(profile_defaults, "runtime_v1_context_tokens", 1024))
+    parser.add_argument("--runtime-v1-generated-tokens", type=int,
+                        default=default_value(profile_defaults, "runtime_v1_generated_tokens", 32))
+    parser.add_argument("--runtime-v1-prefix-id",
+                        default=default_value(profile_defaults, "runtime_v1_prefix_id", ""))
+    parser.add_argument("--core-trace", action="store_true",
+                        default=bool(default_value(profile_defaults, "core_trace", False)))
     args = parser.parse_args(argv)
+    if not args.out_root:
+        raise SystemExit("--out-root is required unless provided by --runtime-profile/--runtime-resolved")
     if args.runs <= 0:
         raise SystemExit("--runs must be positive")
     if args.provider_check_timeout <= 0:
@@ -528,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
                         target_rps,
                         args.open_loop_duration_s,
                         args.open_loop_driver_mode,
+                        args.runtime_profile,
+                        args.runtime_resolved,
                         extra_args,
                     ))
 
@@ -550,6 +632,10 @@ def main(argv: list[str] | None = None) -> int:
         "runtimeV1ContextTokens": args.runtime_v1_context_tokens,
         "runtimeV1GeneratedTokens": args.runtime_v1_generated_tokens,
         "runtimeV1PrefixId": args.runtime_v1_prefix_id,
+        "runtimeProfile": {
+            "profile": args.runtime_profile,
+            "resolved": args.runtime_resolved,
+        },
         "rowsCsv": str(rows_csv),
         "summary": summarize(rows),
     }
