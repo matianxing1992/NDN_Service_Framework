@@ -18,6 +18,15 @@ ROOT = Path(__file__).resolve().parent
 PLAN_TRACER = ROOT / "plan_tracer.py"
 SHARED = "shared-backbone-current"
 SINGLE = "single-provider-serial"
+RATE_SWEEP_PROFILE_FIELDS = {
+    "out": "out_root",
+    "target_rps": "target_rps_list",
+    "provider_check_timeout": "provider_check_timeout",
+    "activation_pad_bytes": "activation_pad_bytes",
+    "role_execution_delay_ms": "role_execution_delay_ms",
+    "requests": "requests",
+    "concurrency": "concurrency",
+}
 
 
 def parse_float_list(raw: str) -> list[float]:
@@ -31,6 +40,43 @@ def parse_float_list(raw: str) -> list[float]:
             raise SystemExit("RPS values must be non-negative")
         values.append(value)
     return values
+
+
+def load_json_file(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    with Path(path).expanduser().open(encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def native_tracer_section(payload: dict[str, Any]) -> dict[str, Any]:
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+    distributed = profile.get("distributed_inference", {})
+    native = distributed.get("native_tracer", {})
+    if not isinstance(native, dict):
+        return {}
+    return native if native.get("enabled", False) else {}
+
+
+def runtime_profile_defaults(runtime_profile: str, runtime_resolved: str) -> dict[str, Any]:
+    defaults: dict[str, Any] = {}
+    for source in [runtime_profile, runtime_resolved]:
+        section = native_tracer_section(load_json_file(source))
+        for key, dest in RATE_SWEEP_PROFILE_FIELDS.items():
+            if key not in section:
+                continue
+            value = section[key]
+            if dest == "out_root":
+                defaults[dest] = str(Path(str(value)) / "rate-sweep")
+            elif dest == "target_rps_list" and float(value) > 0.0:
+                defaults[dest] = str(value)
+            else:
+                defaults[dest] = value
+    return defaults
+
+
+def default_value(defaults: dict[str, Any], key: str, fallback):
+    return defaults.get(key, fallback)
 
 
 def rps_dir_name(value: float) -> str:
@@ -164,17 +210,31 @@ def run_minindn_auto(out_root: Path,
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--out-root", required=True)
-    parser.add_argument("--target-rps-list", default="0,1,2,4,8")
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--runtime-profile", default="")
+    pre_parser.add_argument("--runtime-resolved", default="")
+    pre_args, _ = pre_parser.parse_known_args(argv)
+    profile_defaults = runtime_profile_defaults(pre_args.runtime_profile, pre_args.runtime_resolved)
+
+    parser = argparse.ArgumentParser(parents=[pre_parser])
+    parser.add_argument("--out-root", default=default_value(profile_defaults, "out_root", ""))
+    parser.add_argument("--target-rps-list",
+                        default=default_value(profile_defaults, "target_rps_list", "0,1,2,4,8"))
     parser.add_argument("--minindn-rps-list", default="",
                         help="Optional subset of RPS values to run through MiniNDN auto")
-    parser.add_argument("--provider-check-timeout", type=int, default=60)
-    parser.add_argument("--activation-pad-bytes", type=int, default=0)
-    parser.add_argument("--role-execution-delay-ms", type=float, default=75.0)
-    parser.add_argument("--requests", type=int, default=4)
-    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--provider-check-timeout", type=int,
+                        default=default_value(profile_defaults, "provider_check_timeout", 60))
+    parser.add_argument("--activation-pad-bytes", type=int,
+                        default=default_value(profile_defaults, "activation_pad_bytes", 0))
+    parser.add_argument("--role-execution-delay-ms", type=float,
+                        default=default_value(profile_defaults, "role_execution_delay_ms", 75.0))
+    parser.add_argument("--requests", type=int,
+                        default=default_value(profile_defaults, "requests", 4))
+    parser.add_argument("--concurrency", type=int,
+                        default=default_value(profile_defaults, "concurrency", 4))
     args = parser.parse_args(argv)
+    if not args.out_root:
+        raise SystemExit("--out-root is required unless provided by --runtime-profile/--runtime-resolved")
 
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
@@ -224,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
         "concurrency": args.concurrency,
         "activationPadBytes": args.activation_pad_bytes,
         "roleExecutionDelayMs": args.role_execution_delay_ms,
+        "runtimeProfile": {
+            "profile": args.runtime_profile,
+            "resolved": args.runtime_resolved,
+        },
         "plannerCsv": str(planner_csv),
         "minindnCsv": str(minindn_csv) if minindn_rows else "",
         "planner": planner_rows,

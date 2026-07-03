@@ -18,6 +18,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 PLANNER = ROOT / "plan_llm_resource_aware.py"
+RPS_PROFILE_FIELDS = {
+    "out": "out_root",
+    "tracer_dir": "tracer_dir",
+    "target_rps": "target_rps_list",
+}
 
 
 def parse_float_list(raw: str) -> list[float]:
@@ -31,6 +36,45 @@ def parse_float_list(raw: str) -> list[float]:
             raise SystemExit("RPS values must be non-negative")
         values.append(value)
     return values
+
+
+def load_json_file(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    with Path(path).expanduser().open(encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def native_tracer_section(payload: dict[str, Any]) -> dict[str, Any]:
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+    distributed = profile.get("distributed_inference", {})
+    native = distributed.get("native_tracer", {})
+    if not isinstance(native, dict):
+        return {}
+    return native if native.get("enabled", False) else {}
+
+
+def runtime_profile_defaults(runtime_profile: str, runtime_resolved: str) -> dict[str, Any]:
+    defaults: dict[str, Any] = {}
+    for source in [runtime_profile, runtime_resolved]:
+        section = native_tracer_section(load_json_file(source))
+        for key, dest in RPS_PROFILE_FIELDS.items():
+            if key not in section:
+                continue
+            value = section[key]
+            if dest == "out_root":
+                defaults[dest] = str(Path(str(value)) / "rps-search")
+            elif dest == "tracer_dir":
+                tracer_dir = Path(str(value))
+                defaults["model_spec"] = str(tracer_dir / "llm_model_spec_qwen_tiny_proportional.json")
+                defaults["provider_profiles"] = str(tracer_dir / "llm_provider_profiles_2_4_8.json")
+            elif dest == "target_rps_list" and float(value) > 0.0:
+                defaults[dest] = str(value)
+    return defaults
+
+
+def default_value(defaults: dict[str, Any], key: str, fallback):
+    return defaults.get(key, fallback)
 
 
 def run_plan(mode: str,
@@ -105,15 +149,33 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-spec", type=Path, default=ROOT / "llm_model_spec_qwen_tiny_proportional.json")
-    parser.add_argument("--provider-profiles", type=Path, default=ROOT / "llm_provider_profiles_2_4_8.json")
-    parser.add_argument("--out-root", type=Path, required=True)
-    parser.add_argument("--target-rps-list", default="1,5,10,20,30,40")
+def main(argv: list[str] | None = None) -> int:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--runtime-profile", default="")
+    pre_parser.add_argument("--runtime-resolved", default="")
+    pre_args, _ = pre_parser.parse_known_args(argv)
+    profile_defaults = runtime_profile_defaults(pre_args.runtime_profile, pre_args.runtime_resolved)
+
+    parser = argparse.ArgumentParser(parents=[pre_parser])
+    parser.add_argument("--model-spec", type=Path,
+                        default=Path(default_value(
+                            profile_defaults,
+                            "model_spec",
+                            ROOT / "llm_model_spec_qwen_tiny_proportional.json")))
+    parser.add_argument("--provider-profiles", type=Path,
+                        default=Path(default_value(
+                            profile_defaults,
+                            "provider_profiles",
+                            ROOT / "llm_provider_profiles_2_4_8.json")))
+    parser.add_argument("--out-root", type=Path,
+                        default=Path(default_value(profile_defaults, "out_root", "")))
+    parser.add_argument("--target-rps-list",
+                        default=default_value(profile_defaults, "target_rps_list", "1,5,10,20,30,40"))
     parser.add_argument("--stable-utilization", type=float, default=0.85)
     parser.add_argument("--attempt-minindn", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if not str(args.out_root):
+        raise SystemExit("--out-root is required unless provided by --runtime-profile/--runtime-resolved")
 
     out_root = args.out_root.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
@@ -147,6 +209,10 @@ def main() -> int:
     summary = {
         "modelSpec": str(args.model_spec),
         "providerProfiles": str(args.provider_profiles),
+        "runtimeProfile": {
+            "profile": args.runtime_profile,
+            "resolved": args.runtime_resolved,
+        },
         "csv": str(csv_path),
         "plans": {mode: str(plans_dir / f"plan-{mode}.json") for mode in plans},
         "maxStableRps": {

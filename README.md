@@ -252,6 +252,16 @@ For comparison campaigns, pass explicit overrides such as
 `--modes greedy,proportional`, `--target-rps-series`, or `--out-root`; those
 flags take precedence over profile defaults.
 
+Planner-only sweep helpers also accept the same profile:
+
+```bash
+python3 examples/python/NDNSF-DistributedInference/native_di_tracer/run_rate_sweep_campaign.py \
+  --runtime-profile examples/di-native-tracer.runtime.json
+
+python3 examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_proportional_rps_search.py \
+  --runtime-profile examples/di-native-tracer.runtime.json
+```
+
 ## 3. How-to
 
 ### 3.1 Generic dynamic API, preferred for new applications
