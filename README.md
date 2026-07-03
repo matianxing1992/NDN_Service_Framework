@@ -227,6 +227,18 @@ ready-to-run MiniNDN command. The doctor checks those files, the required
 NativeTracer smoke binaries, and the expected `memphis/ucla/arizona/wustl/neu`
 topology nodes, then emits a `DI_NATIVE_TRACER_PREFLIGHT` event.
 
+The NativeTracer harness can also consume the same profile directly. Command
+line flags still override profile defaults:
+
+```bash
+python3 Experiments/NDNSF_DI_NativeTracer_Minindn.py \
+  --runtime-profile examples/di-native-tracer.runtime.json \
+  --out /tmp/ndnsf-di-profile-run
+```
+
+To run from the resolved doctor output instead, pass
+`--runtime-resolved /tmp/ndnsf-di-runtime-resolved.json`.
+
 ## 3. How-to
 
 ### 3.1 Generic dynamic API, preferred for new applications

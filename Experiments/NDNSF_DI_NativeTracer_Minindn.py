@@ -54,6 +54,63 @@ NEGATIVE_ACK_RECORDED_RE = re.compile(r"event=NEGATIVE_ACK_RECORDED\b.*?\breason
 NATIVE_ACK_DECISION_RE = re.compile(
     r"NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION\b.*?\bstatus=0\b.*?\bmessage=\"([^\"]*)\"")
 NEGATIVE_ACK_PAYLOAD_RE = re.compile(r"\bnegativeAckReason=([^;\s]+)")
+NATIVE_TRACER_PROFILE_FIELDS = {
+    "out": "out",
+    "assignment": "assignment",
+    "policy_bundle": "policy_bundle",
+    "llm_planner_mode": "llm_planner_mode",
+    "tracer_deterministic_runner": "tracer_deterministic_runner",
+    "provider_check_timeout": "provider_check_timeout",
+    "local_execution_only": "local_execution_only",
+    "full_network": "full_network",
+    "core_trace": "core_trace",
+    "activation_pad_bytes": "activation_pad_bytes",
+    "role_execution_delay_ms": "role_execution_delay_ms",
+    "llm_stage_execution_delay_scale": "llm_stage_execution_delay_scale",
+    "requests": "requests",
+    "concurrency": "concurrency",
+    "target_rps": "target_rps",
+    "open_loop_duration_s": "open_loop_duration_s",
+    "open_loop_driver_mode": "open_loop_driver_mode",
+    "submission_spacing_ms": "submission_spacing_ms",
+    "runtime_v1_context_tokens": "runtime_v1_context_tokens",
+    "runtime_v1_generated_tokens": "runtime_v1_generated_tokens",
+    "runtime_v1_prefix_id": "runtime_v1_prefix_id",
+    "provider_admission_max_queue": "provider_admission_max_queue",
+    "provider_admission_max_active_workers": "provider_admission_max_active_workers",
+    "provider_admission_min_free_memory_mb": "provider_admission_min_free_memory_mb",
+}
+
+
+def load_json_file(path: str) -> dict:
+    if not path:
+        return {}
+    with Path(path).expanduser().open(encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def native_tracer_section(payload: dict) -> dict:
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+    distributed = profile.get("distributed_inference", {})
+    native = distributed.get("native_tracer", {})
+    if not isinstance(native, dict):
+        return {}
+    return native if native.get("enabled", False) else {}
+
+
+def runtime_profile_defaults(runtime_profile: str, runtime_resolved: str) -> dict[str, object]:
+    defaults: dict[str, object] = {}
+    sources = [runtime_profile, runtime_resolved]
+    for source in sources:
+        section = native_tracer_section(load_json_file(source))
+        for key, dest in NATIVE_TRACER_PROFILE_FIELDS.items():
+            if key in section:
+                defaults[dest] = section[key]
+    return defaults
+
+
+def default_value(defaults: dict[str, object], key: str, fallback):
+    return defaults.get(key, fallback)
 
 
 def user_worker_identities(requests: int) -> list[str]:
@@ -1218,6 +1275,18 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
         "command": " ".join(sys.argv),
         "resultDir": str(out_dir),
         "policyBundle": str(policy_dir),
+        "runtimeProfile": {
+            "profile": args.runtime_profile,
+            "resolved": args.runtime_resolved,
+            "service": SERVICE,
+            "policyBundle": args.policy_bundle,
+            "llmPlannerMode": args.llm_planner_mode,
+            "targetRps": args.target_rps,
+            "requests": args.requests,
+            "concurrency": args.concurrency,
+            "localExecutionOnly": args.local_execution_only,
+            "fullNetwork": args.full_network,
+        },
         "nativePlan": str(policy_dir / "native-execution-plan.json"),
         "serviceManifest": str(policy_dir / "service-manifest.json"),
         "optimizationEvidence": {
@@ -1289,63 +1358,92 @@ class MiniNdnArgvGuard:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--runtime-profile", default="",
+                            help="Load defaults from an NDNSF runtime profile JSON")
+    pre_parser.add_argument("--runtime-resolved", default="",
+                            help="Load defaults from a runtime doctor resolved JSON")
+    pre_args, _ = pre_parser.parse_known_args()
+    profile_defaults = runtime_profile_defaults(
+        pre_args.runtime_profile,
+        pre_args.runtime_resolved)
+
+    parser = argparse.ArgumentParser(parents=[pre_parser])
     parser.add_argument("--quick-smoke", action="store_true")
-    parser.add_argument("--out", default=str(DEFAULT_OUT))
+    parser.add_argument("--out", default=default_value(profile_defaults, "out", str(DEFAULT_OUT)))
     parser.add_argument("--assignment",
                         choices=[
                             "default", "alternate", "single-provider",
                             "capacity-pool", "auto", "llm-proportional",
                         ],
-                        default="default")
+                        default=default_value(profile_defaults, "assignment", "default"))
     parser.add_argument("--policy-bundle",
                         choices=["native-tracer", "llm-proportional"],
-                        default="native-tracer",
+                        default=default_value(profile_defaults, "policy_bundle", "native-tracer"),
                         help="Select the policy bundle generator")
     parser.add_argument("--llm-planner-mode",
                         choices=["greedy", "proportional"],
-                        default="proportional",
+                        default=default_value(profile_defaults, "llm_planner_mode", "proportional"),
                         help="Planner mode for --policy-bundle llm-proportional")
     parser.add_argument("--tracer-deterministic-runner", action="store_true",
+                        default=bool(default_value(profile_defaults, "tracer_deterministic_runner", False)),
                         help="Run provider ONNX roles through the deterministic runner")
-    parser.add_argument("--provider-check-timeout", type=int, default=45)
+    parser.add_argument("--provider-check-timeout", type=int,
+                        default=default_value(profile_defaults, "provider_check_timeout", 45))
     parser.add_argument("--local-execution-only", action="store_true",
+                        default=bool(default_value(profile_defaults, "local_execution_only", False)),
                         help="Generate policy and run local native execution evidence without MiniNDN")
     parser.add_argument("--full-network", action="store_true",
+                        default=bool(default_value(profile_defaults, "full_network", False)),
                         help="Run controller, providers in --serve mode, and the NativeTracer user driver")
     parser.add_argument("--core-trace", action="store_true",
+                        default=bool(default_value(profile_defaults, "core_trace", False)),
                         help="Enable NDNSF ServiceUser/ServiceProvider trace logs only for launched app processes")
-    parser.add_argument("--activation-pad-bytes", type=int, default=0,
+    parser.add_argument("--activation-pad-bytes", type=int,
+                        default=default_value(profile_defaults, "activation_pad_bytes", 0),
                         help="Add ignored padding bytes to Backbone encoded activation bundles")
-    parser.add_argument("--role-execution-delay-ms", type=float, default=0.0,
+    parser.add_argument("--role-execution-delay-ms", type=float,
+                        default=default_value(profile_defaults, "role_execution_delay_ms", 0.0),
                         help="Add controlled per-role execution delay to NativeTracer artifacts")
-    parser.add_argument("--llm-stage-execution-delay-scale", type=float, default=1.0,
+    parser.add_argument("--llm-stage-execution-delay-scale", type=float,
+                        default=default_value(profile_defaults, "llm_stage_execution_delay_scale", 1.0),
                         help="Scale LLM estimated per-stage compute delay when no fixed role delay is set")
-    parser.add_argument("--requests", type=int, default=1,
+    parser.add_argument("--requests", type=int,
+                        default=default_value(profile_defaults, "requests", 1),
                         help="Number of closed-loop NativeTracer requests")
-    parser.add_argument("--concurrency", type=int, default=1,
+    parser.add_argument("--concurrency", type=int,
+                        default=default_value(profile_defaults, "concurrency", 1),
                         help="Maximum outstanding NativeTracer requests")
-    parser.add_argument("--target-rps", type=float, default=0.0,
+    parser.add_argument("--target-rps", type=float,
+                        default=default_value(profile_defaults, "target_rps", 0.0),
                         help="Optional target request rate for planner cost evidence and open-loop workloads")
-    parser.add_argument("--open-loop-duration-s", type=float, default=0.0,
+    parser.add_argument("--open-loop-duration-s", type=float,
+                        default=default_value(profile_defaults, "open_loop_duration_s", 0.0),
                         help="Submit NativeTracer requests at --target-rps for this many seconds")
     parser.add_argument("--open-loop-driver-mode",
                         choices=["child", "threaded", "process-pool"],
-                        default="child",
+                        default=default_value(profile_defaults, "open_loop_driver_mode", "child"),
                         help="User-driver implementation for open-loop workloads")
-    parser.add_argument("--submission-spacing-ms", type=int, default=250,
+    parser.add_argument("--submission-spacing-ms", type=int,
+                        default=default_value(profile_defaults, "submission_spacing_ms", 250),
                         help="Delay between concurrent NativeTracer user submissions")
-    parser.add_argument("--runtime-v1-context-tokens", type=int, default=1024,
+    parser.add_argument("--runtime-v1-context-tokens", type=int,
+                        default=default_value(profile_defaults, "runtime_v1_context_tokens", 1024),
                         help="Context length recorded in Runtime v1 MiniNDN evidence")
-    parser.add_argument("--runtime-v1-generated-tokens", type=int, default=32,
+    parser.add_argument("--runtime-v1-generated-tokens", type=int,
+                        default=default_value(profile_defaults, "runtime_v1_generated_tokens", 32),
                         help="Generated-token count recorded in Runtime v1 MiniNDN evidence")
-    parser.add_argument("--runtime-v1-prefix-id", default="",
+    parser.add_argument("--runtime-v1-prefix-id",
+                        default=default_value(profile_defaults, "runtime_v1_prefix_id", ""),
                         help="Optional reusable prefix id recorded in Runtime v1 cache evidence")
-    parser.add_argument("--provider-admission-max-queue", type=int, default=-1,
+    parser.add_argument("--provider-admission-max-queue", type=int,
+                        default=default_value(profile_defaults, "provider_admission_max_queue", -1),
                         help="Opt-in native provider negative ACK when pending work reaches this queue size")
-    parser.add_argument("--provider-admission-max-active-workers", type=int, default=-1,
+    parser.add_argument("--provider-admission-max-active-workers", type=int,
+                        default=default_value(profile_defaults, "provider_admission_max_active_workers", -1),
                         help="Opt-in native provider negative ACK when active workers reach this count")
-    parser.add_argument("--provider-admission-min-free-memory-mb", type=float, default=0.0,
+    parser.add_argument("--provider-admission-min-free-memory-mb", type=float,
+                        default=default_value(profile_defaults, "provider_admission_min_free_memory_mb", 0.0),
                         help="Opt-in native provider negative ACK when advertised free memory is below this value")
     args = parser.parse_args()
     if args.activation_pad_bytes < 0:
