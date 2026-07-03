@@ -4,6 +4,8 @@ set -u
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmpdir="$(mktemp -d /tmp/ndnsf-token-cert-bootstrap.XXXXXX)"
 
+source "${repo_root}/examples/common_regression.sh"
+
 controller_pid=""
 provider_pid=""
 nfd_started="false"
@@ -17,9 +19,7 @@ cleanup() {
     kill "${controller_pid}" 2>/dev/null || true
     wait "${controller_pid}" 2>/dev/null || true
   fi
-  if [[ "${nfd_started}" == "true" ]]; then
-    nfd-stop >/dev/null 2>&1 || true
-  fi
+  ndnsf_stop_nfd_if_started
 }
 trap cleanup EXIT
 
@@ -31,24 +31,28 @@ export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
 export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=INFO}"
 mkdir -p "${HOME}"
 
-if ! pgrep -x nfd >/dev/null 2>&1; then
-  nfd-start >"${tmpdir}/nfd.log" 2>&1
-  nfd_started="true"
-  sleep 2
-fi
+ndnsf_start_nfd_if_needed "${tmpdir}/nfd.log" || {
+  echo "NFD socket /run/nfd/nfd.sock is unavailable" >&2
+  ndnsf_dump_tail "nfd" "${tmpdir}/nfd.log" 80
+  exit 1
+}
+
+generated_token_file="${tmpdir}/generated.bootstrap-tokens"
+timeout 4s ./build/examples/App_ServiceController \
+  --bootstrap-token-file "${generated_token_file}" \
+  >"${tmpdir}/generated-controller.log" 2>&1
+generated_controller_status=$?
+generated_entry_count=$(awk 'NF >= 2 && $1 !~ /^#/ { count++ } END { print count + 0 }' \
+  "${generated_token_file}" 2>/dev/null || echo 0)
+generated_bad_token_count=$(awk 'NF >= 2 && $1 !~ /^#/ && length($2) != 8 { count++ } END { print count + 0 }' \
+  "${generated_token_file}" 2>/dev/null || echo 0)
 
 ./build/examples/App_ServiceController \
   --bootstrap-token-file examples/hello.bootstrap-tokens \
   >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
 
-deadline=$((SECONDS + 15))
-while (( SECONDS < deadline )); do
-  if grep -q "ServiceController listening on:" "${tmpdir}/controller.log" 2>/dev/null; then
-    break
-  fi
-  sleep 0.1
-done
+ndnsf_wait_for_log "${tmpdir}/controller.log" "ServiceController listening on:" 15 || true
 
 timeout 12s ./build/examples/App_User \
   --bootstrap-token wrong-token \
@@ -56,48 +60,42 @@ timeout 12s ./build/examples/App_User \
 wrong_status=$?
 
 timeout 12s ./build/examples/App_User \
-  --bootstrap-token user-token-045 \
+  --bootstrap-token user045A \
   --bootstrap-name /example/hello/provider \
   >"${tmpdir}/wrong-name-user.log" 2>&1
 wrong_name_status=$?
 
 timeout 12s ./build/examples/App_CertificateBootstrapTamper \
-  --bootstrap-token user-token-045 \
+  --bootstrap-token user045A \
   >"${tmpdir}/tampered-proof-user.log" 2>&1
 tampered_status=$?
 
 timeout 12s ./build/examples/App_CertificateBootstrapTamper \
-  --bootstrap-token user-token-045 \
+  --bootstrap-token user045A \
   --valid-request \
   >"${tmpdir}/valid-token-probe-1.log" 2>&1
 valid_probe_1_status=$?
 
 timeout 12s ./build/examples/App_CertificateBootstrapTamper \
-  --bootstrap-token user-token-045 \
+  --bootstrap-token user045A \
   --valid-request \
   >"${tmpdir}/valid-token-probe-2.log" 2>&1
 valid_probe_2_status=$?
 
 ./build/examples/App_Provider \
-  --bootstrap-token provider-token-045 \
+  --bootstrap-token prov045A \
   >"${tmpdir}/provider.log" 2>&1 &
 provider_pid=$!
 
-deadline=$((SECONDS + 20))
-while (( SECONDS < deadline )); do
-  if grep -q "Provider .* registered service /HELLO" "${tmpdir}/provider.log" 2>/dev/null; then
-    break
-  fi
-  sleep 0.1
-done
+ndnsf_wait_for_log "${tmpdir}/provider.log" "Provider .* registered service /HELLO" 20 || true
 
 timeout 30s ./build/examples/App_User \
-  --bootstrap-token user-token-045 \
+  --bootstrap-token user045A \
   >"${tmpdir}/user.log" 2>&1
 user_status=$?
 
 timeout 30s ./build/examples/App_User \
-  --bootstrap-token user-token-045 \
+  --bootstrap-token user045A \
   >"${tmpdir}/user-reuse.log" 2>&1
 reuse_status=$?
 sleep 1
@@ -114,6 +112,17 @@ echo "valid_probe_2_status=${valid_probe_2_status}"
 echo "user_status=${user_status}"
 echo "reuse_status=${reuse_status}"
 echo "user_issued_count=${user_issued_count}"
+echo "generated_controller_status=${generated_controller_status}"
+echo "generated_entry_count=${generated_entry_count}"
+echo "generated_bad_token_count=${generated_bad_token_count}"
+echo "generated_token_file=${generated_token_file}"
+echo
+echo "--- generated controller ---"
+tail -n 80 "${tmpdir}/generated-controller.log"
+if [[ -f "${generated_token_file}" ]]; then
+  echo "--- generated token file ---"
+  cat "${generated_token_file}"
+fi
 echo
 echo "--- controller ---"
 tail -n 160 "${tmpdir}/controller.log"
@@ -155,6 +164,10 @@ if [[ "${wrong_status}" -ne 0 ]] &&
    [[ "${user_status}" -eq 0 ]] &&
    [[ "${reuse_status}" -eq 0 ]] &&
    [[ "${user_issued_count}" -eq 3 ]] &&
+   [[ "${generated_controller_status}" -eq 124 ]] &&
+   [[ "${generated_entry_count}" -eq 5 ]] &&
+   [[ "${generated_bad_token_count}" -eq 0 ]] &&
+   grep -q "NDNSF_CERT_BOOTSTRAP_TOKEN_FILE_GENERATED" "${tmpdir}/generated-controller.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_REFUSED identity=/example/hello/user reason=token-mismatch" "${tmpdir}/controller.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_REFUSED identity=/example/hello/provider reason=token-mismatch" "${tmpdir}/controller.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_REFUSED identity=/example/hello/user reason=request-proof-invalid" "${tmpdir}/controller.log" &&

@@ -91,6 +91,22 @@ computePolicyEpoch(const std::string& path)
   return fnv1aPolicyHash(path);
 }
 
+std::string
+makeBootstrapToken(size_t length)
+{
+  static constexpr std::string_view alphabet =
+    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  ndn::Buffer randomBytes(length);
+  ndn::random::generateSecureBytes(mutableBufferToSpan(randomBytes));
+
+  std::string token;
+  token.reserve(length);
+  for (uint8_t byte : randomBytes) {
+    token.push_back(alphabet[byte % alphabet.size()]);
+  }
+  return token;
+}
+
 ndn::Block
 encryptWireBytesWithContentKeyForCertificate(const ndn::security::Certificate& cert,
                                              ndn::span<const uint8_t> plaintext)
@@ -569,6 +585,49 @@ ServiceController::getTargetIdentityCertificate(const ndn::Name& targetIdentity)
 }
 
 void
+ServiceController::generateBootstrapTokenFile(const std::string& path) const
+{
+  std::map<std::string, std::string> entries;
+  for (const auto& policy : m_providerPolicies) {
+    entries.emplace(ndn::Name(policy.providerName).toUri(), "provider");
+  }
+  for (const auto& policy : m_userPolicies) {
+    entries.emplace(ndn::Name(policy.userName).toUri(), "user");
+  }
+
+  if (entries.empty()) {
+    throw std::runtime_error("Cannot generate bootstrap token file without policy identities: " +
+                             path);
+  }
+
+  const fs::path outputPath(path);
+  if (outputPath.has_parent_path()) {
+    fs::create_directories(outputPath.parent_path());
+  }
+
+  std::ofstream output(path, std::ios::out | std::ios::trunc);
+  if (!output) {
+    throw std::runtime_error("Cannot create bootstrap token file: " + path);
+  }
+
+  output << "# identity token role\n";
+  for (const auto& entry : entries) {
+    output << entry.first << ' ' << makeBootstrapToken(8) << ' ' << entry.second << '\n';
+  }
+  output.close();
+  if (!output) {
+    throw std::runtime_error("Cannot finish writing bootstrap token file: " + path);
+  }
+
+  fs::permissions(outputPath,
+                  fs::perms::owner_read | fs::perms::owner_write,
+                  fs::perm_options::replace);
+
+  NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_TOKEN_FILE_GENERATED path=" << path
+               << " entries=" << entries.size());
+}
+
+void
 ServiceController::loadBootstrapTokenFile(const std::string& path)
 {
   if (path.empty()) {
@@ -577,7 +636,13 @@ ServiceController::loadBootstrapTokenFile(const std::string& path)
 
   std::ifstream input(path);
   if (!input) {
-    throw std::runtime_error("Cannot open bootstrap token file: " + path);
+    if (!fs::exists(path)) {
+      generateBootstrapTokenFile(path);
+      input.open(path);
+    }
+    if (!input) {
+      throw std::runtime_error("Cannot open bootstrap token file: " + path);
+    }
   }
 
   std::string line;

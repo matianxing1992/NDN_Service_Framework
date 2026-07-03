@@ -26,13 +26,13 @@ class CertificateBootstrapApiTest(unittest.TestCase):
         app = ProviderConfig(
             name="provider",
             binary="App_Provider",
-            bootstrap_token="provider-token-045",
+            bootstrap_token="prov045A",
             args=("--provider-id", "A"),
         ).as_application()
 
         self.assertEqual(app.args, (
             "--bootstrap-token",
-            "provider-token-045",
+            "prov045A",
             "--provider-id",
             "A",
         ))
@@ -41,13 +41,13 @@ class CertificateBootstrapApiTest(unittest.TestCase):
         app = UserConfig(
             name="user",
             binary="App_User",
-            bootstrap_token="user-token-045",
+            bootstrap_token="user045A",
             args=("--service", "/HELLO"),
         ).as_application()
 
         self.assertEqual(app.args, (
             "--bootstrap-token",
-            "user-token-045",
+            "user045A",
             "--service",
             "/HELLO",
         ))

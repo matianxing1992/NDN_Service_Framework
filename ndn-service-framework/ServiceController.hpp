@@ -102,6 +102,7 @@ private:
   ndn::Block encryptForCertificate(const ndn::security::Certificate& cert,
                                   const ndn::Block& plaintext) const;
   void loadBootstrapTokenFile(const std::string& path);
+  void generateBootstrapTokenFile(const std::string& path) const;
   void sendCertificateBootstrapResponse(const ndn::Interest& interest,
                                         bool status,
                                         const std::string& message,

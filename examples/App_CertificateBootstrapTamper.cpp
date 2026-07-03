@@ -98,7 +98,7 @@ main(int argc, char** argv)
   try {
     const ndn::Name identity(getOption(argc, argv, "--identity", USER_IDENTITY.toUri()));
     const ndn::Name controllerPrefix(getOption(argc, argv, "--controller", CONTROLLER_PREFIX.toUri()));
-    const std::string token = getOption(argc, argv, "--bootstrap-token", "user-token-045");
+    const std::string token = getOption(argc, argv, "--bootstrap-token", "user045A");
     const bool validRequest = hasFlag(argc, argv, "--valid-request");
     const auto expected = getOption(argc, argv, "--expect-message",
                                     validRequest ? "issued" : "certificate bootstrap proof invalid");

@@ -187,6 +187,30 @@ skips the slower DI native-provider MiniNDN smoke unless requested:
 python3 Experiments/NDNSF_Run_Minindn_Quick_Checks.py --include-di-minindn
 ```
 
+### 2.2 Runtime doctor and structured profile
+
+For local development, CI, and MiniNDN nodes, use the stdlib-only runtime doctor
+to check a complete NDNSF runtime profile before debugging individual logs:
+
+```bash
+python3 tools/ndnsf_runtime.py doctor \
+  --profile examples/hello.runtime.json \
+  --fix \
+  --event-log /tmp/ndnsf-runtime-events.jsonl \
+  --write-resolved /tmp/ndnsf-runtime-resolved.json
+```
+
+The profile centralizes controller, policy, trust schema, token file,
+provider, user, service, and common environment settings. The doctor checks the
+resolved files and built example binaries, reports NFD socket status, and emits
+machine-readable JSONL events such as `DOCTOR_START`, `TOKEN_FILE_LOADED`,
+`TOKEN_FILE_GENERATED`, and `DOCTOR_RESULT`.
+
+When `--fix` is set and the configured bootstrap token file is missing, the
+doctor generates it from the policy identities using 8-character tokens. This
+matches the ServiceController first-start token generation behavior and gives
+tests a single place to inspect the resolved runtime state.
+
 ## 3. How-to
 
 ### 3.1 Generic dynamic API, preferred for new applications
@@ -686,12 +710,17 @@ manual flow: each user or provider generates its own private key locally, and
 only a certificate request is sent to the controller. The controller never sees
 requester private keys.
 
-The operator gives the controller a token file:
+The operator can give the controller a token file:
 
 ```text
-/example/hello/provider provider-token-045 provider
-/example/hello/user user-token-045 user
+/example/hello/provider prov045A provider
+/example/hello/user user045A user
 ```
+
+If `--bootstrap-token-file` points to a missing file, the controller creates it
+on first startup from the identities in the policy file. Generated tokens are
+8-character bootstrap secrets, and the generated file is then reused on later
+starts. Existing token files are never regenerated or overwritten.
 
 Each row binds exactly one identity name to one preconfigured bootstrap token. A
 user/provider only supplies its normal configured identity plus the token; it
@@ -715,11 +744,13 @@ certificate request, and only then issues a controller-signed certificate.
 
 The identity-token map is a stable controller configuration. Successful
 issuance does not rewrite the map, so restarting the controller with the same
-token file produces the same mapping, and the same running controller can sign
-again for the same identity if the requester proves possession of the requested
-certificate key. The regression suite checks wrong tokens, wrong names,
-encrypted requests with tampered requester proofs, and repeated valid probes
-against the same preconfigured token. A tampered proof is rejected with:
+token file produces the same mapping. If the file was auto-generated, that
+generated file is the stable configuration for later runs. The same running
+controller can sign again for the same identity if the requester proves
+possession of the requested certificate key. The regression suite checks
+auto-generation of missing token files, wrong tokens, wrong names, encrypted
+requests with tampered requester proofs, and repeated valid probes against the
+same preconfigured token. A tampered proof is rejected with:
 
 ```text
 NDNSF_CERT_BOOTSTRAP_REFUSED ... reason=request-proof-invalid
@@ -743,10 +774,10 @@ Minimal C++ example flags:
   --bootstrap-token-file examples/hello.bootstrap-tokens
 
 ./build/examples/App_Provider \
-  --bootstrap-token provider-token-045
+  --bootstrap-token prov045A
 
 ./build/examples/App_User \
-  --bootstrap-token user-token-045
+  --bootstrap-token user045A
 ```
 
 The full local regression is:
@@ -808,7 +839,7 @@ The current HELLO examples are exercised by the regression scripts below.
 
 `run_token_handshake_negative_regression.sh` verifies rejection of ACKs and responses with wrong `UserToken` values, selection messages with wrong `ProviderToken` values, and replayed ProviderTokens.
 
-`run_token_certificate_bootstrap_regression.sh` verifies encrypted name-bound token certificate bootstrap, requester proof validation, wrong token/name rejection, tampered proof rejection with `request-proof-invalid`, repeated valid probes against the same preconfigured identity-token map, and local certificate reuse.
+`run_token_certificate_bootstrap_regression.sh` verifies encrypted name-bound token certificate bootstrap, auto-generation of a missing token file with 8-character tokens, requester proof validation, wrong token/name rejection, tampered proof rejection with `request-proof-invalid`, repeated valid probes against the same preconfigured identity-token map, and local certificate reuse.
 
 ### 3.8 Python wrapper and higher-level application packages
 

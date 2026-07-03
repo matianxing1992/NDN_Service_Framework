@@ -164,7 +164,7 @@ def main() -> int:
             ndn.net[args.provider_node],
             "provider",
             app_cmd("App_Provider",
-                    "--bootstrap-token", "provider-token-045"),
+                    "--bootstrap-token", "prov045A"),
             env,
             output_dir,
             processes)
@@ -176,7 +176,7 @@ def main() -> int:
             ndn.net[args.user_node],
             "user",
             app_cmd("App_User",
-                    "--bootstrap-token", "user-token-045"),
+                    "--bootstrap-token", "user045A"),
             env,
             output_dir,
             processes)
@@ -186,7 +186,7 @@ def main() -> int:
             ndn.net[args.user_node],
             "user-reuse",
             app_cmd("App_User",
-                    "--bootstrap-token", "user-token-045"),
+                    "--bootstrap-token", "user045A"),
             env,
             output_dir,
             processes)

@@ -1,0 +1,22 @@
+{
+  "name": "hello-token-bootstrap",
+  "controller": {
+    "prefix": "/example/hello/controller",
+    "policy_file": "examples/hello.policies",
+    "trust_schema": "examples/trust-schema.conf",
+    "bootstrap_token_file": "examples/hello.bootstrap-tokens"
+  },
+  "provider": {
+    "identity": "/example/hello/provider"
+  },
+  "user": {
+    "identity": "/example/hello/user"
+  },
+  "service_name": "/HELLO",
+  "env": {
+    "NDN_LOG": "ndn_service_framework.*=INFO",
+    "NDNSF_SVS_MAX_SUPPRESSION_MS": "1",
+    "NDNSF_SVS_PARALLEL_SYNC": "1",
+    "NDNSF_SVS_PARALLEL_PRODUCTION": "4"
+  }
+}
