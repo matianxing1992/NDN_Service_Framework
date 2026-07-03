@@ -134,6 +134,59 @@ class RuntimeDoctorTests(unittest.TestCase):
             events = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
             self.assertTrue(any(event["event"] == "DI_NATIVE_TRACER_PREFLIGHT" for event in events))
 
+    def test_di_doctor_uses_native_tracer_profile_by_default(self) -> None:
+        proc = subprocess.run(
+            ["python3", str(TOOL), "di", "doctor"],
+            cwd=REPO,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        payload = json.loads(proc.stdout)
+        native = payload["distributed_inference"]["native_tracer"]
+        self.assertTrue(native["ready"])
+        self.assertTrue(native["enabled"])
+        self.assertEqual(payload["profile"]["service_name"], "/Inference/NativeTracer")
+
+    def test_di_launchers_print_underlying_commands(self) -> None:
+        cases = [
+            ("run", "Experiments/NDNSF_DI_NativeTracer_Minindn.py"),
+            ("campaign", "run_llm_full_network_campaign.py"),
+            ("sweep", "run_rate_sweep_campaign.py"),
+            ("search", "run_llm_proportional_rps_search.py"),
+        ]
+        for subcommand, script in cases:
+            with self.subTest(subcommand=subcommand):
+                proc = subprocess.run(
+                    [
+                        "python3",
+                        str(TOOL),
+                        "di",
+                        subcommand,
+                        "--dry-run",
+                        "--",
+                        "--out-root",
+                        "/tmp/ndnsf-wrapper-test",
+                    ],
+                    cwd=REPO,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                payload = json.loads(proc.stdout)
+                command = payload["command"]
+                self.assertIn(script, " ".join(command))
+                self.assertIn("--runtime-profile", command)
+                self.assertIn("examples/di-native-tracer.runtime.json", command)
+                self.assertIn("--out-root", command)
+                self.assertIn("/tmp/ndnsf-wrapper-test", command)
+
 
 if __name__ == "__main__":
     unittest.main()

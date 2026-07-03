@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -23,6 +24,12 @@ from typing import Any, Iterable
 
 TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 DEFAULT_PROFILE = Path("examples/hello.runtime.json")
+DEFAULT_DI_PROFILE = Path("examples/di-native-tracer.runtime.json")
+NATIVE_TRACER_HARNESS = Path("Experiments/NDNSF_DI_NativeTracer_Minindn.py")
+NATIVE_TRACER_DIR = Path("examples/python/NDNSF-DistributedInference/native_di_tracer")
+NATIVE_TRACER_CAMPAIGN = NATIVE_TRACER_DIR / "run_llm_full_network_campaign.py"
+NATIVE_TRACER_RATE_SWEEP = NATIVE_TRACER_DIR / "run_rate_sweep_campaign.py"
+NATIVE_TRACER_RPS_SEARCH = NATIVE_TRACER_DIR / "run_llm_proportional_rps_search.py"
 DI_REQUIRED_TOPOLOGY_NODES = ["memphis", "ucla", "arizona", "wustl", "neu"]
 DI_REQUIRED_BINARIES = [
     "di-native-provider",
@@ -486,6 +493,78 @@ def run_doctor(args: argparse.Namespace) -> int:
         return 0 if ready else 1
 
 
+def clean_remainder(args: list[str]) -> list[str]:
+    if args and args[0] == "--":
+        return args[1:]
+    return args
+
+
+def profile_args(args: argparse.Namespace) -> list[str]:
+    result: list[str] = []
+    if getattr(args, "profile", ""):
+        result.extend(["--runtime-profile", str(args.profile)])
+    if getattr(args, "resolved", ""):
+        result.extend(["--runtime-resolved", str(args.resolved)])
+    return result
+
+
+def di_command(script: Path, args: argparse.Namespace, extra: list[str]) -> list[str]:
+    return [sys.executable, str(script), *profile_args(args), *clean_remainder(extra)]
+
+
+def run_di_command(label: str, command: list[str], args: argparse.Namespace) -> int:
+    payload = {
+        "label": label,
+        "cwd": str(repo_root_from(Path.cwd())),
+        "command": command,
+        "shell": shlex.join(command),
+    }
+    if getattr(args, "dry_run", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(json.dumps({"event": "DI_COMMAND_START", **payload}, sort_keys=True), file=sys.stderr)
+    completed = subprocess.run(command, cwd=payload["cwd"], check=False)
+    print(
+        json.dumps(
+            {"event": "DI_COMMAND_RESULT", "label": label, "returncode": completed.returncode},
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    return int(completed.returncode)
+
+
+def run_di_native(args: argparse.Namespace) -> int:
+    command = di_command(NATIVE_TRACER_HARNESS, args, args.extra_args)
+    return run_di_command("native-tracer-run", command, args)
+
+
+def run_di_campaign(args: argparse.Namespace) -> int:
+    command = di_command(NATIVE_TRACER_CAMPAIGN, args, args.extra_args)
+    return run_di_command("native-tracer-campaign", command, args)
+
+
+def run_di_sweep(args: argparse.Namespace) -> int:
+    command = di_command(NATIVE_TRACER_RATE_SWEEP, args, args.extra_args)
+    return run_di_command("native-tracer-rate-sweep", command, args)
+
+
+def run_di_search(args: argparse.Namespace) -> int:
+    command = di_command(NATIVE_TRACER_RPS_SEARCH, args, args.extra_args)
+    return run_di_command("native-tracer-rps-search", command, args)
+
+
+def add_di_launcher_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", default=str(DEFAULT_DI_PROFILE),
+                        help="Runtime profile to pass as --runtime-profile")
+    parser.add_argument("--resolved", default="",
+                        help="Resolved doctor JSON to pass as --runtime-resolved")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the underlying command without executing it")
+    parser.add_argument("extra_args", nargs=argparse.REMAINDER,
+                        help="Arguments after -- are passed to the underlying script")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="NDNSF runtime profile doctor")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -497,6 +576,34 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--log-dir", default="")
     doctor.add_argument("--check-commands", action="store_true")
     doctor.set_defaults(func=run_doctor)
+
+    di = sub.add_parser("di", help="distributed-inference runtime profile entrypoints")
+    di_sub = di.add_subparsers(dest="di_command", required=True)
+
+    di_doctor = di_sub.add_parser("doctor", help="preflight the DI NativeTracer runtime profile")
+    di_doctor.add_argument("--profile", default=str(DEFAULT_DI_PROFILE))
+    di_doctor.add_argument("--fix", action="store_true", help="create missing generated files such as bootstrap tokens")
+    di_doctor.add_argument("--event-log", default="")
+    di_doctor.add_argument("--write-resolved", default="")
+    di_doctor.add_argument("--log-dir", default="")
+    di_doctor.add_argument("--check-commands", action="store_true")
+    di_doctor.set_defaults(func=run_doctor)
+
+    di_run = di_sub.add_parser("run", help="launch the NativeTracer harness")
+    add_di_launcher_args(di_run)
+    di_run.set_defaults(func=run_di_native)
+
+    di_campaign = di_sub.add_parser("campaign", help="launch the LLM full-network campaign runner")
+    add_di_launcher_args(di_campaign)
+    di_campaign.set_defaults(func=run_di_campaign)
+
+    di_sweep = di_sub.add_parser("sweep", help="launch the NativeTracer rate sweep helper")
+    add_di_launcher_args(di_sweep)
+    di_sweep.set_defaults(func=run_di_sweep)
+
+    di_search = di_sub.add_parser("search", help="launch the LLM proportional RPS search helper")
+    add_di_launcher_args(di_search)
+    di_search.set_defaults(func=run_di_search)
     return parser
 
 

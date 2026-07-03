@@ -262,6 +262,17 @@ python3 examples/python/NDNSF-DistributedInference/native_di_tracer/run_llm_prop
   --runtime-profile examples/di-native-tracer.runtime.json
 ```
 
+For daily use, the unified runtime wrapper is shorter and keeps the canonical
+profile default:
+
+```bash
+python3 tools/ndnsf_runtime.py di doctor
+python3 tools/ndnsf_runtime.py di run -- --out /tmp/ndnsf-di-run
+python3 tools/ndnsf_runtime.py di campaign -- --runs 1 --workloads c1:1:1
+python3 tools/ndnsf_runtime.py di sweep -- --target-rps-list 0,1,2
+python3 tools/ndnsf_runtime.py di search -- --target-rps-list 1,5,10
+```
+
 ## 3. How-to
 
 ### 3.1 Generic dynamic API, preferred for new applications
