@@ -1,0 +1,41 @@
+{
+  "name": "di-native-tracer-llm-proportional",
+  "controller": {
+    "prefix": "/example/hello/controller",
+    "policy_file": "examples/hello.policies",
+    "trust_schema": "examples/trust-schema.conf",
+    "bootstrap_token_file": "examples/hello.bootstrap-tokens"
+  },
+  "provider": {
+    "identity": "/NDNSF-DI/NativeTracer/provider/backbone"
+  },
+  "user": {
+    "identity": "/NDNSF-DI/NativeTracer/user"
+  },
+  "service_name": "/Inference/NativeTracer",
+  "distributed_inference": {
+    "native_tracer": {
+      "enabled": true,
+      "harness": "Experiments/NDNSF_DI_NativeTracer_Minindn.py",
+      "topology": "Experiments/Topology/AI_Lab.conf",
+      "tracer_dir": "examples/python/NDNSF-DistributedInference/native_di_tracer",
+      "out": "results/native_di_real_minindn/profile-doctor",
+      "assignment": "llm-proportional",
+      "policy_bundle": "llm-proportional",
+      "llm_planner_mode": "proportional",
+      "requests": 1,
+      "concurrency": 1,
+      "target_rps": 0.0,
+      "provider_check_timeout": 45,
+      "local_execution_only": true,
+      "runtime_v1_context_tokens": 1024,
+      "runtime_v1_generated_tokens": 32
+    }
+  },
+  "env": {
+    "NDN_LOG": "ndn_service_framework.*=INFO",
+    "NDNSF_NETWORK_TELEMETRY_EXPORT": "1",
+    "NDNSF_COLLAB_LARGE_FETCH_TIMING": "1",
+    "NDNSF_TIMELINE_TRACE_SAMPLE_RATE": "100"
+  }
+}

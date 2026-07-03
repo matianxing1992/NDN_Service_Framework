@@ -23,6 +23,13 @@ from typing import Any, Iterable
 
 TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 DEFAULT_PROFILE = Path("examples/hello.runtime.json")
+DI_REQUIRED_TOPOLOGY_NODES = ["memphis", "ucla", "arizona", "wustl", "neu"]
+DI_REQUIRED_BINARIES = [
+    "di-native-provider",
+    "di-native-plan-schema-smoke",
+    "di-native-plan-manifest-smoke",
+    "di-native-provider-session-smoke",
+]
 
 
 def now_ms() -> int:
@@ -58,6 +65,71 @@ class EventWriter:
 
 
 @dataclass
+class NativeTracerProfile:
+    enabled: bool = False
+    harness: str = "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
+    topology: str = "Experiments/Topology/AI_Lab.conf"
+    tracer_dir: str = "examples/python/NDNSF-DistributedInference/native_di_tracer"
+    out: str = "results/native_di_real_minindn/profile-doctor"
+    assignment: str = "llm-proportional"
+    policy_bundle: str = "llm-proportional"
+    llm_planner_mode: str = "proportional"
+    requests: int = 1
+    concurrency: int = 1
+    target_rps: float = 0.0
+    open_loop_duration_s: float = 0.0
+    open_loop_driver_mode: str = "child"
+    submission_spacing_ms: int = 250
+    provider_check_timeout: int = 45
+    local_execution_only: bool = True
+    full_network: bool = False
+    runtime_v1_context_tokens: int = 1024
+    runtime_v1_generated_tokens: int = 32
+    runtime_v1_prefix_id: str = ""
+    provider_admission_max_queue: int = -1
+    provider_admission_max_active_workers: int = -1
+    provider_admission_min_free_memory_mb: float = 0.0
+    core_trace: bool = False
+    tracer_deterministic_runner: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "NativeTracerProfile":
+        if not data:
+            return cls()
+        return cls(
+            enabled=bool(data.get("enabled", cls.enabled)),
+            harness=str(data.get("harness", cls.harness)),
+            topology=str(data.get("topology", cls.topology)),
+            tracer_dir=str(data.get("tracer_dir", cls.tracer_dir)),
+            out=str(data.get("out", cls.out)),
+            assignment=str(data.get("assignment", cls.assignment)),
+            policy_bundle=str(data.get("policy_bundle", cls.policy_bundle)),
+            llm_planner_mode=str(data.get("llm_planner_mode", cls.llm_planner_mode)),
+            requests=int(data.get("requests", cls.requests)),
+            concurrency=int(data.get("concurrency", cls.concurrency)),
+            target_rps=float(data.get("target_rps", cls.target_rps)),
+            open_loop_duration_s=float(data.get("open_loop_duration_s", cls.open_loop_duration_s)),
+            open_loop_driver_mode=str(data.get("open_loop_driver_mode", cls.open_loop_driver_mode)),
+            submission_spacing_ms=int(data.get("submission_spacing_ms", cls.submission_spacing_ms)),
+            provider_check_timeout=int(data.get("provider_check_timeout", cls.provider_check_timeout)),
+            local_execution_only=bool(data.get("local_execution_only", cls.local_execution_only)),
+            full_network=bool(data.get("full_network", cls.full_network)),
+            runtime_v1_context_tokens=int(data.get("runtime_v1_context_tokens", cls.runtime_v1_context_tokens)),
+            runtime_v1_generated_tokens=int(data.get("runtime_v1_generated_tokens", cls.runtime_v1_generated_tokens)),
+            runtime_v1_prefix_id=str(data.get("runtime_v1_prefix_id", cls.runtime_v1_prefix_id)),
+            provider_admission_max_queue=int(data.get("provider_admission_max_queue", cls.provider_admission_max_queue)),
+            provider_admission_max_active_workers=int(
+                data.get("provider_admission_max_active_workers", cls.provider_admission_max_active_workers)
+            ),
+            provider_admission_min_free_memory_mb=float(
+                data.get("provider_admission_min_free_memory_mb", cls.provider_admission_min_free_memory_mb)
+            ),
+            core_trace=bool(data.get("core_trace", cls.core_trace)),
+            tracer_deterministic_runner=bool(data.get("tracer_deterministic_runner", cls.tracer_deterministic_runner)),
+        )
+
+
+@dataclass
 class RuntimeProfile:
     name: str = "hello"
     controller_prefix: str = "/example/hello/controller"
@@ -68,6 +140,7 @@ class RuntimeProfile:
     user_identity: str = "/example/hello/user"
     service_name: str = "/HELLO"
     env: dict[str, str] = field(default_factory=dict)
+    native_tracer: NativeTracerProfile = field(default_factory=NativeTracerProfile)
 
     @classmethod
     def from_json(cls, path: str | Path) -> "RuntimeProfile":
@@ -75,6 +148,7 @@ class RuntimeProfile:
         controller = data.get("controller", {})
         provider = data.get("provider", {})
         user = data.get("user", {})
+        distributed_inference = data.get("distributed_inference", {})
         return cls(
             name=data.get("name", "hello"),
             controller_prefix=controller.get("prefix", data.get("controller_prefix", cls.controller_prefix)),
@@ -85,6 +159,7 @@ class RuntimeProfile:
             user_identity=user.get("identity", data.get("user_identity", cls.user_identity)),
             service_name=data.get("service_name", cls.service_name),
             env={str(k): str(v) for k, v in data.get("env", {}).items()},
+            native_tracer=NativeTracerProfile.from_dict(distributed_inference.get("native_tracer", data.get("native_tracer", {}))),
         )
 
     def resolved(self, repo_root: Path) -> dict[str, Any]:
@@ -104,6 +179,9 @@ class RuntimeProfile:
             "user": {"identity": self.user_identity},
             "service_name": self.service_name,
             "env": self.env,
+            "distributed_inference": {
+                "native_tracer": resolve_native_tracer(self.native_tracer, repo_root),
+            },
         }
 
 
@@ -186,6 +264,147 @@ def check_binaries(repo_root: Path, names: Iterable[str]) -> dict[str, bool]:
     return result
 
 
+def topology_nodes(path: Path) -> list[str]:
+    nodes: list[str] = []
+    in_nodes = False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_nodes = line == "[nodes]"
+            continue
+        if in_nodes and line.endswith(":"):
+            nodes.append(line[:-1])
+    return nodes
+
+
+def resolve_native_tracer(native: NativeTracerProfile, repo_root: Path) -> dict[str, Any]:
+    def abs_path(value: str) -> str:
+        path = Path(value)
+        return str(path if path.is_absolute() else repo_root / path)
+
+    command = build_native_tracer_command(native)
+    return {
+        "enabled": native.enabled,
+        "harness": abs_path(native.harness),
+        "topology": abs_path(native.topology),
+        "tracer_dir": abs_path(native.tracer_dir),
+        "out": abs_path(native.out),
+        "assignment": native.assignment,
+        "policy_bundle": native.policy_bundle,
+        "llm_planner_mode": native.llm_planner_mode,
+        "requests": native.requests,
+        "concurrency": native.concurrency,
+        "target_rps": native.target_rps,
+        "open_loop_duration_s": native.open_loop_duration_s,
+        "open_loop_driver_mode": native.open_loop_driver_mode,
+        "submission_spacing_ms": native.submission_spacing_ms,
+        "provider_check_timeout": native.provider_check_timeout,
+        "local_execution_only": native.local_execution_only,
+        "full_network": native.full_network,
+        "runtime_v1_context_tokens": native.runtime_v1_context_tokens,
+        "runtime_v1_generated_tokens": native.runtime_v1_generated_tokens,
+        "runtime_v1_prefix_id": native.runtime_v1_prefix_id,
+        "provider_admission_max_queue": native.provider_admission_max_queue,
+        "provider_admission_max_active_workers": native.provider_admission_max_active_workers,
+        "provider_admission_min_free_memory_mb": native.provider_admission_min_free_memory_mb,
+        "core_trace": native.core_trace,
+        "tracer_deterministic_runner": native.tracer_deterministic_runner,
+        "command": command,
+    }
+
+
+def build_native_tracer_command(native: NativeTracerProfile) -> list[str]:
+    command = [
+        "python3",
+        native.harness,
+        "--out",
+        native.out,
+        "--assignment",
+        native.assignment,
+        "--policy-bundle",
+        native.policy_bundle,
+        "--llm-planner-mode",
+        native.llm_planner_mode,
+        "--requests",
+        str(native.requests),
+        "--concurrency",
+        str(native.concurrency),
+        "--target-rps",
+        str(native.target_rps),
+        "--provider-check-timeout",
+        str(native.provider_check_timeout),
+        "--runtime-v1-context-tokens",
+        str(native.runtime_v1_context_tokens),
+        "--runtime-v1-generated-tokens",
+        str(native.runtime_v1_generated_tokens),
+    ]
+    if native.open_loop_duration_s > 0:
+        command.extend(["--open-loop-duration-s", str(native.open_loop_duration_s)])
+    if native.open_loop_driver_mode:
+        command.extend(["--open-loop-driver-mode", native.open_loop_driver_mode])
+    if native.submission_spacing_ms >= 0:
+        command.extend(["--submission-spacing-ms", str(native.submission_spacing_ms)])
+    if native.runtime_v1_prefix_id:
+        command.extend(["--runtime-v1-prefix-id", native.runtime_v1_prefix_id])
+    if native.provider_admission_max_queue >= 0:
+        command.extend(["--provider-admission-max-queue", str(native.provider_admission_max_queue)])
+    if native.provider_admission_max_active_workers >= 0:
+        command.extend(["--provider-admission-max-active-workers", str(native.provider_admission_max_active_workers)])
+    if native.provider_admission_min_free_memory_mb > 0:
+        command.extend(["--provider-admission-min-free-memory-mb", str(native.provider_admission_min_free_memory_mb)])
+    if native.local_execution_only:
+        command.append("--local-execution-only")
+    if native.full_network:
+        command.append("--full-network")
+    if native.core_trace:
+        command.append("--core-trace")
+    if native.tracer_deterministic_runner:
+        command.append("--tracer-deterministic-runner")
+    return command
+
+
+def native_tracer_preflight(repo_root: Path, resolved_native: dict[str, Any], events: EventWriter) -> dict[str, Any]:
+    if not resolved_native.get("enabled", False):
+        return {"enabled": False, "ready": True}
+
+    tracer_dir = Path(resolved_native["tracer_dir"])
+    required_files = {
+        "harness": Path(resolved_native["harness"]),
+        "topology": Path(resolved_native["topology"]),
+        "plan_tracer": tracer_dir / "plan_tracer.py",
+        "user_driver": tracer_dir / "user_driver.py",
+        "bundle_generator": tracer_dir / "generate_llm_proportional_native_bundle.py",
+        "model_spec": tracer_dir / "llm_model_spec_qwen_tiny_proportional.json",
+        "provider_profiles": tracer_dir / "llm_provider_profiles_2_4_8.json",
+    }
+    file_status = {key: path.exists() for key, path in required_files.items()}
+    binary_status = check_binaries(repo_root, DI_REQUIRED_BINARIES)
+    topo_nodes = topology_nodes(required_files["topology"]) if required_files["topology"].exists() else []
+    missing_nodes = [node for node in DI_REQUIRED_TOPOLOGY_NODES if node not in topo_nodes]
+    ready = all(file_status.values()) and all(binary_status.values()) and not missing_nodes
+    result = {
+        "enabled": True,
+        "ready": bool(ready),
+        "files": {key: str(path) for key, path in required_files.items()},
+        "file_status": file_status,
+        "binaries": binary_status,
+        "topology_nodes": topo_nodes,
+        "missing_topology_nodes": missing_nodes,
+        "command": resolved_native["command"],
+    }
+    events.emit(
+        "DI_NATIVE_TRACER_PREFLIGHT",
+        ready=bool(ready),
+        missingFiles=[key for key, ok in file_status.items() if not ok],
+        missingBinaries=[key for key, ok in binary_status.items() if not ok],
+        missingTopologyNodes=missing_nodes,
+        command=resolved_native["command"],
+    )
+    return result
+
+
 def command_status(command: list[str]) -> dict[str, Any]:
     try:
         proc = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
@@ -236,14 +455,29 @@ def run_doctor(args: argparse.Namespace) -> int:
             "nfdc": command_status(["nfdc", "status", "show"]),
         } if args.check_commands else {}
         checks["log_summary"] = summarize_log_markers(Path(args.log_dir)) if args.log_dir else {}
+        checks["distributed_inference"] = {
+            "native_tracer": native_tracer_preflight(
+                repo_root,
+                resolved["distributed_inference"]["native_tracer"],
+                events,
+            )
+        }
 
         ready = True
         ready = ready and Path(resolved["controller"]["policy_file"]).exists()
         ready = ready and Path(resolved["controller"]["trust_schema"]).exists()
         ready = ready and checks["token_file"].get("exists", False)
         ready = ready and all(checks["binaries"].values())
+        ready = ready and checks["distributed_inference"]["native_tracer"].get("ready", False)
         checks["ready"] = bool(ready)
-        events.emit("DOCTOR_RESULT", ready=bool(ready), tokenFile=checks["token_file"], nfd=checks["nfd"], binaries=checks["binaries"])
+        events.emit(
+            "DOCTOR_RESULT",
+            ready=bool(ready),
+            tokenFile=checks["token_file"],
+            nfd=checks["nfd"],
+            binaries=checks["binaries"],
+            distributedInference=checks["distributed_inference"],
+        )
 
         if args.write_resolved:
             Path(args.write_resolved).parent.mkdir(parents=True, exist_ok=True)

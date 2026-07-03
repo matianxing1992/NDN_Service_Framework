@@ -211,6 +211,22 @@ doctor generates it from the policy identities using 8-character tokens. This
 matches the ServiceController first-start token generation behavior and gives
 tests a single place to inspect the resolved runtime state.
 
+The same tool can preflight the NativeTracer distributed-inference harness
+before a MiniNDN run:
+
+```bash
+python3 tools/ndnsf_runtime.py doctor \
+  --profile examples/di-native-tracer.runtime.json \
+  --event-log /tmp/ndnsf-di-runtime-events.jsonl \
+  --write-resolved /tmp/ndnsf-di-runtime-resolved.json
+```
+
+The DI profile records the `/Inference/NativeTracer` harness path, topology,
+Qwen tiny proportional model artifacts, provider profiles, runtime knobs, and a
+ready-to-run MiniNDN command. The doctor checks those files, the required
+NativeTracer smoke binaries, and the expected `memphis/ucla/arizona/wustl/neu`
+topology nodes, then emits a `DI_NATIVE_TRACER_PREFLIGHT` event.
+
 ## 3. How-to
 
 ### 3.1 Generic dynamic API, preferred for new applications

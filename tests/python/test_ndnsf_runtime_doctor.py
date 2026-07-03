@@ -89,6 +89,51 @@ class RuntimeDoctorTests(unittest.TestCase):
             payload = json.loads(proc.stdout)
             self.assertFalse(payload["token_file"]["exists"])
 
+    def test_doctor_resolves_native_tracer_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            event_log = tmpdir / "events.jsonl"
+            resolved_path = tmpdir / "resolved.json"
+
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(TOOL),
+                    "doctor",
+                    "--profile",
+                    "examples/di-native-tracer.runtime.json",
+                    "--event-log",
+                    str(event_log),
+                    "--write-resolved",
+                    str(resolved_path),
+                ],
+                cwd=REPO,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            payload = json.loads(proc.stdout)
+            native = payload["distributed_inference"]["native_tracer"]
+            self.assertTrue(native["ready"])
+            self.assertEqual(native["missing_topology_nodes"], [])
+            self.assertTrue(all(native["file_status"].values()))
+            self.assertTrue(all(native["binaries"].values()))
+            command = native["command"]
+            self.assertIn("Experiments/NDNSF_DI_NativeTracer_Minindn.py", command)
+            self.assertIn("--policy-bundle", command)
+            self.assertIn("llm-proportional", command)
+            self.assertIn("--local-execution-only", command)
+
+            resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
+            resolved_native = resolved["profile"]["distributed_inference"]["native_tracer"]
+            self.assertTrue(Path(resolved_native["harness"]).is_absolute())
+            self.assertTrue(Path(resolved_native["tracer_dir"]).is_absolute())
+            events = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(any(event["event"] == "DI_NATIVE_TRACER_PREFLIGHT" for event in events))
+
 
 if __name__ == "__main__":
     unittest.main()
