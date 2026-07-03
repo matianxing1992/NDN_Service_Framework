@@ -711,6 +711,8 @@ main(int argc, char** argv)
     const std::string benchmarkStrategyText = getOption(argc, argv, "--strategy", "custom-selection");
     const std::string expectedResponse = getOption(argc, argv, "--expect-response", "");
     const std::string bootstrapToken = getOption(argc, argv, "--bootstrap-token", "");
+    const ndn::Name bootstrapName(
+      getOption(argc, argv, "--bootstrap-name", USER_IDENTITY.toUri()));
     const auto knownProviders =
       parseKnownProviderIds(getOption(argc, argv, "--known-provider-ids", ""));
 
@@ -718,7 +720,7 @@ main(int argc, char** argv)
     auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
     if (!bootstrapToken.empty()) {
       userCert = ndn_service_framework::ensureControllerSignedCertificate(
-        face, keyChain, CONTROLLER_PREFIX, USER_IDENTITY, bootstrapToken);
+        face, keyChain, CONTROLLER_PREFIX, USER_IDENTITY, bootstrapName, bootstrapToken);
     }
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(USER_IDENTITY));
     getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);

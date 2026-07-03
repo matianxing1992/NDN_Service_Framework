@@ -10,7 +10,11 @@ from ndnsf import ServiceController, ServiceProvider, ServiceUser
 
 
 def _run_user(label: str) -> int:
-    user = ServiceUser(bootstrap_token="user-token-045", permission_wait_ms=2500)
+    user = ServiceUser(
+        bootstrap_name="/example/hello/user",
+        bootstrap_token="user-token-045",
+        permission_wait_ms=2500,
+    )
     response = user.request_service(
         "/HELLO",
         b"HELLO",
@@ -34,7 +38,10 @@ def _run_controller() -> int:
 
 
 def _run_provider() -> int:
-    provider = ServiceProvider(bootstrap_token="provider-token-045")
+    provider = ServiceProvider(
+        bootstrap_name="/example/hello/provider",
+        bootstrap_token="provider-token-045",
+    )
     provider.add_handler("/HELLO", lambda payload: b"HELLO")
     provider.run("/HELLO")
     return 0

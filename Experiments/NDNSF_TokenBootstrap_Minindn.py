@@ -163,7 +163,9 @@ def main() -> int:
         provider_proc, provider_log = start(
             ndn.net[args.provider_node],
             "provider",
-            app_cmd("App_Provider", "--bootstrap-token", "provider-token-045"),
+            app_cmd("App_Provider",
+                    "--bootstrap-token", "provider-token-045",
+                    "--bootstrap-name", "/example/hello/provider"),
             env,
             output_dir,
             processes)
@@ -174,7 +176,9 @@ def main() -> int:
         user_proc, user_log = start(
             ndn.net[args.user_node],
             "user",
-            app_cmd("App_User", "--bootstrap-token", "user-token-045"),
+            app_cmd("App_User",
+                    "--bootstrap-token", "user-token-045",
+                    "--bootstrap-name", "/example/hello/user"),
             env,
             output_dir,
             processes)
@@ -183,7 +187,9 @@ def main() -> int:
         reuse_proc, reuse_log = start(
             ndn.net[args.user_node],
             "user-reuse",
-            app_cmd("App_User", "--bootstrap-token", "user-token-045"),
+            app_cmd("App_User",
+                    "--bootstrap-token", "user-token-045",
+                    "--bootstrap-name", "/example/hello/user"),
             env,
             output_dir,
             processes)

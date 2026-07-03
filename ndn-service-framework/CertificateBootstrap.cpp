@@ -16,6 +16,7 @@ ndn::Block
 CertificateBootstrapRequest::wireEncode() const
 {
   ndn::Block block(bootstrap_tlv::CertificateBootstrapRequest);
+  block.push_back(identity.wireEncode());
   block.push_back(ndn::makeStringBlock(tlv::TokenType, token));
   ndn::Block certBlock(bootstrap_tlv::CertificateRequest);
   certBlock.push_back(certificateRequest.wireEncode());
@@ -35,11 +36,17 @@ CertificateBootstrapRequest::wireDecode(const ndn::Block& block)
   }
 
   parsed.parse();
+  identity.clear();
   token.clear();
+  bool hasIdentity = false;
   bool hasCertificate = false;
 
   for (const auto& element : parsed.elements()) {
-    if (element.type() == tlv::TokenType) {
+    if (element.type() == ndn::tlv::Name) {
+      identity.wireDecode(element);
+      hasIdentity = !identity.empty();
+    }
+    else if (element.type() == tlv::TokenType) {
       token = ndn::readString(element);
     }
     else if (element.type() == bootstrap_tlv::CertificateRequest) {
@@ -53,7 +60,7 @@ CertificateBootstrapRequest::wireDecode(const ndn::Block& block)
     }
   }
 
-  return !token.empty() && hasCertificate;
+  return hasIdentity && !token.empty() && hasCertificate;
 }
 
 ndn::Block
@@ -141,19 +148,36 @@ requestControllerSignedCertificate(ndn::Face& face,
                                    const std::string& token,
                                    ndn::time::milliseconds timeout)
 {
+  return requestControllerSignedCertificate(face, keyChain, controllerPrefix,
+                                            identity, identity, token, timeout);
+}
+
+ndn::security::Certificate
+requestControllerSignedCertificate(ndn::Face& face,
+                                   ndn::security::KeyChain& keyChain,
+                                   const ndn::Name& controllerPrefix,
+                                   const ndn::Name& certificateIdentity,
+                                   const ndn::Name& bootstrapIdentity,
+                                   const std::string& token,
+                                   ndn::time::milliseconds timeout)
+{
   if (token.empty()) {
     throw std::invalid_argument("bootstrap token is empty");
   }
+  if (bootstrapIdentity.empty()) {
+    throw std::invalid_argument("bootstrap identity is empty");
+  }
 
-  auto pibIdentity = keyChain.getPib().getIdentity(identity);
+  auto pibIdentity = keyChain.getPib().getIdentity(certificateIdentity);
   auto key = pibIdentity.getDefaultKey();
   auto localCertificate = key.getDefaultCertificate();
 
   CertificateBootstrapRequest request;
+  request.identity = bootstrapIdentity;
   request.token = token;
   request.certificateRequest = localCertificate;
 
-  ndn::Interest interest(makeCertificateBootstrapName(controllerPrefix, identity));
+  ndn::Interest interest(makeCertificateBootstrapName(controllerPrefix, bootstrapIdentity));
   interest.setMustBeFresh(true);
   interest.setCanBePrefix(false);
   interest.setInterestLifetime(timeout);
@@ -179,7 +203,7 @@ requestControllerSignedCertificate(ndn::Face& face,
           issuedCertificate = response.issuedCertificate;
           keyChain.setDefaultCertificate(key, issuedCertificate);
           ok = true;
-          NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_INSTALLED identity=" << identity.toUri()
+          NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_INSTALLED identity=" << certificateIdentity.toUri()
                        << " cert=" << issuedCertificate.getName().toUri());
         }
       }
@@ -217,17 +241,31 @@ ensureControllerSignedCertificate(ndn::Face& face,
                                   const std::string& token,
                                   ndn::time::milliseconds timeout)
 {
-  auto pibIdentity = keyChain.getPib().getIdentity(identity);
+  return ensureControllerSignedCertificate(face, keyChain, controllerPrefix,
+                                           identity, identity, token, timeout);
+}
+
+ndn::security::Certificate
+ensureControllerSignedCertificate(ndn::Face& face,
+                                  ndn::security::KeyChain& keyChain,
+                                  const ndn::Name& controllerPrefix,
+                                  const ndn::Name& certificateIdentity,
+                                  const ndn::Name& bootstrapIdentity,
+                                  const std::string& token,
+                                  ndn::time::milliseconds timeout)
+{
+  auto pibIdentity = keyChain.getPib().getIdentity(certificateIdentity);
   auto key = pibIdentity.getDefaultKey();
   auto localCertificate = key.getDefaultCertificate();
   if (isCertificateSignedByIdentity(localCertificate, controllerPrefix)) {
-    NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_REUSED identity=" << identity.toUri()
+    NDN_LOG_INFO("NDNSF_CERT_BOOTSTRAP_REUSED identity=" << certificateIdentity.toUri()
                  << " cert=" << localCertificate.getName().toUri());
     return localCertificate;
   }
 
   return requestControllerSignedCertificate(face, keyChain, controllerPrefix,
-                                            identity, token, timeout);
+                                            certificateIdentity, bootstrapIdentity,
+                                            token, timeout);
 }
 
 } // namespace ndn_service_framework

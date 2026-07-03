@@ -270,12 +270,14 @@ main(int argc, char** argv)
       getOption(argc, argv, "--provider-lifecycle-csv", "");
     const std::string bootstrapToken =
       getOption(argc, argv, "--bootstrap-token", "");
+    const ndn::Name bootstrapName(
+      getOption(argc, argv, "--bootstrap-name", providerIdentity.toUri()));
 
     auto providerCert = getOrCreateIdentity(keyChain, providerIdentity);
     auto controllerCert = getOrCreateIdentity(keyChain, CONTROLLER_PREFIX);
     if (!bootstrapToken.empty()) {
       providerCert = ndn_service_framework::ensureControllerSignedCertificate(
-        face, keyChain, CONTROLLER_PREFIX, providerIdentity, bootstrapToken);
+        face, keyChain, CONTROLLER_PREFIX, providerIdentity, bootstrapName, bootstrapToken);
     }
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(providerIdentity));
     keyChainInitLock.unlock();

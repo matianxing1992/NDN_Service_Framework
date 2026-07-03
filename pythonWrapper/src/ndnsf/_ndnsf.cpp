@@ -1460,7 +1460,8 @@ public:
                         size_t handlerThreads,
                         size_t ackThreads,
                         bool serveCertificates,
-                        const std::string& bootstrapToken)
+                        const std::string& bootstrapToken,
+                        const std::string& bootstrapName)
     : m_group(group)
     , m_controller(controller)
     , m_providerPrefix(providerPrefix)
@@ -1473,8 +1474,11 @@ public:
     m_providerCert = getOrCreateIdentity(m_keyChain, m_providerIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
     if (!bootstrapToken.empty()) {
+      const ndn::Name requestedBootstrapIdentity(
+        bootstrapName.empty() ? m_providerIdentity : ndn::Name(bootstrapName));
       m_providerCert = nsf::ensureControllerSignedCertificate(
-        m_face, m_keyChain, m_controller, m_providerIdentity, bootstrapToken);
+        m_face, m_keyChain, m_controller, m_providerIdentity,
+        requestedBootstrapIdentity, bootstrapToken);
     }
     {
       std::lock_guard<std::mutex> lock(g_keyChainMutex);
@@ -1856,7 +1860,8 @@ public:
                     size_t ackThreads,
                     bool adaptiveAdmission,
                     bool serveCertificates,
-                    const std::string& bootstrapToken)
+                    const std::string& bootstrapToken,
+                    const std::string& bootstrapName)
     : m_group(group)
     , m_controller(controller)
     , m_userIdentity(userIdentity)
@@ -1866,8 +1871,11 @@ public:
     m_userCert = getOrCreateIdentity(m_keyChain, m_userIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_controller);
     if (!bootstrapToken.empty()) {
+      const ndn::Name requestedBootstrapIdentity(
+        bootstrapName.empty() ? m_userIdentity : ndn::Name(bootstrapName));
       m_userCert = nsf::ensureControllerSignedCertificate(
-        m_face, m_keyChain, m_controller, m_userIdentity, bootstrapToken);
+        m_face, m_keyChain, m_controller, m_userIdentity,
+        requestedBootstrapIdentity, bootstrapToken);
     }
     {
       std::lock_guard<std::mutex> lock(g_keyChainMutex);
@@ -2766,6 +2774,7 @@ PYBIND11_MODULE(_ndnsf, m)
                   size_t,
                   size_t,
                   bool,
+                  const std::string&,
                   const std::string&>(),
          py::arg("provider_id") = "",
          py::arg("group") = "/example/hello/group",
@@ -2775,7 +2784,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("handler_threads") = 4,
          py::arg("ack_threads") = 2,
          py::arg("serve_certificates") = true,
-         py::arg("bootstrap_token") = "")
+         py::arg("bootstrap_token") = "",
+         py::arg("bootstrap_name") = "")
     .def("add_service", &NativeServiceProvider::addService,
          py::arg("service"),
          py::arg("request_handler"),
@@ -2799,6 +2809,7 @@ PYBIND11_MODULE(_ndnsf, m)
                   size_t,
                   bool,
                   bool,
+                  const std::string&,
                   const std::string&>(),
          py::arg("group") = "/example/hello/group",
          py::arg("controller") = "/example/hello/controller",
@@ -2809,7 +2820,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("ack_threads") = 2,
          py::arg("adaptive_admission") = false,
          py::arg("serve_certificates") = true,
-         py::arg("bootstrap_token") = "")
+         py::arg("bootstrap_token") = "",
+         py::arg("bootstrap_name") = "")
     .def("request_service", &NativeServiceUser::requestService,
          py::arg("service"),
          py::arg("payload"),

@@ -955,6 +955,14 @@ ServiceController::onCertificateBootstrapInterest(const ndn::InterestFilter&,
       return;
     }
 
+    if (request.identity != targetIdentity) {
+      NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
+                   << " reason=request-name-mismatch"
+                   << " requestIdentity=" << request.identity.toUri());
+      sendCertificateBootstrapResponse(interest, false, "bootstrap name mismatch", nullptr);
+      return;
+    }
+
     if (request.token != tokenEntry.token) {
       NDN_LOG_WARN("NDNSF_CERT_BOOTSTRAP_REFUSED identity=" << targetUri
                    << " reason=token-mismatch");

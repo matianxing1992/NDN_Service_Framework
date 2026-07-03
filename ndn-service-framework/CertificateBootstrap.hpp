@@ -19,6 +19,7 @@ enum {
 
 struct CertificateBootstrapRequest
 {
+  ndn::Name identity;
   std::string token;
   ndn::security::Certificate certificateRequest;
 
@@ -55,10 +56,30 @@ requestControllerSignedCertificate(ndn::Face& face,
                                      ndn::time::milliseconds(5000));
 
 ndn::security::Certificate
+requestControllerSignedCertificate(ndn::Face& face,
+                                   ndn::security::KeyChain& keyChain,
+                                   const ndn::Name& controllerPrefix,
+                                   const ndn::Name& certificateIdentity,
+                                   const ndn::Name& bootstrapIdentity,
+                                   const std::string& token,
+                                   ndn::time::milliseconds timeout =
+                                     ndn::time::milliseconds(5000));
+
+ndn::security::Certificate
 ensureControllerSignedCertificate(ndn::Face& face,
                                   ndn::security::KeyChain& keyChain,
                                   const ndn::Name& controllerPrefix,
                                   const ndn::Name& identity,
+                                  const std::string& token,
+                                  ndn::time::milliseconds timeout =
+                                    ndn::time::milliseconds(5000));
+
+ndn::security::Certificate
+ensureControllerSignedCertificate(ndn::Face& face,
+                                  ndn::security::KeyChain& keyChain,
+                                  const ndn::Name& controllerPrefix,
+                                  const ndn::Name& certificateIdentity,
+                                  const ndn::Name& bootstrapIdentity,
                                   const std::string& token,
                                   ndn::time::milliseconds timeout =
                                     ndn::time::milliseconds(5000));
