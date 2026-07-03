@@ -710,12 +710,16 @@ scripts create their own temporary keychain material automatically.
 The current HELLO examples are exercised by the regression scripts below.
 
 ```bash
+./examples/run_security_regressions.sh
 ./examples/run_hello_auth_regression.sh
 ./examples/run_hello_ack_payload_regression.sh
 ./examples/run_selective_ack_custom_selection_regression.sh
 ./examples/run_nac_abe_attribute_routing_regression.sh
 ./examples/run_token_handshake_negative_regression.sh
+./examples/run_token_certificate_bootstrap_regression.sh
 ```
+
+`run_security_regressions.sh` runs the core security regression suite in sequence.
 
 `run_hello_auth_regression.sh` verifies controller-issued user/provider permission mappings, the generic HELLO request/response flow, and `UserToken` propagation through request, ACK, and response.
 
@@ -726,6 +730,8 @@ The current HELLO examples are exercised by the regression scripts below.
 `run_nac_abe_attribute_routing_regression.sh` verifies runtime `GetAttributesByName` logs for NAC-ABE routing: REQUEST and SELECTION use `/SERVICE/HELLO`, while ACK and RESPONSE use `/PERMISSION/HELLO`.
 
 `run_token_handshake_negative_regression.sh` verifies rejection of ACKs and responses with wrong `UserToken` values, selection messages with wrong `ProviderToken` values, and replayed ProviderTokens.
+
+`run_token_certificate_bootstrap_regression.sh` verifies encrypted name-bound token certificate bootstrap, requester proof validation, wrong token/name rejection, tampered proof rejection with `request-proof-invalid`, certificate reuse, and that the same valid token still works after a rejected tampered request.
 
 ### 3.8 Python wrapper and higher-level application packages
 
