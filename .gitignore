@@ -50,6 +50,7 @@ AGENTS.md
 .deepseek/
 deepseek_delegate*.txt
 deepseek_delegate*.patch
+deepseek_usage*.jsonl
 .planning/
 .codegraph/
 .specify/integrations/codex.manifest.json

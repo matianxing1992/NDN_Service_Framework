@@ -12,6 +12,7 @@ This helper is intentionally conservative:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import sys
@@ -25,6 +26,7 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_KEY_FILE = Path.home() / ".config" / "ndnsf" / "deepseek_api_key"
 DEFAULT_MAX_CONTEXT_BYTES = 20000
+DEFAULT_USAGE_LOG = Path.home() / ".local" / "state" / "ndnsf" / "deepseek_usage.jsonl"
 
 SENSITIVE_MARKERS = (
     "api_key",
@@ -75,6 +77,136 @@ def load_api_key(api_key_file: Path | None = None) -> str:
         "DeepSeek API key not found. Set DEEPSEEK_API_KEY or create "
         f"{DEFAULT_KEY_FILE} with mode 600."
     )
+
+
+def usage_log_path(path: Path | None = None) -> Path:
+    file_from_env = os.environ.get("DEEPSEEK_USAGE_LOG", "").strip()
+    if path:
+        return path.expanduser()
+    if file_from_env:
+        return Path(file_from_env).expanduser()
+    return DEFAULT_USAGE_LOG
+
+
+def append_usage_log(response: dict[str, Any], *, log_path: Path, model: str) -> None:
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "model": response.get("model") or model,
+        "usage": usage,
+    }
+    with log_path.open("a", encoding="utf-8") as output:
+        output.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _usage_int(usage: dict[str, Any], key: str) -> int:
+    value = usage.get(key, 0)
+    return value if isinstance(value, int) else 0
+
+
+def summarize_usage_log(log_path: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "log_path": str(log_path),
+        "calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 0,
+        "reasoning_tokens": 0,
+        "by_model": {},
+        "last_call": None,
+    }
+    if not log_path.exists():
+        return summary
+
+    with log_path.open(encoding="utf-8") as input_file:
+        for line in input_file:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            usage = record.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            model = str(record.get("model") or "unknown")
+            by_model = summary["by_model"].setdefault(
+                model,
+                {
+                    "calls": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
+            )
+            summary["calls"] += 1
+            by_model["calls"] += 1
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "prompt_cache_hit_tokens",
+                "prompt_cache_miss_tokens",
+            ):
+                value = _usage_int(usage, key)
+                summary[key] += value
+                by_model[key] += value
+            completion_details = usage.get("completion_tokens_details")
+            if isinstance(completion_details, dict):
+                reasoning = _usage_int(completion_details, "reasoning_tokens")
+                summary["reasoning_tokens"] += reasoning
+                by_model["reasoning_tokens"] += reasoning
+            summary["last_call"] = {
+                "timestamp": record.get("timestamp"),
+                "model": model,
+                "usage": usage,
+            }
+    return summary
+
+
+def format_usage_summary(summary: dict[str, Any]) -> str:
+    lines = [
+        "DeepSeek usage summary",
+        f"log: {summary['log_path']}",
+        (
+            "total: "
+            f"calls={summary['calls']} "
+            f"prompt={summary['prompt_tokens']} "
+            f"completion={summary['completion_tokens']} "
+            f"total={summary['total_tokens']} "
+            f"cache_hit={summary['prompt_cache_hit_tokens']} "
+            f"cache_miss={summary['prompt_cache_miss_tokens']} "
+            f"reasoning={summary['reasoning_tokens']}"
+        ),
+    ]
+    for model, model_summary in sorted(summary["by_model"].items()):
+        lines.append(
+            "model "
+            f"{model}: calls={model_summary['calls']} "
+            f"prompt={model_summary['prompt_tokens']} "
+            f"completion={model_summary['completion_tokens']} "
+            f"total={model_summary['total_tokens']}"
+        )
+    if summary["last_call"]:
+        last = summary["last_call"]
+        usage = last["usage"]
+        lines.append(
+            "last: "
+            f"{last['timestamp']} {last['model']} "
+            f"prompt={_usage_int(usage, 'prompt_tokens')} "
+            f"completion={_usage_int(usage, 'completion_tokens')} "
+            f"total={_usage_int(usage, 'total_tokens')}"
+        )
+    return "\n".join(lines)
 
 
 def is_sensitive_context_path(path: Path) -> bool:
@@ -239,7 +371,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Ask DeepSeek for an advisory coding draft without editing files."
     )
-    parser.add_argument("--task", required=True, help="Implementation/review task for DeepSeek.")
+    parser.add_argument("--task", help="Implementation/review task for DeepSeek.")
     parser.add_argument("--mode", choices=("patch", "plan", "test", "review"), default="patch")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
@@ -253,14 +385,37 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--output", help="Write DeepSeek response text to this file.")
+    parser.add_argument("--usage-log", type=Path, help="Token usage JSONL log path.")
+    parser.add_argument(
+        "--usage-summary",
+        action="store_true",
+        help="Print accumulated DeepSeek token usage and exit.",
+    )
+    parser.add_argument(
+        "--usage-json",
+        action="store_true",
+        help="Print usage summary as JSON instead of text.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print request payload without network.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.usage_summary and not args.task:
+        parser.error("--task is required unless --usage-summary is set")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     repo_root = repo_root_from(Path.cwd())
     try:
+        log_path = usage_log_path(args.usage_log)
+        if args.usage_summary:
+            summary = summarize_usage_log(log_path)
+            if args.usage_json:
+                print(json.dumps(summary, indent=2, sort_keys=True))
+            else:
+                print(format_usage_summary(summary))
+            return 0
+
         payload = build_payload(args, repo_root)
         if args.dry_run:
             print(json.dumps({"base_url": args.base_url, "payload": payload}, indent=2))
@@ -273,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
             api_key=api_key,
             timeout=args.timeout,
         )
+        append_usage_log(response, log_path=log_path, model=args.model)
         write_or_print(extract_content(response), args.output)
         return 0
     except DelegateError as exc:
