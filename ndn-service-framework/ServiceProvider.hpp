@@ -76,8 +76,58 @@ namespace ndn_service_framework{
                 ndn::Buffer payload;
             };
 
+            struct GenericAdmissionLease
+            {
+                std::string leaseId;
+                ndn::Name providerName;
+                ndn::Name requesterName;
+                ndn::Name serviceName;
+                uint64_t expiresAtMs = 0;
+                ndn::Buffer resourceBindingProof;
+                bool consumed = false;
+            };
+
+            struct GenericLeaseValidationResult
+            {
+                bool status = false;
+                std::string reasonCode;
+                std::string leaseId;
+            };
+
+            class ProviderAdmissionLeaseTable
+            {
+            public:
+                void grant(GenericAdmissionLease lease);
+                GenericLeaseValidationResult consume(
+                    const std::string& leaseId,
+                    const ndn::Name& requesterName,
+                    const ndn::Name& providerName,
+                    const ndn::Name& serviceName,
+                    const ndn::Buffer& resourceBindingProof,
+                    uint64_t nowMs);
+                size_t size() const;
+
+            private:
+                std::map<std::string, GenericAdmissionLease> m_leases;
+            };
+
+            struct GenericAdmissionLeaseValidationRequest
+            {
+                ndn::Name requesterName;
+                ndn::Name providerName;
+                ndn::Name serviceName;
+                ndn::Name requestId;
+                RequestMessage requestMessage;
+                ServiceSelectionMessage selectionMessage;
+                ndn::Buffer assignmentPayload;
+            };
+
             using AckStrategyHandler =
                 std::function<AckDecision(const RequestMessage&)>;
+
+            using GenericAdmissionLeaseValidator =
+                std::function<GenericLeaseValidationResult(
+                    const GenericAdmissionLeaseValidationRequest&)>;
 
             using LegacyAckStrategyHandler =
                 std::function<std::pair<bool, ndn::Block>(const RequestAckMessage&)>;
@@ -403,6 +453,13 @@ namespace ndn_service_framework{
 
             void setSelectionStatusQueryable(const ndn::Name& serviceName,
                                              bool enabled = true);
+            void setGenericAdmissionLeaseValidator(
+                const ndn::Name& serviceName,
+                GenericAdmissionLeaseValidator validator,
+                bool required = true);
+            void setGenericAdmissionLeaseRequired(const ndn::Name& serviceName,
+                                                  bool required = true);
+            void grantGenericAdmissionLease(GenericAdmissionLease lease);
 
             template<typename RequestT, typename ResponseT>
             void addHandler(const ndn::Name& serviceName,
@@ -577,6 +634,8 @@ namespace ndn_service_framework{
                 RequestHandler targetedRequestHandler;
                 ServiceMode mode = ServiceMode::Normal;
                 bool selectionStatusQueryable = false;
+                bool genericAdmissionLeaseRequired = false;
+                GenericAdmissionLeaseValidator genericAdmissionLeaseValidator;
             };
 
             struct RegisteredCollaborationService
@@ -673,6 +732,14 @@ namespace ndn_service_framework{
                 const ndn::Name& requestId,
                 RequestMessage requestMessage,
                 AckDecision decision);
+            GenericLeaseValidationResult validateGenericAdmissionLeaseForSelection(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& requestId,
+                const RequestMessage& requestMessage,
+                const ServiceSelectionMessage& selectionMessage,
+                const ndn::Buffer& assignmentPayload);
             void finishDecodedRequestOnEventLoop(
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
@@ -873,6 +940,7 @@ namespace ndn_service_framework{
                 m_selectionExecutionStatuses;
             ProviderRequestLifecycleCallback m_providerRequestLifecycleCallback;
             std::map<std::string, uint64_t> m_providerAdmissionCounters;
+            ProviderAdmissionLeaseTable m_genericAdmissionLeases;
 
             ndn::random::RandomNumberEngine random;
 

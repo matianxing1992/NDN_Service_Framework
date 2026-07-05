@@ -513,6 +513,20 @@ namespace ndn_service_framework
             return fields;
         }
 
+        bool
+        buffersEqual(const ndn::Buffer& lhs, const ndn::Buffer& rhs)
+        {
+            return lhs.size() == rhs.size() &&
+                   std::equal(lhs.begin(), lhs.end(), rhs.begin());
+        }
+
+        ndn::Buffer
+        bufferFromText(const std::string& text)
+        {
+            return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()),
+                               text.size());
+        }
+
         ndn::Buffer
         collaborationAssociatedData(const ndn::Name& dataName,
                                     const ndn::Name& requestId,
@@ -1219,6 +1233,161 @@ namespace ndn_service_framework
         NDN_LOG_WARN("Selection status query "
                      << (enabled ? "enabled" : "disabled")
                      << " for service " << serviceUri);
+    }
+
+    void ServiceProvider::ProviderAdmissionLeaseTable::grant(
+        GenericAdmissionLease lease)
+    {
+        if (lease.leaseId.empty()) {
+            throw std::invalid_argument("GenericAdmissionLease leaseId is required");
+        }
+        lease.consumed = false;
+        m_leases[lease.leaseId] = std::move(lease);
+    }
+
+    ServiceProvider::GenericLeaseValidationResult
+    ServiceProvider::ProviderAdmissionLeaseTable::consume(
+        const std::string& leaseId,
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Buffer& resourceBindingProof,
+        uint64_t nowMs)
+    {
+        GenericLeaseValidationResult result;
+        result.leaseId = leaseId;
+        auto it = m_leases.find(leaseId);
+        if (it == m_leases.end()) {
+            result.reasonCode = "LEASE_NOT_FOUND";
+            return result;
+        }
+        auto& lease = it->second;
+        if (lease.consumed) {
+            result.reasonCode = "LEASE_ALREADY_CONSUMED";
+            return result;
+        }
+        if (lease.expiresAtMs > 0 && nowMs > lease.expiresAtMs) {
+            result.reasonCode = "LEASE_EXPIRED";
+            return result;
+        }
+        if (!lease.requesterName.empty() && !lease.requesterName.equals(requesterName)) {
+            result.reasonCode = "LEASE_REQUESTER_MISMATCH";
+            return result;
+        }
+        if (!lease.providerName.empty() && !lease.providerName.equals(providerName)) {
+            result.reasonCode = "LEASE_PROVIDER_MISMATCH";
+            return result;
+        }
+        if (!lease.serviceName.empty() && !lease.serviceName.equals(serviceName)) {
+            result.reasonCode = "LEASE_SERVICE_MISMATCH";
+            return result;
+        }
+        if (!lease.resourceBindingProof.empty() &&
+            !buffersEqual(lease.resourceBindingProof, resourceBindingProof)) {
+            result.reasonCode = "LEASE_RESOURCE_BINDING_MISMATCH";
+            return result;
+        }
+        lease.consumed = true;
+        result.status = true;
+        result.reasonCode = "OK";
+        return result;
+    }
+
+    size_t ServiceProvider::ProviderAdmissionLeaseTable::size() const
+    {
+        return m_leases.size();
+    }
+
+    void ServiceProvider::setGenericAdmissionLeaseValidator(
+        const ndn::Name& serviceName,
+        GenericAdmissionLeaseValidator validator,
+        bool required)
+    {
+        auto& service = m_services[serviceName];
+        service.genericAdmissionLeaseValidator = std::move(validator);
+        service.genericAdmissionLeaseRequired = required;
+        NDN_LOG_WARN("Generic admission lease validation "
+                     << (required ? "required" : "optional")
+                     << " for service " << serviceName.toUri());
+    }
+
+    void ServiceProvider::setGenericAdmissionLeaseRequired(
+        const ndn::Name& serviceName,
+        bool required)
+    {
+        auto& service = m_services[serviceName];
+        service.genericAdmissionLeaseRequired = required;
+        NDN_LOG_WARN("Generic admission lease validation "
+                     << (required ? "required" : "disabled")
+                     << " for service " << serviceName.toUri());
+    }
+
+    void ServiceProvider::grantGenericAdmissionLease(GenericAdmissionLease lease)
+    {
+        m_genericAdmissionLeases.grant(std::move(lease));
+    }
+
+    ServiceProvider::GenericLeaseValidationResult
+    ServiceProvider::validateGenericAdmissionLeaseForSelection(
+        const ndn::Name& requesterName,
+        const ndn::Name& providerName,
+        const ndn::Name& serviceName,
+        const ndn::Name& requestId,
+        const RequestMessage& requestMessage,
+        const ServiceSelectionMessage& selectionMessage,
+        const ndn::Buffer& assignmentPayload)
+    {
+        GenericLeaseValidationResult result;
+        result.status = true;
+        result.reasonCode = "NOT_REQUIRED";
+        auto serviceIt = m_services.find(serviceName);
+        if (serviceIt == m_services.end() ||
+            !serviceIt->second.genericAdmissionLeaseRequired) {
+            return result;
+        }
+
+        const GenericAdmissionLeaseValidationRequest request{
+            requesterName,
+            providerName,
+            serviceName,
+            requestId,
+            requestMessage,
+            selectionMessage,
+            assignmentPayload,
+        };
+        if (serviceIt->second.genericAdmissionLeaseValidator) {
+            result = serviceIt->second.genericAdmissionLeaseValidator(request);
+            if (result.reasonCode.empty()) {
+                result.reasonCode = result.status ? "OK" : "LEASE_REJECTED";
+            }
+            return result;
+        }
+
+        const auto fields = parseSemicolonFields(assignmentPayload);
+        auto leaseIt = fields.find("leaseId");
+        if (leaseIt == fields.end()) {
+            leaseIt = fields.find("admissionLeaseId");
+        }
+        if (leaseIt == fields.end()) {
+            leaseIt = fields.find("genericAdmissionLeaseId");
+        }
+        if (leaseIt == fields.end() || leaseIt->second.empty()) {
+            result.status = false;
+            result.reasonCode = "LEASE_ID_MISSING";
+            return result;
+        }
+        auto proofIt = fields.find("resourceBindingProof");
+        if (proofIt == fields.end()) {
+            proofIt = fields.find("leaseResourceBinding");
+        }
+        const ndn::Buffer proof =
+            proofIt == fields.end() ? ndn::Buffer() : bufferFromText(proofIt->second);
+        return m_genericAdmissionLeases.consume(leaseIt->second,
+                                                requesterName,
+                                                providerName,
+                                                serviceName,
+                                                proof,
+                                                nowMilliseconds());
     }
 
     void ServiceProvider::publishServiceInfo(
@@ -8185,6 +8354,48 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                requestId,
                                                "service handler not found");
                 continue;
+            }
+
+            const auto leaseValidation =
+                validateGenericAdmissionLeaseForSelection(requesterName,
+                                                          providerName,
+                                                          serviceName,
+                                                          requestId,
+                                                          selectedRequest,
+                                                          message,
+                                                          effectiveAssignmentPayload);
+            if (!leaseValidation.status) {
+                NDN_LOG_WARN("NDNSF_ADMISSION_LEASE_REJECTED provider="
+                             << providerName.toUri()
+                             << " requester=" << requesterName.toUri()
+                             << " service=" << serviceName.toUri()
+                             << " requestId=" << requestId.toUri()
+                             << " leaseId=" << leaseValidation.leaseId
+                             << " reason=" << leaseValidation.reasonCode);
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=ADMISSION_LEASE_REJECTED timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << requestId.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " requesterName=" << requesterName.toUri()
+                          << " providerName=" << providerName.toUri()
+                          << " leaseId=" << leaseValidation.leaseId
+                          << " reason=" << leaseValidation.reasonCode);
+                updateSelectionExecutionStatus(selectionDigest,
+                                               SelectionExecutionState::Rejected,
+                                               providerName,
+                                               serviceName,
+                                               requestId,
+                                               "admission lease rejected: " +
+                                                   leaseValidation.reasonCode);
+                continue;
+            }
+            if (leaseValidation.reasonCode != "NOT_REQUIRED") {
+                NDN_LOG_INFO("NDNSF_ADMISSION_LEASE_ACCEPTED provider="
+                             << providerName.toUri()
+                             << " requester=" << requesterName.toUri()
+                             << " service=" << serviceName.toUri()
+                             << " requestId=" << requestId.toUri()
+                             << " leaseId=" << leaseValidation.leaseId);
             }
 
             NDN_LOG_TRACE("[NDNSF_TRACE] role=provider event=PROVIDER_EXECUTE_START timestamp_us="

@@ -538,11 +538,16 @@ makeRequestMessageWithUserToken(const std::string& payload,
 }
 
 ndn::Buffer
-makeSelectionBuffer(const ndn::Name& requestId, const std::string& providerToken)
+makeSelectionBuffer(const ndn::Name& requestId,
+                    const std::string& providerToken,
+                    const ndn::Buffer& assignmentPayload = ndn::Buffer())
 {
   ServiceSelectionMessage selection;
   selection.setRequestIDs({requestId.toUri()});
   selection.setProviderToken(providerToken);
+  if (!assignmentPayload.empty()) {
+    selection.setAssignmentPayload(assignmentPayload);
+  }
   auto block = selection.WireEncode();
   return ndn::Buffer(block.data(), block.size());
 }
