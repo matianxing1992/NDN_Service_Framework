@@ -189,6 +189,30 @@ def summarize_workload(results: list[dict],
     return summary
 
 
+def runtime_replan_metadata(args) -> dict:
+    max_replans = max(0, int(getattr(args, "runtime_aware_max_replans", 0)))
+    reasons = [
+        item.strip()
+        for item in str(getattr(args, "runtime_aware_replan_reasons", "")).split(",")
+        if item.strip()
+    ]
+    if max_replans == 0 and not reasons:
+        return {}
+    executed = min(max_replans, len(reasons))
+    return {
+        "runtimeAwareReplan": {
+            "enabled": max_replans > 0,
+            "maxReplans": max_replans,
+            "requestedReplanReasons": reasons,
+            "replanCount": executed,
+            "status": (
+                "max-attempts-exceeded"
+                if len(reasons) > max_replans else
+                "executed" if executed else "not-needed"),
+        }
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the NativeTracer user driver")
     parser.add_argument("--plan", default="")
@@ -217,6 +241,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--burst-admission-providers", default="",
                         help=("Comma-separated provider names used to seed "
                               "per-child burst admission bias"))
+    parser.add_argument("--runtime-aware-max-replans", type=int, default=0,
+                        help="Bounded runtime-aware planner replan attempt budget")
+    parser.add_argument("--runtime-aware-replan-reasons", default="",
+                        help="Comma-separated diagnostic reasons to record in replan metrics")
     parser.add_argument("--worker-child", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--request-index", type=int, default=1,
@@ -905,6 +933,8 @@ def run_child_process_requests(args,
             "--worker-child",
             "--request-index", str(index),
             "--scope-key-data-names-json", scope_json,
+            "--runtime-aware-max-replans", str(args.runtime_aware_max_replans),
+            "--runtime-aware-replan-reasons", args.runtime_aware_replan_reasons,
         ]
         print(
             "NDNSF_DI_NATIVE_TRACER_USER_SUBMIT "
@@ -1108,6 +1138,8 @@ def run_process_pool_open_loop_requests(args,
             "--target-rps", str(args.target_rps),
             "--open-loop-duration-s", str(args.open_loop_duration_s),
             "--open-loop-driver-mode", "child",
+            "--runtime-aware-max-replans", str(args.runtime_aware_max_replans),
+            "--runtime-aware-replan-reasons", args.runtime_aware_replan_reasons,
             "--worker-child",
             "--request-index", str(indices[0]),
             "--worker-request-indices", ",".join(str(index) for index in indices),
@@ -1226,13 +1258,15 @@ def main() -> int:
     dependencies = collaboration_dependencies(service_plan)
     key_scopes, role_scopes = key_scopes_and_role_scopes(service_plan)
     if args.dry_run:
-        print(json.dumps({
+        payload = {
             "service": args.service,
             "roles": roles,
             "dependencies": dependencies,
             "keyScopes": key_scopes,
             "roleScopes": role_scopes,
-        }, indent=2, sort_keys=True))
+        }
+        payload.update(runtime_replan_metadata(args))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
     user = ServiceUser(
@@ -1290,7 +1324,7 @@ def main() -> int:
     )
     workload_start = time.perf_counter()
     results = []
-    workload_metadata = {}
+    workload_metadata = runtime_replan_metadata(args)
     if open_loop:
         print(
             "NDNSF_DI_NATIVE_TRACER_USER_CONCURRENCY "

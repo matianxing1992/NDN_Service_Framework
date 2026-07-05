@@ -1045,6 +1045,33 @@ class ReplanRecord:
     excluded_providers: tuple[str, ...] = ()
     timestamp_ms: int = field(default_factory=now_ms)
 
+    @classmethod
+    def from_failure(cls,
+                     *,
+                     request_id: str,
+                     attempt: int,
+                     failed_provider: str,
+                     reason_code: str,
+                     failed_lease_id: str = "",
+                     previous_excluded: Iterable[str] = ()) -> "ReplanRecord":
+        excluded = set(str(item) for item in previous_excluded if str(item))
+        if failed_provider:
+            excluded.add(failed_provider)
+        return cls(
+            request_id=request_id,
+            attempt=max(1, int(attempt)),
+            failed_provider=failed_provider,
+            failed_lease_id=failed_lease_id,
+            reason_code=reason_code or "UNKNOWN",
+            excluded_providers=tuple(sorted(excluded)),
+        )
+
+    def excluded_provider_set(self) -> set[str]:
+        excluded = set(self.excluded_providers)
+        if self.failed_provider:
+            excluded.add(self.failed_provider)
+        return excluded
+
 
 RESIDENCY_READY_COST_MS = {
     FragmentResidency.GPU_LOADED: 0.0,
@@ -1152,13 +1179,22 @@ def choose_runtime_assignment(template: PlanTemplate,
                               *,
                               request_id: str,
                               runtime_required: bool = True,
-                              network_matrix: ProviderNetworkMatrix | None = None) -> RuntimeAssignment:
+                              network_matrix: ProviderNetworkMatrix | None = None,
+                              excluded_providers: Iterable[str] = ()) -> RuntimeAssignment:
+    excluded = set(str(item) for item in excluded_providers if str(item))
     role_assignments: dict[str, dict[str, Any]] = {}
     rejected: list[dict[str, Any]] = []
     role_scores: dict[str, list[dict[str, Any]]] = {}
     for role in template.roles:
         scored = [
-            score_runtime_candidate(role, candidate, runtime_required=runtime_required)
+            ({
+                "provider": str(candidate.get("providerName", candidate.get("provider", ""))),
+                "roleId": role.role_id,
+                "valid": False,
+                "reason": "PROVIDER_EXCLUDED",
+                "scoreMs": float("inf"),
+            } if str(candidate.get("providerName", candidate.get("provider", ""))) in excluded
+             else score_runtime_candidate(role, candidate, runtime_required=runtime_required))
             for candidate in provider_candidates.get(role.role_id, [])
         ]
         role_scores[role.role_id] = scored
@@ -1189,6 +1225,7 @@ def choose_runtime_assignment(template: PlanTemplate,
             "roleScores": role_scores,
             "edgeCosts": edge_costs,
             "rejectedCandidates": rejected,
+            "excludedProviders": sorted(excluded),
         },
     )
 
@@ -1198,13 +1235,22 @@ def choose_edge_aware_runtime_assignment(template: PlanTemplate,
                                          *,
                                          request_id: str,
                                          runtime_required: bool = True,
-                                         network_matrix: ProviderNetworkMatrix | None = None
+                                         network_matrix: ProviderNetworkMatrix | None = None,
+                                         excluded_providers: Iterable[str] = ()
                                          ) -> RuntimeAssignment:
+    excluded = set(str(item) for item in excluded_providers if str(item))
     scored_by_role: dict[str, list[dict[str, Any]]] = {}
     rejected: list[dict[str, Any]] = []
     for role in template.roles:
         scored = [
-            score_runtime_candidate(role, candidate, runtime_required=runtime_required)
+            ({
+                "provider": str(candidate.get("providerName", candidate.get("provider", ""))),
+                "roleId": role.role_id,
+                "valid": False,
+                "reason": "PROVIDER_EXCLUDED",
+                "scoreMs": float("inf"),
+            } if str(candidate.get("providerName", candidate.get("provider", ""))) in excluded
+             else score_runtime_candidate(role, candidate, runtime_required=runtime_required))
             for candidate in provider_candidates.get(role.role_id, [])
         ]
         scored_by_role[role.role_id] = scored
@@ -1247,8 +1293,45 @@ def choose_edge_aware_runtime_assignment(template: PlanTemplate,
             "edgeCosts": edge_costs,
             "rejectedCandidates": rejected,
             "plannerMode": "edge-aware-exhaustive",
+            "excludedProviders": sorted(excluded),
         },
     )
+
+
+def choose_bounded_replan_assignment(template: PlanTemplate,
+                                     provider_candidates: dict[str, list[dict[str, Any]]],
+                                     *,
+                                     request_id: str,
+                                     replan_records: Iterable[ReplanRecord] = (),
+                                     max_attempts: int = 2,
+                                     runtime_required: bool = True,
+                                     network_matrix: ProviderNetworkMatrix | None = None
+                                     ) -> RuntimeAssignment:
+    records = list(replan_records)
+    attempt = len(records) + 1
+    excluded: set[str] = set()
+    for record in records:
+        excluded.update(record.excluded_provider_set())
+    if attempt > max(1, int(max_attempts)):
+        raise ValueError(
+            "MAX_REPLAN_ATTEMPTS_EXCEEDED excludedProviders=" +
+            ",".join(sorted(excluded)))
+    assignment = choose_edge_aware_runtime_assignment(
+        template,
+        provider_candidates,
+        request_id=request_id,
+        runtime_required=runtime_required,
+        network_matrix=network_matrix,
+        excluded_providers=excluded,
+    )
+    breakdown = dict(assignment.score_breakdown)
+    breakdown["replanCount"] = len(records)
+    breakdown["replanAttempt"] = attempt
+    breakdown["replanStatus"] = "executed" if records else "not-needed"
+    breakdown["excludedProviders"] = sorted(excluded)
+    return replace(assignment,
+                   replan_attempt=len(records),
+                   score_breakdown=breakdown)
 
 
 def exact_token_prefix_digest(token_ids: Iterable[int], *,

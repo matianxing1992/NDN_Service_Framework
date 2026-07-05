@@ -20,6 +20,7 @@ from ndnsf_distributed_inference.runtime_v1 import (
     PlanTemplate,
     ProviderNetworkMatrix,
     ReplanRecord,
+    choose_bounded_replan_assignment,
     choose_edge_aware_runtime_assignment,
     choose_runtime_assignment,
     residency_ready_cost_ms,
@@ -217,6 +218,69 @@ class RuntimeAwarePlannerTest(unittest.TestCase):
         )
         self.assertEqual(record.reason_code, "FRAGMENT_EVICTED")
         self.assertEqual(record.excluded_providers, ("/provider/A",))
+
+    def test_bounded_replan_excludes_evicted_provider(self) -> None:
+        key = fragment()
+        template = PlanTemplate(
+            template_id="template-replan",
+            model_id="qwen-tiny",
+            roles=(PlanRole("/Stage/0", key, estimated_compute_ms=10),),
+        )
+        providers = {
+            "/Stage/0": [
+                candidate("/provider/A", key, FragmentResidency.GPU_LOADED),
+                candidate("/provider/B", key, FragmentResidency.CPU_RESIDENT),
+            ],
+        }
+        initial = choose_bounded_replan_assignment(
+            template,
+            providers,
+            request_id="req-replan",
+            max_attempts=2,
+        )
+        self.assertEqual(initial.role_assignments["/Stage/0"]["provider"], "/provider/A")
+
+        record = ReplanRecord.from_failure(
+            request_id="req-replan",
+            attempt=1,
+            failed_provider="/provider/A",
+            reason_code="FRAGMENT_EVICTED",
+        )
+        replanned = choose_bounded_replan_assignment(
+            template,
+            providers,
+            request_id="req-replan",
+            replan_records=(record,),
+            max_attempts=2,
+        )
+        self.assertEqual(replanned.role_assignments["/Stage/0"]["provider"], "/provider/B")
+        self.assertEqual(replanned.replan_attempt, 1)
+        self.assertEqual(replanned.score_breakdown["excludedProviders"], ["/provider/A"])
+
+    def test_bounded_replan_reports_max_attempts(self) -> None:
+        key = fragment()
+        template = PlanTemplate(
+            template_id="template-replan-max",
+            model_id="qwen-tiny",
+            roles=(PlanRole("/Stage/0", key, estimated_compute_ms=10),),
+        )
+        providers = {
+            "/Stage/0": [candidate("/provider/A", key, FragmentResidency.GPU_LOADED)],
+        }
+        record = ReplanRecord.from_failure(
+            request_id="req-replan-max",
+            attempt=1,
+            failed_provider="/provider/A",
+            reason_code="FRAGMENT_EVICTED",
+        )
+        with self.assertRaisesRegex(ValueError, "MAX_REPLAN_ATTEMPTS_EXCEEDED"):
+            choose_bounded_replan_assignment(
+                template,
+                providers,
+                request_id="req-replan-max",
+                replan_records=(record,),
+                max_attempts=1,
+            )
 
 
 if __name__ == "__main__":

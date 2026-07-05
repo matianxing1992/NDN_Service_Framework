@@ -109,6 +109,7 @@ from .runtime_v1 import (
     build_local_llm_plan,
     choose_cache_placement,
     choose_edge_aware_runtime_assignment,
+    choose_bounded_replan_assignment,
     choose_runtime_assignment,
     choose_semantic_cache_provider,
     compress_payload,
