@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
@@ -38,6 +38,8 @@ PLAN_TRACER = TRACER_DIR / "plan_tracer.py"
 LLM_BUNDLE_GENERATOR = TRACER_DIR / "generate_llm_proportional_native_bundle.py"
 RUNTIME_V1_MODEL_SPEC = TRACER_DIR / "llm_model_spec_qwen_tiny_proportional.json"
 RUNTIME_V1_PROVIDER_PROFILES = TRACER_DIR / "llm_provider_profiles_2_4_8.json"
+RUNTIME_AWARE_FIXTURES = TRACER_DIR / "runtime_aware_fixtures"
+RUNTIME_AWARE_MULTI_USER_WORKLOAD = RUNTIME_AWARE_FIXTURES / "multi_user_requests.json"
 USER_DRIVER = TRACER_DIR / "user_driver.py"
 PROVIDER_EXE = REPO / "build/examples/di-native-provider"
 PLAN_SCHEMA_EXE = REPO / "build/examples/di-native-plan-schema-smoke"
@@ -59,6 +61,7 @@ NATIVE_TRACER_PROFILE_FIELDS = {
     "assignment": "assignment",
     "policy_bundle": "policy_bundle",
     "llm_planner_mode": "llm_planner_mode",
+    "runtime_aware_user_planner": "runtime_aware_user_planner",
     "tracer_deterministic_runner": "tracer_deterministic_runner",
     "provider_check_timeout": "provider_check_timeout",
     "local_execution_only": "local_execution_only",
@@ -79,6 +82,9 @@ NATIVE_TRACER_PROFILE_FIELDS = {
     "provider_admission_max_queue": "provider_admission_max_queue",
     "provider_admission_max_active_workers": "provider_admission_max_active_workers",
     "provider_admission_min_free_memory_mb": "provider_admission_min_free_memory_mb",
+    "multi_user_workload": "multi_user_workload",
+    "runtime_aware_max_replans": "runtime_aware_max_replans",
+    "runtime_aware_replan_reasons": "runtime_aware_replan_reasons",
 }
 
 
@@ -87,6 +93,29 @@ def load_json_file(path: str) -> dict:
         return {}
     with Path(path).expanduser().open(encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def load_multi_user_workload(path: str | Path) -> dict[str, Any]:
+    workload_path = Path(path)
+    if not str(path):
+        return {"enabled": False, "path": "", "requests": []}
+    payload = json.loads(workload_path.read_text(encoding="utf-8"))
+    requests = payload.get("requests", [])
+    if not isinstance(requests, list):
+        raise RuntimeError(f"multi-user workload requests must be a list: {workload_path}")
+    return {
+        "enabled": True,
+        "path": str(workload_path),
+        "schema": payload.get("schema", ""),
+        "serviceName": payload.get("serviceName", SERVICE),
+        "requestCount": len(requests),
+        "users": sorted({
+            str(item.get("user", ""))
+            for item in requests
+            if isinstance(item, dict) and item.get("user")
+        }),
+        "requests": requests,
+    }
 
 
 def native_tracer_section(payload: dict) -> dict:
@@ -708,7 +737,9 @@ def user_driver_command(policy_dir: Path,
                         target_rps: float = 0.0,
                         open_loop_duration_s: float = 0.0,
                         open_loop_driver_mode: str = "child",
-                        burst_admission_providers: Optional[list[str]] = None) -> str:
+                        burst_admission_providers: Optional[list[str]] = None,
+                        runtime_aware_max_replans: int = 0,
+                        runtime_aware_replan_reasons: str = "") -> str:
     args = [
         "python3", str(USER_DRIVER),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -735,6 +766,10 @@ def user_driver_command(policy_dir: Path,
             "--burst-admission-providers",
             ",".join(burst_admission_providers),
         ])
+    if runtime_aware_max_replans > 0:
+        args.extend(["--runtime-aware-max-replans", str(runtime_aware_max_replans)])
+    if runtime_aware_replan_reasons:
+        args.extend(["--runtime-aware-replan-reasons", runtime_aware_replan_reasons])
     return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
 
 
@@ -835,6 +870,95 @@ def metric_stats(values: list[float]) -> dict[str, float | int]:
         "min": round(min(values), 3),
         "max": round(max(values), 3),
     }
+
+
+def build_campaign_metrics(summary: dict[str, object]) -> dict[str, object]:
+    user_execution = summary.get("userExecution", {})
+    if not isinstance(user_execution, dict):
+        user_execution = {}
+    provider_utilization = summary.get("providerUtilization", {})
+    if not isinstance(provider_utilization, dict):
+        provider_utilization = {}
+    runtime_assignment = summary.get("runtimeAwarePlanner", {})
+    if not isinstance(runtime_assignment, dict):
+        runtime_assignment = {}
+    request_count = int(user_execution.get("requestCount", summary.get("requestCount", 0)) or 0)
+    success_count = int(user_execution.get("successCount", 0) or 0)
+    failure_count = int(user_execution.get("failureCount", max(0, request_count - success_count)) or 0)
+    lease_counters = {
+        "negativeAckEvents": int(
+            summary.get("failureBreakdown", {}).get("negativeAckEventCount", 0)
+        ) if isinstance(summary.get("failureBreakdown", {}), dict) else 0,
+        "rejections": failure_count,
+    }
+    residency_counters: Counter[str] = Counter()
+    selected_providers = runtime_assignment.get("selectedProviders", {})
+    if isinstance(selected_providers, dict):
+        for value in selected_providers.values():
+            residency_counters[str(value)] += 1
+    utilization_values = [
+        float(item.get("estimatedUtilization", 0.0))
+        for item in provider_utilization.values()
+        if isinstance(item, dict)
+    ]
+    return {
+        "status": summary.get("status", ""),
+        "successRate": (
+            round(success_count / request_count, 6)
+            if request_count > 0 else
+            (1.0 if summary.get("status") == "SUCCESS" else 0.0)
+        ),
+        "requestCount": request_count,
+        "successCount": success_count,
+        "failureCount": failure_count,
+        "latencyMs": {
+            "p50": float(user_execution.get("p50Ms", 0.0) or 0.0),
+            "p95": float(user_execution.get("p95Ms", 0.0) or 0.0),
+            "mean": float(user_execution.get("meanMs", 0.0) or 0.0),
+            "makespan": float(user_execution.get("makespanMs", 0.0) or 0.0),
+        },
+        "utilization": {
+            "providers": provider_utilization,
+            "meanEstimatedUtilization": (
+                round(statistics.mean(utilization_values), 6)
+                if utilization_values else 0.0
+            ),
+        },
+        "leaseCounters": lease_counters,
+        "residencyCounters": dict(sorted(residency_counters.items())),
+        "edgeCostSummary": runtime_assignment.get("edgeCostSummary", {}),
+        "nodeCostSummary": runtime_assignment.get("nodeCostSummary", {}),
+        "replanCount": int(user_execution.get("replanCount", 0) or 0),
+    }
+
+
+def write_planner_metrics(out_dir: Path, summary: dict[str, object]) -> dict[str, str]:
+    metrics = build_campaign_metrics(summary)
+    json_path = out_dir / "planner-metrics.json"
+    csv_path = out_dir / "planner-metrics.csv"
+    json_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+                         encoding="utf-8")
+    with csv_path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=[
+            "status", "requestCount", "successCount", "failureCount",
+            "successRate", "p50Ms", "p95Ms", "meanMs", "makespanMs",
+            "meanEstimatedUtilization", "replanCount",
+        ])
+        writer.writeheader()
+        writer.writerow({
+            "status": metrics["status"],
+            "requestCount": metrics["requestCount"],
+            "successCount": metrics["successCount"],
+            "failureCount": metrics["failureCount"],
+            "successRate": metrics["successRate"],
+            "p50Ms": metrics["latencyMs"]["p50"],
+            "p95Ms": metrics["latencyMs"]["p95"],
+            "meanMs": metrics["latencyMs"]["mean"],
+            "makespanMs": metrics["latencyMs"]["makespan"],
+            "meanEstimatedUtilization": metrics["utilization"]["meanEstimatedUtilization"],
+            "replanCount": metrics["replanCount"],
+        })
+    return {"json": str(json_path), "csv": str(csv_path)}
 
 
 def summarize_provider_metrics(provider_log_rows: list[dict[str, object]]) -> dict[str, object]:
@@ -1291,6 +1415,9 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "concurrency": args.concurrency,
             "localExecutionOnly": args.local_execution_only,
             "fullNetwork": args.full_network,
+            "multiUserWorkload": args.multi_user_workload,
+            "runtimeAwareMaxReplans": args.runtime_aware_max_replans,
+            "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
         },
         "nativePlan": str(policy_dir / "native-execution-plan.json"),
         "serviceManifest": str(policy_dir / "service-manifest.json"),
@@ -1340,6 +1467,16 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "minFreeMemoryMb": args.provider_admission_min_free_memory_mb,
             "enabled": bool(provider_admission_env(args)),
         },
+        "runtimeAwarePlanner": {
+            "enabled": bool(args.runtime_aware_user_planner),
+            "status": "not-started",
+        },
+        "multiUserWorkload": {
+            "enabled": False,
+        },
+        "plannerMetrics": {
+            "status": "not-written",
+        },
         "assignment": args.assignment,
         "assignmentRequested": args.assignment,
         "assignmentResolved": args.assignment,
@@ -1375,6 +1512,8 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(parents=[pre_parser])
     parser.add_argument("--quick-smoke", action="store_true")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print resolved NativeTracer MiniNDN campaign arguments without running")
     parser.add_argument("--out", default=default_value(profile_defaults, "out", str(DEFAULT_OUT)))
     parser.add_argument("--assignment",
                         choices=[
@@ -1393,6 +1532,15 @@ def main() -> int:
     parser.add_argument("--runtime-aware-user-planner", action="store_true",
                         default=bool(default_value(profile_defaults, "runtime_aware_user_planner", False)),
                         help="Enable runtime-aware user-side planner metadata and campaign metrics")
+    parser.add_argument("--multi-user-workload",
+                        default=default_value(profile_defaults, "multi_user_workload", ""),
+                        help="Optional runtime-aware multi-user workload fixture")
+    parser.add_argument("--runtime-aware-max-replans", type=int,
+                        default=default_value(profile_defaults, "runtime_aware_max_replans", 0),
+                        help="Maximum bounded runtime-aware replans passed to the user driver")
+    parser.add_argument("--runtime-aware-replan-reasons",
+                        default=default_value(profile_defaults, "runtime_aware_replan_reasons", ""),
+                        help="Comma-separated synthetic replan reasons for evidence dry-runs")
     parser.add_argument("--tracer-deterministic-runner", action="store_true",
                         default=bool(default_value(profile_defaults, "tracer_deterministic_runner", False)),
                         help="Run provider ONNX roles through the deterministic runner")
@@ -1401,6 +1549,9 @@ def main() -> int:
     parser.add_argument("--local-execution-only", action="store_true",
                         default=bool(default_value(profile_defaults, "local_execution_only", False)),
                         help="Generate policy and run local native execution evidence without MiniNDN")
+    parser.add_argument("--no-local-execution-only", dest="local_execution_only",
+                        action="store_false",
+                        help="Override a profile default and run the MiniNDN provider-check path")
     parser.add_argument("--full-network", action="store_true",
                         default=bool(default_value(profile_defaults, "full_network", False)),
                         help="Run controller, providers in --serve mode, and the NativeTracer user driver")
@@ -1478,12 +1629,53 @@ def main() -> int:
         raise SystemExit("--runtime-v1-context-tokens must be positive")
     if args.runtime_v1_generated_tokens < 0:
         raise SystemExit("--runtime-v1-generated-tokens must be non-negative")
+    if args.runtime_aware_max_replans < 0:
+        raise SystemExit("--runtime-aware-max-replans must be non-negative")
     if args.provider_admission_max_queue < -1:
         raise SystemExit("--provider-admission-max-queue must be -1 or non-negative")
     if args.provider_admission_max_active_workers < -1:
         raise SystemExit("--provider-admission-max-active-workers must be -1 or non-negative")
     if args.provider_admission_min_free_memory_mb < 0:
         raise SystemExit("--provider-admission-min-free-memory-mb must be non-negative")
+
+    multi_user_workload = (
+        load_multi_user_workload(args.multi_user_workload)
+        if args.multi_user_workload else
+        {"enabled": False, "path": "", "requests": []}
+    )
+    if multi_user_workload.get("enabled") and not args.open_loop_duration_s:
+        args.requests = max(args.requests, int(multi_user_workload.get("requestCount", 0) or 0))
+        args.concurrency = max(1, min(args.concurrency, args.requests))
+
+    if args.dry_run:
+        print(json.dumps({
+            "event": "NDNSF_DI_NATIVE_TRACER_MININDN_DRY_RUN",
+            "assignment": args.assignment,
+            "policyBundle": args.policy_bundle,
+            "llmPlannerMode": args.llm_planner_mode,
+            "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
+            "multiUserWorkload": multi_user_workload,
+            "requests": args.requests,
+            "concurrency": args.concurrency,
+            "targetRps": args.target_rps,
+            "runtimeAwareMaxReplans": args.runtime_aware_max_replans,
+            "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
+            "plannerMetrics": {
+                "json": str(Path(args.out) / "planner-metrics.json"),
+                "csv": str(Path(args.out) / "planner-metrics.csv"),
+            },
+            "userDriverCommand": user_driver_command(
+                Path(args.out) / "policy-bundle",
+                args.requests,
+                args.concurrency,
+                args.submission_spacing_ms if args.concurrency > 1 else 0,
+                args.target_rps,
+                args.open_loop_duration_s,
+                args.open_loop_driver_mode,
+                runtime_aware_max_replans=args.runtime_aware_max_replans,
+                runtime_aware_replan_reasons=args.runtime_aware_replan_reasons),
+        }, indent=2, sort_keys=True))
+        return 0
 
     if args.quick_smoke:
         validate_prerequisites()
@@ -1515,6 +1707,10 @@ def main() -> int:
     ])
 
     summary = build_base_summary(args, out_dir, policy_dir, logs_dir)
+    summary["multiUserWorkload"] = {
+        key: value for key, value in multi_user_workload.items()
+        if key != "requests"
+    }
     ndn = None
     procs = []
     try:
@@ -1641,6 +1837,30 @@ def main() -> int:
                 "roleExecutionDelayMs": policy_summary.get(
                     "roleExecutionDelayMs", args.role_execution_delay_ms),
                 "workloadConcurrency": policy_summary.get("workloadConcurrency", args.concurrency),
+            }
+        runtime_assignment = policy_summary.get("runtimeAssignment", {})
+        runtime_assignment_summary = policy_summary.get("runtimeAssignmentSummary", {})
+        if args.runtime_aware_user_planner or runtime_assignment or runtime_assignment_summary:
+            summary["runtimeAwarePlanner"] = {
+                "enabled": bool(args.runtime_aware_user_planner),
+                "status": "available" if runtime_assignment or runtime_assignment_summary else "enabled-no-assignment",
+                "assignmentPath": policy_summary.get("runtimeAssignmentPath", ""),
+                "selectedProviders": (
+                    runtime_assignment_summary.get("selectedProviders", {})
+                    if isinstance(runtime_assignment_summary, dict) else {}
+                ),
+                "nodeCostSummary": (
+                    runtime_assignment_summary.get("nodeCostSummary", {})
+                    if isinstance(runtime_assignment_summary, dict) else {}
+                ),
+                "edgeCostSummary": (
+                    runtime_assignment_summary.get("edgeCostSummary", {})
+                    if isinstance(runtime_assignment_summary, dict) else {}
+                ),
+                "rejectedCandidateCount": (
+                    runtime_assignment_summary.get("rejectedCandidateCount", 0)
+                    if isinstance(runtime_assignment_summary, dict) else 0
+                ),
             }
 
         roles = load_plan_roles(policy_dir / "native-execution-plan.json")
@@ -1805,7 +2025,9 @@ def main() -> int:
                                     [
                                         "/NDNSF-DI/Tracer/provider/backbone",
                                         "/NDNSF-DI/Tracer/provider/single",
-                                    ] if resolved_assignment == "capacity-pool" else None),
+                                    ] if resolved_assignment == "capacity-pool" else None,
+                                    args.runtime_aware_max_replans,
+                                    args.runtime_aware_replan_reasons),
                 logs_dir,
                 env,
                 procs)
@@ -1930,6 +2152,16 @@ def main() -> int:
                 user_execution,
                 summary["negativeAckReasonCounters"],
             )
+        try:
+            summary["plannerMetrics"] = {
+                "status": "written",
+                **write_planner_metrics(out_dir, summary),
+            }
+        except Exception as exc:
+            summary["plannerMetrics"] = {
+                "status": "failed",
+                "reason": str(exc),
+            }
         write_summary(out_dir, summary)
         print((out_dir / "summary.txt").read_text(encoding="utf-8"))
     return 0 if summary["status"] == "SUCCESS" else 1

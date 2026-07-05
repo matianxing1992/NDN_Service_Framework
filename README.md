@@ -818,6 +818,16 @@ Build it with:
 
 `/examples/App_ServiceController.cpp`, `/examples/App_Provider.cpp`, and `/examples/App_User.cpp` are the current HELLO regression examples. They use controller-issued permission mappings, dynamic `addService(...)`, `RequestMessage.payload = "HELLO"`, `ResponseMessage.payload = "HELLO"`, `AckDecision` metadata payloads, `UserToken`/`ProviderToken` handshakes, and timeout-driven custom selection over `AckSelectionCandidate`.
 
+Generic runtime metadata helpers are available for applications that need
+structured ACK state without adding application-specific concepts to NDNSF
+core. `GenericAckMetadata` can carry a `GenericProviderRuntimeHint`, directed
+`PeerNetworkMetric` entries, and optional `GenericAdmissionLease` offers.
+Admission leases are opt-in and are validated before selected service
+execution only for services that enable them. They complement, but do not
+replace, the normal UserToken, ProviderToken, NAC-ABE, permission, and replay
+checks. Application layers such as NDNSF-DI interpret the service payload; core
+helpers remain model-agnostic.
+
 See `/examples/wscript` for how to compile the examples.
 
 ### 3.7 How to run examples
@@ -867,6 +877,12 @@ dependency-driven execution, repo-backed or NDN-backed artifacts, activation
 exchange through large-data references, and MiniNDN smoke tests. It remains an
 application package above NDNSF core; model-specific splitters and planners are
 kept there rather than inside the framework core.
+
+The runtime-aware DI planner keeps planning user-side. It creates reusable plan
+templates, then selects per-request runtime assignments from provider ACK
+metadata, fragment residency, directed provider-to-provider metrics, and
+optional admission leases. The workflow entry point is
+`docs/NDNSF-DI-runtime-workflow.md`.
 
 `NDNSF-DistributedRepo` is a repository-oriented application layer. It should
 store and serve application-published NDN Data segments or references without

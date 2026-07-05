@@ -1,0 +1,43 @@
+{
+  "schema": "ndnsf-di-runtime-aware-peer-metrics-v1",
+  "baseTopology": "Experiments/Topology/AI_Lab.conf",
+  "description": "Directed provider-to-provider metrics used by Spec047 runtime-aware planner evidence. MiniNDN links remain symmetric; these metrics model measured or advertised overlay transfer cost between providers.",
+  "metrics": [
+    {
+      "srcPeer": "/NDNSF-DI/Tracer/provider/backbone",
+      "dstPeer": "/NDNSF-DI/Tracer/provider/head0",
+      "rttMs": 12,
+      "bandwidthMbps": 900,
+      "lossRate": 0.002,
+      "jitterMs": 1,
+      "confidence": 0.9
+    },
+    {
+      "srcPeer": "/NDNSF-DI/Tracer/provider/head0",
+      "dstPeer": "/NDNSF-DI/Tracer/provider/backbone",
+      "rttMs": 24,
+      "bandwidthMbps": 320,
+      "lossRate": 0.006,
+      "jitterMs": 3,
+      "confidence": 0.8
+    },
+    {
+      "srcPeer": "/NDNSF-DI/Tracer/provider/backbone",
+      "dstPeer": "/NDNSF-DI/Tracer/provider/merge",
+      "rttMs": 18,
+      "bandwidthMbps": 650,
+      "lossRate": 0.003,
+      "jitterMs": 2,
+      "confidence": 0.85
+    },
+    {
+      "srcPeer": "/NDNSF-DI/Tracer/provider/merge",
+      "dstPeer": "/NDNSF-DI/Tracer/provider/backbone",
+      "rttMs": 36,
+      "bandwidthMbps": 180,
+      "lossRate": 0.012,
+      "jitterMs": 6,
+      "confidence": 0.7
+    }
+  ]
+}

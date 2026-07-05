@@ -66,6 +66,9 @@ NATIVE_TRACER_KEYS = {
     "provider_admission_max_queue",
     "provider_admission_max_active_workers",
     "provider_admission_min_free_memory_mb",
+    "multi_user_workload",
+    "runtime_aware_max_replans",
+    "runtime_aware_replan_reasons",
     "core_trace",
     "tracer_deterministic_runner",
 }
@@ -79,6 +82,8 @@ NATIVE_TRACER_STRING_FIELDS = {
     "llm_planner_mode",
     "open_loop_driver_mode",
     "runtime_v1_prefix_id",
+    "multi_user_workload",
+    "runtime_aware_replan_reasons",
 }
 NATIVE_TRACER_BOOL_FIELDS = {
     "enabled",
@@ -97,6 +102,7 @@ NATIVE_TRACER_INT_FIELDS = {
     "runtime_v1_generated_tokens",
     "provider_admission_max_queue",
     "provider_admission_max_active_workers",
+    "runtime_aware_max_replans",
 }
 NATIVE_TRACER_FLOAT_FIELDS = {
     "target_rps",
@@ -163,6 +169,9 @@ class NativeTracerProfile:
     provider_admission_max_queue: int = -1
     provider_admission_max_active_workers: int = -1
     provider_admission_min_free_memory_mb: float = 0.0
+    multi_user_workload: str = ""
+    runtime_aware_max_replans: int = 0
+    runtime_aware_replan_reasons: str = ""
     core_trace: bool = False
     tracer_deterministic_runner: bool = False
 
@@ -201,6 +210,10 @@ class NativeTracerProfile:
             provider_admission_min_free_memory_mb=float(
                 data.get("provider_admission_min_free_memory_mb", cls.provider_admission_min_free_memory_mb)
             ),
+            multi_user_workload=str(data.get("multi_user_workload", cls.multi_user_workload)),
+            runtime_aware_max_replans=int(data.get("runtime_aware_max_replans", cls.runtime_aware_max_replans)),
+            runtime_aware_replan_reasons=str(data.get(
+                "runtime_aware_replan_reasons", cls.runtime_aware_replan_reasons)),
             core_trace=bool(data.get("core_trace", cls.core_trace)),
             tracer_deterministic_runner=bool(data.get("tracer_deterministic_runner", cls.tracer_deterministic_runner)),
         )
@@ -492,6 +505,9 @@ def resolve_native_tracer(native: NativeTracerProfile, repo_root: Path) -> dict[
         "provider_admission_max_queue": native.provider_admission_max_queue,
         "provider_admission_max_active_workers": native.provider_admission_max_active_workers,
         "provider_admission_min_free_memory_mb": native.provider_admission_min_free_memory_mb,
+        "multi_user_workload": native.multi_user_workload,
+        "runtime_aware_max_replans": native.runtime_aware_max_replans,
+        "runtime_aware_replan_reasons": native.runtime_aware_replan_reasons,
         "core_trace": native.core_trace,
         "tracer_deterministic_runner": native.tracer_deterministic_runner,
         "command": command,
@@ -537,6 +553,12 @@ def build_native_tracer_command(native: NativeTracerProfile) -> list[str]:
         command.extend(["--provider-admission-max-active-workers", str(native.provider_admission_max_active_workers)])
     if native.provider_admission_min_free_memory_mb > 0:
         command.extend(["--provider-admission-min-free-memory-mb", str(native.provider_admission_min_free_memory_mb)])
+    if native.multi_user_workload:
+        command.extend(["--multi-user-workload", native.multi_user_workload])
+    if native.runtime_aware_max_replans > 0:
+        command.extend(["--runtime-aware-max-replans", str(native.runtime_aware_max_replans)])
+    if native.runtime_aware_replan_reasons:
+        command.extend(["--runtime-aware-replan-reasons", native.runtime_aware_replan_reasons])
     if native.local_execution_only:
         command.append("--local-execution-only")
     if native.full_network:
