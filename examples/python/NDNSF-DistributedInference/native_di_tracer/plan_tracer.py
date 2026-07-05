@@ -11,7 +11,20 @@ from pathlib import Path
 import subprocess
 import sys
 
-from ndnsf_distributed_inference import write_policy_bundle
+from ndnsf_distributed_inference import (
+    ModelFragmentKey,
+    PlanDependency,
+    PlanRole,
+    PlanTemplate,
+    choose_edge_aware_runtime_assignment,
+    to_plain,
+    write_json,
+    write_policy_bundle,
+)
+from runtime_aware_fixtures.loader import (
+    load_provider_ack_metadata,
+    load_provider_network_matrix,
+)
 
 
 SERVICE = "/Inference/NativeTracer"
@@ -25,6 +38,7 @@ REQUIRED_OUTPUTS = {
     "/Head/Shard/0": {"head0-to-merge"},
     "/Head/Shard/1": {"head1-to-merge"},
 }
+ROLE_ORDER = ["/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"]
 FINAL_RESPONSE_ROLE = "/Merge"
 FINAL_RESPONSE_SCOPE = "final-response"
 PADDING_TENSOR = "__ndnsf_padding"
@@ -58,6 +72,103 @@ def write_json_with_sidecar(path: Path, payload: dict) -> None:
     path.with_suffix(path.suffix + ".sha256").write_text(
         sha256_file(path) + "\n",
         encoding="utf-8")
+
+
+def native_tracer_fragment_key(role_id: str, stage_index: int, stage_count: int) -> ModelFragmentKey:
+    return ModelFragmentKey(
+        model_id="qwen-native-tracer",
+        model_digest="sha256:qwen-native-tracer",
+        runtime_backend="onnx-cpu",
+        precision="fp32",
+        split_strategy="native-tracer-pipeline",
+        stage_index=stage_index,
+        stage_count=stage_count,
+        layer_start=stage_index,
+        layer_end=stage_index,
+        fragment_digest="sha256:native-tracer:" + role_id.strip("/").replace("/", "-"),
+    )
+
+
+def build_runtime_plan_template(service_plan: dict) -> PlanTemplate:
+    roles = [role for role in ROLE_ORDER if role in set(service_plan["roles"])]
+    role_index = {role: index for index, role in enumerate(roles)}
+    plan_roles = tuple(
+        PlanRole(
+            role_id=role,
+            fragment_key=native_tracer_fragment_key(role, role_index[role], len(roles)),
+            estimated_compute_ms={
+                "/Backbone": 18.0,
+                "/Head/Shard/0": 9.0,
+                "/Head/Shard/1": 9.0,
+                "/Merge": 4.0,
+            }.get(role, 10.0),
+            memory_mb={
+                "/Backbone": 256.0,
+                "/Head/Shard/0": 128.0,
+                "/Head/Shard/1": 128.0,
+                "/Merge": 64.0,
+            }.get(role, 128.0),
+        )
+        for role in roles
+    )
+    dependencies: list[PlanDependency] = []
+    for dependency in service_plan.get("dependencies", []):
+        bytes_count = int(dependency.get("expectedBytes", 0) or 0)
+        for producer in dependency.get("producers", []):
+            for consumer in dependency.get("consumers", []):
+                if producer in role_index and consumer in role_index:
+                    dependencies.append(PlanDependency(
+                        from_role=producer,
+                        to_role=consumer,
+                        bytes_count=bytes_count,
+                    ))
+    return PlanTemplate(
+        template_id="native-tracer-runtime-aware-v1",
+        model_id="qwen-native-tracer",
+        split_strategy="native-tracer-pipeline",
+        roles=plan_roles,
+        dependencies=tuple(dependencies),
+    )
+
+
+def generate_runtime_assignment_evidence(out_dir: Path, service_plan: dict) -> dict:
+    template = build_runtime_plan_template(service_plan)
+    metadata_by_provider = load_provider_ack_metadata()
+    candidates = {
+        role.role_id: [
+            {"providerName": provider, "genericAckMetadata": metadata}
+            for provider, metadata in metadata_by_provider.items()
+        ]
+        for role in template.roles
+    }
+    assignment = choose_edge_aware_runtime_assignment(
+        template,
+        candidates,
+        request_id="native-tracer-runtime-aware-dry-run",
+        runtime_required=True,
+        network_matrix=load_provider_network_matrix(),
+    )
+    assignment_path = out_dir / "planner-runtime-assignment.json"
+    payload = {
+        "schema": "ndnsf-di-runtime-aware-assignment-v1",
+        "template": to_plain(template),
+        "assignment": to_plain(assignment),
+    }
+    write_json(assignment_path, payload)
+    selected = assignment.role_assignments
+    return {
+        "runtimeAwarePlanner": True,
+        "runtimeAwareAssignment": str(assignment_path),
+        "runtimeAwareAssignmentSha256": sha256_file(assignment_path),
+        "runtimeAwareSelectedProviders": {
+            role: item["provider"] for role, item in selected.items()
+        },
+        "runtimeAwareRejectedCandidateCount": len(
+            assignment.score_breakdown.get("rejectedCandidates", [])),
+        "runtimeAwareNodeCostMs": assignment.score_breakdown["nodeCostMs"],
+        "runtimeAwareEdgeCostMs": assignment.score_breakdown["edgeCostMs"],
+        "runtimeAwareTotalEstimatedMs": assignment.score_breakdown["totalEstimatedMs"],
+    }
 
 
 def padded_expected_segments(expected_bytes: int) -> int:
@@ -306,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--role-execution-delay-ms", type=float, default=0.0)
     parser.add_argument("--workload-concurrency", type=int, default=1)
     parser.add_argument("--target-rps", type=float, default=0.0)
+    parser.add_argument("--runtime-aware-user-planner", action="store_true")
     args = parser.parse_args(argv)
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
@@ -322,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
     apply_activation_padding(out_dir, args.activation_pad_bytes)
     apply_role_execution_delay(out_dir, args.role_execution_delay_ms)
     summary = validate_bundle(out_dir)
+    plan = json.loads((out_dir / "native-execution-plan.json").read_text())
+    service_plan = next(item for item in plan["services"] if item["service"] == SERVICE)
     summary.update(generate_optimization_evidence(
         out_dir,
         args.runtime_candidate,
@@ -334,6 +448,8 @@ def main(argv: list[str] | None = None) -> int:
         "controllerPolicy": deployment.policy_file,
         "trustSchema": deployment.trust_schema,
     })
+    if args.runtime_aware_user_planner:
+        summary.update(generate_runtime_assignment_evidence(out_dir, service_plan))
 
     if args.summary_json:
         Path(args.summary_json).write_text(
@@ -348,6 +464,10 @@ def main(argv: list[str] | None = None) -> int:
     print("manifest:", summary["manifest"])
     print("optimization evidence:", summary["optimizationEvidence"])
     print("selected candidate:", summary["selectedCandidate"])
+    if args.runtime_aware_user_planner:
+        print("runtime-aware assignment:", summary["runtimeAwareAssignment"])
+        print("runtime-aware selected providers:",
+              json.dumps(summary["runtimeAwareSelectedProviders"], sort_keys=True))
     print()
     print("C++ smoke commands:")
     print(

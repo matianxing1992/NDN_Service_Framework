@@ -415,6 +415,7 @@ def run_plan_tracer(policy_dir: Path,
                     activation_pad_bytes: int,
                     workload_concurrency: int,
                     target_rps: float,
+                    runtime_aware_user_planner: bool = False,
                     log_name: str = "plan-tracer") -> dict[str, object]:
     active_assignment = assignment_for(assignment_name)
     provider_profiles_json = (
@@ -431,7 +432,7 @@ def run_plan_tracer(policy_dir: Path,
         if log_name == "plan-tracer" else
         out_dir / f"{log_name}-policy-summary.json"
     )
-    run_logged(log_name, [
+    command = [
         "python3", str(PLAN_TRACER),
         "--out", str(policy_dir),
         "--summary-json", str(summary_path),
@@ -441,7 +442,10 @@ def run_plan_tracer(policy_dir: Path,
         "--role-execution-delay-ms", str(role_execution_delay_ms),
         "--workload-concurrency", str(workload_concurrency),
         "--target-rps", str(target_rps),
-    ], logs_dir, env)
+    ]
+    if runtime_aware_user_planner:
+        command.append("--runtime-aware-user-planner")
+    run_logged(log_name, command, logs_dir, env)
     return json.loads(summary_path.read_text(encoding="utf-8"))
 
 
@@ -1554,6 +1558,7 @@ def main() -> int:
                 args.activation_pad_bytes,
                 args.concurrency,
                 args.target_rps,
+                args.runtime_aware_user_planner,
                 "plan-tracer-auto-probe")
             recommended = str(probe_summary.get(
                 "plannerRecommendedCandidate",
@@ -1586,6 +1591,7 @@ def main() -> int:
                 args.activation_pad_bytes,
                 args.concurrency,
                 args.target_rps,
+                args.runtime_aware_user_planner,
                 "plan-tracer")
         add_worker_user_policies(policy_dir / "controller.policies", args.requests)
         summary["assignmentRequested"] = requested_assignment

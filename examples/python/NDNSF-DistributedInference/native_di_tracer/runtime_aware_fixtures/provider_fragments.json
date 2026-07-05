@@ -16,21 +16,39 @@
         "fragmentStates": [
           {
             "fragmentKey": {
-              "modelId": "qwen-tiny",
-              "modelDigest": "sha256:model",
-              "runtimeBackend": "onnx-cuda",
-              "precision": "fp16",
-              "splitStrategy": "pipeline",
+              "modelId": "qwen-native-tracer",
+              "modelDigest": "sha256:qwen-native-tracer",
+              "runtimeBackend": "onnx-cpu",
+              "precision": "fp32",
+              "splitStrategy": "native-tracer-pipeline",
               "stageIndex": 0,
-              "stageCount": 2,
+              "stageCount": 4,
               "layerStart": 0,
-              "layerEnd": 13,
-              "fragmentDigest": "sha256:stage0"
+              "layerEnd": 0,
+              "fragmentDigest": "sha256:native-tracer:Backbone"
             },
             "residency": "GPU_LOADED",
             "estimatedReadyMs": 0,
             "memoryFootprintMb": 1024,
             "confidence": 1.0
+          },
+          {
+            "fragmentKey": {
+              "modelId": "qwen-native-tracer",
+              "modelDigest": "sha256:qwen-native-tracer",
+              "runtimeBackend": "onnx-cpu",
+              "precision": "fp32",
+              "splitStrategy": "native-tracer-pipeline",
+              "stageIndex": 3,
+              "stageCount": 4,
+              "layerStart": 3,
+              "layerEnd": 3,
+              "fragmentDigest": "sha256:native-tracer:Merge"
+            },
+            "residency": "CPU_RESIDENT",
+            "estimatedReadyMs": 4,
+            "memoryFootprintMb": 256,
+            "confidence": 0.9
           }
         ]
       }
@@ -50,20 +68,56 @@
         "fragmentStates": [
           {
             "fragmentKey": {
-              "modelId": "qwen-tiny",
-              "modelDigest": "sha256:model",
-              "runtimeBackend": "onnx-cuda",
-              "precision": "fp16",
-              "splitStrategy": "pipeline",
-              "stageIndex": 0,
-              "stageCount": 2,
-              "layerStart": 0,
-              "layerEnd": 13,
-              "fragmentDigest": "sha256:stage0"
+              "modelId": "qwen-native-tracer",
+              "modelDigest": "sha256:qwen-native-tracer",
+              "runtimeBackend": "onnx-cpu",
+              "precision": "fp32",
+              "splitStrategy": "native-tracer-pipeline",
+              "stageIndex": 1,
+              "stageCount": 4,
+              "layerStart": 1,
+              "layerEnd": 1,
+              "fragmentDigest": "sha256:native-tracer:Head-Shard-0"
+            },
+            "residency": "GPU_LOADED",
+            "estimatedReadyMs": 0,
+            "memoryFootprintMb": 512,
+            "confidence": 1.0
+          },
+          {
+            "fragmentKey": {
+              "modelId": "qwen-native-tracer",
+              "modelDigest": "sha256:qwen-native-tracer",
+              "runtimeBackend": "onnx-cpu",
+              "precision": "fp32",
+              "splitStrategy": "native-tracer-pipeline",
+              "stageIndex": 2,
+              "stageCount": 4,
+              "layerStart": 2,
+              "layerEnd": 2,
+              "fragmentDigest": "sha256:native-tracer:Head-Shard-1"
+            },
+            "residency": "GPU_LOADED",
+            "estimatedReadyMs": 0,
+            "memoryFootprintMb": 512,
+            "confidence": 1.0
+          },
+          {
+            "fragmentKey": {
+              "modelId": "qwen-native-tracer",
+              "modelDigest": "sha256:qwen-native-tracer",
+              "runtimeBackend": "onnx-cpu",
+              "precision": "fp32",
+              "splitStrategy": "native-tracer-pipeline",
+              "stageIndex": 3,
+              "stageCount": 4,
+              "layerStart": 3,
+              "layerEnd": 3,
+              "fragmentDigest": "sha256:native-tracer:Merge"
             },
             "residency": "DISK_RESIDENT",
             "estimatedReadyMs": 20,
-            "memoryFootprintMb": 1024,
+            "memoryFootprintMb": 256,
             "confidence": 0.95
           }
         ]
