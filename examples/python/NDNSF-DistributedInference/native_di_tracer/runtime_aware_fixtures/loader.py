@@ -10,7 +10,9 @@ from typing import Any
 from ndnsf_distributed_inference.runtime_v1 import (
     GenericAckMetadata,
     GenericAdmissionLease,
-    GenericProviderRuntimeHint,
+    FragmentResidency,
+    ModelFragmentKey,
+    ProviderFragmentInventoryManager,
     ProviderNetworkMatrix,
 )
 
@@ -26,13 +28,45 @@ def load_provider_ack_metadata(name: str = "provider_fragments.json") -> dict[st
     payload = read_fixture(name)
     result: dict[str, GenericAckMetadata] = {}
     for provider in payload.get("providers", []):
-        generic_hint = GenericProviderRuntimeHint.from_dict(dict(provider["genericHint"]))
+        provider_name = str(provider["providerName"])
+        hint = dict(provider.get("genericHint", {}))
+        di_state = dict(provider.get("diState", {}))
+        manager = ProviderFragmentInventoryManager(
+            provider_name,
+            supported_backends=di_state.get("supportedBackends", ()),
+            free_gpu_memory_mb=di_state.get("freeGpuMemoryMb", 0.0),
+            free_cpu_memory_mb=di_state.get("freeCpuMemoryMb", 0.0),
+            active_role_count=di_state.get("activeRoleCount", 0),
+            queue_length=hint.get("queueLength", di_state.get("queueLength", 0)),
+            estimated_queue_wait_ms=hint.get(
+                "estimatedQueueWaitMs",
+                di_state.get("estimatedQueueWaitMs", 0.0)),
+            confidence=hint.get("confidence", di_state.get("confidence", 1.0)),
+        )
+        for state in di_state.get("fragmentStates", []):
+            fragment_key = ModelFragmentKey.from_dict(dict(state["fragmentKey"]))
+            disk_path = state.get("diskPath", state.get("disk_path", ""))
+            if disk_path and not Path(str(disk_path)).is_absolute():
+                disk_path = FIXTURE_DIR / str(disk_path)
+            manager.register_fragment(
+                fragment_key,
+                disk_path=disk_path,
+                memory_footprint_mb=state.get("memoryFootprintMb", 0.0),
+                repo_available=(
+                    FragmentResidency(state.get("residency", FragmentResidency.MISSING.value))
+                    == FragmentResidency.REPO_AVAILABLE
+                ),
+                pinned=state.get("pinned", False),
+                confidence=state.get("confidence", 1.0),
+            )
+            residency = FragmentResidency(state.get("residency", FragmentResidency.MISSING.value))
+            if residency == FragmentResidency.CPU_RESIDENT:
+                manager.mark_cpu_resident(fragment_key)
+            elif residency == FragmentResidency.GPU_LOADED:
+                manager.mark_gpu_loaded(fragment_key)
         lease_payloads = provider.get("leaseOffers", [])
-        metadata = GenericAckMetadata(
-            provider_runtime_hint=generic_hint,
+        metadata = manager.ack_metadata(
             lease_offers=tuple(GenericAdmissionLease.from_dict(dict(item)) for item in lease_payloads),
-            service_payload_schema="ndnsf-di-runtime-ack-v1",
-            service_payload=dict(provider["diState"]),
         )
         result[str(provider["providerName"])] = metadata
     return result

@@ -858,6 +858,173 @@ class DiProviderRuntimeState:
         return None
 
 
+@dataclass
+class ProviderFragmentInventoryEntry:
+    fragment_key: ModelFragmentKey
+    disk_path: str = ""
+    memory_footprint_mb: float = 0.0
+    repo_available: bool = False
+    pinned: bool = False
+    confidence: float = 1.0
+    cpu_resident: bool = False
+    gpu_loaded: bool = False
+    last_used_ms: int = 0
+
+
+class ProviderFragmentInventoryManager:
+    """Provider-local source of truth for DI fragment residency.
+
+    GPU and CPU residency are runtime events reported by the provider process.
+    Disk residency is derived from the actual local artifact path. This keeps
+    model-fragment state in NDNSF-DI while still producing the generic ACK
+    metadata consumed by the user-side planner.
+    """
+
+    def __init__(self,
+                 provider_name: str,
+                 *,
+                 supported_backends: Iterable[str] = (),
+                 free_gpu_memory_mb: float = 0.0,
+                 free_cpu_memory_mb: float = 0.0,
+                 active_role_count: int = 0,
+                 queue_length: int = 0,
+                 estimated_queue_wait_ms: float = 0.0,
+                 confidence: float = 1.0):
+        if not provider_name:
+            raise ValueError("provider_name is required")
+        self.provider_name = provider_name
+        self.supported_backends = tuple(str(item) for item in supported_backends if str(item))
+        self.free_gpu_memory_mb = float(free_gpu_memory_mb)
+        self.free_cpu_memory_mb = float(free_cpu_memory_mb)
+        self.active_role_count = int(active_role_count)
+        self.queue_length = int(queue_length)
+        self.estimated_queue_wait_ms = float(estimated_queue_wait_ms)
+        self.confidence = float(confidence)
+        self._entries: dict[str, ProviderFragmentInventoryEntry] = {}
+
+    def register_fragment(self,
+                          fragment_key: ModelFragmentKey,
+                          *,
+                          disk_path: str | Path = "",
+                          memory_footprint_mb: float = 0.0,
+                          repo_available: bool = False,
+                          pinned: bool = False,
+                          confidence: float = 1.0) -> ProviderFragmentInventoryEntry:
+        entry = ProviderFragmentInventoryEntry(
+            fragment_key=fragment_key,
+            disk_path=str(disk_path),
+            memory_footprint_mb=float(memory_footprint_mb),
+            repo_available=bool(repo_available),
+            pinned=bool(pinned),
+            confidence=float(confidence),
+        )
+        self._entries[fragment_key.digest()] = entry
+        return entry
+
+    def mark_cpu_resident(self, fragment_key: ModelFragmentKey, resident: bool = True) -> None:
+        entry = self._entry_for(fragment_key)
+        entry.cpu_resident = bool(resident)
+        if resident:
+            entry.last_used_ms = now_ms()
+        elif not entry.gpu_loaded:
+            entry.last_used_ms = 0
+
+    def mark_gpu_loaded(self, fragment_key: ModelFragmentKey, loaded: bool = True) -> None:
+        entry = self._entry_for(fragment_key)
+        entry.gpu_loaded = bool(loaded)
+        if loaded:
+            entry.cpu_resident = True
+            entry.last_used_ms = now_ms()
+        elif not entry.cpu_resident:
+            entry.last_used_ms = 0
+
+    def evict(self, fragment_key: ModelFragmentKey, *, from_gpu: bool = True, from_cpu: bool = False) -> None:
+        entry = self._entry_for(fragment_key)
+        if from_gpu:
+            entry.gpu_loaded = False
+        if from_cpu:
+            entry.cpu_resident = False
+        if not entry.gpu_loaded and not entry.cpu_resident:
+            entry.last_used_ms = 0
+
+    def state_for(self, fragment_key: ModelFragmentKey) -> DiFragmentRuntimeState:
+        entry = self._entries.get(fragment_key.digest())
+        if entry is None:
+            return DiFragmentRuntimeState(
+                fragment_key=fragment_key,
+                residency=FragmentResidency.MISSING,
+                estimated_ready_ms=RESIDENCY_READY_COST_MS[FragmentResidency.MISSING],
+                confidence=0.0,
+            )
+        return self._state_from_entry(entry)
+
+    def snapshot(self) -> DiProviderRuntimeState:
+        return DiProviderRuntimeState(
+            provider_name=self.provider_name,
+            active_role_count=max(0, self.active_role_count),
+            queue_length=max(0, self.queue_length),
+            estimated_queue_wait_ms=max(0.0, self.estimated_queue_wait_ms),
+            free_gpu_memory_mb=max(0.0, self.free_gpu_memory_mb),
+            free_cpu_memory_mb=max(0.0, self.free_cpu_memory_mb),
+            supported_backends=self.supported_backends,
+            fragment_states=tuple(
+                self._state_from_entry(entry)
+                for _, entry in sorted(self._entries.items())
+            ),
+            confidence=self.confidence,
+        )
+
+    def ack_metadata(self,
+                     *,
+                     lease_offers: Iterable[GenericAdmissionLease] = ()) -> GenericAckMetadata:
+        snapshot = self.snapshot()
+        return GenericAckMetadata(
+            provider_runtime_hint=GenericProviderRuntimeHint(
+                provider_name=self.provider_name,
+                active_work_count=max(0, self.active_role_count),
+                queue_length=max(0, self.queue_length),
+                estimated_queue_wait_ms=max(0.0, self.estimated_queue_wait_ms),
+                confidence=self.confidence,
+            ),
+            lease_offers=tuple(lease_offers),
+            service_payload_schema="ndnsf-di-runtime-ack-v1",
+            service_payload=to_plain(snapshot),
+        )
+
+    def residency_counters(self) -> dict[str, int]:
+        counters = {item.value: 0 for item in FragmentResidency}
+        for state in self.snapshot().fragment_states:
+            counters[state.residency.value] += 1
+        return counters
+
+    def _entry_for(self, fragment_key: ModelFragmentKey) -> ProviderFragmentInventoryEntry:
+        digest = fragment_key.digest()
+        if digest not in self._entries:
+            raise KeyError(f"fragment is not registered: {fragment_key.fragment_digest or digest}")
+        return self._entries[digest]
+
+    def _state_from_entry(self, entry: ProviderFragmentInventoryEntry) -> DiFragmentRuntimeState:
+        if entry.gpu_loaded:
+            residency = FragmentResidency.GPU_LOADED
+        elif entry.cpu_resident:
+            residency = FragmentResidency.CPU_RESIDENT
+        elif entry.disk_path and Path(entry.disk_path).exists():
+            residency = FragmentResidency.DISK_RESIDENT
+        elif entry.repo_available:
+            residency = FragmentResidency.REPO_AVAILABLE
+        else:
+            residency = FragmentResidency.MISSING
+        return DiFragmentRuntimeState(
+            fragment_key=entry.fragment_key,
+            residency=residency,
+            estimated_ready_ms=RESIDENCY_READY_COST_MS[residency],
+            pinned=entry.pinned,
+            last_used_ms=entry.last_used_ms,
+            memory_footprint_mb=entry.memory_footprint_mb,
+            confidence=entry.confidence,
+        )
+
+
 @dataclass(frozen=True)
 class DiLeaseResourceBinding:
     role_id: str

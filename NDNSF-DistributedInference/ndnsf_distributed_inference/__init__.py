@@ -65,6 +65,8 @@ from .runtime_v1 import (
     DiFragmentRuntimeState,
     DiLeaseResourceBinding,
     DiProviderRuntimeState,
+    ProviderFragmentInventoryManager,
+    ProviderFragmentInventoryEntry,
     ExactForwardCacheEntry,
     ExactForwardCacheKey,
     ExactForwardCacheKind,

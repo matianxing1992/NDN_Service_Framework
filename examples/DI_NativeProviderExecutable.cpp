@@ -933,6 +933,7 @@ main(int argc, char** argv)
             config.assignment = defaultAssignment(plan, options.providerName);
             config.runnerFactory = factory;
             config.runnerSpecs = std::move(runners);
+            config.localProviderName = options.providerName;
             config.workerCount = options.workers;
 
             auto runtime = makeNativeProviderCollaborationRuntime(std::move(config));

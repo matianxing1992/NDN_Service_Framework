@@ -3,6 +3,7 @@
 #include "ndn-service-framework/utils.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -79,6 +80,80 @@ nativeTraceEnabled()
   return runtimeTimingEnabled() || std::getenv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE") != nullptr;
 }
 
+std::string
+metadataValue(const NativeModelRunnerSpec& spec,
+              std::initializer_list<const char*> names)
+{
+  for (const auto* name : names) {
+    const auto found = spec.metadata.find(name);
+    if (found != spec.metadata.end()) {
+      return found->second;
+    }
+  }
+  return "";
+}
+
+std::string
+fragmentDigestFor(const NativeModelRunnerSpec& spec)
+{
+  auto digest = metadataValue(
+    spec,
+    {"fragmentDigest", "fragment_digest", "sha256", "digest"});
+  if (!digest.empty()) {
+    return digest;
+  }
+  return spec.role.empty() ? "unknown" : "role:" + spec.role;
+}
+
+std::string
+loadedResidencyFor(const NativeModelRunnerSpec& spec)
+{
+  auto device = metadataValue(
+    spec,
+    {"device", "runtimeDevice", "runtime_device", "executionProvider", "execution_provider"});
+  std::transform(device.begin(), device.end(), device.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  if (device.find("cuda") != std::string::npos ||
+      device.find("gpu") != std::string::npos) {
+    return "GPU_LOADED";
+  }
+  return "CPU_RESIDENT";
+}
+
+void
+logFragmentInventoryEvent(const char* event,
+                          const NativeModelRunnerSpec& spec,
+                          const std::string& provider = "")
+{
+  if (!nativeTraceEnabled()) {
+    return;
+  }
+  std::cout << "\nNDNSF_DI_FRAGMENT_INVENTORY"
+            << " event=" << event
+            << " provider=" << (provider.empty() ? "unknown" : provider)
+            << " role=" << spec.role
+            << " fragmentDigest=" << fragmentDigestFor(spec)
+            << " backend=" << (spec.backend.empty() ? "unknown" : spec.backend)
+            << " path=" << (spec.path.empty() ? "none" : spec.path)
+            << " residency="
+            << (std::string(event) == "EVICTED" ||
+                std::string(event) == "DISK_RESIDENT" ? "DISK_RESIDENT" : loadedResidencyFor(spec))
+            << " epoch_ms=" << epochMs()
+            << std::endl;
+}
+
+const NativeModelRunnerSpec*
+runnerSpecForRole(const std::vector<NativeModelRunnerSpec>& specs,
+                  const std::string& role)
+{
+  const auto found = std::find_if(specs.begin(), specs.end(),
+                                  [&role] (const NativeModelRunnerSpec& spec) {
+                                    return spec.role == role;
+                                  });
+  return found == specs.end() ? nullptr : &*found;
+}
+
 int
 collaborationFetchTimeoutMs(int configured)
 {
@@ -102,6 +177,7 @@ public:
     , baseAssignment(config.assignment)
     , runnerSpecs(config.runnerSpecs)
     , runnerFactory(config.runnerFactory)
+    , localProviderName(config.localProviderName)
     , runtime(config.workerCount)
   {
     if (!runnerFactory) {
@@ -109,7 +185,16 @@ public:
         "NativeProviderHandlerState requires NativeModelRunnerFactory");
     }
     for (const auto& spec : runnerSpecs) {
+      logFragmentInventoryEvent("DISK_RESIDENT", spec, localProviderName);
       runtime.registerRunner(spec.role, runnerFactory->create(spec));
+      logFragmentInventoryEvent(loadedResidencyFor(spec).c_str(), spec, localProviderName);
+    }
+  }
+
+  ~NativeProviderHandlerState()
+  {
+    for (const auto& spec : runnerSpecs) {
+      logFragmentInventoryEvent("EVICTED", spec, localProviderName);
     }
   }
 
@@ -117,6 +202,7 @@ public:
   NativeProviderAssignment baseAssignment;
   std::vector<NativeModelRunnerSpec> runnerSpecs;
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
+  std::string localProviderName;
   NativeProviderRuntime runtime;
 };
 
@@ -474,6 +560,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                         ctx.sessionId(),
                                         assignment,
                                         ctx.localProvider().toUri());
+      if (const auto* spec = runnerSpecForRole(state->runnerSpecs, role)) {
+        logFragmentInventoryEvent("EXECUTION_OBSERVED",
+                                  *spec,
+                                  ctx.localProvider().toUri());
+      }
       const bool localFullPlan =
         roleSpec.outputs.empty() &&
         allPlanRolesAssignedToLocal(state->plan,

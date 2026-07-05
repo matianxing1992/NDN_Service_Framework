@@ -116,6 +116,7 @@
               "fragmentDigest": "sha256:native-tracer:Merge"
             },
             "residency": "DISK_RESIDENT",
+            "diskPath": "provider_fragments.json",
             "estimatedReadyMs": 20,
             "memoryFootprintMb": 256,
             "confidence": 0.95

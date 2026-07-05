@@ -840,6 +840,54 @@ def parse_trace_fields(line: str) -> dict[str, str]:
     return fields
 
 
+def collect_provider_fragment_inventory(logs_dir: Path) -> dict[str, object]:
+    event_counters: Counter[str] = Counter()
+    residency_counters: Counter[str] = Counter()
+    latest_by_provider_role: dict[str, dict[str, str]] = {}
+    latest_by_fragment: dict[str, dict[str, str]] = {}
+    scanned_logs = 0
+    event_count = 0
+    for path in sorted(logs_dir.glob("*.log")):
+        scanned_logs += 1
+        for line in read_log_text(path).splitlines():
+            if "NDNSF_DI_FRAGMENT_INVENTORY" not in line:
+                continue
+            fields = parse_trace_fields(line)
+            event = fields.get("event", "")
+            role = fields.get("role", "")
+            provider = fields.get("provider", "")
+            digest = fields.get("fragmentDigest", "")
+            residency = fields.get("residency", "")
+            if not event or not role or not digest:
+                continue
+            event_count += 1
+            event_counters[event] += 1
+            if residency:
+                residency_counters[residency] += 1
+            record = {
+                "event": event,
+                "provider": provider,
+                "role": role,
+                "fragmentDigest": digest,
+                "backend": fields.get("backend", ""),
+                "path": fields.get("path", ""),
+                "residency": residency,
+                "epochMs": fields.get("epoch_ms", ""),
+                "log": str(path),
+            }
+            latest_by_fragment[digest] = record
+            if provider and provider != "unknown":
+                latest_by_provider_role[f"{provider}|{role}"] = record
+    return {
+        "scannedLogs": scanned_logs,
+        "eventCount": event_count,
+        "eventCounters": dict(sorted(event_counters.items())),
+        "residencyCounters": dict(sorted(residency_counters.items())),
+        "latestByProviderRole": dict(sorted(latest_by_provider_role.items())),
+        "latestByFragment": dict(sorted(latest_by_fragment.items())),
+    }
+
+
 def float_field(fields: dict[str, str], key: str, fallback: float = 0.0) -> float:
     try:
         return float(fields.get(key, fallback))
@@ -872,6 +920,102 @@ def metric_stats(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def _counter_from_mapping(payload: object, keys: list[str]) -> dict[str, int]:
+    result = {key: 0 for key in keys}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            text = str(key)
+            if text not in result:
+                continue
+            try:
+                amount = int(value)
+            except (TypeError, ValueError):
+                amount = 0
+            result[text] += amount
+    return result
+
+
+def _runtime_assignment_residencies(runtime_assignment: dict[str, object]) -> Counter[str]:
+    counters: Counter[str] = Counter()
+    selected_residencies = runtime_assignment.get("selectedResidencies", {})
+    if isinstance(selected_residencies, dict):
+        for value in selected_residencies.values():
+            counters[str(value)] += 1
+        if counters:
+            return counters
+    role_assignments = runtime_assignment.get("roleAssignments", {})
+    if isinstance(role_assignments, dict):
+        for item in role_assignments.values():
+            if isinstance(item, dict) and item.get("residency"):
+                counters[str(item["residency"])] += 1
+        if counters:
+            return counters
+    assignment = runtime_assignment.get("assignment", {})
+    if isinstance(assignment, dict):
+        nested = assignment.get("role_assignments", assignment.get("roleAssignments", {}))
+        if isinstance(nested, dict):
+            for item in nested.values():
+                if isinstance(item, dict) and item.get("residency"):
+                    counters[str(item["residency"])] += 1
+    return counters
+
+
+def _max_stable_rps(summary: dict[str, object]) -> dict[str, object]:
+    entries = summary.get("rpsSweep", summary.get("rateSweep", []))
+    if not isinstance(entries, list):
+        entries = []
+    if not entries:
+        user_execution = summary.get("userExecution", {})
+        if isinstance(user_execution, dict):
+            request_count = int(user_execution.get("requestCount", summary.get("requestCount", 0)) or 0)
+            success_count = int(user_execution.get("successCount", 0) or 0)
+            success_rate = round(success_count / request_count, 6) if request_count > 0 else 0.0
+            candidate_rps = float(
+                user_execution.get("targetRps", 0.0) or
+                user_execution.get("offeredRps", 0.0) or
+                user_execution.get("throughputRps", 0.0) or
+                0.0
+            )
+            if summary.get("status") == "SUCCESS" and success_rate >= 0.99 and candidate_rps > 0:
+                point = {
+                    "targetRps": candidate_rps,
+                    "successRate": success_rate,
+                    "failureRate": 1.0 - success_rate,
+                    "p95Ms": float(user_execution.get("p95Ms", 0.0) or 0.0),
+                    "source": "currentRun",
+                }
+                return {
+                    "maxStableRps": candidate_rps,
+                    "stablePoint": point,
+                    "evaluatedPoints": 1,
+                }
+    stable_entries: list[dict[str, object]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        success_rate = float(item.get("successRate", 0.0) or 0.0)
+        failure_rate = float(item.get("failureRate", 1.0 - success_rate) or 0.0)
+        p95_ms = float(item.get("p95Ms", item.get("latencyP95Ms", 0.0)) or 0.0)
+        stable = bool(item.get("stable", False)) or (
+            str(item.get("status", "")).upper() == "SUCCESS" and
+            success_rate >= 0.99 and
+            failure_rate <= 0.01
+        )
+        if stable:
+            stable_entries.append({
+                "targetRps": float(item.get("targetRps", item.get("rps", 0.0)) or 0.0),
+                "successRate": success_rate,
+                "failureRate": failure_rate,
+                "p95Ms": p95_ms,
+            })
+    best = max(stable_entries, key=lambda item: float(item["targetRps"])) if stable_entries else None
+    return {
+        "maxStableRps": 0.0 if best is None else best["targetRps"],
+        "stablePoint": best or {},
+        "evaluatedPoints": len(entries),
+    }
+
+
 def build_campaign_metrics(summary: dict[str, object]) -> dict[str, object]:
     user_execution = summary.get("userExecution", {})
     if not isinstance(user_execution, dict):
@@ -885,22 +1029,33 @@ def build_campaign_metrics(summary: dict[str, object]) -> dict[str, object]:
     request_count = int(user_execution.get("requestCount", summary.get("requestCount", 0)) or 0)
     success_count = int(user_execution.get("successCount", 0) or 0)
     failure_count = int(user_execution.get("failureCount", max(0, request_count - success_count)) or 0)
-    lease_counters = {
+    lease_counters = _counter_from_mapping(summary.get("leaseCounters", {}), [
+        "granted", "rejected", "expired", "consumed",
+    ])
+    lease_counters.update({
         "negativeAckEvents": int(
             summary.get("failureBreakdown", {}).get("negativeAckEventCount", 0)
         ) if isinstance(summary.get("failureBreakdown", {}), dict) else 0,
         "rejections": failure_count,
-    }
-    residency_counters: Counter[str] = Counter()
-    selected_providers = runtime_assignment.get("selectedProviders", {})
-    if isinstance(selected_providers, dict):
-        for value in selected_providers.values():
-            residency_counters[str(value)] += 1
+    })
+    residency_counters = Counter(_counter_from_mapping(summary.get("residencyCounters", {}), [
+        "GPU_LOADED", "CPU_RESIDENT", "DISK_RESIDENT", "REPO_AVAILABLE", "MISSING",
+    ]))
+    residency_counters.update(_runtime_assignment_residencies(runtime_assignment))
+    inventory = summary.get("providerFragmentInventory", {})
+    if isinstance(inventory, dict):
+        selected_hits = inventory.get("selectedResidencyCounters", {})
+        if isinstance(selected_hits, dict):
+            residency_counters.update({
+                str(key): int(value)
+                for key, value in selected_hits.items()
+            })
     utilization_values = [
         float(item.get("estimatedUtilization", 0.0))
         for item in provider_utilization.values()
         if isinstance(item, dict)
     ]
+    rps_summary = _max_stable_rps(summary)
     return {
         "status": summary.get("status", ""),
         "successRate": (
@@ -926,9 +1081,17 @@ def build_campaign_metrics(summary: dict[str, object]) -> dict[str, object]:
         },
         "leaseCounters": lease_counters,
         "residencyCounters": dict(sorted(residency_counters.items())),
+        "observedResidencyCounters": (
+            dict(sorted(inventory.get("residencyCounters", {}).items()))
+            if isinstance(inventory, dict) and isinstance(inventory.get("residencyCounters", {}), dict)
+            else {}
+        ),
+        "providerFragmentInventory": inventory if isinstance(inventory, dict) else {},
         "edgeCostSummary": runtime_assignment.get("edgeCostSummary", {}),
         "nodeCostSummary": runtime_assignment.get("nodeCostSummary", {}),
         "replanCount": int(user_execution.get("replanCount", 0) or 0),
+        "rpsSweep": rps_summary,
+        "maxStableRps": rps_summary["maxStableRps"],
     }
 
 
@@ -942,7 +1105,7 @@ def write_planner_metrics(out_dir: Path, summary: dict[str, object]) -> dict[str
         writer = csv.DictWriter(output, fieldnames=[
             "status", "requestCount", "successCount", "failureCount",
             "successRate", "p50Ms", "p95Ms", "meanMs", "makespanMs",
-            "meanEstimatedUtilization", "replanCount",
+            "meanEstimatedUtilization", "replanCount", "maxStableRps",
         ])
         writer.writeheader()
         writer.writerow({
@@ -957,6 +1120,7 @@ def write_planner_metrics(out_dir: Path, summary: dict[str, object]) -> dict[str
             "makespanMs": metrics["latencyMs"]["makespan"],
             "meanEstimatedUtilization": metrics["utilization"]["meanEstimatedUtilization"],
             "replanCount": metrics["replanCount"],
+            "maxStableRps": metrics["maxStableRps"],
         })
     return {"json": str(json_path), "csv": str(csv_path)}
 
@@ -1278,6 +1442,43 @@ def collect_negative_ack_reason_counters(logs_dir: Path) -> dict[str, object]:
         "userRecorded": dict(sorted(user_reasons.items())),
         "providerDecisions": dict(sorted(provider_reasons.items())),
         "payloadReasons": dict(sorted(payload_reasons.items())),
+        "scannedLogs": scanned_logs,
+    }
+
+
+def collect_admission_lease_counters(logs_dir: Path) -> dict[str, object]:
+    counters: Counter[str] = Counter({
+        "granted": 0,
+        "rejected": 0,
+        "expired": 0,
+        "consumed": 0,
+    })
+    reasons: Counter[str] = Counter()
+    scanned_logs = 0
+    for path in sorted(logs_dir.glob("*.log")):
+        scanned_logs += 1
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for line in text.splitlines():
+            if "NDNSF_ADMISSION_LEASE_ACCEPTED" in line:
+                counters["consumed"] += 1
+            elif "NDNSF_ADMISSION_LEASE_REJECTED" in line:
+                counters["rejected"] += 1
+                fields = parse_trace_fields(line)
+                reason = fields.get("reason", "")
+                if reason:
+                    reasons[reason] += 1
+                    if reason == "LEASE_EXPIRED":
+                        counters["expired"] += 1
+                    elif reason == "LEASE_ALREADY_CONSUMED":
+                        counters["alreadyConsumed"] += 1
+                    elif reason == "LEASE_NOT_FOUND":
+                        counters["notFound"] += 1
+    return {
+        **dict(sorted(counters.items())),
+        "reasons": dict(sorted(reasons.items())),
         "scannedLogs": scanned_logs,
     }
 
@@ -1849,6 +2050,14 @@ def main() -> int:
                     runtime_assignment_summary.get("selectedProviders", {})
                     if isinstance(runtime_assignment_summary, dict) else {}
                 ),
+                "selectedResidencies": (
+                    runtime_assignment_summary.get("selectedResidencies", {})
+                    if isinstance(runtime_assignment_summary, dict) else {}
+                ),
+                "roleAssignments": (
+                    runtime_assignment_summary.get("roleAssignments", {})
+                    if isinstance(runtime_assignment_summary, dict) else {}
+                ),
                 "nodeCostSummary": (
                     runtime_assignment_summary.get("nodeCostSummary", {})
                     if isinstance(runtime_assignment_summary, dict) else {}
@@ -2146,6 +2355,8 @@ def main() -> int:
         except Exception:
             pass
         summary["negativeAckReasonCounters"] = collect_negative_ack_reason_counters(logs_dir)
+        summary["leaseCounters"] = collect_admission_lease_counters(logs_dir)
+        summary["providerFragmentInventory"] = collect_provider_fragment_inventory(logs_dir)
         if not summary.get("failureBreakdown") and isinstance(summary.get("userExecution"), dict):
             user_execution = summary["userExecution"]
             summary["failureBreakdown"] = build_failure_breakdown(

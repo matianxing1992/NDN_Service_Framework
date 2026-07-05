@@ -14,10 +14,14 @@ from ndnsf_distributed_inference.runtime_v1 import (
     ExactForwardCacheEntry,
     ExactForwardCacheManager,
     FailureAction,
+    FragmentResidency,
+    GenericAdmissionLease,
     KvCacheTelemetry,
     LongContextManager,
+    ModelFragmentKey,
     ModelManifestV1,
     PlanCache,
+    ProviderFragmentInventoryManager,
     ProviderProfileV1,
     RuntimeTelemetryV1,
     RolePipelineScheduler,
@@ -75,6 +79,54 @@ class RuntimeV1ContractsTest(unittest.TestCase):
         self.assertEqual(fields["roles"], "/LLM/Stage/2")
         self.assertEqual(fields["providerProfile"]["provider"], "llm-8gb")
         self.assertEqual(fields["providerProfile"]["max_context_tokens"], 16384)
+
+    def test_provider_fragment_inventory_reports_actual_residency(self) -> None:
+        key = ModelFragmentKey(
+            model_id="qwen-test",
+            model_digest="sha256:model",
+            runtime_backend="onnx-cpu",
+            precision="fp32",
+            split_strategy="pipeline",
+            fragment_digest="sha256:stage0",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "stage0.onnx"
+            artifact.write_bytes(b"fake onnx")
+            manager = ProviderFragmentInventoryManager(
+                "/provider/A",
+                supported_backends=("onnx-cpu",),
+                free_cpu_memory_mb=2048,
+            )
+            manager.register_fragment(
+                key,
+                disk_path=artifact,
+                memory_footprint_mb=128,
+                repo_available=True,
+            )
+            self.assertEqual(manager.state_for(key).residency, FragmentResidency.DISK_RESIDENT)
+
+            manager.mark_cpu_resident(key)
+            self.assertEqual(manager.state_for(key).residency, FragmentResidency.CPU_RESIDENT)
+
+            manager.mark_gpu_loaded(key)
+            state = manager.state_for(key)
+            self.assertEqual(state.residency, FragmentResidency.GPU_LOADED)
+            self.assertGreater(state.last_used_ms, 0)
+
+            manager.evict(key, from_gpu=True, from_cpu=True)
+            self.assertEqual(manager.state_for(key).residency, FragmentResidency.DISK_RESIDENT)
+            metadata = manager.ack_metadata(lease_offers=(GenericAdmissionLease(
+                lease_id="lease-1",
+                request_id="req-1",
+                service_name="/Inference/NativeTracer",
+                provider_name="/provider/A",
+                expires_at_ms=4102444800000,
+            ),))
+            parsed = parse_ack_metadata(encode_ack_metadata(metadata.to_ack_fields()))
+            self.assertEqual(
+                parsed["genericAckMetadata"]["service_payload"]["fragment_states"][0]["residency"],
+                "DISK_RESIDENT",
+            )
 
     def test_proportional_allocation_matches_capacity_ratio(self) -> None:
         providers = [

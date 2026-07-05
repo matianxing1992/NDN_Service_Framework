@@ -174,15 +174,31 @@ def generate_runtime_assignment_evidence(out_dir: Path, service_plan: dict) -> d
     }
     write_json(assignment_path, payload)
     selected = assignment.role_assignments
+    selected_residencies = {
+        role: item.get("residency", "")
+        for role, item in selected.items()
+    }
+    runtime_assignment_summary = {
+        "selectedProviders": {
+            role: item["provider"] for role, item in selected.items()
+        },
+        "selectedResidencies": selected_residencies,
+        "roleAssignments": selected,
+        "nodeCostSummary": {"totalMs": assignment.score_breakdown["nodeCostMs"]},
+        "edgeCostSummary": {"totalMs": assignment.score_breakdown["edgeCostMs"]},
+        "rejectedCandidateCount": len(
+            assignment.score_breakdown.get("rejectedCandidates", [])),
+    }
     return {
         "runtimeAwarePlanner": True,
         "runtimeAwareAssignment": str(assignment_path),
+        "runtimeAssignmentPath": str(assignment_path),
+        "runtimeAssignment": to_plain(assignment),
+        "runtimeAssignmentSummary": runtime_assignment_summary,
         "runtimeAwareAssignmentSha256": sha256_file(assignment_path),
-        "runtimeAwareSelectedProviders": {
-            role: item["provider"] for role, item in selected.items()
-        },
-        "runtimeAwareRejectedCandidateCount": len(
-            assignment.score_breakdown.get("rejectedCandidates", [])),
+        "runtimeAwareSelectedProviders": runtime_assignment_summary["selectedProviders"],
+        "runtimeAwareSelectedResidencies": selected_residencies,
+        "runtimeAwareRejectedCandidateCount": runtime_assignment_summary["rejectedCandidateCount"],
         "runtimeAwareNodeCostMs": assignment.score_breakdown["nodeCostMs"],
         "runtimeAwareEdgeCostMs": assignment.score_breakdown["edgeCostMs"],
         "runtimeAwareTotalEstimatedMs": assignment.score_breakdown["totalEstimatedMs"],
