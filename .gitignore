@@ -47,6 +47,9 @@ NDNSF-UAV-APP/ROADMAP_ch.md
 AGENTS.md
 .agents/
 .codex/
+.deepseek/
+deepseek_delegate*.txt
+deepseek_delegate*.patch
 .planning/
 .codegraph/
 .specify/integrations/codex.manifest.json
