@@ -1,0 +1,20 @@
+{
+  "schema": "ndnsf-di-runtime-aware-workload-v1",
+  "serviceName": "/Inference/NativeTracer",
+  "requests": [
+    {
+      "requestId": "user-a-001",
+      "user": "/user/A",
+      "modelId": "qwen-tiny",
+      "contextTokens": 1024,
+      "generatedTokens": 32
+    },
+    {
+      "requestId": "user-b-001",
+      "user": "/user/B",
+      "modelId": "qwen-tiny",
+      "contextTokens": 1024,
+      "generatedTokens": 32
+    }
+  ]
+}

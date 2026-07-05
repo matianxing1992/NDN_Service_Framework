@@ -50,6 +50,7 @@ NATIVE_TRACER_KEYS = {
     "assignment",
     "policy_bundle",
     "llm_planner_mode",
+    "runtime_aware_user_planner",
     "requests",
     "concurrency",
     "target_rps",
@@ -83,6 +84,7 @@ NATIVE_TRACER_BOOL_FIELDS = {
     "enabled",
     "local_execution_only",
     "full_network",
+    "runtime_aware_user_planner",
     "core_trace",
     "tracer_deterministic_runner",
 }
@@ -145,6 +147,7 @@ class NativeTracerProfile:
     assignment: str = "llm-proportional"
     policy_bundle: str = "llm-proportional"
     llm_planner_mode: str = "proportional"
+    runtime_aware_user_planner: bool = False
     requests: int = 1
     concurrency: int = 1
     target_rps: float = 0.0
@@ -176,6 +179,9 @@ class NativeTracerProfile:
             assignment=str(data.get("assignment", cls.assignment)),
             policy_bundle=str(data.get("policy_bundle", cls.policy_bundle)),
             llm_planner_mode=str(data.get("llm_planner_mode", cls.llm_planner_mode)),
+            runtime_aware_user_planner=bool(data.get(
+                "runtime_aware_user_planner",
+                cls.runtime_aware_user_planner)),
             requests=int(data.get("requests", cls.requests)),
             concurrency=int(data.get("concurrency", cls.concurrency)),
             target_rps=float(data.get("target_rps", cls.target_rps)),
@@ -470,6 +476,7 @@ def resolve_native_tracer(native: NativeTracerProfile, repo_root: Path) -> dict[
         "assignment": native.assignment,
         "policy_bundle": native.policy_bundle,
         "llm_planner_mode": native.llm_planner_mode,
+        "runtime_aware_user_planner": native.runtime_aware_user_planner,
         "requests": native.requests,
         "concurrency": native.concurrency,
         "target_rps": native.target_rps,
@@ -538,6 +545,8 @@ def build_native_tracer_command(native: NativeTracerProfile) -> list[str]:
         command.append("--core-trace")
     if native.tracer_deterministic_runner:
         command.append("--tracer-deterministic-runner")
+    if native.runtime_aware_user_planner:
+        command.append("--runtime-aware-user-planner")
     return command
 
 

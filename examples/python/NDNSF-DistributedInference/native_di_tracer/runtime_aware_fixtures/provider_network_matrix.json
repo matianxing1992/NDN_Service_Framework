@@ -1,0 +1,31 @@
+{
+  "schema": "ndnsf-di-runtime-aware-network-v1",
+  "defaultRttMs": 80,
+  "defaultBandwidthMbps": 100,
+  "unknownPenaltyMs": 150,
+  "stalePenaltyMs": 40,
+  "metrics": [
+    {
+      "srcPeer": "/provider/gpu",
+      "dstPeer": "/provider/disk",
+      "rttMs": 30,
+      "bandwidthMbps": 200,
+      "lossRate": 0.01,
+      "jitterMs": 2,
+      "bytesSampled": 1048576,
+      "updatedAtMs": 4102444800000,
+      "confidence": 0.9
+    },
+    {
+      "srcPeer": "/provider/disk",
+      "dstPeer": "/provider/gpu",
+      "rttMs": 80,
+      "bandwidthMbps": 40,
+      "lossRate": 0.02,
+      "jitterMs": 5,
+      "bytesSampled": 1048576,
+      "updatedAtMs": 4102444800000,
+      "confidence": 0.8
+    }
+  ]
+}

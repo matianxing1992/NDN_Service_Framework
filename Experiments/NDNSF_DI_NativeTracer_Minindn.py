@@ -1281,6 +1281,7 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "service": SERVICE,
             "policyBundle": args.policy_bundle,
             "llmPlannerMode": args.llm_planner_mode,
+            "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
             "targetRps": args.target_rps,
             "requests": args.requests,
             "concurrency": args.concurrency,
@@ -1385,6 +1386,9 @@ def main() -> int:
                         choices=["greedy", "proportional"],
                         default=default_value(profile_defaults, "llm_planner_mode", "proportional"),
                         help="Planner mode for --policy-bundle llm-proportional")
+    parser.add_argument("--runtime-aware-user-planner", action="store_true",
+                        default=bool(default_value(profile_defaults, "runtime_aware_user_planner", False)),
+                        help="Enable runtime-aware user-side planner metadata and campaign metrics")
     parser.add_argument("--tracer-deterministic-runner", action="store_true",
                         default=bool(default_value(profile_defaults, "tracer_deterministic_runner", False)),
                         help="Run provider ONNX roles through the deterministic runner")

@@ -1,0 +1,73 @@
+{
+  "schema": "ndnsf-di-runtime-aware-fragments-v1",
+  "providers": [
+    {
+      "providerName": "/provider/gpu",
+      "genericHint": {
+        "providerName": "/provider/gpu",
+        "queueLength": 0,
+        "estimatedQueueWaitMs": 2,
+        "confidence": 1.0
+      },
+      "diState": {
+        "providerName": "/provider/gpu",
+        "freeGpuMemoryMb": 8192,
+        "supportedBackends": ["onnx-cuda"],
+        "fragmentStates": [
+          {
+            "fragmentKey": {
+              "modelId": "qwen-tiny",
+              "modelDigest": "sha256:model",
+              "runtimeBackend": "onnx-cuda",
+              "precision": "fp16",
+              "splitStrategy": "pipeline",
+              "stageIndex": 0,
+              "stageCount": 2,
+              "layerStart": 0,
+              "layerEnd": 13,
+              "fragmentDigest": "sha256:stage0"
+            },
+            "residency": "GPU_LOADED",
+            "estimatedReadyMs": 0,
+            "memoryFootprintMb": 1024,
+            "confidence": 1.0
+          }
+        ]
+      }
+    },
+    {
+      "providerName": "/provider/disk",
+      "genericHint": {
+        "providerName": "/provider/disk",
+        "queueLength": 0,
+        "estimatedQueueWaitMs": 2,
+        "confidence": 1.0
+      },
+      "diState": {
+        "providerName": "/provider/disk",
+        "freeGpuMemoryMb": 4096,
+        "supportedBackends": ["onnx-cpu"],
+        "fragmentStates": [
+          {
+            "fragmentKey": {
+              "modelId": "qwen-tiny",
+              "modelDigest": "sha256:model",
+              "runtimeBackend": "onnx-cuda",
+              "precision": "fp16",
+              "splitStrategy": "pipeline",
+              "stageIndex": 0,
+              "stageCount": 2,
+              "layerStart": 0,
+              "layerEnd": 13,
+              "fragmentDigest": "sha256:stage0"
+            },
+            "residency": "DISK_RESIDENT",
+            "estimatedReadyMs": 20,
+            "memoryFootprintMb": 1024,
+            "confidence": 0.95
+          }
+        ]
+      }
+    }
+  ]
+}
