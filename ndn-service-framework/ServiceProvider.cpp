@@ -1298,6 +1298,34 @@ namespace ndn_service_framework
         return m_leases.size();
     }
 
+    ndn::Buffer ServiceProvider::makeGenericAdmissionLeaseAckPayload(
+        const GenericAdmissionLease& lease,
+        const ndn::Buffer& servicePayload)
+    {
+        std::string payload;
+        payload += "leaseId=" + lease.leaseId + ";";
+        if (!lease.providerName.empty()) {
+            payload += "leaseProvider=" + lease.providerName.toUri() + ";";
+        }
+        if (!lease.requesterName.empty()) {
+            payload += "leaseRequester=" + lease.requesterName.toUri() + ";";
+        }
+        if (!lease.serviceName.empty()) {
+            payload += "leaseService=" + lease.serviceName.toUri() + ";";
+        }
+        if (lease.expiresAtMs > 0) {
+            payload += "leaseExpiresAtMs=" + std::to_string(lease.expiresAtMs) + ";";
+        }
+        if (!servicePayload.empty()) {
+            payload += std::string(reinterpret_cast<const char*>(servicePayload.data()),
+                                   servicePayload.size());
+            if (!payload.empty() && payload.back() != ';') {
+                payload.push_back(';');
+            }
+        }
+        return bufferFromText(payload);
+    }
+
     void ServiceProvider::setGenericAdmissionLeaseValidator(
         const ndn::Name& serviceName,
         GenericAdmissionLeaseValidator validator,

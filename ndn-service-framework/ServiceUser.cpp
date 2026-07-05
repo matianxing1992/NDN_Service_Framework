@@ -95,6 +95,38 @@ namespace ndn_service_framework
             return fields;
         }
 
+        ndn::Buffer
+        textToBuffer(const std::string& text)
+        {
+            return ndn::Buffer(reinterpret_cast<const uint8_t*>(text.data()),
+                               text.size());
+        }
+
+        std::string
+        bufferToText(const ndn::Buffer& payload)
+        {
+            return std::string(reinterpret_cast<const char*>(payload.data()),
+                               payload.size());
+        }
+
+        ndn::Buffer
+        mergeSelectionAssignmentPayloads(const ndn::Buffer& base,
+                                         const ndn::Buffer& extra)
+        {
+            if (base.empty()) {
+                return extra;
+            }
+            if (extra.empty()) {
+                return base;
+            }
+            std::string merged = bufferToText(base);
+            if (!merged.empty() && merged.back() != ';') {
+                merged.push_back(';');
+            }
+            merged += bufferToText(extra);
+            return textToBuffer(merged);
+        }
+
         ndn::security::Certificate
         getExistingSigningCertificateOrFallback(ndn::KeyChain& keyChain,
                                                 const ndn::security::Certificate& encryptionCert)
@@ -1010,6 +1042,31 @@ namespace ndn_service_framework
     void ServiceUser::setRequestPublisher(RequestPublisher publisher)
     {
         m_requestPublisher = std::move(publisher);
+    }
+
+    ndn::Buffer ServiceUser::makeGenericAdmissionLeaseSelectionPayload(
+        const std::string& leaseId,
+        const ndn::Buffer& resourceBindingProof)
+    {
+        std::string payload = "leaseId=" + leaseId + ";";
+        if (!resourceBindingProof.empty()) {
+            payload += "resourceBindingProof=" + bufferToText(resourceBindingProof) + ";";
+        }
+        return textToBuffer(payload);
+    }
+
+    bool ServiceUser::setSelectionAssignmentPayloadForRequest(
+        const ndn::Name& requestId,
+        const ndn::Name& providerName,
+        const ndn::Buffer& assignmentPayload)
+    {
+        auto pendingIt = m_pendingCalls.find(requestId);
+        if (pendingIt == m_pendingCalls.end()) {
+            return false;
+        }
+        pendingIt->second.selectionAssignmentPayloads[providerName.toUri()] =
+            assignmentPayload;
+        return true;
     }
 
     void ServiceUser::setRequestLifecycleCallback(RequestLifecycleCallback callback)
@@ -6755,6 +6812,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
                 providerEntry.assignmentPayload = assignmentIt->second;
             }
+            auto genericAssignmentIt =
+                pendingIt->second.selectionAssignmentPayloads.find(providerName.toUri());
+            if (genericAssignmentIt != pendingIt->second.selectionAssignmentPayloads.end()) {
+                providerEntry.assignmentPayload =
+                    mergeSelectionAssignmentPayloads(providerEntry.assignmentPayload,
+                                                     genericAssignmentIt->second);
+            }
         }
         selectionMessage.addProviderEntry(providerEntry);
         NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_TOKEN_STATE timestamp_us="
@@ -6918,6 +6982,14 @@ void ServiceUser::finishRequestAckOnEventLoop(
                         sharedScopeKeyFields[field.first] = field.second;
                     }
                 }
+            }
+            auto genericAssignmentIt =
+                pendingIt->second.selectionAssignmentPayloads.find(
+                    selectedAck.providerName.toUri());
+            if (genericAssignmentIt != pendingIt->second.selectionAssignmentPayloads.end()) {
+                entry.assignmentPayload =
+                    mergeSelectionAssignmentPayloads(entry.assignmentPayload,
+                                                     genericAssignmentIt->second);
             }
             selectionMessage.addProviderEntry(entry);
         }

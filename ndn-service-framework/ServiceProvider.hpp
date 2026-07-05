@@ -111,6 +111,10 @@ namespace ndn_service_framework{
                 std::map<std::string, GenericAdmissionLease> m_leases;
             };
 
+            static ndn::Buffer makeGenericAdmissionLeaseAckPayload(
+                const GenericAdmissionLease& lease,
+                const ndn::Buffer& servicePayload = ndn::Buffer());
+
             struct GenericAdmissionLeaseValidationRequest
             {
                 ndn::Name requesterName;

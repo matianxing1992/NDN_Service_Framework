@@ -197,6 +197,60 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsInvalidLeaseBeforeExecution)
   BOOST_CHECK_EQUAL(executions, 1);
 }
 
+BOOST_AUTO_TEST_CASE(UserStoresGenericLeaseSelectionPayload)
+{
+  ndn::security::KeyChain keyChain("pib-memory:generic-lease-user-payload",
+                                   "tpm-memory:generic-lease-user-payload");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name providerName("/test/provider/lease");
+  const ndn::Name serviceName("/Inference/NativeTracer");
+  const ndn::Name requestId("/request-lease-user-payload");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-lease-user-payload"));
+  LocalServiceUser user(face,
+                        ndn::Name("/test/group"),
+                        userCert,
+                        aaCert,
+                        "examples/trust-any.conf");
+
+  user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
+  const auto payload =
+    ServiceUser::makeGenericAdmissionLeaseSelectionPayload(
+      "lease-user",
+      textBuffer("merge-fragment-ok"));
+  BOOST_CHECK(user.setSelectionAssignmentPayloadForRequest(requestId,
+                                                           providerName,
+                                                           payload));
+  const auto stored =
+    user.getSelectionAssignmentPayloadForTest(requestId, providerName);
+  BOOST_CHECK_EQUAL(std::string(reinterpret_cast<const char*>(stored.data()),
+                                stored.size()),
+                    "leaseId=lease-user;resourceBindingProof=merge-fragment-ok;");
+  BOOST_CHECK(!user.setSelectionAssignmentPayloadForRequest(
+    ndn::Name("/missing"), providerName, payload));
+}
+
+BOOST_AUTO_TEST_CASE(ProviderAckPayloadCanCarryGenericLease)
+{
+  ServiceProvider::GenericAdmissionLease lease;
+  lease.leaseId = "lease-ack";
+  lease.requesterName = ndn::Name("/test/user");
+  lease.providerName = ndn::Name("/test/provider");
+  lease.serviceName = ndn::Name("/Inference/NativeTracer");
+  lease.expiresAtMs = 2000;
+  const auto payload = ServiceProvider::makeGenericAdmissionLeaseAckPayload(
+    lease,
+    textBuffer("queueLength=1;"));
+  const std::string text(reinterpret_cast<const char*>(payload.data()),
+                         payload.size());
+  BOOST_CHECK(text.find("leaseId=lease-ack;") != std::string::npos);
+  BOOST_CHECK(text.find("leaseProvider=/test/provider;") != std::string::npos);
+  BOOST_CHECK(text.find("leaseService=/Inference/NativeTracer;") != std::string::npos);
+  BOOST_CHECK(text.find("leaseExpiresAtMs=2000;") != std::string::npos);
+  BOOST_CHECK(text.find("queueLength=1;") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test

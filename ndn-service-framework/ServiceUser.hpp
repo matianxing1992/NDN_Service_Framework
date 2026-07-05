@@ -317,6 +317,13 @@ namespace ndn_service_framework{
                                                      ndn::KeyChain& keyChain,
                                                      UserPermissionTable& permissionTable);
             void setRequestPublisher(RequestPublisher publisher);
+            static ndn::Buffer makeGenericAdmissionLeaseSelectionPayload(
+                const std::string& leaseId,
+                const ndn::Buffer& resourceBindingProof = ndn::Buffer());
+            bool setSelectionAssignmentPayloadForRequest(
+                const ndn::Name& requestId,
+                const ndn::Name& providerName,
+                const ndn::Buffer& assignmentPayload);
             void setRequestLifecycleCallback(RequestLifecycleCallback callback);
             void setAdmissionControlWarningHandler(AdmissionControlWarningHandler handler);
             void setAdmissionControlRejectHandler(AdmissionControlRejectHandler handler);
@@ -822,6 +829,7 @@ namespace ndn_service_framework{
                 bool isCollaboration = false;
                 CollaborationPlan collaborationPlan;
                 std::map<std::string, ndn::Buffer> collaborationAssignments;
+                std::map<std::string, ndn::Buffer> selectionAssignmentPayloads;
                 bool trackSelectionStatus = false;
                 SelectionStatusOptions selectionStatusOptions;
                 SelectionStatusTimeoutHandler statusTimeoutHandler;

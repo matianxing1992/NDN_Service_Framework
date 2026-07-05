@@ -188,6 +188,22 @@ public:
     return m_pendingCalls.find(requestId) != m_pendingCalls.end();
   }
 
+  ndn::Buffer
+  getSelectionAssignmentPayloadForTest(const ndn::Name& requestId,
+                                       const ndn::Name& providerName) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    if (pending == m_pendingCalls.end()) {
+      return ndn::Buffer();
+    }
+    const auto assignment =
+      pending->second.selectionAssignmentPayloads.find(providerName.toUri());
+    if (assignment == pending->second.selectionAssignmentPayloads.end()) {
+      return ndn::Buffer();
+    }
+    return assignment->second;
+  }
+
   bool
   isAckWindowExpired(const ndn::Name& requestId) const
   {
