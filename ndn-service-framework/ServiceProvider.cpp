@@ -527,6 +527,59 @@ namespace ndn_service_framework
                                text.size());
         }
 
+        std::string
+        numberToText(double value)
+        {
+            std::ostringstream os;
+            os << value;
+            return os.str();
+        }
+
+        uint64_t
+        uintFieldOrDefault(const std::map<std::string, std::string>& fields,
+                           const std::string& key,
+                           uint64_t fallback = 0)
+        {
+            const auto it = fields.find(key);
+            if (it == fields.end() || it->second.empty()) {
+                return fallback;
+            }
+            try {
+                return static_cast<uint64_t>(std::stoull(it->second));
+            }
+            catch (const std::exception&) {
+                return fallback;
+            }
+        }
+
+        double
+        doubleFieldOrDefault(const std::map<std::string, std::string>& fields,
+                             const std::string& key,
+                             double fallback = 0.0)
+        {
+            const auto it = fields.find(key);
+            if (it == fields.end() || it->second.empty()) {
+                return fallback;
+            }
+            try {
+                return std::stod(it->second);
+            }
+            catch (const std::exception&) {
+                return fallback;
+            }
+        }
+
+        ndn::Name
+        nameFieldOrDefault(const std::map<std::string, std::string>& fields,
+                           const std::string& key)
+        {
+            const auto it = fields.find(key);
+            if (it == fields.end() || it->second.empty()) {
+                return ndn::Name();
+            }
+            return ndn::Name(it->second);
+        }
+
         ndn::Buffer
         collaborationAssociatedData(const ndn::Name& dataName,
                                     const ndn::Name& requestId,
@@ -1324,6 +1377,129 @@ namespace ndn_service_framework
             }
         }
         return bufferFromText(payload);
+    }
+
+    ndn::Buffer ServiceProvider::makePeerNetworkMetricPayload(
+        const PeerNetworkMetric& metric)
+    {
+        std::string payload;
+        if (!metric.srcPeer.empty()) {
+            payload += "peerMetricSrc=" + metric.srcPeer.toUri() + ";";
+        }
+        if (!metric.dstPeer.empty()) {
+            payload += "peerMetricDst=" + metric.dstPeer.toUri() + ";";
+        }
+        payload += "peerMetricRttMs=" + numberToText(metric.rttMs) + ";";
+        payload += "peerMetricBandwidthMbps=" + numberToText(metric.bandwidthMbps) + ";";
+        payload += "peerMetricLossRate=" + numberToText(metric.lossRate) + ";";
+        payload += "peerMetricJitterMs=" + numberToText(metric.jitterMs) + ";";
+        if (metric.observedAtMs > 0) {
+            payload += "peerMetricObservedAtMs=" + std::to_string(metric.observedAtMs) + ";";
+        }
+        payload += "peerMetricConfidence=" + numberToText(metric.confidence) + ";";
+        return bufferFromText(payload);
+    }
+
+    std::optional<ServiceProvider::PeerNetworkMetric>
+    ServiceProvider::parsePeerNetworkMetricPayload(const ndn::Buffer& payload)
+    {
+        const auto fields = parseSemicolonFields(payload);
+        if (fields.find("peerMetricSrc") == fields.end() ||
+            fields.find("peerMetricDst") == fields.end()) {
+            return std::nullopt;
+        }
+        PeerNetworkMetric metric;
+        metric.srcPeer = nameFieldOrDefault(fields, "peerMetricSrc");
+        metric.dstPeer = nameFieldOrDefault(fields, "peerMetricDst");
+        metric.rttMs = doubleFieldOrDefault(fields, "peerMetricRttMs");
+        metric.bandwidthMbps = doubleFieldOrDefault(fields, "peerMetricBandwidthMbps");
+        metric.lossRate = doubleFieldOrDefault(fields, "peerMetricLossRate");
+        metric.jitterMs = doubleFieldOrDefault(fields, "peerMetricJitterMs");
+        metric.observedAtMs = uintFieldOrDefault(fields, "peerMetricObservedAtMs");
+        metric.confidence = doubleFieldOrDefault(fields, "peerMetricConfidence", 1.0);
+        return metric;
+    }
+
+    ndn::Buffer ServiceProvider::makeGenericAckMetadataPayload(
+        const GenericAckMetadata& metadata)
+    {
+        std::string payload;
+        if (metadata.runtimeHint) {
+            const auto& hint = *metadata.runtimeHint;
+            if (!hint.providerName.empty()) {
+                payload += "runtimeProvider=" + hint.providerName.toUri() + ";";
+            }
+            payload += "runtimeQueueLength=" + std::to_string(hint.queueLength) + ";";
+            payload += "runtimeEstimatedQueueWaitMs=" +
+                       std::to_string(hint.estimatedQueueWaitMs) + ";";
+            payload += "runtimeCpuUtilization=" + numberToText(hint.cpuUtilization) + ";";
+            payload += "runtimeGpuUtilization=" + numberToText(hint.gpuUtilization) + ";";
+            payload += "runtimeFreeMemoryMb=" + std::to_string(hint.freeMemoryMb) + ";";
+            payload += "runtimeFreeGpuMemoryMb=" +
+                       std::to_string(hint.freeGpuMemoryMb) + ";";
+            if (!hint.peerMetrics.empty()) {
+                const auto peerPayload = makePeerNetworkMetricPayload(hint.peerMetrics.front());
+                payload += std::string(reinterpret_cast<const char*>(peerPayload.data()),
+                                       peerPayload.size());
+            }
+        }
+        if (!metadata.leaseOffers.empty()) {
+            const auto leasePayload =
+                makeGenericAdmissionLeaseAckPayload(metadata.leaseOffers.front());
+            payload += std::string(reinterpret_cast<const char*>(leasePayload.data()),
+                                   leasePayload.size());
+        }
+        if (!metadata.servicePayloadSchema.empty()) {
+            payload += "servicePayloadSchema=" + metadata.servicePayloadSchema + ";";
+        }
+        if (!metadata.servicePayload.empty()) {
+            payload += "servicePayload=";
+            payload += std::string(reinterpret_cast<const char*>(metadata.servicePayload.data()),
+                                   metadata.servicePayload.size());
+            if (payload.back() != ';') {
+                payload.push_back(';');
+            }
+        }
+        return bufferFromText(payload);
+    }
+
+    ServiceProvider::GenericAckMetadata
+    ServiceProvider::parseGenericAckMetadataPayload(const ndn::Buffer& payload)
+    {
+        GenericAckMetadata metadata;
+        const auto fields = parseSemicolonFields(payload);
+        if (fields.find("runtimeProvider") != fields.end()) {
+            GenericProviderRuntimeHint hint;
+            hint.providerName = nameFieldOrDefault(fields, "runtimeProvider");
+            hint.queueLength = uintFieldOrDefault(fields, "runtimeQueueLength");
+            hint.estimatedQueueWaitMs =
+                uintFieldOrDefault(fields, "runtimeEstimatedQueueWaitMs");
+            hint.cpuUtilization = doubleFieldOrDefault(fields, "runtimeCpuUtilization");
+            hint.gpuUtilization = doubleFieldOrDefault(fields, "runtimeGpuUtilization");
+            hint.freeMemoryMb = uintFieldOrDefault(fields, "runtimeFreeMemoryMb");
+            hint.freeGpuMemoryMb = uintFieldOrDefault(fields, "runtimeFreeGpuMemoryMb");
+            if (auto peerMetric = parsePeerNetworkMetricPayload(payload)) {
+                hint.peerMetrics.push_back(*peerMetric);
+            }
+            metadata.runtimeHint = hint;
+        }
+        auto leaseIt = fields.find("leaseId");
+        if (leaseIt != fields.end() && !leaseIt->second.empty()) {
+            GenericAdmissionLease lease;
+            lease.leaseId = leaseIt->second;
+            lease.providerName = nameFieldOrDefault(fields, "leaseProvider");
+            lease.requesterName = nameFieldOrDefault(fields, "leaseRequester");
+            lease.serviceName = nameFieldOrDefault(fields, "leaseService");
+            lease.expiresAtMs = uintFieldOrDefault(fields, "leaseExpiresAtMs");
+            metadata.leaseOffers.push_back(std::move(lease));
+        }
+        if (const auto it = fields.find("servicePayloadSchema"); it != fields.end()) {
+            metadata.servicePayloadSchema = it->second;
+        }
+        if (const auto it = fields.find("servicePayload"); it != fields.end()) {
+            metadata.servicePayload = bufferFromText(it->second);
+        }
+        return metadata;
     }
 
     void ServiceProvider::setGenericAdmissionLeaseValidator(

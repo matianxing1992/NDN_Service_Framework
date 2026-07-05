@@ -76,6 +76,30 @@ namespace ndn_service_framework{
                 ndn::Buffer payload;
             };
 
+            struct PeerNetworkMetric
+            {
+                ndn::Name srcPeer;
+                ndn::Name dstPeer;
+                double rttMs = 0.0;
+                double bandwidthMbps = 0.0;
+                double lossRate = 0.0;
+                double jitterMs = 0.0;
+                uint64_t observedAtMs = 0;
+                double confidence = 1.0;
+            };
+
+            struct GenericProviderRuntimeHint
+            {
+                ndn::Name providerName;
+                uint64_t queueLength = 0;
+                uint64_t estimatedQueueWaitMs = 0;
+                double cpuUtilization = 0.0;
+                double gpuUtilization = 0.0;
+                uint64_t freeMemoryMb = 0;
+                uint64_t freeGpuMemoryMb = 0;
+                std::vector<PeerNetworkMetric> peerMetrics;
+            };
+
             struct GenericAdmissionLease
             {
                 std::string leaseId;
@@ -92,6 +116,14 @@ namespace ndn_service_framework{
                 bool status = false;
                 std::string reasonCode;
                 std::string leaseId;
+            };
+
+            struct GenericAckMetadata
+            {
+                std::optional<GenericProviderRuntimeHint> runtimeHint;
+                std::vector<GenericAdmissionLease> leaseOffers;
+                std::string servicePayloadSchema;
+                ndn::Buffer servicePayload;
             };
 
             class ProviderAdmissionLeaseTable
@@ -114,6 +146,14 @@ namespace ndn_service_framework{
             static ndn::Buffer makeGenericAdmissionLeaseAckPayload(
                 const GenericAdmissionLease& lease,
                 const ndn::Buffer& servicePayload = ndn::Buffer());
+            static ndn::Buffer makeGenericAckMetadataPayload(
+                const GenericAckMetadata& metadata);
+            static GenericAckMetadata parseGenericAckMetadataPayload(
+                const ndn::Buffer& payload);
+            static ndn::Buffer makePeerNetworkMetricPayload(
+                const PeerNetworkMetric& metric);
+            static std::optional<PeerNetworkMetric> parsePeerNetworkMetricPayload(
+                const ndn::Buffer& payload);
 
             struct GenericAdmissionLeaseValidationRequest
             {

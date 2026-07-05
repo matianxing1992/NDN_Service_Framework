@@ -251,6 +251,76 @@ BOOST_AUTO_TEST_CASE(ProviderAckPayloadCanCarryGenericLease)
   BOOST_CHECK(text.find("queueLength=1;") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(GenericAckMetadataCarriesRuntimeHintLeaseAndPeerMetric)
+{
+  ServiceProvider::PeerNetworkMetric metric;
+  metric.srcPeer = ndn::Name("/provider/A");
+  metric.dstPeer = ndn::Name("/provider/B");
+  metric.rttMs = 12.5;
+  metric.bandwidthMbps = 500.0;
+  metric.lossRate = 0.01;
+  metric.jitterMs = 1.5;
+  metric.observedAtMs = 123456;
+  metric.confidence = 0.75;
+
+  ServiceProvider::GenericProviderRuntimeHint hint;
+  hint.providerName = ndn::Name("/provider/A");
+  hint.queueLength = 2;
+  hint.estimatedQueueWaitMs = 15;
+  hint.cpuUtilization = 0.4;
+  hint.gpuUtilization = 0.6;
+  hint.freeMemoryMb = 4096;
+  hint.freeGpuMemoryMb = 2048;
+  hint.peerMetrics.push_back(metric);
+
+  ServiceProvider::GenericAdmissionLease lease;
+  lease.leaseId = "lease-meta";
+  lease.requesterName = ndn::Name("/user/A");
+  lease.providerName = ndn::Name("/provider/A");
+  lease.serviceName = ndn::Name("/Inference/NativeTracer");
+  lease.expiresAtMs = 4102444800000;
+
+  ServiceProvider::GenericAckMetadata metadata;
+  metadata.runtimeHint = hint;
+  metadata.leaseOffers.push_back(lease);
+  metadata.servicePayloadSchema = "di-runtime-v1";
+  metadata.servicePayload = textBuffer("fragmentStates=sample");
+
+  const auto payload = ServiceProvider::makeGenericAckMetadataPayload(metadata);
+  const auto parsed = ServiceProvider::parseGenericAckMetadataPayload(payload);
+
+  BOOST_REQUIRE(parsed.runtimeHint);
+  BOOST_CHECK(parsed.runtimeHint->providerName == ndn::Name("/provider/A"));
+  BOOST_CHECK_EQUAL(parsed.runtimeHint->queueLength, 2);
+  BOOST_CHECK_EQUAL(parsed.runtimeHint->estimatedQueueWaitMs, 15);
+  BOOST_CHECK_EQUAL(parsed.runtimeHint->freeMemoryMb, 4096);
+  BOOST_REQUIRE_EQUAL(parsed.runtimeHint->peerMetrics.size(), 1);
+  BOOST_CHECK(parsed.runtimeHint->peerMetrics.front().srcPeer == ndn::Name("/provider/A"));
+  BOOST_CHECK(parsed.runtimeHint->peerMetrics.front().dstPeer == ndn::Name("/provider/B"));
+  BOOST_CHECK_CLOSE(parsed.runtimeHint->peerMetrics.front().lossRate, 0.01, 0.001);
+  BOOST_REQUIRE_EQUAL(parsed.leaseOffers.size(), 1);
+  BOOST_CHECK_EQUAL(parsed.leaseOffers.front().leaseId, "lease-meta");
+  BOOST_CHECK(parsed.leaseOffers.front().serviceName == ndn::Name("/Inference/NativeTracer"));
+  BOOST_CHECK_EQUAL(parsed.servicePayloadSchema, "di-runtime-v1");
+}
+
+BOOST_AUTO_TEST_CASE(PeerNetworkMetricEnvelopeRoundTripsAsDirected)
+{
+  ServiceProvider::PeerNetworkMetric metric;
+  metric.srcPeer = ndn::Name("/provider/left");
+  metric.dstPeer = ndn::Name("/provider/right");
+  metric.rttMs = 4.0;
+  metric.bandwidthMbps = 900.0;
+  metric.lossRate = 0.02;
+
+  const auto payload = ServiceProvider::makePeerNetworkMetricPayload(metric);
+  const auto parsed = ServiceProvider::parsePeerNetworkMetricPayload(payload);
+  BOOST_REQUIRE(parsed);
+  BOOST_CHECK(parsed->srcPeer == ndn::Name("/provider/left"));
+  BOOST_CHECK(parsed->dstPeer == ndn::Name("/provider/right"));
+  BOOST_CHECK_CLOSE(parsed->bandwidthMbps, 900.0, 0.001);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test
