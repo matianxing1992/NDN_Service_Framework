@@ -454,6 +454,21 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         config.freshnessMs);
 
       const auto role = ctx.role();
+      const auto bindingError =
+        validateNativeProviderAssignmentPayload(state->runnerSpecs,
+                                                role,
+                                                ctx.assignment().assignmentPayload);
+      if (bindingError) {
+        if (nativeTraceEnabled()) {
+          std::cout << "\nNDNSF_DI_RESOURCE_BINDING_REJECTED"
+                    << " session=" << ctx.sessionId()
+                    << " role=" << role
+                    << " reason=" << *bindingError
+                    << std::endl;
+        }
+        ctx.fail(*bindingError);
+        return;
+      }
       const auto roleSpec = roleSpecFor(state->plan,
                                         role,
                                         ctx.sessionId(),

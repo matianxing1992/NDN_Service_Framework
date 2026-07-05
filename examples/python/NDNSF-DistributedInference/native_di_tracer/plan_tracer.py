@@ -131,6 +131,24 @@ def build_runtime_plan_template(service_plan: dict) -> PlanTemplate:
     )
 
 
+def apply_runtime_fragment_metadata(out_dir: Path) -> None:
+    manifest_path = out_dir / "service-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    service_manifest = next(
+        item for item in manifest["services"] if item["name"] == SERVICE)
+    role_index = {role: index for index, role in enumerate(ROLE_ORDER)}
+    for artifact in service_manifest["artifacts"]:
+        role = artifact.get("role", "")
+        if role not in role_index:
+            continue
+        metadata = dict(artifact.get("metadata") or {})
+        metadata.setdefault(
+            "fragmentDigest",
+            native_tracer_fragment_key(role, role_index[role], len(ROLE_ORDER)).fragment_digest)
+        artifact["metadata"] = metadata
+    write_json_with_sidecar(manifest_path, manifest)
+
+
 def generate_runtime_assignment_evidence(out_dir: Path, service_plan: dict) -> dict:
     template = build_runtime_plan_template(service_plan)
     metadata_by_provider = load_provider_ack_metadata()
@@ -431,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out)
     ensure_qwen_artifacts(Path(args.config))
     deployment = write_policy_bundle(args.config, out_dir)
+    apply_runtime_fragment_metadata(out_dir)
     apply_activation_padding(out_dir, args.activation_pad_bytes)
     apply_role_execution_delay(out_dir, args.role_execution_delay_ms)
     summary = validate_bundle(out_dir)

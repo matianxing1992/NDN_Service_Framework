@@ -769,6 +769,47 @@ BOOST_AUTO_TEST_CASE(NativeProviderHandlerExtractsOnlyFinalRoleResponse)
   BOOST_CHECK(!disabledPayload.has_value());
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderAssignmentPayloadValidatesRoleAndFragment)
+{
+  NativeModelRunnerSpec mergeSpec;
+  mergeSpec.role = "/Merge";
+  mergeSpec.backend = "test-backend";
+  mergeSpec.metadata["fragmentDigest"] = "sha256:merge";
+  const std::vector<NativeModelRunnerSpec> specs{mergeSpec};
+
+  const char* okText = "role=/Merge;fragmentDigest=sha256:merge;";
+  const auto okPayload = ndn::Buffer(
+    reinterpret_cast<const uint8_t*>(okText),
+    std::strlen(okText));
+  BOOST_CHECK(!validateNativeProviderAssignmentPayload(specs, "/Merge", okPayload));
+
+  const char* wrongRoleText = "role=/Backbone;fragmentDigest=sha256:merge;";
+  const auto wrongRolePayload = ndn::Buffer(
+    reinterpret_cast<const uint8_t*>(wrongRoleText),
+    std::strlen(wrongRoleText));
+  auto wrongRole =
+    validateNativeProviderAssignmentPayload(specs, "/Merge", wrongRolePayload);
+  BOOST_REQUIRE(wrongRole);
+  BOOST_CHECK_EQUAL(*wrongRole, "DI_BINDING_ROLE_MISMATCH");
+
+  const char* wrongFragmentText = "role=/Merge;fragmentDigest=sha256:other;";
+  const auto wrongFragmentPayload = ndn::Buffer(
+    reinterpret_cast<const uint8_t*>(wrongFragmentText),
+    std::strlen(wrongFragmentText));
+  auto wrongFragment =
+    validateNativeProviderAssignmentPayload(specs, "/Merge", wrongFragmentPayload);
+  BOOST_REQUIRE(wrongFragment);
+  BOOST_CHECK_EQUAL(*wrongFragment, "DI_BINDING_FRAGMENT_MISMATCH");
+
+  NativeModelRunnerSpec legacySpec;
+  legacySpec.role = "/Merge";
+  const std::vector<NativeModelRunnerSpec> legacySpecs{legacySpec};
+  BOOST_CHECK(!validateNativeProviderAssignmentPayload(
+    legacySpecs,
+    "/Merge",
+    wrongFragmentPayload));
+}
+
 BOOST_AUTO_TEST_CASE(NativeModelRunnerFactoryCreatesRuntimeRunnerFromSpec)
 {
   NativeModelRunnerSpec spec{

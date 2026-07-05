@@ -1062,10 +1062,20 @@ namespace ndn_service_framework
     {
         auto pendingIt = m_pendingCalls.find(requestId);
         if (pendingIt == m_pendingCalls.end()) {
+            NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ASSIGNMENT_PAYLOAD_REJECTED timestamp_us="
+                      << nowMicroseconds()
+                      << " requestId=" << requestId.toUri()
+                      << " providerName=" << providerName.toUri()
+                      << " reason=pending_missing");
             return false;
         }
         pendingIt->second.selectionAssignmentPayloads[providerName.toUri()] =
             assignmentPayload;
+        NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ASSIGNMENT_PAYLOAD_SET timestamp_us="
+                  << nowMicroseconds()
+                  << " requestId=" << requestId.toUri()
+                  << " providerName=" << providerName.toUri()
+                  << " payloadBytes=" << assignmentPayload.size());
         return true;
     }
 
@@ -6818,6 +6828,12 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 providerEntry.assignmentPayload =
                     mergeSelectionAssignmentPayloads(providerEntry.assignmentPayload,
                                                      genericAssignmentIt->second);
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ASSIGNMENT_PAYLOAD_ATTACHED timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << requestId.toUri()
+                          << " providerName=" << providerName.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " payloadBytes=" << providerEntry.assignmentPayload.size());
             }
         }
         selectionMessage.addProviderEntry(providerEntry);
@@ -6990,6 +7006,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 entry.assignmentPayload =
                     mergeSelectionAssignmentPayloads(entry.assignmentPayload,
                                                      genericAssignmentIt->second);
+                NDN_LOG_TRACE("[NDNSF_TRACE] role=user event=SELECTION_ASSIGNMENT_PAYLOAD_ATTACHED timestamp_us="
+                          << nowMicroseconds()
+                          << " requestId=" << requestId.toUri()
+                          << " providerName=" << selectedAck.providerName.toUri()
+                          << " serviceName=" << serviceName.toUri()
+                          << " payloadBytes=" << entry.assignmentPayload.size()
+                          << " compact=1");
             }
             selectionMessage.addProviderEntry(entry);
         }
