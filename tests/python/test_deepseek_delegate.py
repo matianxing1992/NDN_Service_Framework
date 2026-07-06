@@ -61,6 +61,29 @@ class DeepSeekDelegateTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
             self.assertIn("hello context", proc.stdout)
 
+    def test_docs_mode_is_supported_in_dry_run(self) -> None:
+        proc = subprocess.run(
+            [
+                "python3",
+                str(TOOL),
+                "--task",
+                "Draft documentation bullets.",
+                "--mode",
+                "docs",
+                "--dry-run",
+            ],
+            cwd=REPO,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["payload"]["messages"][0]["role"], "system")
+        self.assertIn("documentation prose", payload["payload"]["messages"][0]["content"])
+
     def test_sensitive_context_is_rejected_by_default(self) -> None:
         with tempfile.TemporaryDirectory(dir=REPO) as tmp:
             context = Path(tmp) / "bootstrap-token.txt"

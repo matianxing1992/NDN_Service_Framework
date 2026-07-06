@@ -41,15 +41,18 @@ RUNTIME_V1_PROVIDER_PROFILES = TRACER_DIR / "llm_provider_profiles_2_4_8.json"
 RUNTIME_AWARE_FIXTURES = TRACER_DIR / "runtime_aware_fixtures"
 RUNTIME_AWARE_MULTI_USER_WORKLOAD = RUNTIME_AWARE_FIXTURES / "multi_user_requests.json"
 USER_DRIVER = TRACER_DIR / "user_driver.py"
+ADVISORY_COORDINATOR = TRACER_DIR / "advisory_coordinator.py"
 PROVIDER_EXE = REPO / "build/examples/di-native-provider"
 PLAN_SCHEMA_EXE = REPO / "build/examples/di-native-plan-schema-smoke"
 PLAN_MANIFEST_EXE = REPO / "build/examples/di-native-plan-manifest-smoke"
 PROVIDER_SESSION_EXE = REPO / "build/examples/di-native-provider-session-smoke"
 DEFAULT_OUT = REPO / "results/native_di_real_minindn/latest"
 SERVICE = "/Inference/NativeTracer"
+COORDINATION_SERVICE = "/NDNSF/Coordination/Advisory"
 GROUP = "/NDNSF-DI/Tracer/group"
 CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
+COORDINATOR_PROVIDER = "/NDNSF-DI/Tracer/provider/coordinator"
 IDENTITY_SAFEBAG_PASSPHRASE = "ndnsf-di-native-tracer"
 REQUIRED_ROLES = ["/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"]
 NEGATIVE_ACK_RECORDED_RE = re.compile(r"event=NEGATIVE_ACK_RECORDED\b.*?\breason=([^\s,]+)")
@@ -82,6 +85,8 @@ NATIVE_TRACER_PROFILE_FIELDS = {
     "provider_admission_max_queue": "provider_admission_max_queue",
     "provider_admission_max_active_workers": "provider_admission_max_active_workers",
     "provider_admission_min_free_memory_mb": "provider_admission_min_free_memory_mb",
+    "enable_native_admission_lease": "enable_native_admission_lease",
+    "overload_fast_fail_timeout_ms": "overload_fast_fail_timeout_ms",
     "multi_user_workload": "multi_user_workload",
     "runtime_aware_max_replans": "runtime_aware_max_replans",
     "runtime_aware_replan_reasons": "runtime_aware_replan_reasons",
@@ -166,15 +171,17 @@ SINGLE_PROVIDER_ASSIGNMENT = {
     "/Merge": ("ucla", "/NDNSF-DI/Tracer/provider/single"),
 }
 
+CAPACITY_POOL_ALTERNATE_ASSIGNMENT = "capacity-pool-alt"
 CAPACITY_POOL_EXTRA_PROVIDERS = [
     {
-        "assignment": "capacity-pool-extra",
-        "role": "/Backbone",
-        "roles": "/Backbone",
-        "provider": "/NDNSF-DI/Tracer/provider/single",
-        "node": "ucla",
+        "assignment": CAPACITY_POOL_ALTERNATE_ASSIGNMENT,
+        "role": role,
+        "roles": role,
+        "provider": provider,
+        "node": node,
         "service": SERVICE,
-    },
+    }
+    for role, (node, provider) in ALTERNATE_ASSIGNMENT.items()
 ]
 
 LLM_PROVIDER_RESOURCE_PROFILES = {
@@ -315,8 +322,25 @@ def assignment_for_runtime_candidate(candidate: str) -> str:
 def launch_rows_for_assignment(assignment_name: str,
                                assignment_rows: list[dict[str, str]]) -> list[dict[str, str]]:
     rows = [dict(row) for row in assignment_rows]
-    if assignment_name == "capacity-pool":
+    if assignment_name == "capacity-pool" and not any(
+        row.get("assignment") == CAPACITY_POOL_ALTERNATE_ASSIGNMENT
+        for row in rows
+    ):
         rows.extend(dict(row) for row in CAPACITY_POOL_EXTRA_PROVIDERS)
+    return rows
+
+
+def capacity_pool_candidate_rows(primary_rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    rows = [dict(row) for row in primary_rows]
+    existing = {
+        (row.get("role", ""), row.get("provider", ""))
+        for row in rows
+    }
+    for row in CAPACITY_POOL_EXTRA_PROVIDERS:
+        key = (row["role"], row["provider"])
+        if key not in existing:
+            rows.append(dict(row))
+            existing.add(key)
     return rows
 
 
@@ -432,6 +456,77 @@ def write_provider_profiles_json(path: Path,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8")
+
+
+def write_runtime_hints_json(path: Path,
+                             assignment_rows: list[dict[str, str]],
+                             *,
+                             role_execution_delay_ms: float,
+                             provider_admission_max_active_workers: int,
+                             provider_admission_max_queue: int) -> None:
+    role_compute_ms = {
+        "/Backbone": 4.0,
+        "/Head/Shard/0": 2.5,
+        "/Head/Shard/1": 2.5,
+        "/Merge": 1.5,
+    }
+    provider_roles: dict[str, dict[str, object]] = {}
+    providers: dict[str, dict[str, object]] = {}
+    generated_at_ms = int(time.time() * 1000)
+    active_workers = max(1, int(provider_admission_max_active_workers or 1))
+    max_queue = max(0, int(provider_admission_max_queue or 0))
+    for row in assignment_rows:
+        role = row["role"]
+        provider = row["provider"]
+        assignment = row.get("assignment", "")
+        is_alternate = assignment == CAPACITY_POOL_ALTERNATE_ASSIGNMENT
+        duration_ms = role_compute_ms.get(role, 5.0) + role_execution_delay_ms
+        ready_cost_ms = 20.0 if is_alternate else 5.0
+        queue_wait_ms = 10.0 if is_alternate else 0.0
+        residency = "DISK_RESIDENT" if is_alternate else "CPU_RESIDENT"
+        hint = {
+            "provider": provider,
+            "role": role,
+            "assignment": assignment,
+            "estimatedDurationMs": round(max(1.0, duration_ms), 3),
+            "readyCostMs": ready_cost_ms,
+            "residency": residency,
+            "fragmentDigest": f"sha256:native-tracer:{role.strip('/').replace('/', '-')}",
+            "runtimeHint": {
+                "estimatedQueueWaitMs": queue_wait_ms,
+                "activeWorkerCount": 0,
+                "maxActiveWorkers": active_workers,
+                "readyQueueDepth": 0,
+                "maxQueue": max_queue,
+                "fragmentResidency": residency,
+                "sampleAgeMs": 0,
+            },
+            "leaseOffers": [{
+                "status": "GRANTED",
+                "estimatedStartMs": 0,
+                "ttlMs": 60000,
+                "source": "harness-runtime-hint-snapshot",
+            }],
+        }
+        provider_roles[f"{provider}|{role}"] = hint
+        providers.setdefault(provider, {
+            "provider": provider,
+            "runtimeHint": {
+                "estimatedQueueWaitMs": queue_wait_ms,
+                "maxActiveWorkers": active_workers,
+                "maxQueue": max_queue,
+                "sampleAgeMs": 0,
+            },
+            "roles": {},
+        })
+        providers[provider]["roles"][role] = hint
+    path.write_text(json.dumps({
+        "schema": "ndnsf-di-runtime-hints-v1",
+        "generatedAtMs": generated_at_ms,
+        "source": "MiniNDN harness provider profile snapshot",
+        "providerRoles": provider_roles,
+        "providers": providers,
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def run_plan_tracer(policy_dir: Path,
@@ -695,7 +790,8 @@ def provider_check_command(row: dict[str, str],
 
 def provider_serve_command(row: dict[str, str],
                            policy_dir: Path,
-                           deterministic_runner: bool = False) -> str:
+                           deterministic_runner: bool = False,
+                           enable_admission_lease: bool = False) -> str:
     args = [
         str(PROVIDER_EXE),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -713,7 +809,24 @@ def provider_serve_command(row: dict[str, str],
     ]
     if deterministic_runner:
         args.append("--tracer-deterministic-runner")
+    if enable_admission_lease:
+        args.extend(["--enable-admission-lease", "--admission-lease-ttl-ms", "60000"])
     return f"cd {perf.shell_quote(str(TRACER_DIR))} && exec {shell_join(args)}"
+
+
+def advisory_coordinator_command(policy_dir: Path,
+                                 proof_secret: str = "") -> str:
+    args = [
+        "python3", str(ADVISORY_COORDINATOR),
+        "--group", GROUP,
+        "--controller", CONTROLLER,
+        "--provider", COORDINATOR_PROVIDER,
+        "--service", COORDINATION_SERVICE,
+        "--trust-schema", str(policy_dir / "trust-schema.conf"),
+    ]
+    if proof_secret:
+        args.extend(["--proof-secret", proof_secret])
+    return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
 
 
 def controller_command(policy_dir: Path, assignment_rows: list[dict[str, str]]) -> str:
@@ -734,12 +847,18 @@ def user_driver_command(policy_dir: Path,
                         requests: int,
                         concurrency: int,
                         submission_spacing_ms: int,
+                        assignment_csv: Optional[Path] = None,
+                        runtime_hints_json: Optional[Path] = None,
+                        fragment_inventory_json: Optional[Path] = None,
+                        timeout_ms: int = 60000,
+                        overload_fast_fail_timeout_ms: int = 0,
                         target_rps: float = 0.0,
                         open_loop_duration_s: float = 0.0,
                         open_loop_driver_mode: str = "child",
                         burst_admission_providers: Optional[list[str]] = None,
                         runtime_aware_max_replans: int = 0,
-                        runtime_aware_replan_reasons: str = "") -> str:
+                        runtime_aware_replan_reasons: str = "",
+                        coordination_service: str = "") -> str:
     args = [
         "python3", str(USER_DRIVER),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -749,12 +868,23 @@ def user_driver_command(policy_dir: Path,
         "--user", USER,
         "--trust-schema", str(policy_dir / "trust-schema.conf"),
         "--ack-timeout-ms", "8000",
-        "--timeout-ms", "60000",
+        "--timeout-ms", str(timeout_ms),
         "--permission-wait-ms", "8000",
         "--requests", str(requests),
         "--concurrency", str(concurrency),
         "--submission-spacing-ms", str(submission_spacing_ms),
     ]
+    if overload_fast_fail_timeout_ms > 0:
+        args.extend([
+            "--overload-fast-fail-timeout-ms",
+            str(overload_fast_fail_timeout_ms),
+        ])
+    if assignment_csv is not None:
+        args.extend(["--assignment-csv", str(assignment_csv)])
+    if runtime_hints_json is not None:
+        args.extend(["--runtime-hints-json", str(runtime_hints_json)])
+    if fragment_inventory_json is not None:
+        args.extend(["--fragment-inventory-json", str(fragment_inventory_json)])
     if open_loop_duration_s > 0.0:
         args.extend([
             "--target-rps", str(target_rps),
@@ -770,6 +900,8 @@ def user_driver_command(policy_dir: Path,
         args.extend(["--runtime-aware-max-replans", str(runtime_aware_max_replans)])
     if runtime_aware_replan_reasons:
         args.extend(["--runtime-aware-replan-reasons", runtime_aware_replan_reasons])
+    if coordination_service:
+        args.extend(["--coordination-service", coordination_service])
     return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
 
 
@@ -808,6 +940,52 @@ def add_worker_user_policies(policy_path: Path, requests: int) -> None:
         raise RuntimeError(f"could not locate user-policies closing brace in {policy_path}")
     policy_path.write_text(text[:insert_at] + "\n" + "\n".join(blocks) + text[insert_at:],
                            encoding="utf-8")
+
+
+def add_advisory_coordination_policies(policy_path: Path,
+                                       requests: int,
+                                       enabled: bool) -> None:
+    if not enabled:
+        return
+    text = policy_path.read_text(encoding="utf-8")
+    if f"for {COORDINATOR_PROVIDER}\n" not in text:
+        provider_block = (
+            "    provider-policy\n"
+            "    {\n"
+            f"        for {COORDINATOR_PROVIDER}\n"
+            "        allow\n"
+            "        {\n"
+            f"            {COORDINATION_SERVICE}\n"
+            "        }\n"
+            "    }\n"
+        )
+        insert_at = text.find("\n}\n\nuser-policies")
+        if insert_at < 0:
+            raise RuntimeError(f"could not locate provider-policies closing brace in {policy_path}")
+        text = text[:insert_at] + "\n" + provider_block + text[insert_at:]
+    blocks = []
+    for identity in [USER, *user_worker_identities(requests)]:
+        marker = f"for {identity}\n"
+        start = text.find(marker)
+        already_allowed = start >= 0 and COORDINATION_SERVICE in text[start:start + 320]
+        if already_allowed:
+            continue
+        blocks.append(
+            "    user-policy\n"
+            "    {\n"
+            f"        for {identity}\n"
+            "        allow\n"
+            "        {\n"
+            f"            {COORDINATION_SERVICE}\n"
+            "        }\n"
+            "    }\n"
+        )
+    if blocks:
+        insert_at = text.rfind("\n}")
+        if insert_at < 0:
+            raise RuntimeError(f"could not locate user-policies closing brace in {policy_path}")
+        text = text[:insert_at] + "\n" + "\n".join(blocks) + text[insert_at:]
+    policy_path.write_text(text, encoding="utf-8")
 
 
 def parse_user_execution(log_path: Path) -> dict[str, object]:
@@ -886,6 +1064,93 @@ def collect_provider_fragment_inventory(logs_dir: Path) -> dict[str, object]:
         "latestByProviderRole": dict(sorted(latest_by_provider_role.items())),
         "latestByFragment": dict(sorted(latest_by_fragment.items())),
     }
+
+
+def refresh_runtime_hints_json_from_inventory(path: Path,
+                                              inventory: dict[str, object]) -> dict[str, object]:
+    if not path.exists():
+        return {"updated": 0, "path": str(path), "reason": "missing-runtime-hints-json"}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    provider_roles = payload.get("providerRoles", {})
+    providers = payload.get("providers", {})
+    latest = inventory.get("latestByProviderRole", {})
+    if not isinstance(provider_roles, dict) or not isinstance(providers, dict) or not isinstance(latest, dict):
+        return {"updated": 0, "path": str(path), "reason": "invalid-runtime-hints-json"}
+    updated = 0
+    now_ms = int(time.time() * 1000)
+    for key, record in latest.items():
+        if not isinstance(record, dict):
+            continue
+        provider = str(record.get("provider", ""))
+        role = str(record.get("role", ""))
+        if not provider or not role:
+            continue
+        hint = provider_roles.get(key)
+        if not isinstance(hint, dict):
+            hint = {
+                "provider": provider,
+                "role": role,
+                "assignment": "",
+                "runtimeHint": {},
+                "leaseOffers": [{
+                    "status": "GRANTED",
+                    "estimatedStartMs": 0,
+                    "ttlMs": 60000,
+                    "source": "provider-runtime-inventory",
+                }],
+            }
+            provider_roles[key] = hint
+        residency = str(record.get("residency", ""))
+        if residency:
+            hint["residency"] = residency
+            runtime_hint = hint.setdefault("runtimeHint", {})
+            if isinstance(runtime_hint, dict):
+                runtime_hint["fragmentResidency"] = residency
+        if record.get("fragmentDigest"):
+            hint["fragmentDigest"] = str(record["fragmentDigest"])
+        if record.get("backend"):
+            hint["backend"] = str(record["backend"])
+        if record.get("path"):
+            hint["artifactPath"] = str(record["path"])
+        hint["source"] = "provider-runtime-inventory"
+        hint["inventoryEvent"] = str(record.get("event", ""))
+        epoch_ms = int_field({k: str(v) for k, v in record.items()}, "epochMs", 0)
+        runtime_hint = hint.setdefault("runtimeHint", {})
+        if isinstance(runtime_hint, dict):
+            runtime_hint["sampleAgeMs"] = max(0, now_ms - epoch_ms) if epoch_ms > 0 else 0
+            runtime_hint["source"] = "provider-runtime-inventory"
+        provider_payload = providers.get(provider)
+        if isinstance(provider_payload, dict):
+            roles = provider_payload.setdefault("roles", {})
+            if isinstance(roles, dict):
+                roles[role] = hint
+        updated += 1
+    payload["generatedAtMs"] = now_ms
+    payload["source"] = "MiniNDN harness provider runtime inventory"
+    payload["providerRoles"] = provider_roles
+    payload["providers"] = providers
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return {
+        "updated": updated,
+        "path": str(path),
+        "source": payload["source"],
+    }
+
+
+def wait_for_provider_inventory(logs_dir: Path,
+                                expected_provider_roles: int,
+                                timeout_s: float) -> dict[str, object]:
+    deadline = time.time() + max(0.0, float(timeout_s))
+    last_inventory: dict[str, object] = collect_provider_fragment_inventory(logs_dir)
+    expected = max(0, int(expected_provider_roles))
+    while time.time() < deadline:
+        latest = last_inventory.get("latestByProviderRole", {})
+        if isinstance(latest, dict) and len(latest) >= expected:
+            return last_inventory
+        time.sleep(0.2)
+        last_inventory = collect_provider_fragment_inventory(logs_dir)
+    return last_inventory
 
 
 def float_field(fields: dict[str, str], key: str, fallback: float = 0.0) -> float:
@@ -1462,7 +1727,9 @@ def collect_admission_lease_counters(logs_dir: Path) -> dict[str, object]:
         except Exception:
             continue
         for line in text.splitlines():
-            if "NDNSF_ADMISSION_LEASE_ACCEPTED" in line:
+            if "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_GRANTED" in line:
+                counters["granted"] += 1
+            elif "NDNSF_ADMISSION_LEASE_ACCEPTED" in line:
                 counters["consumed"] += 1
             elif "NDNSF_ADMISSION_LEASE_REJECTED" in line:
                 counters["rejected"] += 1
@@ -1480,6 +1747,77 @@ def collect_admission_lease_counters(logs_dir: Path) -> dict[str, object]:
         **dict(sorted(counters.items())),
         "reasons": dict(sorted(reasons.items())),
         "scannedLogs": scanned_logs,
+    }
+
+
+def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
+    providers: dict[str, dict[str, object]] = {}
+    scanned_logs = 0
+    event_count = 0
+    for path in sorted(logs_dir.glob("*.log")):
+        scanned_logs += 1
+        text = read_log_text(path)
+        for line in text.splitlines():
+            if "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION" not in line:
+                continue
+            fields = parse_trace_fields(line)
+            payload_text = fields.get("payload", "").strip('"')
+            payload_fields = parse_trace_fields(payload_text.replace(";", " "))
+            provider = fields.get("provider", "") or payload_fields.get("leaseProvider", "")
+            if not provider:
+                continue
+            event_count += 1
+            item = providers.setdefault(provider, {
+                "provider": provider,
+                "ackEvents": 0,
+                "successfulAckEvents": 0,
+                "negativeAckEvents": 0,
+                "maxQueue": 0,
+                "maxReadyQueue": 0,
+                "maxWaitingInputs": 0,
+                "maxActiveWorkers": 0,
+                "maxWorkers": 0,
+                "maxIdleWorkers": 0,
+                "latest": {},
+            })
+            status = fields.get("status", "")
+            item["ackEvents"] = int(item["ackEvents"]) + 1
+            if status == "1":
+                item["successfulAckEvents"] = int(item["successfulAckEvents"]) + 1
+            else:
+                item["negativeAckEvents"] = int(item["negativeAckEvents"]) + 1
+            latest = {
+                "status": status,
+                "roles": payload_fields.get("roles", ""),
+                "queue": int_field(payload_fields, "queue", 0),
+                "readyQueue": int_field(payload_fields, "readyQueue", 0),
+                "waitingInputs": int_field(payload_fields, "waitingInputs", 0),
+                "activeWorkers": int_field(payload_fields, "activeWorkers", 0),
+                "workers": int_field(payload_fields, "workers", 0),
+                "idleWorkers": int_field(payload_fields, "idleWorkers", 0),
+                "runtimeStatus": payload_fields.get("runtimeStatus", ""),
+                "negativeAckReason": payload_fields.get("negativeAckReason", ""),
+                "leaseId": payload_fields.get("leaseId", ""),
+                "leaseExpiresAtMs": payload_fields.get("leaseExpiresAtMs", ""),
+                "log": str(path),
+            }
+            for payload_key, output_key in {
+                "queue": "maxQueue",
+                "readyQueue": "maxReadyQueue",
+                "waitingInputs": "maxWaitingInputs",
+                "activeWorkers": "maxActiveWorkers",
+                "workers": "maxWorkers",
+                "idleWorkers": "maxIdleWorkers",
+            }.items():
+                item[output_key] = max(
+                    int(item[output_key]),
+                    int_field(payload_fields, payload_key, 0),
+                )
+            item["latest"] = latest
+    return {
+        "scannedLogs": scanned_logs,
+        "eventCount": event_count,
+        "providers": dict(sorted(providers.items())),
     }
 
 
@@ -1611,6 +1949,8 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "policyBundle": args.policy_bundle,
             "llmPlannerMode": args.llm_planner_mode,
             "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
+            "advisoryCoordinator": bool(args.advisory_coordinator),
+            "coordinationService": COORDINATION_SERVICE if args.advisory_coordinator else "",
             "targetRps": args.target_rps,
             "requests": args.requests,
             "concurrency": args.concurrency,
@@ -1619,6 +1959,8 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "multiUserWorkload": args.multi_user_workload,
             "runtimeAwareMaxReplans": args.runtime_aware_max_replans,
             "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
+            "enableNativeAdmissionLease": args.enable_native_admission_lease,
+            "overloadFastFailTimeoutMs": args.overload_fast_fail_timeout_ms,
         },
         "nativePlan": str(policy_dir / "native-execution-plan.json"),
         "serviceManifest": str(policy_dir / "service-manifest.json"),
@@ -1733,6 +2075,8 @@ def main() -> int:
     parser.add_argument("--runtime-aware-user-planner", action="store_true",
                         default=bool(default_value(profile_defaults, "runtime_aware_user_planner", False)),
                         help="Enable runtime-aware user-side planner metadata and campaign metrics")
+    parser.add_argument("--advisory-coordinator", action="store_true",
+                        help="Run the generic NDNSF coordination service before NativeTracer requests")
     parser.add_argument("--multi-user-workload",
                         default=default_value(profile_defaults, "multi_user_workload", ""),
                         help="Optional runtime-aware multi-user workload fixture")
@@ -1805,6 +2149,13 @@ def main() -> int:
     parser.add_argument("--provider-admission-min-free-memory-mb", type=float,
                         default=default_value(profile_defaults, "provider_admission_min_free_memory_mb", 0.0),
                         help="Opt-in native provider negative ACK when advertised free memory is below this value")
+    parser.add_argument("--enable-native-admission-lease", action="store_true",
+                        default=bool(default_value(profile_defaults, "enable_native_admission_lease", False)),
+                        help="Require NativeTracer generic admission leases before selected role execution")
+    parser.add_argument("--overload-fast-fail-timeout-ms", type=int,
+                        default=default_value(profile_defaults, "overload_fast_fail_timeout_ms", 0),
+                        help=("Use a shorter user collaboration timeout for overload "
+                              "fast-fail experiments"))
     args = parser.parse_args()
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
@@ -1838,6 +2189,8 @@ def main() -> int:
         raise SystemExit("--provider-admission-max-active-workers must be -1 or non-negative")
     if args.provider_admission_min_free_memory_mb < 0:
         raise SystemExit("--provider-admission-min-free-memory-mb must be non-negative")
+    if args.overload_fast_fail_timeout_ms < 0:
+        raise SystemExit("--overload-fast-fail-timeout-ms must be non-negative")
 
     multi_user_workload = (
         load_multi_user_workload(args.multi_user_workload)
@@ -1855,6 +2208,7 @@ def main() -> int:
             "policyBundle": args.policy_bundle,
             "llmPlannerMode": args.llm_planner_mode,
             "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
+            "advisoryCoordinator": args.advisory_coordinator,
             "multiUserWorkload": multi_user_workload,
             "requests": args.requests,
             "concurrency": args.concurrency,
@@ -1870,11 +2224,24 @@ def main() -> int:
                 args.requests,
                 args.concurrency,
                 args.submission_spacing_ms if args.concurrency > 1 else 0,
-                args.target_rps,
-                args.open_loop_duration_s,
-                args.open_loop_driver_mode,
+                assignment_csv=Path(args.out) / "assignment.csv",
+                runtime_hints_json=(
+                    Path(args.out) / "runtime-hints.json"
+                    if args.advisory_coordinator else None
+                ),
+                fragment_inventory_json=(
+                    Path(args.out) / "fragment-inventory.json"
+                    if args.advisory_coordinator else None
+                ),
+                overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
+                target_rps=args.target_rps,
+                open_loop_duration_s=args.open_loop_duration_s,
+                open_loop_driver_mode=args.open_loop_driver_mode,
                 runtime_aware_max_replans=args.runtime_aware_max_replans,
-                runtime_aware_replan_reasons=args.runtime_aware_replan_reasons),
+                runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
+                coordination_service=(
+                    COORDINATION_SERVICE if args.advisory_coordinator else ""
+                )),
         }, indent=2, sort_keys=True))
         return 0
 
@@ -1991,6 +2358,10 @@ def main() -> int:
                 args.runtime_aware_user_planner,
                 "plan-tracer")
         add_worker_user_policies(policy_dir / "controller.policies", args.requests)
+        add_advisory_coordination_policies(
+            policy_dir / "controller.policies",
+            args.requests,
+            args.advisory_coordinator)
         summary["assignmentRequested"] = requested_assignment
         summary["assignmentResolved"] = resolved_assignment
         summary["assignment"] = resolved_assignment
@@ -2075,18 +2446,37 @@ def main() -> int:
         roles = load_plan_roles(policy_dir / "native-execution-plan.json")
         assignment_csv = out_dir / "assignment.csv"
         if args.policy_bundle == "llm-proportional":
+            primary_assignment_rows = list(policy_summary.get("assignmentRows", []))
             assignment_rows = write_assignment_csv_rows(
                 assignment_csv,
-                list(policy_summary.get("assignmentRows", [])))
+                primary_assignment_rows)
         else:
-            assignment_rows = write_assignment_csv(
+            primary_assignment_rows = write_assignment_csv(
                 assignment_csv,
                 resolved_assignment,
                 roles,
                 active_assignment)
+            assignment_rows = (
+                capacity_pool_candidate_rows(primary_assignment_rows)
+                if resolved_assignment == "capacity-pool" else
+                primary_assignment_rows
+            )
+            if assignment_rows != primary_assignment_rows:
+                write_assignment_csv_rows(assignment_csv, assignment_rows)
         launch_rows = launch_rows_for_assignment(resolved_assignment, assignment_rows)
         provider_rows = grouped_provider_rows(launch_rows)
+        runtime_hints_json = out_dir / "runtime-hints.json"
+        write_runtime_hints_json(
+            runtime_hints_json,
+            assignment_rows,
+            role_execution_delay_ms=args.role_execution_delay_ms,
+            provider_admission_max_active_workers=args.provider_admission_max_active_workers,
+            provider_admission_max_queue=args.provider_admission_max_queue,
+        )
         summary["providerLaunchRows"] = launch_rows
+        summary["primaryAssignmentRows"] = primary_assignment_rows
+        summary["candidateAssignmentRows"] = assignment_rows
+        summary["runtimeHintsJson"] = str(runtime_hints_json)
         summary["providerLaunchMode"] = (
             "capacity-pool" if resolved_assignment == "capacity-pool" else
             "static-assignment")
@@ -2118,7 +2508,7 @@ def main() -> int:
             logs_dir,
             env,
             local_execution_assignment,
-            assignment_rows,
+            primary_assignment_rows,
             model_family=model_family,
             model_format=model_format,
             planner_kind=planner_kind,
@@ -2164,11 +2554,16 @@ def main() -> int:
                                           provider_rows,
                                           out_dir,
                                           logs_dir,
-                                          user_worker_identities(args.requests))
+                                          [
+                                              *user_worker_identities(args.requests),
+                                              *([COORDINATOR_PROVIDER] if args.advisory_coordinator else []),
+                                          ])
 
         routing = NdnRoutingHelper(ndn.net, "udp", "link-state")
         routing.addOrigin([ndn.net["memphis"]],
                           [CONTROLLER, GROUP, USER, *user_worker_identities(args.requests)])
+        if args.advisory_coordinator:
+            routing.addOrigin([ndn.net["memphis"]], [COORDINATOR_PROVIDER, COORDINATION_SERVICE])
         for row in launch_rows:
             routing.addOrigin([ndn.net[row["node"]]], [row["provider"], GROUP])
         routing.calculateRoutes()
@@ -2190,13 +2585,38 @@ def main() -> int:
 
             provider_logs = []
             provider_log_rows = []
+            if args.advisory_coordinator:
+                coord_proc, coord_log = start_node_command(
+                    ndn.net["memphis"],
+                    "advisory-coordinator",
+                    advisory_coordinator_command(policy_dir),
+                    logs_dir,
+                    env,
+                    procs)
+                time.sleep(1.0)
+                if coord_proc.poll() is not None:
+                    raise RuntimeError(
+                        f"advisory coordinator exited before user execution; see {coord_log}")
+                summary["advisoryCoordinator"] = {
+                    "status": "started",
+                    "service": COORDINATION_SERVICE,
+                    "provider": COORDINATOR_PROVIDER,
+                    "log": str(coord_log),
+                }
+            else:
+                summary["advisoryCoordinator"] = {
+                    "status": "disabled",
+                    "service": "",
+                    "provider": "",
+                }
             for row in provider_rows:
                 node = ndn.net[row["node"]]
                 command = provider_serve_command(
                     row,
                     policy_dir,
                     args.tracer_deterministic_runner or
-                    args.policy_bundle == "llm-proportional")
+                    args.policy_bundle == "llm-proportional",
+                    args.enable_native_admission_lease)
                 provider_env = llm_provider_resource_env(row["provider"])
                 provider_env.update(provider_admission_env(args))
                 proc, path = start_node_command(
@@ -2220,6 +2640,22 @@ def main() -> int:
                                   ["NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"],
                                   args.provider_check_timeout,
                                   "native provider provisioning")
+            if args.advisory_coordinator:
+                runtime_inventory = wait_for_provider_inventory(
+                    logs_dir,
+                    expected_provider_roles=len(assignment_rows),
+                    timeout_s=min(5.0, max(1.0, float(args.provider_check_timeout))),
+                )
+                summary["runtimeHintSnapshotRefresh"] = (
+                    refresh_runtime_hints_json_from_inventory(
+                        runtime_hints_json,
+                        runtime_inventory,
+                    )
+                )
+                fragment_inventory_json = out_dir / "fragment-inventory.json"
+                fragment_inventory_json.write_text(
+                    json.dumps(runtime_inventory, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
             time.sleep(8.0)
             user_proc, user_log = start_node_command(
                 ndn.net["memphis"],
@@ -2228,15 +2664,27 @@ def main() -> int:
                                     args.requests,
                                     args.concurrency,
                                     args.submission_spacing_ms if args.concurrency > 1 else 0,
-                                    args.target_rps,
-                                    args.open_loop_duration_s,
-                                    args.open_loop_driver_mode,
-                                    [
+                                    assignment_csv=assignment_csv,
+                                    runtime_hints_json=(
+                                        runtime_hints_json
+                                        if args.advisory_coordinator else None
+                                    ),
+                                    fragment_inventory_json=(
+                                        out_dir / "fragment-inventory.json"
+                                        if args.advisory_coordinator else None
+                                    ),
+                                    overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
+                                    target_rps=args.target_rps,
+                                    open_loop_duration_s=args.open_loop_duration_s,
+                                    open_loop_driver_mode=args.open_loop_driver_mode,
+                                    burst_admission_providers=[
                                         "/NDNSF-DI/Tracer/provider/backbone",
                                         "/NDNSF-DI/Tracer/provider/single",
                                     ] if resolved_assignment == "capacity-pool" else None,
-                                    args.runtime_aware_max_replans,
-                                    args.runtime_aware_replan_reasons),
+                                    runtime_aware_max_replans=args.runtime_aware_max_replans,
+                                    runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
+                                    coordination_service=(
+                                        COORDINATION_SERVICE if args.advisory_coordinator else "")),
                 logs_dir,
                 env,
                 procs)
@@ -2244,6 +2692,11 @@ def main() -> int:
                 user_proc.wait(timeout=user_driver_wait_timeout_s(
                     args.requests,
                     args.concurrency,
+                    request_timeout_ms=(
+                        args.overload_fast_fail_timeout_ms
+                        if args.overload_fast_fail_timeout_ms > 0 else
+                        60000
+                    ),
                     open_loop_duration_s=args.open_loop_duration_s))
             except Exception:
                 user_proc.kill()
@@ -2268,6 +2721,8 @@ def main() -> int:
                 "p50Ms": user_result.get("p50Ms", user_result.get("elapsedMs", 0.0)),
                 "p95Ms": user_result.get("p95Ms", user_result.get("elapsedMs", 0.0)),
                 "throughputRps": user_result.get("throughputRps", 0.0),
+                "overloadFastFailCount": user_result.get("overloadFastFailCount", 0),
+                "overloadFastFail": user_result.get("overloadFastFail", {}),
                 "targetRps": user_result.get("targetRps", args.target_rps),
                 "openLoopDurationS": user_result.get("openLoopDurationS", args.open_loop_duration_s),
                 "openLoopDriverMode": user_result.get("mode", args.open_loop_driver_mode),
@@ -2356,6 +2811,7 @@ def main() -> int:
             pass
         summary["negativeAckReasonCounters"] = collect_negative_ack_reason_counters(logs_dir)
         summary["leaseCounters"] = collect_admission_lease_counters(logs_dir)
+        summary["providerAckRuntimeHints"] = collect_provider_ack_runtime_hints(logs_dir)
         summary["providerFragmentInventory"] = collect_provider_fragment_inventory(logs_dir)
         if not summary.get("failureBreakdown") and isinstance(summary.get("userExecution"), dict):
             user_execution = summary["userExecution"]

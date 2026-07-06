@@ -1337,6 +1337,32 @@ class ServiceProvider:
         self._native.run()
         return 0
 
+    def publish_service_info(self,
+                             service_name: str,
+                             service_lifetime_seconds: int = 30,
+                             meta_info: Optional[dict[str, str]] = None) -> None:
+        """Publish service availability and capacity via NDNSD (requires NDNSF_ENABLE_NDNSD=1)."""
+        self._native.publish_service_info(service_name, service_lifetime_seconds, meta_info or {})
+
+    def update_ndnsd_meta(self, key: str, value: str) -> None:
+        """Update one key in the internal NDNSD meta dict (thread-safe).
+
+        Changes are picked up by the next periodic heartbeat.
+        """
+        self._native.update_ndnsd_meta(key, value)
+
+    def set_ndnsd_meta(self, meta: dict[str, str]) -> None:
+        """Replace the entire internal NDNSD meta dict (thread-safe)."""
+        self._native.set_ndnsd_meta(meta)
+
+    def start_ndnsd_heartbeat(self, interval_seconds: int = 10) -> None:
+        """Start periodic NDNSD heartbeat using the C++ io_context scheduler.
+
+        Reads the internal meta dict (updated via update_ndnsd_meta) each tick.
+        Publishes for every registered service.
+        """
+        self._native.start_ndnsd_periodic_publish(interval_seconds)
+
     def start_background(self, service: Optional[str] = None) -> threading.Thread:
         thread = threading.Thread(target=self.run, args=(service,), daemon=True)
         thread.start()
@@ -1645,6 +1671,7 @@ class ServiceUser:
         role_scopes: Optional[dict[str, list[str]]] = None,
         ack_timeout_ms: int = 300,
         timeout_ms: int = 10000,
+        ack_observer: Optional[Callable[[list[AckCandidate]], None]] = None,
     ) -> ServiceResponse:
         """Run a generic multi-provider collaboration.
 
@@ -1652,7 +1679,29 @@ class ServiceUser:
         Python selector assigns each requested role to the first successful ACK
         advertising that role, then sends per-role assignment metadata with
         artifact Data names and scope-key Data names.
+        ``ack_observer`` receives the ACK candidates collected for the
+        collaboration request before the built-in role selector chooses
+        providers. It is observational only and must not return a value.
         """
+
+        native_ack_observer = None
+        if ack_observer is not None:
+            def native_ack_observer(native_candidates) -> None:
+                ack_observer([
+                    AckCandidate(
+                        provider_name=str(candidate.provider_name),
+                        service_name=str(candidate.service_name),
+                        request_id=str(candidate.request_id),
+                        status=bool(candidate.status),
+                        message=str(candidate.message),
+                        payload=bytes(candidate.payload),
+                        telemetry=(
+                            None if candidate.telemetry is None
+                            else dict(candidate.telemetry)
+                        ),
+                    )
+                    for candidate in native_candidates
+                ])
 
         response = self._native.request_collaboration(
             service,
@@ -1665,6 +1714,7 @@ class ServiceUser:
             {str(role): list(scopes) for role, scopes in (role_scopes or {}).items()},
             ack_timeout_ms,
             timeout_ms,
+            native_ack_observer,
         )
         return _from_native_response(response)
 
@@ -1721,6 +1771,17 @@ class ServiceUser:
                 token=str(token),
             )
             for provider_service, service, token in self._native.get_allowed_services()
+        ]
+
+    def get_ndnsd_services(self) -> list[dict[str, Any]]:
+        """Return received NDNSD service details from discovered providers.
+
+        Requires NDNSF_ENABLE_NDNSD=1. Each entry contains provider, serviceName,
+        serviceLifetime, publishTimestamp, and serviceMetaInfo dict.
+        """
+        return [
+            {str(k): v for k, v in item.items()}
+            for item in self._native.get_ndnsd_services()
         ]
 
     def pump(self, milliseconds: int) -> None:

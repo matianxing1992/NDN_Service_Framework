@@ -1295,6 +1295,7 @@ namespace ndn_service_framework
             throw std::invalid_argument("GenericAdmissionLease leaseId is required");
         }
         lease.consumed = false;
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_leases[lease.leaseId] = std::move(lease);
     }
 
@@ -1309,6 +1310,7 @@ namespace ndn_service_framework
     {
         GenericLeaseValidationResult result;
         result.leaseId = leaseId;
+        std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_leases.find(leaseId);
         if (it == m_leases.end()) {
             result.reasonCode = "LEASE_NOT_FOUND";
@@ -1348,6 +1350,7 @@ namespace ndn_service_framework
 
     size_t ServiceProvider::ProviderAdmissionLeaseTable::size() const
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
         return m_leases.size();
     }
 
@@ -6194,6 +6197,56 @@ namespace ndn_service_framework
         // }
     }
 
+    void ServiceProvider::updateNdnsdMeta(const std::string& key, const std::string& value)
+    {
+        std::lock_guard<std::mutex> lock(m_ndnsdMetaMutex);
+        m_ndnsdMeta[key] = value;
+    }
+
+    void ServiceProvider::setNdnsdMeta(const std::map<std::string, std::string>& meta)
+    {
+        std::lock_guard<std::mutex> lock(m_ndnsdMetaMutex);
+        m_ndnsdMeta = meta;
+    }
+
+    void ServiceProvider::startNdnsdPeriodicPublish(int intervalSeconds)
+    {
+        if (!m_ServiceDiscovery.isEnabled()) {
+            NDN_LOG_INFO("[ServiceProvider] NDNSD disabled; skip periodic publish");
+            return;
+        }
+        if (intervalSeconds <= 0 || m_serviceNames.empty()) {
+            return;
+        }
+        NDN_LOG_INFO("[ServiceProvider] NDNSD periodic publish started"
+                     << " interval=" << intervalSeconds << "s"
+                     << " services=" << m_serviceNames.size());
+        m_ndnsdHeartbeatIntervalSeconds = intervalSeconds;
+        m_ndnsdScheduler = std::make_unique<ndn::Scheduler>(m_face.getIoContext());
+
+        std::function<void()> heartbeat = [this] {
+            std::map<std::string, std::string> meta;
+            {
+                std::lock_guard<std::mutex> lock(m_ndnsdMetaMutex);
+                meta = m_ndnsdMeta;
+            }
+            meta["publishSource"] = "ndnsf-core-heartbeat";
+            int lifetime = m_ndnsdHeartbeatIntervalSeconds * 2;
+            for (const auto& serviceUri : m_serviceNames) {
+                publishServiceInfo(ndn::Name(serviceUri), lifetime, meta);
+            }
+        };
+        // Store callback for re-scheduling; schedule initial tick
+        auto recurring = std::make_shared<std::function<void()>>(std::move(heartbeat));
+        *recurring = [this, intervalSeconds, recurring] {
+            (*recurring)();  // publish
+            m_ndnsdHeartbeatEvent = m_ndnsdScheduler->schedule(
+                ndn::time::seconds(intervalSeconds), *recurring);
+        };
+        m_ndnsdHeartbeatEvent = m_ndnsdScheduler->schedule(
+            ndn::time::seconds(intervalSeconds), *recurring);
+    }
+
     void ServiceProvider::UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails)
     {
         if (serviceDetails.serviceMetaInfo.find("tokenName") != serviceDetails.serviceMetaInfo.end()) {
@@ -8569,6 +8622,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                                           message,
                                                           effectiveAssignmentPayload);
             if (!leaseValidation.status) {
+                std::cout << "NDNSF_ADMISSION_LEASE_REJECTED"
+                          << " provider=" << providerName.toUri()
+                          << " requester=" << requesterName.toUri()
+                          << " service=" << serviceName.toUri()
+                          << " requestId=" << requestId.toUri()
+                          << " leaseId=" << leaseValidation.leaseId
+                          << " reason=" << leaseValidation.reasonCode
+                          << std::endl;
                 NDN_LOG_WARN("NDNSF_ADMISSION_LEASE_REJECTED provider="
                              << providerName.toUri()
                              << " requester=" << requesterName.toUri()
@@ -8594,6 +8655,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 continue;
             }
             if (leaseValidation.reasonCode != "NOT_REQUIRED") {
+                std::cout << "NDNSF_ADMISSION_LEASE_ACCEPTED"
+                          << " provider=" << providerName.toUri()
+                          << " requester=" << requesterName.toUri()
+                          << " service=" << serviceName.toUri()
+                          << " requestId=" << requestId.toUri()
+                          << " leaseId=" << leaseValidation.leaseId
+                          << std::endl;
                 NDN_LOG_INFO("NDNSF_ADMISSION_LEASE_ACCEPTED provider="
                              << providerName.toUri()
                              << " requester=" << requesterName.toUri()

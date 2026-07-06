@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <exception>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1153,15 +1154,37 @@ toPyCollaborationData(const nsf::ServiceProvider::CollaborationData& data)
   return output;
 }
 
+py::list
+ackCandidatesToPyList(const std::vector<nsf::AckCandidate>& candidates)
+{
+  py::list pyCandidates;
+  for (const auto& candidate : candidates) {
+    PyAckCandidate item;
+    item.providerName = candidate.providerName.toUri();
+    item.serviceName = candidate.serviceName.toUri();
+    item.requestId = candidate.requestId.toUri();
+    item.status = candidate.ack.getStatus();
+    item.message = candidate.ack.getMessage();
+    item.payload = toPyBytes(candidate.ack.getPayload());
+    if (candidate.telemetry) {
+      item.telemetry = networkTelemetrySnapshotToDict(*candidate.telemetry);
+    }
+    pyCandidates.append(py::cast(item));
+  }
+  return pyCandidates;
+}
+
 class RoleAssignmentSelectionPolicy final : public nsf::ParticipantSelectionPolicy
 {
 public:
   RoleAssignmentSelectionPolicy(std::map<std::string, ndn::Name> artifactDataNames,
                                 std::map<std::string, ndn::Name> scopeKeyDataNames,
-                                std::map<std::string, std::vector<std::string>> roleScopes)
+                                std::map<std::string, std::vector<std::string>> roleScopes,
+                                PyFunctionPtr ackObserver = nullptr)
     : m_artifactDataNames(std::move(artifactDataNames))
     , m_scopeKeyDataNames(std::move(scopeKeyDataNames))
     , m_roleScopes(std::move(roleScopes))
+    , m_ackObserver(std::move(ackObserver))
   {
   }
 
@@ -1169,6 +1192,16 @@ public:
   select(const std::vector<nsf::AckCandidate>& candidates,
          const std::vector<nsf::CollaborationRoleSpec>& roles) const override
   {
+    if (m_ackObserver) {
+      py::gil_scoped_acquire gil;
+      try {
+        (*m_ackObserver)(ackCandidatesToPyList(candidates));
+      }
+      catch (const py::error_already_set& e) {
+        PyErr_WriteUnraisable(e.value().ptr());
+      }
+    }
+
     std::vector<nsf::SelectedParticipant> selected;
     std::map<std::string, std::vector<nsf::AckCandidate>> candidatesByRole;
 
@@ -1237,6 +1270,16 @@ public:
           }
         }
       }
+      const auto ackPayloadText = bytesToString(best->ack.getPayload());
+      const auto leaseId = fieldFromText(ackPayloadText, "leaseId");
+      if (!leaseId.empty()) {
+        assignment += "leaseId=" + leaseId + ";";
+      }
+      const auto resourceBindingProof =
+        fieldFromText(ackPayloadText, "resourceBindingProof");
+      if (!resourceBindingProof.empty()) {
+        assignment += "resourceBindingProof=" + resourceBindingProof + ";";
+      }
 
       ndn::Buffer assignmentPayload(reinterpret_cast<const uint8_t*>(assignment.data()),
                                     assignment.size());
@@ -1248,6 +1291,18 @@ public:
                           role.provisioningTimeoutMs,
                           std::move(assignmentPayload),
                           *best});
+    }
+    if (std::getenv("NDNSF_PY_COLLAB_SELECTION_TRACE") != nullptr) {
+      std::cout << "NDNSF_PY_COLLAB_SELECTION candidates=" << candidates.size()
+                << " roles=" << roles.size()
+                << " selected=" << selected.size();
+      for (const auto& participant : selected) {
+        std::cout << " roleProvider." << participant.role << "="
+                  << participant.provider.toUri()
+                  << " assignmentPayloadBytes="
+                  << participant.assignmentPayload.size();
+      }
+      std::cout << std::endl;
     }
     if (!selected.empty()) {
       std::string roleProviderFields;
@@ -1280,6 +1335,7 @@ private:
   std::map<std::string, ndn::Name> m_artifactDataNames;
   std::map<std::string, ndn::Name> m_scopeKeyDataNames;
   std::map<std::string, std::vector<std::string>> m_roleScopes;
+  PyFunctionPtr m_ackObserver;
 };
 
 class PyCollaborationContext
@@ -1690,6 +1746,41 @@ public:
     }
   }
 
+  /// Publish service info via NDNSD with capacity telemetry in meta info.
+  void
+  publishServiceInfo(const std::string& serviceName,
+                     int serviceLifetimeSeconds,
+                     const py::dict& metaInfo)
+  {
+    std::map<std::string, std::string> meta;
+    for (const auto& [key, value] : metaInfo) {
+      meta[py::str(key).cast<std::string>()] = py::str(value).cast<std::string>();
+    }
+    m_provider->publishServiceInfo(
+      ndn::Name(serviceName),
+      serviceLifetimeSeconds,
+      std::move(meta));
+  }
+
+  void updateNdnsdMeta(const std::string& key, const std::string& value)
+  {
+    m_provider->updateNdnsdMeta(key, value);
+  }
+
+  void setNdnsdMeta(const py::dict& metaInfo)
+  {
+    std::map<std::string, std::string> meta;
+    for (const auto& [key, value] : metaInfo) {
+      meta[py::str(key).cast<std::string>()] = py::str(value).cast<std::string>();
+    }
+    m_provider->setNdnsdMeta(meta);
+  }
+
+  void startNdnsdPeriodicPublish(int intervalSeconds)
+  {
+    m_provider->startNdnsdPeriodicPublish(intervalSeconds);
+  }
+
 private:
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
@@ -2081,7 +2172,8 @@ PyServiceResponse
                          const std::map<std::string, std::string>& scopeKeyDataNames,
                          const std::map<std::string, std::vector<std::string>>& roleScopes,
                          int ackTimeoutMs,
-                         int timeoutMs)
+                         int timeoutMs,
+                         PyFunctionPtr ackObserver = nullptr)
   {
     nsf::CollaborationPlan plan;
     plan.ackCollectionTimeMs = ackTimeoutMs;
@@ -2168,7 +2260,8 @@ PyServiceResponse
     plan.participantSelector = std::make_shared<RoleAssignmentSelectionPolicy>(
       std::move(nativeArtifactDataNames),
       std::move(nativeScopeKeyDataNames),
-      roleScopes);
+      roleScopes,
+      std::move(ackObserver));
     return plan;
   }
 
@@ -2182,8 +2275,13 @@ PyServiceResponse
                        const std::map<std::string, std::string>& scopeKeyDataNames,
                        const std::map<std::string, std::vector<std::string>>& roleScopes,
                        int ackTimeoutMs,
-                       int timeoutMs)
+                       int timeoutMs,
+                       py::object ackObserver = py::none())
   {
+    PyFunctionPtr observer;
+    if (!ackObserver.is_none()) {
+      observer = keepPyFunction(ackObserver.cast<py::function>());
+    }
     auto plan = buildCollaborationPlan(serviceName,
                                        roles,
                                        keyScopes,
@@ -2192,7 +2290,8 @@ PyServiceResponse
                                        scopeKeyDataNames,
                                        roleScopes,
                                        ackTimeoutMs,
-                                       timeoutMs);
+                                       timeoutMs,
+                                       std::move(observer));
 
     PyServiceResponse output;
     std::mutex mutex;
@@ -2506,6 +2605,32 @@ PyServiceResponse
     return m_user->getAllowedServices();
   }
 
+  /// Return received NDNSD service details as a list of dicts.
+  py::list
+  getNdnsdServices() const
+  {
+    py::list result;
+    try {
+      auto details = m_user->getNdnsdReceivedDetails();
+      for (const auto& [key, detail] : details) {
+        py::dict entry;
+        entry["provider"] = detail.applicationPrefix.toUri();
+        entry["serviceName"] = detail.serviceName.toUri();
+        entry["serviceLifetime"] = detail.serviceLifetime;
+        entry["publishTimestamp"] = static_cast<int64_t>(detail.publishTimestamp);
+        py::dict meta;
+        for (const auto& [mk, mv] : detail.serviceMetaInfo) {
+          meta[py::str(mk)] = py::str(mv);
+        }
+        entry["serviceMetaInfo"] = meta;
+        result.append(entry);
+      }
+    } catch (const std::exception& e) {
+      // NDNSD may not be enabled
+    }
+    return result;
+  }
+
 private:
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
@@ -2788,6 +2913,14 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("collaboration_handler"),
          py::arg("ack_handler") = std::optional<py::function>())
     .def("start", &NativeServiceProvider::start)
+    .def("publish_service_info", &NativeServiceProvider::publishServiceInfo,
+         py::arg("service_name"), py::arg("service_lifetime_seconds"), py::arg("meta_info") = py::dict())
+    .def("update_ndnsd_meta", &NativeServiceProvider::updateNdnsdMeta,
+         py::arg("key"), py::arg("value"))
+    .def("set_ndnsd_meta", &NativeServiceProvider::setNdnsdMeta,
+         py::arg("meta"))
+    .def("start_ndnsd_periodic_publish", &NativeServiceProvider::startNdnsdPeriodicPublish,
+         py::arg("interval_seconds"))
     .def("run", &NativeServiceProvider::run, py::call_guard<py::gil_scoped_release>())
     .def("stop", &NativeServiceProvider::stop);
 
@@ -2848,7 +2981,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("scope_key_data_names"),
          py::arg("role_scopes"),
          py::arg("ack_timeout_ms") = 300,
-         py::arg("timeout_ms") = 10000)
+         py::arg("timeout_ms") = 10000,
+         py::arg("ack_observer") = py::none())
     .def("request_collaboration_async", &NativeServiceUser::requestCollaborationAsync,
          py::arg("service"),
          py::arg("payload"),
@@ -2865,5 +2999,6 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("start", &NativeServiceUser::start)
     .def("stop", &NativeServiceUser::stop)
     .def("get_allowed_services", &NativeServiceUser::getAllowedServices)
+    .def("get_ndnsd_services", &NativeServiceUser::getNdnsdServices)
     .def("pump", &NativeServiceUser::pump);
 }

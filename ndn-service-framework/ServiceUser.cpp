@@ -127,6 +127,22 @@ namespace ndn_service_framework
             return textToBuffer(merged);
         }
 
+        ndn::Buffer
+        genericAdmissionLeaseSelectionPayloadFromAck(const RequestAckMessage& ack)
+        {
+            const auto fields = parseSemicolonFields(ack.getPayload());
+            const auto leaseIt = fields.find("leaseId");
+            if (leaseIt == fields.end() || leaseIt->second.empty()) {
+                return ndn::Buffer();
+            }
+            std::string payload = "leaseId=" + leaseIt->second + ";";
+            const auto proofIt = fields.find("resourceBindingProof");
+            if (proofIt != fields.end() && !proofIt->second.empty()) {
+                payload += "resourceBindingProof=" + proofIt->second + ";";
+            }
+            return textToBuffer(payload);
+        }
+
         ndn::security::Certificate
         getExistingSigningCertificateOrFallback(ndn::KeyChain& keyChain,
                                                 const ndn::security::Certificate& encryptionCert)
@@ -2861,6 +2877,12 @@ namespace ndn_service_framework
         return UPT.dumpAll();
     }
 
+    std::map<std::string, ndnsd::discovery::Details>
+    ServiceUser::getNdnsdReceivedDetails() const
+    {
+        return m_ServiceDiscovery.getReceivedServiceDetails();
+    }
+
     bool ServiceUser::isAcceptablePolicyEpoch(size_t messageEpoch) const
     {
         return m_currentPolicyEpoch == 0 || messageEpoch == 0 ||
@@ -5556,7 +5578,22 @@ namespace ndn_service_framework
                         }
                     }
                     pendingCall.collaborationAssignments[
-                        storedAck.providerName.toUri()] = assignment;
+                        storedAck.providerName.toUri()] =
+                        mergeSelectionAssignmentPayloads(
+                            assignment,
+                            genericAdmissionLeaseSelectionPayloadFromAck(storedAck.message));
+                    const auto assignmentIt = pendingCall.collaborationAssignments.find(
+                        storedAck.providerName.toUri());
+                    NDN_LOG_INFO("NDNSF_COLLAB_ASSIGNMENT_SELECTED requestId="
+                                 << storedAck.requestId.toUri()
+                                 << " providerName=" << storedAck.providerName.toUri()
+                                 << " serviceName=" << storedAck.serviceName.toUri()
+                                 << " role=" << participant.role
+                                 << " assignmentPayloadBytes="
+                                 << (assignmentIt == pendingCall.collaborationAssignments.end() ?
+                                     0 : assignmentIt->second.size())
+                                 << " ackPayloadBytes="
+                                 << storedAck.message.getPayload().size());
                     break;
                 }
             }
@@ -6821,6 +6858,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
                 pendingIt->second.collaborationAssignments.find(providerName.toUri());
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
                 providerEntry.assignmentPayload = assignmentIt->second;
+                NDN_LOG_INFO("NDNSF_SELECTION_ASSIGNMENT_ATTACHED requestId="
+                             << requestId.toUri()
+                             << " providerName=" << providerName.toUri()
+                             << " serviceName=" << serviceName.toUri()
+                             << " payloadBytes="
+                             << providerEntry.assignmentPayload.size()
+                             << " compact=0");
             }
             auto genericAssignmentIt =
                 pendingIt->second.selectionAssignmentPayloads.find(providerName.toUri());
@@ -6992,6 +7036,13 @@ void ServiceUser::finishRequestAckOnEventLoop(
                     selectedAck.providerName.toUri());
             if (assignmentIt != pendingIt->second.collaborationAssignments.end()) {
                 entry.assignmentPayload = assignmentIt->second;
+                NDN_LOG_INFO("NDNSF_SELECTION_ASSIGNMENT_ATTACHED requestId="
+                             << requestId.toUri()
+                             << " providerName=" << selectedAck.providerName.toUri()
+                             << " serviceName=" << serviceName.toUri()
+                             << " payloadBytes="
+                             << entry.assignmentPayload.size()
+                             << " compact=1");
                 for (const auto& field : parseSemicolonFields(assignmentIt->second)) {
                     static const std::string scopeKeyPrefix = "scopeKeyData.";
                     if (field.first.rfind(scopeKeyPrefix, 0) == 0 && !field.second.empty()) {

@@ -312,6 +312,9 @@ namespace ndn_service_framework{
             size_t getCurrentPolicyEpoch() const;
             std::vector<std::tuple<std::string, std::string, std::string>>
             getAllowedServices() const;
+            /// Return received NDNSD service details keyed by provider identity.
+            std::map<std::string, ndnsd::discovery::Details>
+            getNdnsdReceivedDetails() const;
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,

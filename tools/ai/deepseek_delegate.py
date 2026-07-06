@@ -276,6 +276,12 @@ def system_prompt(mode: str) -> str:
         )
     if mode == "plan":
         return base + " Return a concise design and task plan with risks and tests."
+    if mode == "docs":
+        return (
+            base
+            + " Return concise documentation prose or markdown bullets. "
+            "Keep it easy for Codex to edit into project docs."
+        )
     if mode == "test":
         return base + " Return focused test cases and expected assertions."
     if mode == "review":
@@ -372,7 +378,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description="Ask DeepSeek for an advisory coding draft without editing files."
     )
     parser.add_argument("--task", help="Implementation/review task for DeepSeek.")
-    parser.add_argument("--mode", choices=("patch", "plan", "test", "review"), default="patch")
+    parser.add_argument("--mode", choices=("patch", "plan", "docs", "test", "review"), default="patch")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--api-key-file", type=Path)

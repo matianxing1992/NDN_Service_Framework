@@ -407,6 +407,15 @@ namespace ndn_service_framework{
             }
         }
 
+        std::map<std::string, Details>
+        getReceivedServiceDetails() const
+        {
+            if (m_discovery) {
+                return m_discovery->getReceivedServiceDetails();
+            }
+            return {};
+        }
+
     private:
         std::unique_ptr<ndnsd::discovery::ServiceDiscovery> m_discovery;
     };

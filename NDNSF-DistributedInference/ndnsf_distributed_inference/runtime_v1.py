@@ -21,6 +21,34 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 
+from ndnsf.coordination import (
+    CoordinationIntent,
+    CoordinationMode as CoreCoordinationMode,
+    CoordinationSuggestion,
+    CoordinationWindow as CoreCoordinationWindow,
+    coordination_suggestion_proof,
+    verify_coordination_suggestion,
+)
+from ndnsf.runtime_telemetry import (
+    AdmissionLeaseStatus,
+    GenericAckMetadata,
+    GenericAdmissionLease,
+    GenericLeaseValidationResult,
+    GenericProviderRuntimeHint,
+    PeerNetworkMetric,
+    ProviderAdmissionLeaseTable,
+    ProviderNetworkMatrix,
+    _string_list,
+    encode_ack_metadata,
+    now_ms,
+    parse_ack_metadata,
+    read_json,
+    stable_digest,
+    stable_json,
+    to_plain,
+    write_json,
+)
+
 
 class ContextObjectKind(str, Enum):
     PROMPT_CHUNK = "PromptChunk"
@@ -1200,6 +1228,309 @@ class RuntimeAssignment:
     score_breakdown: dict[str, Any] = field(default_factory=dict)
     replan_attempt: int = 0
     selected_at_ms: int = field(default_factory=now_ms)
+
+
+# ---------------------------------------------------------------------------
+# Advisory coordinator (DI-specific, imports from core coordination envelope)
+# ---------------------------------------------------------------------------
+
+CoordinatorMode = CoreCoordinationMode
+CoordinatorWindow = CoreCoordinationWindow
+
+
+@dataclass(frozen=True)
+class AdvisoryCoordinatorConfig:
+    enabled: bool = False
+    mode: CoordinatorMode = CoordinatorMode.ADVISORY
+    coordinator_name: str = "/NDNSF-DI/Coordinator"
+    window_ms: int = 200
+    suggestion_ttl_ms: int = 1000
+    fairness_penalty_ms: float = 25.0
+    proof_secret: str = ""
+
+
+@dataclass(frozen=True)
+class PlanIntent(CoordinationIntent):
+    user_name: str = ""
+    template_id: str = ""
+
+    def __post_init__(self) -> None:
+        if self.user_name and not self.requester_name:
+            object.__setattr__(self, "requester_name", self.user_name)
+        if self.template_id:
+            if not self.payload_schema:
+                object.__setattr__(self, "payload_schema", "ndnsf-di-plan-intent-v1")
+            if not self.payload:
+                object.__setattr__(self, "payload", {"templateId": self.template_id})
+
+    def is_valid(self, *, now_ms_value: int | None = None) -> bool:
+        if not super().is_valid(now_ms_value=now_ms_value):
+            return False
+        return bool(self.template_id)
+
+
+@dataclass(frozen=True)
+class AdvisorySuggestion(CoordinationSuggestion):
+    template_id: str = ""
+    role_assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.payload_schema:
+            object.__setattr__(self, "payload_schema", "ndnsf-di-assignment-suggestion-v1")
+        if not self.payload:
+            object.__setattr__(self, "payload", {
+                "templateId": self.template_id,
+                "roleAssignments": self.role_assignments,
+            })
+
+    def provider_for_role(self, role_id: str) -> str:
+        value = self.role_assignments.get(role_id)
+        if isinstance(value, dict):
+            return str(value.get("provider", value.get("providerName", "")))
+        if isinstance(value, str):
+            return value
+        return ""
+
+
+def advisory_suggestion_proof(suggestion: AdvisorySuggestion, *, secret: str = "") -> str:
+    return coordination_suggestion_proof(suggestion, secret=secret)
+
+
+def verify_advisory_suggestion(suggestion: AdvisorySuggestion, *,
+                                secret: str = "",
+                                now_ms_value: int | None = None) -> tuple[bool, str]:
+    ok, reason = verify_coordination_suggestion(suggestion, secret=secret, now_ms_value=now_ms_value)
+    if not ok and reason == "COORDINATION_PROOF_INVALID":
+        return False, "ADVISORY_PROOF_INVALID"
+    return ok, reason
+
+
+class AdvisoryCoordinator:
+    def __init__(self, config: AdvisoryCoordinatorConfig | None = None) -> None:
+        self.config = config or AdvisoryCoordinatorConfig()
+
+    def suggest(self,
+                template: PlanTemplate,
+                provider_candidates_by_intent: dict[str, dict[str, list[dict[str, Any]]]],
+                intents: Iterable[PlanIntent],
+                *,
+                network_matrix: ProviderNetworkMatrix | None = None,
+                now_ms_value: int | None = None,
+                runtime_required: bool = True) -> dict[str, AdvisorySuggestion]:
+        if not self.config.enabled or self.config.mode == CoordinatorMode.DISABLED:
+            return {}
+        current = now_ms() if now_ms_value is None else int(now_ms_value)
+        window = CoordinatorWindow.open(
+            intents,
+            now_ms_value=current,
+            window_ms=self.config.window_ms,
+        )
+        provider_use: dict[str, int] = {}
+        suggestions: dict[str, AdvisorySuggestion] = {}
+        valid_intents = [
+            intent for intent in window.intents
+            if intent.template_id == template.template_id and intent.is_valid(now_ms_value=current)
+        ]
+        valid_intents.sort(key=lambda item: (-float(item.utility_weight), item.created_at_ms, item.intent_id))
+        for intent in valid_intents:
+            candidates = provider_candidates_by_intent.get(intent.intent_id, {})
+            if not candidates:
+                continue
+            try:
+                assignment = choose_advisory_runtime_assignment(
+                    template,
+                    candidates,
+                    request_id=intent.request_id,
+                    provider_use_counts=provider_use,
+                    fairness_penalty_ms=self.config.fairness_penalty_ms,
+                    runtime_required=runtime_required,
+                    network_matrix=network_matrix,
+                    now_ms_value=current,
+                )
+            except ValueError:
+                continue
+            for item in assignment.role_assignments.values():
+                provider = str(item.get("provider", ""))
+                if provider:
+                    provider_use[provider] = provider_use.get(provider, 0) + 1
+            suggestion = AdvisorySuggestion(
+                suggestion_id=stable_digest({
+                    "schema": "ndnsf-di-advisory-suggestion-v1",
+                    "intent": intent.digest(),
+                    "assignment": assignment.role_assignments,
+                    "windowId": window.window_id,
+                }, length=24),
+                intent_id=intent.intent_id,
+                request_id=intent.request_id,
+                template_id=template.template_id,
+                role_assignments=assignment.role_assignments,
+                coordinator_name=self.config.coordinator_name,
+                window_id=window.window_id,
+                created_at_ms=current,
+                expires_at_ms=current + max(0, int(self.config.suggestion_ttl_ms)),
+                score_breakdown={
+                    **assignment.score_breakdown,
+                    "coordinatorMode": self.config.mode.value,
+                    "providerUseCountsAfterSuggestion": dict(provider_use),
+                },
+            )
+            suggestion = replace(
+                suggestion,
+                proof=advisory_suggestion_proof(suggestion, secret=self.config.proof_secret),
+            )
+            suggestions[intent.intent_id] = suggestion
+        return suggestions
+
+
+def choose_advisory_runtime_assignment(template: PlanTemplate,
+                                       candidates_by_role: dict[str, list[dict[str, Any]]],
+                                       *,
+                                       request_id: str = "",
+                                       provider_use_counts: dict[str, int] | None = None,
+                                       fairness_penalty_ms: float = 0.0,
+                                       runtime_required: bool = True,
+                                       network_matrix: ProviderNetworkMatrix | None = None,
+                                       now_ms_value: int | None = None) -> RuntimeAssignment:
+    provider_use = dict(provider_use_counts or {})
+    role_assignments: dict[str, dict[str, Any]] = {}
+    rejected: list[dict[str, Any]] = []
+    total_node_ms = 0.0
+    total_edge_ms = 0.0
+    total_fairness_ms = 0.0
+    role_nodes: list[dict[str, Any]] = []
+    edge_costs: list[dict[str, Any]] = []
+    for role in template.roles:
+        candidates = candidates_by_role.get(role.role_id, [])
+        if not candidates:
+            continue
+        scored = []
+        for c in candidates:
+            provider = str(c.get("providerName", c.get("provider", "")))
+            if not provider:
+                continue
+            node_result = score_runtime_candidate(
+                role, c,
+                runtime_required=runtime_required,
+                now_ms_value=now_ms_value,
+            )
+            fairness_ms = float(provider_use.get(provider, 0)) * max(0.0, float(fairness_penalty_ms))
+            scored.append({
+                "provider": provider,
+                "nodeCostMs": node_result.get("totalMs", 0.0),
+                "fairnessPenaltyMs": fairness_ms,
+                "totalMs": node_result.get("totalMs", 0.0) + fairness_ms,
+                "details": node_result,
+                "candidate": c,
+            })
+        if not scored:
+            continue
+        scored.sort(key=lambda item: float(item["totalMs"]))
+        best = scored[0]
+        role_assignments[role.role_id] = {
+            "provider": best["provider"],
+            "assignment": str(best["candidate"].get("assignment", "")),
+            "nodeCostMs": best["nodeCostMs"],
+            "fairnessPenaltyMs": best["fairnessPenaltyMs"],
+        }
+        total_node_ms += best["nodeCostMs"]
+        total_fairness_ms += best["fairnessPenaltyMs"]
+        provider_use[best["provider"]] = provider_use.get(best["provider"], 0) + 1
+        role_nodes.append({
+            "role": role.role_id,
+            **{k: v for k, v in best.items() if k != "candidate"},
+        })
+        for other in scored[1:]:
+            rejected.append({
+                "role": role.role_id,
+                "provider": other["provider"],
+                "reason": "lower-score",
+                "scoreMs": other["totalMs"],
+            })
+    total_estimated_ms = total_node_ms + total_edge_ms + total_fairness_ms
+    return RuntimeAssignment(
+        request_id=request_id,
+        template_id=template.template_id,
+        role_assignments=role_assignments,
+        score_breakdown={
+            "plannerMode": "advisory-fairness-aware",
+            "nodeCostMs": total_node_ms,
+            "edgeCostMs": total_edge_ms,
+            "fairnessPenaltyMs": total_fairness_ms,
+            "totalEstimatedMs": total_estimated_ms,
+            "roleScores": role_nodes,
+            "edgeCosts": edge_costs,
+            "rejectedCandidates": rejected,
+        },
+    )
+
+
+def merge_advisory_suggestion(local: RuntimeAssignment,
+                              suggestion: AdvisorySuggestion,
+                              template: PlanTemplate,
+                              current_candidates: dict[str, list[dict[str, Any]]],
+                              *,
+                              proof_secret: str = "",
+                              now_ms_value: int | None = None) -> RuntimeAssignment:
+    current = now_ms() if now_ms_value is None else int(now_ms_value)
+    if not suggestion.is_fresh(now_ms_value=current):
+        return replace(local, score_breakdown={
+            **local.score_breakdown,
+            "advisoryStatus": "ignored",
+            "advisoryReason": "STALE_SUGGESTION",
+        })
+    if proof_secret or suggestion.proof:
+        ok, reason = verify_advisory_suggestion(suggestion, secret=proof_secret, now_ms_value=current)
+        if not ok:
+            return replace(local, score_breakdown={
+                **local.score_breakdown,
+                "advisoryStatus": "ignored",
+                "advisoryReason": reason,
+            })
+    provider_map: dict[str, dict[str, Any]] = {}
+    for candidate_list in current_candidates.values():
+        for c in candidate_list:
+            provider = str(c.get("providerName", c.get("provider", "")))
+            if provider:
+                provider_map[provider] = c
+    merged_assignments = dict(local.role_assignments)
+    for role_id, value in suggestion.role_assignments.items():
+        provider = ""
+        if isinstance(value, dict):
+            provider = str(value.get("provider", value.get("providerName", "")))
+        elif isinstance(value, str):
+            provider = value
+        if not provider:
+            continue
+        if provider not in provider_map:
+            return replace(local, score_breakdown={
+                **local.score_breakdown,
+                "advisoryStatus": "ignored",
+                "advisoryReason": "SUGGESTED_PROVIDER_NOT_CURRENTLY_VALID",
+            })
+        candidate = provider_map[provider]
+        metadata = _metadata_from_candidate(candidate)
+        if metadata is not None:
+            valid_lease = any(
+                lease.is_valid(now_ms_value=current)
+                for lease in metadata.lease_offers
+                if lease.provider_name == provider
+            )
+            if metadata.lease_offers and not valid_lease:
+                return replace(local, score_breakdown={
+                    **local.score_breakdown,
+                    "advisoryStatus": "ignored",
+                    "advisoryReason": "SUGGESTED_PROVIDER_NOT_CURRENTLY_VALID",
+                })
+        merged_assignments[role_id] = {
+            "provider": provider,
+            "assignment": str(value.get("assignment", "")) if isinstance(value, dict) else "",
+            "source": "advisory-suggestion",
+        }
+    return replace(local, role_assignments=merged_assignments, score_breakdown={
+        **local.score_breakdown,
+        "advisoryStatus": "accepted",
+        "source": "advisory-merged",
+    })
 
 
 @dataclass(frozen=True)

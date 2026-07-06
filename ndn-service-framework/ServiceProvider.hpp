@@ -17,6 +17,7 @@
 #include <functional>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -140,6 +141,7 @@ namespace ndn_service_framework{
                 size_t size() const;
 
             private:
+                mutable std::mutex m_mutex;
                 std::map<std::string, GenericAdmissionLease> m_leases;
             };
 
@@ -412,7 +414,17 @@ namespace ndn_service_framework{
             void publishServiceInfo(const ndn::Name& serviceName,
                                     int serviceLifetimeSeconds,
                                     std::map<std::string, std::string> serviceMetaInfo = {});
-            
+
+            /// Update one key in the internal NDNSD meta dict (thread-safe).
+            void updateNdnsdMeta(const std::string& key, const std::string& value);
+
+            /// Replace the entire internal NDNSD meta dict (thread-safe).
+            void setNdnsdMeta(const std::map<std::string, std::string>& meta);
+
+            /// Start periodic NDNSD heartbeat for all registered services.
+            /// Meta is read from the internal dict (updated via updateNdnsdMeta).
+            void startNdnsdPeriodicPublish(int intervalSeconds);
+
             void OnRequest(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
             // After receiving service selection message, this function is called to consumeRequest.
@@ -1002,6 +1014,11 @@ namespace ndn_service_framework{
             size_t m_pendingImsInterestCount = 0;
 
             OptionalServiceDiscovery m_ServiceDiscovery;
+            std::map<std::string, std::string> m_ndnsdMeta;
+            mutable std::mutex m_ndnsdMetaMutex;
+            std::unique_ptr<ndn::Scheduler> m_ndnsdScheduler;
+            ndn::scheduler::ScopedEventId m_ndnsdHeartbeatEvent;
+            int m_ndnsdHeartbeatIntervalSeconds = 0;
 
             UserPermissionTable UPT;
 

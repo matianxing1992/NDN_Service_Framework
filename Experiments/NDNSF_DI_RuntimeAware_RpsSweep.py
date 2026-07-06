@@ -45,7 +45,7 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def point_summary(point_dir: Path, target_rps: float, returncode: int) -> dict[str, Any]:
+def point_summary(point_dir: Path, target_rps: float, returncode: int, mode: str) -> dict[str, Any]:
     summary = load_json(point_dir / "summary.json")
     metrics = load_json(point_dir / "planner-metrics.json")
     user = summary.get("userExecution", {}) if isinstance(summary.get("userExecution"), dict) else {}
@@ -55,6 +55,7 @@ def point_summary(point_dir: Path, target_rps: float, returncode: int) -> dict[s
     failure_rate = round(1.0 - success_rate, 6) if request_count else 1.0
     return {
         "targetRps": target_rps,
+        "mode": mode,
         "returncode": returncode,
         "status": summary.get("status", "FAILURE" if returncode else "UNKNOWN"),
         "stable": returncode == 0 and success_rate >= 0.99,
@@ -65,6 +66,8 @@ def point_summary(point_dir: Path, target_rps: float, returncode: int) -> dict[s
         "p50Ms": float(user.get("p50Ms", 0.0) or 0.0),
         "p95Ms": float(user.get("p95Ms", 0.0) or 0.0),
         "throughputRps": float(user.get("throughputRps", 0.0) or 0.0),
+        "overloadFastFailCount": int(user.get("overloadFastFailCount", 0) or 0),
+        "overloadFastFail": user.get("overloadFastFail", {}),
         "leaseCounters": metrics.get("leaseCounters", summary.get("leaseCounters", {})),
         "residencyCounters": metrics.get("residencyCounters", {}),
         "observedResidencyCounters": metrics.get("observedResidencyCounters", {}),
@@ -79,14 +82,19 @@ def point_summary(point_dir: Path, target_rps: float, returncode: int) -> dict[s
 
 def write_outputs(out_dir: Path, points: list[dict[str, Any]]) -> None:
     stable_points = [item for item in points if item.get("stable")]
-    max_stable = max(
-        (float(item["targetRps"]) for item in stable_points),
-        default=0.0,
-    )
+    max_stable_by_mode = {
+        mode: max(
+            (float(item["targetRps"]) for item in stable_points if item.get("mode") == mode),
+            default=0.0,
+        )
+        for mode in sorted({str(item.get("mode", "default")) for item in points})
+    }
+    max_stable = max(max_stable_by_mode.values(), default=0.0)
     payload = {
         "status": "SUCCESS" if points else "FAILURE",
         "pointCount": len(points),
         "maxStableRps": max_stable,
+        "maxStableRpsByMode": max_stable_by_mode,
         "points": points,
     }
     (out_dir / "rps-sweep-summary.json").write_text(
@@ -96,8 +104,9 @@ def write_outputs(out_dir: Path, points: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(
             output,
             fieldnames=[
-                "targetRps", "status", "stable", "successRate", "failureRate",
+                "mode", "targetRps", "status", "stable", "successRate", "failureRate",
                 "requestCount", "successCount", "p50Ms", "p95Ms", "throughputRps",
+                "overloadFastFailCount",
                 "summaryPath", "metricsPath",
             ],
         )
@@ -118,10 +127,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--open-loop-duration-s", type=float, default=0.0)
     parser.add_argument("--workload", default=str(DEFAULT_WORKLOAD))
+    parser.add_argument("--disable-native-admission-lease", action="store_true",
+                        help="Run the sweep without NativeTracer generic admission leases")
+    parser.add_argument("--capacity-pool", action="store_true",
+                        help="Use NativeTracer capacity-pool assignment with multiple candidates per role")
+    parser.add_argument("--overload-fast-fail-timeout-ms", type=int, default=0,
+                        help="Forward a shorter collaboration timeout for overload fast-fail evidence")
+    parser.add_argument("--compare-advisory-coordinator", action="store_true",
+                        help="Run both pure user-side and advisory coordinator wire-path modes")
+    parser.add_argument("--advisory-coordinator-only", action="store_true",
+                        help="Run only the advisory coordinator wire-path mode")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("extra_harness_args", nargs=argparse.REMAINDER,
                         help="Arguments appended to each NativeTracer MiniNDN run")
     args = parser.parse_args(argv)
+    if args.overload_fast_fail_timeout_ms < 0:
+        raise SystemExit("--overload-fast-fail-timeout-ms must be non-negative")
 
     out_dir = Path(args.out).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -131,30 +152,45 @@ def main(argv: list[str] | None = None) -> int:
     if extras and extras[0] == "--":
         extras = extras[1:]
 
-    for target_rps in args.rps:
-        point_dir = out_dir / f"rps-{str(target_rps).replace('.', 'p')}"
-        cmd = [
-            sys.executable,
-            str(HARNESS),
-            "--out", str(point_dir),
-            "--runtime-aware-user-planner",
-            "--multi-user-workload", args.workload,
-            "--runtime-aware-max-replans", "1",
-            "--runtime-aware-replan-reasons", "FRAGMENT_EVICTED",
-            "--requests", str(args.requests),
-            "--concurrency", str(args.concurrency),
-            "--target-rps", str(target_rps),
-            "--full-network",
-            "--tracer-deterministic-runner",
-        ]
-        if args.open_loop_duration_s > 0.0:
-            cmd.extend(["--open-loop-duration-s", str(args.open_loop_duration_s)])
-        cmd.extend(extras)
-        commands.append(cmd)
-        if args.dry_run:
-            continue
-        completed = subprocess.run(cmd, cwd=str(REPO))
-        points.append(point_summary(point_dir, target_rps, completed.returncode))
+    modes = ["advisory"] if args.advisory_coordinator_only else (
+        ["pure", "advisory"] if args.compare_advisory_coordinator else ["pure"])
+
+    for mode in modes:
+        for target_rps in args.rps:
+            point_dir = out_dir / mode / f"rps-{str(target_rps).replace('.', 'p')}"
+            cmd = [
+                sys.executable,
+                str(HARNESS),
+                "--out", str(point_dir),
+                "--runtime-aware-user-planner",
+                "--multi-user-workload", args.workload,
+                "--runtime-aware-max-replans", "1",
+                "--runtime-aware-replan-reasons", "FRAGMENT_EVICTED",
+                "--requests", str(args.requests),
+                "--concurrency", str(args.concurrency),
+                "--target-rps", str(target_rps),
+                "--full-network",
+                "--tracer-deterministic-runner",
+            ]
+            if not args.disable_native_admission_lease:
+                cmd.append("--enable-native-admission-lease")
+            if args.capacity_pool:
+                cmd.extend(["--assignment", "capacity-pool"])
+            if args.overload_fast_fail_timeout_ms > 0:
+                cmd.extend([
+                    "--overload-fast-fail-timeout-ms",
+                    str(args.overload_fast_fail_timeout_ms),
+                ])
+            if mode == "advisory":
+                cmd.append("--advisory-coordinator")
+            if args.open_loop_duration_s > 0.0:
+                cmd.extend(["--open-loop-duration-s", str(args.open_loop_duration_s)])
+            cmd.extend(extras)
+            commands.append(cmd)
+            if args.dry_run:
+                continue
+            completed = subprocess.run(cmd, cwd=str(REPO))
+            points.append(point_summary(point_dir, target_rps, completed.returncode, mode))
 
     (out_dir / "rps-sweep-commands.json").write_text(
         json.dumps(commands, indent=2) + "\n",

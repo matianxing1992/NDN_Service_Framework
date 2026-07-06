@@ -24,6 +24,7 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -90,6 +91,8 @@ struct Options
   bool disableTokens = false;
   bool wiringCheckOnly = false;
   bool tracerDeterministicRunner = false;
+  bool enableAdmissionLease = false;
+  int admissionLeaseTtlMs = 60000;
 };
 
 std::size_t
@@ -110,6 +113,42 @@ parsePositiveInt(const std::string& value, const std::string& optionName)
     throw std::invalid_argument(optionName + " must be greater than zero");
   }
   return parsed;
+}
+
+long long
+epochMs()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+ndn::Buffer
+textBuffer(const std::string& text)
+{
+  return ndn::Buffer(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+}
+
+std::string
+bufferText(const ndn::Buffer& payload)
+{
+  return std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+}
+
+std::string
+nativeTracerLeaseId(const std::string& providerName)
+{
+  static std::atomic<std::uint64_t> counter{0};
+  return "native-tracer-lease-" + std::to_string(epochMs()) + "-" +
+         std::to_string(++counter) + "-" + std::to_string(std::hash<std::string>{}(providerName));
+}
+
+std::string
+nativeTracerLeaseProof(const std::vector<std::string>& allowedRoles)
+{
+  if (allowedRoles.size() == 1) {
+    return "role=" + allowedRoles.front();
+  }
+  return "";
 }
 
 std::vector<std::string>
@@ -494,6 +533,12 @@ parseArgs(int argc, char** argv)
     else if (arg == "--tracer-deterministic-runner") {
       options.tracerDeterministicRunner = true;
     }
+    else if (arg == "--enable-admission-lease") {
+      options.enableAdmissionLease = true;
+    }
+    else if (arg == "--admission-lease-ttl-ms") {
+      options.admissionLeaseTtlMs = parsePositiveInt(readValue(), "--admission-lease-ttl-ms");
+    }
     else {
       throw std::invalid_argument("unknown argument: " + arg);
     }
@@ -707,7 +752,8 @@ printUsage(const char* program)
     << "[--artifact-cache-dir <dir>] [--repo-service <service>] "
     << "[--repo-fetch-timeout-ms <ms>] [--repo-ack-timeout-ms <ms>] "
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
-    << "[--tracer-deterministic-runner]\n";
+    << "[--tracer-deterministic-runner] [--enable-admission-lease] "
+    << "[--admission-lease-ttl-ms <ms>]\n";
 }
 
 } // namespace
@@ -805,17 +851,64 @@ main(int argc, char** argv)
       auto provisioningState = std::make_shared<NativeProviderReadinessState>();
       auto readyHandler = std::make_shared<std::optional<CollaborationHandler>>();
       auto readyHandlerMutex = std::make_shared<std::mutex>();
+      if (options.enableAdmissionLease) {
+        provider.setGenericAdmissionLeaseRequired(ndn::Name(options.serviceName), true);
+        std::cout << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_REQUIRED"
+                  << " service=" << options.serviceName
+                  << " ttlMs=" << options.admissionLeaseTtlMs
+                  << std::endl;
+      }
 
       provider.addCollaborationHandler(
         ndn::Name(options.serviceName),
         allowedRoles,
-        [rolesText = joinRoles(allowedRoles), provisioningState](
+        [rolesText = joinRoles(allowedRoles),
+         allowedRoles,
+         provisioningState,
+         &provider,
+         serviceName = ndn::Name(options.serviceName),
+         providerName = ndn::Name(options.providerName),
+         enableAdmissionLease = options.enableAdmissionLease,
+         admissionLeaseTtlMs = options.admissionLeaseTtlMs](
           const ndn_service_framework::RequestMessage&) {
           auto decision = provisioningState->makeAckDecision(rolesText);
+          if (enableAdmissionLease && decision.status) {
+            ndn_service_framework::ServiceProvider::GenericAdmissionLease lease;
+            lease.leaseId = nativeTracerLeaseId(providerName.toUri());
+            lease.providerName = providerName;
+            lease.serviceName = serviceName;
+            lease.expiresAtMs = static_cast<std::uint64_t>(
+              std::max<long long>(0, epochMs() + admissionLeaseTtlMs));
+            const auto proof = nativeTracerLeaseProof(allowedRoles);
+            if (!proof.empty()) {
+              lease.resourceBindingProof = textBuffer(proof);
+            }
+            provider.grantGenericAdmissionLease(lease);
+            std::string payload = bufferText(decision.payload);
+            if (!payload.empty() && payload.back() != ';') {
+              payload.push_back(';');
+            }
+            payload += "leaseId=" + lease.leaseId + ";";
+            payload += "leaseProvider=" + lease.providerName.toUri() + ";";
+            payload += "leaseService=" + lease.serviceName.toUri() + ";";
+            payload += "leaseExpiresAtMs=" + std::to_string(lease.expiresAtMs) + ";";
+            if (!proof.empty()) {
+              payload += "resourceBindingProof=" + proof + ";";
+            }
+            decision.payload = textBuffer(payload);
+            std::cout << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_GRANTED"
+                      << " provider=" << providerName
+                      << " service=" << serviceName
+                      << " leaseId=" << lease.leaseId
+                      << " proof=" << (proof.empty() ? "-" : proof)
+                      << std::endl;
+          }
           std::cout << "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION"
+                    << " provider=" << providerName
                     << " roles=" << rolesText
                     << " status=" << (decision.status ? 1 : 0)
                     << " message=\"" << decision.message << "\""
+                    << " payload=\"" << bufferText(decision.payload) << "\""
                     << std::endl;
           return decision;
         },
