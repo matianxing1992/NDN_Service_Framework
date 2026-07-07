@@ -311,6 +311,8 @@ class TkGuiHelperTests(unittest.TestCase):
             "0.5",
             "--experiment-open-loop-duration-s",
             "10",
+            "--experiment-dependency-payload-mode",
+            "streamchunk",
             "--experiment-dry-run",
         ])
         command, out_dir = build_qwen_minindn_command(profile, args)
@@ -333,6 +335,8 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertIn("--target-rps", command)
         self.assertIn("0.5", command)
         self.assertIn("--open-loop-duration-s", command)
+        self.assertIn("--dependency-payload-mode", command)
+        self.assertIn("streamchunk", command)
         self.assertIn("10.0", command)
         self.assertIn("--dry-run", command)
 

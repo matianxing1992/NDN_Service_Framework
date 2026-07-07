@@ -1,5 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 
+#include <cstdlib>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -18,6 +20,53 @@ tensorList(const std::vector<std::string>& tensors)
     os << tensors[i];
   }
   return os.str();
+}
+
+bool
+truthyEnv(const char* name)
+{
+  const char* value = std::getenv(name);
+  if (value == nullptr) {
+    return false;
+  }
+  const std::string text(value);
+  return !(text.empty() || text == "0" || text == "false" || text == "FALSE" ||
+           text == "off" || text == "OFF");
+}
+
+bool
+streamDependencyTraceEnabled()
+{
+  return truthyEnv("NDNSF_DI_RUNTIME_TIMING") ||
+         truthyEnv("NDNSF_DI_STREAM_DEPENDENCY_TRACE");
+}
+
+void
+logStreamDependency(const std::string& sessionId,
+                    const DependencyEdge& edge,
+                    const char* direction,
+                    const char* mode,
+                    std::size_t payloadBytes,
+                    std::size_t wireBytes,
+                    const char* status)
+{
+  if (!streamDependencyTraceEnabled()) {
+    return;
+  }
+  const auto envelopeBytes = wireBytes > payloadBytes ? wireBytes - payloadBytes : 0;
+  std::cout << "\nNDNSF_DI_STREAM_DEPENDENCY"
+            << " session=" << sessionId
+            << " scope=" << edge.scope
+            << " producer=" << edge.producerRole
+            << " consumer=" << edge.consumerRole
+            << " mode=" << mode
+            << " direction=" << direction
+            << " payload_bytes=" << payloadBytes
+            << " wire_bytes=" << wireBytes
+            << " envelope_bytes=" << envelopeBytes
+            << " planned_name=" << (edge.plannedDataName.empty() ? "none" : edge.plannedDataName)
+            << " status=" << status
+            << std::endl;
 }
 
 std::string
@@ -151,13 +200,40 @@ NdnsfCollaborationDependencyIo::prefetchInput(const std::string& sessionId,
         edge.plannedDataName);
     }
     if (m_streamChunkDependencies) {
-      return decodeTensorBundleFromStreamChunk(sessionId, edge, *payload);
+      try {
+        auto bundle = decodeTensorBundleFromStreamChunk(sessionId, edge, *payload);
+        logStreamDependency(sessionId,
+                            edge,
+                            "fetch",
+                            "streamchunk",
+                            bundle.payload.size(),
+                            payload->size(),
+                            "ok");
+        return bundle;
+      }
+      catch (...) {
+        logStreamDependency(sessionId,
+                            edge,
+                            "fetch",
+                            "streamchunk",
+                            0,
+                            payload->size(),
+                            "decode-error");
+        throw;
+      }
     }
     TensorBundle bundle;
     bundle.name = edge.tensors.size() == 1 ? edge.tensors.front() : edge.plannedDataName;
     bundle.payload.assign(payload->data(), payload->data() + payload->size());
     bundle.expectedSegments = edge.expectedSegments;
     bundle.expectedBytes = edge.expectedBytes;
+    logStreamDependency(sessionId,
+                        edge,
+                        "fetch",
+                        "raw",
+                        bundle.payload.size(),
+                        payload->size(),
+                        "ok");
     return bundle;
   });
 }
@@ -170,6 +246,13 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
   const auto payload = m_streamChunkDependencies
     ? encodeTensorBundleAsStreamChunk(sessionId, edge, bundle)
     : ndn::Buffer(bundle.payload.data(), bundle.payload.size());
+  logStreamDependency(sessionId,
+                      edge,
+                      "publish",
+                      m_streamChunkDependencies ? "streamchunk" : "raw",
+                      bundle.payload.size(),
+                      payload.size(),
+                      "ok");
   if (edge.plannedDataName.empty()) {
     m_ctx.publishLarge(
       edge.scope,

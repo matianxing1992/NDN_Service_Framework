@@ -16,6 +16,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 HARNESS = REPO / "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
 SWEEP = REPO / "Experiments/NDNSF_DI_RuntimeAware_RpsSweep.py"
+STREAM_CHUNK_CAMPAIGN = REPO / "Experiments/NDNSF_DI_StreamChunk_Mode_Campaign.py"
 USER_DRIVER = REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py"
 ADVISORY_COORDINATOR = (
     REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/advisory_coordinator.py"
@@ -68,6 +69,7 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             "--runtime-aware-replan-reasons", "FRAGMENT_EVICTED",
             "--requests", "1",
             "--concurrency", "1",
+            "--dependency-payload-mode", "streamchunk",
         ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
            stderr=subprocess.PIPE, check=True)
         payload = json.loads(completed.stdout)
@@ -76,8 +78,36 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(payload["multiUserWorkload"]["requestCount"], 2)
         self.assertEqual(payload["requests"], 2)
         self.assertEqual(payload["runtimeAwareMaxReplans"], 1)
+        self.assertEqual(payload["dependencyPayloadMode"], "streamchunk")
+        self.assertEqual(payload["dependencyPayloadEnv"], {
+            "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": "1",
+            "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
+        })
         self.assertIn("--runtime-aware-max-replans 1", payload["userDriverCommand"])
         self.assertIn("FRAGMENT_EVICTED", payload["userDriverCommand"])
+
+    def test_streamchunk_mode_campaign_dry_run_builds_both_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = subprocess.run([
+                sys.executable,
+                str(STREAM_CHUNK_CAMPAIGN),
+                "--out", str(Path(tmp) / "streamchunk-campaign"),
+                "--modes", "raw,streamchunk",
+                "--repeats", "2",
+                "--requests", "1",
+                "--concurrency", "1",
+                "--dry-run",
+                "--",
+                "--tracer-deterministic-runner",
+            ], cwd=str(REPO), text=True, stdout=subprocess.PIPE,
+               stderr=subprocess.PIPE, check=True)
+        payload = json.loads(completed.stdout)
+        commands = payload["commands"]
+        self.assertEqual(payload["status"], "DRY_RUN")
+        self.assertEqual(len(commands), 4)
+        joined = [" ".join(command) for command in commands]
+        self.assertTrue(any("--dependency-payload-mode raw" in item for item in joined))
+        self.assertTrue(any("--dependency-payload-mode streamchunk" in item for item in joined))
 
     def test_user_driver_loads_role_assignments_from_csv(self) -> None:
         user_driver = load_user_driver_module()

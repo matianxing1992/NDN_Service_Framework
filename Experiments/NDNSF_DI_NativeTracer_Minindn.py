@@ -375,6 +375,15 @@ def provider_admission_env(args) -> dict[str, str]:
     return env
 
 
+def dependency_payload_env(args) -> dict[str, str]:
+    return {
+        "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": (
+            "1" if args.dependency_payload_mode == "streamchunk" else "0"
+        ),
+        "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
+    }
+
+
 def shell_join(items: list[str]) -> str:
     return " ".join(perf.shell_quote(str(item)) for item in items)
 
@@ -541,6 +550,9 @@ def run_plan_tracer(policy_dir: Path,
                     target_rps: float,
                     runtime_aware_user_planner: bool = False,
                     log_name: str = "plan-tracer") -> dict[str, object]:
+    policy_dir = policy_dir.resolve()
+    out_dir = out_dir.resolve()
+    logs_dir = logs_dir.resolve()
     active_assignment = assignment_for(assignment_name)
     provider_profiles_json = (
         out_dir / "provider-profiles.json"
@@ -583,6 +595,9 @@ def run_llm_proportional_bundle(policy_dir: Path,
                                 stage_execution_delay_scale: float,
                                 target_rps: float,
                                 provider_workers: int) -> dict[str, object]:
+    policy_dir = policy_dir.resolve()
+    out_dir = out_dir.resolve()
+    logs_dir = logs_dir.resolve()
     summary_path = out_dir / "policy-summary.json"
     run_logged("generate-llm-proportional-bundle", [
         "python3", str(LLM_BUNDLE_GENERATOR),
@@ -634,10 +649,10 @@ def load_plan_roles(plan_path: Path) -> list[str]:
     return list(service["roles"])
 
 
-def validate_prerequisites() -> None:
+def validate_prerequisites(topology_file: Path = TOPO) -> None:
     missing = [
         str(path) for path in (
-            TOPO,
+            topology_file,
             PLAN_TRACER,
             LLM_BUNDLE_GENERATOR,
             USER_DRIVER,
@@ -648,7 +663,7 @@ def validate_prerequisites() -> None:
         )
         if not path.exists()
     ]
-    nodes = topology_nodes(TOPO) if TOPO.exists() else set()
+    nodes = topology_nodes(topology_file) if topology_file.exists() else set()
     required_nodes = {"memphis", "ucla", "arizona", "wustl", "neu"}
     missing_nodes = sorted(required_nodes - nodes)
     if missing or missing_nodes:
@@ -768,6 +783,7 @@ def run_local_execution_baseline(policy_dir: Path,
 def provider_check_command(row: dict[str, str],
                            policy_dir: Path,
                            deterministic_runner: bool = False) -> str:
+    policy_dir = policy_dir.resolve()
     args = [
         str(PROVIDER_EXE),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -792,6 +808,7 @@ def provider_serve_command(row: dict[str, str],
                            policy_dir: Path,
                            deterministic_runner: bool = False,
                            enable_admission_lease: bool = False) -> str:
+    policy_dir = policy_dir.resolve()
     args = [
         str(PROVIDER_EXE),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -816,6 +833,7 @@ def provider_serve_command(row: dict[str, str],
 
 def advisory_coordinator_command(policy_dir: Path,
                                  proof_secret: str = "") -> str:
+    policy_dir = policy_dir.resolve()
     args = [
         "python3", str(ADVISORY_COORDINATOR),
         "--group", GROUP,
@@ -830,6 +848,7 @@ def advisory_coordinator_command(policy_dir: Path,
 
 
 def controller_command(policy_dir: Path, assignment_rows: list[dict[str, str]]) -> str:
+    policy_dir = policy_dir.resolve()
     code = (
         "from ndnsf import ServiceController; "
         "ServiceController("
@@ -859,6 +878,13 @@ def user_driver_command(policy_dir: Path,
                         runtime_aware_max_replans: int = 0,
                         runtime_aware_replan_reasons: str = "",
                         coordination_service: str = "") -> str:
+    policy_dir = policy_dir.resolve()
+    if assignment_csv is not None:
+        assignment_csv = assignment_csv.resolve()
+    if runtime_hints_json is not None:
+        runtime_hints_json = runtime_hints_json.resolve()
+    if fragment_inventory_json is not None:
+        fragment_inventory_json = fragment_inventory_json.resolve()
     args = [
         "python3", str(USER_DRIVER),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -1063,6 +1089,93 @@ def collect_provider_fragment_inventory(logs_dir: Path) -> dict[str, object]:
         "residencyCounters": dict(sorted(residency_counters.items())),
         "latestByProviderRole": dict(sorted(latest_by_provider_role.items())),
         "latestByFragment": dict(sorted(latest_by_fragment.items())),
+    }
+
+
+def collect_stream_dependency_counters(logs_dir: Path) -> dict[str, object]:
+    scanned_logs = 0
+    event_count = 0
+    decode_error_count = 0
+    mode_counters: Counter[str] = Counter()
+    direction_counters: Counter[str] = Counter()
+    status_counters: Counter[str] = Counter()
+    payload_bytes_by_mode: Counter[str] = Counter()
+    wire_bytes_by_mode: Counter[str] = Counter()
+    envelope_bytes_by_mode: Counter[str] = Counter()
+    dependency_fetch_payload_values: list[float] = []
+    dependency_publish_payload_values: list[float] = []
+    examples: list[dict[str, object]] = []
+
+    for path in sorted(logs_dir.glob("*.log")):
+        scanned_logs += 1
+        for line in read_log_text(path).splitlines():
+            if "NDNSF_DI_STREAM_DEPENDENCY" not in line:
+                continue
+            fields = parse_trace_fields(line)
+            mode = fields.get("mode", "")
+            direction = fields.get("direction", "")
+            status = fields.get("status", "")
+            payload_bytes = int_field(fields, "payload_bytes", 0)
+            wire_bytes = int_field(fields, "wire_bytes", 0)
+            envelope_bytes = int_field(fields, "envelope_bytes", 0)
+            event_count += 1
+            if status == "decode-error":
+                decode_error_count += 1
+            if mode:
+                mode_counters[mode] += 1
+                payload_bytes_by_mode[mode] += payload_bytes
+                wire_bytes_by_mode[mode] += wire_bytes
+                envelope_bytes_by_mode[mode] += envelope_bytes
+            if direction:
+                direction_counters[direction] += 1
+                if direction == "fetch":
+                    dependency_fetch_payload_values.append(float(payload_bytes))
+                elif direction == "publish":
+                    dependency_publish_payload_values.append(float(payload_bytes))
+            if status:
+                status_counters[status] += 1
+            if len(examples) < 10:
+                examples.append({
+                    "session": fields.get("session", ""),
+                    "scope": fields.get("scope", ""),
+                    "mode": mode,
+                    "direction": direction,
+                    "payloadBytes": payload_bytes,
+                    "wireBytes": wire_bytes,
+                    "envelopeBytes": envelope_bytes,
+                    "status": status,
+                    "plannedName": fields.get("planned_name", ""),
+                    "log": str(path),
+                })
+
+    def by_mode(counter: Counter[str]) -> dict[str, int]:
+        return {key: int(value) for key, value in sorted(counter.items())}
+
+    overhead_ratio_by_mode: dict[str, float] = {}
+    for mode, wire_bytes in wire_bytes_by_mode.items():
+        payload_bytes = payload_bytes_by_mode.get(mode, 0)
+        if payload_bytes:
+            overhead_ratio_by_mode[mode] = round(
+                max(0, wire_bytes - payload_bytes) / payload_bytes,
+                6,
+            )
+        else:
+            overhead_ratio_by_mode[mode] = 0.0
+
+    return {
+        "scannedLogs": scanned_logs,
+        "eventCount": event_count,
+        "decodeErrorCount": decode_error_count,
+        "modeCounters": by_mode(mode_counters),
+        "directionCounters": by_mode(direction_counters),
+        "statusCounters": by_mode(status_counters),
+        "payloadBytesByMode": by_mode(payload_bytes_by_mode),
+        "wireBytesByMode": by_mode(wire_bytes_by_mode),
+        "envelopeBytesByMode": by_mode(envelope_bytes_by_mode),
+        "overheadRatioByMode": overhead_ratio_by_mode,
+        "dependencyFetchPayloadBytes": metric_stats(dependency_fetch_payload_values),
+        "dependencyPublishPayloadBytes": metric_stats(dependency_publish_payload_values),
+        "examples": examples,
     }
 
 
@@ -1875,6 +1988,7 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
         f"miniNDNStatus={summary['miniNDNStatus']}",
         f"miniNDNRun={summary['miniNDNRun']}",
         f"runnerMode={summary['runnerMode']}",
+        f"dependencyPayloadMode={summary.get('dependencyPayloadMode', 'raw')}",
         f"activationPadBytes={summary.get('activationPadBytes', 0)}",
         f"roleExecutionDelayMs={summary.get('roleExecutionDelayMs', 0.0)}",
         f"requestCount={summary.get('requestCount', 1)}",
@@ -1921,6 +2035,15 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
             f"providerDecisions:{negative_ack.get('providerDecisions', {})};"
             f"payloadReasons:{negative_ack.get('payloadReasons', {})}"
         )
+    stream_counters = summary.get("streamChunkDependencyCounters", {})
+    if isinstance(stream_counters, dict):
+        lines.append(
+            "streamChunkDependencyCounters="
+            f"events:{stream_counters.get('eventCount', 0)};"
+            f"decodeErrors:{stream_counters.get('decodeErrorCount', 0)};"
+            f"modes:{stream_counters.get('modeCounters', {})};"
+            f"overhead:{stream_counters.get('overheadRatioByMode', {})}"
+        )
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n",
                                          encoding="utf-8")
     marker = "SUCCESS" if summary["status"] == "SUCCESS" else "FAILURE"
@@ -1961,7 +2084,12 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
             "enableNativeAdmissionLease": args.enable_native_admission_lease,
             "overloadFastFailTimeoutMs": args.overload_fast_fail_timeout_ms,
+            "dependencyPayloadMode": args.dependency_payload_mode,
+            "topologyFile": str(Path(args.topology_file).resolve()),
         },
+        "topologyFile": str(Path(args.topology_file).resolve()),
+        "dependencyPayloadMode": args.dependency_payload_mode,
+        "dependencyPayloadEnv": dependency_payload_env(args),
         "nativePlan": str(policy_dir / "native-execution-plan.json"),
         "serviceManifest": str(policy_dir / "service-manifest.json"),
         "optimizationEvidence": {
@@ -2028,6 +2156,11 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
         "requestCount": args.requests,
         "concurrency": args.concurrency,
         "failureReason": "",
+        "streamChunkDependencyCounters": {
+            "eventCount": 0,
+            "decodeErrorCount": 0,
+            "modeCounters": {},
+        },
     }
 
 
@@ -2058,6 +2191,9 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print resolved NativeTracer MiniNDN campaign arguments without running")
     parser.add_argument("--out", default=default_value(profile_defaults, "out", str(DEFAULT_OUT)))
+    parser.add_argument("--topology-file",
+                        default=default_value(profile_defaults, "topology_file", str(TOPO)),
+                        help="MiniNDN topology file for the NativeTracer full-network harness")
     parser.add_argument("--assignment",
                         choices=[
                             "default", "alternate", "single-provider",
@@ -2158,6 +2294,12 @@ def main() -> int:
                         default=default_value(profile_defaults, "overload_fast_fail_timeout_ms", 0),
                         help=("Use a shorter user collaboration timeout for overload "
                               "fast-fail experiments"))
+    parser.add_argument("--dependency-payload-mode",
+                        choices=["raw", "streamchunk"],
+                        default=default_value(profile_defaults, "dependency_payload_mode", "raw"),
+                        help=("Dependency large-data payload envelope for native provider "
+                              "collaboration: raw keeps the original tensor bundle bytes; "
+                              "streamchunk wraps them in core NDNSF StreamChunk TLV."))
     args = parser.parse_args()
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
@@ -2193,6 +2335,8 @@ def main() -> int:
         raise SystemExit("--provider-admission-min-free-memory-mb must be non-negative")
     if args.overload_fast_fail_timeout_ms < 0:
         raise SystemExit("--overload-fast-fail-timeout-ms must be non-negative")
+    topology_file = Path(args.topology_file).resolve()
+    args.topology_file = str(topology_file)
 
     multi_user_workload = (
         load_multi_user_workload(args.multi_user_workload)
@@ -2217,6 +2361,9 @@ def main() -> int:
             "targetRps": args.target_rps,
             "runtimeAwareMaxReplans": args.runtime_aware_max_replans,
             "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
+            "topologyFile": str(topology_file),
+            "dependencyPayloadMode": args.dependency_payload_mode,
+            "dependencyPayloadEnv": dependency_payload_env(args),
             "plannerMetrics": {
                 "json": str(Path(args.out) / "planner-metrics.json"),
                 "csv": str(Path(args.out) / "planner-metrics.csv"),
@@ -2248,10 +2395,10 @@ def main() -> int:
         return 0
 
     if args.quick_smoke:
-        validate_prerequisites()
+        validate_prerequisites(topology_file)
         print(
             "NDNSF_DI_NATIVE_TRACER_MININDN_QUICK_SMOKE_OK "
-            f"topology={TOPO} provider={PROVIDER_EXE}")
+            f"topology={topology_file} provider={PROVIDER_EXE}")
         return 0
 
     setLogLevel("info")
@@ -2275,6 +2422,7 @@ def main() -> int:
         str(REPO / "build"),
         env.get("LD_LIBRARY_PATH", ""),
     ])
+    env.update(dependency_payload_env(args))
 
     summary = build_base_summary(args, out_dir, policy_dir, logs_dir)
     summary["multiUserWorkload"] = {
@@ -2284,7 +2432,7 @@ def main() -> int:
     ndn = None
     procs = []
     try:
-        validate_prerequisites()
+        validate_prerequisites(topology_file)
         requested_assignment = args.assignment
         resolved_assignment = args.assignment
         auto_recommended_candidate = ""
@@ -2535,7 +2683,7 @@ def main() -> int:
         with MiniNdnArgvGuard():
             Minindn.cleanUp()
             Minindn.verifyDependencies()
-            ndn = Minindn(topoFile=str(TOPO))
+            ndn = Minindn(topoFile=str(topology_file))
             ndn.start()
             assign_provider_homes(ndn, provider_rows)
             summary["providerLaunchRows"] = launch_rows
@@ -2621,6 +2769,7 @@ def main() -> int:
                     args.enable_native_admission_lease)
                 provider_env = llm_provider_resource_env(row["provider"])
                 provider_env.update(provider_admission_env(args))
+                provider_env.update(dependency_payload_env(args))
                 proc, path = start_node_command(
                     node,
                     "provider-serve-" + safe_log_component(row["role"]) +
@@ -2786,6 +2935,7 @@ def main() -> int:
                 args.policy_bundle == "llm-proportional")
             provider_env = llm_provider_resource_env(row["provider"])
             provider_env.update(provider_admission_env(args))
+            provider_env.update(dependency_payload_env(args))
             start_node_command(node,
                                "provider-check-" + safe_log_component(row["role"]) +
                                "--" + safe_log_component(row["provider"]),
@@ -2821,6 +2971,12 @@ def main() -> int:
         summary["leaseCounters"] = collect_admission_lease_counters(logs_dir)
         summary["providerAckRuntimeHints"] = collect_provider_ack_runtime_hints(logs_dir)
         summary["providerFragmentInventory"] = collect_provider_fragment_inventory(logs_dir)
+        summary["streamChunkDependencyCounters"] = collect_stream_dependency_counters(logs_dir)
+        (out_dir / "streamchunk_counters.json").write_text(
+            json.dumps(summary["streamChunkDependencyCounters"],
+                       indent=2,
+                       sort_keys=True) + "\n",
+            encoding="utf-8")
         if not summary.get("failureBreakdown") and isinstance(summary.get("userExecution"), dict):
             user_execution = summary["userExecution"]
             summary["failureBreakdown"] = build_failure_breakdown(
