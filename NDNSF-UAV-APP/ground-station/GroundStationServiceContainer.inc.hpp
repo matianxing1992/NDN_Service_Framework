@@ -3696,7 +3696,7 @@ private:
     uint64_t probeNotBeforeMs = 0;
   };
 
-struct StreamChunk
+  struct DecoderStreamChunk
   {
     uint64_t packetSeq = 0;
     uint64_t arrivalMs = 0;
@@ -4407,11 +4407,9 @@ struct StreamChunk
     }
 
     const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
-    insertChunkForDecode(packet.packetSeq,
-                         packet.payload,
-                         packet.streamId,
-                         packet.streamSessionEpoch,
-                         elapsedMs);
+    auto streamChunk = videoPacketToStreamChunk(packet);
+    streamChunk.arrivalMs = receivedMs;
+    insertStreamChunkForDecode(streamChunk, elapsedMs);
   }
 
   void
@@ -4492,11 +4490,9 @@ struct StreamChunk
     const auto elapsedMs = (m_firstFrameMs == 0 ? 0 : receivedMs - m_firstFrameMs);
     attemptAndRecoverFrame(state);
     if (packet.fecSymbolIndex < state.dataShards) {
-      insertChunkForDecode(packet.packetSeq,
-                           packet.payload,
-                           packet.streamId,
-                           packet.streamSessionEpoch,
-                           elapsedMs);
+      auto streamChunk = videoPacketToStreamChunk(packet);
+      streamChunk.arrivalMs = receivedMs;
+      insertStreamChunkForDecode(streamChunk, elapsedMs);
     }
     if (state.complete) {
       cleanupFecFrames();
@@ -4543,11 +4539,14 @@ struct StreamChunk
         return;
       }
       const auto recoveredElapsed = (m_firstFrameMs == 0 ? 0 : state.firstArrivalMs - m_firstFrameMs);
-      insertChunkForDecode(recoveredSeq,
-                          recovered,
-                          !state.streamId.empty() ? state.streamId : activeVideoStreamId(),
-                          state.streamSessionEpoch,
-                          recoveredElapsed);
+      ndn_service_framework::StreamChunk recoveredChunk;
+      recoveredChunk.streamId = !state.streamId.empty() ? state.streamId : activeVideoStreamId();
+      recoveredChunk.sessionEpoch = state.streamSessionEpoch;
+      recoveredChunk.seq = recoveredSeq;
+      recoveredChunk.payload = recovered;
+      recoveredChunk.contentType = "video/h264";
+      recoveredChunk.arrivalMs = state.firstArrivalMs;
+      insertStreamChunkForDecode(recoveredChunk, recoveredElapsed);
       state.shards[missingIdx] = recovered;
       state.complete = true;
       break;
@@ -4634,6 +4633,17 @@ struct StreamChunk
   }
 
   void
+  insertStreamChunkForDecode(const ndn_service_framework::StreamChunk& chunk,
+                             uint64_t elapsedMs)
+  {
+    insertChunkForDecode(chunk.seq,
+                         chunk.payload,
+                         chunk.streamId,
+                         chunk.sessionEpoch,
+                         elapsedMs);
+  }
+
+  void
   insertChunkForDecode(uint64_t packetSeq,
                       const std::vector<uint8_t>& payload,
                       const std::string& streamId,
@@ -4651,9 +4661,9 @@ struct StreamChunk
     bool notifyWriter = false;
     {
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
-      const auto inserted = m_pendingChunks.emplace(packetSeq, StreamChunk{});
+      const auto inserted = m_pendingChunks.emplace(packetSeq, DecoderStreamChunk{});
       if (inserted.second) {
-        StreamChunk chunk;
+        DecoderStreamChunk chunk;
         chunk.packetSeq = packetSeq;
         chunk.arrivalMs = (m_firstFrameMs == 0 ? 0 : m_firstFrameMs + elapsedMs);
         chunk.elapsedMs = elapsedMs;
@@ -4889,7 +4899,7 @@ struct StreamChunk
   decoderWriterLoop()
   {
     while (m_decoderRunning.load()) {
-      StreamChunk chunk;
+      DecoderStreamChunk chunk;
       {
         std::unique_lock<std::mutex> guard(m_decoderQueueMutex);
         m_decoderQueueCv.wait_for(guard, std::chrono::milliseconds(10), [this] {
@@ -5266,8 +5276,8 @@ private:
   static constexpr size_t MAX_VIDEO_PACKET_HISTORY = 4096;
   std::mutex m_decoderQueueMutex;
   std::condition_variable m_decoderQueueCv;
-  std::deque<StreamChunk> m_chunkQueue;
-  std::map<uint64_t, StreamChunk> m_pendingChunks;
+  std::deque<DecoderStreamChunk> m_chunkQueue;
+  std::map<uint64_t, DecoderStreamChunk> m_pendingChunks;
   std::map<uint64_t, std::vector<uint8_t>> m_recordingPlaybackChunks;
   std::map<std::pair<uint64_t, uint64_t>, FecFrameState> m_fecFrames;
   std::vector<uint8_t> m_decoderOutBuffer;

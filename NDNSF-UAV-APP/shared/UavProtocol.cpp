@@ -3282,6 +3282,119 @@ decodeVideoPacket(const std::vector<uint8_t>& payload)
   return packet;
 }
 
+namespace {
+
+std::vector<uint64_t>
+parseVideoFecDataLengths(const std::string& value)
+{
+  std::vector<uint64_t> lengths;
+  if (value.empty()) {
+    return lengths;
+  }
+  std::stringstream parser(value);
+  std::string token;
+  while (std::getline(parser, token, ',')) {
+    if (token.empty()) {
+      continue;
+    }
+    lengths.push_back(std::stoull(token));
+  }
+  return lengths;
+}
+
+std::string
+formatVideoFecDataLengths(const std::vector<uint64_t>& lengths)
+{
+  std::ostringstream os;
+  for (size_t i = 0; i < lengths.size(); ++i) {
+    if (i > 0) {
+      os << ',';
+    }
+    os << lengths[i];
+  }
+  return os.str();
+}
+
+uint64_t
+metadataUint64(const std::map<std::string, std::string>& metadata,
+               const std::string& key,
+               uint64_t fallback)
+{
+  const auto it = metadata.find(key);
+  if (it == metadata.end() || it->second.empty()) {
+    return fallback;
+  }
+  return std::stoull(it->second);
+}
+
+} // namespace
+
+ndn_service_framework::StreamChunk
+videoPacketToStreamChunk(const VideoPacket& packet)
+{
+  ndn_service_framework::StreamChunk chunk;
+  chunk.streamId = packet.streamId;
+  chunk.sessionEpoch = packet.streamSessionEpoch;
+  chunk.seq = packet.packetSeq;
+  chunk.payload = packet.payload;
+  chunk.contentType = packet.encoding.empty() ? "video/h264" : packet.encoding;
+  chunk.captureMs = packet.captureMs;
+  chunk.keyChunk = packet.keyFrame;
+  chunk.frameId = packet.frameSeq;
+  chunk.frameFirstSeq = packet.frameFirstPacketSeq;
+  chunk.frameLastSeq = packet.frameLastPacketSeq;
+  chunk.segmentIndex = packet.frameSegmentIndex;
+  chunk.segmentCount = packet.frameSegmentCount;
+  chunk.metadata["uav.second"] = std::to_string(packet.second);
+  chunk.metadata["uav.bucket_packet_count"] = std::to_string(packet.bucketPacketCount);
+
+  if (packet.fecDataShards > 0 || packet.fecParityShards > 0 ||
+      packet.fecSymbolCount > 0 || !packet.fecDataLengths.empty()) {
+    ndn_service_framework::StreamFecInfo fec;
+    fec.scheme = "xor-parity";
+    fec.dataShards = packet.fecDataShards;
+    fec.parityShards = packet.fecParityShards;
+    fec.symbolIndex = packet.fecSymbolIndex;
+    fec.symbolCount = packet.fecSymbolCount;
+    fec.dataLengths = parseVideoFecDataLengths(packet.fecDataLengths);
+    fec.sourceBlockId = std::to_string(packet.frameSeq);
+    fec.repairSymbol = packet.fecDataShards > 0 &&
+                       packet.fecSymbolIndex >= packet.fecDataShards;
+    chunk.fec = fec;
+  }
+  return chunk;
+}
+
+VideoPacket
+streamChunkToVideoPacket(const ndn_service_framework::StreamChunk& chunk)
+{
+  VideoPacket packet;
+  packet.streamId = chunk.streamId;
+  packet.streamSessionEpoch = chunk.sessionEpoch;
+  packet.second = metadataUint64(chunk.metadata, "uav.second", 0);
+  packet.packetSeq = chunk.seq;
+  packet.frameSeq = chunk.frameId;
+  packet.captureMs = chunk.captureMs;
+  packet.frameFirstPacketSeq = chunk.frameFirstSeq;
+  packet.frameLastPacketSeq = chunk.frameLastSeq;
+  packet.bucketPacketCount =
+    metadataUint64(chunk.metadata, "uav.bucket_packet_count", chunk.seq + 1);
+  packet.frameSegmentIndex = static_cast<uint32_t>(chunk.segmentIndex);
+  packet.frameSegmentCount = static_cast<uint32_t>(chunk.segmentCount);
+  packet.keyFrame = chunk.keyChunk;
+  packet.encoding = chunk.contentType;
+  packet.payload = chunk.payload;
+
+  if (chunk.fec) {
+    packet.fecDataShards = static_cast<uint32_t>(chunk.fec->dataShards);
+    packet.fecParityShards = static_cast<uint32_t>(chunk.fec->parityShards);
+    packet.fecSymbolIndex = static_cast<uint32_t>(chunk.fec->symbolIndex);
+    packet.fecSymbolCount = static_cast<uint32_t>(chunk.fec->symbolCount);
+    packet.fecDataLengths = formatVideoFecDataLengths(chunk.fec->dataLengths);
+  }
+  return packet;
+}
+
 std::vector<uint8_t>
 buildMockMavlinkFrame(const std::string& commandName, const Fields& params)
 {

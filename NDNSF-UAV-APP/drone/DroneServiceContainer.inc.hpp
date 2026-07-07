@@ -2132,62 +2132,58 @@ private:
 
     const auto firstPacketSeq = allocatePacketRange(dataShardCount + m_fecParityShards);
     const auto frameLastPacketSeq = firstPacketSeq + dataShardCount + m_fecParityShards - 1;
-    const auto dataLengthsCsv = joinFecLengths(dataLengths);
+    const std::vector<uint64_t> streamDataLengths(dataLengths.begin(), dataLengths.end());
     m_nextSeq += static_cast<uint64_t>(dataShardCount + m_fecParityShards);
 
-    for (uint64_t i = 0; i < dataShardCount; ++i) {
-      VideoPacket packet;
-      packet.streamId = m_streamId;
-      packet.streamSessionEpoch = m_streamSessionEpoch;
-      packet.second = second;
-      packet.packetSeq = firstPacketSeq + i;
-      packet.frameSeq = frameSeq;
-      packet.captureMs = captureMs;
-      packet.frameFirstPacketSeq = firstPacketSeq;
-      packet.frameLastPacketSeq = frameLastPacketSeq;
-      packet.bucketPacketCount = frameLastPacketSeq + 1;
-      packet.frameSegmentIndex = static_cast<uint32_t>(i);
-      packet.frameSegmentCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
-      packet.keyFrame = ((frameSeq % 30) == 0);
-      packet.encoding = "video/h264";
-      packet.fecDataShards = static_cast<uint32_t>(dataShardCount);
-      packet.fecParityShards = static_cast<uint32_t>(m_fecParityShards);
-      packet.fecSymbolIndex = static_cast<uint32_t>(i);
-      packet.fecSymbolCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
-      packet.fecDataLengths = dataLengthsCsv;
-      packet.payload = std::move(dataChunks[i]);
+    auto makeStreamChunk = [&] (uint64_t symbolIndex,
+                                std::vector<uint8_t> payload,
+                                bool keyChunk) {
+      ndn_service_framework::StreamChunk chunk;
+      chunk.streamId = m_streamId;
+      chunk.sessionEpoch = m_streamSessionEpoch;
+      chunk.seq = firstPacketSeq + symbolIndex;
+      chunk.payload = std::move(payload);
+      chunk.contentType = "video/h264";
+      chunk.captureMs = captureMs;
+      chunk.keyChunk = keyChunk;
+      chunk.frameId = frameSeq;
+      chunk.frameFirstSeq = firstPacketSeq;
+      chunk.frameLastSeq = frameLastPacketSeq;
+      chunk.segmentIndex = symbolIndex;
+      chunk.segmentCount = dataShardCount + m_fecParityShards;
+      chunk.metadata["uav.second"] = std::to_string(second);
+      chunk.metadata["uav.bucket_packet_count"] = std::to_string(frameLastPacketSeq + 1);
+
+      ndn_service_framework::StreamFecInfo fec;
+      fec.scheme = "xor-parity";
+      fec.dataShards = dataShardCount;
+      fec.parityShards = m_fecParityShards;
+      fec.symbolIndex = symbolIndex;
+      fec.symbolCount = dataShardCount + m_fecParityShards;
+      fec.dataLengths = streamDataLengths;
+      fec.sourceBlockId = std::to_string(frameSeq);
+      fec.repairSymbol = symbolIndex >= dataShardCount;
+      chunk.fec = std::move(fec);
+      return chunk;
+    };
+
+    auto publishStreamChunk = [&] (const ndn_service_framework::StreamChunk& chunk) {
+      const auto packet = streamChunkToVideoPacket(chunk);
 
       ndn::Name packetName = m_streamPrefix;
       packetName.append(std::to_string(packet.packetSeq));
       rememberPacket(packetName, encodeVideoPacket(packet));
+    };
+
+    for (uint64_t i = 0; i < dataShardCount; ++i) {
+      auto chunk = makeStreamChunk(i, std::move(dataChunks[i]), ((frameSeq % 30) == 0));
+      publishStreamChunk(chunk);
     }
 
     for (uint64_t i = 0; i < m_fecParityShards; ++i) {
       const auto symbolIndex = dataShardCount + i;
-      VideoPacket packet;
-      packet.streamId = m_streamId;
-      packet.streamSessionEpoch = m_streamSessionEpoch;
-      packet.second = second;
-      packet.packetSeq = firstPacketSeq + symbolIndex;
-      packet.frameSeq = frameSeq;
-      packet.captureMs = captureMs;
-      packet.frameFirstPacketSeq = firstPacketSeq;
-      packet.frameLastPacketSeq = frameLastPacketSeq;
-      packet.bucketPacketCount = frameLastPacketSeq + 1;
-      packet.frameSegmentIndex = static_cast<uint32_t>(symbolIndex);
-      packet.frameSegmentCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
-      packet.keyFrame = false;
-      packet.encoding = "video/h264";
-      packet.fecDataShards = static_cast<uint32_t>(dataShardCount);
-      packet.fecParityShards = static_cast<uint32_t>(m_fecParityShards);
-      packet.fecSymbolIndex = static_cast<uint32_t>(symbolIndex);
-      packet.fecSymbolCount = static_cast<uint32_t>(dataShardCount + m_fecParityShards);
-      packet.fecDataLengths = dataLengthsCsv;
-      packet.payload = parityPayload;
-
-      ndn::Name packetName = m_streamPrefix;
-      packetName.append(std::to_string(packet.packetSeq));
-      rememberPacket(packetName, encodeVideoPacket(packet));
+      auto chunk = makeStreamChunk(symbolIndex, parityPayload, false);
+      publishStreamChunk(chunk);
     }
   }
 

@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "ndn-service-framework/Stream.hpp"
+
 namespace ndnsf::examples::uav {
 
 using Fields = std::map<std::string, std::string>;
@@ -759,6 +761,12 @@ encodeVideoPacket(const VideoPacket& packet);
 
 VideoPacket
 decodeVideoPacket(const std::vector<uint8_t>& payload);
+
+ndn_service_framework::StreamChunk
+videoPacketToStreamChunk(const VideoPacket& packet);
+
+VideoPacket
+streamChunkToVideoPacket(const ndn_service_framework::StreamChunk& chunk);
 
 std::vector<uint8_t>
 buildMockMavlinkFrame(const std::string& commandName, const Fields& params);
