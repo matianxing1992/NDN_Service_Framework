@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from ndnsf_distributed_inference.gui import (
     ControllerTabConfig,
@@ -52,6 +54,7 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             for index in range(self.app.notebook.index("end"))
         ]
         self.assertEqual(tab_names[:3], ["User", "Provider", "Controller"])
+        self.assertIn("Qwen MiniNDN", tab_names)
 
     def test_apply_profile_updates_editable_fields_and_roundtrips(self) -> None:
         profile = ThreeRoleGuiProfile(
@@ -133,6 +136,36 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             self.factory.created["user"].requests,
             [("/HELLO", b"HELLO-FROM-TK")],
         )
+
+    def test_qwen_minindn_tab_builds_same_full_network_command(self) -> None:
+        tab = self.app.qwen_minindn
+        tab.fields["use_sudo"].set(False)  # type: ignore[union-attr]
+        tab.fields["dry_run"].set(True)  # type: ignore[union-attr]
+        command, out_dir = tab.experiment_command()
+        self.assertEqual(out_dir, Path("/tmp/ndnsf-di-gui-qwen-minindn"))
+        self.assertIn("Experiments/NDNSF_DI_NativeTracer_Minindn.py", command)
+        self.assertIn("--full-network", command)
+        self.assertIn("--no-local-execution-only", command)
+        self.assertIn("--assignment", command)
+        self.assertIn("llm-proportional", command)
+        self.assertIn("--dry-run", command)
+
+    def test_qwen_minindn_button_runs_dry_run_without_blocking_gui(self) -> None:
+        tab = self.app.qwen_minindn
+        with tempfile.TemporaryDirectory() as tmp:
+            tab.fields["use_sudo"].set(False)  # type: ignore[union-attr]
+            tab.fields["dry_run"].set(True)  # type: ignore[union-attr]
+            tab.fields["out_dir"].set(str(Path(tmp) / "qwen-dry-run"))  # type: ignore[union-attr]
+            tab.fields["output_json"].set(str(Path(tmp) / "qwen-gui-summary.json"))  # type: ignore[union-attr]
+            tab.run_experiment()
+            self.assertTrue(wait_until(
+                self.app,
+                lambda: tab.status_var.get().startswith("completed rc=0"),
+                timeout_s=4.0,
+            ))
+            self.assertIn("NDNSF_DI_NATIVE_TRACER_MININDN_DRY_RUN", tab.log_pane.get())
+            self.assertEqual(str(tab.run_button["state"]), "normal")
+            self.assertEqual(str(tab.stop_button["state"]), "disabled")
 
 
 if __name__ == "__main__":

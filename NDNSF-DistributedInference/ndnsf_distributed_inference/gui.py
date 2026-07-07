@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Protocol, Sequence
 
 try:
@@ -2882,6 +2883,270 @@ class UserDirectTab(DirectRoleTab):
         self.apply_env(env)
 
 
+class QwenMiniNdnExperimentTab(ttk.Frame):
+    def __init__(self, parent, app: "DistributedInferenceGui"):
+        super().__init__(parent)
+        self.app = app
+        self.fields: dict[str, tk.StringVar | tk.BooleanVar] = {}
+        self.queue: queue.Queue[str | tuple[str, Any]] = queue.Queue()
+        self.process: subprocess.Popen[str] | None = None
+        self.thread: threading.Thread | None = None
+        self._drain_after_id: str | None = None
+        self.status_var = tk.StringVar(value="stopped")
+        self._build()
+        self._drain_after_id = self.after(200, self._drain_queue)
+
+    def _field(self, parent, row: int, label: str, key: str, value: str = "",
+               *, browse: str = "") -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
+        var = tk.StringVar(value=value)
+        self.fields[key] = var
+        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", padx=6, pady=3)
+        if browse:
+            if browse == "dir":
+                command = self._browse_dir
+            elif browse == "save":
+                command = self._browse_save
+            else:
+                command = self._browse_open
+            ttk.Button(parent, text="Browse", command=lambda: command(key)).grid(
+                row=row, column=2, sticky="ew", padx=6, pady=3)
+
+    def _check(self, parent, row: int, label: str, key: str, value: bool = False) -> None:
+        var = tk.BooleanVar(value=value)
+        self.fields[key] = var
+        ttk.Checkbutton(parent, text=label, variable=var).grid(
+            row=row, column=0, columnspan=3, sticky="w", padx=6, pady=3)
+
+    def _build(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+        config = ttk.LabelFrame(self, text="Qwen NativeTracer MiniNDN experiment")
+        config.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+        config.columnconfigure(1, weight=1)
+        rows = [
+            ("Runtime profile", "runtime_profile", "examples/di-native-tracer.runtime.json", "open"),
+            ("Output directory", "out_dir", "/tmp/ndnsf-di-gui-qwen-minindn", "dir"),
+            ("Requests", "requests", "1", ""),
+            ("Concurrency", "concurrency", "1", ""),
+            ("Provider check timeout s", "provider_check_timeout", "60", ""),
+            ("Target RPS", "target_rps", "", ""),
+            ("Open-loop duration s", "open_loop_duration_s", "", ""),
+            ("Output JSON", "output_json", "/tmp/ndnsf-di-gui-qwen-minindn/gui-summary.json", "save"),
+            ("Extra harness args", "extra_args", "", ""),
+        ]
+        for row, (label, key, value, browse) in enumerate(rows):
+            self._field(config, row, label, key, value, browse=browse)
+        row = len(rows)
+        self._check(config, row, "Dry run only", "dry_run", False); row += 1
+        self._check(config, row, "Wrap with sudo -n env", "use_sudo", True); row += 1
+        buttons = ttk.Frame(config)
+        buttons.grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
+        ttk.Button(buttons, text="Preview Command", command=self.preview_command).pack(side="left")
+        self.run_button = ttk.Button(buttons, text="Run Qwen MiniNDN", command=self.run_experiment)
+        self.run_button.pack(side="left", padx=4)
+        self.stop_button = ttk.Button(buttons, text="Stop", command=self.stop_experiment, state="disabled")
+        self.stop_button.pack(side="left", padx=4)
+        ttk.Label(config, text="Status").grid(row=row + 1, column=0, sticky="w", padx=6)
+        ttk.Label(config, textvariable=self.status_var).grid(row=row + 1, column=1, sticky="ew", padx=6)
+
+        self.command_preview = TextPane(self, height=5)
+        self.command_preview.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+        self.log_pane = TextPane(self, height=22)
+        self.log_pane.grid(row=2, column=0, sticky="nsew", padx=6, pady=6)
+        self.preview_command()
+
+    def _browse_open(self, key: str) -> None:
+        path = filedialog.askopenfilename(title=f"Select {key}")
+        if path and isinstance(self.fields.get(key), tk.StringVar):
+            self.fields[key].set(path)  # type: ignore[union-attr]
+
+    def _browse_dir(self, key: str) -> None:
+        path = filedialog.askdirectory(title=f"Select {key}")
+        if path and isinstance(self.fields.get(key), tk.StringVar):
+            self.fields[key].set(path)  # type: ignore[union-attr]
+
+    def _browse_save(self, key: str) -> None:
+        path = filedialog.asksaveasfilename(title=f"Select {key}")
+        if path and isinstance(self.fields.get(key), tk.StringVar):
+            self.fields[key].set(path)  # type: ignore[union-attr]
+
+    def value(self, key: str) -> str:
+        return str(self.fields[key].get())
+
+    def bool_value(self, key: str) -> bool:
+        return bool(self.fields[key].get())
+
+    def _float_value(self, key: str, default: float) -> float:
+        value = self.value(key).strip()
+        return default if not value else float(value)
+
+    def _int_value(self, key: str, default: int) -> int:
+        value = self.value(key).strip()
+        return default if not value else int(value)
+
+    def _args_namespace(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            profile="",
+            controller_config="",
+            provider_config="",
+            user_config="",
+            experiment_runtime_profile=self.value("runtime_profile"),
+            experiment_out=self.value("out_dir"),
+            experiment_requests=self._int_value("requests", 0),
+            experiment_concurrency=self._int_value("concurrency", 0),
+            experiment_provider_check_timeout=self._int_value("provider_check_timeout", 0),
+            experiment_target_rps=self._float_value("target_rps", -1.0),
+            experiment_open_loop_duration_s=self._float_value("open_loop_duration_s", -1.0),
+            experiment_dry_run=self.bool_value("dry_run"),
+            experiment_extra_arg=split_extra_args(self.value("extra_args")),
+            output_json=self.value("output_json"),
+        )
+
+    def experiment_command(self) -> tuple[list[str], Path]:
+        args = self._args_namespace()
+        command, out_dir = build_qwen_minindn_command(self.app.profile(), args)
+        if self.bool_value("use_sudo"):
+            command = [
+                "sudo",
+                "-n",
+                "env",
+                "PYTHONPATH=NDNSF-DistributedInference:pythonWrapper",
+                "PYTHONPYCACHEPREFIX=/tmp/ndnsf_pycache",
+                *command,
+            ]
+        return command, out_dir
+
+    def preview_command(self) -> None:
+        try:
+            command, _ = self.experiment_command()
+            self.command_preview.set(shlex.join(command))
+            self.status_var.set("command ready")
+        except Exception as exc:
+            self.command_preview.set(f"Command error: {exc}")
+            self.status_var.set("command error")
+
+    def run_experiment(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self.queue.put("Qwen MiniNDN experiment is already running.\n")
+            return
+        try:
+            command, out_dir = self.experiment_command()
+        except Exception as exc:
+            self.queue.put(f"Qwen MiniNDN command failed: {exc}\n")
+            self.status_var.set("command error")
+            return
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.command_preview.set(shlex.join(command))
+        self.log_pane.set("")
+        self.status_var.set("starting")
+        self.app.set_status("Qwen MiniNDN experiment starting")
+        self.run_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.thread = threading.Thread(
+            target=self._run_experiment_thread,
+            args=(command,),
+            daemon=True,
+        )
+        self.thread.start()
+
+    def _run_experiment_thread(self, command: list[str]) -> None:
+        started_at = time.time()
+        try:
+            self.process = subprocess.Popen(
+                command,
+                cwd=str(repo_root()),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+            )
+            assert self.process.stdout is not None
+            try:
+                for line in self.process.stdout:
+                    self.queue.put(line)
+            finally:
+                self.process.stdout.close()
+            returncode = self.process.wait()
+            elapsed_ms = round((time.time() - started_at) * 1000.0, 3)
+            self.queue.put(("done", {"returncode": returncode, "elapsed_ms": elapsed_ms}))
+        except Exception as exc:
+            self.queue.put(("done", {"returncode": -1, "elapsed_ms": 0.0, "error": str(exc)}))
+
+    def stop_experiment(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            self.queue.put("Qwen MiniNDN experiment termination requested.\n")
+            self.status_var.set("stopping")
+
+    def _drain_queue(self) -> None:
+        while True:
+            try:
+                item = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(item, tuple) and item[0] == "done":
+                result = item[1]
+                returncode = result.get("returncode", -1)
+                if returncode == 0:
+                    self.status_var.set(f"completed rc=0 elapsed_ms={result.get('elapsed_ms')}")
+                    self.app.set_status("Qwen MiniNDN experiment completed")
+                    self._append_summary()
+                else:
+                    self.status_var.set(f"failed rc={returncode}")
+                    self.app.set_status("Qwen MiniNDN experiment failed")
+                    error = result.get("error")
+                    if error:
+                        self.log_pane.text.insert("end", f"\nERROR: {error}\n")
+                self.run_button.configure(state="normal")
+                self.stop_button.configure(state="disabled")
+                self.process = None
+            else:
+                self.log_pane.text.insert("end", str(item))
+                self.log_pane.text.see("end")
+        self._drain_after_id = self.after(200, self._drain_queue)
+
+    def _append_summary(self) -> None:
+        output_json_value = self.value("output_json").strip()
+        summary_path = Path(self.value("out_dir")) / "summary.json"
+        if summary_path.exists():
+            try:
+                data = json.loads(summary_path.read_text(encoding="utf-8"))
+                compact = {
+                    "ok": data.get("status") == "SUCCESS",
+                    "status": data.get("status"),
+                    "runnerMode": data.get("runnerMode"),
+                    "userExecution": data.get("userExecution", {}),
+                    "dependencyExecution": data.get("dependencyExecution", {}),
+                    "summary_json": str(summary_path),
+                    "out": self.value("out_dir"),
+                }
+                if output_json_value:
+                    output_json = Path(output_json_value)
+                    output_json.parent.mkdir(parents=True, exist_ok=True)
+                    output_json.write_text(json.dumps(compact, indent=2), encoding="utf-8")
+                self.log_pane.text.insert(
+                    "end",
+                    "\nQwen MiniNDN summary\n" + json.dumps(compact, indent=2) + "\n",
+                )
+            except Exception as exc:
+                self.log_pane.text.insert("end", f"\nSummary read failed: {exc}\n")
+
+    def cancel_periodic_callbacks(self) -> None:
+        if self._drain_after_id is None:
+            return
+        try:
+            self.after_cancel(self._drain_after_id)
+        except Exception:
+            pass
+        self._drain_after_id = None
+
+    def destroy(self) -> None:
+        self.cancel_periodic_callbacks()
+        self.stop_experiment()
+        super().destroy()
+
+
 class DistributedInferenceGui(tk.Tk):
     def __init__(self, factory: RuntimeFactory | None = None):
         super().__init__()
@@ -2909,6 +3174,7 @@ class DistributedInferenceGui(tk.Tk):
         self.policy_editor = PolicyEditorTab(self.notebook, self)
         self.model_split = ModelSplitTab(self.notebook, self)
         self.certificates = CertificateTab(self.notebook, self)
+        self.qwen_minindn = QwenMiniNdnExperimentTab(self.notebook, self)
         self.runner = DeploymentRunnerTab(self.notebook, self)
         self.controller_runtime = RoleRuntimeTab(self.notebook, self, "controller")
         self.user_runtime = RoleRuntimeTab(self.notebook, self, "user")
@@ -2920,6 +3186,7 @@ class DistributedInferenceGui(tk.Tk):
         self.notebook.add(self.policy_editor, text="Policy Editor")
         self.notebook.add(self.model_split, text="Model Split")
         self.notebook.add(self.certificates, text="Certificates")
+        self.notebook.add(self.qwen_minindn, text="Qwen MiniNDN")
         self.notebook.add(self.runner, text="Script Runner")
         self.notebook.add(self.controller_runtime, text="Script Controller")
         self.notebook.add(self.user_runtime, text="Script User")
@@ -2995,11 +3262,13 @@ class DistributedInferenceGui(tk.Tk):
         self.controller_tab.stop_role()
         self.provider_tab.stop_role()
         self.user_tab.stop_role()
+        self.qwen_minindn.stop_experiment()
         self.runner.stop_processes()
 
     def _cancel_role_callbacks(self) -> None:
         for tab in (self.controller_tab, self.provider_tab, self.user_tab):
             tab.cancel_periodic_callbacks()
+        self.qwen_minindn.cancel_periodic_callbacks()
 
     def _cancel_pending_after_callbacks(self) -> None:
         try:
