@@ -813,6 +813,17 @@ camera-control service globally unique. High-rate video packets are still
 fetched as signed NDN Data under the drone namespace, so the generic
 request/response path carries control only, not the video byte stream.
 
+NDNSF core now provides a reusable streaming substrate in
+`ndn-service-framework/Stream.hpp`: stream identity, session epoch, chunk
+metadata, codec-neutral FEC metadata, producer buffering, consumer reordering,
+and adaptive fetch state. The UAV app still owns camera capture, H264 encoding,
+XOR recovery, decoder queues, and bitrate policy. Future cleanup should map the
+existing `VideoPacket` fields onto the core `StreamInfo`/`StreamChunk` helpers
+without changing the control/data split described here.
+The first compatibility layer is `videoPacketToStreamChunk(...)` and
+`streamChunkToVideoPacket(...)` in `shared/UavProtocol.*`; these helpers do not
+change the existing `encodeVideoPacket(...)` wire format.
+
 Camera capture, local recording, and live downlink are intentionally separate:
 
 ```text

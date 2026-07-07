@@ -35,6 +35,8 @@ using ndnsf::examples::uav::buildPatrolMissionPlan;
 using ndnsf::examples::uav::computeVideoAdaptivePolicy;
 using ndnsf::examples::uav::decodeVideoPacket;
 using ndnsf::examples::uav::encodeVideoPacket;
+using ndnsf::examples::uav::streamChunkToVideoPacket;
+using ndnsf::examples::uav::videoPacketToStreamChunk;
 
 ReadinessState
 makeReadyState(bool armed)
@@ -1119,6 +1121,137 @@ BOOST_AUTO_TEST_CASE(VideoPacketSessionMetadataRoundTrips)
   VideoPacket oldSession = decoded;
   oldSession.streamSessionEpoch = 41;
   BOOST_CHECK_NE(oldSession.streamSessionEpoch, decoded.streamSessionEpoch);
+}
+
+BOOST_AUTO_TEST_CASE(VideoPacketMapsToCoreStreamChunkWithoutChangingWire)
+{
+  VideoPacket packet;
+  packet.streamId = "live|A|2";
+  packet.streamSessionEpoch = 77;
+  packet.second = 1234;
+  packet.packetSeq = 9;
+  packet.frameSeq = 4;
+  packet.captureMs = 5555;
+  packet.frameFirstPacketSeq = 8;
+  packet.frameLastPacketSeq = 11;
+  packet.bucketPacketCount = 12;
+  packet.frameSegmentIndex = 1;
+  packet.frameSegmentCount = 4;
+  packet.encoding = "video/h264";
+  packet.keyFrame = true;
+  packet.fecDataShards = 3;
+  packet.fecParityShards = 1;
+  packet.fecSymbolIndex = 3;
+  packet.fecSymbolCount = 4;
+  packet.fecDataLengths = "100,101,102";
+  packet.payload = {0x01, 0x02, 0x03, 0x04};
+
+  const auto streamChunk = videoPacketToStreamChunk(packet);
+  BOOST_CHECK_EQUAL(streamChunk.streamId, packet.streamId);
+  BOOST_CHECK_EQUAL(streamChunk.sessionEpoch, packet.streamSessionEpoch);
+  BOOST_CHECK_EQUAL(streamChunk.seq, packet.packetSeq);
+  BOOST_CHECK_EQUAL(streamChunk.contentType, packet.encoding);
+  BOOST_CHECK_EQUAL(streamChunk.frameId, packet.frameSeq);
+  BOOST_CHECK_EQUAL(streamChunk.metadata.at("uav.second"), "1234");
+  BOOST_CHECK_EQUAL(streamChunk.metadata.at("uav.bucket_packet_count"), "12");
+  BOOST_REQUIRE(streamChunk.fec);
+  BOOST_CHECK_EQUAL(streamChunk.fec->scheme, "xor-parity");
+  BOOST_CHECK(streamChunk.fec->repairSymbol);
+  BOOST_CHECK_EQUAL(streamChunk.fec->dataLengths.size(), 3);
+
+  const auto restored = streamChunkToVideoPacket(streamChunk);
+  BOOST_CHECK_EQUAL(restored.streamId, packet.streamId);
+  BOOST_CHECK_EQUAL(restored.streamSessionEpoch, packet.streamSessionEpoch);
+  BOOST_CHECK_EQUAL(restored.second, packet.second);
+  BOOST_CHECK_EQUAL(restored.packetSeq, packet.packetSeq);
+  BOOST_CHECK_EQUAL(restored.frameSeq, packet.frameSeq);
+  BOOST_CHECK_EQUAL(restored.captureMs, packet.captureMs);
+  BOOST_CHECK_EQUAL(restored.frameFirstPacketSeq, packet.frameFirstPacketSeq);
+  BOOST_CHECK_EQUAL(restored.frameLastPacketSeq, packet.frameLastPacketSeq);
+  BOOST_CHECK_EQUAL(restored.bucketPacketCount, packet.bucketPacketCount);
+  BOOST_CHECK_EQUAL(restored.frameSegmentIndex, packet.frameSegmentIndex);
+  BOOST_CHECK_EQUAL(restored.frameSegmentCount, packet.frameSegmentCount);
+  BOOST_CHECK_EQUAL(restored.encoding, packet.encoding);
+  BOOST_CHECK_EQUAL(restored.keyFrame, packet.keyFrame);
+  BOOST_CHECK_EQUAL(restored.fecDataShards, packet.fecDataShards);
+  BOOST_CHECK_EQUAL(restored.fecParityShards, packet.fecParityShards);
+  BOOST_CHECK_EQUAL(restored.fecSymbolIndex, packet.fecSymbolIndex);
+  BOOST_CHECK_EQUAL(restored.fecSymbolCount, packet.fecSymbolCount);
+  BOOST_CHECK_EQUAL(restored.fecDataLengths, packet.fecDataLengths);
+  BOOST_CHECK(restored.payload == packet.payload);
+
+  BOOST_CHECK(encodeVideoPacket(restored) == encodeVideoPacket(packet));
+}
+
+BOOST_AUTO_TEST_CASE(StreamChunkHandoffPreservesFecRecoveryInputs)
+{
+  const std::vector<uint8_t> shard0{0x10, 0x20, 0x30, 0x40};
+  const std::vector<uint8_t> shard1{0x01, 0x02, 0x03};
+  std::vector<uint8_t> parity(shard0.size(), 0);
+  for (size_t i = 0; i < shard0.size(); ++i) {
+    parity[i] ^= shard0[i];
+  }
+  for (size_t i = 0; i < shard1.size(); ++i) {
+    parity[i] ^= shard1[i];
+  }
+
+  auto makePacket = [] (uint64_t packetSeq,
+                        uint32_t symbolIndex,
+                        std::vector<uint8_t> payload) {
+    VideoPacket packet;
+    packet.streamId = "live|A|fec";
+    packet.streamSessionEpoch = 88;
+    packet.second = 123;
+    packet.packetSeq = packetSeq;
+    packet.frameSeq = 5;
+    packet.captureMs = 6789;
+    packet.frameFirstPacketSeq = 20;
+    packet.frameLastPacketSeq = 22;
+    packet.bucketPacketCount = 23;
+    packet.frameSegmentIndex = symbolIndex;
+    packet.frameSegmentCount = 3;
+    packet.encoding = "video/h264";
+    packet.fecDataShards = 2;
+    packet.fecParityShards = 1;
+    packet.fecSymbolIndex = symbolIndex;
+    packet.fecSymbolCount = 3;
+    packet.fecDataLengths = "4,3";
+    packet.payload = std::move(payload);
+    return packet;
+  };
+
+  const auto receivedData0 = videoPacketToStreamChunk(makePacket(20, 0, shard0));
+  const auto receivedParity = videoPacketToStreamChunk(makePacket(22, 2, parity));
+
+  BOOST_REQUIRE(receivedData0.fec);
+  BOOST_REQUIRE(receivedParity.fec);
+  BOOST_CHECK_EQUAL(receivedData0.fec->dataLengths.size(), 2);
+  BOOST_CHECK_EQUAL(receivedParity.fec->dataLengths[1], shard1.size());
+  BOOST_CHECK(receivedParity.fec->repairSymbol);
+
+  const auto missingIdx = 1U;
+  std::vector<uint8_t> recovered(receivedParity.fec->dataLengths[missingIdx], 0);
+  for (size_t i = 0; i < recovered.size(); ++i) {
+    recovered[i] ^= (i < receivedParity.payload.size() ? receivedParity.payload[i] : 0);
+    recovered[i] ^= (i < receivedData0.payload.size() ? receivedData0.payload[i] : 0);
+  }
+
+  ndn_service_framework::StreamChunk recoveredChunk;
+  recoveredChunk.streamId = receivedData0.streamId;
+  recoveredChunk.sessionEpoch = receivedData0.sessionEpoch;
+  recoveredChunk.seq = 21;
+  recoveredChunk.payload = recovered;
+  recoveredChunk.contentType = receivedData0.contentType;
+  recoveredChunk.frameId = receivedData0.frameId;
+  recoveredChunk.frameFirstSeq = receivedData0.frameFirstSeq;
+  recoveredChunk.frameLastSeq = receivedData0.frameLastSeq;
+  recoveredChunk.segmentIndex = missingIdx;
+  recoveredChunk.segmentCount = receivedData0.segmentCount;
+
+  BOOST_CHECK(recoveredChunk.payload == shard1);
+  BOOST_CHECK_EQUAL(recoveredChunk.streamId, "live|A|fec");
+  BOOST_CHECK_EQUAL(recoveredChunk.sessionEpoch, 88);
+  BOOST_CHECK_EQUAL(recoveredChunk.seq, 21);
 }
 
 BOOST_AUTO_TEST_CASE(RecordingDataProductTracksEncryptedManifest)

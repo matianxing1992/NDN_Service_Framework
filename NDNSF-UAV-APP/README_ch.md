@@ -697,6 +697,16 @@ Ground station -> /example/uav/drone/A/UAV/Camera/Video/stop/<nonce>
 用于让这个摄像头控制服务全局唯一。高频 video packets 仍然作为 drone namespace 下的签名
 NDN Data 拉取，因此 generic request/response 路径只承载控制消息，不承载视频字节流。
 
+NDNSF core 现在提供了可复用的 streaming substrate：`ndn-service-framework/Stream.hpp`。
+它负责 stream identity、session epoch、chunk metadata、codec-neutral FEC metadata、
+producer buffering、consumer reordering 和 adaptive fetch state。UAV app 仍然负责摄像头采集、
+H264 编码、XOR 恢复、decoder queue 和 bitrate policy。后续 cleanup 可以把现有
+`VideoPacket` 字段映射到 core 的 `StreamInfo`/`StreamChunk` helper，而不改变这里描述的
+control/data split。
+第一步兼容层已经放在 `shared/UavProtocol.*`：`videoPacketToStreamChunk(...)` 和
+`streamChunkToVideoPacket(...)`。这两个 helper 不改变现有 `encodeVideoPacket(...)`
+wire format。
+
 摄像头采集、本地录像和实时图传是三个独立状态：
 
 ```text

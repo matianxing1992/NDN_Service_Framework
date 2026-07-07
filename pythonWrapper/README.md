@@ -177,6 +177,29 @@ with NDNSFSession(
 Both layers keep core NDNSF mechanisms in C++. Python code supplies application
 payloads, handlers, and orchestration policy.
 
+## Streaming Substrate
+
+The primary stream substrate lives in the C++ core as
+`ndn-service-framework/Stream.hpp`. It defines app-neutral stream info, stream
+chunks, codec-neutral FEC metadata, bounded producer buffering, consumer
+reordering, and adaptive fetch state. The Python package exports a mirror API
+for orchestration and tests:
+
+```python
+from ndnsf import StreamInfo, StreamChunk, StreamProducerBuffer
+
+info = StreamInfo(
+    stream_id="stream-1",
+    session_epoch=1,
+    stream_prefix="/example/video/stream-1")
+chunk = StreamChunk(info.stream_id, info.session_epoch, 0, b"payload")
+buffer = StreamProducerBuffer(max_chunks=600)
+buffer.put(chunk)
+```
+
+Applications still own codecs, media capture, tensor semantics, FEC repair, and
+bitrate or workload-specific policy. See `docs/streaming-substrate.md`.
+
 ## Collaboration and Large Data
 
 The Python wrapper exposes the current generic collaboration path. Providers

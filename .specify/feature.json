@@ -1,1 +1,3 @@
-{"feature":"specs/054-deployment-lifecycle-fixes","feature_directory":"specs/054-deployment-lifecycle-fixes"}
+{
+  "feature_directory": "specs/057-core-streaming-substrate"
+}
