@@ -754,6 +754,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Seconds to wait for each role to report running.")
     parser.add_argument("--output-json", default="",
                         help="Write headless run summary JSON to this path.")
+    parser.add_argument("--headless-experiment",
+                        choices=["roles", "qwen-minindn"],
+                        default="roles",
+                        help=("Headless execution mode. 'roles' starts the GUI "
+                              "roles directly; 'qwen-minindn' runs the Qwen "
+                              "NativeTracer MiniNDN experiment from GUI config."))
+    parser.add_argument("--experiment-runtime-profile", default="",
+                        help=("Runtime profile for --headless-experiment "
+                              "qwen-minindn. Defaults to provider runtime profile."))
+    parser.add_argument("--experiment-out", default="",
+                        help="Output directory for the Qwen MiniNDN experiment.")
+    parser.add_argument("--experiment-requests", type=int, default=0,
+                        help="Override Qwen MiniNDN request count when > 0.")
+    parser.add_argument("--experiment-concurrency", type=int, default=0,
+                        help="Override Qwen MiniNDN concurrency when > 0.")
+    parser.add_argument("--experiment-provider-check-timeout", type=int, default=0,
+                        help="Override Qwen MiniNDN provider startup/check timeout.")
+    parser.add_argument("--experiment-target-rps", type=float, default=-1.0,
+                        help="Override Qwen MiniNDN target RPS when >= 0.")
+    parser.add_argument("--experiment-open-loop-duration-s", type=float, default=-1.0,
+                        help="Override Qwen MiniNDN open-loop duration when >= 0.")
+    parser.add_argument("--experiment-dry-run", action="store_true",
+                        help="Print/record the resolved Qwen MiniNDN command without running MiniNDN.")
+    parser.add_argument("--experiment-extra-arg", action="append", default=[],
+                        help="Additional argument appended to the Qwen MiniNDN harness; repeatable.")
     return parser
 
 
@@ -769,7 +794,99 @@ def load_headless_profile(args: argparse.Namespace) -> ThreeRoleGuiProfile:
     return profile
 
 
+def build_qwen_minindn_command(profile: ThreeRoleGuiProfile,
+                               args: argparse.Namespace) -> tuple[list[str], Path]:
+    runtime_profile = (
+        args.experiment_runtime_profile or
+        profile.provider.runtime_profile or
+        "examples/di-native-tracer.runtime.json"
+    )
+    out_dir = Path(
+        args.experiment_out or
+        "/tmp/ndnsf-di-gui-qwen-headless-minindn"
+    )
+    command = [
+        sys.executable,
+        "Experiments/NDNSF_DI_NativeTracer_Minindn.py",
+        "--runtime-profile", runtime_profile,
+        "--out", str(out_dir),
+        "--assignment", "llm-proportional",
+        "--policy-bundle", "llm-proportional",
+        "--llm-planner-mode", "proportional",
+        "--no-local-execution-only",
+        "--full-network",
+    ]
+    if args.experiment_requests > 0:
+        command.extend(["--requests", str(args.experiment_requests)])
+    if args.experiment_concurrency > 0:
+        command.extend(["--concurrency", str(args.experiment_concurrency)])
+    if args.experiment_provider_check_timeout > 0:
+        command.extend([
+            "--provider-check-timeout",
+            str(args.experiment_provider_check_timeout),
+        ])
+    if args.experiment_target_rps >= 0:
+        command.extend(["--target-rps", str(args.experiment_target_rps)])
+    if args.experiment_open_loop_duration_s >= 0:
+        command.extend([
+            "--open-loop-duration-s",
+            str(args.experiment_open_loop_duration_s),
+        ])
+    if args.experiment_dry_run:
+        command.append("--dry-run")
+    command.extend(args.experiment_extra_arg)
+    return command, out_dir
+
+
+def run_headless_qwen_minindn(args: argparse.Namespace) -> dict[str, Any]:
+    profile = load_headless_profile(args)
+    command, out_dir = build_qwen_minindn_command(profile, args)
+    started_at = time.time()
+    proc = subprocess.run(
+        command,
+        cwd=str(repo_root()),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    harness_summary: dict[str, Any] = {}
+    summary_path = out_dir / "summary.json"
+    if summary_path.exists():
+        try:
+            harness_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            harness_summary = {"status": "unreadable", "error": str(exc)}
+    ok = (
+        proc.returncode == 0 and
+        (args.experiment_dry_run or harness_summary.get("status") == "SUCCESS")
+    )
+    summary = {
+        "ok": ok,
+        "headless_experiment": "qwen-minindn",
+        "command": command,
+        "returncode": proc.returncode,
+        "out": str(out_dir),
+        "summary_json": str(summary_path),
+        "harness_status": harness_summary.get("status", "dry-run" if args.experiment_dry_run else "missing"),
+        "miniNDNRun": harness_summary.get("miniNDNRun", ""),
+        "runnerMode": harness_summary.get("runnerMode", ""),
+        "userExecution": harness_summary.get("userExecution", {}),
+        "dependencyExecution": harness_summary.get("dependencyExecution", {}),
+        "providerUtilization": harness_summary.get("providerUtilization", {}),
+        "failureReason": harness_summary.get("failureReason", ""),
+        "elapsed_ms": round((time.time() - started_at) * 1000.0, 3),
+        "stdout_tail": proc.stdout[-8000:],
+    }
+    if args.output_json:
+        Path(args.output_json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output_json).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def run_headless(args: argparse.Namespace) -> dict[str, Any]:
+    if args.headless_experiment == "qwen-minindn":
+        return run_headless_qwen_minindn(args)
     profile = load_headless_profile(args)
     factory: RuntimeFactory
     factory = FakeRuntimeFactory() if args.runtime_mode == "fake" else RealRuntimeFactory()

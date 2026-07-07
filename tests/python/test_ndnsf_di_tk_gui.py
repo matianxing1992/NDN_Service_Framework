@@ -21,6 +21,7 @@ from ndnsf_distributed_inference.gui import (
     UserTabConfig,
     apply_role_config_file,
     build_arg_parser,
+    build_qwen_minindn_command,
     build_role_command,
     load_runtime_profile,
     load_three_role_profile,
@@ -267,6 +268,73 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertTrue(args.user_auto_run)
         self.assertEqual(args.user_config, "user1.config")
         self.assertEqual(args.runtime_mode, "fake")
+
+    def test_headless_arg_parser_accepts_qwen_minindn_mode(self) -> None:
+        args = build_arg_parser().parse_args([
+            "--headless",
+            "--headless-experiment",
+            "qwen-minindn",
+            "--experiment-runtime-profile",
+            "examples/di-native-tracer.runtime.json",
+            "--experiment-requests",
+            "2",
+            "--experiment-concurrency",
+            "1",
+            "--experiment-provider-check-timeout",
+            "60",
+            "--experiment-dry-run",
+        ])
+        self.assertEqual(args.headless_experiment, "qwen-minindn")
+        self.assertEqual(args.experiment_runtime_profile, "examples/di-native-tracer.runtime.json")
+        self.assertEqual(args.experiment_requests, 2)
+        self.assertTrue(args.experiment_dry_run)
+
+    def test_qwen_minindn_command_uses_full_network_runtime_profile(self) -> None:
+        profile = ThreeRoleGuiProfile(
+            provider=ProviderTabConfig(
+                runtime_profile="examples/di-native-tracer.runtime.json",
+            ),
+        )
+        args = build_arg_parser().parse_args([
+            "--headless",
+            "--headless-experiment",
+            "qwen-minindn",
+            "--experiment-out",
+            "/tmp/qwen-gui-headless",
+            "--experiment-requests",
+            "3",
+            "--experiment-concurrency",
+            "2",
+            "--experiment-provider-check-timeout",
+            "45",
+            "--experiment-target-rps",
+            "0.5",
+            "--experiment-open-loop-duration-s",
+            "10",
+            "--experiment-dry-run",
+        ])
+        command, out_dir = build_qwen_minindn_command(profile, args)
+        self.assertEqual(out_dir, Path("/tmp/qwen-gui-headless"))
+        self.assertIn("Experiments/NDNSF_DI_NativeTracer_Minindn.py", command)
+        self.assertIn("--runtime-profile", command)
+        self.assertIn("examples/di-native-tracer.runtime.json", command)
+        self.assertIn("--assignment", command)
+        self.assertIn("llm-proportional", command)
+        self.assertIn("--policy-bundle", command)
+        self.assertIn("--llm-planner-mode", command)
+        self.assertIn("--no-local-execution-only", command)
+        self.assertIn("--full-network", command)
+        self.assertIn("--requests", command)
+        self.assertIn("3", command)
+        self.assertIn("--concurrency", command)
+        self.assertIn("2", command)
+        self.assertIn("--provider-check-timeout", command)
+        self.assertIn("45", command)
+        self.assertIn("--target-rps", command)
+        self.assertIn("0.5", command)
+        self.assertIn("--open-loop-duration-s", command)
+        self.assertIn("10.0", command)
+        self.assertIn("--dry-run", command)
 
     def test_headless_fake_all_roles_and_request_writes_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
