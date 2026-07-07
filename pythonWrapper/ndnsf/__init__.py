@@ -34,9 +34,18 @@ from .coordination import (
     encode_coordination_response,
     verify_coordination_suggestion,
 )
+from .metrics import NdnMetrics, start_metrics_server
 from .ndnsd_health import NdnsdHealthTracker, NdnsdProviderState
+from .retry import RetryPolicy, retry_call
+from .tracing import Span, TraceCollector
 from .runtime_telemetry import (
     AdmissionLeaseStatus,
+    DeploymentStatus,
+    PlacementConstraint,
+    TokenBucket,
+    build_network_matrix_from_ndnsd,
+    probe_peer_rtt,
+    score_normalized,
     GenericAckMetadata,
     GenericAdmissionLease,
     GenericLeaseValidationResult,

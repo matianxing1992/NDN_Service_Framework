@@ -31,6 +31,7 @@ from ndnsf.coordination import (
 )
 from ndnsf.runtime_telemetry import (
     AdmissionLeaseStatus,
+    DeploymentStatus as CoreDeploymentStatus,
     GenericAckMetadata,
     GenericAdmissionLease,
     GenericLeaseValidationResult,
@@ -224,6 +225,151 @@ def parse_ack_metadata(payload: bytes | str) -> dict[str, Any]:
         else:
             fields[key] = value
     return fields
+
+
+# ---------------------------------------------------------------------------
+# Deployment lifecycle (DI-specific)
+# ---------------------------------------------------------------------------
+
+DeploymentStatus = CoreDeploymentStatus
+
+
+@dataclass
+class Deployment:
+    deployment_id: str
+    plan_id: str = ""
+    plan_content_digest: str = ""
+    creator: str = ""
+    service_name: str = ""
+    status: DeploymentStatus = DeploymentStatus.PROVISIONING
+    fragment_map: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    scope_key_data_names: dict[str, str] = field(default_factory=dict)
+    artifact_data_names: dict[str, str] = field(default_factory=dict)
+    created_at_ms: int = field(default_factory=now_ms)
+    updated_at_ms: int = field(default_factory=now_ms)
+    ready_cost_ms: float = 0.0
+    ref_count: int = 0
+    idle_timeout_s: int = 300
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "Deployment":
+        return cls(
+            deployment_id=str(payload.get("deploymentId", payload.get("deployment_id", ""))),
+            plan_id=str(payload.get("planId", payload.get("plan_id", ""))),
+            plan_content_digest=str(payload.get("planContentDigest", payload.get("plan_content_digest", ""))),
+            creator=str(payload.get("creator", "")),
+            service_name=str(payload.get("serviceName", payload.get("service_name", ""))),
+            status=DeploymentStatus(payload.get("status", DeploymentStatus.PROVISIONING.value)),
+            fragment_map=dict(payload.get("fragmentMap", payload.get("fragment_map", {}))),
+            scope_key_data_names=dict(payload.get("scopeKeyDataNames", payload.get("scope_key_data_names", {}))),
+            artifact_data_names=dict(payload.get("artifactDataNames", payload.get("artifact_data_names", {}))),
+            created_at_ms=int(payload.get("createdAtMs", payload.get("created_at_ms", now_ms()))),
+            updated_at_ms=int(payload.get("updatedAtMs", payload.get("updated_at_ms", now_ms()))),
+            ready_cost_ms=float(payload.get("readyCostMs", payload.get("ready_cost_ms", 0.0)) or 0.0),
+            ref_count=int(payload.get("refCount", payload.get("ref_count", 0)) or 0),
+            idle_timeout_s=int(payload.get("idleTimeoutS", payload.get("idle_timeout_s", 300)) or 300),
+        )
+
+    def can_evict(self) -> tuple[bool, str]:
+        if self.ref_count > 0:
+            return False, f"DEPLOYMENT_IN_USE;ref_count={self.ref_count}"
+        if self.status == DeploymentStatus.PROVISIONING:
+            return False, "DEPLOYMENT_NOT_READY"
+        return True, "OK"
+
+    def role_provider(self, role_id: str) -> str:
+        assignments = self.fragment_map.get(role_id, [])
+        if assignments:
+            return str(assignments[0].get("provider", ""))
+        return ""
+
+    def estimated_ready_ms(self) -> float:
+        if self.status == DeploymentStatus.ACTIVE:
+            return 0.0
+        if self.status == DeploymentStatus.DISK_RESIDENT:
+            return RESIDENCY_READY_COST_MS["DISK_RESIDENT"]
+        return self.ready_cost_ms
+
+
+class DeploymentLeaseTable:
+    """Tracks active execution leases per deployment. Thread-safe."""
+
+    def __init__(self) -> None:
+        import threading as _threading
+        self._leases: dict[str, ExecutionLease] = {}
+        self._lock = _threading.Lock()
+
+    def grant(self, lease: ExecutionLease) -> ExecutionLease:
+        with self._lock:
+            self._leases[lease.lease_id] = lease
+        return lease
+
+    def release(self, lease_id: str) -> bool:
+        with self._lock:
+            lease = self._leases.get(lease_id)
+            if lease is None:
+                return False
+            lease.release()
+            return True
+
+    def active_count(self, deployment_id: str, *, now_ms_value: int | None = None) -> int:
+        current = now_ms() if now_ms_value is None else int(now_ms_value)
+        with self._lock:
+            return sum(
+                1 for lease in self._leases.values()
+                if lease.deployment_id == deployment_id and lease.is_valid(now_ms_value=current)
+            )
+
+    def expire_stale(self, *, now_ms_value: int | None = None) -> int:
+        current = now_ms() if now_ms_value is None else int(now_ms_value)
+        expired = 0
+        with self._lock:
+            for lease in list(self._leases.values()):
+                if not lease.released and lease.expires_at_ms and current >= lease.expires_at_ms:
+                    lease.released = True
+                    expired += 1
+        return expired
+
+    def active_leases(self) -> list[ExecutionLease]:
+        with self._lock:
+            return [l for l in self._leases.values() if l.is_valid()]
+
+
+# ---------------------------------------------------------------------------
+# Deployment Garbage Collector
+# ---------------------------------------------------------------------------
+
+class DeploymentGc:
+    """Scans deployments, expires stale execution leases, transitions IDLE→DISK_RESIDENT."""
+
+    def __init__(self, lease_table: DeploymentLeaseTable, idle_timeout_s: int = 300):
+        self.lease_table = lease_table
+        self.idle_timeout_s = max(10, int(idle_timeout_s))
+        self._last_scan_ms = now_ms()
+
+    def scan(self, deployments: list[Deployment],
+             *, now_ms_value: int | None = None) -> list[Deployment]:
+        """Scan and update deployment states. Returns updated list."""
+        current = now_ms() if now_ms_value is None else int(now_ms_value)
+        self._last_scan_ms = current
+        # Expire stale leases
+        self.lease_table.expire_stale(now_ms_value=current)
+        updated = []
+        for dep in deployments:
+            ref_count = self.lease_table.active_count(dep.deployment_id, now_ms_value=current)
+            changed = False
+            if dep.ref_count != ref_count:
+                dep.ref_count = ref_count
+                dep.updated_at_ms = current
+                changed = True
+            if (dep.status == DeploymentStatus.ACTIVE and ref_count == 0 and
+                    current - dep.updated_at_ms > self.idle_timeout_s * 1000):
+                dep.status = DeploymentStatus.IDLE
+                dep.updated_at_ms = current
+                changed = True
+            if changed:
+                updated.append(dep)
+        return updated
 
 
 @dataclass(frozen=True)
@@ -1845,6 +1991,201 @@ def exact_token_prefix_digest(token_ids: Iterable[int], *,
         "tokenizerId": tokenizer_id,
         "tokenIds": normalized,
     }, length=length)
+
+
+# ---------------------------------------------------------------------------
+# Placement helpers for deployment
+# ---------------------------------------------------------------------------
+
+
+def filter_feasible_providers(role_id: str,
+                               candidates: list[dict[str, Any]],
+                               constraint: dict[str, Any] | None = None,
+                               *,
+                               existing_deployments: dict[str, Any] | None = None,
+                               already_placed: dict[str, str] | None = None,
+                               excluded: set[str] | None = None,
+                               circuit_open: set[str] | None = None) -> list[dict[str, Any]]:
+    """Filter provider candidates by hard constraints.
+
+    Checks: backend compatibility, GPU memory (with IDLE preemption),
+    anti-affinity, max workers, circuit breaker.
+    """
+    excluded = excluded or set()
+    circuit_open = circuit_open or set()
+    already_placed = already_placed or {}
+    feasible = []
+    for c in candidates:
+        provider = str(c.get("providerName", c.get("provider", "")))
+        if not provider or provider in excluded or provider in circuit_open:
+            continue
+        if constraint:
+            meta = _metadata_from_candidate(c)
+            if meta is not None:
+                di = _di_state_from_metadata(meta)
+                hint = meta.provider_runtime_hint
+                # 1. backend compatibility
+                req_backend = constraint.get("required_backend", "")
+                if req_backend and req_backend not in di.supported_backends:
+                    continue
+                # 2. GPU memory
+                required_gpu = constraint.get("min_gpu_memory_mb", 0)
+                if required_gpu > 0 and di.free_gpu_memory_mb < required_gpu:
+                    can_preempt = False
+                    if existing_deployments:
+                        for did, dep in existing_deployments.items():
+                            if (dep.get("status") in {"ACTIVE", "IDLE"} and
+                                    int(dep.get("refCount", dep.get("ref_count", 0)) or 0) == 0):
+                                fm = dep.get("fragmentMap", dep.get("fragment_map", {}))
+                                for role_entries in fm.values():
+                                    for frag in (role_entries if isinstance(role_entries, list) else []):
+                                        if isinstance(frag, dict) and frag.get("provider") == provider:
+                                            can_preempt = True
+                                            break
+                    if not can_preempt:
+                        continue
+                # 3. anti-affinity: cannot co-locate with listed roles
+                anti_roles = constraint.get("anti_affinity", ())
+                conflict = False
+                for arole in (anti_roles if isinstance(anti_roles, (list, tuple)) else []):
+                    if already_placed.get(arole) == provider:
+                        conflict = True
+                        break
+                if conflict:
+                    continue
+                # 4. max workers
+                max_w = constraint.get("max_workers_per_provider", 0)
+                if max_w > 0 and hint.active_work_count >= max_w:
+                    continue
+        feasible.append(c)
+    return feasible
+
+
+# Placement scoring strategies — preset weights for different environments
+PLACEMENT_STRATEGY_PRESETS: dict[str, dict[str, int]] = {
+    "gpu-cluster": {
+        "fragment": 50, "queue": 15, "edge": 5, "health": 15, "fairness": 10,
+        "affinity_bonus": 5, "anti_affinity": 0,
+    },
+    "edge-network": {
+        "fragment": 25, "queue": 10, "edge": 40, "health": 10, "fairness": 10,
+        "affinity_bonus": 5, "anti_affinity": 0,
+    },
+    "multi-tenant": {
+        "fragment": 30, "queue": 15, "edge": 10, "health": 15, "fairness": 25,
+        "affinity_bonus": 5, "anti_affinity": 0,
+    },
+    "high-availability": {
+        "fragment": 30, "queue": 15, "edge": 10, "health": 25, "fairness": 10,
+        "affinity_bonus": 0, "anti_affinity": 10,
+    },
+}
+
+
+def pick_optimal_placement(scored_by_role: dict[str, list[dict[str, Any]]],
+                            strategy: str = "best_score",
+                            *,
+                            min_replicas: int = 1) -> dict[str, dict[str, Any]]:
+    """Pick the best provider combination from scored candidates.
+
+    Strategies:
+      best_score:   highest total score per role (default)
+      pack:         minimize distinct providers (consolidation)
+      spread:       maximize distinct providers (fault tolerance)
+      min_replicas: ensure at least N replicas per role
+    """
+    if strategy == "pack":
+        return _pick_pack(scored_by_role)
+    if strategy == "spread":
+        return _pick_spread(scored_by_role)
+    if strategy == "min_replicas":
+        return _pick_min_replicas(scored_by_role, min_replicas)
+    # default: best_score
+    return _pick_best_score(scored_by_role)
+
+
+def _pick_best_score(scored_by_role):
+    result = {}
+    for role, scored in scored_by_role.items():
+        if scored:
+            best = max(scored, key=lambda x: x.get("totalScore", x.get("scoreMs", 0)))
+            result[role] = best
+    return result
+
+
+def _pick_pack(scored_by_role):
+    """Minimize distinct providers — useful for energy efficiency."""
+    result = {}
+    used: set[str] = set()
+    for role, scored in sorted(scored_by_role.items()):
+        if not scored:
+            continue
+        # Prefer already-used providers (add bonus for reuse)
+        scored_sorted = sorted(scored, key=lambda x: (
+            0 if x.get("provider", "") in used else 1,
+            -(x.get("totalScore", x.get("scoreMs", 0)))
+        ))
+        best = scored_sorted[0]
+        result[role] = best
+        used.add(best.get("provider", ""))
+    return result
+
+
+def _pick_spread(scored_by_role):
+    """Maximize distinct providers — useful for fault tolerance."""
+    result = {}
+    used: set[str] = set()
+    for role, scored in sorted(scored_by_role.items()):
+        if not scored:
+            continue
+        scored_sorted = sorted(scored, key=lambda x: (
+            0 if x.get("provider", "") not in used else 1,
+            -(x.get("totalScore", x.get("scoreMs", 0)))
+        ))
+        best = scored_sorted[0]
+        result[role] = best
+        used.add(best.get("provider", ""))
+    return result
+
+
+def _pick_min_replicas(scored_by_role, min_replicas):
+    result = {}
+    for role, scored in scored_by_role.items():
+        if not scored:
+            continue
+        scored_sorted = sorted(scored, key=lambda x: -(x.get("totalScore", x.get("scoreMs", 0))))
+        picks = scored_sorted[:max(1, min_replicas)]
+        result[role] = picks[0]  # primary
+        if len(picks) > 1:
+            result[f"{role}__replica_1"] = picks[1]
+    return result
+
+
+# Re-export for backward compatibility — old name kept for existing callers
+_score_normalized = __import__("ndnsf.runtime_telemetry", fromlist=["score_normalized"]).score_normalized
+
+
+def score_provider_candidates(role_id: str,
+                               feasible: list[dict[str, Any]],
+                               *,
+                               runtime_required: bool = True,
+                               now_ms_value: int | None = None) -> list[dict[str, Any]]:
+    """Score each feasible candidate. Lower score = better."""
+    current = now_ms() if now_ms_value is None else int(now_ms_value)
+    scored = []
+    for c in feasible:
+        node = score_runtime_candidate(
+            PlanRole(role_id, fragment_key=ModelFragmentKey()),
+            c, runtime_required=runtime_required, now_ms_value=current)
+        scored.append({
+            "provider": str(c.get("providerName", c.get("provider", ""))),
+            "scoreMs": node.get("scoreMs", float("inf")),
+            "valid": node.get("valid", False),
+            "residency": node.get("residency", "MISSING"),
+            "details": node,
+        })
+    scored.sort(key=lambda x: x["scoreMs"])
+    return scored
 
 
 @dataclass(frozen=True)

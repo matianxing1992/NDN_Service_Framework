@@ -2075,6 +2075,8 @@ def main() -> int:
     parser.add_argument("--runtime-aware-user-planner", action="store_true",
                         default=bool(default_value(profile_defaults, "runtime_aware_user_planner", False)),
                         help="Enable runtime-aware user-side planner metadata and campaign metrics")
+    parser.add_argument("--lifecycle-experiment", action="store_true",
+                        help="Run deployment lifecycle experiment instead of normal user driver")
     parser.add_argument("--advisory-coordinator", action="store_true",
                         help="Run the generic NDNSF coordination service before NativeTracer requests")
     parser.add_argument("--multi-user-workload",
@@ -2585,7 +2587,7 @@ def main() -> int:
 
             provider_logs = []
             provider_log_rows = []
-            if args.advisory_coordinator:
+            if False:  # advisory-coordinator deprecated: placement now local, not central
                 coord_proc, coord_log = start_node_command(
                     ndn.net["memphis"],
                     "advisory-coordinator",
@@ -2657,10 +2659,16 @@ def main() -> int:
                     json.dumps(runtime_inventory, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8")
             time.sleep(8.0)
-            user_proc, user_log = start_node_command(
-                ndn.net["memphis"],
-                "user-driver",
-                user_driver_command(policy_dir,
+            if args.lifecycle_experiment:
+                lifecycle_script = (
+                    REPO / "Experiments/NDNSF_DI_Deployment_Lifecycle_Experiment.py")
+                user_command = (
+                    f"cd {REPO} && exec python3 {lifecycle_script} "
+                    f"--out {out_dir} --requests {args.requests} "
+                    f"--permission-wait-ms 5000"
+                )
+            else:
+                user_command = user_driver_command(policy_dir,
                                     args.requests,
                                     args.concurrency,
                                     args.submission_spacing_ms if args.concurrency > 1 else 0,
@@ -2684,10 +2692,10 @@ def main() -> int:
                                     runtime_aware_max_replans=args.runtime_aware_max_replans,
                                     runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
                                     coordination_service=(
-                                        COORDINATION_SERVICE if args.advisory_coordinator else "")),
-                logs_dir,
-                env,
-                procs)
+                                        COORDINATION_SERVICE if args.advisory_coordinator else ""))
+            user_proc, user_log = start_node_command(
+                ndn.net["memphis"], "user-driver", user_command,
+                logs_dir, env, procs)
             try:
                 user_proc.wait(timeout=user_driver_wait_timeout_s(
                     args.requests,

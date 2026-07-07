@@ -2,6 +2,7 @@
 
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstdint>
 #include <charconv>
@@ -134,6 +135,18 @@ NativeProviderReadinessState::markFailed(std::string message)
   set(Status::Failed, std::move(message));
 }
 
+void
+NativeProviderReadinessState::setProvisioningContext(std::string deploymentId,
+                                                      std::string provisioningRole,
+                                                      int64_t expectedReadyMs)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_deploymentId = std::move(deploymentId);
+  m_provisioningRole = std::move(provisioningRole);
+  m_expectedReadyMs = expectedReadyMs;
+  m_provisioningStartedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
 bool
 NativeProviderReadinessState::isReady() const
 {
@@ -169,12 +182,20 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText) cons
   bool ready = false;
   std::string status;
   std::string message;
+  std::string deploymentId;
+  std::string provisioningRole;
+  int64_t expectedReadyMs = 0;
+  int64_t provisioningStartedMs = 0;
   CapacitySnapshotProvider capacitySnapshotProvider;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     ready = m_status == Status::Ready;
     status = statusTextLocked();
     message = m_message;
+    deploymentId = m_deploymentId;
+    provisioningRole = m_provisioningRole;
+    expectedReadyMs = m_expectedReadyMs;
+    provisioningStartedMs = m_provisioningStartedMs;
     capacitySnapshotProvider = m_capacitySnapshotProvider;
   }
 
@@ -203,6 +224,15 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText) cons
   const auto negativeAckReason = reasonForStatus(status);
   if (!ready && !negativeAckReason.empty()) {
     payload << "negativeAckReason=" << negativeAckReason << ";";
+  }
+  // When provisioning, include context so other users know WHY this
+  // provider is unavailable and WHEN it will be ready.
+  if (!ready && !deploymentId.empty()) {
+    payload << "deploymentId=" << deploymentId << ";";
+    payload << "provisioningRole=" << provisioningRole << ";";
+    int64_t elapsed = std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - provisioningStartedMs);
+    int64_t remaining = std::max<int64_t>(0, expectedReadyMs - elapsed);
+    payload << "expectedReadyMs=" << remaining << ";";
   }
 
   auto admission = AdmissionDecision{};

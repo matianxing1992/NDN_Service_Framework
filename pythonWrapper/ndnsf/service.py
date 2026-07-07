@@ -1672,6 +1672,7 @@ class ServiceUser:
         ack_timeout_ms: int = 300,
         timeout_ms: int = 10000,
         ack_observer: Optional[Callable[[list[AckCandidate]], None]] = None,
+        deployment_id: Optional[str] = None,
     ) -> ServiceResponse:
         """Run a generic multi-provider collaboration.
 
@@ -1682,6 +1683,8 @@ class ServiceUser:
         ``ack_observer`` receives the ACK candidates collected for the
         collaboration request before the built-in role selector chooses
         providers. It is observational only and must not return a value.
+        ``deployment_id`` pre-fills role→provider from an existing deployment
+        and reuses its scope keys (deployment-level, not request-level).
         """
 
         native_ack_observer = None
@@ -1703,20 +1706,45 @@ class ServiceUser:
                     for candidate in native_candidates
                 ])
 
-        response = self._native.request_collaboration(
-            service,
-            bytes(payload),
-            [_role_to_dict(role) for role in roles],
-            {str(scope): list(scope_roles) for scope, scope_roles in key_scopes.items()},
-            [_dependency_to_dict(dep) for dep in (dependencies or [])],
-            dict(artifact_data_names or {}),
-            dict(scope_key_data_names or {}),
-            {str(role): list(scopes) for role, scopes in (role_scopes or {}).items()},
-            ack_timeout_ms,
-            timeout_ms,
-            native_ack_observer,
-        )
-        return _from_native_response(response)
+        # Pre-fill role→provider from deployment if specified
+        role_provider_pref = ""
+        if deployment_id:
+            dep = self.get_deployment(deployment_id)
+            if dep and dep.get("status") in {"ACTIVE", "DEGRADED"}:
+                fm = dep.get("fragmentMap", dep.get("fragment_map", {}))
+                prefs = []
+                for role_id, providers in fm.items():
+                    if providers:
+                        provider = providers[0].get("provider", "") if isinstance(providers[0], dict) else str(providers[0])
+                        if provider:
+                            prefs.append(f"{role_id}=>{provider}")
+                role_provider_pref = ";".join(prefs) + (";" if prefs else "")
+
+        import os as _os
+        prev_pref = _os.environ.get("NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE", "")
+        if role_provider_pref:
+            _os.environ["NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE"] = role_provider_pref
+        try:
+            response = self._native.request_collaboration(
+                service,
+                bytes(payload),
+                [_role_to_dict(role) for role in roles],
+                {str(scope): list(scope_roles) for scope, scope_roles in key_scopes.items()},
+                [_dependency_to_dict(dep) for dep in (dependencies or [])],
+                dict(artifact_data_names or {}),
+                dict(scope_key_data_names or {}),
+                {str(role): list(scopes) for role, scopes in (role_scopes or {}).items()},
+                ack_timeout_ms,
+                timeout_ms,
+                native_ack_observer,
+            )
+            return _from_native_response(response)
+        finally:
+            if role_provider_pref:
+                if prev_pref:
+                    _os.environ["NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE"] = prev_pref
+                else:
+                    _os.environ.pop("NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE", None)
 
     def request_collaboration_async(
         self,
@@ -1783,6 +1811,284 @@ class ServiceUser:
             {str(k): v for k, v in item.items()}
             for item in self._native.get_ndnsd_services()
         ]
+
+    def discover_deployments(self, service: str = "") -> list[dict[str, Any]]:
+        """Discover deployments, sorted by readiness (ACTIVE first).
+
+        ACTIVE (GPU-resident, p50 < 10ms) → IDLE (memory-resident) →
+        DISK_RESIDENT (35ms reload) → EVICTED (full redeploy).
+        """
+        import json as _json
+        try:
+            self._native.pump(50)
+        except Exception:
+            pass
+        deployments: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in self.get_ndnsd_services():
+            meta = entry.get("serviceMetaInfo", {})
+            if not isinstance(meta, dict):
+                continue
+            raw = meta.get("deployments", "")
+            if not raw:
+                continue
+            try:
+                deps = _json.loads(raw)
+            except (_json.JSONDecodeError, TypeError):
+                continue
+            for dep in deps if isinstance(deps, list) else []:
+                if not isinstance(dep, dict):
+                    continue
+                svc = str(dep.get("serviceName", dep.get("service_name", "")))
+                if service and svc != service:
+                    continue
+                did = str(dep.get("deploymentId", dep.get("deployment_id", "")))
+                if did and did not in seen:
+                    seen.add(did)
+                    deployments.append(dep)
+        if not deployments:
+            try:
+                from ndnsf.coordination import CoordinationIntent, CoordinationServiceClient
+                client = CoordinationServiceClient(
+                    self, service_name=COORDINATION_ADVISORY_SERVICE,
+                    ack_timeout_ms=1000, timeout_ms=5000)
+                intent = CoordinationIntent(
+                    intent_id=f"discover-{int(time.time()*1000)}",
+                    request_id="discover-deployments",
+                    requester_name=self.user,
+                    service_name=COORDINATION_ADVISORY_SERVICE,
+                    purpose="discover-deployments",
+                    payload={"serviceName": service})
+                response = client.request([intent])
+                for s in response.suggestions:
+                    dep = s.payload
+                    if service and dep.get("serviceName", dep.get("service_name", "")) != service:
+                        continue
+                    did = str(dep.get("deploymentId", dep.get("deployment_id", "")))
+                    if did and did not in seen:
+                        seen.add(did)
+                        deployments.append(dep)
+            except Exception:
+                pass
+        # Sort: ACTIVE first (GPU hot), then IDLE, then DISK_RESIDENT (cold), then rest
+        status_priority = {"ACTIVE": 0, "IDLE": 1, "DEGRADED": 2, "DISK_RESIDENT": 3, "PROVISIONING": 4, "EVICTED": 5}
+        deployments.sort(key=lambda d: status_priority.get(str(d.get("status", d.get("status", "")).upper()), 99))
+        return deployments
+
+    def get_deployment(self, deployment_id: str) -> dict[str, Any] | None:
+        """Find a specific deployment by ID through NDNSD."""
+        for dep in self.discover_deployments():
+            if dep.get("deploymentId", dep.get("deployment_id", "")) == deployment_id:
+                return dep
+        return None
+
+    def deploy_service(self,
+                       service: str,
+                       plan: dict[str, Any],
+                       *,
+                       roles: list[CollaborationRole | dict],
+                       key_scopes: dict[str, list[str]],
+                       artifact_data_names: dict[str, str] | None = None,
+                       scope_key_data_names: dict[str, str] | None = None,
+                       dependencies: list[CollaborationDependency | dict] | None = None,
+                       ack_timeout_ms: int = 10000,
+                       timeout_ms: int = 60000) -> dict[str, Any]:
+        """Deploy a model across providers via the existing ACK/Selection/Lease flow.
+
+        Reuses ``request_collaboration`` — providers ACK, user selects optimal
+        providers, leases are reserved.  The deployer receives all provider
+        responses directly and knows immediately when the deployment is ACTIVE
+        (response.status=true).  No polling is needed for the deployer.
+
+        Other users discover the deployment via ``discover_deployments()``
+        (NDNSD/SVS gossip) or ``wait_deployment()``.
+
+        The ``fragment_map`` is built from the ACK observer: the selected
+        provider for each role is recorded during the selection phase.
+        """
+        import hashlib as _hashlib
+        import json as _json
+        import secrets as _secrets
+        import time as _time
+
+        deployment_id = "dep-" + _hashlib.sha256(
+            _secrets.token_hex(16).encode()).hexdigest()[:12]
+        started_ms = int(_time.time() * 1000)
+
+        # Capture provider assignments per role.  Supports provisioning ACKs
+        # (negative-ACK with role advert) and multi-replica.
+        selected_providers: dict[str, list[str]] = {}
+
+        def _deploy_observer(candidates: list[AckCandidate]) -> None:
+            for c in candidates:
+                payload_text = bytes(c.payload).decode("utf-8", errors="replace")
+                fields: dict[str, str] = {}
+                for item in payload_text.split(";"):
+                    eq = item.find("=")
+                    if eq == -1:
+                        continue
+                    fields[item[:eq].strip()] = item[eq+1:].strip()
+                role_text = fields.get("roles", "")
+                for role in role_text.split(","):
+                    role = role.strip()
+                    if not role:
+                        continue
+                    # Accept both ready and provisioning providers
+                    if c.status or fields.get("negativeAckReason") == "ModelUnavailable":
+                        selected_providers.setdefault(role, []).append(c.provider_name)
+
+        response = self.request_collaboration(
+            service,
+            _json.dumps({"purpose": "deploy", "deploymentId": deployment_id,
+                          "plan": plan}).encode(),
+            roles=roles,
+            key_scopes=key_scopes,
+            dependencies=dependencies,
+            artifact_data_names=artifact_data_names or {},
+            scope_key_data_names=scope_key_data_names or {},
+            ack_timeout_ms=ack_timeout_ms,
+            timeout_ms=timeout_ms,
+            ack_observer=_deploy_observer,
+        )
+
+        # Build fragment_map with multi-replica support (deduplicate)
+        fragment_map: dict[str, list[dict[str, Any]]] = {}
+        for role, providers in selected_providers.items():
+            seen = set()
+            entries = []
+            for p in providers:
+                if p not in seen:
+                    seen.add(p)
+                    entries.append({"provider": p, "role": role})
+            fragment_map[role] = entries
+
+        status = "ACTIVE" if response.status else "PROVISIONING"
+        deployment = {
+            "deploymentId": deployment_id,
+            "planId": plan.get("planId", plan.get("plan_id", "")),
+            "serviceName": service,
+            "status": status,
+            "fragmentMap": fragment_map,
+            "scopeKeyDataNames": scope_key_data_names or {},
+            "artifactDataNames": artifact_data_names or {},
+            "refCount": 0,
+            "createdAtMs": started_ms,
+            "updatedAtMs": int(_time.time() * 1000),
+        }
+
+        self._publish_deployment_ndnsd(deployment)
+        return deployment
+
+    def _publish_deployment_ndnsd(self, deployment: dict[str, Any]) -> None:
+        """Route deployment state change through the Merge Provider (coordinator).
+
+        The coordinator is the sole authority for deployment state and NDNSD
+        publishing.  Users never write NDNSD directly — they route through
+        the coordinator service.
+        """
+        import json as _json
+        from ndnsf.coordination import CoordinationIntent, CoordinationServiceClient
+        try:
+            client = CoordinationServiceClient(
+                self, service_name=COORDINATION_ADVISORY_SERVICE,
+                ack_timeout_ms=1000, timeout_ms=5000)
+            intent = CoordinationIntent(
+                intent_id=f"dep-publish-{deployment.get('deploymentId', '')}",
+                request_id=f"ndnsd-{deployment.get('deploymentId', '')}",
+                requester_name=self.user,
+                service_name=COORDINATION_ADVISORY_SERVICE,
+                purpose="deploy",
+                payload=deployment)
+            client.request([intent])
+        except Exception:
+            pass  # coordinator unreachable is recoverable; retry on next action
+
+    def evict_deployment(self, deployment_id: str) -> dict[str, Any]:
+        """Evict a deployment from all providers, freeing resources.
+
+        Rejected if deployment has active execution leases (ref_count > 0).
+        Sets status to DISK_RESIDENT or EVICTED and broadcasts via NDNSD.
+        """
+        import json as _json
+        import time as _time
+        dep = self.get_deployment(deployment_id)
+        if dep is None:
+            return {"status": "NOT_FOUND", "deploymentId": deployment_id}
+        ref_count = int(dep.get("refCount", dep.get("ref_count", 0)))
+        if ref_count > 0:
+            return {"status": "REJECTED", "deploymentId": deployment_id,
+                    "reason": f"DEPLOYMENT_IN_USE;ref_count={ref_count}",
+                    "refCount": ref_count}
+        dep["status"] = "DISK_RESIDENT"
+        dep["updatedAtMs"] = int(_time.time() * 1000)
+        self._publish_deployment_ndnsd(dep)
+        return dep
+
+    def acquire_execution_lease(self, deployment_id: str,
+                                 ttl_ms: int = 30000) -> dict[str, Any]:
+        """Acquire an execution lease through the Merge Provider (coordinator).
+
+        The coordinator is the single authority for ref_count.
+        """
+        from ndnsf.coordination import CoordinationIntent, CoordinationServiceClient
+        client = CoordinationServiceClient(self, service_name=COORDINATION_ADVISORY_SERVICE)
+        intent = CoordinationIntent(
+            intent_id=f"acquire-lease-{deployment_id}",
+            request_id=deployment_id,
+            requester_name=self.user,
+            service_name=COORDINATION_ADVISORY_SERVICE,
+            purpose="acquire-lease",
+            payload={"deploymentId": deployment_id},
+        )
+        try:
+            response = client.request([intent])
+            if response.suggestions:
+                return response.suggestions[0].payload
+        except Exception:
+            pass
+        # Fallback: create a local lease (no ref_count tracking)
+        from ndnsf.runtime_telemetry import ExecutionLease
+        lease = ExecutionLease.create(deployment_id, user=self.user, ttl_ms=ttl_ms)
+        return {
+            "leaseId": lease.lease_id,
+            "deploymentId": deployment_id,
+            "acquiredAtMs": lease.acquired_at_ms,
+            "expiresAtMs": lease.expires_at_ms,
+            "status": "GRANTED_LOCAL",
+        }
+
+    def release_execution_lease(self, lease_id: str) -> dict[str, Any]:
+        """Release an execution lease through the Merge Provider (coordinator)."""
+        from ndnsf.coordination import CoordinationIntent, CoordinationServiceClient
+        client = CoordinationServiceClient(self, service_name=COORDINATION_ADVISORY_SERVICE)
+        intent = CoordinationIntent(
+            intent_id=f"release-lease-{lease_id}",
+            request_id=lease_id,
+            requester_name=self.user,
+            service_name=COORDINATION_ADVISORY_SERVICE,
+            purpose="release-lease",
+            payload={"leaseId": lease_id},
+        )
+        try:
+            response = client.request([intent])
+            if response.suggestions:
+                return response.suggestions[0].payload
+        except Exception:
+            pass
+        return {"status": "NOT_FOUND", "leaseId": lease_id}
+
+    def wait_deployment(self, deployment_id: str,
+                        timeout_ms: int = 60000,
+                        target_status: str = "ACTIVE") -> dict[str, Any] | None:
+        """Block until a deployment reaches target_status or timeout."""
+        import time as _time
+        deadline = _time.time() + timeout_ms / 1000.0
+        while _time.time() < deadline:
+            dep = self.get_deployment(deployment_id)
+            if dep and dep.get("status") == target_status:
+                return dep
+            _time.sleep(0.5)
+        return self.get_deployment(deployment_id)
 
     def pump(self, milliseconds: int) -> None:
         self._native.pump(milliseconds)

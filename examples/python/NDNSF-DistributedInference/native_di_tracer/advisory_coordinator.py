@@ -18,9 +18,19 @@ from ndnsf import (
     CoordinationServiceProvider,
     CoordinationSuggestion,
     NdnsdHealthTracker,
+    PeerNetworkMetric,
+    ProviderNetworkMatrix,
     RESIDENCY_READY_COST_MS,
     ServiceProvider,
+    build_network_matrix_from_ndnsd,
     coordination_suggestion_proof,
+    score_normalized,
+)
+from ndnsf_distributed_inference.runtime_v1 import (
+    PLACEMENT_STRATEGY_PRESETS,
+    DeploymentStatus,
+    filter_feasible_providers,
+    pick_optimal_placement,
 )
 
 
@@ -57,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Sort intents by utility_weight descending before processing")
     parser.add_argument("--health-penalty-ms", type=float, default=200.0,
                         help="Penalty added per health score point below 1.0")
+    parser.add_argument("--edge-cost-factor", type=float, default=1.0,
+                        help="Multiplier for inter-provider transfer costs in scoring")
+    parser.add_argument("--score-weights", default="",
+                        help="JSON file or string with per-dimension weights (fragment/queue/edge/health/fairness/compute)")
+    parser.add_argument("--placement-strategy", default="best_score",
+                        choices=["best_score", "pack", "spread", "min_replicas"],
+                        help="Provider selection strategy (default: best_score)")
+    parser.add_argument("--strategy-preset", default="gpu-cluster",
+                        choices=["gpu-cluster", "edge-network", "multi-tenant", "high-availability"],
+                        help="Pre-configured scoring weights for specific environments")
     parser.add_argument("--state-file", default="",
                         help="JSON file path for coordinator state persistence")
     parser.add_argument("--state-ttl-ms", type=int, default=60000,
@@ -305,6 +325,36 @@ def _save_state(path: str,
         pass
 
 
+SCORE_WEIGHTS = {
+    "fragment":    35,
+    "queue":       20,
+    "edge":        15,
+    "health":      15,
+    "fairness":    10,
+    "compute":      5,
+}
+
+
+def _load_score_weights(raw: str) -> dict[str, int]:
+    """Load score weights from JSON file or string."""
+    import json as _json
+    if not raw:
+        return dict(SCORE_WEIGHTS)
+    try:
+        if raw.startswith("{") or raw.startswith("/"):
+            loaded = _json.loads(raw) if raw.startswith("{") else _json.loads(
+                __import__("pathlib").Path(raw).read_text(encoding="utf-8"))
+        else:
+            return dict(SCORE_WEIGHTS)
+    except Exception:
+        return dict(SCORE_WEIGHTS)
+    result = dict(SCORE_WEIGHTS)
+    for k in result:
+        if k in loaded:
+            result[k] = max(0, min(100, int(loaded[k])))
+    return result
+
+
 def make_handler(args):
     state_ttl = int(getattr(args, "state_ttl_ms", 60000))
     state_path = str(getattr(args, "state_file", "") or "")
@@ -323,12 +373,81 @@ def make_handler(args):
     provider_ack_state: dict[str, dict[str, Any]] = {}
     fragment_state_table: dict[str, dict[str, Any]] = {}
     health_tracker = NdnsdHealthTracker()
+    deployments: dict[str, dict[str, Any]] = {}
+    ref_count: dict[str, int] = {}  # deployment_id → active request count
+    network_matrix = ProviderNetworkMatrix()
+    preset = str(getattr(args, "strategy_preset", "gpu-cluster"))
+    weights = dict(PLACEMENT_STRATEGY_PRESETS.get(preset, PLACEMENT_STRATEGY_PRESETS["gpu-cluster"]))
+    user_weights = _load_score_weights(str(getattr(args, "score_weights", "")))
+    weights.update(user_weights)  # user overrides take precedence
+    placement_strategy = str(getattr(args, "placement_strategy", "best_score"))
     state_lock = threading.Lock()
     window_version = loaded_version
+
+    def _refresh_network_matrix(ack_candidates: list[dict[str, Any]] | None = None) -> None:
+        """Build ProviderNetworkMatrix from observed ACK RTT telemetry."""
+        nonlocal network_matrix
+        observed: list[PeerNetworkMetric] = []
+        import json as _json
+        # Try NDNSD-published metrics first
+        try:
+            ndnsd_raw = provider.get_ndnsd_services()
+            if ndnsd_raw:
+                ndnsd_list = [{str(k): v for k, v in item.items()} for item in ndnsd_raw]
+                m = build_network_matrix_from_ndnsd(ndnsd_list)
+                if m.metrics:
+                    observed.extend(m.metrics.values())
+        except Exception:
+            pass
+        # Also use ACK telemetry RTT as real-time metrics
+        if ack_candidates:
+            for c in ack_candidates:
+                provider_name = str(c.get("provider", c.get("providerName", "")))
+                telemetry = c.get("telemetry", c.get("_telemetry", {}))
+                if isinstance(telemetry, dict):
+                    rtt = float(telemetry.get("rtt_ms", telemetry.get("rttMs", 0)) or 0)
+                    if rtt > 0:
+                        observed.append(PeerNetworkMetric(
+                            src_peer="user",
+                            dst_peer=provider_name,
+                            rtt_ms=rtt / 2.0,  # one-way ~ half of RTT
+                            bandwidth_mbps=float(telemetry.get("goodput_mbps", 100)),
+                            loss_rate=0.0,
+                            confidence=0.8,
+                        ))
+        # For all known providers, add symmetric edges from ACK data
+        known = list(set(
+            m.dst_peer for m in observed
+        ))
+        for m in observed:
+            for other in known:
+                if m.dst_peer != other:
+                    # If both reached user at similar RTT, they may be co-located
+                    # Use observed RTT ratios as heuristic
+                    observed.append(PeerNetworkMetric(
+                        src_peer=m.dst_peer,
+                        dst_peer=other,
+                        rtt_ms=abs(m.rtt_ms - _get_ack_rtt(ack_candidates, other)) if ack_candidates else 5.0,
+                        bandwidth_mbps=min(m.bandwidth_mbps, 1000),
+                        confidence=0.3,
+                    ))
+        if observed:
+            network_matrix = ProviderNetworkMatrix(observed, default_rtt_ms=5.0, unknown_penalty_ms=50.0)
+
+    def _get_ack_rtt(candidates, provider_name):
+        for c in (candidates or []):
+            pn = str(c.get("provider", c.get("providerName", "")))
+            if pn == provider_name:
+                t = c.get("telemetry", c.get("_telemetry", {}))
+                if isinstance(t, dict):
+                    return float(t.get("rtt_ms", t.get("rttMs", 5.0)) or 5.0)
+        return 5.0
 
     def choose_role_assignments(intent_payload: dict,
                                 current_ms: int
                                 ) -> tuple[dict[str, dict[str, Any]], dict[str, int], dict[str, Any]]:
+        nonlocal network_matrix
+        edge_factor = float(getattr(args, "edge_cost_factor", 1.0))
         observed_ack = intent_payload.get("observedAckRuntime", {})
         if isinstance(observed_ack, dict) and observed_ack:
             _merge_observed_ack_runtime(
@@ -392,8 +511,9 @@ def make_handler(args):
         if isinstance(role_candidates, dict):
             for role, candidates in sorted(role_candidates.items()):
                 normalized = _normalize_role_candidates(candidates)
-                best = None
-                best_score = None
+                best: dict[str, Any] | None = None
+                best_score = -1.0
+                best_finish = float(current_ms)
                 for item in normalized:
                     provider = str(item.get("provider", item.get("providerName", ""))).strip()
                     if not provider:
@@ -406,74 +526,92 @@ def make_handler(args):
                             "reason": lease_reason,
                         })
                         continue
-                    ready_cost_ms = _candidate_ready_cost_ms(item)
-                    queue_wait_ms = _candidate_queue_wait_ms(item)
-                    duration_ms = _candidate_duration_ms(
-                        item,
-                        getattr(args, "default_role_duration_ms", 500.0),
-                    )
-                    reserved_at_ms = max(
-                        provider_available_at_ms.get(provider, float(current_ms)),
-                        local_available_at.get(provider, float(current_ms)),
-                    )
-                    start_ms = max(
-                        float(current_ms) + float(lease_start_ms),
-                        reserved_at_ms,
-                    )
-                    finish_ms = start_ms + ready_cost_ms + queue_wait_ms + duration_ms
-                    fairness_ms = (
-                        provider_use[provider] + local_use[provider]
-                    ) * max(0.0, float(getattr(args, "fairness_penalty_ms", 25.0)))
+                    # === Phase 1: FILTER (hard constraints) ===
                     if not health_tracker.is_available(provider):
                         rejected.append({
-                            "role": str(role),
-                            "provider": provider,
+                            "role": str(role), "provider": provider,
                             "reason": "CIRCUIT_OPEN",
                         })
                         continue
-                    ack_busy_ms = _ack_state_busy_penalty(
-                        provider,
-                        provider_ack_state,
-                        float(getattr(args, "busy_penalty_ms", 500.0)),
-                        float(getattr(args, "queue_penalty_per_item_ms", 50.0)),
-                    )
+
+                    # === Phase 2: SCORE (normalized 0-100, weighted) ===
                     fragment_ready_ms = _fragment_ready_penalty(
-                        provider,
-                        str(role),
-                        fragment_state_table,
+                        provider, str(role), fragment_state_table,
                         float(getattr(args, "fragment_ready_default_ms",
                                       RESIDENCY_READY_COST_MS["MISSING"])),
                     )
-                    health_score = health_tracker.health_score(provider)
-                    health_penalty_ms = max(0.0, (1.0 - health_score)) * float(
-                        getattr(args, "health_penalty_ms", 200.0))
-                    score = (finish_ms + fairness_ms + ack_busy_ms +
-                             fragment_ready_ms + health_penalty_ms)
+                    ready_cost_ms = _candidate_ready_cost_ms(item)
+                    queue_wait_ms = _candidate_queue_wait_ms(item)
+                    duration_ms = _candidate_duration_ms(
+                        item, getattr(args, "default_role_duration_ms", 500.0))
+                    reserved_at_ms = max(
+                        provider_available_at_ms.get(provider, float(current_ms)),
+                        local_available_at.get(provider, float(current_ms)))
+                    start_ms = max(float(current_ms) + float(lease_start_ms), reserved_at_ms)
+                    finish_ms = start_ms + ready_cost_ms + queue_wait_ms + duration_ms
+                    compute_ms = finish_ms - float(current_ms)
+
+                    # Normalize each dimension to 0-100
+                    health_val = 1.0 - health_tracker.health_score(provider)
+                    fairness_count = provider_use[provider] + local_use[provider]
+                    edge_cost_ms = 0.0
+                    for prev_role, prev_info in selected.items():
+                        prev_provider = str(prev_info.get("provider", ""))
+                        if prev_provider and prev_provider != provider:
+                            ems, _ = network_matrix.transfer_cost_ms(
+                                prev_provider, provider,
+                                int(item.get("_dependencyBytes", 100000)))
+                            edge_cost_ms += ems * edge_factor
+
+                    # All dimensions mapped to [0,100]; 100 = best
+                    s_compute  = score_normalized(compute_ms,      worst=500,  best=0)
+                    s_queue   = score_normalized(queue_wait_ms,    worst=200,  best=0)
+                    s_fragment = score_normalized(
+                        min(fragment_ready_ms, RESIDENCY_READY_COST_MS["MISSING"] * 2),
+                        worst=RESIDENCY_READY_COST_MS["DISK_RESIDENT"] * 3, best=0)
+                    s_edge    = score_normalized(edge_cost_ms,  worst=200,  best=0)
+                    s_health  = (1.0 - health_val) * 100
+                    s_fair    = score_normalized(float(fairness_count), worst=10, best=0)
+                    # Affinity: bonus for co-locating with already-selected roles
+                    s_affinity = 100.0 if any(
+                        str(prev.get("provider", "")) == provider
+                        for prev in selected.values()
+                    ) else 0.0
+                    s_anti = 100.0  # no anti-affinity conflict by default
+
+                    total = (
+                        weights.get("fragment", 35)   * s_fragment +
+                        weights.get("queue", 20)       * s_queue +
+                        weights.get("edge", 15)        * s_edge +
+                        weights.get("health", 15)      * s_health +
+                        weights.get("fairness", 10)    * s_fair +
+                        weights.get("compute", 5)      * s_compute +
+                        weights.get("affinity_bonus", 0) * s_affinity +
+                        weights.get("anti_affinity", 0) * s_anti
+                    ) / 100.0
+
                     detail = {
                         "role": str(role),
                         "provider": provider,
                         "assignment": str(item.get("assignment", "")).strip(),
-                        "scoreMs": round(score - float(current_ms), 3),
+                        "totalScore": round(total, 2),
+                        "sCompute": round(s_compute, 1), "wCompute": weights.get("compute", 5),
+                        "sQueue": round(s_queue, 1), "wQueue": weights.get("queue", 20),
+                        "sFragment": round(s_fragment, 1), "wFragment": weights.get("fragment", 35),
+                        "sEdge": round(s_edge, 1), "wEdge": weights.get("edge", 15),
+                        "sHealth": round(s_health, 1), "wHealth": weights.get("health", 15),
+                        "sFair": round(s_fair, 1), "wFairness": weights.get("fairness", 10),
+                        "sAffinity": round(s_affinity, 1), "wAffinity": weights.get("affinity_bonus", 0),
+                        "edgeCostMs": round(edge_cost_ms, 3),
+                        "fragmentReadyMs": round(fragment_ready_ms, 3),
+                        "queueWaitMs": round(queue_wait_ms, 3),
+                        "computeMs": round(compute_ms, 3),
                         "startMs": round(start_ms, 3),
                         "finishMs": round(finish_ms, 3),
-                        "durationMs": round(duration_ms, 3),
-                        "readyCostMs": round(ready_cost_ms, 3),
-                        "queueWaitMs": round(queue_wait_ms, 3),
-                        "fairnessPenaltyMs": round(fairness_ms, 3),
-                        "ackBusyPenaltyMs": round(ack_busy_ms, 3),
-                        "fragmentReadyPenaltyMs": round(fragment_ready_ms, 3),
-                        "healthPenaltyMs": round(health_penalty_ms, 3),
-                        "healthScore": round(health_score, 3),
                         "leaseReason": lease_reason,
                     }
                     role_scores.setdefault(str(role), []).append(detail)
-                    if best is None or (
-                        score,
-                        provider,
-                    ) < (
-                        best_score,
-                        str(best.get("provider", "")),
-                    ):
+                    if best is None or total > best_score:
                         best = {
                             "provider": provider,
                             "assignment": str(item.get("assignment", "")).strip(),
@@ -482,7 +620,7 @@ def make_handler(args):
                             "estimatedDurationMs": round(duration_ms, 3),
                             "leaseReason": lease_reason,
                         }
-                        best_score = score
+                        best_score = total
                         best_finish = finish_ms
                 if best is not None:
                     selected[str(role)] = best
@@ -554,13 +692,96 @@ def make_handler(args):
         }
 
     def handle(request: CoordinationRequest) -> CoordinationResponse:
+        import json as _json
         nonlocal window_version
         with state_lock:
             window_version += 1
             current_window_version = window_version
             current_ms = int(time.time() * 1000)
+            _refresh_network_matrix()
             suggestions = []
             intents = list(request.intents)
+
+            # --- Merge Provider: lease management ---
+            for intent in intents[:]:
+                purpose = str(intent.purpose).lower()
+                if purpose in {"acquire-lease", "release-lease"}:
+                    dep_id = str(intent.payload.get("deploymentId", intent.payload.get("deployment_id", "")))
+                    if purpose == "acquire-lease":
+                        lease = ExecutionLease.create(dep_id, user=intent.requester_name)
+                        lease_table.grant(lease)
+                        deployments.setdefault(dep_id, {
+                            "deploymentId": dep_id, "status": "ACTIVE",
+                            "fragmentMap": {}, "refCount": 0,
+                        })
+                        suggestions.append(CoordinationSuggestion(
+                            suggestion_id=f"lease-{lease.lease_id}",
+                            intent_id=intent.intent_id, request_id=intent.request_id,
+                            service_name=intent.service_name,
+                            coordinator_name=args.provider,
+                            payload={"leaseId": lease.lease_id,
+                                     "deploymentId": dep_id, "status": "GRANTED",
+                                     "refCount": lease_table.active_count(dep_id)},
+                        ))
+                    else:
+                        lease_id = str(intent.payload.get("leaseId", intent.payload.get("lease_id", "")))
+                        released = lease_table.release(lease_id)
+                        suggestions.append(CoordinationSuggestion(
+                            suggestion_id=f"release-{lease_id}",
+                            intent_id=intent.intent_id, request_id=intent.request_id,
+                            service_name=intent.service_name,
+                            coordinator_name=args.provider,
+                            payload={"leaseId": lease_id,
+                                     "status": "RELEASED" if released else "NOT_FOUND",
+                                     "refCount": lease_table.active_count(dep_id) if dep_id else 0},
+                        ))
+                    intents.remove(intent)
+
+            # --- Merge Provider: discover-deployments ---
+            for intent in intents[:]:
+                if intent.purpose == "discover-deployments":
+                    svc = str(intent.payload.get("serviceName", intent.payload.get("service_name", "")))
+                    dep_list = []
+                    for did, dep in deployments.items():
+                        ref = lease_table.active_count(did, now_ms_value=current_ms)
+                        dep["refCount"] = ref
+                        if svc and dep.get("serviceName", dep.get("service_name", "")) != svc:
+                            continue
+                        dep_list.append(dict(dep))
+                    for dep_dict in dep_list:
+                        suggestions.append(CoordinationSuggestion(
+                            suggestion_id=f"discover-{dep_dict.get('deploymentId', '')}",
+                            intent_id=intent.intent_id, request_id=intent.request_id,
+                            service_name=intent.service_name,
+                            coordinator_name=args.provider,
+                            payload=dep_dict,
+                        ))
+                    intents.remove(intent)
+
+            # --- Merge Provider: deploy intent ---
+            for intent in intents[:]:
+                if intent.purpose == "deploy":
+                    dep_id = str(intent.payload.get("deploymentId", intent.payload.get("deployment_id", "")))
+                    deployments[dep_id] = {
+                        "deploymentId": dep_id, "planId": intent.payload.get("planId", ""),
+                        "serviceName": intent.service_name, "status": "PROVISIONING",
+                        "fragmentMap": intent.payload.get("roleAssignments", {}),
+                        "refCount": 0, "createdAtMs": intent.created_at_ms,
+                        "updatedAtMs": current_ms,
+                    }
+                    intents.remove(intent)
+
+            # --- Publish deployments via NDNSD heartbeat ---
+            dep_list = []
+            for did, dep in deployments.items():
+                ref = lease_table.active_count(did, now_ms_value=current_ms)
+                dep["refCount"] = ref
+                dep["updatedAtMs"] = current_ms
+                dep_list.append(dep)
+            try:
+                provider.update_ndnsd_meta("deployments", _json.dumps(dep_list, sort_keys=True))
+            except Exception:
+                pass
             if getattr(args, "enable_priority", False):
                 intents.sort(
                     key=lambda item: (-float(getattr(item, "utility_weight", 1.0)),

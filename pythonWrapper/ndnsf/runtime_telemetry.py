@@ -20,6 +20,66 @@ from typing import Any, Iterable
 
 
 # ---------------------------------------------------------------------------
+# Rate limiter (token bucket)
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+
+class TokenBucket:
+    """Token-bucket rate limiter (thread-safe).
+
+    Usage::
+
+        limiter = TokenBucket(rate_per_second=10.0, burst=20)
+        if limiter.consume():
+            ...  # request allowed
+        else:
+            ...  # rate-limited
+    """
+
+    def __init__(self, rate_per_second: float, burst: int = 0):
+        self._rate = max(0.0, float(rate_per_second))
+        self._burst = max(1, int(burst) if burst > 0 else max(1, int(self._rate)))
+        self._tokens = float(self._burst)
+        self._last_refill = now_ms()
+        self._lock = _threading.Lock()
+        self._consumed = 0
+        self._dropped = 0
+
+    @property
+    def consumed(self) -> int:
+        return self._consumed
+
+    @property
+    def dropped(self) -> int:
+        return self._dropped
+
+    def consume(self, tokens: float = 1.0) -> bool:
+        if self._rate <= 0.0:
+            self._consumed += 1
+            return True
+        with self._lock:
+            now = now_ms()
+            elapsed = (now - self._last_refill) / 1000.0
+            self._last_refill = now
+            self._tokens = min(float(self._burst), self._tokens + elapsed * self._rate)
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                self._consumed += 1
+                return True
+            self._dropped += 1
+            return False
+
+    def reset(self) -> None:
+        with self._lock:
+            self._tokens = float(self._burst)
+            self._last_refill = now_ms()
+            self._consumed = 0
+            self._dropped = 0
+
+
+# ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 
@@ -149,6 +209,55 @@ RESIDENCY_READY_COST_MS: dict[str, float] = {
     "REPO_AVAILABLE": 120.0,
     "MISSING": 1_000_000.0,
 }
+
+
+# ---------------------------------------------------------------------------
+# Deployment lifecycle (service-neutral)
+# ---------------------------------------------------------------------------
+
+
+class DeploymentStatus(str, Enum):
+    PROVISIONING = "PROVISIONING"
+    ACTIVE = "ACTIVE"
+    IDLE = "IDLE"
+    DEGRADED = "DEGRADED"
+    DISK_RESIDENT = "DISK_RESIDENT"
+    EVICTED = "EVICTED"
+
+
+@dataclass(frozen=True)
+class PlacementConstraint:
+    """Per-role resource constraints for deployment placement.
+
+    Used by the placement algorithm to filter provider candidates.
+    All fields are advisory minimums; the provider is the final authority
+    via admission control and lease validation.
+    """
+    role_id: str = ""
+    min_gpu_memory_mb: float = 0.0
+    min_cpu_memory_mb: float = 0.0
+    required_backend: str = ""
+    anti_affinity: tuple[str, ...] = ()
+    affinity: tuple[str, ...] = ()
+    min_replicas: int = 1
+    max_replicas: int = 1
+    preload_priority: int = 0
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PlacementConstraint":
+        return cls(
+            role_id=str(payload.get("roleId", payload.get("role_id", ""))),
+            min_gpu_memory_mb=float(payload.get("minGpuMemoryMb", payload.get("min_gpu_memory_mb", 0)) or 0),
+            min_cpu_memory_mb=float(payload.get("minCpuMemoryMb", payload.get("min_cpu_memory_mb", 0)) or 0),
+            required_backend=str(payload.get("requiredBackend", payload.get("required_backend", ""))),
+            anti_affinity=tuple(sorted(
+                str(r) for r in payload.get("antiAffinity", payload.get("anti_affinity", ())) or ())),
+            affinity=tuple(sorted(
+                str(r) for r in payload.get("affinity", ()) or ())),
+            min_replicas=max(1, int(payload.get("minReplicas", payload.get("min_replicas", 1)) or 1)),
+            max_replicas=max(1, int(payload.get("maxReplicas", payload.get("max_replicas", 1)) or 1)),
+            preload_priority=int(payload.get("preloadPriority", payload.get("preload_priority", 0)) or 0),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +551,80 @@ class ProviderAdmissionLeaseTable:
 # ---------------------------------------------------------------------------
 # Provider network matrix
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Provider network probing
+# ---------------------------------------------------------------------------
+
+
+def probe_peer_rtt(provider: Any, peer_name: str, service: str,
+                   *, sizes: tuple[int, ...] = (1024, 10240, 102400, 512000),
+                   timeout_ms: int = 2000) -> dict[str, Any]:
+    """Probe a peer provider for RTT and bandwidth using small Data packets.
+
+    Returns a dict with rtt_ms, bandwidth_mbps, loss_rate suitable for
+    constructing a PeerNetworkMetric.
+    """
+    import statistics as _statistics
+    rtts: list[float] = []
+    bandwidths: list[float] = []
+    lost = 0
+    import secrets as _secrets
+    for size in sizes:
+        nonce = _secrets.token_hex(8)
+        try:
+            t0 = time.time() * 1000
+            # Use existing request_service with a small probe payload
+            payload = (nonce + ":" + str(size)).encode().ljust(size, b"\0")[:size]
+            resp = provider.request_service(
+                service, payload,
+                ack_timeout_ms=50, timeout_ms=timeout_ms,
+                strategy="first-responding")
+            t1 = time.time() * 1000
+            rtt = t1 - t0
+            rtts.append(rtt)
+            if size >= 102400 and len(resp.payload) >= size // 2:
+                bandwidths.append((size * 8.0 / 1_000_000.0) / max(rtt / 1000.0, 0.001))
+        except Exception:
+            lost += 1
+    return {
+        "rtt_ms": round(_statistics.median(rtts), 3) if rtts else 999.0,
+        "bandwidth_mbps": round(_statistics.mean(bandwidths), 1) if bandwidths else 10.0,
+        "loss_rate": round(lost / max(len(sizes), 1), 3),
+        "samples": len(rtts),
+        "lost": lost,
+    }
+
+
+def score_normalized(value: float, worst: float, best: float = 0.0, invert: bool = True) -> float:
+    """Normalize a value to 0-100. If invert=True, lower is better (returns 100-best)."""
+    if worst == best:
+        return 100.0
+    ratio = max(0.0, min(1.0, (value - best) / (worst - best)))
+    return (1.0 - ratio) * 100.0 if invert else ratio * 100.0
+
+
+def build_network_matrix_from_ndnsd(ndnsd_services: list[dict[str, Any]]) -> ProviderNetworkMatrix:
+    """Build a ProviderNetworkMatrix from NDNSD-published peer metrics."""
+    import json as _json
+    all_metrics: list[PeerNetworkMetric] = []
+    for entry in ndnsd_services:
+        meta = entry.get("serviceMetaInfo", {})
+        if not isinstance(meta, dict):
+            continue
+        raw = meta.get("peerMetrics", "")
+        if not raw:
+            continue
+        try:
+            metrics_list = _json.loads(raw)
+        except (_json.JSONDecodeError, TypeError):
+            continue
+        for m in metrics_list if isinstance(metrics_list, list) else []:
+            if not isinstance(m, dict):
+                continue
+            all_metrics.append(PeerNetworkMetric.from_dict(m))
+    return ProviderNetworkMatrix(all_metrics)
 
 
 class ProviderNetworkMatrix:

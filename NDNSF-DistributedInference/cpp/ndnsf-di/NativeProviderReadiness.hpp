@@ -25,6 +25,11 @@ public:
   void markReady(std::string message);
   void markFailed(std::string message);
 
+  /// Set provisioning context so negative-ACKs carry useful info.
+  void setProvisioningContext(std::string deploymentId,
+                              std::string provisioningRole,
+                              int64_t expectedReadyMs);
+
   bool isReady() const;
   std::string statusText() const;
   std::string message() const;
@@ -44,6 +49,10 @@ private:
   mutable std::mutex m_mutex;
   Status m_status = Status::Installing;
   std::string m_message = "installing native model/runtime artifacts";
+  std::string m_deploymentId;
+  std::string m_provisioningRole;
+  int64_t m_expectedReadyMs = 0;
+  int64_t m_provisioningStartedMs = 0;
   CapacitySnapshotProvider m_capacitySnapshotProvider;
 };
 

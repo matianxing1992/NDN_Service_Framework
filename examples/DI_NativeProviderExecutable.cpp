@@ -872,6 +872,25 @@ main(int argc, char** argv)
          admissionLeaseTtlMs = options.admissionLeaseTtlMs](
           const ndn_service_framework::RequestMessage&) {
           auto decision = provisioningState->makeAckDecision(rolesText);
+          // Update NDNSD meta with live capacity from this ACK decision
+          if (decision.status) {
+            auto payloadText = bufferText(decision.payload);
+            provider.updateNdnsdMeta("roles", rolesText);
+            provider.updateNdnsdMeta("runtimeStatus", "ready");
+            // Parse semicolon-delimited key=value fields for capacity
+            std::string current;
+            for (char ch : payloadText) {
+              if (ch == ';') {
+                auto eq = current.find('=');
+                if (eq != std::string::npos && eq > 0 && eq + 1 < current.size()) {
+                  provider.updateNdnsdMeta(current.substr(0, eq), current.substr(eq + 1));
+                }
+                current.clear();
+              } else {
+                current.push_back(ch);
+              }
+            }
+          }
           if (enableAdmissionLease && decision.status) {
             ndn_service_framework::ServiceProvider::GenericAdmissionLease lease;
             lease.leaseId = nativeTracerLeaseId(providerName.toUri());
@@ -939,10 +958,16 @@ main(int argc, char** argv)
          controllerIdentity,
          provisioningState,
          readyHandler,
-         readyHandlerMutex] () mutable {
+         readyHandlerMutex,
+         &provider] () mutable {
           try {
             provisioningState->markInstalling(
               "fetching and materializing native model/runtime artifacts");
+            // Tell other users via negative-ACK what's happening
+            provisioningState->setProvisioningContext(
+              options.providerName,      // deploymentId placeholder
+              joinRoles(allowedRoles),   // which roles
+              30000);                    // estimated 30s to ready
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_INSTALLING"
                       << " artifactReferences=" << options.artifactReferencesPath
                       << " cacheDir=" << options.artifactCacheDir
@@ -1036,6 +1061,7 @@ main(int argc, char** argv)
               *readyHandler = std::move(runtime.handler);
             }
             provisioningState->markReady("native model/runtime artifacts ready");
+            provider.updateNdnsdMeta("runtimeStatus", "ready");
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"
                       << " activeRoles=" << allowedRoles.size()
                       << " workers=" << options.workers
@@ -1055,6 +1081,8 @@ main(int argc, char** argv)
                 << std::endl;
       provider.init();
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_INIT_DONE" << std::endl;
+      provider.setNdnsdMeta({{"runtimeStatus", "installing"}});
+      provider.startNdnsdPeriodicPublish(10);
       std::thread(std::move(installTask)).detach();
 
       std::cout << "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY service="

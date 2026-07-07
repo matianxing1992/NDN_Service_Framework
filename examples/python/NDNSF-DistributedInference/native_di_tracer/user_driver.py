@@ -25,8 +25,20 @@ from ndnsf import (
     COORDINATION_ADVISORY_SERVICE,
     CoordinationIntent,
     CoordinationServiceClient,
+    NdnMetrics,
     NdnsdHealthTracker,
+    ProviderNetworkMatrix,
+    RetryPolicy,
     ServiceUser,
+    TokenBucket,
+    TraceCollector,
+    build_network_matrix_from_ndnsd,
+    retry_call,
+)
+from ndnsf_distributed_inference.runtime_v1 import (
+    PLACEMENT_STRATEGY_PRESETS,
+    filter_feasible_providers,
+    pick_optimal_placement,
 )
 
 
@@ -514,6 +526,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fragment-inventory-json", default="",
                         help=("Optional provider fragment inventory JSON used to "
                               "enrich coordination intents with live fragment residency"))
+    parser.add_argument("--max-rps", type=float, default=0.0,
+                        help="Per-user token-bucket rate limit (0 = unlimited)")
+    parser.add_argument("--retry-max-attempts", type=int, default=0,
+                        help="Max retry attempts per request (0 = no retry)")
+    parser.add_argument("--wait-for-deployment", default="",
+                        help="Wait for this deployment_id to become ACTIVE before starting requests")
     parser.add_argument("--coordination-ack-timeout-ms", type=int, default=800)
     parser.add_argument("--coordination-timeout-ms", type=int, default=5000)
     parser.add_argument("--overload-fast-fail-timeout-ms", type=int, default=0,
@@ -539,7 +557,7 @@ def request_advisory_suggestion(user: ServiceUser,
                                 index: int,
                                 observed_ack_runtime: dict[str, dict[str, Any]] | None = None) -> dict:
     if not args.coordination_service:
-        return {"enabled": False}
+        return {"enabled": False, "mode": "local-placement"}
     client = CoordinationServiceClient(
         user,
         service_name=args.coordination_service,
@@ -658,6 +676,9 @@ def ack_candidates_snapshot(candidates) -> list[dict[str, Any]]:
             "idleWorkers": int_field(fields, "idleWorkers"),
             "runtimeStatus": fields.get("runtimeStatus", ""),
             "negativeAckReason": fields.get("negativeAckReason", ""),
+            "deploymentId": fields.get("deploymentId", ""),
+            "provisioningRole": fields.get("provisioningRole", ""),
+            "expectedReadyMs": fields.get("expectedReadyMs", ""),
             "leaseId": fields.get("leaseId", ""),
             "leaseExpiresAtMs": fields.get("leaseExpiresAtMs", ""),
             "telemetry": candidate.telemetry,
@@ -1857,6 +1878,18 @@ def main() -> int:
         + json.dumps(scope_key_data_names, sort_keys=True),
         flush=True,
     )
+    if args.wait_for_deployment:
+        dep = user.wait_deployment(args.wait_for_deployment, timeout_ms=30000)
+        if dep and dep.get("status") == "ACTIVE":
+            print("NDNSF_DI_NATIVE_TRACER_WAIT_DEPLOYMENT " + json.dumps({
+                "deploymentId": args.wait_for_deployment,
+                "status": dep.get("status"),
+                "fragmentMap": dep.get("fragmentMap", {}),
+            }, sort_keys=True), flush=True)
+        else:
+            print("NDNSF_DI_NATIVE_TRACER_WAIT_DEPLOYMENT_TIMEOUT " + json.dumps({
+                "deploymentId": args.wait_for_deployment,
+            }, sort_keys=True), flush=True)
     workload_start = time.perf_counter()
     results = []
     base_workload_metadata = {
@@ -1938,9 +1971,34 @@ def main() -> int:
             finally:
                 user.stop()
     elif args.concurrency == 1:
+        rate_limiter = TokenBucket(args.max_rps, burst=max(1, int(args.max_rps * 2))) if args.max_rps > 0 else None
+        retry_policy = RetryPolicy(max_attempts=args.retry_max_attempts) if args.retry_max_attempts > 0 else None
+        metrics = NdnMetrics()
+        trace_collector = TraceCollector("ndnsf-di-user")
         observed_ack: dict[str, dict[str, Any]] = {}
         for index in range(1, args.requests + 1):
-            result = run_one_request(
+            if rate_limiter is not None and not rate_limiter.consume():
+                metrics.rate_limited_total.labels(service=args.service).inc()
+                result = {"status": "failed", "service": args.service,
+                          "requestIndex": index, "error": "rate-limited",
+                          "elapsedMs": 0.0, "requestCount": args.requests,
+                          "concurrency": args.concurrency,
+                          "responseStatus": False, "payloadBytes": 0}
+                results.append(result)
+                print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " + json.dumps(result, sort_keys=True), flush=True)
+                continue
+            if retry_policy is not None:
+                retry_policy.reset()
+                def _do_request() -> dict:
+                    return run_one_request(
+                        user, args, service_plan, roles, key_scopes, dependencies,
+                        scope_key_data_names, role_scopes, index,
+                        observed_ack_runtime=observed_ack if observed_ack else None)
+                result = retry_call(_do_request, retry_policy)
+                if result.get("retryAttempts", 0) > 0:
+                    metrics.retry_total.labels(service=args.service).inc(result.get("retryAttempts", 0))
+            else:
+                result = run_one_request(
                 user,
                 args,
                 service_plan,

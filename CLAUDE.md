@@ -2,7 +2,8 @@
 
 Read and follow `AGENTS.md` first. It is the canonical project guidance for
 NDNSF, including CodeGraph-first exploration, Spec Kit, GSD, DeepSeek delegation,
-MiniNDN-first validation, git safety, and the completion bell.
+Academic Research Suite (ARS), MiniNDN-first validation, git safety, and the
+completion bell.
 
 Default to Chinese in conversation with the user. Use English only when the
 user explicitly asks for English, when writing source-code identifiers, or when
