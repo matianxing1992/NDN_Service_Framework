@@ -2891,6 +2891,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
         self.queue: queue.Queue[str | tuple[str, Any]] = queue.Queue()
         self.process: subprocess.Popen[str] | None = None
         self.thread: threading.Thread | None = None
+        self.stop_requested = False
         self._drain_after_id: str | None = None
         self.status_var = tk.StringVar(value="stopped")
         self._build()
@@ -2931,6 +2932,8 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             ("Concurrency", "concurrency", "1", ""),
             ("Provider check timeout s", "provider_check_timeout", "60", ""),
             ("Target RPS", "target_rps", "", ""),
+            ("Target RPS sweep list", "target_rps_list", "", ""),
+            ("Sweep repeats", "sweep_repeats", "1", ""),
             ("Open-loop duration s", "open_loop_duration_s", "", ""),
             ("Output JSON", "output_json", "/tmp/ndnsf-di-gui-qwen-minindn/gui-summary.json", "save"),
             ("Extra harness args", "extra_args", "", ""),
@@ -2945,6 +2948,8 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
         ttk.Button(buttons, text="Preview Command", command=self.preview_command).pack(side="left")
         self.run_button = ttk.Button(buttons, text="Run Qwen MiniNDN", command=self.run_experiment)
         self.run_button.pack(side="left", padx=4)
+        self.sweep_button = ttk.Button(buttons, text="Run Sweep", command=self.run_sweep)
+        self.sweep_button.pack(side="left", padx=4)
         self.stop_button = ttk.Button(buttons, text="Stop", command=self.stop_experiment, state="disabled")
         self.stop_button.pack(side="left", padx=4)
         ttk.Label(config, text="Status").grid(row=row + 1, column=0, sticky="w", padx=6)
@@ -2985,37 +2990,72 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
         value = self.value(key).strip()
         return default if not value else int(value)
 
-    def _args_namespace(self) -> SimpleNamespace:
+    def _args_namespace(self,
+                        *,
+                        out_dir: str | None = None,
+                        target_rps: float | None = None) -> SimpleNamespace:
         return SimpleNamespace(
             profile="",
             controller_config="",
             provider_config="",
             user_config="",
             experiment_runtime_profile=self.value("runtime_profile"),
-            experiment_out=self.value("out_dir"),
+            experiment_out=out_dir if out_dir is not None else self.value("out_dir"),
             experiment_requests=self._int_value("requests", 0),
             experiment_concurrency=self._int_value("concurrency", 0),
             experiment_provider_check_timeout=self._int_value("provider_check_timeout", 0),
-            experiment_target_rps=self._float_value("target_rps", -1.0),
+            experiment_target_rps=(
+                target_rps if target_rps is not None
+                else self._float_value("target_rps", -1.0)
+            ),
             experiment_open_loop_duration_s=self._float_value("open_loop_duration_s", -1.0),
             experiment_dry_run=self.bool_value("dry_run"),
             experiment_extra_arg=split_extra_args(self.value("extra_args")),
             output_json=self.value("output_json"),
         )
 
-    def experiment_command(self) -> tuple[list[str], Path]:
-        args = self._args_namespace()
+    def _wrap_command(self, command: list[str]) -> list[str]:
+        if not self.bool_value("use_sudo"):
+            return command
+        return [
+            "sudo",
+            "-n",
+            "env",
+            "PYTHONPATH=NDNSF-DistributedInference:pythonWrapper",
+            "PYTHONPYCACHEPREFIX=/tmp/ndnsf_pycache",
+            *command,
+        ]
+
+    def experiment_command(self,
+                           *,
+                           out_dir: str | None = None,
+                           target_rps: float | None = None) -> tuple[list[str], Path]:
+        args = self._args_namespace(out_dir=out_dir, target_rps=target_rps)
         command, out_dir = build_qwen_minindn_command(self.app.profile(), args)
-        if self.bool_value("use_sudo"):
-            command = [
-                "sudo",
-                "-n",
-                "env",
-                "PYTHONPATH=NDNSF-DistributedInference:pythonWrapper",
-                "PYTHONPYCACHEPREFIX=/tmp/ndnsf_pycache",
-                *command,
-            ]
-        return command, out_dir
+        return self._wrap_command(command), out_dir
+
+    def sweep_commands(self) -> list[tuple[str, list[str], Path]]:
+        values = [
+            item.strip()
+            for item in self.value("target_rps_list").split(",")
+            if item.strip()
+        ]
+        if not values:
+            values = [self.value("target_rps").strip() or "0"]
+        repeats = max(1, self._int_value("sweep_repeats", 1))
+        base_out = Path(self.value("out_dir"))
+        commands: list[tuple[str, list[str], Path]] = []
+        for rps_text in values:
+            rps = float(rps_text)
+            token = rps_text.replace(".", "_").replace("-", "m")
+            for repeat in range(1, repeats + 1):
+                out_dir = base_out / f"rps-{token}-run-{repeat}"
+                command, resolved_out = self.experiment_command(
+                    out_dir=str(out_dir),
+                    target_rps=rps,
+                )
+                commands.append((f"rps={rps_text} run={repeat}", command, resolved_out))
+        return commands
 
     def preview_command(self) -> None:
         try:
@@ -3039,42 +3079,87 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
         out_dir.mkdir(parents=True, exist_ok=True)
         self.command_preview.set(shlex.join(command))
         self.log_pane.set("")
+        self.stop_requested = False
         self.status_var.set("starting")
         self.app.set_status("Qwen MiniNDN experiment starting")
         self.run_button.configure(state="disabled")
+        self.sweep_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.thread = threading.Thread(
-            target=self._run_experiment_thread,
-            args=(command,),
+            target=self._run_commands_thread,
+            args=([("single", command, out_dir)],),
             daemon=True,
         )
         self.thread.start()
 
-    def _run_experiment_thread(self, command: list[str]) -> None:
-        started_at = time.time()
+    def run_sweep(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self.queue.put("Qwen MiniNDN experiment is already running.\n")
+            return
         try:
-            self.process = subprocess.Popen(
-                command,
-                cwd=str(repo_root()),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-            )
-            assert self.process.stdout is not None
-            try:
-                for line in self.process.stdout:
-                    self.queue.put(line)
-            finally:
-                self.process.stdout.close()
-            returncode = self.process.wait()
+            commands = self.sweep_commands()
+        except Exception as exc:
+            self.queue.put(f"Qwen MiniNDN sweep command failed: {exc}\n")
+            self.status_var.set("command error")
+            return
+        for _, _, out_dir in commands:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        self.command_preview.set("\n".join(shlex.join(command) for _, command, _ in commands))
+        self.log_pane.set("")
+        self.stop_requested = False
+        self.status_var.set(f"sweep starting {len(commands)} runs")
+        self.app.set_status("Qwen MiniNDN sweep starting")
+        self.run_button.configure(state="disabled")
+        self.sweep_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.thread = threading.Thread(
+            target=self._run_commands_thread,
+            args=(commands,),
+            daemon=True,
+        )
+        self.thread.start()
+
+    def _run_commands_thread(self, commands: list[tuple[str, list[str], Path]]) -> None:
+        started_at = time.time()
+        results: list[dict[str, Any]] = []
+        try:
+            for label, command, out_dir in commands:
+                if self.stop_requested:
+                    results.append({"label": label, "out": str(out_dir), "returncode": -15, "stopped": True})
+                    break
+                self.queue.put(f"\n=== Qwen MiniNDN {label} ===\n")
+                self.process = subprocess.Popen(
+                    command,
+                    cwd=str(repo_root()),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    bufsize=1,
+                )
+                assert self.process.stdout is not None
+                try:
+                    for line in self.process.stdout:
+                        self.queue.put(line)
+                finally:
+                    self.process.stdout.close()
+                returncode = self.process.wait()
+                result = {"label": label, "out": str(out_dir), "returncode": returncode}
+                results.append(result)
+                if returncode != 0:
+                    break
             elapsed_ms = round((time.time() - started_at) * 1000.0, 3)
-            self.queue.put(("done", {"returncode": returncode, "elapsed_ms": elapsed_ms}))
+            final_rc = next((item["returncode"] for item in results if item["returncode"] != 0), 0)
+            self.queue.put(("done", {
+                "returncode": final_rc,
+                "elapsed_ms": elapsed_ms,
+                "results": results,
+            }))
         except Exception as exc:
             self.queue.put(("done", {"returncode": -1, "elapsed_ms": 0.0, "error": str(exc)}))
 
     def stop_experiment(self) -> None:
         if self.process is not None and self.process.poll() is None:
+            self.stop_requested = True
             self.process.terminate()
             self.queue.put("Qwen MiniNDN experiment termination requested.\n")
             self.status_var.set("stopping")
@@ -3091,7 +3176,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                 if returncode == 0:
                     self.status_var.set(f"completed rc=0 elapsed_ms={result.get('elapsed_ms')}")
                     self.app.set_status("Qwen MiniNDN experiment completed")
-                    self._append_summary()
+                    self._append_summary(result.get("results", []))
                 else:
                     self.status_var.set(f"failed rc={returncode}")
                     self.app.set_status("Qwen MiniNDN experiment failed")
@@ -3099,6 +3184,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                     if error:
                         self.log_pane.text.insert("end", f"\nERROR: {error}\n")
                 self.run_button.configure(state="normal")
+                self.sweep_button.configure(state="normal")
                 self.stop_button.configure(state="disabled")
                 self.process = None
             else:
@@ -3106,31 +3192,44 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                 self.log_pane.text.see("end")
         self._drain_after_id = self.after(200, self._drain_queue)
 
-    def _append_summary(self) -> None:
+    def _append_summary(self, results: list[dict[str, Any]]) -> None:
         output_json_value = self.value("output_json").strip()
-        summary_path = Path(self.value("out_dir")) / "summary.json"
-        if summary_path.exists():
+        compact_runs: list[dict[str, Any]] = []
+        if not results:
+            results = [{"label": "single", "out": self.value("out_dir"), "returncode": 0}]
+        for result in results:
+            summary_path = Path(str(result.get("out", self.value("out_dir")))) / "summary.json"
+            if not summary_path.exists():
+                continue
             try:
                 data = json.loads(summary_path.read_text(encoding="utf-8"))
-                compact = {
+                compact_runs.append({
+                    "label": result.get("label", ""),
+                    "returncode": result.get("returncode"),
                     "ok": data.get("status") == "SUCCESS",
                     "status": data.get("status"),
                     "runnerMode": data.get("runnerMode"),
                     "userExecution": data.get("userExecution", {}),
                     "dependencyExecution": data.get("dependencyExecution", {}),
                     "summary_json": str(summary_path),
-                    "out": self.value("out_dir"),
-                }
-                if output_json_value:
-                    output_json = Path(output_json_value)
-                    output_json.parent.mkdir(parents=True, exist_ok=True)
-                    output_json.write_text(json.dumps(compact, indent=2), encoding="utf-8")
-                self.log_pane.text.insert(
-                    "end",
-                    "\nQwen MiniNDN summary\n" + json.dumps(compact, indent=2) + "\n",
-                )
+                    "out": str(summary_path.parent),
+                })
             except Exception as exc:
                 self.log_pane.text.insert("end", f"\nSummary read failed: {exc}\n")
+        if compact_runs:
+            payload: dict[str, Any]
+            if len(compact_runs) == 1:
+                payload = compact_runs[0]
+            else:
+                payload = {"ok": all(item.get("ok") for item in compact_runs), "runs": compact_runs}
+            if output_json_value:
+                output_json = Path(output_json_value)
+                output_json.parent.mkdir(parents=True, exist_ok=True)
+                output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            self.log_pane.text.insert(
+                "end",
+                "\nQwen MiniNDN summary\n" + json.dumps(payload, indent=2) + "\n",
+            )
 
     def cancel_periodic_callbacks(self) -> None:
         if self._drain_after_id is None:

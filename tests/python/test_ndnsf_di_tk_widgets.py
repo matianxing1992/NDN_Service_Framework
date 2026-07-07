@@ -150,6 +150,24 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
         self.assertIn("llm-proportional", command)
         self.assertIn("--dry-run", command)
 
+    def test_qwen_minindn_tab_builds_sweep_commands(self) -> None:
+        tab = self.app.qwen_minindn
+        tab.fields["use_sudo"].set(False)  # type: ignore[union-attr]
+        tab.fields["dry_run"].set(True)  # type: ignore[union-attr]
+        tab.fields["target_rps_list"].set("0.2,0.4")  # type: ignore[union-attr]
+        tab.fields["sweep_repeats"].set("2")  # type: ignore[union-attr]
+        commands = tab.sweep_commands()
+        self.assertEqual(len(commands), 4)
+        labels = [label for label, _, _ in commands]
+        self.assertEqual(labels, [
+            "rps=0.2 run=1",
+            "rps=0.2 run=2",
+            "rps=0.4 run=1",
+            "rps=0.4 run=2",
+        ])
+        self.assertTrue(all("--target-rps" in command for _, command, _ in commands))
+        self.assertTrue(all("--dry-run" in command for _, command, _ in commands))
+
     def test_qwen_minindn_button_runs_dry_run_without_blocking_gui(self) -> None:
         tab = self.app.qwen_minindn
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,7 +183,29 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             ))
             self.assertIn("NDNSF_DI_NATIVE_TRACER_MININDN_DRY_RUN", tab.log_pane.get())
             self.assertEqual(str(tab.run_button["state"]), "normal")
+            self.assertEqual(str(tab.sweep_button["state"]), "normal")
             self.assertEqual(str(tab.stop_button["state"]), "disabled")
+
+    def test_qwen_minindn_sweep_button_runs_dry_run_sequence(self) -> None:
+        tab = self.app.qwen_minindn
+        with tempfile.TemporaryDirectory() as tmp:
+            tab.fields["use_sudo"].set(False)  # type: ignore[union-attr]
+            tab.fields["dry_run"].set(True)  # type: ignore[union-attr]
+            tab.fields["out_dir"].set(str(Path(tmp) / "qwen-sweep"))  # type: ignore[union-attr]
+            tab.fields["output_json"].set(str(Path(tmp) / "qwen-sweep-summary.json"))  # type: ignore[union-attr]
+            tab.fields["target_rps_list"].set("0.2,0.4")  # type: ignore[union-attr]
+            tab.run_sweep()
+            self.assertTrue(wait_until(
+                self.app,
+                lambda: tab.status_var.get().startswith("completed rc=0"),
+                timeout_s=8.0,
+            ))
+            log_text = tab.log_pane.get()
+            self.assertIn("=== Qwen MiniNDN rps=0.2 run=1 ===", log_text)
+            self.assertIn("=== Qwen MiniNDN rps=0.4 run=1 ===", log_text)
+            self.assertIn("NDNSF_DI_NATIVE_TRACER_MININDN_DRY_RUN", log_text)
+            self.assertEqual(str(tab.run_button["state"]), "normal")
+            self.assertEqual(str(tab.sweep_button["state"]), "normal")
 
 
 if __name__ == "__main__":
