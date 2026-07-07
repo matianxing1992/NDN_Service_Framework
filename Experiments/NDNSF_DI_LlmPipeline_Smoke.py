@@ -18,8 +18,14 @@ from typing import Any
 
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "pythonWrapper"))
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 
+from ndnsf.streaming import (  # noqa: E402
+    StreamChunk,
+    decode_stream_chunk,
+    encode_stream_chunk,
+)
 from ndnsf_distributed_inference.llm_stub_planner import (  # noqa: E402
     llm_planner_registry,
     llm_planner_request,
@@ -37,20 +43,73 @@ class PlannedDependency:
     tensors: tuple[str, ...]
 
 
-class InMemoryDependencyStore:
-    def __init__(self) -> None:
-        self._objects: dict[str, bytes] = {}
+DI_TENSOR_STREAM_CONTENT_TYPE = "application/x-ndnsf-di-tensor-bundle"
 
-    def publish(self, name: str, payload: bytes) -> None:
+
+class InMemoryDependencyStore:
+    def __init__(self, *, chunk_bytes: int = 64) -> None:
+        self._objects: dict[str, list[bytes]] = {}
+        self._chunk_bytes = max(1, int(chunk_bytes))
+        self.published_chunks = 0
+        self.fetched_chunks = 0
+
+    def publish(self, name: str, payload: bytes, edge: PlannedDependency) -> None:
         if name in self._objects:
             raise RuntimeError(f"duplicate dependency object: {name}")
-        self._objects[name] = payload
+        chunk_count = max(1, (len(payload) + self._chunk_bytes - 1) // self._chunk_bytes)
+        wires: list[bytes] = []
+        for index in range(chunk_count):
+            start = index * self._chunk_bytes
+            part = payload[start:start + self._chunk_bytes]
+            chunk = StreamChunk(
+                stream_id=name,
+                session_epoch=1,
+                seq=index,
+                payload=part,
+                content_type=DI_TENSOR_STREAM_CONTENT_TYPE,
+                segment_index=index,
+                segment_count=chunk_count,
+                metadata={
+                    "producer": edge.producer,
+                    "consumer": edge.consumer,
+                    "keyScope": edge.key_scope,
+                    "tensors": ",".join(edge.tensors),
+                    "objectName": name,
+                },
+            )
+            wires.append(encode_stream_chunk(chunk))
+        self._objects[name] = wires
+        self.published_chunks += len(wires)
 
     def fetch(self, name: str) -> bytes:
         try:
-            return self._objects[name]
+            wires = self._objects[name]
         except KeyError as exc:
             raise RuntimeError(f"missing dependency object: {name}") from exc
+        payload_parts: list[bytes] = []
+        expected_count: int | None = None
+        for expected_seq, wire in enumerate(wires):
+            chunk = decode_stream_chunk(wire)
+            if chunk.stream_id != name:
+                raise RuntimeError(f"stream id mismatch for {name}: {chunk.stream_id}")
+            if chunk.seq != expected_seq:
+                raise RuntimeError(f"stream chunk sequence mismatch for {name}: {chunk.seq}")
+            if chunk.content_type != DI_TENSOR_STREAM_CONTENT_TYPE:
+                raise RuntimeError(
+                    f"unexpected dependency stream content type: {chunk.content_type}")
+            if chunk.metadata.get("objectName") != name:
+                raise RuntimeError(f"dependency stream metadata objectName mismatch: {name}")
+            if expected_count is None:
+                expected_count = int(chunk.segment_count)
+            elif expected_count != int(chunk.segment_count):
+                raise RuntimeError(f"dependency stream segment_count changed for {name}")
+            payload_parts.append(chunk.payload)
+        if expected_count != len(wires):
+            raise RuntimeError(
+                f"dependency stream segment count mismatch for {name}: "
+                f"expected={expected_count} actual={len(wires)}")
+        self.fetched_chunks += len(wires)
+        return b"".join(payload_parts)
 
 
 def dependency_name(session_id: str, edge: PlannedDependency) -> str:
@@ -126,12 +185,13 @@ def execute_fake_pipeline(
     *,
     session_id: str,
     input_prompt: bytes,
-) -> tuple[bytes, list[str]]:
+    stream_chunk_bytes: int = 64,
+) -> tuple[bytes, list[str], InMemoryDependencyStore]:
     roles = list(service.get("roles", []))
     edges = planned_dependencies(service)
     outgoing = {edge.producer: edge for edge in edges}
     incoming = {edge.consumer: edge for edge in edges}
-    store = InMemoryDependencyStore()
+    store = InMemoryDependencyStore(chunk_bytes=stream_chunk_bytes)
     execution_order: list[str] = []
 
     current_payload = input_prompt
@@ -154,13 +214,13 @@ def execute_fake_pipeline(
         if edge is not None:
             if edge.tensors != ("hidden-state",):
                 raise RuntimeError(f"unexpected LLM pipeline edge tensors: {edge.tensors}")
-            store.publish(dependency_name(session_id, edge), stage_payload)
+            store.publish(dependency_name(session_id, edge), stage_payload, edge)
         else:
             return json.dumps({
                 "finalRole": role,
                 "executionOrder": execution_order,
                 "logitsReference": stage_payload.decode("utf-8"),
-            }, sort_keys=True).encode("utf-8"), execution_order
+            }, sort_keys=True).encode("utf-8"), execution_order, store
 
     raise RuntimeError("pipeline did not produce a final output")
 
@@ -176,6 +236,8 @@ def main() -> int:
     parser.add_argument("--session-id", default="llm-pipeline-smoke-session")
     parser.add_argument("--prompt", default="hello from NDNSF-DI LLM pipeline smoke")
     parser.add_argument("--out-dir", default="/tmp/ndnsf-di-llm-pipeline-smoke")
+    parser.add_argument("--stream-chunk-bytes", type=int, default=64,
+                        help="Dependency stream chunk size for the fake hidden-state store.")
     args = parser.parse_args()
 
     out = Path(args.out_dir)
@@ -200,10 +262,11 @@ def main() -> int:
     native_plan = Path(deployment.native_execution_plan_file)
     service = load_service(native_plan, args.service)
     validate_pipeline_metadata(service, args.stages, args.layers)
-    final_payload, execution_order = execute_fake_pipeline(
+    final_payload, execution_order, store = execute_fake_pipeline(
         service,
         session_id=args.session_id,
         input_prompt=args.prompt.encode("utf-8"),
+        stream_chunk_bytes=args.stream_chunk_bytes,
     )
     final_doc = json.loads(final_payload.decode("utf-8"))
     if final_doc.get("finalRole") != f"/LLM/Pipeline/Stage/{args.stages - 1}":
@@ -216,6 +279,8 @@ def main() -> int:
         f"stages={args.stages}",
         f"layers={args.layers}",
         f"dependencies={len(service.get('dependencies', []))}",
+        f"stream_chunks={store.published_chunks}",
+        f"stream_content_type={DI_TENSOR_STREAM_CONTENT_TYPE}",
         f"final_bytes={len(final_payload)}",
         f"native_plan={native_plan}",
     )
