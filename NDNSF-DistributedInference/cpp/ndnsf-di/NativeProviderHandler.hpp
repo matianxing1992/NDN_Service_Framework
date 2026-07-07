@@ -29,6 +29,7 @@ struct NativeProviderHandlerConfig
   std::size_t maxSegmentSize = 7000;
   int freshnessMs = 60000;
   std::size_t workerCount = 1;
+  bool streamChunkDependencies = false;
 };
 
 std::optional<std::vector<uint8_t>>

@@ -75,9 +75,28 @@ runtimeTimingEnabled()
 }
 
 bool
+truthyEnv(const char* name)
+{
+  const char* value = std::getenv(name);
+  if (value == nullptr) {
+    return false;
+  }
+  const std::string text(value);
+  return !(text.empty() || text == "0" || text == "false" || text == "FALSE" ||
+           text == "off" || text == "OFF");
+}
+
+bool
 nativeTraceEnabled()
 {
   return runtimeTimingEnabled() || std::getenv("NDNSF_COLLAB_ASSIGNMENT_FETCH_TRACE") != nullptr;
+}
+
+bool
+streamChunkDependenciesEnvEnabled()
+{
+  static const bool enabled = truthyEnv("NDNSF_DI_STREAM_CHUNK_DEPENDENCIES");
+  return enabled;
 }
 
 std::string
@@ -537,7 +556,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx,
         collaborationFetchTimeoutMs(config.fetchTimeoutMs),
         config.maxSegmentSize,
-        config.freshnessMs);
+        config.freshnessMs,
+        config.streamChunkDependencies ||
+          streamChunkDependenciesEnvEnabled());
 
       const auto role = ctx.role();
       const auto bindingError =
