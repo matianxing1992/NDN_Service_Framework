@@ -2113,6 +2113,7 @@ class DirectRoleTab(ttk.Frame):
         self.status_var = tk.StringVar(value="stopped")
         self.persist_tokens_var = tk.BooleanVar(value=False)
         self.env_config = NdnsfSvsEnvConfig()
+        self._drain_after_id: str | None = None
         self.controller = RoleRuntimeController(
             role,
             factory=factory,
@@ -2123,7 +2124,7 @@ class DirectRoleTab(ttk.Frame):
         self.fields: dict[str, tk.StringVar | tk.BooleanVar] = {}
         self.advanced_json: dict[str, JsonTextPane] = {}
         self._build()
-        self.after(200, self._drain_queue)
+        self._drain_after_id = self.after(200, self._drain_queue)
 
     def _queue_log(self, message: str) -> None:
         self.queue.put(message)
@@ -2140,9 +2141,28 @@ class DirectRoleTab(ttk.Frame):
             if isinstance(item, tuple) and item[0] == "status":
                 self.status_var.set(item[1])
                 self.app.set_status(f"{self.role.title()}: {item[1]}")
+            elif isinstance(item, tuple) and item[0] == "response":
+                response_pane = getattr(self, "response_pane", None)
+                if response_pane is not None:
+                    response_pane.set(item[1])
+                else:
+                    self.log(item[1])
             else:
                 self.log(str(item))
-        self.after(200, self._drain_queue)
+        self._drain_after_id = self.after(200, self._drain_queue)
+
+    def cancel_periodic_callbacks(self) -> None:
+        if self._drain_after_id is None:
+            return
+        try:
+            self.after_cancel(self._drain_after_id)
+        except Exception:
+            pass
+        self._drain_after_id = None
+
+    def destroy(self) -> None:
+        self.cancel_periodic_callbacks()
+        super().destroy()
 
     def _field(self, parent, row: int, label: str, key: str, value: str = "",
                *, browse: str = "") -> None:
@@ -2587,7 +2607,12 @@ class UserDirectTab(DirectRoleTab):
         )
 
     def send_request(self) -> None:
-        threading.Thread(target=self._send_request_thread, daemon=True).start()
+        try:
+            config = self.request_config()
+        except Exception as exc:
+            self.queue.put(("response", f"Request failed: {exc}\n"))
+            return
+        threading.Thread(target=self._send_request_thread, args=(config,), daemon=True).start()
 
     def send_async_request(self) -> None:
         runtime = self.controller.runtime
@@ -2603,15 +2628,16 @@ class UserDirectTab(DirectRoleTab):
                 payload = getattr(response, "payload", b"")
                 payload_text = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else str(payload)
                 self.queue.put(
-                    "Async response\n"
-                    f"status: {getattr(response, 'status', '')}\n"
-                    f"message: {getattr(response, 'message', getattr(response, 'error', ''))}\n"
-                    f"elapsed_ms: {elapsed_ms:.3f}\n"
-                    f"payload:\n{payload_text}\n"
+                    ("response",
+                     "Async response\n"
+                     f"status: {getattr(response, 'status', '')}\n"
+                     f"message: {getattr(response, 'message', getattr(response, 'error', ''))}\n"
+                     f"elapsed_ms: {elapsed_ms:.3f}\n"
+                     f"payload:\n{payload_text}\n")
                 )
 
             def on_timeout(reason: str) -> None:
-                self.queue.put(f"Async request timeout: {reason}\n")
+                self.queue.put(("response", f"Async request timeout: {reason}\n"))
 
             runtime.request_service_async(
                 req.service_name,
@@ -2626,10 +2652,10 @@ class UserDirectTab(DirectRoleTab):
         except Exception as exc:
             self.log(f"Async request failed: {exc}\n")
 
-    def _send_request_thread(self) -> None:
+    def _send_request_thread(self, config: UserRequestConfig) -> None:
         started = time.time()
         try:
-            response = self.controller.request_user(self.request_config())
+            response = self.controller.request_user(config)
             elapsed_ms = (time.time() - started) * 1000.0
             payload = getattr(response, "payload", b"")
             if isinstance(payload, bytes):
@@ -2638,36 +2664,51 @@ class UserDirectTab(DirectRoleTab):
                 payload_text = str(payload)
             status = getattr(response, "status", getattr(response, "success", ""))
             message = getattr(response, "message", getattr(response, "error", ""))
-            self.queue.put(
+            self.queue.put((
+                "response",
                 "Response\n"
                 f"status: {status}\n"
                 f"message: {message}\n"
                 f"elapsed_ms: {elapsed_ms:.3f}\n"
-                f"payload:\n{payload_text}\n"
-            )
+                f"payload:\n{payload_text}\n",
+            ))
         except Exception as exc:
-            self.queue.put(f"Request failed: {exc}\n")
+            self.queue.put(("response", f"Request failed: {exc}\n"))
 
     def send_collaboration_request(self) -> None:
-        threading.Thread(target=self._send_collaboration_thread, daemon=True).start()
+        try:
+            req = self.request_config()
+            collaboration_args = {
+                "roles": parse_json_field(req.collaboration_roles_json, default=[]),
+                "key_scopes": parse_json_field(req.key_scopes_json, default={}),
+                "dependencies": parse_json_field(req.dependencies_json, default=[]),
+                "artifact_data_names": parse_json_field(req.artifact_data_names_json, default={}),
+                "scope_key_data_names": parse_json_field(req.scope_key_data_names_json, default={}),
+                "role_scopes": parse_json_field(req.role_scopes_json, default={}),
+            }
+        except Exception as exc:
+            self.queue.put(("response", f"Collaboration request failed: {exc}\n"))
+            return
+        threading.Thread(
+            target=self._send_collaboration_thread,
+            args=(req, collaboration_args),
+            daemon=True,
+        ).start()
 
-    def _send_collaboration_thread(self) -> None:
+    def _send_collaboration_thread(self,
+                                   req: UserRequestConfig,
+                                   collaboration_args: dict[str, Any]) -> None:
         started = time.time()
         runtime = self.controller.runtime
         if runtime is None or not hasattr(runtime, "request_collaboration"):
-            self.queue.put("Collaboration request failed: user runtime is not running or lacks request_collaboration.\n")
+            self.queue.put(("response",
+                            "Collaboration request failed: user runtime is not running or lacks request_collaboration.\n"))
             return
         try:
-            req = self.request_config()
             response = runtime.request_collaboration(
                 req.service_name,
                 payload_from_request(req),
-                roles=parse_json_field(req.collaboration_roles_json, default=[]),
-                key_scopes=parse_json_field(req.key_scopes_json, default={}),
-                dependencies=parse_json_field(req.dependencies_json, default=[]),
-                artifact_data_names=parse_json_field(req.artifact_data_names_json, default={}),
-                scope_key_data_names=parse_json_field(req.scope_key_data_names_json, default={}),
-                role_scopes=parse_json_field(req.role_scopes_json, default={}),
+                **collaboration_args,
                 ack_timeout_ms=req.ack_timeout_ms,
                 timeout_ms=req.timeout_ms,
                 deployment_id=req.deployment_id or None,
@@ -2675,15 +2716,16 @@ class UserDirectTab(DirectRoleTab):
             elapsed_ms = (time.time() - started) * 1000.0
             payload = getattr(response, "payload", b"")
             payload_text = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else str(payload)
-            self.queue.put(
+            self.queue.put((
+                "response",
                 "Collaboration response\n"
                 f"status: {getattr(response, 'status', '')}\n"
                 f"message: {getattr(response, 'message', getattr(response, 'error', ''))}\n"
                 f"elapsed_ms: {elapsed_ms:.3f}\n"
-                f"payload:\n{payload_text}\n"
-            )
+                f"payload:\n{payload_text}\n",
+            ))
         except Exception as exc:
-            self.queue.put(f"Collaboration request failed: {exc}\n")
+            self.queue.put(("response", f"Collaboration request failed: {exc}\n"))
 
     def refresh_permissions(self) -> None:
         runtime = self.controller.runtime
@@ -2724,11 +2766,12 @@ class UserDirectTab(DirectRoleTab):
 
 
 class DistributedInferenceGui(tk.Tk):
-    def __init__(self):
+    def __init__(self, factory: RuntimeFactory | None = None):
         super().__init__()
         self.title("NDNSF Distributed Inference")
         self.geometry("1280x820")
         self.status = tk.StringVar(value="Ready")
+        self.runtime_factory = factory
         self.profile_path_var = tk.StringVar(
             value="examples/python/NDNSF-DistributedInference/gui_three_role_profile.json")
         toolbar = ttk.Frame(self)
@@ -2742,9 +2785,9 @@ class DistributedInferenceGui(tk.Tk):
         ttk.Button(toolbar, text="Stop All", command=self.stop_all_roles).pack(side="left", padx=2)
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
-        self.user_tab = UserDirectTab(self.notebook, self, "user")
-        self.provider_tab = ProviderDirectTab(self.notebook, self, "provider")
-        self.controller_tab = ControllerDirectTab(self.notebook, self, "controller")
+        self.user_tab = UserDirectTab(self.notebook, self, "user", factory=factory)
+        self.provider_tab = ProviderDirectTab(self.notebook, self, "provider", factory=factory)
+        self.controller_tab = ControllerDirectTab(self.notebook, self, "controller", factory=factory)
         self.wizard = WizardTab(self.notebook, self)
         self.policy_editor = PolicyEditorTab(self.notebook, self)
         self.model_split = ModelSplitTab(self.notebook, self)
@@ -2837,10 +2880,35 @@ class DistributedInferenceGui(tk.Tk):
         self.user_tab.stop_role()
         self.runner.stop_processes()
 
+    def _cancel_role_callbacks(self) -> None:
+        for tab in (self.controller_tab, self.provider_tab, self.user_tab):
+            tab.cancel_periodic_callbacks()
+
+    def _cancel_pending_after_callbacks(self) -> None:
+        try:
+            pending = self.tk.call("after", "info")
+        except Exception:
+            return
+        if isinstance(pending, str):
+            after_ids = pending.split()
+        else:
+            after_ids = list(pending)
+        for after_id in after_ids:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+
     def _on_close(self) -> None:
         self.stop_all_roles()
         self.runner.stop_processes()
+        self._cancel_role_callbacks()
         self.destroy()
+
+    def destroy(self) -> None:
+        self._cancel_role_callbacks()
+        self._cancel_pending_after_callbacks()
+        super().destroy()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
