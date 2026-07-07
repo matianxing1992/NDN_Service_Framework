@@ -9,15 +9,17 @@ processes without exposing low-level NDN packet details.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import shlex
 import subprocess
 import sys
 import tempfile
 import threading
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 try:
     import tkinter as tk
@@ -89,6 +91,244 @@ class RuntimeGuiProfile:
         }
 
 
+@dataclass
+class NdnsfSvsEnvConfig:
+    enable_ndnsd: bool = True
+    disable_ndnsd: bool = False
+    expected_rps: str = ""
+    publication_fetch_retries: str = ""
+    publication_fetch_inner_retries: str = ""
+    publication_fetch_lifetime_ms: str = ""
+    publication_fetch_backoff_ms: str = ""
+    publication_fetch_max_backoff_ms: str = ""
+    publication_fetch_window: str = ""
+    max_suppression_ms: str = "1"
+    periodic_sync_ms: str = ""
+    parallel_sync: bool = True
+    parallel_workers: str = ""
+    parallel_queue: str = ""
+    parallel_production: bool = True
+    sync_batching: bool = False
+    sync_batch_ms: str = ""
+
+    def to_env(self) -> dict[str, str]:
+        values: dict[str, str] = {}
+        if self.enable_ndnsd:
+            values["NDNSF_ENABLE_NDNSD"] = "1"
+        if self.disable_ndnsd:
+            values["NDNSF_DISABLE_NDNSD"] = "1"
+        mapping = {
+            "expected_rps": "NDNSF_SVS_EXPECTED_RPS",
+            "publication_fetch_retries": "NDNSF_SVS_PUBLICATION_FETCH_RETRIES",
+            "publication_fetch_inner_retries": "NDNSF_SVS_PUBLICATION_FETCH_INNER_RETRIES",
+            "publication_fetch_lifetime_ms": "NDNSF_SVS_PUBLICATION_FETCH_LIFETIME_MS",
+            "publication_fetch_backoff_ms": "NDNSF_SVS_PUBLICATION_FETCH_BACKOFF_MS",
+            "publication_fetch_max_backoff_ms": "NDNSF_SVS_PUBLICATION_FETCH_MAX_BACKOFF_MS",
+            "publication_fetch_window": "NDNSF_SVS_PUBLICATION_FETCH_WINDOW",
+            "max_suppression_ms": "NDNSF_SVS_MAX_SUPPRESSION_MS",
+            "periodic_sync_ms": "NDNSF_SVS_PERIODIC_SYNC_MS",
+            "parallel_workers": "NDNSF_SVS_PARALLEL_WORKERS",
+            "parallel_queue": "NDNSF_SVS_PARALLEL_QUEUE",
+            "sync_batch_ms": "NDNSF_SVS_SYNC_BATCH_MS",
+        }
+        for field_name, env_name in mapping.items():
+            value = str(getattr(self, field_name, "")).strip()
+            if value:
+                values[env_name] = value
+        values["NDNSF_SVS_PARALLEL_SYNC"] = "1" if self.parallel_sync else "0"
+        values["NDNSF_SVS_PARALLEL_PRODUCTION"] = "1" if self.parallel_production else "0"
+        if self.sync_batching:
+            values["NDNSF_SVS_SYNC_BATCHING"] = "1"
+        return values
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "NdnsfSvsEnvConfig":
+        if not isinstance(data, dict):
+            return cls()
+        allowed = set(cls.__dataclass_fields__)
+        return cls(**{key: value for key, value in data.items() if key in allowed})
+
+
+@dataclass
+class SharedNdnsfConfig:
+    group: str = "/NDNSF-DI/Tracer/group"
+    controller: str = "/NDNSF-DI/Tracer/controller"
+    trust_schema: str = "examples/trust-schema.conf"
+    serve_certificates: bool = True
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "SharedNdnsfConfig":
+        if not isinstance(data, dict):
+            return cls()
+        allowed = set(cls.__dataclass_fields__)
+        return cls(**{key: value for key, value in data.items() if key in allowed})
+
+
+@dataclass
+class ControllerTabConfig:
+    controller_prefix: str = "/NDNSF-DI/Tracer/controller"
+    policy_file: str = "examples/hello.policies"
+    trust_schema: str = "examples/trust-schema.conf"
+    bootstrap_token_file: str = "examples/hello.bootstrap-tokens"
+    bootstrap_identities: str = ""
+    serve_certificates: bool = True
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "ControllerTabConfig":
+        if not isinstance(data, dict):
+            return cls()
+        allowed = set(cls.__dataclass_fields__)
+        return cls(**{key: value for key, value in data.items() if key in allowed})
+
+
+@dataclass
+class ProviderTabConfig:
+    provider_id: str = "A"
+    provider_prefix: str = "/NDNSF-DI/Tracer/provider"
+    group: str = "/NDNSF-DI/Tracer/group"
+    controller: str = "/NDNSF-DI/Tracer/controller"
+    trust_schema: str = "examples/trust-schema.conf"
+    bootstrap_token: str = ""
+    service_name: str = "/HELLO"
+    roles: str = "all"
+    handler_threads: int = 4
+    ack_threads: int = 2
+    serve_certificates: bool = True
+    handler_mode: str = "echo"
+    static_response: str = "HELLO"
+    ack_status: bool = True
+    ack_message: str = "ready"
+    ack_metadata_json: str = "{}"
+    ndnsd_lifetime_seconds: int = 30
+    ndnsd_meta_json: str = "{}"
+    runtime_profile: str = "examples/di-native-tracer.runtime.json"
+    service_manifest: str = ""
+    native_plan: str = ""
+    fragment_inventory_json: str = "{}"
+    artifact_cache_dir: str = "/tmp/ndnsf-di-artifacts"
+    memory_compute_profile_json: str = "{}"
+    deployment_id: str = ""
+    provider_probing: bool = False
+    provider_probe_interval_s: int = 10
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "ProviderTabConfig":
+        if not isinstance(data, dict):
+            return cls()
+        allowed = set(cls.__dataclass_fields__)
+        return cls(**{key: value for key, value in data.items() if key in allowed})
+
+
+@dataclass
+class UserRequestConfig:
+    service_name: str = "/HELLO"
+    request_strategy: str = "first-responding"
+    ack_timeout_ms: int = 1000
+    timeout_ms: int = 10000
+    payload_encoding: str = "text"
+    payload: str = "HELLO"
+    request_mode: str = "normal"
+    collaboration_roles_json: str = "[]"
+    key_scopes_json: str = "{}"
+    dependencies_json: str = "[]"
+    artifact_data_names_json: str = "{}"
+    scope_key_data_names_json: str = "{}"
+    role_scopes_json: str = "{}"
+    deployment_id: str = ""
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "UserRequestConfig":
+        if not isinstance(data, dict):
+            return cls()
+        allowed = set(cls.__dataclass_fields__)
+        return cls(**{key: value for key, value in data.items() if key in allowed})
+
+
+@dataclass
+class UserTabConfig:
+    user: str = "/NDNSF-DI/Tracer/user"
+    group: str = "/NDNSF-DI/Tracer/group"
+    controller: str = "/NDNSF-DI/Tracer/controller"
+    trust_schema: str = "examples/trust-schema.conf"
+    bootstrap_token: str = ""
+    permission_wait_ms: int = 1500
+    handler_threads: int = 2
+    ack_threads: int = 2
+    adaptive_admission: bool = False
+    serve_certificates: bool = True
+    request: UserRequestConfig = field(default_factory=UserRequestConfig)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "UserTabConfig":
+        if not isinstance(data, dict):
+            return cls()
+        values = dict(data)
+        values["request"] = UserRequestConfig.from_mapping(values.get("request"))
+        allowed = set(cls.__dataclass_fields__)
+        return cls(**{key: value for key, value in values.items() if key in allowed})
+
+
+@dataclass
+class ThreeRoleGuiProfile:
+    version: int = 2
+    shared: SharedNdnsfConfig = field(default_factory=SharedNdnsfConfig)
+    env: NdnsfSvsEnvConfig = field(default_factory=NdnsfSvsEnvConfig)
+    controller: ControllerTabConfig = field(default_factory=ControllerTabConfig)
+    provider: ProviderTabConfig = field(default_factory=ProviderTabConfig)
+    user: UserTabConfig = field(default_factory=UserTabConfig)
+    persist_tokens: bool = False
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "ThreeRoleGuiProfile":
+        if "version" not in data and {"controller", "provider", "user"} <= set(data):
+            return cls.from_legacy(RuntimeGuiProfile.from_mapping(data))
+        return cls(
+            version=int(data.get("version", 2)),
+            shared=SharedNdnsfConfig.from_mapping(data.get("shared")),
+            env=NdnsfSvsEnvConfig.from_mapping(data.get("env")),
+            controller=ControllerTabConfig.from_mapping(data.get("controller")),
+            provider=ProviderTabConfig.from_mapping(data.get("provider")),
+            user=UserTabConfig.from_mapping(data.get("user")),
+            persist_tokens=bool(data.get("persist_tokens", False)),
+        )
+
+    @classmethod
+    def from_legacy(cls, legacy: RuntimeGuiProfile) -> "ThreeRoleGuiProfile":
+        return cls(
+            controller=ControllerTabConfig(),
+            provider=ProviderTabConfig(
+                group=legacy.provider.group or ProviderTabConfig.group,
+                service_name=legacy.provider.service,
+                provider_id=legacy.provider.provider_id,
+                roles=legacy.provider.roles,
+            ),
+            user=UserTabConfig(
+                group=legacy.user.group or UserTabConfig.group,
+                request=UserRequestConfig(
+                    service_name=legacy.user.service,
+                    ack_timeout_ms=int(legacy.user.ack_timeout_ms or 1000),
+                    timeout_ms=int(legacy.user.timeout_ms or 10000),
+                ),
+            ),
+        )
+
+    def to_mapping(self) -> dict[str, Any]:
+        data = asdict(self)
+        if not self.persist_tokens:
+            data["provider"]["bootstrap_token"] = ""
+            data["user"]["bootstrap_token"] = ""
+        return data
+
+
+def load_three_role_profile(path: str | Path) -> ThreeRoleGuiProfile:
+    return ThreeRoleGuiProfile.from_mapping(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def write_three_role_profile(path: str | Path, profile: ThreeRoleGuiProfile) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(profile.to_mapping(), indent=2), encoding="utf-8")
+
+
 def load_runtime_profile(path: str | Path) -> RuntimeGuiProfile:
     return RuntimeGuiProfile.from_mapping(json.loads(Path(path).read_text(encoding="utf-8")))
 
@@ -96,6 +336,322 @@ def load_runtime_profile(path: str | Path) -> RuntimeGuiProfile:
 def write_runtime_profile(path: str | Path, profile: RuntimeGuiProfile) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(profile.to_mapping(), indent=2), encoding="utf-8")
+
+
+SECRET_KEYS = {"token", "bootstrap_token", "password", "safebag"}
+
+
+def redact_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "****"
+    return value[:2] + "****" + value[-2:]
+
+
+def redact_mapping(data: dict[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, value in data.items():
+        if any(secret in key.lower() for secret in SECRET_KEYS):
+            redacted[key] = redact_secret(str(value))
+        elif isinstance(value, dict):
+            redacted[key] = redact_mapping(value)
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def parse_json_field(value: str, *, default: Any) -> Any:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    return json.loads(text)
+
+
+def parse_int_field(value: Any, *, name: str, minimum: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return parsed
+
+
+def payload_from_request(config: UserRequestConfig) -> bytes:
+    value = config.payload
+    if config.payload_encoding == "text":
+        return value.encode("utf-8")
+    if config.payload_encoding == "json":
+        return json.dumps(json.loads(value), sort_keys=True).encode("utf-8")
+    if config.payload_encoding == "hex":
+        return bytes.fromhex(value.strip())
+    if config.payload_encoding == "file":
+        return Path(value).read_bytes()
+    raise ValueError(f"unsupported payload encoding: {config.payload_encoding}")
+
+
+class RuntimeFactory(Protocol):
+    def create_controller(self, config: ControllerTabConfig): ...
+    def create_provider(self, config: ProviderTabConfig): ...
+    def create_user(self, config: UserTabConfig): ...
+
+
+class RealRuntimeFactory:
+    def create_controller(self, config: ControllerTabConfig):
+        from ndnsf import ServiceController
+        return ServiceController(
+            controller_prefix=config.controller_prefix,
+            policy_file=config.policy_file,
+            trust_schema=config.trust_schema,
+            bootstrap_identities=[
+                item.strip() for item in config.bootstrap_identities.split(",")
+                if item.strip()
+            ],
+            serve_certificates=config.serve_certificates,
+            bootstrap_token_file=config.bootstrap_token_file,
+        )
+
+    def create_provider(self, config: ProviderTabConfig):
+        from ndnsf import AckDecision, ServiceProvider
+        provider = ServiceProvider(
+            provider_id=config.provider_id,
+            group=config.group,
+            controller=config.controller,
+            provider_prefix=config.provider_prefix,
+            trust_schema=config.trust_schema,
+            handler_threads=parse_int_field(config.handler_threads, name="handler_threads", minimum=1),
+            ack_threads=parse_int_field(config.ack_threads, name="ack_threads", minimum=1),
+            serve_certificates=config.serve_certificates,
+            bootstrap_token=config.bootstrap_token,
+        )
+
+        def handler(payload: bytes):
+            if config.handler_mode == "static":
+                return config.static_response.encode("utf-8")
+            if config.handler_mode == "dry-run":
+                return b"DRY-RUN"
+            return bytes(payload)
+
+        def ack_handler(_payload: bytes):
+            metadata = parse_json_field(config.ack_metadata_json, default={})
+            message = config.ack_message
+            if metadata:
+                message = json.dumps({"message": message, "meta": metadata}, sort_keys=True)
+            return AckDecision(status=bool(config.ack_status), message=message)
+
+        provider.add_handler(config.service_name, handler)
+        provider.set_ack_handler(config.service_name, ack_handler)
+        return provider
+
+    def create_user(self, config: UserTabConfig):
+        from ndnsf import ServiceUser
+        return ServiceUser(
+            group=config.group,
+            controller=config.controller,
+            user=config.user,
+            trust_schema=config.trust_schema,
+            permission_wait_ms=parse_int_field(config.permission_wait_ms,
+                                               name="permission_wait_ms",
+                                               minimum=0),
+            handler_threads=parse_int_field(config.handler_threads,
+                                            name="handler_threads",
+                                            minimum=1),
+            ack_threads=parse_int_field(config.ack_threads,
+                                        name="ack_threads",
+                                        minimum=1),
+            adaptive_admission=bool(config.adaptive_admission),
+            serve_certificates=config.serve_certificates,
+            bootstrap_token=config.bootstrap_token,
+        )
+
+
+class FakeRuntime:
+    def __init__(self, role: str, response: bytes = b"HELLO") -> None:
+        self.role = role
+        self.response = response
+        self.started = False
+        self.stopped = False
+        self.requests: list[tuple[str, bytes]] = []
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+        self.started = False
+
+    def start_background(self, service: str | None = None):
+        del service
+        self.start()
+        return threading.current_thread()
+
+    def run(self, service: str | None = None) -> int:
+        del service
+        self.start()
+        return 0
+
+    def request_service(self, service: str, payload: bytes, **_kwargs):
+        self.requests.append((service, bytes(payload)))
+
+        @dataclass
+        class Response:
+            success: bool = True
+            status: bool = True
+            message: str = "fake-ok"
+            payload: bytes = b""
+
+        return Response(payload=self.response)
+
+    def get_allowed_services(self):
+        return []
+
+    def get_ndnsd_services(self):
+        return []
+
+
+class FakeRuntimeFactory:
+    def __init__(self) -> None:
+        self.created: dict[str, FakeRuntime] = {}
+
+    def create_controller(self, config: ControllerTabConfig):
+        del config
+        self.created["controller"] = FakeRuntime("controller")
+        return self.created["controller"]
+
+    def create_provider(self, config: ProviderTabConfig):
+        del config
+        self.created["provider"] = FakeRuntime("provider")
+        return self.created["provider"]
+
+    def create_user(self, config: UserTabConfig):
+        del config
+        self.created["user"] = FakeRuntime("user")
+        return self.created["user"]
+
+
+class EnvOverlay:
+    def __init__(self, values: dict[str, str]) -> None:
+        self.values = {key: str(value) for key, value in values.items() if str(value) != ""}
+        self.previous: dict[str, str | None] = {}
+
+    def __enter__(self):
+        for key, value in self.values.items():
+            self.previous[key] = os.environ.get(key)
+            os.environ[key] = value
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        for key, value in self.previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+class RoleRuntimeController:
+    def __init__(self,
+                 role: str,
+                 factory: RuntimeFactory | None = None,
+                 log_callback: Callable[[str], None] | None = None,
+                 status_callback: Callable[[str], None] | None = None,
+                 env_config: NdnsfSvsEnvConfig | None = None) -> None:
+        self.role = role
+        self.factory = factory or RealRuntimeFactory()
+        self.log_callback = log_callback or (lambda _msg: None)
+        self.status_callback = status_callback or (lambda _status: None)
+        self.env_config = env_config or NdnsfSvsEnvConfig()
+        self.runtime: Any = None
+        self.thread: threading.Thread | None = None
+        self.status = "stopped"
+        self.last_error = ""
+        self._lock = threading.Lock()
+
+    def set_status(self, value: str) -> None:
+        self.status = value
+        self.status_callback(value)
+
+    def log(self, message: str) -> None:
+        self.log_callback(f"[{self.role}] {message}")
+
+    def run(self, config: Any) -> None:
+        with self._lock:
+            if self.status in {"starting", "running"}:
+                self.log("already running\n")
+                return
+            self.set_status("starting")
+            self.last_error = ""
+        self.thread = threading.Thread(target=self._run_thread, args=(config,), daemon=True)
+        self.thread.start()
+
+    def _run_thread(self, config: Any) -> None:
+        try:
+            with EnvOverlay(self.env_config.to_env()):
+                if self.role == "controller":
+                    self.runtime = self.factory.create_controller(config)
+                    self.set_status("running")
+                    if hasattr(self.runtime, "start_background"):
+                        self.runtime.start_background()
+                    else:
+                        self.runtime.start()
+                elif self.role == "provider":
+                    self.runtime = self.factory.create_provider(config)
+                    self.set_status("running")
+                    if hasattr(self.runtime, "start_background"):
+                        self.runtime.start_background(getattr(config, "service_name", None))
+                    elif hasattr(self.runtime, "run"):
+                        self.runtime.run(getattr(config, "service_name", None))
+                    else:
+                        self.runtime.start()
+                elif self.role == "user":
+                    self.runtime = self.factory.create_user(config)
+                    self.runtime.start()
+                    self.set_status("running")
+                else:
+                    raise ValueError(f"unknown role: {self.role}")
+                self.log("runtime started\n")
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.set_status("failed")
+            self.log(f"ERROR: {exc}\n")
+
+    def stop(self) -> None:
+        with self._lock:
+            if self.status not in {"starting", "running"}:
+                self.set_status("stopped")
+                return
+            self.set_status("stopping")
+        try:
+            if self.runtime is not None and hasattr(self.runtime, "stop"):
+                self.runtime.stop()
+            self.set_status("stopped")
+            self.log("runtime stopped\n")
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.set_status("failed")
+            self.log(f"ERROR during stop: {exc}\n")
+
+    def restart(self, config: Any) -> None:
+        self.stop()
+        self.run(config)
+
+    def request_user(self, config: UserRequestConfig):
+        if self.role != "user":
+            raise RuntimeError("request_user is only valid for user role")
+        if self.runtime is None or self.status != "running":
+            raise RuntimeError("user runtime is not running")
+        payload = payload_from_request(config)
+        return self.runtime.request_service(
+            config.service_name,
+            payload,
+            ack_timeout_ms=parse_int_field(config.ack_timeout_ms,
+                                           name="ack_timeout_ms",
+                                           minimum=0),
+            timeout_ms=parse_int_field(config.timeout_ms,
+                                       name="timeout_ms",
+                                       minimum=1),
+            strategy=config.request_strategy,
+        )
 
 
 def split_extra_args(value: str) -> list[str]:
@@ -1339,14 +1895,659 @@ class RoleRuntimeTab(ttk.Frame):
         self.status_var.set("stopped")
 
 
+class JsonTextPane(TextPane):
+    def get_json(self, *, default: Any) -> Any:
+        return parse_json_field(self.get(), default=default)
+
+    def set_json(self, value: Any) -> None:
+        self.set(json.dumps(value, indent=2, sort_keys=True))
+
+
+class DirectRoleTab(ttk.Frame):
+    def __init__(self,
+                 parent,
+                 app: "DistributedInferenceGui",
+                 role: str,
+                 factory: RuntimeFactory | None = None) -> None:
+        super().__init__(parent)
+        self.app = app
+        self.role = role
+        self.queue: queue.Queue[str | tuple[str, str]] = queue.Queue()
+        self.status_var = tk.StringVar(value="stopped")
+        self.persist_tokens_var = tk.BooleanVar(value=False)
+        self.env_config = NdnsfSvsEnvConfig()
+        self.controller = RoleRuntimeController(
+            role,
+            factory=factory,
+            log_callback=self._queue_log,
+            status_callback=self._queue_status,
+            env_config=self.env_config,
+        )
+        self.fields: dict[str, tk.StringVar | tk.BooleanVar] = {}
+        self.advanced_json: dict[str, JsonTextPane] = {}
+        self._build()
+        self.after(200, self._drain_queue)
+
+    def _queue_log(self, message: str) -> None:
+        self.queue.put(message)
+
+    def _queue_status(self, status: str) -> None:
+        self.queue.put(("status", status))
+
+    def _drain_queue(self) -> None:
+        while True:
+            try:
+                item = self.queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(item, tuple) and item[0] == "status":
+                self.status_var.set(item[1])
+                self.app.set_status(f"{self.role.title()}: {item[1]}")
+            else:
+                self.log(str(item))
+        self.after(200, self._drain_queue)
+
+    def _field(self, parent, row: int, label: str, key: str, value: str = "",
+               *, browse: str = "") -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
+        var = tk.StringVar(value=value)
+        self.fields[key] = var
+        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", padx=6, pady=3)
+        if browse:
+            command = self._browse_save if browse == "save" else self._browse_open
+            ttk.Button(parent, text="Browse", command=lambda: command(key)).grid(
+                row=row, column=2, sticky="ew", padx=6, pady=3)
+
+    def _check(self, parent, row: int, label: str, key: str, value: bool = False) -> None:
+        var = tk.BooleanVar(value=value)
+        self.fields[key] = var
+        ttk.Checkbutton(parent, text=label, variable=var).grid(
+            row=row, column=0, columnspan=3, sticky="w", padx=6, pady=3)
+
+    def _json_field(self, parent, row: int, label: str, key: str, value: str = "{}",
+                    *, height: int = 4) -> int:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", padx=6, pady=3)
+        pane = JsonTextPane(parent, height=height)
+        pane.set(value)
+        pane.grid(row=row, column=1, columnspan=2, sticky="nsew", padx=6, pady=3)
+        parent.rowconfigure(row, weight=1)
+        self.advanced_json[key] = pane
+        return row
+
+    def _browse_open(self, key: str) -> None:
+        path = filedialog.askopenfilename(title=f"Select {key}")
+        if path and isinstance(self.fields.get(key), tk.StringVar):
+            self.fields[key].set(path)  # type: ignore[union-attr]
+
+    def _browse_save(self, key: str) -> None:
+        path = filedialog.asksaveasfilename(title=f"Select {key}")
+        if path and isinstance(self.fields.get(key), tk.StringVar):
+            self.fields[key].set(path)  # type: ignore[union-attr]
+
+    def value(self, key: str) -> str:
+        var = self.fields[key]
+        return str(var.get())
+
+    def bool_value(self, key: str) -> bool:
+        var = self.fields[key]
+        return bool(var.get())
+
+    def int_value(self, key: str, *, minimum: int = 0) -> int:
+        return parse_int_field(self.value(key), name=key, minimum=minimum)
+
+    def _common_env_frame(self, parent) -> ttk.LabelFrame:
+        frame = ttk.LabelFrame(parent, text="Advanced NDNSF/SVS environment")
+        frame.columnconfigure(1, weight=1)
+        row = 0
+        self._check(frame, row, "Enable NDNSD", "env_enable_ndnsd", True); row += 1
+        self._check(frame, row, "Disable NDNSD", "env_disable_ndnsd", False); row += 1
+        self._field(frame, row, "Expected RPS", "env_expected_rps", ""); row += 1
+        self._field(frame, row, "SVS fetch retries", "env_fetch_retries", ""); row += 1
+        self._field(frame, row, "SVS inner retries", "env_inner_retries", ""); row += 1
+        self._field(frame, row, "SVS lifetime ms", "env_lifetime_ms", ""); row += 1
+        self._field(frame, row, "SVS fetch window", "env_fetch_window", ""); row += 1
+        self._field(frame, row, "SVS suppression ms", "env_suppression_ms", "1"); row += 1
+        self._field(frame, row, "SVS periodic sync ms", "env_periodic_ms", ""); row += 1
+        self._check(frame, row, "Parallel Sync", "env_parallel_sync", True); row += 1
+        self._check(frame, row, "Parallel Production", "env_parallel_production", True); row += 1
+        self._check(frame, row, "Sync batching", "env_sync_batching", False); row += 1
+        self._field(frame, row, "Sync batch ms", "env_sync_batch_ms", ""); row += 1
+        return frame
+
+    def env_from_fields(self) -> NdnsfSvsEnvConfig:
+        return NdnsfSvsEnvConfig(
+            enable_ndnsd=self.bool_value("env_enable_ndnsd"),
+            disable_ndnsd=self.bool_value("env_disable_ndnsd"),
+            expected_rps=self.value("env_expected_rps"),
+            publication_fetch_retries=self.value("env_fetch_retries"),
+            publication_fetch_inner_retries=self.value("env_inner_retries"),
+            publication_fetch_lifetime_ms=self.value("env_lifetime_ms"),
+            publication_fetch_window=self.value("env_fetch_window"),
+            max_suppression_ms=self.value("env_suppression_ms"),
+            periodic_sync_ms=self.value("env_periodic_ms"),
+            parallel_sync=self.bool_value("env_parallel_sync"),
+            parallel_production=self.bool_value("env_parallel_production"),
+            sync_batching=self.bool_value("env_sync_batching"),
+            sync_batch_ms=self.value("env_sync_batch_ms"),
+        )
+
+    def _build(self) -> None:
+        raise NotImplementedError
+
+    def log(self, message: str) -> None:
+        self.log_pane.text.insert("end", message)
+        self.log_pane.text.see("end")
+
+    def clear_log(self) -> None:
+        self.log_pane.set("")
+
+    def run_role(self) -> None:
+        config = self.config()
+        self.controller.env_config = self.env_from_fields()
+        self.controller.run(config)
+
+    def stop_role(self) -> None:
+        self.controller.stop()
+
+    def restart_role(self) -> None:
+        self.controller.restart(self.config())
+
+    def config(self):
+        raise NotImplementedError
+
+    def apply_env(self, env: NdnsfSvsEnvConfig) -> None:
+        self.fields["env_enable_ndnsd"].set(env.enable_ndnsd)  # type: ignore[union-attr]
+        self.fields["env_disable_ndnsd"].set(env.disable_ndnsd)  # type: ignore[union-attr]
+        self.fields["env_expected_rps"].set(env.expected_rps)  # type: ignore[union-attr]
+        self.fields["env_fetch_retries"].set(env.publication_fetch_retries)  # type: ignore[union-attr]
+        self.fields["env_inner_retries"].set(env.publication_fetch_inner_retries)  # type: ignore[union-attr]
+        self.fields["env_lifetime_ms"].set(env.publication_fetch_lifetime_ms)  # type: ignore[union-attr]
+        self.fields["env_fetch_window"].set(env.publication_fetch_window)  # type: ignore[union-attr]
+        self.fields["env_suppression_ms"].set(env.max_suppression_ms)  # type: ignore[union-attr]
+        self.fields["env_periodic_ms"].set(env.periodic_sync_ms)  # type: ignore[union-attr]
+        self.fields["env_parallel_sync"].set(env.parallel_sync)  # type: ignore[union-attr]
+        self.fields["env_parallel_production"].set(env.parallel_production)  # type: ignore[union-attr]
+        self.fields["env_sync_batching"].set(env.sync_batching)  # type: ignore[union-attr]
+        self.fields["env_sync_batch_ms"].set(env.sync_batch_ms)  # type: ignore[union-attr]
+
+
+class ControllerDirectTab(DirectRoleTab):
+    def _build(self) -> None:
+        self.columnconfigure(0, weight=1)
+        top = ttk.LabelFrame(self, text="Controller configuration")
+        top.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+        top.columnconfigure(1, weight=1)
+        self._field(top, 0, "Controller prefix", "controller_prefix",
+                    "/NDNSF-DI/Tracer/controller")
+        self._field(top, 1, "Policy file", "policy_file", "examples/hello.policies",
+                    browse="open")
+        self._field(top, 2, "Trust schema", "trust_schema", "examples/trust-schema.conf",
+                    browse="open")
+        self._field(top, 3, "Bootstrap token file", "bootstrap_token_file",
+                    "examples/hello.bootstrap-tokens", browse="open")
+        self._field(top, 4, "Bootstrap identities (,)", "bootstrap_identities", "")
+        self._check(top, 5, "Serve certificates", "serve_certificates", True)
+        self._check(top, 6, "Save tokens in GUI profile", "persist_tokens", False)
+        buttons = ttk.Frame(top)
+        buttons.grid(row=7, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
+        ttk.Button(buttons, text="Run Controller", command=self.run_role).pack(side="left")
+        ttk.Button(buttons, text="Stop", command=self.stop_role).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Validate Policy", command=self.validate_policy).pack(side="left")
+        ttk.Button(buttons, text="Open/Create Token File",
+                   command=self.open_token_file).pack(side="left", padx=4)
+        ttk.Label(top, text="Status").grid(row=8, column=0, sticky="w", padx=6)
+        ttk.Label(top, textvariable=self.status_var).grid(row=8, column=1, sticky="ew", padx=6)
+        env = self._common_env_frame(self)
+        env.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+        token = ttk.LabelFrame(self, text="Token table helper")
+        token.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
+        token.columnconfigure(1, weight=1)
+        self._field(token, 0, "Identity name", "token_identity", "")
+        self._field(token, 1, "Token", "token_value", "")
+        ttk.Button(token, text="Add/Update Token", command=self.add_token).grid(
+            row=2, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
+        self.log_pane = TextPane(self, height=12)
+        self.log_pane.grid(row=3, column=0, sticky="nsew", padx=6, pady=6)
+        self.rowconfigure(3, weight=1)
+
+    def config(self) -> ControllerTabConfig:
+        return ControllerTabConfig(
+            controller_prefix=self.value("controller_prefix"),
+            policy_file=self.value("policy_file"),
+            trust_schema=self.value("trust_schema"),
+            bootstrap_token_file=self.value("bootstrap_token_file"),
+            bootstrap_identities=self.value("bootstrap_identities"),
+            serve_certificates=self.bool_value("serve_certificates"),
+        )
+
+    def validate_policy(self) -> None:
+        path = self.value("policy_file")
+        if not Path(path).exists():
+            self.log(f"Policy file not found: {path}\n")
+            return
+        self.log(f"Policy file exists: {path}\n")
+
+    def open_token_file(self) -> None:
+        path = Path(self.value("bootstrap_token_file"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+        self.log(f"Token file ready: {path}\n")
+
+    def add_token(self) -> None:
+        identity = self.value("token_identity").strip()
+        token = self.value("token_value").strip()
+        if not identity or not token:
+            self.log("Token identity and token are required.\n")
+            return
+        path = Path(self.value("bootstrap_token_file"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        prefix = identity + " "
+        lines = [line for line in existing if not line.startswith(prefix)]
+        lines.append(f"{identity} {token}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.log(f"Stored token for {identity}: {redact_secret(token)}\n")
+
+    def apply_config(self, config: ControllerTabConfig, env: NdnsfSvsEnvConfig) -> None:
+        for key, value in asdict(config).items():
+            if key in self.fields:
+                self.fields[key].set(value)  # type: ignore[union-attr]
+        self.apply_env(env)
+
+
+class ProviderDirectTab(DirectRoleTab):
+    def _build(self) -> None:
+        self.columnconfigure(0, weight=1)
+        basic = ttk.LabelFrame(self, text="Provider configuration")
+        basic.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+        basic.columnconfigure(1, weight=1)
+        rows = [
+            ("Provider ID", "provider_id", "A"),
+            ("Provider prefix", "provider_prefix", "/NDNSF-DI/Tracer/provider"),
+            ("Sync group", "group", "/NDNSF-DI/Tracer/group"),
+            ("Controller", "controller", "/NDNSF-DI/Tracer/controller"),
+            ("Trust schema", "trust_schema", "examples/trust-schema.conf"),
+            ("Bootstrap token", "bootstrap_token", ""),
+            ("Service name", "service_name", "/HELLO"),
+            ("Roles", "roles", "all"),
+            ("Handler threads", "handler_threads", "4"),
+            ("ACK threads", "ack_threads", "2"),
+            ("Handler mode", "handler_mode", "echo"),
+            ("Static response", "static_response", "HELLO"),
+            ("ACK message", "ack_message", "ready"),
+        ]
+        for row, (label, key, value) in enumerate(rows):
+            browse = "open" if key == "trust_schema" else ""
+            self._field(basic, row, label, key, value, browse=browse)
+        self._check(basic, len(rows), "Serve certificates", "serve_certificates", True)
+        self._check(basic, len(rows) + 1, "ACK status true", "ack_status", True)
+        buttons = ttk.Frame(basic)
+        buttons.grid(row=len(rows) + 2, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
+        ttk.Button(buttons, text="Run Provider", command=self.run_role).pack(side="left")
+        ttk.Button(buttons, text="Stop", command=self.stop_role).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Publish Service Info", command=self.publish_info).pack(side="left")
+        ttk.Button(buttons, text="Start Probing", command=self.start_provider_probing).pack(side="left", padx=4)
+        ttk.Label(basic, text="Status").grid(row=len(rows) + 3, column=0, sticky="w", padx=6)
+        ttk.Label(basic, textvariable=self.status_var).grid(row=len(rows) + 3, column=1, sticky="ew", padx=6)
+        advanced = ttk.LabelFrame(self, text="Provider metadata and DI runtime")
+        advanced.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
+        advanced.columnconfigure(1, weight=1)
+        self._field(advanced, 0, "Runtime profile", "runtime_profile", "examples/di-native-tracer.runtime.json", browse="open")
+        self._field(advanced, 1, "Service manifest", "service_manifest", "", browse="open")
+        self._field(advanced, 2, "Native plan", "native_plan", "", browse="open")
+        self._field(advanced, 3, "Artifact cache dir", "artifact_cache_dir", "/tmp/ndnsf-di-artifacts")
+        self._field(advanced, 4, "Deployment ID", "deployment_id", "")
+        self._field(advanced, 5, "NDNSD lifetime seconds", "ndnsd_lifetime_seconds", "30")
+        self._check(advanced, 6, "Provider probing", "provider_probing", False)
+        self._field(advanced, 7, "Probe interval seconds", "provider_probe_interval_s", "10")
+        self._json_field(advanced, 8, "ACK metadata JSON", "ack_metadata_json", "{}", height=3)
+        self._json_field(advanced, 9, "NDNSD metadata JSON", "ndnsd_meta_json", "{}", height=3)
+        self._json_field(advanced, 10, "Fragment inventory JSON", "fragment_inventory_json", "{}", height=3)
+        self._json_field(advanced, 11, "Memory/compute profile JSON", "memory_compute_profile_json", "{}", height=3)
+        env = self._common_env_frame(self)
+        env.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
+        self.log_pane = TextPane(self, height=10)
+        self.log_pane.grid(row=3, column=0, sticky="nsew", padx=6, pady=6)
+        self.rowconfigure(1, weight=1)
+        self.rowconfigure(3, weight=1)
+
+    def config(self) -> ProviderTabConfig:
+        return ProviderTabConfig(
+            provider_id=self.value("provider_id"),
+            provider_prefix=self.value("provider_prefix"),
+            group=self.value("group"),
+            controller=self.value("controller"),
+            trust_schema=self.value("trust_schema"),
+            bootstrap_token=self.value("bootstrap_token"),
+            service_name=self.value("service_name"),
+            roles=self.value("roles"),
+            handler_threads=self.int_value("handler_threads", minimum=1),
+            ack_threads=self.int_value("ack_threads", minimum=1),
+            serve_certificates=self.bool_value("serve_certificates"),
+            handler_mode=self.value("handler_mode"),
+            static_response=self.value("static_response"),
+            ack_status=self.bool_value("ack_status"),
+            ack_message=self.value("ack_message"),
+            ack_metadata_json=self.advanced_json["ack_metadata_json"].get(),
+            ndnsd_lifetime_seconds=self.int_value("ndnsd_lifetime_seconds", minimum=1),
+            ndnsd_meta_json=self.advanced_json["ndnsd_meta_json"].get(),
+            runtime_profile=self.value("runtime_profile"),
+            service_manifest=self.value("service_manifest"),
+            native_plan=self.value("native_plan"),
+            fragment_inventory_json=self.advanced_json["fragment_inventory_json"].get(),
+            artifact_cache_dir=self.value("artifact_cache_dir"),
+            memory_compute_profile_json=self.advanced_json["memory_compute_profile_json"].get(),
+            deployment_id=self.value("deployment_id"),
+            provider_probing=self.bool_value("provider_probing"),
+            provider_probe_interval_s=self.int_value("provider_probe_interval_s", minimum=1),
+        )
+
+    def publish_info(self) -> None:
+        runtime = self.controller.runtime
+        if runtime is None or not hasattr(runtime, "publish_service_info"):
+            self.log("Provider runtime is not running or does not support publish_service_info.\n")
+            return
+        config = self.config()
+        meta = parse_json_field(config.ndnsd_meta_json, default={})
+        runtime.publish_service_info(config.service_name, config.ndnsd_lifetime_seconds, meta)
+        self.log(f"Published service info for {config.service_name}\n")
+
+    def start_provider_probing(self) -> None:
+        runtime = self.controller.runtime
+        if runtime is None:
+            self.log("Provider runtime is not running.\n")
+            return
+        config = self.config()
+        for method_name in ("start_provider_probing", "startProviderProbing"):
+            method = getattr(runtime, method_name, None)
+            if callable(method):
+                method(config.service_name, config.provider_probe_interval_s)
+                self.log(
+                    f"Started provider probing for {config.service_name} "
+                    f"every {config.provider_probe_interval_s}s\n"
+                )
+                return
+        self.log("Provider probing is configured, but the current Python wrapper does not expose a probing start method.\n")
+
+    def apply_config(self, config: ProviderTabConfig, env: NdnsfSvsEnvConfig) -> None:
+        data = asdict(config)
+        for key, value in data.items():
+            if key in self.fields:
+                self.fields[key].set(value)  # type: ignore[union-attr]
+            if key in self.advanced_json:
+                self.advanced_json[key].set(str(value))
+        self.apply_env(env)
+
+
+class UserDirectTab(DirectRoleTab):
+    def _build(self) -> None:
+        self.columnconfigure(0, weight=1)
+        basic = ttk.LabelFrame(self, text="User configuration")
+        basic.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+        basic.columnconfigure(1, weight=1)
+        rows = [
+            ("User identity", "user", "/NDNSF-DI/Tracer/user"),
+            ("Sync group", "group", "/NDNSF-DI/Tracer/group"),
+            ("Controller", "controller", "/NDNSF-DI/Tracer/controller"),
+            ("Trust schema", "trust_schema", "examples/trust-schema.conf"),
+            ("Bootstrap token", "bootstrap_token", ""),
+            ("Permission wait ms", "permission_wait_ms", "1500"),
+            ("Handler threads", "handler_threads", "2"),
+            ("ACK threads", "ack_threads", "2"),
+        ]
+        for row, (label, key, value) in enumerate(rows):
+            browse = "open" if key == "trust_schema" else ""
+            self._field(basic, row, label, key, value, browse=browse)
+        self._check(basic, len(rows), "Adaptive admission", "adaptive_admission", False)
+        self._check(basic, len(rows) + 1, "Serve certificates", "serve_certificates", True)
+        buttons = ttk.Frame(basic)
+        buttons.grid(row=len(rows) + 2, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
+        ttk.Button(buttons, text="Run User", command=self.run_role).pack(side="left")
+        ttk.Button(buttons, text="Stop", command=self.stop_role).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Refresh Permissions", command=self.refresh_permissions).pack(side="left")
+        ttk.Button(buttons, text="Discover Services", command=self.discover_services).pack(side="left", padx=4)
+        ttk.Label(basic, text="Status").grid(row=len(rows) + 3, column=0, sticky="w", padx=6)
+        ttk.Label(basic, textvariable=self.status_var).grid(row=len(rows) + 3, column=1, sticky="ew", padx=6)
+
+        request = ttk.LabelFrame(self, text="Request / Response")
+        request.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)
+        request.columnconfigure(1, weight=1)
+        request_rows = [
+            ("Service name", "request_service_name", "/HELLO"),
+            ("Request strategy", "request_strategy", "first-responding"),
+            ("ACK timeout ms", "request_ack_timeout_ms", "1000"),
+            ("Total timeout ms", "request_timeout_ms", "10000"),
+            ("Payload encoding", "payload_encoding", "text"),
+            ("Request mode", "request_mode", "normal"),
+            ("Deployment ID", "deployment_id", ""),
+        ]
+        for row, (label, key, value) in enumerate(request_rows):
+            self._field(request, row, label, key, value)
+        ttk.Label(request, text="Payload").grid(row=len(request_rows), column=0, sticky="nw", padx=6)
+        self.payload_pane = TextPane(request, height=5)
+        self.payload_pane.set("HELLO")
+        self.payload_pane.grid(row=len(request_rows), column=1, columnspan=2, sticky="nsew", padx=6, pady=3)
+        row = len(request_rows) + 1
+        self._json_field(request, row, "Collaboration roles JSON", "collaboration_roles_json", "[]", height=3); row += 1
+        self._json_field(request, row, "Key scopes JSON", "key_scopes_json", "{}", height=3); row += 1
+        self._json_field(request, row, "Dependencies JSON", "dependencies_json", "[]", height=3); row += 1
+        self._json_field(request, row, "Artifact Data names JSON", "artifact_data_names_json", "{}", height=3); row += 1
+        self._json_field(request, row, "Scope-key Data names JSON", "scope_key_data_names_json", "{}", height=3); row += 1
+        self._json_field(request, row, "Role scopes JSON", "role_scopes_json", "{}", height=3); row += 1
+        ttk.Button(request, text="Send Request", command=self.send_request).grid(
+            row=row, column=0, sticky="ew", padx=6, pady=5)
+        ttk.Button(request, text="Send Async Request", command=self.send_async_request).grid(
+            row=row, column=1, sticky="ew", padx=6, pady=5)
+        ttk.Button(request, text="Clear Response", command=lambda: self.response_pane.set("")).grid(
+            row=row, column=2, sticky="ew", padx=6, pady=5)
+        row += 1
+        ttk.Button(request, text="Send Collaboration Request",
+                   command=self.send_collaboration_request).grid(
+            row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=5)
+        row += 1
+        self.response_pane = TextPane(request, height=8)
+        self.response_pane.grid(row=row, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
+        request.rowconfigure(row, weight=1)
+        env = self._common_env_frame(self)
+        env.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
+        self.log_pane = TextPane(self, height=8)
+        self.log_pane.grid(row=3, column=0, sticky="nsew", padx=6, pady=6)
+        self.rowconfigure(1, weight=2)
+        self.rowconfigure(3, weight=1)
+
+    def request_config(self) -> UserRequestConfig:
+        return UserRequestConfig(
+            service_name=self.value("request_service_name"),
+            request_strategy=self.value("request_strategy"),
+            ack_timeout_ms=self.int_value("request_ack_timeout_ms", minimum=0),
+            timeout_ms=self.int_value("request_timeout_ms", minimum=1),
+            payload_encoding=self.value("payload_encoding"),
+            payload=self.payload_pane.get(),
+            request_mode=self.value("request_mode"),
+            collaboration_roles_json=self.advanced_json["collaboration_roles_json"].get(),
+            key_scopes_json=self.advanced_json["key_scopes_json"].get(),
+            dependencies_json=self.advanced_json["dependencies_json"].get(),
+            artifact_data_names_json=self.advanced_json["artifact_data_names_json"].get(),
+            scope_key_data_names_json=self.advanced_json["scope_key_data_names_json"].get(),
+            role_scopes_json=self.advanced_json["role_scopes_json"].get(),
+            deployment_id=self.value("deployment_id"),
+        )
+
+    def config(self) -> UserTabConfig:
+        return UserTabConfig(
+            user=self.value("user"),
+            group=self.value("group"),
+            controller=self.value("controller"),
+            trust_schema=self.value("trust_schema"),
+            bootstrap_token=self.value("bootstrap_token"),
+            permission_wait_ms=self.int_value("permission_wait_ms", minimum=0),
+            handler_threads=self.int_value("handler_threads", minimum=1),
+            ack_threads=self.int_value("ack_threads", minimum=1),
+            adaptive_admission=self.bool_value("adaptive_admission"),
+            serve_certificates=self.bool_value("serve_certificates"),
+            request=self.request_config(),
+        )
+
+    def send_request(self) -> None:
+        threading.Thread(target=self._send_request_thread, daemon=True).start()
+
+    def send_async_request(self) -> None:
+        runtime = self.controller.runtime
+        if runtime is None or not hasattr(runtime, "request_service_async"):
+            self.log("Async request unavailable; user runtime is not running or wrapper lacks request_service_async.\n")
+            return
+        try:
+            req = self.request_config()
+            started = time.time()
+
+            def on_response(response) -> None:
+                elapsed_ms = (time.time() - started) * 1000.0
+                payload = getattr(response, "payload", b"")
+                payload_text = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else str(payload)
+                self.queue.put(
+                    "Async response\n"
+                    f"status: {getattr(response, 'status', '')}\n"
+                    f"message: {getattr(response, 'message', getattr(response, 'error', ''))}\n"
+                    f"elapsed_ms: {elapsed_ms:.3f}\n"
+                    f"payload:\n{payload_text}\n"
+                )
+
+            def on_timeout(reason: str) -> None:
+                self.queue.put(f"Async request timeout: {reason}\n")
+
+            runtime.request_service_async(
+                req.service_name,
+                payload_from_request(req),
+                on_response=on_response,
+                on_timeout=on_timeout,
+                ack_timeout_ms=req.ack_timeout_ms,
+                timeout_ms=req.timeout_ms,
+                strategy=req.request_strategy,
+            )
+            self.log(f"Async request submitted for {req.service_name}\n")
+        except Exception as exc:
+            self.log(f"Async request failed: {exc}\n")
+
+    def _send_request_thread(self) -> None:
+        started = time.time()
+        try:
+            response = self.controller.request_user(self.request_config())
+            elapsed_ms = (time.time() - started) * 1000.0
+            payload = getattr(response, "payload", b"")
+            if isinstance(payload, bytes):
+                payload_text = payload.decode("utf-8", errors="replace")
+            else:
+                payload_text = str(payload)
+            status = getattr(response, "status", getattr(response, "success", ""))
+            message = getattr(response, "message", getattr(response, "error", ""))
+            self.queue.put(
+                "Response\n"
+                f"status: {status}\n"
+                f"message: {message}\n"
+                f"elapsed_ms: {elapsed_ms:.3f}\n"
+                f"payload:\n{payload_text}\n"
+            )
+        except Exception as exc:
+            self.queue.put(f"Request failed: {exc}\n")
+
+    def send_collaboration_request(self) -> None:
+        threading.Thread(target=self._send_collaboration_thread, daemon=True).start()
+
+    def _send_collaboration_thread(self) -> None:
+        started = time.time()
+        runtime = self.controller.runtime
+        if runtime is None or not hasattr(runtime, "request_collaboration"):
+            self.queue.put("Collaboration request failed: user runtime is not running or lacks request_collaboration.\n")
+            return
+        try:
+            req = self.request_config()
+            response = runtime.request_collaboration(
+                req.service_name,
+                payload_from_request(req),
+                roles=parse_json_field(req.collaboration_roles_json, default=[]),
+                key_scopes=parse_json_field(req.key_scopes_json, default={}),
+                dependencies=parse_json_field(req.dependencies_json, default=[]),
+                artifact_data_names=parse_json_field(req.artifact_data_names_json, default={}),
+                scope_key_data_names=parse_json_field(req.scope_key_data_names_json, default={}),
+                role_scopes=parse_json_field(req.role_scopes_json, default={}),
+                ack_timeout_ms=req.ack_timeout_ms,
+                timeout_ms=req.timeout_ms,
+                deployment_id=req.deployment_id or None,
+            )
+            elapsed_ms = (time.time() - started) * 1000.0
+            payload = getattr(response, "payload", b"")
+            payload_text = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else str(payload)
+            self.queue.put(
+                "Collaboration response\n"
+                f"status: {getattr(response, 'status', '')}\n"
+                f"message: {getattr(response, 'message', getattr(response, 'error', ''))}\n"
+                f"elapsed_ms: {elapsed_ms:.3f}\n"
+                f"payload:\n{payload_text}\n"
+            )
+        except Exception as exc:
+            self.queue.put(f"Collaboration request failed: {exc}\n")
+
+    def refresh_permissions(self) -> None:
+        runtime = self.controller.runtime
+        if runtime is None or not hasattr(runtime, "get_allowed_services"):
+            self.log("User runtime is not running.\n")
+            return
+        self.response_pane.set(json.dumps([asdict(item) if hasattr(item, "__dataclass_fields__") else str(item)
+                                           for item in runtime.get_allowed_services()],
+                                          indent=2))
+
+    def discover_services(self) -> None:
+        runtime = self.controller.runtime
+        if runtime is None or not hasattr(runtime, "get_ndnsd_services"):
+            self.log("User runtime is not running.\n")
+            return
+        self.response_pane.set(json.dumps(runtime.get_ndnsd_services(), indent=2, default=str))
+
+    def apply_config(self, config: UserTabConfig, env: NdnsfSvsEnvConfig) -> None:
+        data = asdict(config)
+        request = data.pop("request", {})
+        for key, value in data.items():
+            if key in self.fields:
+                self.fields[key].set(value)  # type: ignore[union-attr]
+        request_field_map = {
+            "service_name": "request_service_name",
+            "ack_timeout_ms": "request_ack_timeout_ms",
+            "timeout_ms": "request_timeout_ms",
+        }
+        for key, value in request.items():
+            field_key = request_field_map.get(key, key)
+            if field_key == "payload":
+                self.payload_pane.set(str(value))
+            elif field_key in self.fields:
+                self.fields[field_key].set(value)  # type: ignore[union-attr]
+            elif field_key in self.advanced_json:
+                self.advanced_json[field_key].set(str(value))
+        self.apply_env(env)
+
+
 class DistributedInferenceGui(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("NDNSF Distributed Inference")
         self.geometry("1280x820")
         self.status = tk.StringVar(value="Ready")
+        self.profile_path_var = tk.StringVar(
+            value="examples/python/NDNSF-DistributedInference/gui_three_role_profile.json")
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x")
+        ttk.Label(toolbar, text="Profile").pack(side="left", padx=4)
+        ttk.Entry(toolbar, textvariable=self.profile_path_var, width=70).pack(
+            side="left", fill="x", expand=True, padx=4)
+        ttk.Button(toolbar, text="Load", command=self.load_three_role_profile).pack(side="left")
+        ttk.Button(toolbar, text="Save", command=self.save_three_role_profile).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Run All", command=self.run_all_roles).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Stop All", command=self.stop_all_roles).pack(side="left", padx=2)
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True)
+        self.user_tab = UserDirectTab(self.notebook, self, "user")
+        self.provider_tab = ProviderDirectTab(self.notebook, self, "provider")
+        self.controller_tab = ControllerDirectTab(self.notebook, self, "controller")
         self.wizard = WizardTab(self.notebook, self)
         self.policy_editor = PolicyEditorTab(self.notebook, self)
         self.model_split = ModelSplitTab(self.notebook, self)
@@ -1355,14 +2556,17 @@ class DistributedInferenceGui(tk.Tk):
         self.controller_runtime = RoleRuntimeTab(self.notebook, self, "controller")
         self.user_runtime = RoleRuntimeTab(self.notebook, self, "user")
         self.provider_runtime = RoleRuntimeTab(self.notebook, self, "provider")
+        self.notebook.add(self.user_tab, text="User")
+        self.notebook.add(self.provider_tab, text="Provider")
+        self.notebook.add(self.controller_tab, text="Controller")
         self.notebook.add(self.wizard, text="Project Wizard")
         self.notebook.add(self.policy_editor, text="Policy Editor")
         self.notebook.add(self.model_split, text="Model Split")
         self.notebook.add(self.certificates, text="Certificates")
-        self.notebook.add(self.controller_runtime, text="Controller")
-        self.notebook.add(self.user_runtime, text="User")
-        self.notebook.add(self.provider_runtime, text="Provider")
-        self.notebook.add(self.runner, text="Deployment Runner")
+        self.notebook.add(self.runner, text="Script Runner")
+        self.notebook.add(self.controller_runtime, text="Script Controller")
+        self.notebook.add(self.user_runtime, text="Script User")
+        self.notebook.add(self.provider_runtime, text="Script Provider")
         ttk.Label(self, textvariable=self.status, anchor="w").pack(fill="x")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1377,7 +2581,67 @@ class DistributedInferenceGui(tk.Tk):
         if status is not None:
             status.set(value)
 
+    def profile(self) -> ThreeRoleGuiProfile:
+        profile = ThreeRoleGuiProfile(
+            env=self.user_tab.env_from_fields(),
+            controller=self.controller_tab.config(),
+            provider=self.provider_tab.config(),
+            user=self.user_tab.config(),
+            persist_tokens=self.controller_tab.bool_value("persist_tokens"),
+        )
+        return profile
+
+    def apply_profile(self, profile: ThreeRoleGuiProfile) -> None:
+        self.controller_tab.apply_config(profile.controller, profile.env)
+        self.provider_tab.apply_config(profile.provider, profile.env)
+        self.user_tab.apply_config(profile.user, profile.env)
+        self.set_status("Three-role GUI profile loaded")
+
+    def load_three_role_profile(self) -> None:
+        path = self.profile_path_var.get().strip()
+        if not path or not Path(path).exists():
+            path = filedialog.askopenfilename(
+                title="Load three-role profile",
+                filetypes=[("JSON", "*.json"), ("All files", "*")],
+            )
+            if not path:
+                return
+            self.profile_path_var.set(path)
+        try:
+            self.apply_profile(load_three_role_profile(path))
+        except Exception as exc:
+            messagebox.showerror("Load profile failed", str(exc))
+
+    def save_three_role_profile(self) -> None:
+        path = self.profile_path_var.get().strip()
+        if not path:
+            path = filedialog.asksaveasfilename(
+                title="Save three-role profile",
+                defaultextension=".json",
+                filetypes=[("JSON", "*.json"), ("All files", "*")],
+            )
+            if not path:
+                return
+            self.profile_path_var.set(path)
+        try:
+            write_three_role_profile(path, self.profile())
+            self.set_status(f"Saved three-role profile: {path}")
+        except Exception as exc:
+            messagebox.showerror("Save profile failed", str(exc))
+
+    def run_all_roles(self) -> None:
+        self.controller_tab.run_role()
+        self.provider_tab.run_role()
+        self.user_tab.run_role()
+
+    def stop_all_roles(self) -> None:
+        self.controller_tab.stop_role()
+        self.provider_tab.stop_role()
+        self.user_tab.stop_role()
+        self.runner.stop_processes()
+
     def _on_close(self) -> None:
+        self.stop_all_roles()
         self.runner.stop_processes()
         self.destroy()
 

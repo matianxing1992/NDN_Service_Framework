@@ -8,13 +8,25 @@ import unittest
 from pathlib import Path
 
 from ndnsf_distributed_inference.gui import (
+    ControllerTabConfig,
+    FakeRuntimeFactory,
+    NdnsfSvsEnvConfig,
+    ProviderTabConfig,
+    RoleRuntimeController,
     RoleProcessState,
     RuntimeGuiProfile,
     RuntimeRoleProfile,
+    ThreeRoleGuiProfile,
+    UserRequestConfig,
+    UserTabConfig,
     build_role_command,
     load_runtime_profile,
+    load_three_role_profile,
+    payload_from_request,
+    redact_mapping,
     split_extra_args,
     write_runtime_profile,
+    write_three_role_profile,
 )
 
 
@@ -113,6 +125,118 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertIsNone(state.pid)
         self.assertEqual(state.mark_running(5678), "running pid=5678")
         self.assertEqual(state.mark_exited(2), "failed rc=2")
+
+    def test_three_role_profile_roundtrip_redacts_tokens_by_default(self) -> None:
+        profile = ThreeRoleGuiProfile(
+            env=NdnsfSvsEnvConfig(publication_fetch_window="32"),
+            controller=ControllerTabConfig(
+                controller_prefix="/demo/controller",
+                bootstrap_token_file="tokens.txt",
+            ),
+            provider=ProviderTabConfig(
+                provider_id="P1",
+                bootstrap_token="provider-secret",
+                service_name="/HELLO",
+            ),
+            user=UserTabConfig(
+                user="/demo/user",
+                bootstrap_token="user-secret",
+                request=UserRequestConfig(service_name="/HELLO", payload="hi"),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profile.json"
+            write_three_role_profile(path, profile)
+            raw = path.read_text(encoding="utf-8")
+            self.assertNotIn("provider-secret", raw)
+            self.assertNotIn("user-secret", raw)
+            loaded = load_three_role_profile(path)
+        self.assertEqual(loaded.provider.provider_id, "P1")
+        self.assertEqual(loaded.user.request.payload, "hi")
+        self.assertEqual(loaded.env.publication_fetch_window, "32")
+
+    def test_three_role_profile_can_migrate_legacy_profile(self) -> None:
+        legacy = RuntimeGuiProfile(
+            controller=RuntimeRoleProfile(role="controller"),
+            provider=RuntimeRoleProfile(
+                role="provider",
+                group="/legacy/group",
+                provider_id="P2",
+                service="/Legacy/Service",
+                roles="/Stage/0",
+            ),
+            user=RuntimeRoleProfile(
+                role="user",
+                group="/legacy/group",
+                service="/Legacy/Service",
+                ack_timeout_ms="700",
+                timeout_ms="9000",
+            ),
+        )
+        migrated = ThreeRoleGuiProfile.from_legacy(legacy)
+        self.assertEqual(migrated.provider.group, "/legacy/group")
+        self.assertEqual(migrated.provider.service_name, "/Legacy/Service")
+        self.assertEqual(migrated.user.request.ack_timeout_ms, 700)
+
+    def test_payload_codecs(self) -> None:
+        self.assertEqual(payload_from_request(UserRequestConfig(payload="hello")), b"hello")
+        self.assertEqual(
+            payload_from_request(UserRequestConfig(payload_encoding="json", payload='{"b": 2, "a": 1}')),
+            b'{"a": 1, "b": 2}',
+        )
+        self.assertEqual(
+            payload_from_request(UserRequestConfig(payload_encoding="hex", payload="4849")),
+            b"HI",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "payload.bin"
+            path.write_bytes(b"file-data")
+            self.assertEqual(
+                payload_from_request(UserRequestConfig(payload_encoding="file", payload=str(path))),
+                b"file-data",
+            )
+
+    def test_fake_runtime_controller_starts_only_when_run_is_called(self) -> None:
+        factory = FakeRuntimeFactory()
+        statuses: list[str] = []
+        controller = RoleRuntimeController(
+            "provider",
+            factory=factory,
+            status_callback=statuses.append,
+        )
+        self.assertNotIn("provider", factory.created)
+        controller.run(ProviderTabConfig(provider_id="P3"))
+        controller.thread.join(timeout=2)
+        self.assertIn("provider", factory.created)
+        self.assertTrue(factory.created["provider"].started)
+        self.assertEqual(controller.status, "running")
+        controller.stop()
+        self.assertEqual(controller.status, "stopped")
+
+    def test_fake_user_request_dispatch(self) -> None:
+        factory = FakeRuntimeFactory()
+        controller = RoleRuntimeController("user", factory=factory)
+        controller.run(UserTabConfig(user="/demo/user"))
+        controller.thread.join(timeout=2)
+        response = controller.request_user(UserRequestConfig(
+            service_name="/HELLO",
+            payload="HELLO",
+            ack_timeout_ms=100,
+            timeout_ms=1000,
+        ))
+        self.assertTrue(response.status)
+        self.assertEqual(response.payload, b"HELLO")
+        self.assertEqual(factory.created["user"].requests, [("/HELLO", b"HELLO")])
+
+    def test_redact_mapping_hides_secret_values(self) -> None:
+        redacted = redact_mapping({
+            "bootstrap_token": "abcdef123456",
+            "nested": {"password": "secret"},
+            "plain": "visible",
+        })
+        self.assertNotIn("abcdef123456", str(redacted))
+        self.assertNotIn("secret", str(redacted))
+        self.assertEqual(redacted["plain"], "visible")
 
 
 if __name__ == "__main__":
