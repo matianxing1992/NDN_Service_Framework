@@ -9,6 +9,7 @@ import json
 import tempfile
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ndnsf_distributed_inference.gui import (
@@ -262,8 +263,10 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             aggregate = json.loads(output_json.read_text(encoding="utf-8"))
             csv_path = Path(aggregate["csv"])
             report_path = Path(aggregate["report"])
+            plot_path = Path(aggregate["plot"])
             self.assertTrue(csv_path.exists())
             self.assertTrue(report_path.exists())
+            self.assertTrue(plot_path.exists())
             with csv_path.open(newline="", encoding="utf-8") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 2)
@@ -276,11 +279,19 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             self.assertEqual(rows[0]["providerBusyHandlerMs"], "40.0")
             report_text = report_path.read_text(encoding="utf-8")
             self.assertIn("# Qwen MiniNDN Sweep Report", report_text)
+            self.assertIn("![Qwen MiniNDN sweep plot](gui-summary.svg)", report_text)
             self.assertIn("Best p50: 11 ms (rps=0.2 run=1)", report_text)
             self.assertIn("Best throughput: 3.5 RPS", report_text)
             self.assertIn("Mean provider utilization across runs: 0.5", report_text)
             self.assertIn("| rps=0.4 run=1 | 0.4 | SUCCESS | 1.0 | 33.0 | 44.0 |", report_text)
             self.assertIn("No failed runs.", report_text)
+            plot_text = plot_path.read_text(encoding="utf-8")
+            self.assertIn("<svg", plot_text)
+            self.assertIn("Qwen MiniNDN Sweep Metrics", plot_text)
+            self.assertIn("Latency (ms)", plot_text)
+            self.assertIn("Throughput (RPS)", plot_text)
+            self.assertIn("Provider utilization", plot_text)
+            ET.parse(plot_path)
 
 
 if __name__ == "__main__":

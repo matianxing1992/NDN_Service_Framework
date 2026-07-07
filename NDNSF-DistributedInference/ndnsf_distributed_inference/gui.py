@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import os
 import queue
@@ -3232,10 +3233,13 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                 if csv_rows:
                     csv_path = output_json.with_suffix(".csv")
                     report_path = output_json.with_suffix(".md")
+                    plot_path = output_json.with_suffix(".svg")
                     self._write_summary_csv(csv_path, csv_rows)
-                    self._write_summary_markdown_report(report_path, csv_rows)
+                    self._write_summary_svg_plot(plot_path, csv_rows)
+                    self._write_summary_markdown_report(report_path, csv_rows, plot_path)
                     payload["csv"] = str(csv_path)
                     payload["report"] = str(report_path)
+                    payload["plot"] = str(plot_path)
                     output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             self.log_pane.text.insert(
                 "end",
@@ -3327,7 +3331,10 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             for row in rows:
                 writer.writerow(row)
 
-    def _write_summary_markdown_report(self, path: Path, rows: list[dict[str, Any]]) -> None:
+    def _write_summary_markdown_report(self,
+                                       path: Path,
+                                       rows: list[dict[str, Any]],
+                                       plot_path: Path | None = None) -> None:
         def number(row: dict[str, Any], key: str) -> float | None:
             value = row.get(key, "")
             if value == "":
@@ -3399,6 +3406,10 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             f"- Mean provider utilization across runs: {fmt(mean_utilization)}",
             f"- Total provider busy handler time: {fmt(total_busy_ms)} ms",
             "",
+        ]
+        if plot_path is not None:
+            lines.extend(["## Plot", "", f"![Qwen MiniNDN sweep plot]({plot_path.name})", ""])
+        lines.extend([
             "## Runs",
             "",
             (
@@ -3406,7 +3417,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                 "throughputRps | providerMeanUtilization | providerBusyHandlerMs |"
             ),
             "|---|---:|---|---:|---:|---:|---:|---:|---:|",
-        ]
+        ])
         for row in rows:
             lines.append(
                 "| "
@@ -3438,6 +3449,163 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
         for row in rows:
             lines.append(f"- {cell(row.get('label', ''))}: {cell(row.get('summary_json', ''))}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _write_summary_svg_plot(self, path: Path, rows: list[dict[str, Any]]) -> None:
+        def number(row: dict[str, Any], key: str) -> float | None:
+            value = row.get(key, "")
+            if value == "":
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def fmt(value: float | None) -> str:
+            if value is None:
+                return "n/a"
+            return f"{value:.2f}".rstrip("0").rstrip(".")
+
+        def safe_text(value: Any) -> str:
+            return html.escape(str(value if value != "" else "n/a"))
+
+        width = 960
+        height = 560
+        margin_left = 84
+        margin_right = 34
+        panel_top = 78
+        panel_gap = 42
+        panel_height = 118
+        plot_width = width - margin_left - margin_right
+        labels = [str(row.get("label", f"run-{index + 1}") or f"run-{index + 1}")
+                  for index, row in enumerate(rows)]
+        count = max(1, len(rows))
+        slot = plot_width / count
+
+        series = [
+            {
+                "title": "Latency (ms)",
+                "keys": [("p50Ms", "#1f4e8c", "p50"), ("p95Ms", "#c26d2d", "p95")],
+                "top": panel_top,
+            },
+            {
+                "title": "Throughput (RPS)",
+                "keys": [("throughputRps", "#3d8b5b", "throughput")],
+                "top": panel_top + panel_height + panel_gap,
+            },
+            {
+                "title": "Provider utilization",
+                "keys": [("providerMeanUtilization", "#6a5acd", "mean util")],
+                "top": panel_top + 2 * (panel_height + panel_gap),
+            },
+        ]
+
+        def panel_max(keys: list[tuple[str, str, str]]) -> float:
+            values = [
+                value
+                for row in rows
+                for key, _color, _label in keys
+                for value in [number(row, key)]
+                if value is not None
+            ]
+            if not values:
+                return 1.0
+            highest = max(values)
+            return highest * 1.12 if highest > 0 else 1.0
+
+        parts = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            (
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+                f'height="{height}" viewBox="0 0 {width} {height}" role="img" '
+                'aria-labelledby="title desc">'
+            ),
+            "<title id=\"title\">Qwen MiniNDN Sweep Plot</title>",
+            (
+                "<desc id=\"desc\">Latency, throughput, and provider utilization "
+                "for each Qwen MiniNDN sweep run.</desc>"
+            ),
+            '<rect width="100%" height="100%" fill="#ffffff"/>',
+            (
+                '<text x="34" y="38" font-family="Arial, sans-serif" '
+                'font-size="24" font-weight="700" fill="#163f7a">'
+                "Qwen MiniNDN Sweep Metrics</text>"
+            ),
+        ]
+
+        for panel in series:
+            top = int(panel["top"])
+            keys = panel["keys"]
+            max_value = panel_max(keys)
+            parts.extend([
+                (
+                    f'<text x="34" y="{top - 14}" font-family="Arial, sans-serif" '
+                    f'font-size="16" font-weight="700" fill="#222">{safe_text(panel["title"])}</text>'
+                ),
+                (
+                    f'<line x1="{margin_left}" y1="{top + panel_height}" '
+                    f'x2="{width - margin_right}" y2="{top + panel_height}" '
+                    'stroke="#333" stroke-width="1"/>'
+                ),
+                (
+                    f'<line x1="{margin_left}" y1="{top}" x2="{margin_left}" '
+                    f'y2="{top + panel_height}" stroke="#333" stroke-width="1"/>'
+                ),
+                (
+                    f'<text x="{margin_left - 8}" y="{top + 5}" text-anchor="end" '
+                    'font-family="Arial, sans-serif" font-size="11" fill="#555">'
+                    f'{fmt(max_value)}</text>'
+                ),
+                (
+                    f'<text x="{margin_left - 8}" y="{top + panel_height}" text-anchor="end" '
+                    'font-family="Arial, sans-serif" font-size="11" fill="#555">0</text>'
+                ),
+            ])
+            bar_group_width = min(74.0, slot * 0.72)
+            bar_width = max(10.0, bar_group_width / max(1, len(keys)))
+            for index, row in enumerate(rows):
+                base_x = margin_left + index * slot + (slot - bar_group_width) / 2
+                for key_index, (key, color, legend) in enumerate(keys):
+                    value = number(row, key)
+                    bar_height = 0.0 if value is None else max(0.0, min(panel_height, panel_height * value / max_value))
+                    x = base_x + key_index * bar_width
+                    y = top + panel_height - bar_height
+                    parts.extend([
+                        (
+                            f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_width - 3:.2f}" '
+                            f'height="{bar_height:.2f}" fill="{color}" rx="2">'
+                            f'<title>{safe_text(labels[index])} {safe_text(legend)}: {fmt(value)}</title>'
+                            "</rect>"
+                        ),
+                        (
+                            f'<text x="{x + (bar_width - 3) / 2:.2f}" y="{y - 4:.2f}" '
+                            'text-anchor="middle" font-family="Arial, sans-serif" '
+                            'font-size="10" fill="#333">'
+                            f'{fmt(value)}</text>'
+                        ),
+                    ])
+                if panel is series[-1]:
+                    label = labels[index]
+                    if len(label) > 18:
+                        label = label[:15] + "..."
+                    parts.append(
+                        f'<text x="{margin_left + index * slot + slot / 2:.2f}" '
+                        f'y="{top + panel_height + 26}" text-anchor="middle" '
+                        'font-family="Arial, sans-serif" font-size="11" fill="#333">'
+                        f'{safe_text(label)}</text>'
+                    )
+            legend_x = width - margin_right - 230
+            for legend_index, (_key, color, legend) in enumerate(keys):
+                lx = legend_x + legend_index * 88
+                parts.extend([
+                    f'<rect x="{lx}" y="{top - 28}" width="12" height="12" fill="{color}"/>',
+                    (
+                        f'<text x="{lx + 18}" y="{top - 18}" font-family="Arial, sans-serif" '
+                        f'font-size="12" fill="#333">{safe_text(legend)}</text>'
+                    ),
+                ])
+
+        parts.append("</svg>")
+        path.write_text("\n".join(parts) + "\n", encoding="utf-8")
 
     def cancel_periodic_callbacks(self) -> None:
         if self._drain_after_id is None:
