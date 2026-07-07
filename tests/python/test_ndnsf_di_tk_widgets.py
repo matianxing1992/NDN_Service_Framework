@@ -261,7 +261,9 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             ])
             aggregate = json.loads(output_json.read_text(encoding="utf-8"))
             csv_path = Path(aggregate["csv"])
+            report_path = Path(aggregate["report"])
             self.assertTrue(csv_path.exists())
+            self.assertTrue(report_path.exists())
             with csv_path.open(newline="", encoding="utf-8") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 2)
@@ -272,6 +274,13 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             self.assertEqual(rows[0]["providerCount"], "2")
             self.assertEqual(rows[0]["providerMeanUtilization"], "0.5")
             self.assertEqual(rows[0]["providerBusyHandlerMs"], "40.0")
+            report_text = report_path.read_text(encoding="utf-8")
+            self.assertIn("# Qwen MiniNDN Sweep Report", report_text)
+            self.assertIn("Best p50: 11 ms (rps=0.2 run=1)", report_text)
+            self.assertIn("Best throughput: 3.5 RPS", report_text)
+            self.assertIn("Mean provider utilization across runs: 0.5", report_text)
+            self.assertIn("| rps=0.4 run=1 | 0.4 | SUCCESS | 1.0 | 33.0 | 44.0 |", report_text)
+            self.assertIn("No failed runs.", report_text)
 
 
 if __name__ == "__main__":

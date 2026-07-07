@@ -3231,8 +3231,11 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                 output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
                 if csv_rows:
                     csv_path = output_json.with_suffix(".csv")
+                    report_path = output_json.with_suffix(".md")
                     self._write_summary_csv(csv_path, csv_rows)
+                    self._write_summary_markdown_report(report_path, csv_rows)
                     payload["csv"] = str(csv_path)
+                    payload["report"] = str(report_path)
                     output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             self.log_pane.text.insert(
                 "end",
@@ -3323,6 +3326,118 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             writer.writeheader()
             for row in rows:
                 writer.writerow(row)
+
+    def _write_summary_markdown_report(self, path: Path, rows: list[dict[str, Any]]) -> None:
+        def number(row: dict[str, Any], key: str) -> float | None:
+            value = row.get(key, "")
+            if value == "":
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def fmt(value: float | None) -> str:
+            if value is None:
+                return "n/a"
+            text = f"{value:.3f}".rstrip("0").rstrip(".")
+            return text if text else "0"
+
+        def cell(value: Any) -> str:
+            return str(value if value != "" else "n/a").replace("|", "\\|")
+
+        def integer(value: Any) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        failed_rows = [
+            row for row in rows
+            if row.get("status") != "SUCCESS"
+            or integer(row.get("failureCount")) > 0
+            or integer(row.get("returncode")) != 0
+        ]
+        successful_rows = [row for row in rows if row not in failed_rows]
+        p50_rows = [
+            (number(row, "p50Ms"), row)
+            for row in successful_rows
+            if number(row, "p50Ms") is not None
+        ]
+        throughput_rows = [
+            (number(row, "throughputRps"), row)
+            for row in successful_rows
+            if number(row, "throughputRps") is not None
+        ]
+        utilization_values = [
+            value for value in (number(row, "providerMeanUtilization") for row in rows)
+            if value is not None
+        ]
+        busy_values = [
+            value for value in (number(row, "providerBusyHandlerMs") for row in rows)
+            if value is not None
+        ]
+        best_p50 = min(p50_rows, key=lambda item: item[0]) if p50_rows else (None, {})
+        best_throughput = max(throughput_rows, key=lambda item: item[0]) if throughput_rows else (None, {})
+        mean_utilization = (
+            sum(utilization_values) / len(utilization_values)
+            if utilization_values else None
+        )
+        total_busy_ms = sum(busy_values) if busy_values else None
+
+        lines = [
+            "# Qwen MiniNDN Sweep Report",
+            "",
+            f"- Total runs: {len(rows)}",
+            f"- Successful runs: {len(successful_rows)}",
+            f"- Failed runs: {len(failed_rows)}",
+            f"- Best p50: {fmt(best_p50[0])} ms ({cell(best_p50[1].get('label', ''))})",
+            (
+                f"- Best throughput: {fmt(best_throughput[0])} RPS "
+                f"({cell(best_throughput[1].get('label', ''))})"
+            ),
+            f"- Mean provider utilization across runs: {fmt(mean_utilization)}",
+            f"- Total provider busy handler time: {fmt(total_busy_ms)} ms",
+            "",
+            "## Runs",
+            "",
+            (
+                "| label | targetRps | status | successRate | p50Ms | p95Ms | "
+                "throughputRps | providerMeanUtilization | providerBusyHandlerMs |"
+            ),
+            "|---|---:|---|---:|---:|---:|---:|---:|---:|",
+        ]
+        for row in rows:
+            lines.append(
+                "| "
+                + " | ".join([
+                    cell(row.get("label", "")),
+                    cell(row.get("targetRps", "")),
+                    cell(row.get("status", "")),
+                    cell(row.get("successRate", "")),
+                    cell(row.get("p50Ms", "")),
+                    cell(row.get("p95Ms", "")),
+                    cell(row.get("throughputRps", "")),
+                    cell(row.get("providerMeanUtilization", "")),
+                    cell(row.get("providerBusyHandlerMs", "")),
+                ])
+                + " |"
+            )
+        lines.extend(["", "## Failures", ""])
+        if failed_rows:
+            for row in failed_rows:
+                lines.append(
+                    f"- {cell(row.get('label', ''))}: status={cell(row.get('status', ''))}, "
+                    f"returncode={cell(row.get('returncode', ''))}, "
+                    f"failureCount={cell(row.get('failureCount', ''))}, "
+                    f"summary={cell(row.get('summary_json', ''))}"
+                )
+        else:
+            lines.append("- No failed runs.")
+        lines.extend(["", "## Output Paths", ""])
+        for row in rows:
+            lines.append(f"- {cell(row.get('label', ''))}: {cell(row.get('summary_json', ''))}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def cancel_periodic_callbacks(self) -> None:
         if self._drain_after_id is None:
