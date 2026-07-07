@@ -8,6 +8,7 @@ processes without exposing low-level NDN packet details.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import queue
@@ -19,7 +20,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 try:
     import tkinter as tk
@@ -652,6 +653,202 @@ class RoleRuntimeController:
                                        minimum=1),
             strategy=config.request_strategy,
         )
+
+
+def _load_json_mapping(path: str | Path) -> dict[str, Any]:
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"configuration must be a JSON object: {path}")
+    return value
+
+
+def apply_role_config_file(profile: ThreeRoleGuiProfile,
+                           role: str,
+                           path: str | Path) -> None:
+    """Merge a full profile or one role-specific JSON config into *profile*."""
+    data = _load_json_mapping(path)
+    if "version" in data and {"controller", "provider", "user"} <= set(data):
+        loaded = ThreeRoleGuiProfile.from_mapping(data)
+        setattr(profile, role, getattr(loaded, role))
+        return
+    if role in data and isinstance(data[role], dict):
+        data = data[role]
+    if role == "controller":
+        profile.controller = ControllerTabConfig.from_mapping(data)
+    elif role == "provider":
+        profile.provider = ProviderTabConfig.from_mapping(data)
+    elif role == "user":
+        profile.user = UserTabConfig.from_mapping(data)
+    else:
+        raise ValueError(f"unknown role config: {role}")
+
+
+def _response_to_mapping(response: Any) -> dict[str, Any]:
+    payload = getattr(response, "payload", b"")
+    if isinstance(payload, bytes):
+        payload_text = payload.decode("utf-8", errors="replace")
+        payload_hex = payload.hex()
+        payload_size = len(payload)
+    else:
+        payload_text = str(payload)
+        payload_hex = ""
+        payload_size = len(payload_text.encode("utf-8"))
+    return {
+        "success": bool(getattr(response, "success", getattr(response, "status", False))),
+        "status": bool(getattr(response, "status", getattr(response, "success", False))),
+        "message": str(getattr(response, "message", getattr(response, "error", ""))),
+        "payload_text": payload_text,
+        "payload_hex": payload_hex,
+        "payload_size": payload_size,
+    }
+
+
+def _wait_for_role(controller: RoleRuntimeController,
+                   *,
+                   timeout_s: float = 5.0) -> bool:
+    deadline = time.time() + max(0.0, timeout_s)
+    while time.time() < deadline:
+        if controller.status in {"running", "failed"}:
+            return controller.status == "running"
+        time.sleep(0.02)
+    if controller.thread is not None:
+        controller.thread.join(timeout=0.1)
+    return controller.status == "running"
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="NDNSF-DI Tk GUI and headless role automation")
+    parser.add_argument("-headless", "--headless", action="store_true",
+                        help="Run without creating a Tk window.")
+    parser.add_argument("--profile", default="",
+                        help="Full three-role GUI profile JSON.")
+    parser.add_argument("-user_auto_run", "--user-auto-run", "--user_auto_run",
+                        action="store_true", dest="user_auto_run",
+                        help="Start the user role in headless mode.")
+    parser.add_argument("-provider_auto_run", "--provider-auto-run",
+                        "--provider_auto_run", action="store_true",
+                        dest="provider_auto_run",
+                        help="Start the provider role in headless mode.")
+    parser.add_argument("-controller_auto_run", "--controller-auto-run",
+                        "--controller_auto_run", action="store_true",
+                        dest="controller_auto_run",
+                        help="Start the controller role in headless mode.")
+    parser.add_argument("-user_config", "--user-config", "--user_config",
+                        default="", dest="user_config",
+                        help="JSON config for the user role or a full profile.")
+    parser.add_argument("-provider_config", "--provider-config",
+                        "--provider_config", default="", dest="provider_config",
+                        help="JSON config for the provider role or a full profile.")
+    parser.add_argument("-controller_config", "--controller-config",
+                        "--controller_config", default="", dest="controller_config",
+                        help="JSON config for the controller role or a full profile.")
+    parser.add_argument("--runtime-mode", choices=["direct", "fake"],
+                        default="direct",
+                        help="Use real Python wrapper runtimes or fake test runtimes.")
+    parser.add_argument("--send-user-request", action="store_true",
+                        help="After starting the user, send the configured request.")
+    parser.add_argument("--duration-s", type=float, default=0.0,
+                        help="Keep started roles alive for this many seconds before stop.")
+    parser.add_argument("--startup-timeout-s", type=float, default=5.0,
+                        help="Seconds to wait for each role to report running.")
+    parser.add_argument("--output-json", default="",
+                        help="Write headless run summary JSON to this path.")
+    return parser
+
+
+def load_headless_profile(args: argparse.Namespace) -> ThreeRoleGuiProfile:
+    if args.profile:
+        profile = load_three_role_profile(args.profile)
+    else:
+        profile = ThreeRoleGuiProfile()
+    for role in ("controller", "provider", "user"):
+        config_path = getattr(args, f"{role}_config", "")
+        if config_path:
+            apply_role_config_file(profile, role, config_path)
+    return profile
+
+
+def run_headless(args: argparse.Namespace) -> dict[str, Any]:
+    profile = load_headless_profile(args)
+    factory: RuntimeFactory
+    factory = FakeRuntimeFactory() if args.runtime_mode == "fake" else RealRuntimeFactory()
+    logs: list[str] = []
+    status_events: list[dict[str, str]] = []
+
+    def make_controller(role: str) -> RoleRuntimeController:
+        return RoleRuntimeController(
+            role,
+            factory=factory,
+            log_callback=logs.append,
+            status_callback=lambda status, role=role: status_events.append({
+                "role": role,
+                "status": status,
+            }),
+            env_config=profile.env,
+        )
+
+    controllers = {
+        "controller": make_controller("controller"),
+        "provider": make_controller("provider"),
+        "user": make_controller("user"),
+    }
+    configs = {
+        "controller": profile.controller,
+        "provider": profile.provider,
+        "user": profile.user,
+    }
+    auto_order = [
+        role for role in ("controller", "provider", "user")
+        if getattr(args, f"{role}_auto_run")
+    ]
+    errors: list[str] = []
+    request_result: dict[str, Any] = {}
+    started_at = time.time()
+    for role in auto_order:
+        controllers[role].run(configs[role])
+        if not _wait_for_role(controllers[role], timeout_s=args.startup_timeout_s):
+            errors.append(f"{role} failed to start: {controllers[role].last_error}")
+
+    if args.send_user_request:
+        if "user" not in auto_order:
+            errors.append("--send-user-request requires --user-auto-run")
+        elif controllers["user"].status != "running":
+            errors.append("user request skipped because user is not running")
+        else:
+            req_started = time.time()
+            try:
+                response = controllers["user"].request_user(profile.user.request)
+                request_result = _response_to_mapping(response)
+                request_result["elapsed_ms"] = round((time.time() - req_started) * 1000.0, 3)
+            except Exception as exc:
+                errors.append(f"user request failed: {exc}")
+
+    if args.duration_s > 0:
+        time.sleep(args.duration_s)
+    for role in reversed(auto_order):
+        controllers[role].stop()
+
+    summary = {
+        "ok": not errors,
+        "runtime_mode": args.runtime_mode,
+        "auto_run_roles": auto_order,
+        "statuses": {role: controllers[role].status for role in controllers},
+        "last_errors": {
+            role: controllers[role].last_error
+            for role in controllers
+            if controllers[role].last_error
+        },
+        "status_events": status_events,
+        "request": request_result,
+        "errors": errors,
+        "elapsed_ms": round((time.time() - started_at) * 1000.0, 3),
+        "logs": logs[-50:],
+    }
+    if args.output_json:
+        Path(args.output_json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output_json).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
 
 
 def split_extra_args(value: str) -> list[str]:
@@ -2646,7 +2843,12 @@ class DistributedInferenceGui(tk.Tk):
         self.destroy()
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    if args.headless:
+        summary = run_headless(args)
+        print(json.dumps(summary, indent=2))
+        return 0 if summary.get("ok") else 1
     app = DistributedInferenceGui()
     app.mainloop()
     return 0

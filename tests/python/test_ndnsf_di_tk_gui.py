@@ -19,11 +19,14 @@ from ndnsf_distributed_inference.gui import (
     ThreeRoleGuiProfile,
     UserRequestConfig,
     UserTabConfig,
+    apply_role_config_file,
+    build_arg_parser,
     build_role_command,
     load_runtime_profile,
     load_three_role_profile,
     payload_from_request,
     redact_mapping,
+    run_headless,
     split_extra_args,
     write_runtime_profile,
     write_three_role_profile,
@@ -237,6 +240,65 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertNotIn("abcdef123456", str(redacted))
         self.assertNotIn("secret", str(redacted))
         self.assertEqual(redacted["plain"], "visible")
+
+    def test_role_config_file_can_override_user_only(self) -> None:
+        profile = ThreeRoleGuiProfile()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "user.config"
+            path.write_text(
+                '{"user": "/demo/user1", "request": {"service_name": "/HELLO", "payload": "ping"}}',
+                encoding="utf-8",
+            )
+            apply_role_config_file(profile, "user", path)
+        self.assertEqual(profile.user.user, "/demo/user1")
+        self.assertEqual(profile.user.request.service_name, "/HELLO")
+        self.assertEqual(profile.user.request.payload, "ping")
+        self.assertEqual(profile.provider.provider_id, "A")
+
+    def test_headless_arg_parser_accepts_single_dash_underscore_flags(self) -> None:
+        args = build_arg_parser().parse_args([
+            "-headless",
+            "-user_auto_run",
+            "-user_config=user1.config",
+            "--runtime-mode",
+            "fake",
+        ])
+        self.assertTrue(args.headless)
+        self.assertTrue(args.user_auto_run)
+        self.assertEqual(args.user_config, "user1.config")
+        self.assertEqual(args.runtime_mode, "fake")
+
+    def test_headless_fake_all_roles_and_request_writes_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "headless.json"
+            args = build_arg_parser().parse_args([
+                "--headless",
+                "--runtime-mode",
+                "fake",
+                "--controller-auto-run",
+                "--provider-auto-run",
+                "--user-auto-run",
+                "--send-user-request",
+                "--output-json",
+                str(output),
+            ])
+            summary = run_headless(args)
+            written = output.read_text(encoding="utf-8")
+        self.assertTrue(summary["ok"])
+        self.assertEqual(summary["auto_run_roles"], ["controller", "provider", "user"])
+        self.assertEqual(summary["request"]["payload_text"], "HELLO")
+        self.assertIn('"runtime_mode": "fake"', written)
+
+    def test_headless_request_requires_user_auto_run(self) -> None:
+        args = build_arg_parser().parse_args([
+            "--headless",
+            "--runtime-mode",
+            "fake",
+            "--send-user-request",
+        ])
+        summary = run_headless(args)
+        self.assertFalse(summary["ok"])
+        self.assertIn("--send-user-request requires --user-auto-run", summary["errors"])
 
 
 if __name__ == "__main__":

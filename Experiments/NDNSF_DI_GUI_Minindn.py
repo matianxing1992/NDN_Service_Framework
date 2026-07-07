@@ -36,10 +36,16 @@ def run_preflight(env: dict[str, str]) -> None:
     code = (
         "import tkinter\n"
         "from ndnsf_distributed_inference.gui import "
-        "DistributedInferenceGui, DeploymentRunnerTab\n"
+        "DistributedInferenceGui, DeploymentRunnerTab, build_arg_parser, run_headless\n"
         "from ndnsf_distributed_inference.policy import load_config\n"
         f"load_config({str(DEFAULT_POLICY)!r})\n"
         "assert 'yolo-2x2' in DeploymentRunnerTab.REGRESSION_CASES\n"
+        "args = build_arg_parser().parse_args(['--headless', '--runtime-mode', 'fake', "
+        "'--controller-auto-run', '--provider-auto-run', '--user-auto-run', "
+        "'--send-user-request'])\n"
+        "summary = run_headless(args)\n"
+        "assert summary['ok'], summary\n"
+        "assert summary['request']['payload_text'] == 'HELLO', summary\n"
         "print('NDNSF_DI_GUI_PREFLIGHT_OK')\n"
     )
     proc = subprocess.run(
@@ -96,7 +102,7 @@ def main() -> int:
     parser.add_argument("--run-minindn", action="store_true",
                         help="Run the selected regression before launching the GUI.")
     parser.add_argument("--preflight-only", action="store_true",
-                        help="Only verify imports/config; do not run MiniNDN or launch the GUI.")
+                        help="Only verify imports/config/headless fake run; do not run MiniNDN or launch the GUI.")
     parser.add_argument("--no-gui", action="store_true",
                         help="Do not launch the GUI after preflight/regression.")
     args = parser.parse_args()

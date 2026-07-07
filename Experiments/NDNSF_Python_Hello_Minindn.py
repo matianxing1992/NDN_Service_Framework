@@ -88,6 +88,8 @@ def make_perf_args(args: argparse.Namespace) -> SimpleNamespace:
         svs_sync_batch_ms=0,
         ack_threads=2,
         performance_mode=False,
+        workload_mode="closed-loop",
+        rate_rps=None,
     )
 
 
