@@ -9,6 +9,7 @@ processes without exposing low-level NDN packet details.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import queue
@@ -3195,6 +3196,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
     def _append_summary(self, results: list[dict[str, Any]]) -> None:
         output_json_value = self.value("output_json").strip()
         compact_runs: list[dict[str, Any]] = []
+        csv_rows: list[dict[str, Any]] = []
         if not results:
             results = [{"label": "single", "out": self.value("out_dir"), "returncode": 0}]
         for result in results:
@@ -3214,6 +3216,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                     "summary_json": str(summary_path),
                     "out": str(summary_path.parent),
                 })
+                csv_rows.append(self._summary_csv_row(result, data, summary_path))
             except Exception as exc:
                 self.log_pane.text.insert("end", f"\nSummary read failed: {exc}\n")
         if compact_runs:
@@ -3226,10 +3229,100 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                 output_json = Path(output_json_value)
                 output_json.parent.mkdir(parents=True, exist_ok=True)
                 output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                if csv_rows:
+                    csv_path = output_json.with_suffix(".csv")
+                    self._write_summary_csv(csv_path, csv_rows)
+                    payload["csv"] = str(csv_path)
+                    output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             self.log_pane.text.insert(
                 "end",
                 "\nQwen MiniNDN summary\n" + json.dumps(payload, indent=2) + "\n",
             )
+
+    def _summary_csv_row(self,
+                         result: dict[str, Any],
+                         data: dict[str, Any],
+                         summary_path: Path) -> dict[str, Any]:
+        user_execution = data.get("userExecution", {}) or {}
+        dependency_execution = data.get("dependencyExecution", {}) or {}
+        provider_utilization = data.get("providerUtilization", {}) or {}
+        provider_count = len(provider_utilization) if isinstance(provider_utilization, dict) else 0
+        provider_mean_utilization = ""
+        provider_busy_ms = ""
+        if isinstance(provider_utilization, dict) and provider_utilization:
+            utilizations = [
+                float(item.get("estimatedUtilization", 0.0) or 0.0)
+                for item in provider_utilization.values()
+                if isinstance(item, dict)
+            ]
+            busy_values = [
+                float(item.get("busyHandlerMs", 0.0) or 0.0)
+                for item in provider_utilization.values()
+                if isinstance(item, dict)
+            ]
+            if utilizations:
+                provider_mean_utilization = round(sum(utilizations) / len(utilizations), 6)
+            if busy_values:
+                provider_busy_ms = round(sum(busy_values), 3)
+        request_count = int(user_execution.get("requestCount", 0) or 0)
+        success_count = int(user_execution.get("successCount", 0) or 0)
+        failure_count = int(user_execution.get("failureCount", 0) or 0)
+        success_rate = round(success_count / request_count, 6) if request_count else ""
+        return {
+            "label": result.get("label", ""),
+            "out": str(summary_path.parent),
+            "summary_json": str(summary_path),
+            "returncode": result.get("returncode", ""),
+            "status": data.get("status", ""),
+            "runnerMode": data.get("runnerMode", ""),
+            "miniNDNRun": data.get("miniNDNRun", ""),
+            "targetRps": user_execution.get("targetRps", data.get("targetRps", "")),
+            "requestCount": request_count,
+            "successCount": success_count,
+            "failureCount": failure_count,
+            "successRate": success_rate,
+            "p50Ms": user_execution.get("p50Ms", ""),
+            "p95Ms": user_execution.get("p95Ms", ""),
+            "meanMs": user_execution.get("meanMs", ""),
+            "makespanMs": user_execution.get("makespanMs", ""),
+            "throughputRps": user_execution.get("throughputRps", ""),
+            "dependencyStatus": dependency_execution.get("status", ""),
+            "dependencyRoles": ",".join(dependency_execution.get("roles", []) or []),
+            "providerCount": provider_count,
+            "providerMeanUtilization": provider_mean_utilization,
+            "providerBusyHandlerMs": provider_busy_ms,
+        }
+
+    def _write_summary_csv(self, path: Path, rows: list[dict[str, Any]]) -> None:
+        fieldnames = [
+            "label",
+            "out",
+            "summary_json",
+            "returncode",
+            "status",
+            "runnerMode",
+            "miniNDNRun",
+            "targetRps",
+            "requestCount",
+            "successCount",
+            "failureCount",
+            "successRate",
+            "p50Ms",
+            "p95Ms",
+            "meanMs",
+            "makespanMs",
+            "throughputRps",
+            "dependencyStatus",
+            "dependencyRoles",
+            "providerCount",
+            "providerMeanUtilization",
+            "providerBusyHandlerMs",
+        ]
+        with path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
 
     def cancel_periodic_callbacks(self) -> None:
         if self._drain_after_id is None:

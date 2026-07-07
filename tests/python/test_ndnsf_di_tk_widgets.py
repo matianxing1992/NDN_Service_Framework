@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import csv
+import json
 import tempfile
 import time
 import unittest
@@ -206,6 +208,70 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             self.assertIn("NDNSF_DI_NATIVE_TRACER_MININDN_DRY_RUN", log_text)
             self.assertEqual(str(tab.run_button["state"]), "normal")
             self.assertEqual(str(tab.sweep_button["state"]), "normal")
+
+    def test_qwen_minindn_summary_writes_report_csv(self) -> None:
+        tab = self.app.qwen_minindn
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run1 = root / "rps-0_2-run-1"
+            run2 = root / "rps-0_4-run-1"
+            run1.mkdir()
+            run2.mkdir()
+            template = {
+                "status": "SUCCESS",
+                "runnerMode": "qwen-onnx-native",
+                "miniNDNRun": "started",
+                "dependencyExecution": {
+                    "status": "executed",
+                    "roles": ["/LLM/Stage/0", "/LLM/Stage/1"],
+                },
+                "providerUtilization": {
+                    "/provider/A": {
+                        "estimatedUtilization": 0.25,
+                        "busyHandlerMs": 10.0,
+                    },
+                    "/provider/B": {
+                        "estimatedUtilization": 0.75,
+                        "busyHandlerMs": 30.0,
+                    },
+                },
+            }
+            for path, target_rps, p50, p95 in (
+                (run1, 0.2, 11.0, 22.0),
+                (run2, 0.4, 33.0, 44.0),
+            ):
+                payload = dict(template)
+                payload["userExecution"] = {
+                    "targetRps": target_rps,
+                    "requestCount": 2,
+                    "successCount": 2,
+                    "failureCount": 0,
+                    "p50Ms": p50,
+                    "p95Ms": p95,
+                    "meanMs": p50,
+                    "makespanMs": p95,
+                    "throughputRps": 3.5,
+                }
+                (path / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
+            output_json = root / "gui-summary.json"
+            tab.fields["output_json"].set(str(output_json))  # type: ignore[union-attr]
+            tab._append_summary([
+                {"label": "rps=0.2 run=1", "out": str(run1), "returncode": 0},
+                {"label": "rps=0.4 run=1", "out": str(run2), "returncode": 0},
+            ])
+            aggregate = json.loads(output_json.read_text(encoding="utf-8"))
+            csv_path = Path(aggregate["csv"])
+            self.assertTrue(csv_path.exists())
+            with csv_path.open(newline="", encoding="utf-8") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["label"], "rps=0.2 run=1")
+            self.assertEqual(rows[0]["status"], "SUCCESS")
+            self.assertEqual(rows[0]["successRate"], "1.0")
+            self.assertEqual(rows[0]["p50Ms"], "11.0")
+            self.assertEqual(rows[0]["providerCount"], "2")
+            self.assertEqual(rows[0]["providerMeanUtilization"], "0.5")
+            self.assertEqual(rows[0]["providerBusyHandlerMs"], "40.0")
 
 
 if __name__ == "__main__":
