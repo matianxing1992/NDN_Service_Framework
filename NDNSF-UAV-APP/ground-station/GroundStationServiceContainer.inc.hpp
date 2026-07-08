@@ -2719,7 +2719,9 @@ public:
     Fields auditFields;
     std::string auditReason;
     const bool auditOk = requestOperatorAuthorityAuditFromIssuerSync(
-      m_config.groundStationIdentity, 20, timeout, auditFields, auditReason);
+      m_config.groundStationIdentity, Fields{
+        {"limit", "20"},
+      }, timeout, auditFields, auditReason);
 
     const auto returnedCount = unsignedFieldOr(auditFields, "returned_count", 0);
     bool sawOverride = false;
@@ -2759,7 +2761,30 @@ public:
                  << " saw_override=" << (sawOverride ? "true" : "false")
                  << " saw_detected=" << (sawDetected ? "true" : "false")
                  << " lease_id=" << firstLease.leaseId);
-    return ok;
+    Fields pageFields;
+    std::string pageReason;
+    const bool pageOk = requestOperatorAuthorityAuditFromIssuerSync(
+      m_config.groundStationIdentity, Fields{
+        {"offset", "1"},
+        {"limit", "1"},
+        {"from_ms", std::to_string(firstLease.issuedMs)},
+      }, timeout, pageFields, pageReason);
+    const bool pageMatchesDetected =
+      pageOk &&
+      pageReason == "ok" &&
+      fieldOr(pageFields, "returned_count", "0") == "1" &&
+      fieldOr(pageFields, "offset", "0") == "1" &&
+      fieldOr(pageFields, "limit", "0") == "1" &&
+      fieldOr(pageFields, "alert.0.type", "") == "lease-revoked-detected" &&
+      fieldOr(pageFields, "alert.0.lease_id", "") == firstLease.leaseId;
+    NDN_LOG_INFO("AUTHORITY_AUDIT_PAGE_RESULT ok=" << (pageMatchesDetected ? "true" : "false")
+                 << " query=" << (pageOk ? "ok" : pageReason)
+                 << " returned_count=" << fieldOr(pageFields, "returned_count", "0")
+                 << " offset=" << fieldOr(pageFields, "offset", "0")
+                 << " limit=" << fieldOr(pageFields, "limit", "0")
+                 << " first_type=" << fieldOr(pageFields, "alert.0.type", "none")
+                 << " lease_id=" << fieldOr(pageFields, "alert.0.lease_id", "none"));
+    return ok && pageMatchesDetected;
   }
 
   bool
@@ -3948,7 +3973,7 @@ private:
 
   bool
   requestOperatorAuthorityAuditFromIssuerSync(const ndn::Name& issuerIdentity,
-                                              uint64_t maxRecords,
+                                              Fields query,
                                               std::chrono::seconds timeout,
                                               Fields& out,
                                               std::string& reason)
@@ -3964,7 +3989,7 @@ private:
     };
 
     auto state = std::make_shared<RequestState>();
-    boost::asio::post(m_face.getIoContext(), [this, issuerIdentity, maxRecords, state] {
+    boost::asio::post(m_face.getIoContext(), [this, issuerIdentity, query = std::move(query), state] {
       if (!m_containerReady.load() || !m_user) {
         std::lock_guard<std::mutex> guard(state->mutex);
         state->done = true;
@@ -3974,10 +3999,9 @@ private:
         return;
       }
 
-      auto requestMessage = makeRequest(encodeFields(Fields{
-        {"type", "operator-authority-audit-query"},
-        {"max_records", std::to_string(maxRecords)},
-      }));
+      auto requestFields = query;
+      requestFields["type"] = "operator-authority-audit-query";
+      auto requestMessage = makeRequest(encodeFields(requestFields));
       m_user->RequestService(
         std::vector<ndn::Name>{issuerIdentity},
         m_config.serviceGsOperatorAuthorityAudit,
@@ -5829,22 +5853,47 @@ private:
     const auto payload = request.getPayload();
     const auto fields = decodeFields(std::string(
       reinterpret_cast<const char*>(payload.data()), payload.size()));
-    const auto maxRecords = std::min<uint64_t>(
-      20, std::max<uint64_t>(1, unsignedFieldOr(fields, "max_records", 20)));
+    const auto limit = std::min<uint64_t>(
+      20, std::max<uint64_t>(1, unsignedFieldOr(fields, "limit",
+                                                unsignedFieldOr(fields, "max_records", 20))));
+    const bool explicitWindow = fields.find("offset") != fields.end() ||
+                                fields.find("limit") != fields.end() ||
+                                fields.find("from_ms") != fields.end() ||
+                                fields.find("to_ms") != fields.end();
+    const auto requestedOffset = unsignedFieldOr(fields, "offset", 0);
+    const auto fromMs = unsignedFieldOr(fields, "from_ms", 0);
+    const auto toMs = unsignedFieldOr(fields, "to_ms", 0);
     const auto alerts = operatorAuthorityAlertsSnapshot();
-    const auto returnedCount = std::min<uint64_t>(maxRecords, alerts.size());
-    const auto start = alerts.size() - static_cast<size_t>(returnedCount);
+    std::vector<OperatorAuthorityAlert> matched;
+    for (const auto& alert : alerts) {
+      if (fromMs != 0 && alert.updatedMs < fromMs) {
+        continue;
+      }
+      if (toMs != 0 && alert.updatedMs > toMs) {
+        continue;
+      }
+      matched.push_back(alert);
+    }
+    const auto totalMatched = static_cast<uint64_t>(matched.size());
+    const auto start = explicitWindow ?
+                       std::min<uint64_t>(requestedOffset, totalMatched) :
+                       totalMatched - std::min<uint64_t>(limit, totalMatched);
+    const auto returnedCount = std::min<uint64_t>(limit, totalMatched - start);
 
     Fields response{
       {"type", "operator-authority-audit-response"},
       {"ok", "true"},
       {"reason", "ok"},
       {"alert_count", std::to_string(alerts.size())},
+      {"matched_count", std::to_string(totalMatched)},
       {"returned_count", std::to_string(returnedCount)},
-      {"max_records", std::to_string(maxRecords)},
+      {"offset", std::to_string(start)},
+      {"limit", std::to_string(limit)},
+      {"from_ms", std::to_string(fromMs)},
+      {"to_ms", std::to_string(toMs)},
     };
     for (uint64_t i = 0; i < returnedCount; ++i) {
-      const auto& alert = alerts[start + static_cast<size_t>(i)];
+      const auto& alert = matched[static_cast<size_t>(start + i)];
       const auto prefix = "alert." + std::to_string(i) + ".";
       response[prefix + "type"] = alert.type;
       response[prefix + "reason"] = alert.reason;
@@ -5857,8 +5906,12 @@ private:
     }
 
     NDN_LOG_INFO("AUTHORITY_AUDIT_LOOKUP alert_count=" << alerts.size()
+                 << " matched_count=" << totalMatched
                  << " returned_count=" << returnedCount
-                 << " max_records=" << maxRecords
+                 << " offset=" << start
+                 << " limit=" << limit
+                 << " from_ms=" << fromMs
+                 << " to_ms=" << toMs
                  << " reason=ok");
     return makeResponse(true, encodeFields(response));
   }

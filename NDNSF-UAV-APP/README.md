@@ -1737,7 +1737,9 @@ that admin overrides and client-side revoked-lease detection are retained as
 operator-visible alert entries, persisted in the authority state file, and
 reloaded for post-mission review. The authority audit-query smoke verifies
 the same events can be fetched through `/UAV/GS/OperatorAuthority/Audit`
-over the NDNSF service path. This bundle intentionally uses mock flight-controller fields and
+over the NDNSF service path. Audit queries accept `offset`, `limit`, `from_ms`,
+and `to_ms` fields; responses report `matched_count` and `returned_count` so
+post-mission tools can page through a bounded time window. This bundle intentionally uses mock flight-controller fields and
 the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
 

@@ -1423,6 +1423,7 @@ def main() -> int:
                 raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
             require_log(gs_log, "AUTHORITY_AUDIT_LOOKUP")
             require_log(gs_log, "AUTHORITY_AUDIT_QUERY_RESULT ok=true")
+            require_log(gs_log, "AUTHORITY_AUDIT_PAGE_RESULT ok=true")
             require_log(gs_log, "saw_override=true")
             require_log(gs_log, "saw_detected=true")
             require_log(gs_log, "GS_AUTHORITY_AUDIT_QUERY_EXIT ok=true")
