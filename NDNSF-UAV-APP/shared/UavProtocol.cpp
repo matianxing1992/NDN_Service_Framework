@@ -1375,6 +1375,26 @@ VideoAdaptiveState::toStreamHealth(uint64_t streamSessionEpoch,
 }
 
 std::string
+VideoAdaptiveState::streamHealthSummary(uint64_t streamSessionEpoch,
+                                        const ndn::Name& streamPrefix,
+                                        uint64_t staleAfterMs,
+                                        uint64_t nowMs) const
+{
+  const auto health = toStreamHealth(streamSessionEpoch, streamPrefix, staleAfterMs, nowMs);
+  std::ostringstream os;
+  os << "stream_health=" << ndn_service_framework::toString(health.state)
+     << " reason=" << health.reason
+     << " pressure=" << static_cast<uint64_t>(health.fetchDecision.pressure * 100.0)
+     << " window=" << health.fetchDecision.window
+     << " lookahead=" << health.fetchDecision.lookahead
+     << " next_seq=" << health.nextSeq
+     << " timeouts=" << health.metrics.timeouts
+     << " nacks=" << health.metrics.nacks
+     << " gaps=" << health.metrics.gaps;
+  return os.str();
+}
+
+std::string
 VideoAdaptiveState::compactSummary() const
 {
   return "rtt=" + std::to_string(rttMs) +

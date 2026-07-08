@@ -506,6 +506,12 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_EQUAL(health.metrics.nacks, 1);
   BOOST_CHECK_EQUAL(health.fetchDecision.window, 64);
   BOOST_CHECK_EQUAL(health.metadata.at("primary_pressure"), "timeout");
+  const auto healthSummary = decoded.streamHealthSummary(
+    7, ndn::Name("/uav/A/video"), 3000, 123999);
+  BOOST_CHECK_NE(healthSummary.find("stream_health=DEGRADED"), std::string::npos);
+  BOOST_CHECK_NE(healthSummary.find("reason=loss-or-gap"), std::string::npos);
+  BOOST_CHECK_NE(healthSummary.find("window=64"), std::string::npos);
+  BOOST_CHECK_NE(healthSummary.find("gaps=45"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(VideoControlStateDerivesStartStopActions)

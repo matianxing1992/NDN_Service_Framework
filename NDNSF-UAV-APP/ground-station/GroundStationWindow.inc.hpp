@@ -754,7 +754,8 @@ public:
                      "  stream elapsed: " + std::to_string(elapsedMs) + " ms";
         const auto adaptive = m_runtime.videoAdaptiveForDrone(m_runtime.targetDroneId());
         if (adaptive) {
-          stats += "  " + adaptive->compactSummary();
+          stats += "  " + adaptive->streamHealthSummary() +
+                   "  " + adaptive->compactSummary();
         }
         m_stats.set_text(stats);
       }
@@ -2918,6 +2919,8 @@ private:
       state.mapText = mapTextForTelemetry(*telemetry, mission, state.selectedDrone,
                                           readiness, video, command, safety);
       if (videoAdaptive) {
+        state.mapText += "\n" + formatTag("video_stream_health",
+                                          videoAdaptive->streamHealthSummary());
         state.mapText += "\n" + formatTag("video_adaptive", videoAdaptive->compactSummary());
         state.mapText += "\n" + formatTag("video_timeout_ms",
                                           std::to_string(videoAdaptive->missingTimeoutMs));
@@ -2979,7 +2982,10 @@ private:
                                          std::string(missionPart->returnHomePlanned ? "yes" : "no"));
       }
       if (videoAdaptive) {
-        state.inspectorText += " " + videoAdaptive->statusLine();
+        state.inspectorText += " " + videoAdaptive->streamHealthSummary() +
+                               " " + videoAdaptive->statusLine();
+        state.mapText += "\n" + formatTag("video_stream_health",
+                                          videoAdaptive->streamHealthSummary());
         state.mapText += "\n" + formatTag("video_adaptive", videoAdaptive->compactSummary());
         state.mapText += "\n" + formatTag("video_timeout_ms",
                                           std::to_string(videoAdaptive->missingTimeoutMs));

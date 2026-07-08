@@ -310,6 +310,10 @@ struct VideoAdaptiveState
                                                      const ndn::Name& streamPrefix = ndn::Name(),
                                                      uint64_t staleAfterMs = 3000,
                                                      uint64_t nowMs = 0) const;
+  std::string streamHealthSummary(uint64_t streamSessionEpoch = 0,
+                                  const ndn::Name& streamPrefix = ndn::Name(),
+                                  uint64_t staleAfterMs = 3000,
+                                  uint64_t nowMs = 0) const;
   std::string compactSummary() const;
   std::string statusLine() const;
 };
