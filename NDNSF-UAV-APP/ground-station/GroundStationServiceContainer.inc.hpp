@@ -2813,7 +2813,39 @@ public:
                  << " revoked_operator=" << fieldOr(redactedFields, "alert.0.revoked_operator", "none")
                  << " revoker_operator=" << fieldOr(redactedFields, "alert.0.revoker_operator", "none")
                  << " redacted=" << fieldOr(redactedFields, "alert.0.redacted", "false"));
-    return ok && pageMatchesDetected && summaryRedacted;
+
+    Fields selfFields;
+    std::string selfReason;
+    const bool selfOk = requestOperatorAuthorityAuditFromIssuerSync(
+      m_config.groundStationIdentity, Fields{
+        {"offset", "0"},
+        {"limit", "1"},
+        {"redaction", "self"},
+        {"requester_operator", "/example/uav/operator/not-involved"},
+      }, timeout, selfFields, selfReason);
+    const bool identityPreferred =
+      selfOk &&
+      selfReason == "ok" &&
+      fieldOr(selfFields, "redaction", "") == "self" &&
+      fieldOr(selfFields, "requester_operator_source", "") == "requester-identity" &&
+      fieldOr(selfFields, "effective_requester_operator", "") == first.operatorId &&
+      fieldOr(selfFields, "alert.0.type", "") == "admin-override" &&
+      fieldOr(selfFields, "alert.0.lease_id", "") == firstLease.leaseId &&
+      fieldOr(selfFields, "alert.0.revoked_operator", "") == first.operatorId &&
+      fieldOr(selfFields, "alert.0.revoker_operator", "") == admin.operatorId &&
+      fieldOr(selfFields, "alert.0.redacted", "") == "false";
+    NDN_LOG_INFO("AUTHORITY_AUDIT_IDENTITY_RESULT ok=" << (identityPreferred ? "true" : "false")
+                 << " query=" << (selfOk ? "ok" : selfReason)
+                 << " redaction=" << fieldOr(selfFields, "redaction", "none")
+                 << " source=" << fieldOr(selfFields, "requester_operator_source", "none")
+                 << " requester_identity=" << fieldOr(selfFields, "requester_identity", "none")
+                 << " effective_requester_operator="
+                 << fieldOr(selfFields, "effective_requester_operator", "none")
+                 << " payload_requester_operator=/example/uav/operator/not-involved"
+                 << " revoked_operator=" << fieldOr(selfFields, "alert.0.revoked_operator", "none")
+                 << " revoker_operator=" << fieldOr(selfFields, "alert.0.revoker_operator", "none")
+                 << " redacted=" << fieldOr(selfFields, "alert.0.redacted", "false"));
+    return ok && pageMatchesDetected && summaryRedacted && identityPreferred;
   }
 
   bool
@@ -4139,6 +4171,22 @@ private:
   operatorHasAdminAuthority(const std::string& operatorId) const
   {
     return m_operatorAdminIds.empty() || m_operatorAdminIds.count(operatorId) != 0;
+  }
+
+  std::string
+  operatorIdForRequesterIdentity(const ndn::Name& requesterIdentity) const
+  {
+    const auto requester = requesterIdentity.toUri();
+    if (requester == m_config.groundStationIdentity.toUri()) {
+      return m_operatorId;
+    }
+    if (requester.find("/operator/") != std::string::npos) {
+      return requester;
+    }
+    if (requester.find("/Operator/") != std::string::npos) {
+      return requester;
+    }
+    return "";
   }
 
   void
@@ -5738,10 +5786,10 @@ private:
 
     m_coreContainer.localRegistry().registerLocalService(
       m_config.serviceGsOperatorAuthorityAudit,
-      [this](const ndn::Name&,
+      [this](const ndn::Name& requesterIdentity,
              const ndn::Name&,
              const ndn_service_framework::RequestMessage& request) {
-        return runOperatorAuthorityAuditLocal(request);
+        return runOperatorAuthorityAuditLocal(request, requesterIdentity);
       });
 
     m_objectDetectionProvider->addService(
@@ -5758,12 +5806,16 @@ private:
           }));
           return decision;
         }),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
-        [this](const ndn_service_framework::RequestMessage& request) {
+      ndn_service_framework::ServiceProvider::RequestHandler(
+        [this](const ndn::Name& requesterIdentity,
+               const ndn::Name&,
+               const ndn::Name&,
+               const ndn::Name&,
+               const ndn_service_framework::RequestMessage& request) {
           ndn_service_framework::ResponseMessage response;
           m_coreContainer.localRegistry().localInvokeRawInto(
             m_config.serviceGsOperatorAuthorityAudit, request, response,
-            m_config.groundStationIdentity);
+            requesterIdentity);
           return response;
         }),
       ServiceInvocationMode::NormalOnly);
@@ -5877,7 +5929,8 @@ private:
   }
 
   ndn_service_framework::ResponseMessage
-  runOperatorAuthorityAuditLocal(const ndn_service_framework::RequestMessage& request)
+  runOperatorAuthorityAuditLocal(const ndn_service_framework::RequestMessage& request,
+                                 const ndn::Name& requesterIdentity = ndn::Name("/local"))
   {
     const auto payload = request.getPayload();
     const auto fields = decodeFields(std::string(
@@ -5893,7 +5946,17 @@ private:
     const auto fromMs = unsignedFieldOr(fields, "from_ms", 0);
     const auto toMs = unsignedFieldOr(fields, "to_ms", 0);
     const auto redaction = fieldOr(fields, "redaction", "full");
-    const auto requesterOperator = fieldOr(fields, "requester_operator", "");
+    const auto payloadRequesterOperator = fieldOr(fields, "requester_operator", "");
+    std::string requesterOperatorSource = "payload";
+    auto requesterOperator = payloadRequesterOperator;
+    const auto authenticatedRequesterOperator = operatorIdForRequesterIdentity(requesterIdentity);
+    if (!authenticatedRequesterOperator.empty()) {
+      requesterOperator = authenticatedRequesterOperator;
+      requesterOperatorSource = "requester-identity";
+    }
+    else if (requesterOperator.empty()) {
+      requesterOperatorSource = "none";
+    }
     const auto alerts = operatorAuthorityAlertsSnapshot();
     std::vector<OperatorAuthorityAlert> matched;
     for (const auto& alert : alerts) {
@@ -5923,6 +5986,9 @@ private:
       {"from_ms", std::to_string(fromMs)},
       {"to_ms", std::to_string(toMs)},
       {"redaction", redaction},
+      {"requester_identity", requesterIdentity.toUri()},
+      {"effective_requester_operator", requesterOperator},
+      {"requester_operator_source", requesterOperatorSource},
     };
     for (uint64_t i = 0; i < returnedCount; ++i) {
       const auto& alert = matched[static_cast<size_t>(start + i)];
@@ -5952,6 +6018,9 @@ private:
                  << " from_ms=" << fromMs
                  << " to_ms=" << toMs
                  << " redaction=" << redaction
+                 << " requester_identity=" << requesterIdentity.toUri()
+                 << " effective_requester_operator=" << requesterOperator
+                 << " requester_operator_source=" << requesterOperatorSource
                  << " reason=ok");
     return makeResponse(true, encodeFields(response));
   }

@@ -1743,9 +1743,10 @@ post-mission tools can page through a bounded time window. They also accept
 `redaction=full|summary|self` and `requester_operator`: `full` remains the
 default for compatibility, `summary` hides operator identities, and `self`
 reveals identities only when the requester matches the revoked or revoking
-operator. This is an app-level audit-output contract until a
-multi-ground-station deployment binds redaction to authenticated requester
-identity. This bundle intentionally uses mock flight-controller fields and the
+operator. When the NDNSF requester identity maps to a configured operator, the
+audit service uses that authenticated mapping before the caller-supplied
+`requester_operator` fallback and reports `requester_operator_source` in the
+response. This bundle intentionally uses mock flight-controller fields and the
 virtual camera path, so it does not require PX4, jMAVSim, a USB camera, or real
 UAV hardware.
 
