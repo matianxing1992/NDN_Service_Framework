@@ -12,6 +12,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ndnsf import (
+    GenericProviderRuntimeHint,
+    ProviderCapabilityHint,
+    ServiceOperationState,
+    ServiceOperationStatus,
+    encode_ack_metadata,
+)
+
 
 REPO = Path(__file__).resolve().parents[2]
 HARNESS = REPO / "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
@@ -577,6 +585,52 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(provider["maxActiveWorkers"], 1)
         self.assertEqual(provider["latest"]["leaseId"], "l0")
         self.assertEqual(provider["latest"]["runtimeStatus"], "ready")
+
+    def test_core_envelope_summary_is_aggregated_from_provider_ack_payloads(self) -> None:
+        harness = load_harness_module()
+        status = ServiceOperationStatus(
+            operation_id="op-1",
+            operation="native-provider-admission",
+            service_name="/Inference/NativeTracer",
+            provider_name="/P/backbone",
+            state=ServiceOperationState.RUNNING,
+            progress=0.5,
+        )
+        hint = ProviderCapabilityHint(
+            provider_name="/P/backbone",
+            service_name="/Inference/NativeTracer",
+            ready=True,
+            message="native DI provider ready",
+            runtime_hint=GenericProviderRuntimeHint(
+                provider_name="/P/backbone",
+                queue_length=3,
+                active_work_count=1,
+            ),
+            operation_status=status,
+            service_payload_schema="ndnsf-di-capability-v1",
+            service_payload={"roles": ["/Backbone"]},
+        )
+        payload = encode_ack_metadata(hint.to_ack_fields()).decode("utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            (logs / "provider.log").write_text(
+                "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION "
+                "provider=/P/backbone roles=/Backbone status=1 "
+                "message=\"native DI provider ready\" "
+                f"payload=\"{payload}\"\n",
+                encoding="utf-8",
+            )
+            summary = harness.collect_core_envelope_summary(logs)
+
+        self.assertEqual(summary["eventCount"], 1)
+        self.assertEqual(summary["envelopeCounts"]["providerCapabilityHint"], 1)
+        self.assertEqual(summary["envelopeCounts"]["serviceOperationStatus"], 1)
+        self.assertEqual(summary["providerReadiness"]["ready"], 1)
+        self.assertEqual(summary["servicePayloadSchemas"]["ndnsf-di-capability-v1"], 1)
+        self.assertEqual(summary["operationStates"]["RUNNING"], 1)
+        latest = summary["latestProviders"]["/P/backbone"]
+        self.assertEqual(latest["queueLength"], 3)
+        self.assertEqual(latest["activeWorkCount"], 1)
 
     def test_planner_metrics_aggregation_reports_campaign_fields(self) -> None:
         harness = load_harness_module()

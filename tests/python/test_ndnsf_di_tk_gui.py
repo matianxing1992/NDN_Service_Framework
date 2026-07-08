@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ndnsf_distributed_inference.gui import (
     ControllerTabConfig,
@@ -23,11 +25,13 @@ from ndnsf_distributed_inference.gui import (
     build_arg_parser,
     build_qwen_minindn_command,
     build_role_command,
+    format_core_envelope_summary,
     load_runtime_profile,
     load_three_role_profile,
     payload_from_request,
     redact_mapping,
     run_headless,
+    run_headless_qwen_minindn,
     split_extra_args,
     write_runtime_profile,
     write_three_role_profile,
@@ -339,6 +343,84 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertIn("streamchunk", command)
         self.assertIn("10.0", command)
         self.assertIn("--dry-run", command)
+
+    def test_qwen_minindn_headless_exposes_core_envelope_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "qwen"
+            summary_path = out_dir / "summary.json"
+            out_dir.mkdir()
+            summary_path.write_text(json.dumps({
+                "status": "SUCCESS",
+                "miniNDNRun": "completed",
+                "runnerMode": "onnx",
+                "userExecution": {"status": "executed"},
+                "dependencyExecution": {"status": "executed"},
+                "coreEnvelopeSummary": {
+                    "eventCount": 2,
+                    "envelopeCounts": {"providerCapabilityHint": 2},
+                    "providerReadiness": {"ready": 2},
+                },
+                "providerAckRuntimeHints": {
+                    "eventCount": 2,
+                    "providers": {"/P/backbone": {"ackEvents": 2}},
+                },
+            }), encoding="utf-8")
+            args = build_arg_parser().parse_args([
+                "--headless",
+                "--headless-experiment",
+                "qwen-minindn",
+                "--experiment-out",
+                str(out_dir),
+            ])
+            with mock.patch(
+                "ndnsf_distributed_inference.gui.subprocess.run",
+                return_value=mock.Mock(returncode=0, stdout="ok"),
+            ):
+                summary = run_headless_qwen_minindn(args)
+
+        self.assertTrue(summary["ok"])
+        self.assertEqual(summary["coreEnvelopeSummary"]["eventCount"], 2)
+        self.assertEqual(
+            summary["coreEnvelopeSummary"]["envelopeCounts"]["providerCapabilityHint"],
+            2,
+        )
+        self.assertEqual(summary["providerAckRuntimeHints"]["eventCount"], 2)
+
+    def test_core_envelope_summary_formatter_reports_gui_fields(self) -> None:
+        text = format_core_envelope_summary(
+            {
+                "eventCount": 2,
+                "envelopeCounts": {"providerCapabilityHint": 2, "serviceOperationStatus": 1},
+                "providerReadiness": {"ready": 1, "notReady": 1},
+                "reasonCodes": {"QUEUE_FULL": 1},
+                "servicePayloadSchemas": {"ndnsf-di-capability-v1": 2},
+                "operationStates": {"RUNNING": 1},
+                "latestProviders": {
+                    "/P/backbone": {
+                        "ready": True,
+                        "queueLength": 3,
+                        "activeWorkCount": 1,
+                        "reasonCode": "",
+                        "servicePayloadSchema": "ndnsf-di-capability-v1",
+                    },
+                },
+            },
+            {
+                "providers": {
+                    "/P/backbone": {
+                        "ackEvents": 2,
+                        "successfulAckEvents": 1,
+                        "negativeAckEvents": 1,
+                        "latest": {"queue": 3, "runtimeStatus": "ready"},
+                    },
+                },
+            },
+        )
+        self.assertIn("ACK events scanned: 2", text)
+        self.assertIn("Provider readiness: notReady=1, ready=1", text)
+        self.assertIn("Reason codes: QUEUE_FULL=1", text)
+        self.assertIn("/P/backbone: ready=True queue=3 active=1", text)
+        self.assertIn("Legacy ACK runtime hints", text)
 
     def test_headless_fake_all_roles_and_request_writes_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

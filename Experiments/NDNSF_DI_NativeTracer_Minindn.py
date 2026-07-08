@@ -21,8 +21,10 @@ from typing import Any, Optional
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 sys.path.insert(0, str(REPO / "Experiments"))
+sys.path.insert(0, str(REPO / "pythonWrapper"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
+from ndnsf import ProviderCapabilityHint, ServiceOperationStatus, parse_ack_metadata  # noqa: E402
 from ndnsf_distributed_inference.runtime_v1_evidence import write_minindn_runtime_v1_evidence  # noqa: E402
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
@@ -1944,6 +1946,92 @@ def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
     }
 
 
+def collect_core_envelope_summary(logs_dir: Path) -> dict[str, object]:
+    """Summarize reusable NDNSF core envelopes visible in provider ACK logs."""
+    envelope_counts: Counter[str] = Counter()
+    provider_readiness: Counter[str] = Counter()
+    reason_codes: Counter[str] = Counter()
+    service_payload_schemas: Counter[str] = Counter()
+    operation_states: Counter[str] = Counter()
+    operation_names: Counter[str] = Counter()
+    latest_providers: dict[str, dict[str, object]] = {}
+    scanned_logs = 0
+    event_count = 0
+    parse_errors: list[dict[str, str]] = []
+    for path in sorted(logs_dir.glob("*.log")):
+        scanned_logs += 1
+        for line_no, line in enumerate(read_log_text(path).splitlines(), start=1):
+            if "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION" not in line:
+                continue
+            event_count += 1
+            fields = parse_trace_fields(line)
+            payload_text = fields.get("payload", "").strip('"')
+            payload_fields = parse_ack_metadata(payload_text)
+            if "providerCapabilityHint" in payload_fields:
+                try:
+                    hint = ProviderCapabilityHint.from_ack_fields(payload_fields)
+                    envelope_counts["providerCapabilityHint"] += 1
+                    provider_readiness["ready" if hint.ready else "notReady"] += 1
+                    if hint.reason_code:
+                        reason_codes[hint.reason_code] += 1
+                    if hint.service_payload_schema:
+                        service_payload_schemas[hint.service_payload_schema] += 1
+                    runtime_hint = hint.runtime_hint
+                    provider_key = fields.get("provider", "") or hint.provider_name
+                    latest_providers[provider_key] = {
+                        "provider": hint.provider_name,
+                        "service": hint.service_name,
+                        "ready": hint.ready,
+                        "reasonCode": hint.reason_code,
+                        "message": hint.message,
+                        "servicePayloadSchema": hint.service_payload_schema,
+                        "queueLength": runtime_hint.queue_length if runtime_hint else 0,
+                        "activeWorkCount": runtime_hint.active_work_count if runtime_hint else 0,
+                        "leaseOfferCount": len(hint.lease_offers),
+                        "log": str(path),
+                    }
+                    if hint.operation_status is not None:
+                        operation = hint.operation_status
+                        envelope_counts["serviceOperationStatus"] += 1
+                        operation_states[operation.state.value] += 1
+                        operation_names[operation.operation] += 1
+                except Exception as exc:
+                    envelope_counts["providerCapabilityHintParseErrors"] += 1
+                    if len(parse_errors) < 5:
+                        parse_errors.append({
+                            "log": str(path),
+                            "line": str(line_no),
+                            "error": str(exc),
+                        })
+            if "operationStatus" in payload_fields:
+                try:
+                    operation = ServiceOperationStatus.from_dict(
+                        dict(payload_fields["operationStatus"]))
+                    envelope_counts["serviceOperationStatus"] += 1
+                    operation_states[operation.state.value] += 1
+                    operation_names[operation.operation] += 1
+                except Exception as exc:
+                    envelope_counts["serviceOperationStatusParseErrors"] += 1
+                    if len(parse_errors) < 5:
+                        parse_errors.append({
+                            "log": str(path),
+                            "line": str(line_no),
+                            "error": str(exc),
+                        })
+    return {
+        "scannedLogs": scanned_logs,
+        "eventCount": event_count,
+        "envelopeCounts": dict(sorted(envelope_counts.items())),
+        "providerReadiness": dict(sorted(provider_readiness.items())),
+        "reasonCodes": dict(sorted(reason_codes.items())),
+        "servicePayloadSchemas": dict(sorted(service_payload_schemas.items())),
+        "operationStates": dict(sorted(operation_states.items())),
+        "operations": dict(sorted(operation_names.items())),
+        "latestProviders": dict(sorted(latest_providers.items())),
+        "parseErrors": parse_errors,
+    }
+
+
 def build_failure_breakdown(user_result: dict[str, object],
                             negative_ack: dict[str, object]) -> dict[str, object]:
     requests = user_result.get("requests", [])
@@ -2054,6 +2142,15 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
             f"decodeErrors:{stream_counters.get('decodeErrorCount', 0)};"
             f"modes:{stream_counters.get('modeCounters', {})};"
             f"overhead:{stream_counters.get('overheadRatioByMode', {})}"
+        )
+    core_envelopes = summary.get("coreEnvelopeSummary", {})
+    if isinstance(core_envelopes, dict):
+        lines.append(
+            "coreEnvelopeSummary="
+            f"events:{core_envelopes.get('eventCount', 0)};"
+            f"envelopes:{core_envelopes.get('envelopeCounts', {})};"
+            f"readiness:{core_envelopes.get('providerReadiness', {})};"
+            f"schemas:{core_envelopes.get('servicePayloadSchemas', {})}"
         )
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n",
                                          encoding="utf-8")
@@ -2993,6 +3090,7 @@ def main() -> int:
         summary["negativeAckReasonCounters"] = collect_negative_ack_reason_counters(logs_dir)
         summary["leaseCounters"] = collect_admission_lease_counters(logs_dir)
         summary["providerAckRuntimeHints"] = collect_provider_ack_runtime_hints(logs_dir)
+        summary["coreEnvelopeSummary"] = collect_core_envelope_summary(logs_dir)
         summary["providerFragmentInventory"] = collect_provider_fragment_inventory(logs_dir)
         summary["streamChunkDependencyCounters"] = collect_stream_dependency_counters(logs_dir)
         (out_dir / "streamchunk_counters.json").write_text(

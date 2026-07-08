@@ -895,6 +895,8 @@ def run_headless_qwen_minindn(args: argparse.Namespace) -> dict[str, Any]:
             "dependencyPayloadMode",
             harness_summary.get("dependencyEnvelopeMode", args.experiment_dependency_envelope_mode),
         ),
+        "coreEnvelopeSummary": harness_summary.get("coreEnvelopeSummary", {}),
+        "providerAckRuntimeHints": harness_summary.get("providerAckRuntimeHints", {}),
         "streamChunkDependencyCounters": harness_summary.get("streamChunkDependencyCounters", {}),
         "providerUtilization": harness_summary.get("providerUtilization", {}),
         "failureReason": harness_summary.get("failureReason", ""),
@@ -905,6 +907,68 @@ def run_headless_qwen_minindn(args: argparse.Namespace) -> dict[str, Any]:
         Path(args.output_json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output_json).write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
+
+
+def format_core_envelope_summary(core_summary: dict[str, Any],
+                                 provider_ack_hints: dict[str, Any] | None = None) -> str:
+    """Format core envelope evidence for the Qwen MiniNDN GUI panel."""
+    if not isinstance(core_summary, dict) or not core_summary:
+        return "No core envelope summary available yet."
+
+    def counter_line(label: str, values: Any) -> str:
+        if not isinstance(values, dict) or not values:
+            return f"{label}: none"
+        return f"{label}: " + ", ".join(
+            f"{key}={value}" for key, value in sorted(values.items())
+        )
+
+    lines = [
+        "Core envelope summary",
+        f"ACK events scanned: {core_summary.get('eventCount', 0)}",
+        counter_line("Envelopes", core_summary.get("envelopeCounts", {})),
+        counter_line("Provider readiness", core_summary.get("providerReadiness", {})),
+        counter_line("Reason codes", core_summary.get("reasonCodes", {})),
+        counter_line("Service payload schemas", core_summary.get("servicePayloadSchemas", {})),
+        counter_line("Operation states", core_summary.get("operationStates", {})),
+        "",
+        "Latest providers:",
+    ]
+    latest = core_summary.get("latestProviders", {})
+    if isinstance(latest, dict) and latest:
+        for provider, item in sorted(latest.items()):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "- "
+                f"{provider}: ready={item.get('ready', '')} "
+                f"queue={item.get('queueLength', 0)} "
+                f"active={item.get('activeWorkCount', 0)} "
+                f"reason={item.get('reasonCode', '') or 'none'} "
+                f"schema={item.get('servicePayloadSchema', '') or 'none'}"
+            )
+    else:
+        lines.append("- none")
+
+    if isinstance(provider_ack_hints, dict) and provider_ack_hints:
+        lines.extend(["", "Legacy ACK runtime hints:"])
+        providers = provider_ack_hints.get("providers", {})
+        if isinstance(providers, dict) and providers:
+            for provider, item in sorted(providers.items()):
+                if not isinstance(item, dict):
+                    continue
+                latest_hint = item.get("latest", {})
+                latest_hint = latest_hint if isinstance(latest_hint, dict) else {}
+                lines.append(
+                    "- "
+                    f"{provider}: ack={item.get('ackEvents', 0)} "
+                    f"success={item.get('successfulAckEvents', 0)} "
+                    f"negative={item.get('negativeAckEvents', 0)} "
+                    f"queue={latest_hint.get('queue', 0)} "
+                    f"runtime={latest_hint.get('runtimeStatus', '') or 'unknown'}"
+                )
+        else:
+            lines.append("- none")
+    return "\n".join(lines)
 
 
 def run_headless(args: argparse.Namespace) -> dict[str, Any]:
@@ -2943,7 +3007,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
         config = ttk.LabelFrame(self, text="Qwen NativeTracer MiniNDN experiment")
         config.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
         config.columnconfigure(1, weight=1)
@@ -2973,6 +3037,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
         self.run_button.pack(side="left", padx=4)
         self.sweep_button = ttk.Button(buttons, text="Run Sweep", command=self.run_sweep)
         self.sweep_button.pack(side="left", padx=4)
+        ttk.Button(buttons, text="Refresh Summary", command=self.refresh_summary).pack(side="left", padx=4)
         self.stop_button = ttk.Button(buttons, text="Stop", command=self.stop_experiment, state="disabled")
         self.stop_button.pack(side="left", padx=4)
         ttk.Label(config, text="Status").grid(row=row + 1, column=0, sticky="w", padx=6)
@@ -2980,8 +3045,11 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
 
         self.command_preview = TextPane(self, height=5)
         self.command_preview.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+        self.core_summary_pane = TextPane(self, height=10)
+        self.core_summary_pane.grid(row=2, column=0, sticky="ew", padx=6, pady=6)
+        self.core_summary_pane.set("Core envelope summary will appear here after a run.")
         self.log_pane = TextPane(self, height=22)
-        self.log_pane.grid(row=2, column=0, sticky="nsew", padx=6, pady=6)
+        self.log_pane.grid(row=3, column=0, sticky="nsew", padx=6, pady=6)
         self.preview_command()
 
     def _browse_open(self, key: str) -> None:
@@ -3188,6 +3256,27 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             self.queue.put("Qwen MiniNDN experiment termination requested.\n")
             self.status_var.set("stopping")
 
+    def refresh_summary(self) -> None:
+        summary_path = Path(self.value("out_dir")) / "summary.json"
+        if not summary_path.exists():
+            self.core_summary_pane.set(f"No summary found at {summary_path}")
+            self.app.set_status("Qwen MiniNDN summary not found")
+            return
+        try:
+            data = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self.core_summary_pane.set(f"Summary read failed: {exc}")
+            self.app.set_status("Qwen MiniNDN summary read failed")
+            return
+        self._display_core_summary(data)
+        self.app.set_status(f"Qwen MiniNDN summary loaded: {summary_path}")
+
+    def _display_core_summary(self, data: dict[str, Any]) -> None:
+        self.core_summary_pane.set(format_core_envelope_summary(
+            data.get("coreEnvelopeSummary", {}),
+            data.get("providerAckRuntimeHints", {}),
+        ))
+
     def _drain_queue(self) -> None:
         while True:
             try:
@@ -3244,11 +3333,14 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                         "dependencyPayloadMode",
                         data.get("dependencyEnvelopeMode", ""),
                     ),
+                    "coreEnvelopeSummary": data.get("coreEnvelopeSummary", {}),
+                    "providerAckRuntimeHints": data.get("providerAckRuntimeHints", {}),
                     "streamChunkDependencyCounters": data.get("streamChunkDependencyCounters", {}),
                     "summary_json": str(summary_path),
                     "out": str(summary_path.parent),
                 })
                 csv_rows.append(self._summary_csv_row(result, data, summary_path))
+                self._display_core_summary(data)
             except Exception as exc:
                 self.log_pane.text.insert("end", f"\nSummary read failed: {exc}\n")
         if compact_runs:
