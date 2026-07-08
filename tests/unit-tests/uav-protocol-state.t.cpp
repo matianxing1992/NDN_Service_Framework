@@ -11,6 +11,7 @@ using ndnsf::examples::uav::FlightCommandState;
 using ndnsf::examples::uav::DroneListRowState;
 using ndnsf::examples::uav::Fields;
 using ndnsf::examples::uav::MissionControlState;
+using ndnsf::examples::uav::MissionPlanDocument;
 using ndnsf::examples::uav::MissionStartGateState;
 using ndnsf::examples::uav::MissionPart;
 using ndnsf::examples::uav::MissionPlan;
@@ -19,13 +20,16 @@ using ndnsf::examples::uav::MissionState;
 using ndnsf::examples::uav::MissionWaypoint;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::RecordingDataProductState;
+using ndnsf::examples::uav::OperatorAuthorityLease;
 using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::SelectedActionState;
 using ndnsf::examples::uav::SelectedDroneSummaryState;
 using ndnsf::examples::uav::TelemetryState;
+using ndnsf::examples::uav::UavDataProductCatalogState;
 using ndnsf::examples::uav::UavFunctionalityState;
 using ndnsf::examples::uav::UavPracticalityState;
 using ndnsf::examples::uav::UavStabilityState;
+using ndnsf::examples::uav::VehicleParameterSnapshot;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
 using ndnsf::examples::uav::VideoControlState;
@@ -969,6 +973,112 @@ BOOST_AUTO_TEST_CASE(UavStabilityStateTracksTransportAndControlGuards)
   BOOST_CHECK_EQUAL(empty.stableCapabilityCount(), 0);
   BOOST_CHECK_NE(empty.missingOrLimitedCapabilities().find("stop-video=missing"),
                  std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(UavMissionPlanDocumentSupportsPersistentOperationalPlan)
+{
+  auto plan = buildPatrolMissionPlan("patrol-v2", 35.1186, -89.9375, 120.0, {"A", "B"});
+  auto document = MissionPlanDocument::fromPlan(plan, "plan-001", "Memphis patrol", "operator-1", 1000);
+  document.geofence = {{35.1180, -89.9380}, {35.1190, -89.9380}, {35.1190, -89.9370}};
+  document.rallyPoints = {{35.1185, -89.9375}};
+  document.metadata["source"] = "unit-test";
+
+  BOOST_CHECK(document.isSaveable());
+  BOOST_CHECK(document.hasFenceOrRally());
+  BOOST_CHECK_EQUAL(document.plan.parts.size(), 2);
+
+  const auto fields = document.toFields();
+  const auto roundTrip = MissionPlanDocument::fromFields(fields);
+  BOOST_CHECK_EQUAL(roundTrip.schema, "ndnsf-uav-mission-plan-v2");
+  BOOST_CHECK_EQUAL(roundTrip.planId, "plan-001");
+  BOOST_CHECK_EQUAL(roundTrip.displayName, "Memphis patrol");
+  BOOST_CHECK_EQUAL(roundTrip.operatorId, "operator-1");
+  BOOST_CHECK_EQUAL(roundTrip.plan.taskId, "patrol-v2");
+  BOOST_CHECK_EQUAL(roundTrip.plan.parts.size(), document.plan.parts.size());
+  BOOST_CHECK_EQUAL(roundTrip.geofence.size(), 3);
+  BOOST_CHECK_EQUAL(roundTrip.rallyPoints.size(), 1);
+  BOOST_CHECK_EQUAL(roundTrip.metadata.at("source"), "unit-test");
+  BOOST_CHECK_NE(roundTrip.statusLine().find("saveable=true"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(UavDataProductCatalogSummarizesQueryableProducts)
+{
+  RecordingDataProductState recording;
+  recording.droneId = "A";
+  recording.productType = "camera-recording";
+  recording.sessionId = "record-42";
+  recording.objectPrefix = "/example/uav/drone/A/repo/camera/recording/42";
+  recording.chunks = 4;
+  recording.bytes = 4096;
+  recording.updatedMs = 12345;
+
+  auto catalog = UavDataProductCatalogState::fromRecording(recording);
+  catalog.telemetryLogProducts = 2;
+  catalog.detectionProducts = 1;
+  BOOST_CHECK(catalog.hasQueryableProducts());
+  BOOST_CHECK_EQUAL(catalog.totalProducts(), 4);
+  BOOST_CHECK_EQUAL(catalog.totalBytes, 4096);
+  BOOST_CHECK_EQUAL(catalog.latestObjectPrefix, recording.objectPrefix);
+
+  const auto roundTrip = UavDataProductCatalogState::fromFields(catalog.toFields());
+  BOOST_CHECK_EQUAL(roundTrip.totalProducts(), 4);
+  BOOST_CHECK_EQUAL(roundTrip.telemetryLogProducts, 2);
+  BOOST_CHECK_NE(roundTrip.statusLine().find("detections=1"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(VehicleParameterSnapshotCarriesCapabilityView)
+{
+  VehicleParameterSnapshot snapshot;
+  snapshot.droneId = "A";
+  snapshot.source = "mavlink-param-cache";
+  snapshot.firmware = "PX4-1.14";
+  snapshot.vehicleType = "quadrotor";
+  snapshot.flightModes = "MANUAL,POSCTL,AUTO.MISSION";
+  snapshot.completePercent = 80;
+  snapshot.parameters["NAV_RCL_ACT"] = "2";
+  snapshot.parameters["COM_RC_LOSS_T"] = "5";
+
+  BOOST_CHECK(snapshot.isUsable());
+  const auto fields = snapshot.toFields();
+  const auto roundTrip = VehicleParameterSnapshot::fromFields(fields);
+  BOOST_CHECK_EQUAL(roundTrip.parameterCount, 2);
+  BOOST_CHECK_EQUAL(roundTrip.parameters.at("NAV_RCL_ACT"), "2");
+  BOOST_CHECK_EQUAL(roundTrip.firmware, "PX4-1.14");
+  BOOST_CHECK_NE(roundTrip.statusLine().find("usable=true"), std::string::npos);
+
+  const auto compact = VehicleParameterSnapshot::fromFields(snapshot.toFields(false));
+  BOOST_CHECK_EQUAL(compact.parameterCount, 2);
+  BOOST_CHECK(compact.parameters.empty());
+  BOOST_CHECK(compact.isUsable());
+}
+
+BOOST_AUTO_TEST_CASE(OperatorAuthorityLeaseBlocksConflictingControl)
+{
+  OperatorAuthorityLease lease;
+  lease.leaseId = "lease-A";
+  lease.operatorId = "operator-1";
+  lease.droneId = "A";
+  lease.scope = "control";
+  lease.issuedMs = 1000;
+  lease.expiresMs = 5000;
+
+  std::string reason;
+  BOOST_CHECK(lease.allowsCommand("A", "takeoff", 2000, reason));
+  BOOST_CHECK_EQUAL(reason, "ok");
+  BOOST_CHECK(!lease.allowsCommand("B", "takeoff", 2000, reason));
+  BOOST_CHECK_EQUAL(reason, "wrong-drone");
+  BOOST_CHECK(!lease.allowsCommand("A", "takeoff", 6000, reason));
+  BOOST_CHECK_EQUAL(reason, "lease-expired");
+
+  lease.scope = "monitor";
+  BOOST_CHECK(lease.allowsCommand("A", "telemetry", 2000, reason));
+  BOOST_CHECK(!lease.allowsCommand("A", "land", 2000, reason));
+  BOOST_CHECK_EQUAL(reason, "monitor-scope");
+
+  const auto roundTrip = OperatorAuthorityLease::fromFields(lease.toFields());
+  BOOST_CHECK_EQUAL(roundTrip.leaseId, "lease-A");
+  BOOST_CHECK_EQUAL(roundTrip.scope, "monitor");
+  BOOST_CHECK_NE(roundTrip.statusLine().find("operator=operator-1"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)

@@ -2908,6 +2908,340 @@ MissionPlan::statusLine() const
          " return_home=" + std::string(returnHomePlanned ? "true" : "false");
 }
 
+MissionPlanDocument
+MissionPlanDocument::fromPlan(const MissionPlan& plan,
+                              const std::string& planId,
+                              const std::string& displayName,
+                              const std::string& operatorId,
+                              uint64_t nowMs)
+{
+  MissionPlanDocument document;
+  document.plan = plan;
+  document.planId = planId.empty() ? plan.taskId : planId;
+  document.displayName = displayName.empty() ? document.planId : displayName;
+  document.operatorId = operatorId.empty() ? "unknown" : operatorId;
+  const auto timestamp = nowMs == 0 ? nowMilliseconds() : nowMs;
+  document.createdMs = timestamp;
+  document.updatedMs = timestamp;
+  return document;
+}
+
+MissionPlanDocument
+MissionPlanDocument::fromFields(const Fields& fields)
+{
+  MissionPlanDocument document;
+  document.schema = fieldOr(fields, "mission_plan_schema", document.schema);
+  document.planId = fieldOr(fields, "mission_plan_id", fieldOr(fields, "plan_id", document.planId));
+  document.displayName = fieldOr(fields, "mission_plan_name", document.displayName);
+  document.operatorId = fieldOr(fields, "mission_plan_operator", document.operatorId);
+  document.createdMs = uint64FieldOr(fields, "mission_plan_created_ms", 0);
+  document.updatedMs = uint64FieldOr(fields, "mission_plan_updated_ms", 0);
+  document.plan.taskId = fieldOr(fields, "mission_plan_task", fieldOr(fields, "task_id", ""));
+  document.plan.assignment = fieldOr(fields, "mission_plan_assignment", document.plan.assignment);
+  document.plan.completionObjective = fieldOr(fields, "mission_plan_completion_objective",
+                                              document.plan.completionObjective);
+  document.plan.returnHomePlanned = fieldOr(fields, "mission_plan_return_home", "false") == "true";
+  document.geofence = decodeMissionWaypoints(fieldOr(fields, "mission_plan_geofence", ""));
+  document.rallyPoints = decodeMissionWaypoints(fieldOr(fields, "mission_plan_rally_points", ""));
+  document.metadata = decodeFields(fieldOr(fields, "mission_plan_metadata", ""));
+  const auto partCount = uint64FieldOr(fields, "mission_plan_part_count", 0);
+  for (uint64_t i = 0; i < partCount; ++i) {
+    const auto prefix = "mission_plan_part_" + std::to_string(i) + "_";
+    MissionPart part;
+    part.id = fieldOr(fields, prefix + "id", "");
+    part.role = fieldOr(fields, prefix + "role", "");
+    part.assignedDrone = fieldOr(fields, prefix + "drone", "");
+    part.completedBy = fieldOr(fields, prefix + "completed_by", "");
+    part.waypoints = decodeMissionWaypoints(fieldOr(fields, prefix + "waypoints", ""));
+    part.attempt = static_cast<int>(uint64FieldOr(fields, prefix + "attempt", 0));
+    part.done = fieldOr(fields, prefix + "done", "false") == "true";
+    part.returnHomePlanned = fieldOr(fields, prefix + "return_home", "false") == "true";
+    document.plan.parts.push_back(part);
+  }
+  return document;
+}
+
+Fields
+MissionPlanDocument::toFields() const
+{
+  Fields fields{
+    {"mission_plan_schema", schema},
+    {"mission_plan_id", planId},
+    {"mission_plan_name", displayName},
+    {"mission_plan_operator", operatorId},
+    {"mission_plan_created_ms", std::to_string(createdMs)},
+    {"mission_plan_updated_ms", std::to_string(updatedMs)},
+    {"mission_plan_task", plan.taskId},
+    {"mission_plan_assignment", plan.assignment},
+    {"mission_plan_completion_objective", plan.completionObjective},
+    {"mission_plan_return_home", plan.returnHomePlanned ? "true" : "false"},
+    {"mission_plan_part_count", std::to_string(plan.parts.size())},
+    {"mission_plan_geofence", encodeMissionWaypoints(geofence)},
+    {"mission_plan_rally_points", encodeMissionWaypoints(rallyPoints)},
+    {"mission_plan_metadata", encodeFields(metadata)},
+  };
+  for (size_t i = 0; i < plan.parts.size(); ++i) {
+    const auto& part = plan.parts[i];
+    const auto prefix = "mission_plan_part_" + std::to_string(i) + "_";
+    fields[prefix + "id"] = part.id;
+    fields[prefix + "role"] = part.role;
+    fields[prefix + "drone"] = part.assignedDrone;
+    fields[prefix + "completed_by"] = part.completedBy;
+    fields[prefix + "waypoints"] = encodeMissionWaypoints(part.waypoints);
+    fields[prefix + "attempt"] = std::to_string(part.attempt);
+    fields[prefix + "done"] = part.done ? "true" : "false";
+    fields[prefix + "return_home"] = part.returnHomePlanned ? "true" : "false";
+  }
+  return fields;
+}
+
+bool
+MissionPlanDocument::isSaveable() const
+{
+  return !planId.empty() && planId != "none" &&
+         !plan.taskId.empty() &&
+         !plan.parts.empty();
+}
+
+bool
+MissionPlanDocument::hasFenceOrRally() const
+{
+  return !geofence.empty() || !rallyPoints.empty();
+}
+
+std::string
+MissionPlanDocument::statusLine() const
+{
+  return "MissionPlanDocument id=" + planId +
+         " name=" + displayName +
+         " operator=" + operatorId +
+         " task=" + plan.taskId +
+         " parts=" + std::to_string(plan.parts.size()) +
+         " geofence=" + std::to_string(geofence.size()) +
+         " rally=" + std::to_string(rallyPoints.size()) +
+         " saveable=" + std::string(isSaveable() ? "true" : "false");
+}
+
+UavDataProductCatalogState
+UavDataProductCatalogState::fromFields(const Fields& fields)
+{
+  UavDataProductCatalogState state;
+  state.recordingProducts = uint64FieldOr(fields, "catalog_recording_products", 0);
+  state.telemetryLogProducts = uint64FieldOr(fields, "catalog_telemetry_log_products", 0);
+  state.detectionProducts = uint64FieldOr(fields, "catalog_detection_products", 0);
+  state.missionLogProducts = uint64FieldOr(fields, "catalog_mission_log_products", 0);
+  state.totalBytes = uint64FieldOr(fields, "catalog_total_bytes", 0);
+  state.latestProductType = fieldOr(fields, "catalog_latest_product_type", state.latestProductType);
+  state.latestObjectPrefix = fieldOr(fields, "catalog_latest_object_prefix", state.latestObjectPrefix);
+  state.latestMissionId = fieldOr(fields, "catalog_latest_mission_id", state.latestMissionId);
+  state.updatedMs = uint64FieldOr(fields, "catalog_updated_ms", 0);
+  return state;
+}
+
+UavDataProductCatalogState
+UavDataProductCatalogState::fromRecording(const RecordingDataProductState& recording)
+{
+  UavDataProductCatalogState state;
+  if (recording.isAvailable()) {
+    state.recordingProducts = 1;
+    state.totalBytes = recording.bytes;
+    state.latestProductType = recording.productType;
+    state.latestObjectPrefix = recording.objectPrefix;
+    state.latestMissionId = fieldOr(recording.toFields(false), "mission_id", "none");
+    state.updatedMs = recording.updatedMs;
+  }
+  return state;
+}
+
+Fields
+UavDataProductCatalogState::toFields() const
+{
+  return {
+    {"catalog_recording_products", std::to_string(recordingProducts)},
+    {"catalog_telemetry_log_products", std::to_string(telemetryLogProducts)},
+    {"catalog_detection_products", std::to_string(detectionProducts)},
+    {"catalog_mission_log_products", std::to_string(missionLogProducts)},
+    {"catalog_total_bytes", std::to_string(totalBytes)},
+    {"catalog_latest_product_type", latestProductType},
+    {"catalog_latest_object_prefix", latestObjectPrefix},
+    {"catalog_latest_mission_id", latestMissionId},
+    {"catalog_updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+uint64_t
+UavDataProductCatalogState::totalProducts() const
+{
+  return recordingProducts + telemetryLogProducts + detectionProducts + missionLogProducts;
+}
+
+bool
+UavDataProductCatalogState::hasQueryableProducts() const
+{
+  return totalProducts() > 0;
+}
+
+std::string
+UavDataProductCatalogState::statusLine() const
+{
+  return "UavDataProductCatalog products=" + std::to_string(totalProducts()) +
+         " recordings=" + std::to_string(recordingProducts) +
+         " telemetry_logs=" + std::to_string(telemetryLogProducts) +
+         " detections=" + std::to_string(detectionProducts) +
+         " mission_logs=" + std::to_string(missionLogProducts) +
+         " bytes=" + std::to_string(totalBytes) +
+         " latest=" + latestProductType + ":" + latestObjectPrefix;
+}
+
+namespace {
+
+std::string
+encodeParameters(const Fields& parameters)
+{
+  return encodeFields(parameters);
+}
+
+Fields
+decodeParameters(const std::string& value)
+{
+  return decodeFields(value);
+}
+
+} // namespace
+
+VehicleParameterSnapshot
+VehicleParameterSnapshot::fromFields(const Fields& fields)
+{
+  VehicleParameterSnapshot snapshot;
+  snapshot.droneId = fieldOr(fields, "parameter_drone", snapshot.droneId);
+  snapshot.source = fieldOr(fields, "parameter_source", snapshot.source);
+  snapshot.firmware = fieldOr(fields, "parameter_firmware", snapshot.firmware);
+  snapshot.vehicleType = fieldOr(fields, "parameter_vehicle_type", snapshot.vehicleType);
+  snapshot.flightModes = fieldOr(fields, "parameter_flight_modes", snapshot.flightModes);
+  snapshot.parameterCount = uint64FieldOr(fields, "parameter_count", 0);
+  snapshot.completePercent = uint64FieldOr(fields, "parameter_complete_percent", 0);
+  snapshot.updatedMs = uint64FieldOr(fields, "parameter_updated_ms", 0);
+  snapshot.parameters = decodeParameters(fieldOr(fields, "parameter_values", ""));
+  if (snapshot.parameterCount == 0 && !snapshot.parameters.empty()) {
+    snapshot.parameterCount = snapshot.parameters.size();
+  }
+  return snapshot;
+}
+
+Fields
+VehicleParameterSnapshot::toFields(bool includeParameters) const
+{
+  Fields fields{
+    {"parameter_drone", droneId},
+    {"parameter_source", source},
+    {"parameter_firmware", firmware},
+    {"parameter_vehicle_type", vehicleType},
+    {"parameter_flight_modes", flightModes},
+    {"parameter_count", std::to_string(parameterCount == 0 ? parameters.size() : parameterCount)},
+    {"parameter_complete_percent", std::to_string(completePercent)},
+    {"parameter_updated_ms", std::to_string(updatedMs)},
+  };
+  if (includeParameters) {
+    fields["parameter_values"] = encodeParameters(parameters);
+  }
+  return fields;
+}
+
+bool
+VehicleParameterSnapshot::isUsable() const
+{
+  return parameterCount > 0 || !parameters.empty() || firmware != "unknown" ||
+         vehicleType != "unknown" || flightModes != "unknown";
+}
+
+std::string
+VehicleParameterSnapshot::statusLine() const
+{
+  return "VehicleParameterSnapshot drone=" + droneId +
+         " source=" + source +
+         " firmware=" + firmware +
+         " vehicle=" + vehicleType +
+         " modes=" + flightModes +
+         " parameters=" + std::to_string(parameterCount == 0 ? parameters.size() : parameterCount) +
+         " complete=" + std::to_string(completePercent) +
+         " usable=" + std::string(isUsable() ? "true" : "false");
+}
+
+OperatorAuthorityLease
+OperatorAuthorityLease::fromFields(const Fields& fields)
+{
+  OperatorAuthorityLease lease;
+  lease.leaseId = fieldOr(fields, "lease_id", lease.leaseId);
+  lease.operatorId = fieldOr(fields, "lease_operator", lease.operatorId);
+  lease.droneId = fieldOr(fields, "lease_drone", lease.droneId);
+  lease.scope = fieldOr(fields, "lease_scope", lease.scope);
+  lease.issuedMs = uint64FieldOr(fields, "lease_issued_ms", 0);
+  lease.expiresMs = uint64FieldOr(fields, "lease_expires_ms", 0);
+  lease.revoked = fieldOr(fields, "lease_revoked", "false") == "true";
+  return lease;
+}
+
+Fields
+OperatorAuthorityLease::toFields() const
+{
+  return {
+    {"lease_id", leaseId},
+    {"lease_operator", operatorId},
+    {"lease_drone", droneId},
+    {"lease_scope", scope},
+    {"lease_issued_ms", std::to_string(issuedMs)},
+    {"lease_expires_ms", std::to_string(expiresMs)},
+    {"lease_revoked", revoked ? "true" : "false"},
+  };
+}
+
+bool
+OperatorAuthorityLease::isFresh(uint64_t nowMs) const
+{
+  const auto current = nowMs == 0 ? nowMilliseconds() : nowMs;
+  return !revoked && !leaseId.empty() && leaseId != "none" &&
+         (expiresMs == 0 || current < expiresMs);
+}
+
+bool
+OperatorAuthorityLease::allowsCommand(const std::string& targetDrone,
+                                      const std::string& commandName,
+                                      uint64_t nowMs,
+                                      std::string& reason) const
+{
+  if (!isFresh(nowMs)) {
+    reason = revoked ? "lease-revoked" : "lease-expired";
+    return false;
+  }
+  if (!droneId.empty() && droneId != "all" && droneId != targetDrone) {
+    reason = "wrong-drone";
+    return false;
+  }
+  const bool monitorOnly = commandName == "telemetry" || commandName == "status" ||
+                           commandName == "get_status";
+  if (scope == "monitor") {
+    reason = monitorOnly ? "ok" : "monitor-scope";
+    return monitorOnly;
+  }
+  if (scope == "control" || scope == "mission" || scope == "admin") {
+    reason = "ok";
+    return true;
+  }
+  reason = "unsupported-scope";
+  return false;
+}
+
+std::string
+OperatorAuthorityLease::statusLine() const
+{
+  return "OperatorAuthorityLease id=" + leaseId +
+         " operator=" + operatorId +
+         " drone=" + droneId +
+         " scope=" + scope +
+         " revoked=" + std::string(revoked ? "true" : "false") +
+         " expires=" + std::to_string(expiresMs);
+}
+
 SelectedDroneSummaryState
 SelectedDroneSummaryState::fromStates(const std::string& selectedDrone,
                                       const std::optional<TelemetryState>& telemetry,

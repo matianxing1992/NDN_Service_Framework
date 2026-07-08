@@ -747,6 +747,89 @@ struct UavStabilityState
   std::string statusLine() const;
 };
 
+struct MissionPlanDocument
+{
+  std::string schema = "ndnsf-uav-mission-plan-v2";
+  std::string planId = "none";
+  std::string displayName = "untitled";
+  std::string operatorId = "unknown";
+  uint64_t createdMs = 0;
+  uint64_t updatedMs = 0;
+  MissionPlan plan;
+  std::vector<MissionWaypoint> geofence;
+  std::vector<MissionWaypoint> rallyPoints;
+  Fields metadata;
+
+  static MissionPlanDocument fromPlan(const MissionPlan& plan,
+                                      const std::string& planId,
+                                      const std::string& displayName,
+                                      const std::string& operatorId,
+                                      uint64_t nowMs = 0);
+  static MissionPlanDocument fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool isSaveable() const;
+  bool hasFenceOrRally() const;
+  std::string statusLine() const;
+};
+
+struct UavDataProductCatalogState
+{
+  uint64_t recordingProducts = 0;
+  uint64_t telemetryLogProducts = 0;
+  uint64_t detectionProducts = 0;
+  uint64_t missionLogProducts = 0;
+  uint64_t totalBytes = 0;
+  std::string latestProductType = "none";
+  std::string latestObjectPrefix = "none";
+  std::string latestMissionId = "none";
+  uint64_t updatedMs = 0;
+
+  static UavDataProductCatalogState fromFields(const Fields& fields);
+  static UavDataProductCatalogState fromRecording(const RecordingDataProductState& recording);
+  Fields toFields() const;
+  uint64_t totalProducts() const;
+  bool hasQueryableProducts() const;
+  std::string statusLine() const;
+};
+
+struct VehicleParameterSnapshot
+{
+  std::string droneId = "unknown";
+  std::string source = "unknown";
+  std::string firmware = "unknown";
+  std::string vehicleType = "unknown";
+  std::string flightModes = "unknown";
+  uint64_t parameterCount = 0;
+  uint64_t completePercent = 0;
+  uint64_t updatedMs = 0;
+  Fields parameters;
+
+  static VehicleParameterSnapshot fromFields(const Fields& fields);
+  Fields toFields(bool includeParameters = true) const;
+  bool isUsable() const;
+  std::string statusLine() const;
+};
+
+struct OperatorAuthorityLease
+{
+  std::string leaseId = "none";
+  std::string operatorId = "unknown";
+  std::string droneId = "unknown";
+  std::string scope = "monitor";
+  uint64_t issuedMs = 0;
+  uint64_t expiresMs = 0;
+  bool revoked = false;
+
+  static OperatorAuthorityLease fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool isFresh(uint64_t nowMs = 0) const;
+  bool allowsCommand(const std::string& targetDrone,
+                     const std::string& commandName,
+                     uint64_t nowMs,
+                     std::string& reason) const;
+  std::string statusLine() const;
+};
+
 MissionPlan
 buildPatrolMissionPlan(const std::string& taskId,
                        double centerLat,
