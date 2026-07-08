@@ -227,6 +227,28 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertFalse(user_driver.overload_fast_fail_metadata(disabled)["overloadFastFail"]["enabled"])
         self.assertEqual(user_driver.effective_timeout_ms(too_large), 60000)
 
+    def test_harness_parses_open_loop_wait_metrics(self) -> None:
+        harness = load_harness_module()
+        payload = {
+            "status": "executed",
+            "localBackpressureCount": 0,
+            "localBackpressureWaitCount": 69,
+            "maxScheduleSlipMs": 7150.519,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "user-driver.log"
+            log_path.write_text(
+                "NDNSF_DI_NATIVE_TRACER_USER_EXECUTION "
+                + json.dumps(payload, sort_keys=True)
+                + "\n",
+                encoding="utf-8")
+
+            parsed = harness.parse_user_execution(log_path)
+
+        self.assertEqual(parsed["localBackpressureCount"], 0)
+        self.assertEqual(parsed["localBackpressureWaitCount"], 69)
+        self.assertEqual(parsed["maxScheduleSlipMs"], 7150.519)
+
     def test_wire_advisory_coordinator_balances_role_candidates(self) -> None:
         from ndnsf import CoordinationIntent, CoordinationRequest
 

@@ -3006,6 +3006,8 @@ def main() -> int:
                 "scheduledRequestCount": user_result.get("scheduledRequestCount", args.requests),
                 "submittedCount": user_result.get("submittedCount", user_result.get("successCount", 1)),
                 "localBackpressureCount": user_result.get("localBackpressureCount", 0),
+                "localBackpressureWaitCount": user_result.get("localBackpressureWaitCount", 0),
+                "maxScheduleSlipMs": user_result.get("maxScheduleSlipMs", 0.0),
                 "offeredRps": user_result.get("offeredRps", 0.0),
                 "requests": user_result.get("requests", []),
             }

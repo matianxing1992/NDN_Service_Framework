@@ -943,6 +943,8 @@ def run_open_loop_requests(user: ServiceUser,
         "inFlight": 0,
         "submitted": 0,
         "dropped": 0,
+        "backpressureWaits": 0,
+        "maxScheduleSlipMs": 0.0,
         "completed": 0,
     }
     schedule_start = time.perf_counter()
@@ -983,6 +985,9 @@ def run_open_loop_requests(user: ServiceUser,
 
     def submit_one_locked(index: int) -> None:
         starts[index] = time.perf_counter()
+        scheduled_at = schedule_start + ((index - 1) / args.target_rps)
+        schedule_slip_ms = max(0.0, (starts[index] - scheduled_at) * 1000.0)
+        state["maxScheduleSlipMs"] = max(state["maxScheduleSlipMs"], schedule_slip_ms)
         state["inFlight"] += 1
         state["submitted"] += 1
         print(
@@ -995,6 +1000,7 @@ def run_open_loop_requests(user: ServiceUser,
                 "targetRps": args.target_rps,
                 "openLoopDurationS": args.open_loop_duration_s,
                 "scheduledOffsetMs": round((starts[index] - schedule_start) * 1000.0, 3),
+                "scheduleSlipMs": round(schedule_slip_ms, 3),
             }, sort_keys=True),
             flush=True,
         )
@@ -1049,21 +1055,9 @@ def run_open_loop_requests(user: ServiceUser,
         if delay > 0:
             time.sleep(delay)
         with condition:
-            if state["inFlight"] >= args.concurrency:
-                state["dropped"] += 1
-                state["completed"] += 1
-                result = make_result(
-                    index,
-                    False,
-                    b"",
-                    "local-open-loop-backpressure",
-                    0.0,
-                    mode="open-loop-dropped")
-                results[index] = result
-                print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
-                      json.dumps(result, sort_keys=True), flush=True)
-                condition.notify_all()
-                continue
+            while state["inFlight"] >= args.concurrency:
+                state["backpressureWaits"] += 1
+                condition.wait(timeout=0.1)
             submit_one_locked(index)
 
     deadline = max(
@@ -1093,6 +1087,8 @@ def run_open_loop_requests(user: ServiceUser,
         "scheduledRequestCount": planned,
         "submittedCount": int(state["submitted"]),
         "localBackpressureCount": int(state["dropped"]),
+        "localBackpressureWaitCount": int(state["backpressureWaits"]),
+        "maxScheduleSlipMs": round(float(state["maxScheduleSlipMs"]), 3),
         "offeredRps": planned / args.open_loop_duration_s if args.open_loop_duration_s > 0 else 0.0,
     }
     return [results[index] for index in sorted(results)], metadata
@@ -1177,24 +1173,10 @@ def run_threaded_open_loop_requests(users: list[ServiceUser],
     results: list[dict] = []
     available_workers = list(range(len(users)))
     active: dict[concurrent.futures.Future, int] = {}
+    local_backpressure_waits = 0
+    max_schedule_slip_ms = 0.0
 
-    def make_drop(index: int) -> dict:
-        return {
-            "status": "failed",
-            "service": args.service,
-            "requestIndex": index,
-            "requestCount": planned,
-            "concurrency": args.concurrency,
-            "mode": "open-loop-threaded-dropped",
-            "targetRps": args.target_rps,
-            "openLoopDurationS": args.open_loop_duration_s,
-            "responseStatus": False,
-            "payloadBytes": 0,
-            "error": "local-open-loop-backpressure",
-            "elapsedMs": 0.0,
-        }
-
-    def request_on_worker(worker_index: int, request_index: int) -> dict:
+    def request_on_worker(worker_index: int, request_index: int, schedule_slip_ms: float) -> dict:
         print(
             "NDNSF_DI_NATIVE_TRACER_USER_SUBMIT "
             + json.dumps({
@@ -1206,6 +1188,7 @@ def run_threaded_open_loop_requests(users: list[ServiceUser],
                 "targetRps": args.target_rps,
                 "openLoopDurationS": args.open_loop_duration_s,
                 "scheduledOffsetMs": round((time.perf_counter() - schedule_start) * 1000.0, 3),
+                "scheduleSlipMs": round(schedule_slip_ms, 3),
             }, sort_keys=True),
             flush=True,
         )
@@ -1263,14 +1246,17 @@ def run_threaded_open_loop_requests(users: list[ServiceUser],
                     break
                 time.sleep(min(delay, 0.02))
             collect_completed(timeout=0.0)
-            if not available_workers:
-                result = make_drop(index)
-                print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
-                      json.dumps(result, sort_keys=True), flush=True)
-                results.append(result)
-                continue
+            while not available_workers:
+                local_backpressure_waits += 1
+                collect_completed(timeout=0.1)
+            schedule_slip_ms = max(0.0, (time.perf_counter() - target_time) * 1000.0)
+            max_schedule_slip_ms = max(max_schedule_slip_ms, schedule_slip_ms)
             worker_index = available_workers.pop(0)
-            active[executor.submit(request_on_worker, worker_index, index)] = worker_index
+            active[executor.submit(
+                request_on_worker,
+                worker_index,
+                index,
+                schedule_slip_ms)] = worker_index
         while active:
             collect_completed(timeout=0.1)
 
@@ -1285,6 +1271,8 @@ def run_threaded_open_loop_requests(users: list[ServiceUser],
         "scheduledRequestCount": planned,
         "submittedCount": len(results) - len(dropped),
         "localBackpressureCount": len(dropped),
+        "localBackpressureWaitCount": local_backpressure_waits,
+        "maxScheduleSlipMs": round(max_schedule_slip_ms, 3),
         "offeredRps": planned / args.open_loop_duration_s if args.open_loop_duration_s > 0 else 0.0,
     }
     return sorted(results, key=lambda item: int(item.get("requestIndex", 0))), metadata
@@ -1385,22 +1373,6 @@ def run_child_process_requests(args,
     open_loop = args.open_loop_duration_s > 0.0
     planned = open_loop_planned_requests(args) if open_loop else args.requests
     schedule_start = time.perf_counter()
-
-    def make_open_loop_drop(index: int) -> dict:
-        return {
-            "status": "failed",
-            "service": args.service,
-            "requestIndex": index,
-            "requestCount": planned,
-            "concurrency": args.concurrency,
-            "mode": "open-loop-dropped",
-            "targetRps": args.target_rps,
-            "openLoopDurationS": args.open_loop_duration_s,
-            "responseStatus": False,
-            "payloadBytes": 0,
-            "error": "local-open-loop-backpressure",
-            "elapsedMs": 0.0,
-        }
 
     def run_child(index: int) -> dict:
         if not open_loop and args.submission_spacing_ms > 0:
@@ -1543,6 +1515,8 @@ def run_child_process_requests(args,
 
     results: list[dict] = []
     if open_loop:
+        local_backpressure_waits = 0
+        max_schedule_slip_ms = 0.0
         print(
             "NDNSF_DI_NATIVE_TRACER_USER_OPEN_LOOP "
             + json.dumps({
@@ -1581,16 +1555,19 @@ def run_child_process_requests(args,
                         break
                     time.sleep(min(delay, 0.05))
                 collect_completed(timeout=0.0)
-                if len(active) >= args.concurrency:
-                    result = make_open_loop_drop(index)
-                    print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
-                          json.dumps(result, sort_keys=True), flush=True)
-                    results.append(result)
-                    continue
+                while len(active) >= args.concurrency:
+                    local_backpressure_waits += 1
+                    collect_completed(timeout=0.1)
+                max_schedule_slip_ms = max(
+                    max_schedule_slip_ms,
+                    max(0.0, (time.perf_counter() - target_time) * 1000.0))
                 active[executor.submit(run_child, index)] = index
 
             while active:
                 collect_completed(timeout=0.1)
+        for result in results:
+            result.setdefault("localBackpressureWaitCount", local_backpressure_waits)
+            result.setdefault("maxScheduleSlipMs", round(max_schedule_slip_ms, 3))
         return sorted(results, key=lambda item: int(item.get("requestIndex", 0)))
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
@@ -1964,6 +1941,14 @@ def main() -> int:
                     "scheduledRequestCount": len(results),
                     "submittedCount": len(results) - len(dropped),
                     "localBackpressureCount": len(dropped),
+                    "localBackpressureWaitCount": max(
+                        int(item.get("localBackpressureWaitCount", 0) or 0)
+                        for item in results
+                    ) if results else 0,
+                    "maxScheduleSlipMs": max(
+                        float(item.get("maxScheduleSlipMs", 0.0) or 0.0)
+                        for item in results
+                    ) if results else 0.0,
                     "offeredRps": (
                         len(results) / args.open_loop_duration_s
                         if args.open_loop_duration_s > 0 else 0.0),
