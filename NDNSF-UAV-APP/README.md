@@ -1637,15 +1637,23 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-recording-playback-test \
   --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-repo-catalog-browse-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
 ```
 
 The expected success markers are
 `NDNSF_UAV_TELEMETRY_MININDN_SMOKE_OK`,
 `NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK`,
 `NDNSF_UAV_GUI_MININDN_SMOKE_OK`, and
-`NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK`. This bundle intentionally uses
-mock flight-controller fields and the virtual camera path, so it does not
-require PX4, jMAVSim, a USB camera, or real UAV hardware.
+`NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_REPO_CATALOG_MININDN_SMOKE_OK`. The repo catalog smoke records
+camera chunks to the drone's in-app repo, fetches the
+`/UAV/Camera/Repo/Catalog` service from the ground station, and verifies that
+chunk objects are summarized as one queryable UAV recording product. This
+bundle intentionally uses mock flight-controller fields and the virtual camera
+path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance

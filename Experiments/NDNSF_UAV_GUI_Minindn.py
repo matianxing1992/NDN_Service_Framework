@@ -165,6 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS verify flight action buttons follow typed ReadinessState.")
     parser.add_argument("--auto-recording-playback-test", action="store_true",
                         help="Have the drone record to its local repo and the GS discover/replay the recording.")
+    parser.add_argument("--auto-repo-catalog-browse-test", action="store_true",
+                        help="Have the drone record to its local repo and the GS browse the repo catalog.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-single-mission-test", action="store_true",
@@ -914,7 +916,7 @@ def main() -> int:
                 "--mavlink-udp-port", mavlink_udp_port,
                 "--mavlink-udp-listen-port", args.mavlink_udp_listen_port,
             ])
-            if args.auto_recording_playback_test:
+            if args.auto_recording_playback_test or args.auto_repo_catalog_browse_test:
                 repo_path = output_dir / f"drone-{drone_id}-camera-recording.sqlite3"
                 try:
                     repo_path.unlink()
@@ -1023,6 +1025,12 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "12000",
             ]
+        if args.auto_repo_catalog_browse_test:
+            gs_argv += [
+                "--auto-repo-catalog-browse-test",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "12000",
+            ]
         if args.auto_patrol_test:
             patrol_timeout_ms = "30000" if should_start_jmavsim(args) else "3000"
             gs_argv += [
@@ -1049,6 +1057,7 @@ def main() -> int:
                                 app_cmd(APP_GS, gs_argv), gs_env, output_dir, processes)
         if not (args.auto_patrol_test or args.auto_single_mission_test or
                 args.auto_loaded_mission_plan_test or
+                args.auto_repo_catalog_browse_test or
                 args.auto_telemetry_test or args.auto_link_state_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
@@ -1122,6 +1131,18 @@ def main() -> int:
             require_log(gs_log, "LOADED_MISSION_PLAN_UPLOAD_RESULT ok=true")
             require_log(gs_log, "GS_LOADED_MISSION_PLAN_EXIT ok=true")
             print("NDNSF_UAV_LOADED_MISSION_PLAN_MININDN_SMOKE_OK")
+        elif args.auto_repo_catalog_browse_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=70)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station repo catalog smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "Repo catalog drone=" + args.drone_id)
+            require_log(gs_log, "REPO_CATALOG_BROWSE_RESULT ok=true")
+            require_log(gs_log, "GS_REPO_CATALOG_EXIT ok=true")
+            require_log(drone_logs[args.drone_id], "CAMERA_RECORDING_ENCRYPTION drone=" + args.drone_id)
+            print("NDNSF_UAV_REPO_CATALOG_MININDN_SMOKE_OK")
         elif args.auto_telemetry_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=70)

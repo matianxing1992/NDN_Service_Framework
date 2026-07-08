@@ -49,6 +49,7 @@ public:
     , m_loadMissionPlan("Load Plan")
     , m_controlToggle("Control")
     , m_refreshRecording("Find Rec.")
+    , m_browseRepo("Browse Repo")
     , m_playRecording("Play Rec.")
     , m_mapZoomIn("+")
     , m_mapZoomOut("-")
@@ -129,7 +130,7 @@ public:
     for (auto* button : {&m_start, &m_stop, &m_applyBitrate, &m_arm, &m_takeoff,
                          &m_land, &m_emergencyStop, &m_patrol, &m_startMission,
                          &m_stopPatrol, &m_controlToggle, &m_refreshRecording,
-                         &m_playRecording}) {
+                         &m_browseRepo, &m_playRecording}) {
       button->set_size_request(104, -1);
       button->set_hexpand(false);
       button->set_halign(Gtk::ALIGN_START);
@@ -330,7 +331,7 @@ public:
     for (auto* label : {&m_status, &m_linkStatus, &m_services, &m_telemetry,
                          &m_flightInspector, &m_cameraInspector, &m_videoInspector,
                          &m_commandHistory, &m_telemetryInspector, &m_missionInspector,
-                         &m_missionDetail, &m_functionalityInspector,
+                         &m_missionDetail, &m_catalogInspector, &m_functionalityInspector,
                          &m_practicalityInspector, &m_stabilityInspector}) {
       label->set_size_request(264, -1);
       label->set_width_chars(32);
@@ -353,6 +354,7 @@ public:
     addInspectorSection(m_videoInspectorFrame, m_videoInspector, "Video");
     addInspectorSection(m_missionInspectorFrame, m_missionInspector, "Mission / Safety");
     addInspectorSection(m_missionDetailFrame, m_missionDetail, "Mission Detail");
+    addInspectorSection(m_catalogInspectorFrame, m_catalogInspector, "Repo Catalog");
     addInspectorSection(m_functionalityInspectorFrame, m_functionalityInspector, "Functionality");
     addInspectorSection(m_practicalityInspectorFrame, m_practicalityInspector, "Practicality");
     addInspectorSection(m_stabilityInspectorFrame, m_stabilityInspector, "Stability");
@@ -572,6 +574,9 @@ public:
     });
     m_refreshRecording.signal_clicked().connect([this] {
       m_runtime.requestRecordingManifest();
+    });
+    m_browseRepo.signal_clicked().connect([this] {
+      m_runtime.requestRepoCatalog();
     });
     m_playRecording.signal_clicked().connect([this] {
       beginLocalStreamView();
@@ -2285,6 +2290,27 @@ private:
     }
     m_missionDetail.set_text(missionDetail.str());
 
+    const auto catalog = m_runtime.catalogForDrone(selectedDrone);
+    std::ostringstream catalogText;
+    appendInspectorRow(catalogText, "Products",
+                       catalog ? std::to_string(catalog->totalProducts()) : "0");
+    appendInspectorRow(catalogText, "Repo objects",
+                       catalog ? std::to_string(catalog->repoObjects) : "0");
+    appendInspectorRow(catalogText, "Recordings",
+                       catalog ? std::to_string(catalog->recordingProducts) : "0");
+    appendInspectorRow(catalogText, "Telemetry logs",
+                       catalog ? std::to_string(catalog->telemetryLogProducts) : "0");
+    appendInspectorRow(catalogText, "Detections",
+                       catalog ? std::to_string(catalog->detectionProducts) : "0");
+    appendInspectorRow(catalogText, "Mission logs",
+                       catalog ? std::to_string(catalog->missionLogProducts) : "0");
+    appendInspectorRow(catalogText, "Bytes",
+                       catalog ? std::to_string(catalog->totalBytes) : "0");
+    appendInspectorRow(catalogText, "Source", catalog ? catalog->sourceRepo : "unknown");
+    appendInspectorRow(catalogText, "Latest", catalog ?
+                       catalog->latestProductType + ":" + catalog->latestObjectPrefix : "none");
+    m_catalogInspector.set_text(catalogText.str());
+
     const auto functionality = m_runtime.functionalitySnapshotForSelectedDrone();
     std::ostringstream functionalityText;
     appendInspectorRow(functionalityText, "Mission editor", functionality.missionEditor);
@@ -3924,6 +3950,7 @@ private:
   Gtk::Frame m_videoInspectorFrame;
   Gtk::Frame m_missionInspectorFrame;
   Gtk::Frame m_missionDetailFrame;
+  Gtk::Frame m_catalogInspectorFrame;
   Gtk::Frame m_functionalityInspectorFrame;
   Gtk::Frame m_practicalityInspectorFrame;
   Gtk::Frame m_stabilityInspectorFrame;
@@ -3944,6 +3971,7 @@ private:
   Gtk::Button m_loadMissionPlan;
   Gtk::Button m_controlToggle;
   Gtk::Button m_refreshRecording;
+  Gtk::Button m_browseRepo;
   Gtk::Button m_playRecording;
   Gtk::Button m_mapZoomIn;
   Gtk::Button m_mapZoomOut;
@@ -4006,6 +4034,7 @@ private:
   Gtk::Label m_telemetryInspector;
   Gtk::Label m_missionInspector;
   Gtk::Label m_missionDetail;
+  Gtk::Label m_catalogInspector;
   Gtk::Label m_functionalityInspector;
   Gtk::Label m_practicalityInspector;
   Gtk::Label m_stabilityInspector;

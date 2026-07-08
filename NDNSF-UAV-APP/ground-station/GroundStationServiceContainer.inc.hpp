@@ -398,6 +398,8 @@ public:
        << droneVideoControlService(m_config, droneId).toUri() << "\n";
     os << "recording-manifest normal-only "
        << droneCameraRecordingManifestService(m_config, droneId).toUri() << "\n";
+    os << "repo-catalog normal-only "
+       << droneCameraRepoCatalogService(m_config, droneId).toUri() << "\n";
     os << "recording-chunk helper encrypted-ndn-data "
        << droneIdentity(m_config, droneId).append("repo").append("camera").append("recording").toUri()
        << "\n";
@@ -1102,6 +1104,23 @@ public:
   }
 
   void
+  requestRepoCatalog()
+  {
+    requestRepoCatalogForDrone(targetDroneId());
+  }
+
+  std::optional<UavDataProductCatalogState>
+  catalogForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_catalogMutex);
+    const auto found = m_catalogByDrone.find(droneId);
+    if (found == m_catalogByDrone.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
+  void
   playLatestRecording()
   {
     requestRecordingManifestForDrone(targetDroneId(), true);
@@ -1801,6 +1820,29 @@ public:
     NDN_LOG_INFO("LOADED_MISSION_PLAN_UPLOAD_RESULT ok=" << (ok ? "true" : "false")
                  << " task=" << loaded->taskId
                  << " parts=" << loaded->parts.size());
+    return ok;
+  }
+
+  bool
+  runRepoCatalogBrowseTest(std::chrono::seconds timeout)
+  {
+    const auto droneId = targetDroneId();
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    const auto catalog = requestRepoCatalogForDroneSync(
+      droneId, std::chrono::duration_cast<std::chrono::milliseconds>(timeout));
+    const bool ok = catalog && catalog->repoObjects > 0 && catalog->recordingProducts > 0;
+    if (catalog) {
+      NDN_LOG_INFO("REPO_CATALOG_BROWSE_RESULT ok=" << (ok ? "true" : "false")
+                   << " drone=" << droneId
+                   << " products=" << catalog->totalProducts()
+                   << " repo_objects=" << catalog->repoObjects
+                   << " latest=" << catalog->latestProductType
+                   << " source=" << catalog->sourceRepo);
+    }
+    else {
+      NDN_LOG_INFO("REPO_CATALOG_BROWSE_RESULT ok=false drone=" << droneId
+                   << " reason=no-catalog-response");
+    }
     return ok;
   }
 
@@ -3740,6 +3782,67 @@ private:
   }
 
   void
+  requestRepoCatalogForDrone(const std::string& droneId,
+                             std::function<void(std::optional<UavDataProductCatalogState>)> onDone = {})
+  {
+    auto completion = std::make_shared<
+      std::function<void(std::optional<UavDataProductCatalogState>)>>(std::move(onDone));
+    postRequestForDrone(
+      droneId,
+      droneCameraRepoCatalogService(m_config, droneId),
+      encodeFields({{"type", "uav-data-product-catalog-request"}}),
+      [this, droneId, completion](const std::string& payload) mutable {
+        const auto fields = decodeFields(payload);
+        auto catalog = UavDataProductCatalogState::fromFields(fields);
+        {
+          std::lock_guard<std::mutex> guard(m_catalogMutex);
+          m_catalogByDrone[droneId] = catalog;
+        }
+        publishStatus(catalog.statusLine());
+        publishStatus("Repo catalog drone=" + droneId +
+                      " products=" + std::to_string(catalog.totalProducts()) +
+                      " repo_objects=" + std::to_string(catalog.repoObjects) +
+                      " source=" + catalog.sourceRepo +
+                      " latest=" + catalog.latestProductType + ":" +
+                      catalog.latestObjectPrefix);
+        if (*completion) {
+          (*completion)(catalog);
+        }
+      },
+      {},
+      [completion]() mutable {
+        if (*completion) {
+          (*completion)(std::nullopt);
+        }
+      });
+  }
+
+  std::optional<UavDataProductCatalogState>
+  requestRepoCatalogForDroneSync(const std::string& droneId, std::chrono::milliseconds timeout)
+  {
+    struct CatalogWaitState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      std::optional<UavDataProductCatalogState> catalog;
+      bool done = false;
+    };
+    auto state = std::make_shared<CatalogWaitState>();
+    requestRepoCatalogForDrone(
+      droneId,
+      [state](std::optional<UavDataProductCatalogState> catalog) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->catalog = std::move(catalog);
+        state->done = true;
+        state->cv.notify_all();
+      });
+
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, timeout, [&] { return state->done; });
+    return state->catalog;
+  }
+
+  void
   startRecordingPlayback(const RecordingDataProductState& manifest)
   {
     if (!manifest.isAvailable()) {
@@ -5567,6 +5670,7 @@ private:
   mutable std::mutex m_missionProgressMutex;
   mutable std::mutex m_videoStateMutex;
   mutable std::mutex m_recordingManifestMutex;
+  mutable std::mutex m_catalogMutex;
   std::vector<std::string> m_missionReadyDrones;
   MissionPlan m_latestMissionPlan;
   MissionProgressState m_latestMissionProgress;
@@ -5574,6 +5678,7 @@ private:
   std::string m_recordingPlaybackDroneId;
   std::string m_recordingPlaybackStreamId;
   std::map<std::string, RecordingDataProductState> m_recordingManifests;
+  std::map<std::string, UavDataProductCatalogState> m_catalogByDrone;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;

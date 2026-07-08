@@ -780,11 +780,13 @@ loadMissionPlanDocument(const std::string& path);
 
 struct UavDataProductCatalogState
 {
+  uint64_t repoObjects = 0;
   uint64_t recordingProducts = 0;
   uint64_t telemetryLogProducts = 0;
   uint64_t detectionProducts = 0;
   uint64_t missionLogProducts = 0;
   uint64_t totalBytes = 0;
+  std::string sourceRepo = "unknown";
   std::string latestProductType = "none";
   std::string latestObjectPrefix = "none";
   std::string latestMissionId = "none";
@@ -792,6 +794,9 @@ struct UavDataProductCatalogState
 
   static UavDataProductCatalogState fromFields(const Fields& fields);
   static UavDataProductCatalogState fromRecording(const RecordingDataProductState& recording);
+  static UavDataProductCatalogState fromCatalogProductFields(const std::vector<Fields>& entries,
+                                                            const std::string& sourceRepo = "unknown",
+                                                            uint64_t updatedMs = 0);
   Fields toFields() const;
   uint64_t totalProducts() const;
   bool hasQueryableProducts() const;

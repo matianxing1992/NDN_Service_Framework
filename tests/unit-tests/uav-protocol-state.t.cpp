@@ -1029,15 +1029,43 @@ BOOST_AUTO_TEST_CASE(UavDataProductCatalogSummarizesQueryableProducts)
   auto catalog = UavDataProductCatalogState::fromRecording(recording);
   catalog.telemetryLogProducts = 2;
   catalog.detectionProducts = 1;
+  catalog.repoObjects = 4;
+  catalog.sourceRepo = "/example/uav/drone/A/local-repo";
   BOOST_CHECK(catalog.hasQueryableProducts());
   BOOST_CHECK_EQUAL(catalog.totalProducts(), 4);
+  BOOST_CHECK_EQUAL(catalog.repoObjects, 4);
   BOOST_CHECK_EQUAL(catalog.totalBytes, 4096);
   BOOST_CHECK_EQUAL(catalog.latestObjectPrefix, recording.objectPrefix);
 
   const auto roundTrip = UavDataProductCatalogState::fromFields(catalog.toFields());
   BOOST_CHECK_EQUAL(roundTrip.totalProducts(), 4);
+  BOOST_CHECK_EQUAL(roundTrip.repoObjects, 4);
+  BOOST_CHECK_EQUAL(roundTrip.sourceRepo, "/example/uav/drone/A/local-repo");
   BOOST_CHECK_EQUAL(roundTrip.telemetryLogProducts, 2);
   BOOST_CHECK_NE(roundTrip.statusLine().find("detections=1"), std::string::npos);
+
+  std::vector<Fields> repoEntries{
+    {{"object_name", "/example/uav/drone/A/repo/camera/recording/record-1/chunk/0"},
+     {"object_type", "video/h264-chunk"}, {"size", "1000"}, {"updated_ms", "10"}},
+    {{"object_name", "/example/uav/drone/A/repo/camera/recording/record-1/chunk/1"},
+     {"object_type", "video/h264-chunk"}, {"size", "1200"}, {"updated_ms", "11"}},
+    {{"object_name", "/example/uav/drone/A/repo/telemetry/log-1"},
+     {"object_type", "telemetry-log"}, {"size", "300"}},
+    {{"object_name", "/example/uav/drone/A/repo/detection/yolo-1"},
+     {"object_type", "detection-log"}, {"size", "400"}},
+    {{"object_name", "/example/uav/drone/A/repo/mission/mission-1"},
+     {"object_type", "mission-log"}, {"size", "500"}},
+  };
+  const auto repoCatalog = UavDataProductCatalogState::fromCatalogProductFields(
+    repoEntries, "/example/uav/drone/A/local-repo", 99);
+  BOOST_CHECK_EQUAL(repoCatalog.repoObjects, 5);
+  BOOST_CHECK_EQUAL(repoCatalog.recordingProducts, 1);
+  BOOST_CHECK_EQUAL(repoCatalog.telemetryLogProducts, 1);
+  BOOST_CHECK_EQUAL(repoCatalog.detectionProducts, 1);
+  BOOST_CHECK_EQUAL(repoCatalog.missionLogProducts, 1);
+  BOOST_CHECK_EQUAL(repoCatalog.totalBytes, 3400);
+  BOOST_CHECK_EQUAL(repoCatalog.sourceRepo, "/example/uav/drone/A/local-repo");
+  BOOST_CHECK(repoCatalog.hasQueryableProducts());
 }
 
 BOOST_AUTO_TEST_CASE(VehicleParameterSnapshotCarriesCapabilityView)

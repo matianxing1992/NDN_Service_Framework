@@ -6,9 +6,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cctype>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -174,6 +176,9 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   else if (key == "service-camera-recording-manifest-suffix") {
     config.serviceCameraRecordingManifestSuffix = ndn::Name(value);
   }
+  else if (key == "service-camera-repo-catalog-suffix") {
+    config.serviceCameraRepoCatalogSuffix = ndn::Name(value);
+  }
   else if (key == "service-gs-object-detection") {
     config.serviceGsObjectDetection = ndn::Name(value);
   }
@@ -313,6 +318,22 @@ droneCameraRecordingManifestService(const UavRuntimeConfig& config, const std::s
 {
   ndn::Name service = droneIdentity(config, droneId);
   for (const auto& component : config.serviceCameraRecordingManifestSuffix) {
+    service.append(component);
+  }
+  return service;
+}
+
+ndn::Name
+droneCameraRepoCatalogService(const std::string& droneId)
+{
+  return droneCameraRepoCatalogService(UavRuntimeConfig{}, droneId);
+}
+
+ndn::Name
+droneCameraRepoCatalogService(const UavRuntimeConfig& config, const std::string& droneId)
+{
+  ndn::Name service = droneIdentity(config, droneId);
+  for (const auto& component : config.serviceCameraRepoCatalogSuffix) {
     service.append(component);
   }
   return service;
@@ -3051,11 +3072,13 @@ UavDataProductCatalogState
 UavDataProductCatalogState::fromFields(const Fields& fields)
 {
   UavDataProductCatalogState state;
+  state.repoObjects = uint64FieldOr(fields, "catalog_repo_objects", 0);
   state.recordingProducts = uint64FieldOr(fields, "catalog_recording_products", 0);
   state.telemetryLogProducts = uint64FieldOr(fields, "catalog_telemetry_log_products", 0);
   state.detectionProducts = uint64FieldOr(fields, "catalog_detection_products", 0);
   state.missionLogProducts = uint64FieldOr(fields, "catalog_mission_log_products", 0);
   state.totalBytes = uint64FieldOr(fields, "catalog_total_bytes", 0);
+  state.sourceRepo = fieldOr(fields, "catalog_source_repo", state.sourceRepo);
   state.latestProductType = fieldOr(fields, "catalog_latest_product_type", state.latestProductType);
   state.latestObjectPrefix = fieldOr(fields, "catalog_latest_object_prefix", state.latestObjectPrefix);
   state.latestMissionId = fieldOr(fields, "catalog_latest_mission_id", state.latestMissionId);
@@ -3068,8 +3091,10 @@ UavDataProductCatalogState::fromRecording(const RecordingDataProductState& recor
 {
   UavDataProductCatalogState state;
   if (recording.isAvailable()) {
+    state.repoObjects = recording.chunks;
     state.recordingProducts = 1;
     state.totalBytes = recording.bytes;
+    state.sourceRepo = recording.droneId;
     state.latestProductType = recording.productType;
     state.latestObjectPrefix = recording.objectPrefix;
     state.latestMissionId = fieldOr(recording.toFields(false), "mission_id", "none");
@@ -3078,15 +3103,107 @@ UavDataProductCatalogState::fromRecording(const RecordingDataProductState& recor
   return state;
 }
 
+UavDataProductCatalogState
+UavDataProductCatalogState::fromCatalogProductFields(const std::vector<Fields>& entries,
+                                                     const std::string& sourceRepo,
+                                                     uint64_t updatedMs)
+{
+  UavDataProductCatalogState state;
+  state.repoObjects = entries.size();
+  state.sourceRepo = sourceRepo.empty() ? state.sourceRepo : sourceRepo;
+  state.updatedMs = updatedMs;
+
+  std::set<std::string> recordingKeys;
+  std::set<std::string> telemetryKeys;
+  std::set<std::string> detectionKeys;
+  std::set<std::string> missionKeys;
+
+  auto lower = [] (std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [] (unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return text;
+  };
+  auto productKey = [] (const std::string& objectName) {
+    const auto chunkPos = objectName.rfind("/chunk/");
+    if (chunkPos != std::string::npos) {
+      return objectName.substr(0, chunkPos);
+    }
+    const auto segmentPos = objectName.rfind("/seg/");
+    if (segmentPos != std::string::npos) {
+      return objectName.substr(0, segmentPos);
+    }
+    return objectName.empty() ? std::string("unknown") : objectName;
+  };
+  auto addKey = [&productKey] (std::set<std::string>& keys, const std::string& objectName,
+                              const std::string& fallback) {
+    const auto key = productKey(objectName);
+    keys.insert(key == "unknown" ? fallback : key);
+  };
+
+  uint64_t latestUpdatedMs = 0;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const auto& entry = entries[i];
+    const auto objectName = fieldOr(entry, "object_name",
+                                    fieldOr(entry, "objectName", fieldOr(entry, "name", "")));
+    const auto objectType = fieldOr(entry, "object_type",
+                                    fieldOr(entry, "objectType", fieldOr(entry, "type", "")));
+    const auto text = lower(objectName + " " + objectType);
+    const auto size = uint64FieldOr(entry, "size", uint64FieldOr(entry, "bytes", 0));
+    const auto entryUpdatedMs = uint64FieldOr(entry, "updated_ms",
+                                              uint64FieldOr(entry, "timestamp_ms", 0));
+    state.totalBytes += size;
+
+    if (text.find("recording") != std::string::npos ||
+        text.find("h264") != std::string::npos ||
+        text.find("video") != std::string::npos) {
+      addKey(recordingKeys, objectName, "recording-" + std::to_string(i));
+      state.latestProductType = objectType.empty() ? "camera-recording" : objectType;
+      state.latestObjectPrefix = productKey(objectName);
+    }
+    else if (text.find("telemetry") != std::string::npos) {
+      addKey(telemetryKeys, objectName, "telemetry-" + std::to_string(i));
+      state.latestProductType = objectType.empty() ? "telemetry-log" : objectType;
+      state.latestObjectPrefix = productKey(objectName);
+    }
+    else if (text.find("detection") != std::string::npos ||
+             text.find("yolo") != std::string::npos) {
+      addKey(detectionKeys, objectName, "detection-" + std::to_string(i));
+      state.latestProductType = objectType.empty() ? "detection-log" : objectType;
+      state.latestObjectPrefix = productKey(objectName);
+    }
+    else if (text.find("mission") != std::string::npos ||
+             text.find("flight-log") != std::string::npos) {
+      addKey(missionKeys, objectName, "mission-" + std::to_string(i));
+      state.latestProductType = objectType.empty() ? "mission-log" : objectType;
+      state.latestObjectPrefix = productKey(objectName);
+    }
+    if (entryUpdatedMs >= latestUpdatedMs) {
+      latestUpdatedMs = entryUpdatedMs;
+      state.latestMissionId = fieldOr(entry, "mission_id", state.latestMissionId);
+    }
+  }
+
+  state.recordingProducts = recordingKeys.size();
+  state.telemetryLogProducts = telemetryKeys.size();
+  state.detectionProducts = detectionKeys.size();
+  state.missionLogProducts = missionKeys.size();
+  if (state.updatedMs == 0) {
+    state.updatedMs = latestUpdatedMs;
+  }
+  return state;
+}
+
 Fields
 UavDataProductCatalogState::toFields() const
 {
   return {
+    {"catalog_repo_objects", std::to_string(repoObjects)},
     {"catalog_recording_products", std::to_string(recordingProducts)},
     {"catalog_telemetry_log_products", std::to_string(telemetryLogProducts)},
     {"catalog_detection_products", std::to_string(detectionProducts)},
     {"catalog_mission_log_products", std::to_string(missionLogProducts)},
     {"catalog_total_bytes", std::to_string(totalBytes)},
+    {"catalog_source_repo", sourceRepo},
     {"catalog_latest_product_type", latestProductType},
     {"catalog_latest_object_prefix", latestObjectPrefix},
     {"catalog_latest_mission_id", latestMissionId},
@@ -3110,6 +3227,8 @@ std::string
 UavDataProductCatalogState::statusLine() const
 {
   return "UavDataProductCatalog products=" + std::to_string(totalProducts()) +
+         " repo_objects=" + std::to_string(repoObjects) +
+         " source=" + sourceRepo +
          " recordings=" + std::to_string(recordingProducts) +
          " telemetry_logs=" + std::to_string(telemetryLogProducts) +
          " detections=" + std::to_string(detectionProducts) +

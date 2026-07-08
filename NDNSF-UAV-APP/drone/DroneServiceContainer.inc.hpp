@@ -1658,6 +1658,43 @@ public:
     };
   }
 
+  Fields
+  recordingCatalogFields() const
+  {
+    std::vector<Fields> products;
+    if (m_recordingRepo) {
+      for (const auto& manifest : m_recordingRepo->list()) {
+        products.push_back({
+          {"object_name", manifest.objectName},
+          {"object_type", manifest.objectType},
+          {"size", std::to_string(manifest.size)},
+          {"segments", std::to_string(manifest.segmentCount)},
+          {"updated_ms", std::to_string(m_recordingLastUpdateMs.load())},
+        });
+      }
+    }
+
+    auto catalog = UavDataProductCatalogState::fromCatalogProductFields(
+      products, droneIdentity(m_config, m_droneId).append("local-repo").toUri(),
+      nowMilliseconds());
+    if (!catalog.hasQueryableProducts() && recordingChunks() > 0) {
+      const auto recording = RecordingDataProductState::fromFields(recordingManifestFields(), m_droneId);
+      catalog = UavDataProductCatalogState::fromRecording(recording);
+      catalog.repoObjects = products.size();
+      catalog.sourceRepo = droneIdentity(m_config, m_droneId).append("local-repo").toUri();
+      catalog.updatedMs = nowMilliseconds();
+    }
+    auto fields = catalog.toFields();
+    fields["type"] = "uav-data-product-catalog";
+    fields["drone_id"] = m_droneId;
+    fields["repo_open"] = isRepoOpen() ? "true" : "false";
+    fields["recording_repo_path"] = recordingRepoPath();
+    fields["recording_session_id"] = m_recordingSessionId;
+    fields["recording_object_prefix"] = m_cameraOptions.recordObjectPrefix;
+    fields["timestamp_ms"] = std::to_string(nowMilliseconds());
+    return fields;
+  }
+
   std::vector<uint8_t>
   recordingChunk(const std::string& objectName) const
   {
@@ -2836,6 +2873,24 @@ public:
     return m_videoPublisher->repoStatusFields();
   }
 
+  Fields
+  recordingCatalogFields() const
+  {
+    std::lock_guard<std::mutex> guard(m_containerMutex);
+    if (m_videoPublisher == nullptr) {
+      UavDataProductCatalogState catalog;
+      catalog.sourceRepo = droneIdentity(m_config, m_droneId).append("local-repo").toUri();
+      auto fields = catalog.toFields();
+      fields["type"] = "uav-data-product-catalog";
+      fields["drone_id"] = m_droneId;
+      fields["repo_open"] = "false";
+      fields["recording_repo_path"] = "none";
+      fields["timestamp_ms"] = std::to_string(nowMilliseconds());
+      return fields;
+    }
+    return m_videoPublisher->recordingCatalogFields();
+  }
+
   std::vector<uint8_t>
   recordingChunk(const std::string& objectName) const
   {
@@ -3051,6 +3106,15 @@ private:
           m_coreContainer.localRegistry().localInvokeRawInto(
             localRecordingManifestServiceName(), request, response, m_identity);
           return response;
+        }),
+      ServiceInvocationMode::NormalOnly);
+
+    m_provider->addService(
+      droneCameraRepoCatalogService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage&) {
+          return makeResponse(true, encodeFields(recordingCatalogFields()));
         }),
       ServiceInvocationMode::NormalOnly);
 
