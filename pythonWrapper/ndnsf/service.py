@@ -19,7 +19,13 @@ import threading
 from typing import Any, Callable, Optional
 
 from . import _ndnsf
-from .runtime_telemetry import ProviderCapabilityHint, parse_ack_metadata
+from .runtime_telemetry import (
+    ProviderCapabilityHint,
+    ServiceOperationState,
+    ServiceOperationStatus,
+    parse_ack_metadata,
+    to_plain,
+)
 from .service_discovery import ServiceDiscoveryRecord
 
 NEGATIVE_ACK_REASON_QUEUE_FULL = "QUEUE_FULL"
@@ -118,6 +124,107 @@ def _deployment_roles_from_ack_candidate(candidate: AckCandidate) -> list[str]:
     roles = _roles_from(fields.get("provisioningRole"))
     roles.extend(role for role in _roles_from(fields.get("roles")) if role not in roles)
     return roles
+
+
+_DEPLOYMENT_STATUS_PRIORITY = {
+    "ACTIVE": 0,
+    "IDLE": 1,
+    "DEGRADED": 2,
+    "DISK_RESIDENT": 3,
+    "PROVISIONING": 4,
+    "EVICTED": 5,
+    "REJECTED": 6,
+    "NOT_FOUND": 7,
+}
+
+
+def _deployment_operation_state(status: str) -> ServiceOperationState:
+    normalized = str(status or "").upper()
+    if normalized == "PROVISIONING":
+        return ServiceOperationState.RUNNING
+    if normalized in {"REJECTED", "NOT_FOUND"}:
+        return ServiceOperationState.FAILED
+    if normalized == "EVICTED":
+        return ServiceOperationState.CANCELED
+    if normalized == "DEGRADED":
+        return ServiceOperationState.WAITING_INPUT
+    return ServiceOperationState.DONE
+
+
+def _deployment_operation_progress(status: str) -> float:
+    normalized = str(status or "").upper()
+    if normalized == "PROVISIONING":
+        return 0.5
+    if normalized in {"REJECTED", "NOT_FOUND"}:
+        return 0.0
+    if normalized == "DEGRADED":
+        return 0.75
+    return 1.0
+
+
+def _deployment_operation_status(deployment: dict[str, Any],
+                                 *,
+                                 operation: str = "DEPLOYMENT") -> dict[str, Any]:
+    existing = deployment.get("operationStatus", deployment.get("operation_status"))
+    if isinstance(existing, dict):
+        try:
+            return to_plain(ServiceOperationStatus.from_dict(existing))
+        except Exception:
+            pass
+    status = str(deployment.get("status", "")).upper()
+    deployment_id = str(deployment.get("deploymentId", deployment.get("deployment_id", "")))
+    service_name = str(deployment.get("serviceName", deployment.get("service_name", "")))
+    reason = str(deployment.get("reason", ""))
+    op_status = ServiceOperationStatus(
+        operation_id=deployment_id or operation.lower(),
+        operation=operation,
+        service_name=service_name,
+        state=_deployment_operation_state(status),
+        reason_code=status if status in {"REJECTED", "NOT_FOUND"} else "",
+        message=reason or status.lower(),
+        progress=_deployment_operation_progress(status),
+        updated_at_ms=int(deployment.get("updatedAtMs", deployment.get("updated_at_ms", 0)) or 0),
+        metadata={
+            "deploymentStatus": status,
+            "planId": deployment.get("planId", deployment.get("plan_id", "")),
+            "refCount": deployment.get("refCount", deployment.get("ref_count", 0)),
+        },
+    )
+    return to_plain(op_status)
+
+
+def _with_deployment_operation_status(deployment: dict[str, Any],
+                                      *,
+                                      operation: str = "DEPLOYMENT") -> dict[str, Any]:
+    result = dict(deployment)
+    result["operationStatus"] = _deployment_operation_status(result, operation=operation)
+    return result
+
+
+def _deployment_sort_key(deployment: dict[str, Any]) -> tuple[int, str]:
+    status = ""
+    op_payload = deployment.get("operationStatus", deployment.get("operation_status"))
+    if isinstance(op_payload, dict):
+        try:
+            op_status = ServiceOperationStatus.from_dict(op_payload)
+            status = str(op_status.metadata.get("deploymentStatus", "")).upper()
+            if not status:
+                state_priority = {
+                    ServiceOperationState.DONE: 0,
+                    ServiceOperationState.WAITING_INPUT: 2,
+                    ServiceOperationState.RUNNING: 4,
+                    ServiceOperationState.CANCELED: 5,
+                    ServiceOperationState.FAILED: 6,
+                    ServiceOperationState.EXPIRED: 6,
+                }
+                return (state_priority.get(op_status.state, 99),
+                        str(deployment.get("deploymentId", "")))
+        except Exception:
+            status = ""
+    if not status:
+        status = str(deployment.get("status", "")).upper()
+    return (_DEPLOYMENT_STATUS_PRIORITY.get(status, 99),
+            str(deployment.get("deploymentId", "")))
 
 
 @dataclass(frozen=True)
@@ -1913,9 +2020,8 @@ class ServiceUser:
                         deployments.append(dep)
             except Exception:
                 pass
-        # Sort: ACTIVE first (GPU hot), then IDLE, then DISK_RESIDENT (cold), then rest
-        status_priority = {"ACTIVE": 0, "IDLE": 1, "DEGRADED": 2, "DISK_RESIDENT": 3, "PROVISIONING": 4, "EVICTED": 5}
-        deployments.sort(key=lambda d: status_priority.get(str(d.get("status", d.get("status", "")).upper()), 99))
+        deployments = [_with_deployment_operation_status(dep) for dep in deployments]
+        deployments.sort(key=_deployment_sort_key)
         return deployments
 
     def get_deployment(self, deployment_id: str) -> dict[str, Any] | None:
@@ -2005,6 +2111,7 @@ class ServiceUser:
             "createdAtMs": started_ms,
             "updatedAtMs": int(_time.time() * 1000),
         }
+        deployment = _with_deployment_operation_status(deployment)
 
         self._publish_deployment_ndnsd(deployment)
         return deployment
@@ -2043,14 +2150,19 @@ class ServiceUser:
         import time as _time
         dep = self.get_deployment(deployment_id)
         if dep is None:
-            return {"status": "NOT_FOUND", "deploymentId": deployment_id}
+            return _with_deployment_operation_status(
+                {"status": "NOT_FOUND", "deploymentId": deployment_id},
+                operation="EVICT_DEPLOYMENT")
         ref_count = int(dep.get("refCount", dep.get("ref_count", 0)))
         if ref_count > 0:
-            return {"status": "REJECTED", "deploymentId": deployment_id,
-                    "reason": f"DEPLOYMENT_IN_USE;ref_count={ref_count}",
-                    "refCount": ref_count}
+            return _with_deployment_operation_status(
+                {"status": "REJECTED", "deploymentId": deployment_id,
+                 "reason": f"DEPLOYMENT_IN_USE;ref_count={ref_count}",
+                 "refCount": ref_count},
+                operation="EVICT_DEPLOYMENT")
         dep["status"] = "DISK_RESIDENT"
         dep["updatedAtMs"] = int(_time.time() * 1000)
+        dep = _with_deployment_operation_status(dep, operation="EVICT_DEPLOYMENT")
         self._publish_deployment_ndnsd(dep)
         return dep
 
