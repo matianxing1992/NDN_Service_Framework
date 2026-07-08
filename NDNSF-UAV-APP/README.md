@@ -824,6 +824,14 @@ The first compatibility layer is `videoPacketToStreamChunk(...)` and
 `streamChunkToVideoPacket(...)` in `shared/UavProtocol.*`; these helpers do not
 change the existing `encodeVideoPacket(...)` wire format.
 
+Transfer API boundary: live downlink uses the NDNSF stream substrate because it
+is an ongoing sequence with packet sequence, freshness, reordering, stale
+session filtering, and optional FEC metadata. Local camera recording is not a
+live stream. It is a repo-backed media object discovered through a manifest and
+then fetched by exact object/chunk names through the large-data/repo path.
+Start/Stop Video controls the live stream only; it does not define the
+recorded-object transfer path.
+
 Camera capture, local recording, and live downlink are intentionally separate:
 
 ```text

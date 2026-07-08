@@ -707,6 +707,12 @@ control/data split。
 `streamChunkToVideoPacket(...)`。这两个 helper 不改变现有 `encodeVideoPacket(...)`
 wire format。
 
+传输 API 边界：实时图传使用 NDNSF streaming substrate，因为它是持续到达的序列，
+需要 packet sequence、freshness、reordering、旧 session 过滤，以及可选 FEC metadata。
+本地录像不是 live stream。它是 repo-backed media object，通过 manifest 发现，再按精确
+object/chunk name 走 large-data/repo path 获取。Start/Stop Video 只控制实时图传，
+不定义录像对象的传输路径。
+
 摄像头采集、本地录像和实时图传是三个独立状态：
 
 ```text

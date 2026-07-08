@@ -387,6 +387,15 @@ fixes the intended ownership boundary: DI execution logic can be native C++,
 while NDNSF Core remains responsible for segmented large data, pending
 Interests, encryption, permissions, and wire behavior.
 
+Dependency transfer boundary: DI model artifacts, runtime bundles, initial
+inputs, and activation tensor bundles are exact-name objects. The normal path
+is NDNSF large-data reference, repo materialization, `publishLargeNamed(...)`,
+`fetchLarge(...)`, and SegmentFetcher-style retrieval. The optional
+`--dependency-envelope-mode streamchunk` path only wraps one complete tensor
+bundle in StreamChunk metadata while still fetching it through the large-data
+path; it is an interoperability/debugging experiment, not a replacement for
+exact-name object retrieval.
+
 These native components do not change NDNSF Request/ACK/Selection/Response
 semantics and do not add AI-specific behavior to NDNSF Core.
 
