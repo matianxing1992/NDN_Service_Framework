@@ -24,7 +24,13 @@ sys.path.insert(0, str(REPO / "Experiments"))
 sys.path.insert(0, str(REPO / "pythonWrapper"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
-from ndnsf import ProviderCapabilityHint, ServiceOperationStatus, parse_ack_metadata  # noqa: E402
+from ndnsf import (  # noqa: E402
+    ProviderCapabilityHint,
+    ServiceOperationState,
+    ServiceOperationStatus,
+    parse_ack_metadata,
+    to_plain,
+)
 from ndnsf_distributed_inference.runtime_v1_evidence import write_minindn_runtime_v1_evidence  # noqa: E402
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
@@ -61,6 +67,111 @@ NEGATIVE_ACK_RECORDED_RE = re.compile(r"event=NEGATIVE_ACK_RECORDED\b.*?\breason
 NATIVE_ACK_DECISION_RE = re.compile(
     r"NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION\b.*?\bstatus=0\b.*?\bmessage=\"([^\"]*)\"")
 NEGATIVE_ACK_PAYLOAD_RE = re.compile(r"\bnegativeAckReason=([^;\s]+)")
+
+
+def _execution_operation_state(status: str, reason: str = "") -> ServiceOperationState:
+    status_text = str(status or "").lower()
+    reason_text = str(reason or "").lower()
+    combined = f"{status_text} {reason_text}"
+    if "timeout" in combined:
+        return ServiceOperationState.EXPIRED
+    if status_text in {"executed", "success", "successful", "local-baseline-executed"}:
+        return ServiceOperationState.DONE
+    if status_text in {"failed", "failure", "error"}:
+        return ServiceOperationState.FAILED
+    if status_text in {"gated", "not-started", "skipped"}:
+        return ServiceOperationState.QUEUED
+    if status_text in {"running", "started", "in-progress"}:
+        return ServiceOperationState.RUNNING
+    return ServiceOperationState.QUEUED
+
+
+def _execution_operation_progress(payload: dict[str, Any],
+                                  state: ServiceOperationState) -> float:
+    request_count = int(payload.get("requestCount", 0) or 0)
+    if request_count > 0:
+        success_count = int(payload.get("successCount", 0) or 0)
+        return max(0.0, min(1.0, success_count / request_count))
+    if state in {
+        ServiceOperationState.DONE,
+        ServiceOperationState.FAILED,
+        ServiceOperationState.CANCELED,
+        ServiceOperationState.EXPIRED,
+    }:
+        return 1.0
+    if state == ServiceOperationState.RUNNING:
+        return 0.5
+    return 0.0
+
+
+def _execution_operation_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in (
+        "status",
+        "reason",
+        "requestCount",
+        "successCount",
+        "failureCount",
+        "concurrency",
+        "targetRps",
+        "throughputRps",
+        "payloadBytes",
+        "roles",
+        "log",
+    ):
+        if key in payload:
+            metadata[key] = payload[key]
+    if "requests" in payload:
+        requests = payload.get("requests")
+        metadata["requestSampleCount"] = len(requests) if isinstance(requests, list) else 0
+    return metadata
+
+
+def with_execution_operation_status(payload: dict[str, Any],
+                                    *,
+                                    operation: str,
+                                    operation_id: str,
+                                    service_name: str = SERVICE) -> dict[str, Any]:
+    result = dict(payload or {})
+    existing = result.get("operationStatus", result.get("operation_status"))
+    if isinstance(existing, dict):
+        try:
+            result["operationStatus"] = to_plain(ServiceOperationStatus.from_dict(existing))
+            return result
+        except Exception:
+            pass
+    status_text = str(result.get("status", ""))
+    reason = str(result.get("reason", result.get("error", "")))
+    state = _execution_operation_state(status_text, reason)
+    operation_status = ServiceOperationStatus(
+        operation_id=operation_id,
+        operation=operation,
+        service_name=service_name,
+        state=state,
+        reason_code=status_text.upper().replace("-", "_"),
+        message=reason or status_text,
+        progress=_execution_operation_progress(result, state),
+        updated_at_ms=int(time.time() * 1000),
+        metadata=_execution_operation_metadata(result),
+    )
+    result["operationStatus"] = to_plain(operation_status)
+    return result
+
+
+def attach_execution_operation_statuses(summary: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(summary.get("userExecution"), dict):
+        summary["userExecution"] = with_execution_operation_status(
+            summary["userExecution"],
+            operation="DI_USER_EXECUTION",
+            operation_id="native-tracer-user-execution",
+        )
+    if isinstance(summary.get("dependencyExecution"), dict):
+        summary["dependencyExecution"] = with_execution_operation_status(
+            summary["dependencyExecution"],
+            operation="DI_DEPENDENCY_EXECUTION",
+            operation_id="native-tracer-dependency-execution",
+        )
+    return summary
 NATIVE_TRACER_PROFILE_FIELDS = {
     "out": "out",
     "assignment": "assignment",
@@ -3100,6 +3211,7 @@ def main() -> int:
                        indent=2,
                        sort_keys=True) + "\n",
             encoding="utf-8")
+        attach_execution_operation_statuses(summary)
         if not summary.get("failureBreakdown") and isinstance(summary.get("userExecution"), dict):
             user_execution = summary["userExecution"]
             summary["failureBreakdown"] = build_failure_breakdown(

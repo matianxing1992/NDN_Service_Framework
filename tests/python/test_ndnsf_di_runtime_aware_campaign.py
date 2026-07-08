@@ -654,6 +654,40 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(latest["queueLength"], 3)
         self.assertEqual(latest["activeWorkCount"], 1)
 
+    def test_execution_summaries_carry_core_operation_status(self) -> None:
+        harness = load_harness_module()
+        summary = {
+            "userExecution": {
+                "status": "executed",
+                "reason": "ok",
+                "requestCount": 4,
+                "successCount": 3,
+                "failureCount": 1,
+                "requests": [{"requestId": "r1"}],
+            },
+            "dependencyExecution": {
+                "status": "failed",
+                "reason": "timeout waiting for dependency",
+                "roles": ["/Backbone", "/Merge"],
+            },
+        }
+
+        harness.attach_execution_operation_statuses(summary)
+
+        user_status = ServiceOperationStatus.from_dict(
+            summary["userExecution"]["operationStatus"])
+        dependency_status = ServiceOperationStatus.from_dict(
+            summary["dependencyExecution"]["operationStatus"])
+
+        self.assertEqual(summary["userExecution"]["status"], "executed")
+        self.assertEqual(user_status.operation, "DI_USER_EXECUTION")
+        self.assertEqual(user_status.state, ServiceOperationState.DONE)
+        self.assertAlmostEqual(user_status.progress, 0.75)
+        self.assertEqual(user_status.metadata["requestSampleCount"], 1)
+        self.assertEqual(dependency_status.operation, "DI_DEPENDENCY_EXECUTION")
+        self.assertEqual(dependency_status.state, ServiceOperationState.EXPIRED)
+        self.assertEqual(dependency_status.metadata["roles"], ["/Backbone", "/Merge"])
+
     def test_planner_metrics_aggregation_reports_campaign_fields(self) -> None:
         harness = load_harness_module()
         metrics = harness.build_campaign_metrics({
