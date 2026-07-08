@@ -48,6 +48,7 @@ public:
       m_patrolDroneIds.push_back(m_targetDroneId);
     }
     m_targetDroneLocked = !m_targetDroneId.empty();
+    issueDefaultOperatorLease();
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
     m_gsCert = getOrCreateIdentity(m_keyChain, m_config.groundStationIdentity);
     m_controllerCert = getOrCreateIdentity(m_keyChain, m_config.controllerPrefix);
@@ -153,6 +154,25 @@ public:
   localRegistry()
   {
     return m_coreContainer.localRegistry();
+  }
+
+  void
+  setOperatorAuthorityLease(OperatorAuthorityLease lease)
+  {
+    std::string status;
+    {
+      std::lock_guard<std::mutex> guard(m_operatorLeaseMutex);
+      m_operatorLease = std::move(lease);
+      status = m_operatorLease.statusLine();
+    }
+    publishStatus(status);
+  }
+
+  OperatorAuthorityLease
+  operatorAuthorityLease() const
+  {
+    std::lock_guard<std::mutex> guard(m_operatorLeaseMutex);
+    return m_operatorLease;
   }
 
   void
@@ -1159,6 +1179,13 @@ public:
   bool
   sendMavlinkCommandToDrone(const std::string& droneId, const std::string& commandName, Fields params = {})
   {
+    std::string leaseReason;
+    if (!validateOperatorLease(droneId, commandName, leaseReason)) {
+      recordBlockedCommand(droneId, commandName, leaseReason);
+      publishStatus("MAVLink " + commandName + " blocked by operator lease drone=" +
+                    droneId + " reason=" + leaseReason);
+      return false;
+    }
     const bool isManualControl = commandName == "manual_control";
     const bool isEmergencyStop = commandName == "emergency_stop";
     if (commandName == "arm") {
@@ -1290,6 +1317,13 @@ public:
   sendMavlinkCommandToDroneSync(const std::string& droneId, const std::string& commandName,
                                 Fields params, std::chrono::milliseconds timeout)
   {
+    std::string leaseReason;
+    if (!validateOperatorLease(droneId, commandName, leaseReason)) {
+      recordBlockedCommand(droneId, commandName, leaseReason);
+      NDN_LOG_INFO("SINGLE_MISSION_COMMAND command=" << commandName
+                   << " ok=false ack=lease-blocked reason=" << leaseReason);
+      return false;
+    }
     if (commandName == "arm") {
       std::string reason;
       if (!validateArmReadiness(droneId, reason)) {
@@ -1665,6 +1699,12 @@ public:
   runSingleDroneMissionUploadTest(std::chrono::seconds timeout, bool startMission)
   {
     const std::string droneId = targetDroneId();
+    std::string leaseReason;
+    if (!validateOperatorLease(droneId, "mission_assign", leaseReason)) {
+      NDN_LOG_INFO("SINGLE_MISSION_RESULT ok=false reason=" << leaseReason
+                   << " phase=lease-blocked");
+      return false;
+    }
     const std::string taskId = "mission-upload-" + std::to_string(nowMilliseconds());
     std::mutex mutex;
     std::condition_variable cv;
@@ -1896,6 +1936,50 @@ public:
   }
 
   bool
+  runAuthorityLeaseGateTest(std::chrono::seconds)
+  {
+    OperatorAuthorityLease monitorLease;
+    monitorLease.leaseId = "monitor-only-test";
+    monitorLease.operatorId = m_config.groundStationIdentity.toUri();
+    monitorLease.droneId = targetDroneId();
+    monitorLease.scope = "monitor";
+    monitorLease.issuedMs = nowMilliseconds();
+    monitorLease.expiresMs = monitorLease.issuedMs + 60000;
+    setOperatorAuthorityLease(monitorLease);
+
+    std::string telemetryReason;
+    const bool telemetryAllowed = validateOperatorLease(targetDroneId(), "telemetry", telemetryReason);
+    const bool landBlocked = !sendMavlinkCommandToDrone(targetDroneId(), "land");
+    std::string missionReason;
+    const bool missionBlocked = !validateOperatorLease(targetDroneId(), "mission_assign", missionReason);
+
+    OperatorAuthorityLease expiredControl;
+    expiredControl.leaseId = "expired-control-test";
+    expiredControl.operatorId = m_config.groundStationIdentity.toUri();
+    expiredControl.droneId = targetDroneId();
+    expiredControl.scope = "control";
+    expiredControl.issuedMs = 1;
+    expiredControl.expiresMs = 2;
+    setOperatorAuthorityLease(expiredControl);
+    std::string expiredReason;
+    const bool expiredBlocked = !validateOperatorLease(targetDroneId(), "arm", expiredReason);
+
+    issueDefaultOperatorLease();
+    const bool ok = telemetryAllowed && telemetryReason == "ok" &&
+                    landBlocked && missionBlocked && missionReason == "monitor-scope" &&
+                    expiredBlocked && expiredReason == "lease-expired";
+    NDN_LOG_INFO("AUTHORITY_LEASE_GATE_RESULT ok=" << (ok ? "true" : "false")
+                 << " telemetry_allowed=" << (telemetryAllowed ? "true" : "false")
+                 << " telemetry_reason=" << telemetryReason
+                 << " land_blocked=" << (landBlocked ? "true" : "false")
+                 << " mission_blocked=" << (missionBlocked ? "true" : "false")
+                 << " mission_reason=" << missionReason
+                 << " expired_blocked=" << (expiredBlocked ? "true" : "false")
+                 << " expired_reason=" << expiredReason);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -1971,6 +2055,18 @@ public:
       }
       return parsed;
     };
+    for (const auto& item : state->parts) {
+      const auto candidateDrones = parseDroneIds(item.second.assignedDrone, 0);
+      std::string leaseReason;
+      if (!validateMissionLeaseForDrones(candidateDrones, leaseReason)) {
+        publishStatus("Mission upload blocked by operator lease part=" + item.first +
+                      " reason=" + leaseReason);
+        NDN_LOG_INFO("MISSION_PLAN_UPLOAD_LEASE_BLOCKED task=" << plan.taskId
+                     << " part=" << item.first
+                     << " reason=" << leaseReason);
+        return false;
+      }
+    }
     auto emitProgress = [this, state, taskId = plan.taskId, plan] (std::string phase) {
       MissionProgressState progress;
       progress.taskId = taskId;
@@ -2224,6 +2320,12 @@ public:
 
     if (m_patrolDroneIds.size() < 2) {
       publishStatus("Patrol demo needs at least two drones");
+      return false;
+    }
+    std::string leaseReason;
+    if (!validateMissionLeaseForDrones(m_patrolDroneIds, leaseReason)) {
+      publishStatus("Patrol mission blocked by operator lease reason=" + leaseReason);
+      NDN_LOG_INFO("PATROL_LEASE_BLOCKED reason=" << leaseReason);
       return false;
     }
 
@@ -2910,6 +3012,50 @@ public:
   }
 
 private:
+  void
+  issueDefaultOperatorLease()
+  {
+    OperatorAuthorityLease lease;
+    lease.leaseId = "default-gs-control";
+    lease.operatorId = m_config.groundStationIdentity.toUri();
+    lease.droneId = "all";
+    lease.scope = "control";
+    lease.issuedMs = nowMilliseconds();
+    lease.expiresMs = 0;
+    {
+      std::lock_guard<std::mutex> guard(m_operatorLeaseMutex);
+      m_operatorLease = std::move(lease);
+    }
+  }
+
+  bool
+  validateOperatorLease(const std::string& droneId,
+                        const std::string& commandName,
+                        std::string& reason) const
+  {
+    std::lock_guard<std::mutex> guard(m_operatorLeaseMutex);
+    return m_operatorLease.allowsCommand(droneId, commandName, nowMilliseconds(), reason);
+  }
+
+  bool
+  validateMissionLeaseForDrones(const std::vector<std::string>& droneIds,
+                                std::string& reason) const
+  {
+    if (droneIds.empty()) {
+      reason = "no-candidate-drone";
+      return false;
+    }
+    for (const auto& droneId : droneIds) {
+      std::string itemReason;
+      if (!validateOperatorLease(droneId, "mission_assign", itemReason)) {
+        reason = droneId + ":" + itemReason;
+        return false;
+      }
+    }
+    reason = "ok";
+    return true;
+  }
+
   void
   clearTelemetryInFlight(const std::string& droneId)
   {
@@ -5785,6 +5931,7 @@ private:
   mutable std::mutex m_recordingManifestMutex;
   mutable std::mutex m_catalogMutex;
   mutable std::mutex m_parameterMutex;
+  mutable std::mutex m_operatorLeaseMutex;
   std::vector<std::string> m_missionReadyDrones;
   MissionPlan m_latestMissionPlan;
   MissionProgressState m_latestMissionProgress;
@@ -5794,6 +5941,7 @@ private:
   std::map<std::string, RecordingDataProductState> m_recordingManifests;
   std::map<std::string, UavDataProductCatalogState> m_catalogByDrone;
   std::map<std::string, VehicleParameterSnapshot> m_parameterSnapshots;
+  OperatorAuthorityLease m_operatorLease;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;

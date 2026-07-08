@@ -169,6 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the drone record to its local repo and the GS browse the repo catalog.")
     parser.add_argument("--auto-parameter-cache-test", action="store_true",
                         help="Have the GS fetch and cache the selected drone's MAVLink parameter snapshot.")
+    parser.add_argument("--auto-authority-lease-test", action="store_true",
+                        help="Have the GS verify operator authority leases fast-fail control commands.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-single-mission-test", action="store_true",
@@ -1039,6 +1041,12 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "12000",
             ]
+        if args.auto_authority_lease_test:
+            gs_argv += [
+                "--auto-authority-lease-test",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "3000",
+            ]
         if args.auto_patrol_test:
             patrol_timeout_ms = "30000" if should_start_jmavsim(args) else "3000"
             gs_argv += [
@@ -1067,6 +1075,7 @@ def main() -> int:
                 args.auto_loaded_mission_plan_test or
                 args.auto_repo_catalog_browse_test or
                 args.auto_parameter_cache_test or
+                args.auto_authority_lease_test or
                 args.auto_telemetry_test or args.auto_link_state_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
@@ -1163,6 +1172,18 @@ def main() -> int:
             require_log(gs_log, "VEHICLE_PARAMETER_CACHE_RESULT ok=true")
             require_log(gs_log, "GS_PARAMETER_CACHE_EXIT ok=true")
             print("NDNSF_UAV_PARAMETER_CACHE_MININDN_SMOKE_OK")
+        elif args.auto_authority_lease_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station authority lease smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "AUTHORITY_LEASE_GATE_RESULT ok=true")
+            require_log(gs_log, "mission_reason=monitor-scope")
+            require_log(gs_log, "expired_reason=lease-expired")
+            require_log(gs_log, "GS_AUTHORITY_LEASE_EXIT ok=true")
+            print("NDNSF_UAV_AUTHORITY_LEASE_MININDN_SMOKE_OK")
         elif args.auto_telemetry_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=70)

@@ -388,6 +388,7 @@ main(int argc, char** argv)
     const bool autoRecordingPlaybackTest = getConfigBool(argc, argv, appConfig, "--auto-recording-playback-test", "auto-recording-playback-test", false);
     const bool autoRepoCatalogBrowseTest = getConfigBool(argc, argv, appConfig, "--auto-repo-catalog-browse-test", "auto-repo-catalog-browse-test", false);
     const bool autoParameterCacheTest = getConfigBool(argc, argv, appConfig, "--auto-parameter-cache-test", "auto-parameter-cache-test", false);
+    const bool autoAuthorityLeaseTest = getConfigBool(argc, argv, appConfig, "--auto-authority-lease-test", "auto-authority-lease-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -487,6 +488,7 @@ main(int argc, char** argv)
                                   autoRecordingPlaybackTest ||
                                   autoRepoCatalogBrowseTest ||
                                   autoParameterCacheTest ||
+                                  autoAuthorityLeaseTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -531,6 +533,11 @@ main(int argc, char** argv)
       std::cout << "GS_PARAMETER_CACHE_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoAuthorityLeaseTest) {
+      const bool ok = runtime->runAuthorityLeaseGateTest(std::chrono::seconds(10));
+      std::cout << "GS_AUTHORITY_LEASE_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
     if (autoTelemetryTest) {
       const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45),
                                                     !autoTelemetryAllowMockFields);
@@ -571,6 +578,7 @@ main(int argc, char** argv)
               << " auto_recording_playback_test=" << (autoRecordingPlaybackTest ? "true" : "false")
               << " auto_repo_catalog_browse_test=" << (autoRepoCatalogBrowseTest ? "true" : "false")
               << " auto_parameter_cache_test=" << (autoParameterCacheTest ? "true" : "false")
+              << " auto_authority_lease_test=" << (autoAuthorityLeaseTest ? "true" : "false")
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
               << " video_bitrate_policy=" << videoBitratePolicy
