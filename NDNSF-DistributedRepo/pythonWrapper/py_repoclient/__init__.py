@@ -10,7 +10,13 @@ from __future__ import annotations
 import json
 from typing import Callable, Iterable, Optional
 
-from ndnsf import AckCandidate, ProviderCapabilityHint, ServiceUser, parse_ack_metadata
+from ndnsf import (
+    AckCandidate,
+    ProviderCapabilityHint,
+    ServiceDiscoveryRecord,
+    ServiceUser,
+    parse_ack_metadata,
+)
 
 from ._py_repoclient import (
     PlacementPolicy,
@@ -72,6 +78,40 @@ def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
         return capability
     except ValueError:
         return None
+
+
+def discovery_record_from_ack(candidate: AckCandidate) -> ServiceDiscoveryRecord:
+    """Parse a core service-discovery record from a Repo ACK.
+
+    Legacy-only ACKs are treated as ready so older repo providers keep working.
+    Typed ``ProviderCapabilityHint`` ACKs can mark a provider unready or
+    draining, which capacity selection should respect before applying
+    storage-placement policy.
+    """
+
+    fields: dict[str, object] = parse_ack_metadata(bytes(candidate.payload))
+    capability_payload = fields.get("providerCapabilityHint")
+    if isinstance(capability_payload, dict):
+        try:
+            hint = ProviderCapabilityHint.from_dict(capability_payload)
+            return ServiceDiscoveryRecord.from_provider_capability_hint(hint)
+        except Exception:
+            pass
+    return ServiceDiscoveryRecord(
+        provider_name=str(candidate.provider_name),
+        service_name=str(candidate.service_name),
+        ready=bool(candidate.status),
+        reason_code="" if candidate.status else "LEGACY_ACK_REJECTED",
+        message=str(candidate.message),
+        source="repo-legacy-ack",
+    )
+
+
+def ready_capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
+    record = discovery_record_from_ack(candidate)
+    if not record.ready_for_new_request():
+        return None
+    return capability_from_ack(candidate)
 
 
 class RepoClient:
@@ -329,7 +369,7 @@ def _capacity_selector(replication_factor: int, object_size: int):
         capabilities = [
             capability
             for candidate in candidates
-            if (capability := capability_from_ack(candidate)) is not None
+            if (capability := ready_capability_from_ack(candidate)) is not None
         ]
         policy = PlacementPolicy()
         policy.replication_factor = int(replication_factor)
@@ -404,7 +444,9 @@ __all__ = [
     "RepoClient",
     "RepoObjectManifest",
     "StorageCapability",
+    "discovery_record_from_ack",
     "capability_from_ack",
+    "ready_capability_from_ack",
     "decode_store_request",
     "encode_inventory",
     "encode_store_request",
