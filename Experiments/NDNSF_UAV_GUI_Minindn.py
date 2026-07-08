@@ -1397,6 +1397,8 @@ def main() -> int:
             require_log(gs_log, "AUTHORITY_ALERT_HISTORY_RESULT ok=true")
             require_log(gs_log, "saw_override=true")
             require_log(gs_log, "saw_detected=true")
+            require_log(gs_log, "reloaded_override=true")
+            require_log(gs_log, "reloaded_detected=true")
             require_log(gs_log, "GS_AUTHORITY_ALERT_HISTORY_EXIT ok=true")
             print("NDNSF_UAV_AUTHORITY_ALERT_HISTORY_MININDN_SMOKE_OK")
         elif args.auto_telemetry_test and args.no_cli:

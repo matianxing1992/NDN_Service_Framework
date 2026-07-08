@@ -254,6 +254,10 @@ public:
         fieldOr(fields, "revoked_scope", current.scope),
         nowMilliseconds()
       });
+      {
+        std::lock_guard<std::mutex> stateGuard(m_issuedOperatorLeaseMutex);
+        persistIssuedOperatorLeasesLocked();
+      }
       reason = fieldOr(fields, "reason", reason);
     }
     NDN_LOG_INFO("AUTHORITY_LEASE_REFRESH revoked=" << (revoked ? "true" : "false")
@@ -2563,11 +2567,14 @@ public:
       std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
       m_issuedOperatorLeases.clear();
       m_operatorRevocationRecords.clear();
-      persistIssuedOperatorLeasesLocked();
     }
     {
       std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
       m_operatorAuthorityAlerts.clear();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      persistIssuedOperatorLeasesLocked();
     }
 
     OperatorAuthorityLeaseRequest first;
@@ -2618,10 +2625,33 @@ public:
         sawDetected = true;
       }
     }
+    {
+      std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+      m_operatorAuthorityAlerts.clear();
+    }
+    loadIssuedOperatorLeasesFromStateFile();
+    const auto reloadedAlerts = operatorAuthorityAlertsSnapshot();
+    bool reloadedOverride = false;
+    bool reloadedDetected = false;
+    for (const auto& alert : reloadedAlerts) {
+      if (alert.type == "admin-override" &&
+          alert.leaseId == firstLease.leaseId &&
+          alert.revokedOperator == first.operatorId &&
+          alert.revokerOperator == admin.operatorId) {
+        reloadedOverride = true;
+      }
+      if (alert.type == "lease-revoked-detected" &&
+          alert.leaseId == firstLease.leaseId &&
+          alert.revokedOperator == first.operatorId &&
+          alert.revokerOperator == admin.operatorId) {
+        reloadedDetected = true;
+      }
+    }
     const bool ok = firstAccepted && firstReason == "ok" &&
                     adminAccepted && adminReason == "ok" &&
                     refreshRevoked && refreshReason == "ok" &&
-                    sawOverride && sawDetected && alerts.size() >= 2;
+                    sawOverride && sawDetected && alerts.size() >= 2 &&
+                    reloadedOverride && reloadedDetected && reloadedAlerts.size() >= 2;
     NDN_LOG_INFO("AUTHORITY_ALERT_HISTORY_RESULT ok=" << (ok ? "true" : "false")
                  << " first=" << (firstAccepted ? "accepted" : firstReason)
                  << " admin=" << (adminAccepted ? "accepted" : adminReason)
@@ -2629,6 +2659,9 @@ public:
                  << " alert_count=" << alerts.size()
                  << " saw_override=" << (sawOverride ? "true" : "false")
                  << " saw_detected=" << (sawDetected ? "true" : "false")
+                 << " reloaded_alert_count=" << reloadedAlerts.size()
+                 << " reloaded_override=" << (reloadedOverride ? "true" : "false")
+                 << " reloaded_detected=" << (reloadedDetected ? "true" : "false")
                  << " lease_id=" << firstLease.leaseId);
     return ok;
   }
@@ -3947,6 +3980,23 @@ private:
         output << prefix << key << "=" << value << "\n";
       }
     }
+    std::vector<OperatorAuthorityAlert> alerts;
+    {
+      std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+      alerts = m_operatorAuthorityAlerts;
+    }
+    output << "alert_count=" << alerts.size() << "\n";
+    for (size_t i = 0; i < alerts.size(); ++i) {
+      const auto prefix = "alert." + std::to_string(i) + ".";
+      output << prefix << "type=" << alerts[i].type << "\n";
+      output << prefix << "reason=" << alerts[i].reason << "\n";
+      output << prefix << "lease_id=" << alerts[i].leaseId << "\n";
+      output << prefix << "revoked_operator=" << alerts[i].revokedOperator << "\n";
+      output << prefix << "revoker_operator=" << alerts[i].revokerOperator << "\n";
+      output << prefix << "drone=" << alerts[i].droneId << "\n";
+      output << prefix << "scope=" << alerts[i].scope << "\n";
+      output << prefix << "updated_ms=" << alerts[i].updatedMs << "\n";
+    }
     output.close();
     if (std::rename(tmp.c_str(), m_operatorAuthorityStateFile.c_str()) != 0) {
       NDN_LOG_WARN("AUTHORITY_STATE_RENAME_FAILED path=" << m_operatorAuthorityStateFile
@@ -3956,7 +4006,8 @@ private:
     else {
       NDN_LOG_INFO("AUTHORITY_STATE_SAVED path=" << m_operatorAuthorityStateFile
                    << " active_lease_count=" << m_issuedOperatorLeases.size()
-                   << " revocation_count=" << m_operatorRevocationRecords.size());
+                   << " revocation_count=" << m_operatorRevocationRecords.size()
+                   << " alert_count=" << alerts.size());
     }
   }
 
@@ -3977,9 +4028,11 @@ private:
       const auto fields = loadKeyValueConfig(m_operatorAuthorityStateFile);
       const auto count = unsignedFieldOr(fields, "lease_count", 0);
       const auto revocationCount = unsignedFieldOr(fields, "revocation_count", 0);
+      const auto alertCount = unsignedFieldOr(fields, "alert_count", 0);
       const auto nowMs = nowMilliseconds();
       std::vector<OperatorAuthorityLease> loaded;
       std::map<std::string, Fields> loadedRevocations;
+      std::vector<OperatorAuthorityAlert> loadedAlerts;
       for (uint64_t i = 0; i < count; ++i) {
         Fields leaseFields;
         const auto prefix = "lease." + std::to_string(i) + ".";
@@ -4007,6 +4060,32 @@ private:
           loadedRevocations[leaseId] = std::move(record);
         }
       }
+      for (uint64_t i = 0; i < alertCount; ++i) {
+        Fields alertFields;
+        const auto prefix = "alert." + std::to_string(i) + ".";
+        for (const auto& [key, value] : fields) {
+          if (key.rfind(prefix, 0) == 0) {
+            alertFields[key.substr(prefix.size())] = value;
+          }
+        }
+        OperatorAuthorityAlert alert;
+        alert.type = fieldOr(alertFields, "type", "unknown");
+        alert.reason = fieldOr(alertFields, "reason", "unknown");
+        alert.leaseId = fieldOr(alertFields, "lease_id", "none");
+        alert.revokedOperator = fieldOr(alertFields, "revoked_operator", "unknown");
+        alert.revokerOperator = fieldOr(alertFields, "revoker_operator", "unknown");
+        alert.droneId = fieldOr(alertFields, "drone", "unknown");
+        alert.scope = fieldOr(alertFields, "scope", "unknown");
+        alert.updatedMs = unsignedFieldOr(alertFields, "updated_ms", 0);
+        loadedAlerts.push_back(std::move(alert));
+        while (loadedAlerts.size() > 20) {
+          loadedAlerts.erase(loadedAlerts.begin());
+        }
+      }
+      {
+        std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+        m_operatorAuthorityAlerts = std::move(loadedAlerts);
+      }
       {
         std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
         m_issuedOperatorLeases = std::move(loaded);
@@ -4015,7 +4094,8 @@ private:
       }
       NDN_LOG_INFO("AUTHORITY_STATE_LOADED path=" << m_operatorAuthorityStateFile
                    << " active_lease_count=" << m_issuedOperatorLeases.size()
-                   << " revocation_count=" << m_operatorRevocationRecords.size());
+                   << " revocation_count=" << m_operatorRevocationRecords.size()
+                   << " alert_count=" << operatorAuthorityAlertsSnapshot().size());
     }
     catch (const std::exception& e) {
       NDN_LOG_WARN("AUTHORITY_STATE_LOAD_FAILED path=" << m_operatorAuthorityStateFile

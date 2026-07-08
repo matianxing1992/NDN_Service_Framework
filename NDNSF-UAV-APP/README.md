@@ -1729,7 +1729,8 @@ through `--operator-authority-refresh-interval-ms`, while the GUI exposes a
 manual `Refresh Lease` button in the main controls and shows refresh mode in
 the Operator Authority inspector. The authority alert-history smoke verifies
 that admin overrides and client-side revoked-lease detection are retained as
-operator-visible alert entries. This bundle intentionally uses mock flight-controller fields and
+operator-visible alert entries, persisted in the authority state file, and
+reloaded for post-mission review. This bundle intentionally uses mock flight-controller fields and
 the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
 
