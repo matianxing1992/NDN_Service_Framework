@@ -464,6 +464,7 @@ class ProviderCapabilityHint:
     provider_name: str
     service_name: str
     ready: bool = True
+    drain_state: str = "ACTIVE"
     reason_code: str = ""
     message: str = ""
     runtime_hint: GenericProviderRuntimeHint | None = None
@@ -491,6 +492,7 @@ class ProviderCapabilityHint:
             provider_name=str(payload.get("providerName", payload.get("provider_name", ""))),
             service_name=str(payload.get("serviceName", payload.get("service_name", ""))),
             ready=bool(payload.get("ready", True)),
+            drain_state=str(payload.get("drainState", payload.get("drain_state", "ACTIVE"))),
             reason_code=str(payload.get("reasonCode", payload.get("reason_code", ""))),
             message=str(payload.get("message", "")),
             runtime_hint=(
@@ -518,6 +520,10 @@ class ProviderCapabilityHint:
     def is_fresh(self, *, now_ms_value: int | None = None) -> bool:
         current = now_ms() if now_ms_value is None else int(now_ms_value)
         return not self.expires_at_ms or current < self.expires_at_ms
+
+    @property
+    def ready_for_new_request(self) -> bool:
+        return self.ready and self.drain_state.upper() in {"", "ACTIVE", "READY"}
 
     def to_ack_fields(self) -> dict[str, Any]:
         return {"providerCapabilityHint": to_plain(self)}

@@ -127,6 +127,54 @@ namespace ndn_service_framework{
                 ndn::Buffer servicePayload;
             };
 
+            struct DataProductReference
+            {
+                ndn::Name name;
+                ndn::Name producerName;
+                ndn::Name serviceName;
+                std::string objectClass;
+                std::string contentType = "application/octet-stream";
+                std::string digest;
+                uint64_t sizeBytes = 0;
+                uint64_t segmentCount = 0;
+                uint64_t freshnessMs = 0;
+            };
+
+            struct ServiceOperationStatus
+            {
+                std::string operationId;
+                std::string operation;
+                ndn::Name serviceName;
+                ndn::Name providerName;
+                ndn::Name requestId;
+                std::string state = "QUEUED";
+                std::string reasonCode;
+                std::string message;
+                double progress = 0.0;
+                std::optional<DataProductReference> resultReference;
+                uint64_t retryAfterMs = 0;
+                uint64_t createdAtMs = 0;
+                uint64_t updatedAtMs = 0;
+                uint64_t expiresAtMs = 0;
+            };
+
+            struct ProviderCapabilityHint
+            {
+                ndn::Name providerName;
+                ndn::Name serviceName;
+                bool ready = true;
+                std::string drainState = "ACTIVE";
+                std::string reasonCode;
+                std::string message;
+                std::optional<GenericProviderRuntimeHint> runtimeHint;
+                std::vector<GenericAdmissionLease> leaseOffers;
+                std::optional<ServiceOperationStatus> operationStatus;
+                std::string servicePayloadSchema;
+                ndn::Buffer servicePayload;
+
+                bool readyForNewRequest() const;
+            };
+
             class ProviderAdmissionLeaseTable
             {
             public:
@@ -155,6 +203,18 @@ namespace ndn_service_framework{
             static ndn::Buffer makePeerNetworkMetricPayload(
                 const PeerNetworkMetric& metric);
             static std::optional<PeerNetworkMetric> parsePeerNetworkMetricPayload(
+                const ndn::Buffer& payload);
+            static ndn::Buffer makeDataProductReferencePayload(
+                const DataProductReference& reference);
+            static std::optional<DataProductReference> parseDataProductReferencePayload(
+                const ndn::Buffer& payload);
+            static ndn::Buffer makeServiceOperationStatusPayload(
+                const ServiceOperationStatus& status);
+            static std::optional<ServiceOperationStatus> parseServiceOperationStatusPayload(
+                const ndn::Buffer& payload);
+            static ndn::Buffer makeProviderCapabilityHintPayload(
+                const ProviderCapabilityHint& hint);
+            static std::optional<ProviderCapabilityHint> parseProviderCapabilityHintPayload(
                 const ndn::Buffer& payload);
 
             struct GenericAdmissionLeaseValidationRequest

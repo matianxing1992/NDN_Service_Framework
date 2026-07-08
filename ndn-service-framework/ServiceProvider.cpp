@@ -1505,6 +1505,235 @@ namespace ndn_service_framework
         return metadata;
     }
 
+    bool
+    ServiceProvider::ProviderCapabilityHint::readyForNewRequest() const
+    {
+        std::string drain = drainState;
+        std::transform(drain.begin(), drain.end(), drain.begin(),
+                       [] (unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        return ready &&
+               (drain.empty() || drain == "ACTIVE" || drain == "READY");
+    }
+
+    ndn::Buffer
+    ServiceProvider::makeDataProductReferencePayload(
+        const DataProductReference& reference)
+    {
+        std::string payload;
+        if (!reference.name.empty()) {
+            payload += "dataProductName=" + reference.name.toUri() + ";";
+        }
+        if (!reference.producerName.empty()) {
+            payload += "dataProductProducer=" + reference.producerName.toUri() + ";";
+        }
+        if (!reference.serviceName.empty()) {
+            payload += "dataProductService=" + reference.serviceName.toUri() + ";";
+        }
+        if (!reference.objectClass.empty()) {
+            payload += "dataProductObjectClass=" + reference.objectClass + ";";
+        }
+        if (!reference.contentType.empty()) {
+            payload += "dataProductContentType=" + reference.contentType + ";";
+        }
+        if (!reference.digest.empty()) {
+            payload += "dataProductDigest=" + reference.digest + ";";
+        }
+        if (reference.sizeBytes > 0) {
+            payload += "dataProductSizeBytes=" + std::to_string(reference.sizeBytes) + ";";
+        }
+        if (reference.segmentCount > 0) {
+            payload += "dataProductSegmentCount=" + std::to_string(reference.segmentCount) + ";";
+        }
+        if (reference.freshnessMs > 0) {
+            payload += "dataProductFreshnessMs=" + std::to_string(reference.freshnessMs) + ";";
+        }
+        return bufferFromText(payload);
+    }
+
+    std::optional<ServiceProvider::DataProductReference>
+    ServiceProvider::parseDataProductReferencePayload(const ndn::Buffer& payload)
+    {
+        const auto fields = parseSemicolonFields(payload);
+        if (fields.find("dataProductName") == fields.end()) {
+            return std::nullopt;
+        }
+        DataProductReference reference;
+        reference.name = nameFieldOrDefault(fields, "dataProductName");
+        reference.producerName = nameFieldOrDefault(fields, "dataProductProducer");
+        reference.serviceName = nameFieldOrDefault(fields, "dataProductService");
+        if (const auto it = fields.find("dataProductObjectClass"); it != fields.end()) {
+            reference.objectClass = it->second;
+        }
+        if (const auto it = fields.find("dataProductContentType"); it != fields.end()) {
+            reference.contentType = it->second;
+        }
+        if (const auto it = fields.find("dataProductDigest"); it != fields.end()) {
+            reference.digest = it->second;
+        }
+        reference.sizeBytes = uintFieldOrDefault(fields, "dataProductSizeBytes");
+        reference.segmentCount = uintFieldOrDefault(fields, "dataProductSegmentCount");
+        reference.freshnessMs = uintFieldOrDefault(fields, "dataProductFreshnessMs");
+        return reference;
+    }
+
+    ndn::Buffer
+    ServiceProvider::makeServiceOperationStatusPayload(
+        const ServiceOperationStatus& status)
+    {
+        std::string payload;
+        if (!status.operationId.empty()) {
+            payload += "operationId=" + status.operationId + ";";
+        }
+        if (!status.operation.empty()) {
+            payload += "operation=" + status.operation + ";";
+        }
+        if (!status.serviceName.empty()) {
+            payload += "operationService=" + status.serviceName.toUri() + ";";
+        }
+        if (!status.providerName.empty()) {
+            payload += "operationProvider=" + status.providerName.toUri() + ";";
+        }
+        if (!status.requestId.empty()) {
+            payload += "operationRequestId=" + status.requestId.toUri() + ";";
+        }
+        payload += "operationState=" + status.state + ";";
+        if (!status.reasonCode.empty()) {
+            payload += "operationReasonCode=" + status.reasonCode + ";";
+        }
+        if (!status.message.empty()) {
+            payload += "operationMessage=" + status.message + ";";
+        }
+        payload += "operationProgress=" + numberToText(status.progress) + ";";
+        if (status.retryAfterMs > 0) {
+            payload += "operationRetryAfterMs=" + std::to_string(status.retryAfterMs) + ";";
+        }
+        if (status.createdAtMs > 0) {
+            payload += "operationCreatedAtMs=" + std::to_string(status.createdAtMs) + ";";
+        }
+        if (status.updatedAtMs > 0) {
+            payload += "operationUpdatedAtMs=" + std::to_string(status.updatedAtMs) + ";";
+        }
+        if (status.expiresAtMs > 0) {
+            payload += "operationExpiresAtMs=" + std::to_string(status.expiresAtMs) + ";";
+        }
+        if (status.resultReference) {
+            const auto referencePayload =
+                makeDataProductReferencePayload(*status.resultReference);
+            payload += std::string(reinterpret_cast<const char*>(referencePayload.data()),
+                                   referencePayload.size());
+        }
+        return bufferFromText(payload);
+    }
+
+    std::optional<ServiceProvider::ServiceOperationStatus>
+    ServiceProvider::parseServiceOperationStatusPayload(const ndn::Buffer& payload)
+    {
+        const auto fields = parseSemicolonFields(payload);
+        if (fields.find("operationId") == fields.end() &&
+            fields.find("operation") == fields.end()) {
+            return std::nullopt;
+        }
+        ServiceOperationStatus status;
+        if (const auto it = fields.find("operationId"); it != fields.end()) {
+            status.operationId = it->second;
+        }
+        if (const auto it = fields.find("operation"); it != fields.end()) {
+            status.operation = it->second;
+        }
+        status.serviceName = nameFieldOrDefault(fields, "operationService");
+        status.providerName = nameFieldOrDefault(fields, "operationProvider");
+        status.requestId = nameFieldOrDefault(fields, "operationRequestId");
+        if (const auto it = fields.find("operationState"); it != fields.end()) {
+            status.state = it->second;
+        }
+        if (const auto it = fields.find("operationReasonCode"); it != fields.end()) {
+            status.reasonCode = it->second;
+        }
+        if (const auto it = fields.find("operationMessage"); it != fields.end()) {
+            status.message = it->second;
+        }
+        status.progress = doubleFieldOrDefault(fields, "operationProgress");
+        status.retryAfterMs = uintFieldOrDefault(fields, "operationRetryAfterMs");
+        status.createdAtMs = uintFieldOrDefault(fields, "operationCreatedAtMs");
+        status.updatedAtMs = uintFieldOrDefault(fields, "operationUpdatedAtMs");
+        status.expiresAtMs = uintFieldOrDefault(fields, "operationExpiresAtMs");
+        status.resultReference = parseDataProductReferencePayload(payload);
+        return status;
+    }
+
+    ndn::Buffer
+    ServiceProvider::makeProviderCapabilityHintPayload(
+        const ProviderCapabilityHint& hint)
+    {
+        std::string payload;
+        if (!hint.providerName.empty()) {
+            payload += "capabilityProvider=" + hint.providerName.toUri() + ";";
+        }
+        if (!hint.serviceName.empty()) {
+            payload += "capabilityService=" + hint.serviceName.toUri() + ";";
+        }
+        payload += std::string("capabilityReady=") + (hint.ready ? "1" : "0") + ";";
+        if (!hint.drainState.empty()) {
+            payload += "capabilityDrainState=" + hint.drainState + ";";
+        }
+        if (!hint.reasonCode.empty()) {
+            payload += "capabilityReasonCode=" + hint.reasonCode + ";";
+        }
+        if (!hint.message.empty()) {
+            payload += "capabilityMessage=" + hint.message + ";";
+        }
+        if (hint.runtimeHint || !hint.leaseOffers.empty() ||
+            !hint.servicePayloadSchema.empty() || !hint.servicePayload.empty()) {
+            GenericAckMetadata metadata;
+            metadata.runtimeHint = hint.runtimeHint;
+            metadata.leaseOffers = hint.leaseOffers;
+            metadata.servicePayloadSchema = hint.servicePayloadSchema;
+            metadata.servicePayload = hint.servicePayload;
+            const auto metadataPayload = makeGenericAckMetadataPayload(metadata);
+            payload += std::string(reinterpret_cast<const char*>(metadataPayload.data()),
+                                   metadataPayload.size());
+        }
+        if (hint.operationStatus) {
+            const auto statusPayload =
+                makeServiceOperationStatusPayload(*hint.operationStatus);
+            payload += std::string(reinterpret_cast<const char*>(statusPayload.data()),
+                                   statusPayload.size());
+        }
+        return bufferFromText(payload);
+    }
+
+    std::optional<ServiceProvider::ProviderCapabilityHint>
+    ServiceProvider::parseProviderCapabilityHintPayload(const ndn::Buffer& payload)
+    {
+        const auto fields = parseSemicolonFields(payload);
+        if (fields.find("capabilityProvider") == fields.end() &&
+            fields.find("capabilityService") == fields.end()) {
+            return std::nullopt;
+        }
+        ProviderCapabilityHint hint;
+        hint.providerName = nameFieldOrDefault(fields, "capabilityProvider");
+        hint.serviceName = nameFieldOrDefault(fields, "capabilityService");
+        const auto readyIt = fields.find("capabilityReady");
+        hint.ready = readyIt == fields.end() ||
+                     !(readyIt->second == "0" || readyIt->second == "false");
+        if (const auto it = fields.find("capabilityDrainState"); it != fields.end()) {
+            hint.drainState = it->second;
+        }
+        if (const auto it = fields.find("capabilityReasonCode"); it != fields.end()) {
+            hint.reasonCode = it->second;
+        }
+        if (const auto it = fields.find("capabilityMessage"); it != fields.end()) {
+            hint.message = it->second;
+        }
+        const auto metadata = parseGenericAckMetadataPayload(payload);
+        hint.runtimeHint = metadata.runtimeHint;
+        hint.leaseOffers = metadata.leaseOffers;
+        hint.servicePayloadSchema = metadata.servicePayloadSchema;
+        hint.servicePayload = metadata.servicePayload;
+        hint.operationStatus = parseServiceOperationStatusPayload(payload);
+        return hint;
+    }
+
     void ServiceProvider::setGenericAdmissionLeaseValidator(
         const ndn::Name& serviceName,
         GenericAdmissionLeaseValidator validator,

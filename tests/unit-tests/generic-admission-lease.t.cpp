@@ -321,6 +321,92 @@ BOOST_AUTO_TEST_CASE(PeerNetworkMetricEnvelopeRoundTripsAsDirected)
   BOOST_CHECK_CLOSE(parsed->bandwidthMbps, 900.0, 0.001);
 }
 
+BOOST_AUTO_TEST_CASE(CoreOperationStatusCarriesDataProductReference)
+{
+  ServiceProvider::DataProductReference reference;
+  reference.name = ndn::Name("/repo/model/stage0/v=1");
+  reference.producerName = ndn::Name("/repo/A");
+  reference.serviceName = ndn::Name("/NDNSF/DistributedRepo");
+  reference.objectClass = "model-artifact";
+  reference.contentType = "application/octet-stream";
+  reference.digest = "sha256:abc";
+  reference.sizeBytes = 4096;
+  reference.segmentCount = 3;
+  reference.freshnessMs = 60000;
+
+  ServiceProvider::ServiceOperationStatus status;
+  status.operationId = "store-1";
+  status.operation = "STORE";
+  status.serviceName = ndn::Name("/NDNSF/DistributedRepo");
+  status.providerName = ndn::Name("/repo/A");
+  status.requestId = ndn::Name("/request/1");
+  status.state = "DONE";
+  status.reasonCode = "OK";
+  status.message = "stored";
+  status.progress = 1.0;
+  status.resultReference = reference;
+  status.updatedAtMs = 2000;
+
+  const auto payload = ServiceProvider::makeServiceOperationStatusPayload(status);
+  const auto parsed = ServiceProvider::parseServiceOperationStatusPayload(payload);
+
+  BOOST_REQUIRE(parsed);
+  BOOST_CHECK_EQUAL(parsed->operationId, "store-1");
+  BOOST_CHECK_EQUAL(parsed->operation, "STORE");
+  BOOST_CHECK_EQUAL(parsed->state, "DONE");
+  BOOST_CHECK_CLOSE(parsed->progress, 1.0, 0.001);
+  BOOST_REQUIRE(parsed->resultReference);
+  BOOST_CHECK(parsed->resultReference->name == ndn::Name("/repo/model/stage0/v=1"));
+  BOOST_CHECK_EQUAL(parsed->resultReference->objectClass, "model-artifact");
+  BOOST_CHECK_EQUAL(parsed->resultReference->segmentCount, 3);
+}
+
+BOOST_AUTO_TEST_CASE(CoreProviderCapabilityHintCarriesRuntimeDrainAndOperation)
+{
+  ServiceProvider::GenericProviderRuntimeHint runtime;
+  runtime.providerName = ndn::Name("/provider/A");
+  runtime.queueLength = 4;
+  runtime.estimatedQueueWaitMs = 25;
+  runtime.freeGpuMemoryMb = 8192;
+
+  ServiceProvider::ServiceOperationStatus status;
+  status.operationId = "provision-1";
+  status.operation = "ARTIFACT_PROVISION";
+  status.serviceName = ndn::Name("/Inference/NativeTracer");
+  status.providerName = ndn::Name("/provider/A");
+  status.state = "RUNNING";
+  status.progress = 0.5;
+
+  ServiceProvider::ProviderCapabilityHint hint;
+  hint.providerName = ndn::Name("/provider/A");
+  hint.serviceName = ndn::Name("/Inference/NativeTracer");
+  hint.ready = false;
+  hint.drainState = "DRAINING";
+  hint.reasonCode = "PROVIDER_BUSY";
+  hint.message = "finishing active work";
+  hint.runtimeHint = runtime;
+  hint.operationStatus = status;
+  hint.servicePayloadSchema = "ndnsf-di-runtime-ack-v1";
+  hint.servicePayload = textBuffer("fragmentStates=stage0:GPU_LOADED");
+
+  const auto payload = ServiceProvider::makeProviderCapabilityHintPayload(hint);
+  const auto parsed = ServiceProvider::parseProviderCapabilityHintPayload(payload);
+
+  BOOST_REQUIRE(parsed);
+  BOOST_CHECK(parsed->providerName == ndn::Name("/provider/A"));
+  BOOST_CHECK(parsed->serviceName == ndn::Name("/Inference/NativeTracer"));
+  BOOST_CHECK(!parsed->ready);
+  BOOST_CHECK_EQUAL(parsed->drainState, "DRAINING");
+  BOOST_CHECK(!parsed->readyForNewRequest());
+  BOOST_REQUIRE(parsed->runtimeHint);
+  BOOST_CHECK_EQUAL(parsed->runtimeHint->queueLength, 4);
+  BOOST_CHECK_EQUAL(parsed->runtimeHint->freeGpuMemoryMb, 8192);
+  BOOST_REQUIRE(parsed->operationStatus);
+  BOOST_CHECK_EQUAL(parsed->operationStatus->operation, "ARTIFACT_PROVISION");
+  BOOST_CHECK_CLOSE(parsed->operationStatus->progress, 0.5, 0.001);
+  BOOST_CHECK_EQUAL(parsed->servicePayloadSchema, "ndnsf-di-runtime-ack-v1");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test

@@ -37,6 +37,21 @@ from .coordination import (
 from .metrics import NdnMetrics, start_metrics_server
 from .ndnsd_health import NdnsdHealthTracker, NdnsdProviderState
 from .retry import RetryPolicy, retry_call
+from .service_discovery import (
+    DRAIN_ACTIVE,
+    DRAIN_DRAINING,
+    DRAIN_MAINTENANCE,
+    DRAIN_OFFLINE,
+    DRAIN_PROVISIONING,
+    DRAIN_READY,
+    DRAIN_UNAVAILABLE,
+    NON_READY_DRAIN_STATES,
+    READY_DRAIN_STATES,
+    ServiceDiscoveryRecord,
+    ServiceDiscoverySnapshot,
+    normalize_drain_state,
+    provider_ready_for_new_request,
+)
 from .tracing import Span, TraceCollector
 from .runtime_telemetry import (
     AdmissionLeaseStatus,
@@ -149,6 +164,13 @@ __all__ = [
     "CoordinationWindow",
     "DataPacket",
     "DataProductReference",
+    "DRAIN_ACTIVE",
+    "DRAIN_DRAINING",
+    "DRAIN_MAINTENANCE",
+    "DRAIN_OFFLINE",
+    "DRAIN_PROVISIONING",
+    "DRAIN_READY",
+    "DRAIN_UNAVAILABLE",
     "ExecutionArtifact",
     "ExecutionArtifactSpec",
     "ExecutionContext",
@@ -167,6 +189,7 @@ __all__ = [
     "ProcessResult",
     "ProviderConfig",
     "ProviderCapabilityHint",
+    "NON_READY_DRAIN_STATES",
     "RECOMMENDED_NEGATIVE_ACK_REASONS",
     "RECOMMENDED_REJECTION_REASONS",
     "RejectionReason",
@@ -174,6 +197,8 @@ __all__ = [
     "SegmentHintRange",
     "SegmentedObjectProducer",
     "ServiceController",
+    "ServiceDiscoveryRecord",
+    "ServiceDiscoverySnapshot",
     "ServiceOperationState",
     "ServiceOperationStatus",
     "ServiceProvider",
@@ -192,6 +217,7 @@ __all__ = [
     "StreamMetrics",
     "StreamProducerBuffer",
     "UserConfig",
+    "READY_DRAIN_STATES",
     "coordination_now_ms",
     "coordination_stable_digest",
     "coordination_stable_json",
@@ -210,7 +236,9 @@ __all__ = [
     "fetch_segmented_data_packets",
     "is_recommended_rejection_reason",
     "make_segmented_data_packets",
+    "normalize_drain_state",
     "parse_large_data_reference_payload",
+    "provider_ready_for_new_request",
     "stream_now_ms",
     "verify_coordination_suggestion",
 ]
