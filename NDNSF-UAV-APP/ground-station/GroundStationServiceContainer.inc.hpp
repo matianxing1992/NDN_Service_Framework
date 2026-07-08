@@ -21,7 +21,9 @@ public:
                        std::string operatorId = "",
                        std::string operatorLeaseDrone = "all",
                        std::string operatorLeaseScope = "control",
-                       uint64_t operatorLeaseTtlMs = 0)
+                       uint64_t operatorLeaseTtlMs = 0,
+                       std::string operatorAuthorityStateFile = "",
+                       std::string operatorAdminIds = "")
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_coreContainer({
@@ -50,6 +52,8 @@ public:
     , m_defaultOperatorLeaseDrone(std::move(operatorLeaseDrone))
     , m_defaultOperatorLeaseScope(std::move(operatorLeaseScope))
     , m_defaultOperatorLeaseTtlMs(operatorLeaseTtlMs)
+    , m_operatorAuthorityStateFile(std::move(operatorAuthorityStateFile))
+    , m_operatorAdminIds(parseOperatorIdList(operatorAdminIds))
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
@@ -64,6 +68,7 @@ public:
     if (m_defaultOperatorLeaseScope.empty()) {
       m_defaultOperatorLeaseScope = "control";
     }
+    loadIssuedOperatorLeasesFromStateFile();
     m_targetDroneLocked = !m_targetDroneId.empty();
     issueDefaultOperatorLease();
     KeyChainInitLock lock(("/tmp/ndnsf-uav-keychain-" + std::to_string(getuid()) + ".lock").c_str());
@@ -2149,6 +2154,89 @@ public:
   }
 
   bool
+  runAuthorityLeasePersistenceTest(std::chrono::seconds timeout)
+  {
+    if (m_operatorAuthorityStateFile.empty()) {
+      NDN_LOG_INFO("AUTHORITY_PERSISTENCE_RESULT ok=false reason=missing-state-file");
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      m_issuedOperatorLeases.clear();
+      persistIssuedOperatorLeasesLocked();
+    }
+
+    OperatorAuthorityLeaseRequest first;
+    first.requestId = "persistence-first-" + std::to_string(nowMilliseconds());
+    first.operatorId = "/example/uav/operator/one";
+    first.droneId = targetDroneId();
+    first.scope = "control";
+    first.ttlMs = 60000;
+    first.requestedMs = nowMilliseconds();
+
+    OperatorAuthorityLease firstLease;
+    std::string firstReason;
+    Fields firstFields;
+    const bool firstAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, first, timeout, firstLease, firstReason, &firstFields);
+
+    auto unauthAdmin = first;
+    unauthAdmin.requestId = "persistence-unauth-admin-" + std::to_string(nowMilliseconds());
+    unauthAdmin.operatorId = "/example/uav/operator/three";
+    unauthAdmin.scope = "admin";
+    OperatorAuthorityLease unauthLease;
+    std::string unauthReason;
+    Fields unauthFields;
+    const bool unauthAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, unauthAdmin, timeout, unauthLease, unauthReason,
+      &unauthFields);
+
+    auto admin = first;
+    admin.requestId = "persistence-admin-" + std::to_string(nowMilliseconds());
+    admin.operatorId = "/example/uav/operator/two";
+    admin.scope = "admin";
+    OperatorAuthorityLease adminLease;
+    std::string adminReason;
+    Fields adminFields;
+    const bool adminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, admin, timeout, adminLease, adminReason, &adminFields);
+
+    bool persistedOk = false;
+    std::string persistedOperator = "none";
+    std::string persistedScope = "none";
+    try {
+      const auto persisted = loadKeyValueConfig(m_operatorAuthorityStateFile);
+      persistedOperator = fieldOr(persisted, "lease.0.lease_operator", persistedOperator);
+      persistedScope = fieldOr(persisted, "lease.0.lease_scope", persistedScope);
+      persistedOk = fieldOr(persisted, "lease_count", "0") == "1" &&
+                    persistedOperator == admin.operatorId &&
+                    persistedScope == "admin";
+    }
+    catch (const std::exception& e) {
+      NDN_LOG_WARN("AUTHORITY_PERSISTENCE_LOAD_CHECK_FAILED path="
+                   << m_operatorAuthorityStateFile << " error=" << e.what());
+    }
+
+    const auto revokedIds = fieldOr(adminFields, "revoked_lease_ids", "");
+    const bool revokedOk = !revokedIds.empty() &&
+                           revokedIds.find(firstLease.leaseId) != std::string::npos;
+    const bool ok = firstAccepted && firstReason == "ok" &&
+                    !unauthAccepted && unauthReason == "admin-unauthorized" &&
+                    adminAccepted && adminReason == "ok" &&
+                    fieldOr(adminFields, "overridden_leases", "0") == "1" &&
+                    revokedOk && persistedOk;
+    NDN_LOG_INFO("AUTHORITY_PERSISTENCE_RESULT ok=" << (ok ? "true" : "false")
+                 << " first=" << (firstAccepted ? "accepted" : firstReason)
+                 << " unauth_admin=" << (unauthAccepted ? "accepted" : unauthReason)
+                 << " admin=" << (adminAccepted ? "accepted" : adminReason)
+                 << " revoked_lease_ids=" << revokedIds
+                 << " persisted_operator=" << persistedOperator
+                 << " persisted_scope=" << persistedScope
+                 << " state_file=" << m_operatorAuthorityStateFile);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -3204,7 +3292,8 @@ private:
                                               const OperatorAuthorityLeaseRequest& leaseRequest,
                                               std::chrono::seconds timeout,
                                               OperatorAuthorityLease& out,
-                                              std::string& reason)
+                                              std::string& reason,
+                                              Fields* responseFields = nullptr)
   {
     struct RequestState
     {
@@ -3214,6 +3303,7 @@ private:
       bool ok = false;
       std::string reason = "timeout";
       OperatorAuthorityLease lease;
+      Fields fields;
     };
 
     auto state = std::make_shared<RequestState>();
@@ -3248,6 +3338,7 @@ private:
           state->done = true;
           state->reason = fieldOr(fields, "reason", "unknown");
           state->ok = fieldOr(fields, "accepted", "false") == "true";
+          state->fields = fields;
           if (state->ok) {
             state->lease = OperatorAuthorityLease::fromFields(fields);
           }
@@ -3259,6 +3350,9 @@ private:
     state->cv.wait_for(lock, timeout, [&state] { return state->done; });
     out = state->lease;
     reason = state->reason;
+    if (responseFields != nullptr) {
+      *responseFields = state->fields;
+    }
     return state->done && state->ok;
   }
 
@@ -3272,6 +3366,150 @@ private:
   leaseTargetsOverlap(const std::string& left, const std::string& right)
   {
     return left == "all" || right == "all" || left == right;
+  }
+
+  static std::set<std::string>
+  parseOperatorIdList(const std::string& text)
+  {
+    auto trimText = [] (std::string value) {
+      const auto begin = value.find_first_not_of(" \t\r\n");
+      if (begin == std::string::npos) {
+        return std::string();
+      }
+      const auto end = value.find_last_not_of(" \t\r\n");
+      return value.substr(begin, end - begin + 1);
+    };
+    std::set<std::string> output;
+    std::string current;
+    auto flush = [&] {
+      current = trimText(current);
+      if (!current.empty()) {
+        output.insert(current);
+      }
+      current.clear();
+    };
+    for (const auto ch : text) {
+      if (ch == ',' || ch == ';' || ch == ' ') {
+        flush();
+      }
+      else {
+        current.push_back(ch);
+      }
+    }
+    flush();
+    return output;
+  }
+
+  static std::string
+  joinTextList(const std::vector<std::string>& values)
+  {
+    std::ostringstream os;
+    for (size_t i = 0; i < values.size(); ++i) {
+      if (i != 0) {
+        os << ",";
+      }
+      os << values[i];
+    }
+    return os.str();
+  }
+
+  static uint64_t
+  unsignedFieldOr(const Fields& fields, const std::string& key, uint64_t fallback)
+  {
+    const auto it = fields.find(key);
+    if (it == fields.end() || it->second.empty()) {
+      return fallback;
+    }
+    try {
+      return std::stoull(it->second);
+    }
+    catch (const std::exception&) {
+      return fallback;
+    }
+  }
+
+  bool
+  operatorHasAdminAuthority(const std::string& operatorId) const
+  {
+    return m_operatorAdminIds.empty() || m_operatorAdminIds.count(operatorId) != 0;
+  }
+
+  void
+  persistIssuedOperatorLeasesLocked() const
+  {
+    if (m_operatorAuthorityStateFile.empty()) {
+      return;
+    }
+    const auto tmp = m_operatorAuthorityStateFile + ".tmp";
+    std::ofstream output(tmp, std::ios::trunc);
+    if (!output) {
+      NDN_LOG_WARN("AUTHORITY_STATE_SAVE_FAILED path=" << m_operatorAuthorityStateFile);
+      return;
+    }
+    output << "# NDNSF-UAV operator authority active leases\n";
+    output << "lease_count=" << m_issuedOperatorLeases.size() << "\n";
+    for (size_t i = 0; i < m_issuedOperatorLeases.size(); ++i) {
+      const auto fields = m_issuedOperatorLeases[i].toFields();
+      const auto prefix = "lease." + std::to_string(i) + ".";
+      for (const auto& [key, value] : fields) {
+        output << prefix << key << "=" << value << "\n";
+      }
+    }
+    output.close();
+    if (std::rename(tmp.c_str(), m_operatorAuthorityStateFile.c_str()) != 0) {
+      NDN_LOG_WARN("AUTHORITY_STATE_RENAME_FAILED path=" << m_operatorAuthorityStateFile
+                   << " errno=" << errno);
+      std::remove(tmp.c_str());
+    }
+    else {
+      NDN_LOG_INFO("AUTHORITY_STATE_SAVED path=" << m_operatorAuthorityStateFile
+                   << " active_lease_count=" << m_issuedOperatorLeases.size());
+    }
+  }
+
+  void
+  loadIssuedOperatorLeasesFromStateFile()
+  {
+    if (m_operatorAuthorityStateFile.empty()) {
+      return;
+    }
+    std::ifstream probe(m_operatorAuthorityStateFile);
+    if (!probe) {
+      NDN_LOG_INFO("AUTHORITY_STATE_LOAD_EMPTY path=" << m_operatorAuthorityStateFile);
+      return;
+    }
+    probe.close();
+
+    try {
+      const auto fields = loadKeyValueConfig(m_operatorAuthorityStateFile);
+      const auto count = unsignedFieldOr(fields, "lease_count", 0);
+      const auto nowMs = nowMilliseconds();
+      std::vector<OperatorAuthorityLease> loaded;
+      for (uint64_t i = 0; i < count; ++i) {
+        Fields leaseFields;
+        const auto prefix = "lease." + std::to_string(i) + ".";
+        for (const auto& [key, value] : fields) {
+          if (key.rfind(prefix, 0) == 0) {
+            leaseFields[key.substr(prefix.size())] = value;
+          }
+        }
+        auto lease = OperatorAuthorityLease::fromFields(leaseFields);
+        if (lease.isFresh(nowMs)) {
+          loaded.push_back(std::move(lease));
+        }
+      }
+      {
+        std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+        m_issuedOperatorLeases = std::move(loaded);
+        persistIssuedOperatorLeasesLocked();
+      }
+      NDN_LOG_INFO("AUTHORITY_STATE_LOADED path=" << m_operatorAuthorityStateFile
+                   << " active_lease_count=" << m_issuedOperatorLeases.size());
+    }
+    catch (const std::exception& e) {
+      NDN_LOG_WARN("AUTHORITY_STATE_LOAD_FAILED path=" << m_operatorAuthorityStateFile
+                   << " error=" << e.what());
+    }
   }
 
   bool
@@ -3291,6 +3529,13 @@ private:
       m_issuedOperatorLeases.end());
 
     const bool requestedExclusive = isExclusiveAuthorityScope(leaseRequest.scope);
+    if (leaseRequest.scope == "admin" && !operatorHasAdminAuthority(leaseRequest.operatorId)) {
+      reason = "admin-unauthorized";
+      details["admin_operator"] = leaseRequest.operatorId;
+      details["active_lease_count"] = std::to_string(m_issuedOperatorLeases.size());
+      persistIssuedOperatorLeasesLocked();
+      return false;
+    }
     if (requestedExclusive && leaseRequest.scope != "admin") {
       for (const auto& active : m_issuedOperatorLeases) {
         if (!isExclusiveAuthorityScope(active.scope) ||
@@ -3304,11 +3549,14 @@ private:
         details["conflicting_scope"] = active.scope;
         details["conflicting_drone"] = active.droneId;
         details["active_lease_count"] = std::to_string(m_issuedOperatorLeases.size());
+        persistIssuedOperatorLeasesLocked();
         return false;
       }
     }
 
     size_t overridden = 0;
+    std::vector<std::string> revokedLeaseIds;
+    std::vector<std::string> revokedOperators;
     m_issuedOperatorLeases.erase(
       std::remove_if(m_issuedOperatorLeases.begin(), m_issuedOperatorLeases.end(),
                      [&](const OperatorAuthorityLease& active) {
@@ -3316,7 +3564,9 @@ private:
                          return false;
                        }
                        if (leaseRequest.scope == "admin" && isExclusiveAuthorityScope(active.scope)) {
-                         ++overridden;
+                          ++overridden;
+                         revokedLeaseIds.push_back(active.leaseId);
+                         revokedOperators.push_back(active.operatorId);
                          return true;
                        }
                        return active.operatorId == leaseRequest.operatorId &&
@@ -3334,7 +3584,10 @@ private:
 
     reason = "ok";
     details["overridden_leases"] = std::to_string(overridden);
+    details["revoked_lease_ids"] = joinTextList(revokedLeaseIds);
+    details["revoked_operators"] = joinTextList(revokedOperators);
     details["active_lease_count"] = std::to_string(m_issuedOperatorLeases.size());
+    persistIssuedOperatorLeasesLocked();
     return true;
   }
 
@@ -6376,6 +6629,8 @@ private:
   std::string m_defaultOperatorLeaseDrone = "all";
   std::string m_defaultOperatorLeaseScope = "control";
   uint64_t m_defaultOperatorLeaseTtlMs = 0;
+  std::string m_operatorAuthorityStateFile;
+  std::set<std::string> m_operatorAdminIds;
   std::mutex m_yoloMutex;
   std::thread m_yoloPrewarmThread;
   pid_t m_yoloWorkerPid = -1;

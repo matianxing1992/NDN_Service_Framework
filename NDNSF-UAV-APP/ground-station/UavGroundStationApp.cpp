@@ -392,6 +392,7 @@ main(int argc, char** argv)
     const bool autoAuthorityConfigTest = getConfigBool(argc, argv, appConfig, "--auto-authority-config-test", "auto-authority-config-test", false);
     const bool autoAuthorityIssuerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-issuer-test", "auto-authority-issuer-test", false);
     const bool autoAuthorityArbitrationTest = getConfigBool(argc, argv, appConfig, "--auto-authority-arbitration-test", "auto-authority-arbitration-test", false);
+    const bool autoAuthorityPersistenceTest = getConfigBool(argc, argv, appConfig, "--auto-authority-persistence-test", "auto-authority-persistence-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -482,6 +483,11 @@ main(int argc, char** argv)
       std::stoull(getConfigOption(argc, argv, appConfig,
                                   "--operator-lease-ttl-ms",
                                   "operator-lease-ttl-ms", "0")));
+    const std::string operatorAuthorityStateFile = getConfigOption(
+      argc, argv, appConfig, "--operator-authority-state-file",
+      "operator-authority-state-file", "");
+    const std::string operatorAdminIds = getConfigOption(
+      argc, argv, appConfig, "--operator-admin-ids", "operator-admin-ids", "");
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 
     if (objectDetectionMode) {
@@ -507,6 +513,7 @@ main(int argc, char** argv)
                                   autoAuthorityConfigTest ||
                                   autoAuthorityIssuerTest ||
                                   autoAuthorityArbitrationTest ||
+                                  autoAuthorityPersistenceTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -520,7 +527,8 @@ main(int argc, char** argv)
       videoBitrateKbps, videoFrameWidth, patrolDroneIds, yoloModel, yoloScript,
       yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction,
       videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile,
-      operatorId, operatorLeaseDrone, operatorLeaseScope, operatorLeaseTtlMs);
+      operatorId, operatorLeaseDrone, operatorLeaseScope, operatorLeaseTtlMs,
+      operatorAuthorityStateFile, operatorAdminIds);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
@@ -572,6 +580,11 @@ main(int argc, char** argv)
       std::cout << "GS_AUTHORITY_ARBITRATION_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoAuthorityPersistenceTest) {
+      const bool ok = runtime->runAuthorityLeasePersistenceTest(std::chrono::seconds(10));
+      std::cout << "GS_AUTHORITY_PERSISTENCE_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
     if (autoTelemetryTest) {
       const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45),
                                                     !autoTelemetryAllowMockFields);
@@ -616,6 +629,7 @@ main(int argc, char** argv)
               << " auto_authority_config_test=" << (autoAuthorityConfigTest ? "true" : "false")
               << " auto_authority_issuer_test=" << (autoAuthorityIssuerTest ? "true" : "false")
               << " auto_authority_arbitration_test=" << (autoAuthorityArbitrationTest ? "true" : "false")
+              << " auto_authority_persistence_test=" << (autoAuthorityPersistenceTest ? "true" : "false")
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
               << " video_bitrate_policy=" << videoBitratePolicy
@@ -623,6 +637,7 @@ main(int argc, char** argv)
               << " operator_lease_drone=" << operatorLeaseDrone
               << " operator_lease_scope=" << operatorLeaseScope
               << " operator_lease_ttl_ms=" << operatorLeaseTtlMs
+              << " operator_authority_state_file=" << operatorAuthorityStateFile
               << std::endl;
     const int rc = app->run(window);
     runtime->shutdownRuntime();

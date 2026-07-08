@@ -1661,6 +1661,10 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-authority-arbitration-test \
   --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-authority-persistence-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
 ```
 
 The expected success markers are
@@ -1673,7 +1677,8 @@ The expected success markers are
 `NDNSF_UAV_AUTHORITY_LEASE_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_CONFIG_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_ISSUER_MININDN_SMOKE_OK`, and
-`NDNSF_UAV_AUTHORITY_ARBITRATION_MININDN_SMOKE_OK`. The repo catalog smoke
+`NDNSF_UAV_AUTHORITY_ARBITRATION_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_AUTHORITY_PERSISTENCE_MININDN_SMOKE_OK`. The repo catalog smoke
 records camera chunks to the drone's in-app repo, fetches the
 `/UAV/Camera/Repo/Catalog` service from the ground station, and verifies that
 chunk objects are summarized as one queryable UAV recording product. The
@@ -1692,7 +1697,9 @@ validation becomes allowed again. The authority arbitration smoke verifies the
 minimal multi-operator conflict policy: monitor leases are non-exclusive,
 control/mission/admin leases are exclusive for overlapping drone targets, the
 same operator can renew, and an admin lease overrides existing exclusive
-leases. This bundle intentionally uses mock
+leases. The authority persistence smoke verifies an issuer-side active lease
+state file, admin allowlist rejection, authorized admin override, and
+response-carried revoked lease evidence. This bundle intentionally uses mock
 flight-controller fields and
 the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
