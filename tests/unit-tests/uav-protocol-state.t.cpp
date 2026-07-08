@@ -36,6 +36,7 @@ using ndnsf::examples::uav::computeVideoAdaptivePolicy;
 using ndnsf::examples::uav::decodeVideoPacket;
 using ndnsf::examples::uav::encodeVideoPacket;
 using ndnsf::examples::uav::streamChunkToVideoPacket;
+using ndnsf::examples::uav::toServiceOperationStatus;
 using ndnsf::examples::uav::videoPacketToStreamChunk;
 
 ReadinessState
@@ -534,6 +535,97 @@ BOOST_AUTO_TEST_CASE(VideoControlStateDerivesStartStopActions)
   BOOST_CHECK(localDisplay.displayActive);
   BOOST_CHECK(!localDisplay.canStart);
   BOOST_CHECK(localDisplay.canStop);
+}
+
+BOOST_AUTO_TEST_CASE(UavStatesMapToCoreServiceOperationStatus)
+{
+  FlightCommandState command;
+  command.droneId = "A";
+  command.command = "takeoff";
+  command.accepted = "true";
+  command.ackResult = "accepted";
+  command.updatedMs = 1000;
+
+  auto status = toServiceOperationStatus(
+    command, ndn::Name("/UAV/FlightCommand"), ndn::Name("/uav/drone/A"),
+    ndn::Name("/request/flight/1"));
+  BOOST_CHECK_EQUAL(status.operation, "UAV_FLIGHT_COMMAND");
+  BOOST_CHECK_EQUAL(status.operationId, "A:takeoff");
+  BOOST_CHECK_EQUAL(status.state, "DONE");
+  BOOST_CHECK_EQUAL(status.reasonCode, "OK");
+  BOOST_CHECK_CLOSE(status.progress, 1.0, 0.001);
+  BOOST_CHECK(status.serviceName == ndn::Name("/UAV/FlightCommand"));
+  BOOST_CHECK(status.providerName == ndn::Name("/uav/drone/A"));
+
+  const auto commandPayload =
+    ndn_service_framework::ServiceProvider::makeServiceOperationStatusPayload(status);
+  const auto parsed =
+    ndn_service_framework::ServiceProvider::parseServiceOperationStatusPayload(commandPayload);
+  BOOST_REQUIRE(parsed);
+  BOOST_CHECK_EQUAL(parsed->operation, "UAV_FLIGHT_COMMAND");
+  BOOST_CHECK_EQUAL(parsed->state, "DONE");
+
+  MissionState mission = makeMissionState("executing");
+  mission.updatedMs = 2000;
+  status = toServiceOperationStatus(
+    mission, ndn::Name("/UAV/MissionAssign"), ndn::Name("/uav/drone/A"));
+  BOOST_CHECK_EQUAL(status.operation, "UAV_MISSION_PART");
+  BOOST_CHECK_EQUAL(status.state, "RUNNING");
+  BOOST_CHECK_EQUAL(status.reasonCode, "executing");
+  BOOST_CHECK_CLOSE(status.progress, 0.75, 0.001);
+
+  mission = makeMissionState("uploaded");
+  status = toServiceOperationStatus(mission);
+  BOOST_CHECK_EQUAL(status.state, "WAITING_INPUT");
+  BOOST_CHECK_CLOSE(status.progress, 0.35, 0.001);
+
+  MissionProgressState progress;
+  progress.taskId = "mission-test";
+  progress.phase = "executing";
+  progress.totalParts = 4;
+  progress.completedParts = 3;
+  status = toServiceOperationStatus(progress, ndn::Name("/UAV/MissionProgress"));
+  BOOST_CHECK_EQUAL(status.operation, "UAV_MISSION");
+  BOOST_CHECK_EQUAL(status.state, "RUNNING");
+  BOOST_CHECK_CLOSE(status.progress, 0.75, 0.001);
+
+  progress.phase = "waiting-compensation";
+  status = toServiceOperationStatus(progress);
+  BOOST_CHECK_EQUAL(status.state, "WAITING_INPUT");
+}
+
+BOOST_AUTO_TEST_CASE(UavRecordingStatusCarriesCoreDataProductReference)
+{
+  RecordingDataProductState recording;
+  recording.droneId = "A";
+  recording.sessionId = "session-7";
+  recording.objectPrefix = "/uav/A/recording";
+  recording.chunks = 12;
+  recording.bytes = 4096;
+  recording.updatedMs = 3000;
+
+  const auto reference = recording.toDataProductReference(
+    ndn::Name("/UAV/RecordingManifest"), ndn::Name("/uav/drone/A"));
+  BOOST_CHECK(reference.name == ndn::Name("/uav/A/recording/session-7"));
+  BOOST_CHECK_EQUAL(reference.objectClass, "camera-recording");
+  BOOST_CHECK_EQUAL(reference.contentType, "video/h264");
+  BOOST_CHECK_EQUAL(reference.segmentCount, 12);
+
+  const auto status = toServiceOperationStatus(
+    recording, ndn::Name("/UAV/RecordingManifest"), ndn::Name("/uav/drone/A"));
+  BOOST_CHECK_EQUAL(status.operation, "UAV_RECORDING");
+  BOOST_CHECK_EQUAL(status.state, "DONE");
+  BOOST_REQUIRE(status.resultReference);
+  BOOST_CHECK(status.resultReference->name == ndn::Name("/uav/A/recording/session-7"));
+
+  const auto payload =
+    ndn_service_framework::ServiceProvider::makeServiceOperationStatusPayload(status);
+  const auto parsed =
+    ndn_service_framework::ServiceProvider::parseServiceOperationStatusPayload(payload);
+  BOOST_REQUIRE(parsed);
+  BOOST_REQUIRE(parsed->resultReference);
+  BOOST_CHECK_EQUAL(parsed->resultReference->objectClass, "camera-recording");
+  BOOST_CHECK_EQUAL(parsed->resultReference->segmentCount, 12);
 }
 
 BOOST_AUTO_TEST_CASE(VideoAdaptivePolicyShrinksUnderPressure)

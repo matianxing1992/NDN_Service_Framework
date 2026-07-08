@@ -19,6 +19,24 @@ namespace {
 double
 missionDistanceSq(const MissionWaypoint& a, const MissionWaypoint& b, double referenceLat);
 
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+makeUavOperationStatus(const std::string& operationId,
+                       const std::string& operation,
+                       const ndn::Name& serviceName,
+                       const ndn::Name& providerName,
+                       const ndn::Name& requestId,
+                       const std::string& state,
+                       const std::string& reasonCode,
+                       const std::string& message,
+                       double progress,
+                       uint64_t updatedMs);
+
+double
+missionStateProgress(const MissionState& mission);
+
+double
+missionProgressFraction(const MissionProgressState& progress);
+
 struct DeterministicIndexedWaypoint
 {
   MissionWaypoint point;
@@ -1754,6 +1772,23 @@ RecordingDataProductState::isPlayable() const
   return isAvailable() && (!isEncrypted() || (!keyId.empty() && !contentKey.empty()));
 }
 
+ndn_service_framework::ServiceProvider::DataProductReference
+RecordingDataProductState::toDataProductReference(const ndn::Name& serviceName,
+                                                  const ndn::Name& producerName) const
+{
+  ndn_service_framework::ServiceProvider::DataProductReference reference;
+  if (isAvailable()) {
+    reference.name = ndn::Name(objectPrefix).append(sessionId);
+  }
+  reference.producerName = producerName;
+  reference.serviceName = serviceName;
+  reference.objectClass = productType;
+  reference.contentType = "video/h264";
+  reference.sizeBytes = bytes;
+  reference.segmentCount = chunks;
+  return reference;
+}
+
 std::string
 RecordingDataProductState::chunkObjectName(uint64_t index) const
 {
@@ -1777,6 +1812,143 @@ RecordingDataProductState::statusLine() const
          " key_bytes=" + std::to_string(contentKey.size()) +
          " available=" + std::string(isAvailable() ? "true" : "false") +
          " playable=" + std::string(isPlayable() ? "true" : "false");
+}
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const FlightCommandState& command,
+                         const ndn::Name& serviceName,
+                         const ndn::Name& providerName,
+                         const ndn::Name& requestId)
+{
+  std::string state = "RUNNING";
+  std::string reasonCode = command.ackResult;
+  double progress = 0.5;
+  if (command.isTimeout()) {
+    state = "EXPIRED";
+    progress = 1.0;
+  }
+  else if (command.accepted == "false" || command.ackResult == "failed") {
+    state = "FAILED";
+    progress = 1.0;
+  }
+  else if (command.isAccepted()) {
+    state = "DONE";
+    reasonCode = "OK";
+    progress = 1.0;
+  }
+  else if (command.accepted == "unknown" && command.ackResult == "unknown") {
+    state = "QUEUED";
+    progress = 0.0;
+  }
+
+  return makeUavOperationStatus(
+    command.droneId + ":" + command.command,
+    "UAV_FLIGHT_COMMAND",
+    serviceName,
+    providerName,
+    requestId,
+    state,
+    reasonCode,
+    command.statusLine(),
+    progress,
+    command.updatedMs);
+}
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const RecordingDataProductState& recording,
+                         const ndn::Name& serviceName,
+                         const ndn::Name& providerName,
+                         const ndn::Name& requestId)
+{
+  const bool available = recording.isAvailable();
+  auto status = makeUavOperationStatus(
+    recording.droneId + ":" + (recording.sessionId.empty() ? "recording" : recording.sessionId),
+    "UAV_RECORDING",
+    serviceName,
+    providerName,
+    requestId,
+    available ? "DONE" : "RUNNING",
+    available ? "OK" : "RECORDING_NOT_READY",
+    recording.statusLine(),
+    available ? 1.0 : 0.5,
+    recording.updatedMs);
+  if (available) {
+    status.resultReference = recording.toDataProductReference(serviceName, providerName);
+  }
+  return status;
+}
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const MissionState& mission,
+                         const ndn::Name& serviceName,
+                         const ndn::Name& providerName,
+                         const ndn::Name& requestId)
+{
+  std::string state = "QUEUED";
+  std::string reasonCode = mission.phase;
+  if (mission.isUploading() || mission.isExecuting() || mission.isStopping()) {
+    state = "RUNNING";
+  }
+  else if (mission.isUploaded()) {
+    state = "WAITING_INPUT";
+  }
+  else if (mission.isCompleted()) {
+    state = "DONE";
+    reasonCode = "OK";
+  }
+  else if (mission.isFailed()) {
+    state = "FAILED";
+  }
+  else if (mission.isCancelled()) {
+    state = "CANCELED";
+  }
+
+  return makeUavOperationStatus(
+    mission.missionId + ":" + mission.partId,
+    "UAV_MISSION_PART",
+    serviceName,
+    providerName,
+    requestId,
+    state,
+    reasonCode,
+    mission.statusLine(),
+    missionStateProgress(mission),
+    mission.updatedMs);
+}
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const MissionProgressState& progress,
+                         const ndn::Name& serviceName,
+                         const ndn::Name& providerName,
+                         const ndn::Name& requestId)
+{
+  std::string state = "QUEUED";
+  std::string reasonCode = progress.phase;
+  if (progress.isComplete()) {
+    state = "DONE";
+    reasonCode = "OK";
+  }
+  else if (progress.isFailed()) {
+    state = "FAILED";
+  }
+  else if (progress.phase == "waiting-compensation") {
+    state = "WAITING_INPUT";
+  }
+  else if (progress.isActive()) {
+    state = "RUNNING";
+  }
+
+  return makeUavOperationStatus(
+    progress.taskId,
+    "UAV_MISSION",
+    serviceName,
+    providerName,
+    requestId,
+    state,
+    reasonCode,
+    progress.statusLine(),
+    missionProgressFraction(progress),
+    0);
 }
 
 MissionState
@@ -1998,6 +2170,64 @@ decodeAssignedDrones(const std::string& value)
     }
   }
   return drones;
+}
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+makeUavOperationStatus(const std::string& operationId,
+                       const std::string& operation,
+                       const ndn::Name& serviceName,
+                       const ndn::Name& providerName,
+                       const ndn::Name& requestId,
+                       const std::string& state,
+                       const std::string& reasonCode,
+                       const std::string& message,
+                       double progress,
+                       uint64_t updatedMs)
+{
+  ndn_service_framework::ServiceProvider::ServiceOperationStatus status;
+  status.operationId = operationId.empty() ? operation : operationId;
+  status.operation = operation;
+  status.serviceName = serviceName;
+  status.providerName = providerName;
+  status.requestId = requestId;
+  status.state = state;
+  status.reasonCode = reasonCode;
+  status.message = message;
+  status.progress = std::clamp(progress, 0.0, 1.0);
+  status.updatedAtMs = updatedMs;
+  return status;
+}
+
+double
+missionStateProgress(const MissionState& mission)
+{
+  if (mission.isCompleted() || mission.isFailed() || mission.isCancelled()) {
+    return 1.0;
+  }
+  if (mission.isExecuting() || mission.isStopping()) {
+    return 0.75;
+  }
+  if (mission.isUploaded()) {
+    return 0.35;
+  }
+  if (mission.isUploading()) {
+    return 0.2;
+  }
+  return 0.0;
+}
+
+double
+missionProgressFraction(const MissionProgressState& progress)
+{
+  if (progress.isComplete() || progress.isFailed()) {
+    return 1.0;
+  }
+  if (progress.totalParts > 0) {
+    return std::clamp(static_cast<double>(progress.completedParts) /
+                        static_cast<double>(progress.totalParts),
+                      0.0, 1.0);
+  }
+  return progress.isActive() ? 0.5 : 0.0;
 }
 
 } // namespace

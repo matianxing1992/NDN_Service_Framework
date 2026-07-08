@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/Stream.hpp"
 
 namespace ndnsf::examples::uav {
@@ -378,6 +379,9 @@ struct RecordingDataProductState
   bool isEncrypted() const;
   bool isPlayable() const;
   std::string chunkObjectName(uint64_t index) const;
+  ndn_service_framework::ServiceProvider::DataProductReference
+  toDataProductReference(const ndn::Name& serviceName = ndn::Name(),
+                         const ndn::Name& producerName = ndn::Name()) const;
   std::string statusLine() const;
 };
 
@@ -747,6 +751,30 @@ buildPatrolMissionPlan(const std::string& taskId,
                        const std::vector<std::string>& droneIds,
                        const std::vector<MissionWaypoint>& routeWaypoints = {},
                        const std::map<std::string, MissionWaypoint>& departurePoints = {});
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const FlightCommandState& command,
+                         const ndn::Name& serviceName = ndn::Name(),
+                         const ndn::Name& providerName = ndn::Name(),
+                         const ndn::Name& requestId = ndn::Name());
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const RecordingDataProductState& recording,
+                         const ndn::Name& serviceName = ndn::Name(),
+                         const ndn::Name& providerName = ndn::Name(),
+                         const ndn::Name& requestId = ndn::Name());
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const MissionState& mission,
+                         const ndn::Name& serviceName = ndn::Name(),
+                         const ndn::Name& providerName = ndn::Name(),
+                         const ndn::Name& requestId = ndn::Name());
+
+ndn_service_framework::ServiceProvider::ServiceOperationStatus
+toServiceOperationStatus(const MissionProgressState& progress,
+                         const ndn::Name& serviceName = ndn::Name(),
+                         const ndn::Name& providerName = ndn::Name(),
+                         const ndn::Name& requestId = ndn::Name());
 
 uint64_t
 nowMilliseconds();
