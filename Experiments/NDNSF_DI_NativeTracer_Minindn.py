@@ -25,7 +25,9 @@ sys.path.insert(0, str(REPO / "pythonWrapper"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
 from ndnsf import (  # noqa: E402
+    PeerNetworkMetric,
     ProviderCapabilityHint,
+    ProviderNetworkMatrix,
     ServiceOperationState,
     ServiceOperationStatus,
     parse_ack_metadata,
@@ -1421,6 +1423,153 @@ def metric_stats(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def _first_non_empty(payload: dict[str, object], keys: list[str]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _numeric_summary_value(payload: object, keys: list[str]) -> float:
+    if not isinstance(payload, dict):
+        return 0.0
+    for key in keys:
+        value = payload.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0.0:
+            return number
+    return 0.0
+
+
+def _median_rtt_from_edge(row: dict[str, object]) -> float:
+    summary_ms = row.get("summaryMs", row.get("summary_ms", {}))
+    rtt = _numeric_summary_value(summary_ms, ["p50", "median", "mean", "min"])
+    if rtt > 0.0:
+        return round(rtt, 3)
+    samples = row.get("rttsMs", row.get("rtts_ms", []))
+    if not isinstance(samples, list):
+        return 0.0
+    values: list[float] = []
+    for item in samples:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if value > 0.0:
+            values.append(value)
+    return round(statistics.median(values), 3) if values else 0.0
+
+
+def _provider_pair_metric_from_dependency_edge(
+    row: dict[str, object],
+    *,
+    fallback_bandwidth_mbps: float = 100.0,
+) -> PeerNetworkMetric | None:
+    """Convert dependency-edge ndnping evidence into a core peer metric.
+
+    The ndnping client runs at the consumer and pings the producer prefix, but
+    the dependency dataflow moves producer -> consumer. Store the metric in the
+    dataflow direction so later DI transfer-cost scoring can consume it directly.
+    """
+
+    src_peer = _first_non_empty(row, [
+        "producerPrefix", "producerProvider", "srcPeer", "src", "producer",
+    ])
+    dst_peer = _first_non_empty(row, [
+        "consumerPrefix", "consumerProvider", "dstPeer", "dst", "consumer",
+    ])
+    rtt_ms = _median_rtt_from_edge(row)
+    if not src_peer or not dst_peer or rtt_ms <= 0.0:
+        return None
+    try:
+        samples = row.get("rttsMs", [])
+        fallback_count = len(samples) if isinstance(samples, list) else 0
+        count = int(row.get("count", fallback_count) or 0)
+    except (TypeError, ValueError):
+        count = 0
+    summary_ms = row.get("summaryMs", {})
+    jitter_ms = _numeric_summary_value(summary_ms, ["stddev", "stdev", "std"])
+    expected_bytes = 0
+    try:
+        expected_bytes = int(row.get("expectedBytes", row.get("bytesSampled", 0)) or 0)
+    except (TypeError, ValueError):
+        expected_bytes = 0
+    confidence = min(0.9, max(0.2, count / 5.0)) if count else 0.2
+    return PeerNetworkMetric(
+        src_peer=src_peer,
+        dst_peer=dst_peer,
+        rtt_ms=rtt_ms,
+        bandwidth_mbps=max(0.001, float(fallback_bandwidth_mbps)),
+        loss_rate=0.0,
+        jitter_ms=round(jitter_ms, 3),
+        bytes_sampled=max(0, expected_bytes),
+        confidence=round(confidence, 3),
+    )
+
+
+def collect_provider_pair_telemetry(out_dir: Path) -> dict[str, object]:
+    """Collect core provider-pair telemetry from available MiniNDN evidence."""
+
+    source_path = out_dir / "dependency-edge-ndnping-rtt-stats.json"
+    if not source_path.exists():
+        return {
+            "status": "not-available",
+            "reason": "dependency edge ndnping summary was not generated",
+            "source": str(source_path),
+            "metricCount": 0,
+            "metrics": [],
+        }
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "status": "not-available",
+            "reason": f"failed to read dependency edge ndnping summary: {exc}",
+            "source": str(source_path),
+            "metricCount": 0,
+            "metrics": [],
+        }
+    rows = payload.get("rows", [])
+    if not isinstance(rows, list):
+        rows = []
+    metrics: list[PeerNetworkMetric] = []
+    skipped = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            skipped += 1
+            continue
+        metric = _provider_pair_metric_from_dependency_edge(row)
+        if metric is None:
+            skipped += 1
+            continue
+        metrics.append(metric)
+    matrix = ProviderNetworkMatrix(metrics)
+    return {
+        "status": "collected" if metrics else "not-available",
+        "reason": "" if metrics else "no valid provider-pair RTT samples",
+        "source": str(source_path),
+        "sourceKind": "dependency-edge-ndnping-rtt",
+        "metricCount": len(metrics),
+        "skippedRowCount": skipped,
+        "metrics": [to_plain(metric) for metric in metrics],
+        "matrix": {
+            "metrics": [to_plain(metric) for metric in matrix.metrics.values()],
+            "defaultRttMs": matrix.default_rtt_ms,
+            "defaultBandwidthMbps": matrix.default_bandwidth_mbps,
+            "staleAfterMs": matrix.stale_after_ms,
+            "stalePenaltyMs": matrix.stale_penalty_ms,
+            "unknownPenaltyMs": matrix.unknown_penalty_ms,
+        },
+    }
+
+
 def _counter_from_mapping(payload: object, keys: list[str]) -> dict[str, int]:
     result = {key: 0 for key in keys}
     if isinstance(payload, dict):
@@ -2383,6 +2532,11 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "decodeErrorCount": 0,
             "modeCounters": {},
         },
+        "providerPairTelemetry": {
+            "status": "not-started",
+            "metricCount": 0,
+            "metrics": [],
+        },
     }
 
 
@@ -3206,6 +3360,7 @@ def main() -> int:
         summary["coreEnvelopeSummary"] = collect_core_envelope_summary(logs_dir)
         summary["providerFragmentInventory"] = collect_provider_fragment_inventory(logs_dir)
         summary["streamChunkDependencyCounters"] = collect_stream_dependency_counters(logs_dir)
+        summary["providerPairTelemetry"] = collect_provider_pair_telemetry(out_dir)
         (out_dir / "streamchunk_counters.json").write_text(
             json.dumps(summary["streamChunkDependencyCounters"],
                        indent=2,

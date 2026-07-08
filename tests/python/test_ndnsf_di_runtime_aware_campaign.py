@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ndnsf import (
     GenericProviderRuntimeHint,
+    ProviderNetworkMatrix,
     ProviderCapabilityHint,
     ServiceOperationState,
     ServiceOperationStatus,
@@ -687,6 +688,52 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(dependency_status.operation, "DI_DEPENDENCY_EXECUTION")
         self.assertEqual(dependency_status.state, ServiceOperationState.EXPIRED)
         self.assertEqual(dependency_status.metadata["roles"], ["/Backbone", "/Merge"])
+
+    def test_provider_pair_telemetry_collects_dependency_edge_rtts(self) -> None:
+        harness = load_harness_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            (out_dir / "dependency-edge-ndnping-rtt-stats.json").write_text(
+                json.dumps({
+                    "rows": [{
+                        "producerRole": "/Backbone",
+                        "consumerRole": "/Merge",
+                        "scope": "backbone-to-merge",
+                        "expectedBytes": 4096,
+                        "producerPrefix": "/P/backbone",
+                        "consumerPrefix": "/P/merge",
+                        "count": 3,
+                        "rttsMs": [9.0, 12.0, 15.0],
+                        "summaryMs": {
+                            "count": 3,
+                            "mean": 12.0,
+                            "p50": 12.0,
+                            "stddev": 3.0,
+                        },
+                    }],
+                }),
+                encoding="utf-8")
+
+            telemetry = harness.collect_provider_pair_telemetry(out_dir)
+
+        self.assertEqual(telemetry["status"], "collected")
+        self.assertEqual(telemetry["metricCount"], 1)
+        metric = telemetry["metrics"][0]
+        self.assertEqual(metric["src_peer"], "/P/backbone")
+        self.assertEqual(metric["dst_peer"], "/P/merge")
+        self.assertEqual(metric["rtt_ms"], 12.0)
+        self.assertEqual(metric["bytes_sampled"], 4096)
+        self.assertGreater(metric["confidence"], 0.0)
+        matrix = ProviderNetworkMatrix.from_dict(telemetry["matrix"])
+        cost_ms, detail = matrix.transfer_cost_ms(
+            "/P/backbone",
+            "/P/merge",
+            4096,
+            now_ms_value=metric["updated_at_ms"],
+        )
+        self.assertFalse(detail["unknown"])
+        self.assertEqual(detail["rttMs"], 12.0)
+        self.assertGreater(cost_ms, 12.0)
 
     def test_planner_metrics_aggregation_reports_campaign_fields(self) -> None:
         harness = load_harness_module()
