@@ -180,6 +180,8 @@ NATIVE_TRACER_PROFILE_FIELDS = {
     "policy_bundle": "policy_bundle",
     "llm_planner_mode": "llm_planner_mode",
     "runtime_aware_user_planner": "runtime_aware_user_planner",
+    "provider_network_matrix_json": "provider_network_matrix_json",
+    "skip_provider_pair_telemetry_probe": "skip_provider_pair_telemetry_probe",
     "tracer_deterministic_runner": "tracer_deterministic_runner",
     "provider_check_timeout": "provider_check_timeout",
     "local_execution_only": "local_execution_only",
@@ -1427,6 +1429,135 @@ def metric_stats(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def parse_ndnping_rtts(text: str) -> list[float]:
+    return [
+        float(match.group(1))
+        for match in re.finditer(r"time=([0-9]+(?:\.[0-9]+)?)\s*ms", text)
+    ]
+
+
+def provider_metadata_from_rows(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    metadata: dict[str, dict[str, str]] = {}
+    for row in rows:
+        roles = str(row.get("roles", row.get("role", ""))).split(",")
+        for role in roles:
+            role = role.strip()
+            if not role:
+                continue
+            metadata[role] = {
+                "providerLog": safe_log_component(row.get("provider", "")),
+                "providerNode": row.get("node", ""),
+                "providerPrefix": row.get("provider", ""),
+            }
+    return metadata
+
+
+def load_native_dependency_edges(plan_path: Path) -> list[dict[str, object]]:
+    if not plan_path.exists():
+        return []
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    edges: list[dict[str, object]] = []
+    for service in payload.get("services", []):
+        if str(service.get("service", service.get("name", ""))) not in {"", SERVICE}:
+            continue
+        for dependency in service.get("dependencies", []):
+            producers = [str(item) for item in dependency.get("producers", [])]
+            consumers = [str(item) for item in dependency.get("consumers", [])]
+            for producer in producers:
+                for consumer in consumers:
+                    edges.append({
+                        "producerRole": producer,
+                        "consumerRole": consumer,
+                        "scope": str(dependency.get("keyScope", "")),
+                        "expectedSegments": int(dependency.get("expectedSegments", 0) or 0),
+                        "expectedBytes": int(dependency.get("expectedBytes", 0) or 0),
+                    })
+    return edges
+
+
+def write_dependency_edge_rtt_summary(ndn,
+                                      out_dir: Path,
+                                      logs_dir: Path,
+                                      provider_rows: list[dict[str, str]],
+                                      env: dict[str, str],
+                                      procs,
+                                      plan_path: Path) -> dict[str, object]:
+    role_meta = provider_metadata_from_rows(provider_rows)
+    rows: list[dict[str, object]] = []
+    for index, edge in enumerate(load_native_dependency_edges(plan_path)):
+        producer = role_meta.get(str(edge["producerRole"]))
+        consumer = role_meta.get(str(edge["consumerRole"]))
+        if not producer or not consumer:
+            rows.append({
+                **edge,
+                "status": "skipped",
+                "reason": "missing provider metadata for dependency edge",
+            })
+            continue
+        ping_prefix = f"{producer['providerPrefix']}/ndnping"
+        producer_log = safe_log_component(producer["providerLog"])
+        consumer_log = safe_log_component(consumer["providerLog"])
+        server_log = logs_dir / f"ndnpingserver-edge-{index}-{producer_log}.log"
+        client_log = logs_dir / f"ndnping-edge-{index}-{consumer_log}-to-{producer_log}.log"
+        server_file = server_log.open("wb")
+        server_cmd = f"exec ndnpingserver {perf.shell_quote(ping_prefix)}"
+        server = getPopen(ndn.net[producer["providerNode"]],
+                          server_cmd,
+                          envDict=env,
+                          shell=True,
+                          stdout=server_file,
+                          stderr=subprocess.STDOUT)
+        procs.append((server, server_file, server_log))
+        time.sleep(0.3)
+        client_file = client_log.open("wb")
+        client_cmd = f"exec timeout 15s ndnping {perf.shell_quote(ping_prefix)} -c 5"
+        client = getPopen(ndn.net[consumer["providerNode"]],
+                          client_cmd,
+                          envDict=env,
+                          shell=True,
+                          stdout=client_file,
+                          stderr=subprocess.STDOUT)
+        try:
+            client.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            client.terminate()
+            client.wait(timeout=5)
+        client_file.close()
+        text = client_log.read_text(errors="replace") if client_log.exists() else ""
+        rtts = parse_ndnping_rtts(text)
+        rows.append({
+            **edge,
+            "status": "measured",
+            "producerNode": producer["providerNode"],
+            "producerLog": producer["providerLog"],
+            "producerPrefix": producer["providerPrefix"],
+            "consumerNode": consumer["providerNode"],
+            "consumerLog": consumer["providerLog"],
+            "consumerPrefix": consumer["providerPrefix"],
+            "pingPrefix": ping_prefix,
+            "returncode": client.returncode,
+            "count": len(rtts),
+            "rttsMs": rtts,
+            "summaryMs": metric_stats(rtts),
+            "clientLog": str(client_log),
+            "serverLog": str(server_log),
+        })
+    summary = {
+        "plan": str(plan_path),
+        "count": len(rows),
+        "rows": rows,
+    }
+    path = out_dir / "dependency-edge-ndnping-rtt-stats.json"
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return {
+        "status": "written",
+        "path": str(path),
+        "rowCount": len(rows),
+        "measuredCount": sum(1 for row in rows if row.get("status") == "measured"),
+    }
+
+
 def _first_non_empty(payload: dict[str, object], keys: list[str]) -> str:
     for key in keys:
         value = payload.get(key)
@@ -2542,6 +2673,11 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "metricCount": 0,
             "metrics": [],
         },
+        "providerPairTelemetryProbe": {
+            "status": "not-started",
+            "reason": "dependency-edge ndnping probe has not run",
+            "enabled": not args.skip_provider_pair_telemetry_probe,
+        },
     }
 
 
@@ -2597,6 +2733,11 @@ def main() -> int:
                         help=("Optional core ProviderNetworkMatrix JSON, or a previous "
                               "NativeTracer summary with providerPairTelemetry.matrix, "
                               "for runtime-aware dependency edge scoring"))
+    parser.add_argument("--skip-provider-pair-telemetry-probe", action="store_true",
+                        default=bool(default_value(profile_defaults, "skip_provider_pair_telemetry_probe", False)),
+                        help=("Skip full-network dependency-edge ndnping probing. "
+                              "By default the harness writes providerPairTelemetry "
+                              "evidence before the user workload starts."))
     parser.add_argument("--lifecycle-experiment", action="store_true",
                         help="Run deployment lifecycle experiment instead of normal user driver")
     parser.add_argument("--advisory-coordinator", action="store_true",
@@ -2748,6 +2889,8 @@ def main() -> int:
             "llmPlannerMode": args.llm_planner_mode,
             "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
             "providerNetworkMatrixJson": args.provider_network_matrix_json,
+            "providerPairTelemetryProbeEnabled": (
+                not args.skip_provider_pair_telemetry_probe),
             "advisoryCoordinator": args.advisory_coordinator,
             "multiUserWorkload": multi_user_workload,
             "requests": args.requests,
@@ -3189,6 +3332,32 @@ def main() -> int:
                                   ["NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"],
                                   args.provider_check_timeout,
                                   "native provider provisioning")
+            if args.skip_provider_pair_telemetry_probe:
+                summary["providerPairTelemetryProbe"] = {
+                    "status": "skipped",
+                    "reason": "disabled by --skip-provider-pair-telemetry-probe",
+                    "enabled": False,
+                }
+            else:
+                try:
+                    summary["providerPairTelemetryProbe"] = {
+                        "enabled": True,
+                        **write_dependency_edge_rtt_summary(
+                            ndn,
+                            out_dir,
+                            logs_dir,
+                            provider_rows,
+                            env,
+                            procs,
+                            policy_dir / "native-execution-plan.json",
+                        ),
+                    }
+                except Exception as exc:
+                    summary["providerPairTelemetryProbe"] = {
+                        "status": "failed",
+                        "enabled": True,
+                        "reason": str(exc),
+                    }
             if args.advisory_coordinator:
                 runtime_inventory = wait_for_provider_inventory(
                     logs_dir,

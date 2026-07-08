@@ -181,6 +181,19 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["providerNetworkMatrixJson"], matrix_path)
         self.assertTrue(payload["runtimeAwareUserPlanner"])
+        self.assertTrue(payload["providerPairTelemetryProbeEnabled"])
+
+        skipped = subprocess.run([
+            sys.executable,
+            str(HARNESS),
+            "--dry-run",
+            "--skip-provider-pair-telemetry-probe",
+            "--requests", "1",
+            "--concurrency", "1",
+        ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
+           stderr=subprocess.PIPE, check=True)
+        skipped_payload = json.loads(skipped.stdout)
+        self.assertFalse(skipped_payload["providerPairTelemetryProbeEnabled"])
 
     def test_plan_tracer_loads_provider_pair_telemetry_summary_matrix(self) -> None:
         plan_tracer = load_plan_tracer_module()
@@ -806,6 +819,47 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertFalse(detail["unknown"])
         self.assertEqual(detail["rttMs"], 12.0)
         self.assertGreater(cost_ms, 12.0)
+
+    def test_dependency_edge_probe_helpers_parse_plan_and_ping_output(self) -> None:
+        harness = load_harness_module()
+        self.assertEqual(
+            harness.parse_ndnping_rtts(
+                "content from /P/ndnping: seq=1 time=1.25 ms\n"
+                "content from /P/ndnping: seq=2 time=3 ms\n"),
+            [1.25, 3.0],
+        )
+        rows = [{
+            "role": "/Backbone",
+            "roles": "/Backbone,/Head/Shard/0",
+            "provider": "/P/backbone",
+            "node": "ucla",
+        }]
+        metadata = harness.provider_metadata_from_rows(rows)
+        self.assertEqual(metadata["/Backbone"]["providerPrefix"], "/P/backbone")
+        self.assertEqual(metadata["/Head/Shard/0"]["providerNode"], "ucla")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "native-execution-plan.json"
+            plan_path.write_text(
+                json.dumps({
+                    "services": [{
+                        "service": harness.SERVICE,
+                        "dependencies": [{
+                            "producers": ["/Backbone"],
+                            "consumers": ["/Merge"],
+                            "keyScope": "backbone-to-merge",
+                            "expectedSegments": 2,
+                            "expectedBytes": 4096,
+                        }],
+                    }],
+                }),
+                encoding="utf-8")
+            edges = harness.load_native_dependency_edges(plan_path)
+
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["producerRole"], "/Backbone")
+        self.assertEqual(edges[0]["consumerRole"], "/Merge")
+        self.assertEqual(edges[0]["expectedBytes"], 4096)
 
     def test_planner_metrics_aggregation_reports_campaign_fields(self) -> None:
         harness = load_harness_module()
