@@ -346,8 +346,22 @@ NDNSF separates continuous publication from exact-name object transfer:
   large-data helper or `CollaborationContext::publishLargeNamed(...)` and
   fetched with `fetchLarge(...)` / SegmentFetcher-style retrieval.
 
+The decision rule is:
+
+```text
+ongoing sequence with freshness/ordering/buffer state -> stream substrate
+known object name with complete-object retrieval        -> large-data path
+```
+
+For example, a live UAV video feed is a stream, while a recorded video object
+is large data. Live telemetry updates are a stream, while a telemetry log file
+or mission snapshot is large data. A DI activation tensor with a planned
+dependency name is large data, while a future token-by-token generation feed
+would be a stream.
+
 In short: a stream is an ongoing sequence; a large object is fetched by its
-exact name.
+exact name. StreamChunk is not a generic replacement for SegmentFetcher-style
+large-object retrieval.
 
 For payloads that exceed the inline/single-segment threshold, NDNSF uses one
 common large-data reference abstraction. Small request and response payloads

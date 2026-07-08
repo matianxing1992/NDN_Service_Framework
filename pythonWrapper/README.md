@@ -205,6 +205,14 @@ artifacts, recordings, and planned DI tensor bundles should stay on the
 large-data path below, where they can be fetched by exact NDN name with
 SegmentFetcher-style segmented retrieval.
 
+Use the stream API when the application needs stream behavior: sequence
+numbers, arrival time, reordering, gap detection, duplicate suppression,
+freshness, buffering, or optional FEC metadata. Use the large-data helpers when
+the application already has a specific object name and wants the complete
+object. A live video feed is a stream; a recorded video file is large data. A
+planned DI tensor dependency is large data; a future token-by-token LLM output
+feed would be a stream.
+
 ## Collaboration and Large Data
 
 The Python wrapper exposes the current generic collaboration path. Providers
@@ -274,6 +282,11 @@ when authorization-protected application data is required. Higher-level
 packages such as `NDNSF-DistributedInference` decide whether
 those objects are model artifacts, runner bundles, activations, or other
 application data.
+
+These helpers are the preferred path for exact-name files, artifacts, recorded
+media objects, manifests, and tensors. Do not wrap those complete objects in
+`StreamChunk` unless the application is intentionally testing a stream metadata
+envelope; the normal retrieval mechanism is still segmented Data by exact name.
 
 ## Layout
 
