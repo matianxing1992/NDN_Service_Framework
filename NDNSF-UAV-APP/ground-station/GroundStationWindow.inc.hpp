@@ -500,7 +500,20 @@ public:
     m_patrol.signal_clicked().connect([this] {
       m_patrolUploadInFlight = true;
       updateSelectedActionControls();
-      m_status.set_text("Uploading cooperative patrol mission...");
+      m_status.set_text("Uploading mission plan...");
+      const auto editablePlan = currentEditableMissionPlan();
+      if (editablePlan) {
+        std::thread([this, editablePlan] {
+          const bool ok = m_runtime.uploadMissionPlan(*editablePlan, std::chrono::seconds(30));
+          Glib::signal_idle().connect_once([this, ok] {
+            m_patrolUploadInFlight = false;
+            m_status.set_text(ok ? "Mission plan uploaded; arm/takeoff and start mission mode to fly it"
+                                 : "Mission plan upload failed");
+            updateVehicleRows();
+          });
+        }).detach();
+        return;
+      }
       double centerLat = 35.1186;
       double centerLon = -89.9375;
       double sideMeters = 140.0;

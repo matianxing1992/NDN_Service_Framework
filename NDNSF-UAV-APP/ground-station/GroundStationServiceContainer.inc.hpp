@@ -1760,6 +1760,285 @@ public:
   }
 
   bool
+  uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
+  {
+    struct UploadState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      size_t completed = 0;
+      size_t failed = 0;
+      std::map<std::string, MissionPart> parts;
+    };
+
+    if (plan.parts.empty()) {
+      publishStatus("Mission plan upload failed: no parts");
+      return false;
+    }
+    if (plan.taskId.empty()) {
+      plan.taskId = "loaded-plan-" + std::to_string(nowMilliseconds());
+    }
+    if (plan.completionObjective.empty()) {
+      plan.completionObjective = "return-to-start";
+    }
+    plan.returnHomePlanned = plan.returnHomePlanned || plan.completionObjective == "return-to-start";
+    updateMissionPlan(plan);
+
+    const auto state = std::make_shared<UploadState>();
+    {
+      std::lock_guard<std::mutex> guard(m_missionReadyMutex);
+      m_missionReadyDrones.clear();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      m_activePatrolTaskId = plan.taskId;
+      m_patrolCancelRequested = false;
+    }
+    for (size_t i = 0; i < plan.parts.size(); ++i) {
+      auto part = plan.parts[i];
+      if (part.id.empty()) {
+        part.id = "part-" + std::to_string(i + 1);
+      }
+      if (part.assignedDrone.empty() && !m_patrolDroneIds.empty()) {
+        part.assignedDrone = m_patrolDroneIds[i % m_patrolDroneIds.size()];
+      }
+      state->parts.emplace(part.id, std::move(part));
+    }
+
+    auto joinDroneIds = [] (const std::vector<std::string>& droneIds) {
+      std::string out;
+      for (size_t i = 0; i < droneIds.size(); ++i) {
+        if (i > 0) {
+          out += ",";
+        }
+        out += droneIds[i];
+      }
+      return out;
+    };
+    auto parseDroneIds = [this] (const std::string& droneIds, size_t fallbackIndex) {
+      std::vector<std::string> parsed;
+      std::string token;
+      std::istringstream stream(droneIds);
+      while (std::getline(stream, token, ',')) {
+        token.erase(0, token.find_first_not_of(" \t\r\n"));
+        const auto last = token.find_last_not_of(" \t\r\n");
+        if (last == std::string::npos) {
+          continue;
+        }
+        token.erase(last + 1);
+        if (!token.empty() && token != "unknown" && token != "none") {
+          parsed.push_back(token);
+        }
+      }
+      if (parsed.empty() && !m_patrolDroneIds.empty()) {
+        parsed.push_back(m_patrolDroneIds[fallbackIndex % m_patrolDroneIds.size()]);
+      }
+      return parsed;
+    };
+    auto emitProgress = [this, state, taskId = plan.taskId, plan] (std::string phase) {
+      MissionProgressState progress;
+      progress.taskId = taskId;
+      progress.phase = std::move(phase);
+      progress.assignment = plan.assignment.empty() ? "loaded-mission-plan" : plan.assignment;
+      progress.completionObjective = plan.completionObjective;
+      progress.returnHomePlanned = plan.returnHomePlanned;
+      progress.attempts = 1;
+      progress.completedPartIds = "none";
+      progress.pendingPartIds = "none";
+      progress.missingPartIds = "none";
+      progress.compensatedPartIds = "none";
+      auto appendId = [] (std::string& list, const std::string& id) {
+        if (list == "none") {
+          list.clear();
+        }
+        if (!list.empty()) {
+          list += ",";
+        }
+        list += id;
+      };
+      {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        progress.totalParts = state->parts.size();
+        for (const auto& item : state->parts) {
+          if (item.second.done) {
+            ++progress.completedParts;
+            appendId(progress.completedPartIds, item.first);
+          }
+          else {
+            appendId(progress.pendingPartIds, item.first);
+          }
+        }
+      }
+      updateMissionProgress(progress);
+      NDN_LOG_INFO("MISSION_PLAN_UPLOAD_PROGRESS " << progress.statusLine());
+    };
+    auto isCancelled = [this, taskId = plan.taskId] {
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      return m_patrolCancelRequested && m_activePatrolTaskId == taskId;
+    };
+
+    NDN_LOG_INFO("MISSION_PLAN_UPLOAD_START task=" << plan.taskId
+                 << " parts=" << state->parts.size()
+                 << " assignment=" << plan.assignment);
+    emitProgress("assigning");
+
+    size_t dispatchIndex = 0;
+    for (const auto& item : state->parts) {
+      const auto partId = item.first;
+      const auto part = item.second;
+      const auto candidateDrones = parseDroneIds(part.assignedDrone, dispatchIndex++);
+      if (candidateDrones.empty()) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        ++state->failed;
+        state->cv.notify_all();
+        continue;
+      }
+      const auto candidateText = joinDroneIds(candidateDrones);
+      Fields payloadFields{
+        {"type", "patrol-task"},
+        {"patrol_task_id", plan.taskId},
+        {"mission_id", plan.taskId},
+        {"mission_completion_objective", plan.completionObjective},
+        {"attempt_id", std::to_string(std::max(1, part.attempt))},
+        {"part_id", part.id},
+        {"role", part.role},
+        {"area", "loaded-mission-plan"},
+        {"waypoints", part.waypointText()},
+        {"capture_required", "true"},
+        {"simulate_no_response", "false"},
+        {"simulate_delay_ms", "0"},
+      };
+      if (candidateDrones.size() == 1) {
+        payloadFields.emplace("target_system", mavlinkTargetSystemForDrone(candidateDrones.front()));
+        payloadFields.emplace("target_component", "1");
+      }
+      auto requestMessage = makeRequest(encodeFields(payloadFields));
+      std::vector<ndn::Name> providerNames;
+      providerNames.reserve(candidateDrones.size());
+      for (const auto& droneId : candidateDrones) {
+        providerNames.push_back(droneIdentity(m_config, droneId));
+      }
+
+      boost::asio::post(m_face.getIoContext(), [this, requestMessage = std::move(requestMessage),
+                                  providerNames = std::move(providerNames),
+                                  partId, candidateText, state, emitProgress,
+                                  isCancelled, taskId = plan.taskId] () mutable {
+        if (isCancelled() || !m_containerReady.load() || !m_user) {
+          std::lock_guard<std::mutex> guard(state->mutex);
+          ++state->failed;
+          state->cv.notify_all();
+          return;
+        }
+        auto selectIdleCandidate =
+          [providerNames, taskId, partId](
+            const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates) {
+            std::vector<ndn_service_framework::AckSelectionCandidate> selected;
+            for (const auto& candidate : candidates) {
+              bool inCandidateSet = false;
+              for (const auto& providerName : providerNames) {
+                if (candidate.providerName.equals(providerName)) {
+                  inCandidateSet = true;
+                  break;
+                }
+              }
+              if (!inCandidateSet || !candidate.ack.getStatus()) {
+                continue;
+              }
+              const auto payload = candidate.ack.getPayload();
+              const auto fields = decodeFields(
+                std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
+              if (fieldOr(fields, "mission_busy", "false") == "true") {
+                NDN_LOG_INFO("MISSION_PLAN_UPLOAD_ACK_BUSY task=" << taskId
+                             << " part=" << partId
+                             << " provider=" << candidate.providerName);
+                continue;
+              }
+              selected.push_back(candidate);
+              break;
+            }
+            return selected;
+          };
+        m_user->RequestService(
+          providerNames,
+          m_config.serviceMissionAssign,
+          std::move(requestMessage),
+          m_ackTimeoutMs,
+          std::move(selectIdleCandidate),
+          m_timeoutMs,
+          [partId, state, emitProgress, taskId](const ndn::Name&) {
+            NDN_LOG_INFO("MISSION_PLAN_UPLOAD_PART_TIMEOUT task=" << taskId
+                         << " part=" << partId);
+            {
+              std::lock_guard<std::mutex> guard(state->mutex);
+              ++state->failed;
+            }
+            emitProgress("assigning");
+            state->cv.notify_all();
+          },
+          [this, partId, candidateText, state, emitProgress, taskId](
+            const ndn_service_framework::ResponseMessage& response) {
+            const auto fields = decodeFields(responsePayload(response));
+            auto mission = MissionState::fromFields(fields);
+            const auto responder = mission.droneId == "unknown" ? candidateText : mission.droneId;
+            if (mission.droneId == "unknown") {
+              mission.droneId = responder;
+            }
+            {
+              std::lock_guard<std::mutex> guard(state->mutex);
+              if (response.getStatus()) {
+                auto& part = state->parts[partId];
+                if (!part.done) {
+                  part.done = true;
+                  part.completedBy = responder;
+                  ++state->completed;
+                }
+              }
+              else {
+                ++state->failed;
+              }
+            }
+            if (response.getStatus()) {
+              updateMissionState(mission);
+              std::lock_guard<std::mutex> readyGuard(m_missionReadyMutex);
+              if (std::find(m_missionReadyDrones.begin(), m_missionReadyDrones.end(),
+                            responder) == m_missionReadyDrones.end()) {
+                m_missionReadyDrones.push_back(responder);
+              }
+              NDN_LOG_INFO("MISSION_PLAN_UPLOAD_PART_DONE task=" << taskId
+                           << " part=" << partId
+                           << " provider=" << responder
+                           << " phase=" << mission.phase);
+            }
+            emitProgress("assigning");
+            state->cv.notify_all();
+          });
+      });
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    bool ok = false;
+    {
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait_until(lock, deadline, [&] {
+        return isCancelled() || state->completed + state->failed >= state->parts.size();
+      });
+      ok = !isCancelled() && state->failed == 0 && state->completed == state->parts.size();
+    }
+    emitProgress(ok ? "completed" : (isCancelled() ? "cancelled" : "failed"));
+    NDN_LOG_INFO("MISSION_PLAN_UPLOAD_DONE task=" << plan.taskId
+                 << " ok=" << (ok ? "true" : "false"));
+    {
+      std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
+      if (m_activePatrolTaskId == plan.taskId) {
+        m_activePatrolTaskId.clear();
+      }
+      m_patrolCancelRequested = false;
+    }
+    return ok;
+  }
+
+  bool
   cancelCurrentPatrolMission()
   {
     std::lock_guard<std::mutex> guard(m_patrolTaskMutex);
