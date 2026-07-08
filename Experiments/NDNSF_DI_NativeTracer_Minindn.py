@@ -90,6 +90,8 @@ NATIVE_TRACER_PROFILE_FIELDS = {
     "multi_user_workload": "multi_user_workload",
     "runtime_aware_max_replans": "runtime_aware_max_replans",
     "runtime_aware_replan_reasons": "runtime_aware_replan_reasons",
+    "dependency_envelope_mode": "dependency_envelope_mode",
+    "dependency_payload_mode": "dependency_envelope_mode",
 }
 
 
@@ -145,6 +147,13 @@ def runtime_profile_defaults(runtime_profile: str, runtime_resolved: str) -> dic
 
 def default_value(defaults: dict[str, object], key: str, fallback):
     return defaults.get(key, fallback)
+
+
+def default_value_any(defaults: dict[str, object], keys: list[str], fallback):
+    for key in keys:
+        if key in defaults:
+            return defaults[key]
+    return fallback
 
 
 def user_worker_identities(requests: int) -> list[str]:
@@ -375,10 +384,11 @@ def provider_admission_env(args) -> dict[str, str]:
     return env
 
 
-def dependency_payload_env(args) -> dict[str, str]:
+def dependency_envelope_env(args) -> dict[str, str]:
+    mode = getattr(args, "dependency_envelope_mode", "raw")
     return {
         "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": (
-            "1" if args.dependency_payload_mode == "streamchunk" else "0"
+            "1" if mode == "streamchunk" else "0"
         ),
         "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
     }
@@ -1988,7 +1998,8 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
         f"miniNDNStatus={summary['miniNDNStatus']}",
         f"miniNDNRun={summary['miniNDNRun']}",
         f"runnerMode={summary['runnerMode']}",
-        f"dependencyPayloadMode={summary.get('dependencyPayloadMode', 'raw')}",
+        f"dependencyEnvelopeMode={summary.get('dependencyEnvelopeMode', summary.get('dependencyPayloadMode', 'raw'))}",
+        f"dependencyPayloadMode={summary.get('dependencyPayloadMode', summary.get('dependencyEnvelopeMode', 'raw'))}",
         f"activationPadBytes={summary.get('activationPadBytes', 0)}",
         f"roleExecutionDelayMs={summary.get('roleExecutionDelayMs', 0.0)}",
         f"requestCount={summary.get('requestCount', 1)}",
@@ -2084,12 +2095,15 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
             "enableNativeAdmissionLease": args.enable_native_admission_lease,
             "overloadFastFailTimeoutMs": args.overload_fast_fail_timeout_ms,
-            "dependencyPayloadMode": args.dependency_payload_mode,
+            "dependencyEnvelopeMode": args.dependency_envelope_mode,
+            "dependencyPayloadMode": args.dependency_envelope_mode,
             "topologyFile": str(Path(args.topology_file).resolve()),
         },
         "topologyFile": str(Path(args.topology_file).resolve()),
-        "dependencyPayloadMode": args.dependency_payload_mode,
-        "dependencyPayloadEnv": dependency_payload_env(args),
+        "dependencyEnvelopeMode": args.dependency_envelope_mode,
+        "dependencyPayloadMode": args.dependency_envelope_mode,
+        "dependencyEnvelopeEnv": dependency_envelope_env(args),
+        "dependencyPayloadEnv": dependency_envelope_env(args),
         "nativePlan": str(policy_dir / "native-execution-plan.json"),
         "serviceManifest": str(policy_dir / "service-manifest.json"),
         "optimizationEvidence": {
@@ -2294,10 +2308,15 @@ def main() -> int:
                         default=default_value(profile_defaults, "overload_fast_fail_timeout_ms", 0),
                         help=("Use a shorter user collaboration timeout for overload "
                               "fast-fail experiments"))
-    parser.add_argument("--dependency-payload-mode",
+    parser.add_argument("--dependency-envelope-mode",
+                        "--dependency-payload-mode",
+                        dest="dependency_envelope_mode",
                         choices=["raw", "streamchunk"],
-                        default=default_value(profile_defaults, "dependency_payload_mode", "raw"),
-                        help=("Dependency large-data payload format for native provider "
+                        default=default_value_any(
+                            profile_defaults,
+                            ["dependency_envelope_mode", "dependency_payload_mode"],
+                            "raw"),
+                        help=("Dependency large-data envelope format for native provider "
                               "collaboration. raw keeps exact-name tensor bundle objects "
                               "on the normal large-data/SegmentFetcher path. streamchunk "
                               "is an opt-in StreamChunk metadata-envelope experiment, "
@@ -2364,8 +2383,10 @@ def main() -> int:
             "runtimeAwareMaxReplans": args.runtime_aware_max_replans,
             "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
             "topologyFile": str(topology_file),
-            "dependencyPayloadMode": args.dependency_payload_mode,
-            "dependencyPayloadEnv": dependency_payload_env(args),
+            "dependencyEnvelopeMode": args.dependency_envelope_mode,
+            "dependencyPayloadMode": args.dependency_envelope_mode,
+            "dependencyEnvelopeEnv": dependency_envelope_env(args),
+            "dependencyPayloadEnv": dependency_envelope_env(args),
             "plannerMetrics": {
                 "json": str(Path(args.out) / "planner-metrics.json"),
                 "csv": str(Path(args.out) / "planner-metrics.csv"),
@@ -2424,7 +2445,7 @@ def main() -> int:
         str(REPO / "build"),
         env.get("LD_LIBRARY_PATH", ""),
     ])
-    env.update(dependency_payload_env(args))
+    env.update(dependency_envelope_env(args))
 
     summary = build_base_summary(args, out_dir, policy_dir, logs_dir)
     summary["multiUserWorkload"] = {
@@ -2771,7 +2792,7 @@ def main() -> int:
                     args.enable_native_admission_lease)
                 provider_env = llm_provider_resource_env(row["provider"])
                 provider_env.update(provider_admission_env(args))
-                provider_env.update(dependency_payload_env(args))
+                provider_env.update(dependency_envelope_env(args))
                 proc, path = start_node_command(
                     node,
                     "provider-serve-" + safe_log_component(row["role"]) +
@@ -2937,7 +2958,7 @@ def main() -> int:
                 args.policy_bundle == "llm-proportional")
             provider_env = llm_provider_resource_env(row["provider"])
             provider_env.update(provider_admission_env(args))
-            provider_env.update(dependency_payload_env(args))
+            provider_env.update(dependency_envelope_env(args))
             start_node_command(node,
                                "provider-check-" + safe_log_component(row["role"]) +
                                "--" + safe_log_component(row["provider"]),

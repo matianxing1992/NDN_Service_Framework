@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Compare raw and StreamChunk NDNSF-DI dependency payload modes.
+"""Compare raw and StreamChunk NDNSF-DI dependency envelope modes.
 
 This wrapper intentionally reuses the canonical NativeTracer MiniNDN harness.
 It does not reimplement topology, identity, controller, provider, or user
-logic; it only runs the same workload in two dependency-payload modes and
+logic; it only runs the same workload in two dependency-envelope modes and
 summarizes the resulting evidence directories.
 """
 
@@ -31,7 +31,7 @@ def parse_modes(text: str) -> list[str]:
             continue
         if mode not in {"raw", "streamchunk"}:
             raise argparse.ArgumentTypeError(
-                "dependency payload modes must be raw or streamchunk")
+                "dependency envelope modes must be raw or streamchunk")
         modes.append(mode)
     if not modes:
         raise argparse.ArgumentTypeError("at least one mode is required")
@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--out", str(point_dir),
                 "--full-network",
                 "--tracer-deterministic-runner",
-                "--dependency-payload-mode", mode,
+                "--dependency-envelope-mode", mode,
                 "--requests", str(args.requests),
                 "--concurrency", str(args.concurrency),
             ]

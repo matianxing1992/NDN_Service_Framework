@@ -69,7 +69,7 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             "--runtime-aware-replan-reasons", "FRAGMENT_EVICTED",
             "--requests", "1",
             "--concurrency", "1",
-            "--dependency-payload-mode", "streamchunk",
+            "--dependency-envelope-mode", "streamchunk",
         ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
            stderr=subprocess.PIPE, check=True)
         payload = json.loads(completed.stdout)
@@ -78,7 +78,12 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(payload["multiUserWorkload"]["requestCount"], 2)
         self.assertEqual(payload["requests"], 2)
         self.assertEqual(payload["runtimeAwareMaxReplans"], 1)
+        self.assertEqual(payload["dependencyEnvelopeMode"], "streamchunk")
         self.assertEqual(payload["dependencyPayloadMode"], "streamchunk")
+        self.assertEqual(payload["dependencyEnvelopeEnv"], {
+            "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": "1",
+            "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
+        })
         self.assertEqual(payload["dependencyPayloadEnv"], {
             "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": "1",
             "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
@@ -106,8 +111,29 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(payload["status"], "DRY_RUN")
         self.assertEqual(len(commands), 4)
         joined = [" ".join(command) for command in commands]
-        self.assertTrue(any("--dependency-payload-mode raw" in item for item in joined))
-        self.assertTrue(any("--dependency-payload-mode streamchunk" in item for item in joined))
+        self.assertTrue(any("--dependency-envelope-mode raw" in item for item in joined))
+        self.assertTrue(any("--dependency-envelope-mode streamchunk" in item for item in joined))
+
+    def test_legacy_dependency_payload_mode_alias_still_works(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = ":".join([
+            str(REPO / "NDNSF-DistributedInference"),
+            str(REPO / "pythonWrapper"),
+            str(REPO),
+            env.get("PYTHONPATH", ""),
+        ])
+        completed = subprocess.run([
+            sys.executable,
+            str(HARNESS),
+            "--dry-run",
+            "--requests", "1",
+            "--concurrency", "1",
+            "--dependency-payload-mode", "streamchunk",
+        ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
+           stderr=subprocess.PIPE, check=True)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["dependencyEnvelopeMode"], "streamchunk")
+        self.assertEqual(payload["dependencyPayloadMode"], "streamchunk")
 
     def test_user_driver_loads_role_assignments_from_csv(self) -> None:
         user_driver = load_user_driver_module()

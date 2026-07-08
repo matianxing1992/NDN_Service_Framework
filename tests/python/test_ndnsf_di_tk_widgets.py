@@ -144,7 +144,7 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
         tab = self.app.qwen_minindn
         tab.fields["use_sudo"].set(False)  # type: ignore[union-attr]
         tab.fields["dry_run"].set(True)  # type: ignore[union-attr]
-        tab.fields["dependency_payload_mode"].set("streamchunk")  # type: ignore[union-attr]
+        tab.fields["dependency_envelope_mode"].set("streamchunk")  # type: ignore[union-attr]
         command, out_dir = tab.experiment_command()
         self.assertEqual(out_dir, Path("/tmp/ndnsf-di-gui-qwen-minindn"))
         self.assertIn("Experiments/NDNSF_DI_NativeTracer_Minindn.py", command)
@@ -153,7 +153,7 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
         self.assertIn("--assignment", command)
         self.assertIn("llm-proportional", command)
         self.assertIn("--dry-run", command)
-        self.assertIn("--dependency-payload-mode", command)
+        self.assertIn("--dependency-envelope-mode", command)
         self.assertIn("streamchunk", command)
 
     def test_qwen_minindn_tab_builds_sweep_commands(self) -> None:
