@@ -1475,6 +1475,23 @@ def load_native_dependency_edges(plan_path: Path) -> list[dict[str, object]]:
     return edges
 
 
+def node_ndn_env(node, env: dict[str, str]) -> dict[str, str]:
+    node_env = dict(env)
+    home = Path(
+        node_env.get("NDNSF_NATIVE_TRACER_SHARED_HOME") or
+        node.params["params"]["homeDir"])
+    ndn_dir = home / ".ndn"
+    ndn_dir.mkdir(parents=True, exist_ok=True)
+    client_conf = ndn_dir / "client.conf"
+    client_conf.write_text(
+        f"transport=unix:///run/nfd/{node.name}.sock\n",
+        encoding="utf-8")
+    node_env["HOME"] = str(home)
+    node_env["NDN_CLIENT_CONF"] = str(client_conf)
+    node_env["NDN_CLIENT_TRANSPORT"] = f"unix:///run/nfd/{node.name}.sock"
+    return node_env
+
+
 def write_dependency_edge_rtt_summary(ndn,
                                       out_dir: Path,
                                       logs_dir: Path,
@@ -1503,7 +1520,7 @@ def write_dependency_edge_rtt_summary(ndn,
         server_cmd = f"exec ndnpingserver {perf.shell_quote(ping_prefix)}"
         server = getPopen(ndn.net[producer["providerNode"]],
                           server_cmd,
-                          envDict=env,
+                          envDict=node_ndn_env(ndn.net[producer["providerNode"]], env),
                           shell=True,
                           stdout=server_file,
                           stderr=subprocess.STDOUT)
@@ -1513,7 +1530,7 @@ def write_dependency_edge_rtt_summary(ndn,
         client_cmd = f"exec timeout 15s ndnping {perf.shell_quote(ping_prefix)} -c 5"
         client = getPopen(ndn.net[consumer["providerNode"]],
                           client_cmd,
-                          envDict=env,
+                          envDict=node_ndn_env(ndn.net[consumer["providerNode"]], env),
                           shell=True,
                           stdout=client_file,
                           stderr=subprocess.STDOUT)

@@ -12,6 +12,8 @@ import subprocess
 import sys
 
 from ndnsf_distributed_inference import (
+    GenericAckMetadata,
+    GenericProviderRuntimeHint,
     ModelFragmentKey,
     PlanDependency,
     PlanRole,
@@ -151,7 +153,7 @@ def apply_runtime_fragment_metadata(out_dir: Path) -> None:
 
 
 def generate_runtime_assignment_evidence(out_dir: Path, service_plan: dict) -> dict:
-    return generate_runtime_assignment_evidence_with_matrix(out_dir, service_plan, "")
+    return generate_runtime_assignment_evidence_with_matrix(out_dir, service_plan, "", "")
 
 
 def load_provider_network_matrix_input(path: str) -> ProviderNetworkMatrix:
@@ -166,13 +168,75 @@ def load_provider_network_matrix_input(path: str) -> ProviderNetworkMatrix:
     return ProviderNetworkMatrix.from_dict(payload)
 
 
+def load_provider_ack_metadata_input(provider_profiles_json: str,
+                                     template: PlanTemplate) -> dict[str, GenericAckMetadata]:
+    if not provider_profiles_json:
+        return load_provider_ack_metadata()
+    path = Path(provider_profiles_json)
+    if not path.exists():
+        return load_provider_ack_metadata()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    roles = payload.get("roles", {})
+    if not isinstance(roles, dict):
+        return load_provider_ack_metadata()
+    role_map = {role.role_id: role for role in template.roles}
+    grouped: dict[str, dict[str, object]] = {}
+    for role_id, profile in roles.items():
+        if not isinstance(profile, dict) or role_id not in role_map:
+            continue
+        provider = str(profile.get("provider", ""))
+        if not provider:
+            continue
+        entry = grouped.setdefault(provider, {
+            "hint": {
+                "providerName": provider,
+                "queueLength": int(profile.get("queueDepth", 0) or 0),
+                "estimatedQueueWaitMs": 0.0,
+                "confidence": 1.0,
+            },
+            "fragmentStates": [],
+            "estimatedComputeMs": 0.0,
+        })
+        role = role_map[role_id]
+        entry["fragmentStates"].append({
+            "fragmentKey": to_plain(role.fragment_key),
+            "residency": "GPU_LOADED",
+            "estimatedReadyMs": 0.0,
+            "memoryFootprintMb": role.memory_mb,
+            "confidence": 1.0,
+        })
+        entry["estimatedComputeMs"] = (
+            float(entry.get("estimatedComputeMs", 0.0) or 0.0) +
+            float(profile.get("roleComputeMs", role.estimated_compute_ms) or 0.0)
+        )
+    if not grouped:
+        return load_provider_ack_metadata()
+    result: dict[str, GenericAckMetadata] = {}
+    for provider, entry in grouped.items():
+        hint = GenericProviderRuntimeHint.from_dict(dict(entry["hint"]))
+        result[provider] = GenericAckMetadata(
+            provider_runtime_hint=hint,
+            service_payload_schema="ndnsf-di-runtime-ack-v1",
+            service_payload={
+                "providerName": provider,
+                "fragmentStates": list(entry["fragmentStates"]),
+                "estimatedComputeMs": entry["estimatedComputeMs"],
+            },
+        )
+    return result
+
+
 def generate_runtime_assignment_evidence_with_matrix(
     out_dir: Path,
     service_plan: dict,
+    provider_profiles_json: str,
     provider_network_matrix_json: str,
 ) -> dict:
     template = build_runtime_plan_template(service_plan)
-    metadata_by_provider = load_provider_ack_metadata()
+    metadata_by_provider = load_provider_ack_metadata_input(
+        provider_profiles_json,
+        template,
+    )
     network_matrix = load_provider_network_matrix_input(provider_network_matrix_json)
     candidates = {
         role.role_id: [
@@ -231,6 +295,14 @@ def generate_runtime_assignment_evidence_with_matrix(
                 "runtime_aware_fixtures/provider_network_matrix.json"
             ),
             "metricCount": len(network_matrix.metrics),
+        },
+        "providerRuntimeMetadata": {
+            "source": (
+                str(Path(provider_profiles_json))
+                if provider_profiles_json else
+                "runtime_aware_fixtures/provider_fragments.json"
+            ),
+            "providerCount": len(metadata_by_provider),
         },
     }
 
@@ -520,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         summary.update(generate_runtime_assignment_evidence_with_matrix(
             out_dir,
             service_plan,
+            args.provider_profiles_json,
             args.provider_network_matrix_json,
         ))
 

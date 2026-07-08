@@ -229,6 +229,45 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertFalse(detail["unknown"])
         self.assertGreater(cost, 12.0)
 
+    def test_plan_tracer_uses_provider_profiles_for_runtime_metadata(self) -> None:
+        plan_tracer = load_plan_tracer_module()
+        service_plan = {
+            "roles": ["/Backbone", "/Merge"],
+            "dependencies": [],
+        }
+        template = plan_tracer.build_runtime_plan_template(service_plan)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "provider-profiles.json"
+            path.write_text(
+                json.dumps({
+                    "roles": {
+                        "/Backbone": {
+                            "provider": "/NDNSF-DI/Tracer/provider/backbone",
+                            "node": "ucla",
+                            "roleComputeMs": 4.0,
+                        },
+                        "/Merge": {
+                            "provider": "/NDNSF-DI/Tracer/provider/merge",
+                            "node": "neu",
+                            "roleComputeMs": 1.5,
+                        },
+                    },
+                }),
+                encoding="utf-8")
+            metadata = plan_tracer.load_provider_ack_metadata_input(str(path), template)
+
+        self.assertEqual(
+            sorted(metadata),
+            ["/NDNSF-DI/Tracer/provider/backbone", "/NDNSF-DI/Tracer/provider/merge"],
+        )
+        backbone = metadata["/NDNSF-DI/Tracer/provider/backbone"]
+        self.assertEqual(backbone.provider_runtime_hint.provider_name,
+                         "/NDNSF-DI/Tracer/provider/backbone")
+        self.assertEqual(
+            backbone.service_payload["fragmentStates"][0]["fragmentKey"]["fragment_digest"],
+            "sha256:native-tracer:Backbone",
+        )
+
     def test_user_driver_loads_role_assignments_from_csv(self) -> None:
         user_driver = load_user_driver_module()
         with tempfile.TemporaryDirectory() as tmp:
