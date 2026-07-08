@@ -393,6 +393,7 @@ main(int argc, char** argv)
     const bool autoAuthorityIssuerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-issuer-test", "auto-authority-issuer-test", false);
     const bool autoAuthorityArbitrationTest = getConfigBool(argc, argv, appConfig, "--auto-authority-arbitration-test", "auto-authority-arbitration-test", false);
     const bool autoAuthorityPersistenceTest = getConfigBool(argc, argv, appConfig, "--auto-authority-persistence-test", "auto-authority-persistence-test", false);
+    const bool autoAuthorityRevocationTest = getConfigBool(argc, argv, appConfig, "--auto-authority-revocation-test", "auto-authority-revocation-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -449,6 +450,7 @@ main(int argc, char** argv)
   config.serviceMavlinkParametersSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-parameters-suffix", "service-mavlink-parameters-suffix", config.serviceMavlinkParametersSuffix.toUri()));
   config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
   config.serviceGsOperatorAuthorityLease = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-lease", "service-gs-operator-authority-lease", config.serviceGsOperatorAuthorityLease.toUri()));
+  config.serviceGsOperatorAuthorityRevocation = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-revocation", "service-gs-operator-authority-revocation", config.serviceGsOperatorAuthorityRevocation.toUri()));
   const auto groundStationMapLatText =
     getConfigOption(argc, argv, appConfig, "--ground-station-map-lat", "ground-station-map-lat", std::to_string(config.groundStationMapLat));
   const auto groundStationMapLonText =
@@ -514,6 +516,7 @@ main(int argc, char** argv)
                                   autoAuthorityIssuerTest ||
                                   autoAuthorityArbitrationTest ||
                                   autoAuthorityPersistenceTest ||
+                                  autoAuthorityRevocationTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -585,6 +588,11 @@ main(int argc, char** argv)
       std::cout << "GS_AUTHORITY_PERSISTENCE_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoAuthorityRevocationTest) {
+      const bool ok = runtime->runAuthorityRevocationLookupTest(std::chrono::seconds(10));
+      std::cout << "GS_AUTHORITY_REVOCATION_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
     if (autoTelemetryTest) {
       const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45),
                                                     !autoTelemetryAllowMockFields);
@@ -630,6 +638,7 @@ main(int argc, char** argv)
               << " auto_authority_issuer_test=" << (autoAuthorityIssuerTest ? "true" : "false")
               << " auto_authority_arbitration_test=" << (autoAuthorityArbitrationTest ? "true" : "false")
               << " auto_authority_persistence_test=" << (autoAuthorityPersistenceTest ? "true" : "false")
+              << " auto_authority_revocation_test=" << (autoAuthorityRevocationTest ? "true" : "false")
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
               << " video_bitrate_policy=" << videoBitratePolicy

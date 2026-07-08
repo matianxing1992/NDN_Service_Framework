@@ -2163,6 +2163,7 @@ public:
     {
       std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
       m_issuedOperatorLeases.clear();
+      m_operatorRevocationRecords.clear();
       persistIssuedOperatorLeasesLocked();
     }
 
@@ -2233,6 +2234,77 @@ public:
                  << " persisted_operator=" << persistedOperator
                  << " persisted_scope=" << persistedScope
                  << " state_file=" << m_operatorAuthorityStateFile);
+    return ok;
+  }
+
+  bool
+  runAuthorityRevocationLookupTest(std::chrono::seconds timeout)
+  {
+    if (m_operatorAuthorityStateFile.empty()) {
+      NDN_LOG_INFO("AUTHORITY_REVOCATION_RESULT ok=false reason=missing-state-file");
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      m_issuedOperatorLeases.clear();
+      m_operatorRevocationRecords.clear();
+      persistIssuedOperatorLeasesLocked();
+    }
+
+    OperatorAuthorityLeaseRequest first;
+    first.requestId = "revocation-first-" + std::to_string(nowMilliseconds());
+    first.operatorId = "/example/uav/operator/one";
+    first.droneId = targetDroneId();
+    first.scope = "control";
+    first.ttlMs = 60000;
+    first.requestedMs = nowMilliseconds();
+
+    OperatorAuthorityLease firstLease;
+    std::string firstReason;
+    const bool firstAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, first, timeout, firstLease, firstReason);
+
+    auto admin = first;
+    admin.requestId = "revocation-admin-" + std::to_string(nowMilliseconds());
+    admin.operatorId = "/example/uav/operator/two";
+    admin.scope = "admin";
+    OperatorAuthorityLease adminLease;
+    std::string adminReason;
+    Fields adminFields;
+    const bool adminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, admin, timeout, adminLease, adminReason, &adminFields);
+
+    const auto revokedLeaseId = fieldOr(adminFields, "revoked_lease_ids", "");
+    Fields recordFields;
+    std::string lookupReason;
+    const bool lookupFound = requestOperatorRevocationRecordFromIssuerSync(
+      m_config.groundStationIdentity, revokedLeaseId, timeout, recordFields, lookupReason);
+
+    Fields missingFields;
+    std::string missingReason;
+    const bool missingFound = requestOperatorRevocationRecordFromIssuerSync(
+      m_config.groundStationIdentity, "missing-lease-id", timeout, missingFields, missingReason);
+
+    const bool recordOk = lookupFound &&
+                          lookupReason == "ok" &&
+                          fieldOr(recordFields, "revoked_lease_id", "") == firstLease.leaseId &&
+                          fieldOr(recordFields, "revoked_operator", "") == first.operatorId &&
+                          fieldOr(recordFields, "revoker_operator", "") == admin.operatorId &&
+                          fieldOr(recordFields, "revoked_scope", "") == first.scope &&
+                          fieldOr(recordFields, "revoked_drone", "") == first.droneId;
+    const bool missingOk = !missingFound && missingReason == "not-found";
+    const bool ok = firstAccepted && firstReason == "ok" &&
+                    adminAccepted && adminReason == "ok" &&
+                    !revokedLeaseId.empty() &&
+                    recordOk && missingOk;
+    NDN_LOG_INFO("AUTHORITY_REVOCATION_RESULT ok=" << (ok ? "true" : "false")
+                 << " first=" << (firstAccepted ? "accepted" : firstReason)
+                 << " admin=" << (adminAccepted ? "accepted" : adminReason)
+                 << " revoked_lease_id=" << revokedLeaseId
+                 << " lookup=" << (lookupFound ? "found" : lookupReason)
+                 << " missing=" << (missingFound ? "found" : missingReason)
+                 << " record_operator=" << fieldOr(recordFields, "revoked_operator", "none")
+                 << " revoker_operator=" << fieldOr(recordFields, "revoker_operator", "none"));
     return ok;
   }
 
@@ -3356,6 +3428,70 @@ private:
     return state->done && state->ok;
   }
 
+  bool
+  requestOperatorRevocationRecordFromIssuerSync(const ndn::Name& issuerIdentity,
+                                                const std::string& revokedLeaseId,
+                                                std::chrono::seconds timeout,
+                                                Fields& out,
+                                                std::string& reason)
+  {
+    struct RequestState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      bool found = false;
+      std::string reason = "timeout";
+      Fields fields;
+    };
+
+    auto state = std::make_shared<RequestState>();
+    boost::asio::post(m_face.getIoContext(), [this, issuerIdentity, revokedLeaseId, state] {
+      if (!m_containerReady.load() || !m_user) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->done = true;
+        state->found = false;
+        state->reason = "runtime-not-ready";
+        state->cv.notify_one();
+        return;
+      }
+
+      auto requestMessage = makeRequest(encodeFields(Fields{
+        {"type", "operator-authority-revocation-query"},
+        {"revoked_lease_id", revokedLeaseId},
+      }));
+      m_user->RequestService(
+        std::vector<ndn::Name>{issuerIdentity},
+        m_config.serviceGsOperatorAuthorityRevocation,
+        std::move(requestMessage),
+        m_ackTimeoutMs,
+        ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
+        m_timeoutMs,
+        [state](const ndn::Name&) {
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->done = true;
+          state->found = false;
+          state->reason = "request-timeout";
+          state->cv.notify_one();
+        },
+        [state](const ndn_service_framework::ResponseMessage& response) {
+          const auto fields = decodeFields(responsePayload(response));
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->done = true;
+          state->fields = fields;
+          state->reason = fieldOr(fields, "reason", "unknown");
+          state->found = fieldOr(fields, "found", "false") == "true";
+          state->cv.notify_one();
+        });
+    });
+
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, timeout, [&state] { return state->done; });
+    out = state->fields;
+    reason = state->reason;
+    return state->done && state->found;
+  }
+
   static bool
   isExclusiveAuthorityScope(const std::string& scope)
   {
@@ -3455,6 +3591,15 @@ private:
         output << prefix << key << "=" << value << "\n";
       }
     }
+    output << "revocation_count=" << m_operatorRevocationRecords.size() << "\n";
+    size_t revocationIndex = 0;
+    for (const auto& [leaseId, record] : m_operatorRevocationRecords) {
+      const auto prefix = "revocation." + std::to_string(revocationIndex++) + ".";
+      output << prefix << "key=" << leaseId << "\n";
+      for (const auto& [key, value] : record) {
+        output << prefix << key << "=" << value << "\n";
+      }
+    }
     output.close();
     if (std::rename(tmp.c_str(), m_operatorAuthorityStateFile.c_str()) != 0) {
       NDN_LOG_WARN("AUTHORITY_STATE_RENAME_FAILED path=" << m_operatorAuthorityStateFile
@@ -3463,7 +3608,8 @@ private:
     }
     else {
       NDN_LOG_INFO("AUTHORITY_STATE_SAVED path=" << m_operatorAuthorityStateFile
-                   << " active_lease_count=" << m_issuedOperatorLeases.size());
+                   << " active_lease_count=" << m_issuedOperatorLeases.size()
+                   << " revocation_count=" << m_operatorRevocationRecords.size());
     }
   }
 
@@ -3483,8 +3629,10 @@ private:
     try {
       const auto fields = loadKeyValueConfig(m_operatorAuthorityStateFile);
       const auto count = unsignedFieldOr(fields, "lease_count", 0);
+      const auto revocationCount = unsignedFieldOr(fields, "revocation_count", 0);
       const auto nowMs = nowMilliseconds();
       std::vector<OperatorAuthorityLease> loaded;
+      std::map<std::string, Fields> loadedRevocations;
       for (uint64_t i = 0; i < count; ++i) {
         Fields leaseFields;
         const auto prefix = "lease." + std::to_string(i) + ".";
@@ -3498,13 +3646,29 @@ private:
           loaded.push_back(std::move(lease));
         }
       }
+      for (uint64_t i = 0; i < revocationCount; ++i) {
+        Fields record;
+        const auto prefix = "revocation." + std::to_string(i) + ".";
+        for (const auto& [key, value] : fields) {
+          if (key.rfind(prefix, 0) == 0) {
+            record[key.substr(prefix.size())] = value;
+          }
+        }
+        const auto leaseId = fieldOr(record, "revoked_lease_id", fieldOr(record, "key", ""));
+        if (!leaseId.empty()) {
+          record.erase("key");
+          loadedRevocations[leaseId] = std::move(record);
+        }
+      }
       {
         std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
         m_issuedOperatorLeases = std::move(loaded);
+        m_operatorRevocationRecords = std::move(loadedRevocations);
         persistIssuedOperatorLeasesLocked();
       }
       NDN_LOG_INFO("AUTHORITY_STATE_LOADED path=" << m_operatorAuthorityStateFile
-                   << " active_lease_count=" << m_issuedOperatorLeases.size());
+                   << " active_lease_count=" << m_issuedOperatorLeases.size()
+                   << " revocation_count=" << m_operatorRevocationRecords.size());
     }
     catch (const std::exception& e) {
       NDN_LOG_WARN("AUTHORITY_STATE_LOAD_FAILED path=" << m_operatorAuthorityStateFile
@@ -3564,9 +3728,21 @@ private:
                          return false;
                        }
                        if (leaseRequest.scope == "admin" && isExclusiveAuthorityScope(active.scope)) {
-                          ++overridden;
+                         ++overridden;
                          revokedLeaseIds.push_back(active.leaseId);
                          revokedOperators.push_back(active.operatorId);
+                         m_operatorRevocationRecords[active.leaseId] = Fields{
+                           {"type", "operator-authority-revocation-record"},
+                           {"found", "true"},
+                           {"reason", "ok"},
+                           {"revoked_lease_id", active.leaseId},
+                           {"revoked_operator", active.operatorId},
+                           {"revoked_drone", active.droneId},
+                           {"revoked_scope", active.scope},
+                           {"revoked_ms", std::to_string(nowMs)},
+                           {"revoker_operator", leaseRequest.operatorId},
+                           {"revoker_request_id", leaseRequest.requestId},
+                         };
                          return true;
                        }
                        return active.operatorId == leaseRequest.operatorId &&
@@ -4838,6 +5014,38 @@ private:
           return response;
         }),
       ServiceInvocationMode::NormalOnly);
+
+    m_coreContainer.localRegistry().registerLocalService(
+      m_config.serviceGsOperatorAuthorityRevocation,
+      [this](const ndn::Name&,
+             const ndn::Name&,
+             const ndn_service_framework::RequestMessage& request) {
+        return runOperatorAuthorityRevocationLocal(request);
+      });
+
+    m_objectDetectionProvider->addService(
+      m_config.serviceGsOperatorAuthorityRevocation,
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(
+        [this](const ndn_service_framework::RequestMessage&) {
+          ndn_service_framework::ServiceProvider::AckDecision decision;
+          decision.status = true;
+          decision.message = "operator authority revocation lookup ready";
+          decision.payload = bufferFromString(encodeFields(Fields{
+            {"gs", m_config.groundStationIdentity.toUri()},
+            {"ready", "true"},
+            {"service", m_config.serviceGsOperatorAuthorityRevocation.toUri()},
+          }));
+          return decision;
+        }),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage& request) {
+          ndn_service_framework::ResponseMessage response;
+          m_coreContainer.localRegistry().localInvokeRawInto(
+            m_config.serviceGsOperatorAuthorityRevocation, request, response,
+            m_config.groundStationIdentity);
+          return response;
+        }),
+      ServiceInvocationMode::NormalOnly);
   }
 
   ndn_service_framework::ResponseMessage
@@ -4902,6 +5110,49 @@ private:
                  << " active_lease_count=" << fieldOr(response, "active_lease_count", "0")
                  << " overridden_leases=" << fieldOr(response, "overridden_leases", "0"));
     return makeResponse(true, encodeFields(response));
+  }
+
+  ndn_service_framework::ResponseMessage
+  runOperatorAuthorityRevocationLocal(const ndn_service_framework::RequestMessage& request)
+  {
+    const auto payload = request.getPayload();
+    const auto fields = decodeFields(std::string(
+      reinterpret_cast<const char*>(payload.data()), payload.size()));
+    const auto leaseId = fieldOr(fields, "revoked_lease_id", fieldOr(fields, "lease_id", ""));
+    if (leaseId.empty()) {
+      return makeResponse(true, encodeFields(Fields{
+        {"type", "operator-authority-revocation-response"},
+        {"found", "false"},
+        {"reason", "missing-lease-id"},
+      }), "missing-lease-id");
+    }
+
+    Fields response;
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      const auto it = m_operatorRevocationRecords.find(leaseId);
+      if (it == m_operatorRevocationRecords.end()) {
+        response = Fields{
+          {"type", "operator-authority-revocation-response"},
+          {"found", "false"},
+          {"reason", "not-found"},
+          {"revoked_lease_id", leaseId},
+        };
+      }
+      else {
+        response = it->second;
+        response["type"] = "operator-authority-revocation-response";
+        response["found"] = "true";
+        response["reason"] = "ok";
+      }
+    }
+
+    NDN_LOG_INFO("AUTHORITY_REVOCATION_LOOKUP lease_id=" << leaseId
+                 << " found=" << fieldOr(response, "found", "false")
+                 << " reason=" << fieldOr(response, "reason", "unknown")
+                 << " revoked_operator=" << fieldOr(response, "revoked_operator", "none")
+                 << " revoker_operator=" << fieldOr(response, "revoker_operator", "none"));
+    return makeResponse(true, encodeFields(response), fieldOr(response, "reason", "ok"));
   }
 
   std::vector<uint8_t>
@@ -6610,6 +6861,7 @@ private:
   std::map<std::string, VehicleParameterSnapshot> m_parameterSnapshots;
   OperatorAuthorityLease m_operatorLease;
   std::vector<OperatorAuthorityLease> m_issuedOperatorLeases;
+  std::map<std::string, Fields> m_operatorRevocationRecords;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;

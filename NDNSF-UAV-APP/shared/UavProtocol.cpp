@@ -188,6 +188,9 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   else if (key == "service-gs-operator-authority-lease") {
     config.serviceGsOperatorAuthorityLease = ndn::Name(value);
   }
+  else if (key == "service-gs-operator-authority-revocation") {
+    config.serviceGsOperatorAuthorityRevocation = ndn::Name(value);
+  }
   else if (key == "ground-station-map-lat") {
     try {
       config.groundStationMapLat = std::stod(value);
