@@ -21,6 +21,9 @@ from ndnsf import (
     AckDecision,
     NEGATIVE_ACK_REASON_INTERNAL_ERROR,
     NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
+    ServiceOperationState,
+    ServiceOperationStatus,
+    encode_ack_metadata,
 )
 
 from .repo import NetworkDistributedRepoClient, RepoObjectManifest, repo_manifest_from_large_data_reference
@@ -176,16 +179,36 @@ class ArtifactProvisioningState:
             if status == "failed"
             else ""
         )
-        payload = (
-            f"runtimeStatus={status};component={self.component};"
-            f"runtimeMessage={message};"
+        state = (
+            ServiceOperationState.DONE
+            if status == "ready"
+            else ServiceOperationState.RUNNING
+            if status == "installing"
+            else ServiceOperationState.FAILED
         )
+        fields: dict[str, Any] = {
+            "runtimeStatus": status,
+            "component": self.component,
+            "runtimeMessage": message,
+            "operationStatus": ServiceOperationStatus(
+                operation_id=f"artifact:{self.component}",
+                operation="ARTIFACT_PROVISION",
+                state=state,
+                reason_code=reason,
+                message=message,
+                progress=1.0 if state == ServiceOperationState.DONE else 0.0,
+                metadata={
+                    "component": self.component,
+                    "legacyStatus": status,
+                },
+            ),
+        }
         if reason:
-            payload += f"negativeAckReason={reason};"
+            fields["negativeAckReason"] = reason
         return AckDecision(
             status=status == "ready",
             message=(f"{self.component} ready: {message}" if status == "ready" else reason),
-            payload=payload.encode(),
+            payload=encode_ack_metadata(fields),
         )
 
     def require_ready(self) -> None:

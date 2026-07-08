@@ -16,12 +16,15 @@ from ndnsf import (
     ExecutionArtifact,
     ExecutionArtifactSpec,
     ExecutionContext,
+    GenericProviderRuntimeHint,
     NEGATIVE_ACK_REASON_GPU_BUSY,
     NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
     NEGATIVE_ACK_REASON_PROVIDER_BUSY,
     NEGATIVE_ACK_REASON_QUEUE_FULL,
+    ProviderCapabilityHint,
     ServiceProvider,
     ServiceResponse,
+    to_plain,
 )
 
 from .plan import RoleDependencyView
@@ -591,9 +594,37 @@ class DistributedInferenceProvider:
                     else RuntimeTelemetryV1.from_dict(dict(telemetry_value))
                 )
                 fields.update(telemetry.to_ack_fields())
+            provider_name = getattr(self.provider, "provider", "") or str(fields.get("provider", ""))
+            runtime_hint = GenericProviderRuntimeHint(
+                provider_name=str(provider_name or "unknown-provider"),
+                active_work_count=telemetry.active_workers if telemetry is not None else 0,
+                queue_length=telemetry.aggregate_queue if telemetry is not None else queue_depth,
+                estimated_queue_wait_ms=telemetry.queue_wait_ewma_ms if telemetry is not None else 0.0,
+                capacity_hints={
+                    "roles": role_list,
+                    "backends": backend_list,
+                    "hasModel": has_model,
+                    "canProvision": can_provision,
+                    **({
+                        "freeMemoryMb": telemetry.free_memory_mb,
+                        "runtimeBackend": telemetry.runtime_backend,
+                        "modelLoaded": telemetry.model_loaded,
+                    } if telemetry is not None else {}),
+                },
+            )
             if not (can_provision or has_model):
                 fields["negativeAckReason"] = NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE
                 fields["status"] = "model-unavailable"
+                fields.update(ProviderCapabilityHint(
+                    provider_name=runtime_hint.provider_name,
+                    service_name=service,
+                    ready=False,
+                    reason_code=NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
+                    message="model unavailable",
+                    runtime_hint=runtime_hint,
+                    service_payload_schema="ndnsf-di-capability-v1",
+                    service_payload={key: to_plain(value) for key, value in fields.items()},
+                ).to_ack_fields())
                 return AckDecision(
                     status=False,
                     message=NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
@@ -605,11 +636,30 @@ class DistributedInferenceProvider:
                 if not accepted:
                     fields["negativeAckReason"] = reason
                     fields["status"] = "admission-rejected"
+                    fields.update(ProviderCapabilityHint(
+                        provider_name=runtime_hint.provider_name,
+                        service_name=service,
+                        ready=False,
+                        reason_code=reason,
+                        message="admission rejected",
+                        runtime_hint=runtime_hint,
+                        service_payload_schema="ndnsf-di-capability-v1",
+                        service_payload={key: to_plain(value) for key, value in fields.items()},
+                    ).to_ack_fields())
                     return AckDecision(
                         status=False,
                         message=reason,
                         payload=encode_ack_metadata(fields) + readiness_payload,
                     )
+            fields.update(ProviderCapabilityHint(
+                provider_name=runtime_hint.provider_name,
+                service_name=service,
+                ready=True,
+                message="inference capability ready",
+                runtime_hint=runtime_hint,
+                service_payload_schema="ndnsf-di-capability-v1",
+                service_payload={key: to_plain(value) for key, value in fields.items()},
+            ).to_ack_fields())
             return AckDecision(
                 status=True,
                 message="inference capability ready",

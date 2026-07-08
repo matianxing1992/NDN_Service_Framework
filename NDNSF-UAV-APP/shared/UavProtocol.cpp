@@ -1296,6 +1296,66 @@ VideoAdaptiveState::maxPressure() const
                    lossPressure, backlogPressure, frameGapPressure});
 }
 
+ndn_service_framework::StreamHealth
+VideoAdaptiveState::toStreamHealth(uint64_t streamSessionEpoch,
+                                   const ndn::Name& streamPrefix,
+                                   uint64_t staleAfterMs,
+                                   uint64_t nowMs) const
+{
+  ndn_service_framework::StreamInfo info;
+  info.streamId = droneId + "-video";
+  info.sessionEpoch = streamSessionEpoch;
+  info.streamPrefix = streamPrefix;
+  info.nextSeq = receivedChunks + pendingChunks;
+  info.contentType = "video/h264";
+  info.window = window;
+  info.lookahead = lookahead;
+  info.interestLifetimeMs = interestLifetimeMs;
+  info.missingTimeoutMs = missingTimeoutMs;
+  info.metadata = {
+    {"drone_id", droneId},
+    {"adaptive_state", state},
+    {"bitrate_action", bitrateAction},
+    {"primary_pressure", primaryPressure},
+    {"policy_reason", policyReason},
+  };
+
+  ndn_service_framework::StreamMetrics metrics;
+  metrics.received = receivedChunks;
+  metrics.timeouts = timeouts;
+  metrics.nacks = nacks;
+  metrics.duplicates = duplicates;
+  metrics.gaps = decodedFrameGap;
+
+  ndn_service_framework::StreamFetchDecision decision;
+  decision.window = window;
+  decision.lookahead = lookahead;
+  decision.interestLifetimeMs = interestLifetimeMs;
+  decision.missingTimeoutMs = missingTimeoutMs;
+  decision.pressure = static_cast<double>(maxPressure()) / 100.0;
+  decision.reason = (
+    backlogPressure >= 80 || timeoutPressure >= 80 || probePressure >= 80
+  ) ? "congested" : policyReason;
+
+  auto health = ndn_service_framework::StreamHealth::fromStream(
+    info,
+    metrics,
+    decision,
+    info.nextSeq,
+    updatedMs,
+    state == "stopped" || state == "idle",
+    staleAfterMs,
+    nowMs);
+  health.metadata = {
+    {"requested_bitrate_kbps", std::to_string(requestedBitrateKbps)},
+    {"accepted_bitrate_kbps", std::to_string(acceptedBitrateKbps)},
+    {"suggested_bitrate_kbps", std::to_string(suggestedBitrateKbps)},
+    {"primary_pressure", primaryPressure},
+    {"policy_reason", policyReason},
+  };
+  return health;
+}
+
 std::string
 VideoAdaptiveState::compactSummary() const
 {

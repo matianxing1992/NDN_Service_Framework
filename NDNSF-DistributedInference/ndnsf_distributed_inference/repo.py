@@ -25,17 +25,25 @@ from ndnsf import (
     AckCandidate,
     AckDecision,
     DataPacket,
+    DataProductReference,
+    GenericProviderRuntimeHint,
+    ProviderCapabilityHint,
     SegmentedObjectProducer,
     ServiceProvider,
+    ServiceOperationState,
+    ServiceOperationStatus,
     ServiceResponse,
     ServiceUser,
     SegmentHintRange,
     StoredDataProducer,
+    encode_ack_metadata,
     fetch_segmented_data_packets,
     fetch_segmented_object,
     fetch_segmented_object_with_segment_hints,
     fetch_known_segmented_object_with_segment_hints,
     make_segmented_data_packets,
+    parse_ack_metadata,
+    to_plain,
 )
 
 
@@ -1945,22 +1953,99 @@ class RepoNodeApp:
         except Exception:
             return AckDecision(False, "repo-bad-request")
         capability = self._capability()
-        ack_payload = (
-            f"repoNode={capability.repo_node};"
-            f"freeBytes={capability.free_bytes};"
-            f"usedBytes={capability.used_bytes};"
-            f"load={capability.recent_load};"
-            f"availability={capability.availability_score};"
-            f"failureDomain={capability.failure_domain};"
-            f"repoMode={capability.repo_mode};"
-            f"acceptsBackupReplica={1 if capability.accepts_backup_replica else 0};"
-            f"memoryCacheBytes={self.memory_cache_bytes};"
-            f"memoryCacheUsedBytes={self._cache_bytes};"
-            f"storageBackend={'sqlite' if self._db is not None else 'memory'};"
-            f"hasManifest={1 if has_manifest else 0};"
-            f"hasObject={1 if has_object else 0};"
-        ).encode()
+        legacy_fields: dict[str, object] = {
+            "repoNode": capability.repo_node,
+            "freeBytes": capability.free_bytes,
+            "usedBytes": capability.used_bytes,
+            "load": capability.recent_load,
+            "availability": capability.availability_score,
+            "failureDomain": capability.failure_domain,
+            "repoMode": capability.repo_mode,
+            "acceptsBackupReplica": 1 if capability.accepts_backup_replica else 0,
+            "memoryCacheBytes": self.memory_cache_bytes,
+            "memoryCacheUsedBytes": self._cache_bytes,
+            "storageBackend": "sqlite" if self._db is not None else "memory",
+            "hasManifest": 1 if has_manifest else 0,
+            "hasObject": 1 if has_object else 0,
+        }
+        capability_hint = ProviderCapabilityHint(
+            provider_name=capability.repo_node,
+            service_name=self.service_name,
+            ready=True,
+            message="repo-ready",
+            runtime_hint=GenericProviderRuntimeHint(
+                provider_name=capability.repo_node,
+                queue_length=0,
+                capacity_hints={
+                    "freeBytes": capability.free_bytes,
+                    "usedBytes": capability.used_bytes,
+                    "repoMode": capability.repo_mode,
+                    "storageClasses": list(capability.storage_classes),
+                },
+                confidence=capability.availability_score,
+            ),
+            service_payload_schema="ndnsf-repo-capability-v1",
+            service_payload={
+                **legacy_fields,
+                "storageClasses": list(capability.storage_classes),
+            },
+        )
+        flat_legacy_fields = {
+            key: value for key, value in legacy_fields.items()
+            if not (isinstance(value, str) and value == "")
+        }
+        ack_payload = encode_ack_metadata({
+            **flat_legacy_fields,
+            **capability_hint.to_ack_fields(),
+        })
         return AckDecision(status=True, message="repo-ready", payload=ack_payload)
+
+    def _operation_status_payload(self,
+                                  operation: str,
+                                  status: str,
+                                  *,
+                                  object_name: str = "",
+                                  manifest: RepoObjectManifest | None = None,
+                                  message: str = "") -> dict[str, object]:
+        state = (
+            ServiceOperationState.DONE
+            if status not in {"failed", "error", "skipped"}
+            else ServiceOperationState.CANCELED
+            if status == "skipped"
+            else ServiceOperationState.FAILED
+        )
+        operation_status = ServiceOperationStatus(
+            operation_id=f"{operation}:{object_name or (manifest.object_name if manifest else self.repo_node)}",
+            operation=operation,
+            service_name=self.service_name,
+            provider_name=self.repo_node,
+            state=state,
+            message=message or status,
+            progress=1.0 if state == ServiceOperationState.DONE else 0.0,
+            result_reference=(
+                {"objectName": object_name or manifest.object_name}
+                if object_name or manifest is not None else {}
+            ),
+            metadata={"legacyStatus": status},
+        )
+        payload: dict[str, object] = {"operationStatus": to_plain(operation_status)}
+        if manifest is not None and state == ServiceOperationState.DONE:
+            payload["dataProductReference"] = to_plain(DataProductReference(
+                object_name=manifest.object_name,
+                object_class=manifest.object_class or manifest.object_type,
+                content_type="application/vnd.ndn.data",
+                producer_name=self.repo_node,
+                repo_manifest=manifest.to_dict(),
+                size_bytes=manifest.size,
+                digest=manifest.sha256,
+                ttl_ms=manifest.ttl_ms,
+                metadata={
+                    "repoNode": self.repo_node,
+                    "segmentCount": manifest.segment_count,
+                    "replicationFactor": manifest.replication_factor,
+                },
+            ))
+        return payload
 
     def _handle(self, payload: bytes) -> ServiceResponse:
         try:
@@ -1982,6 +2067,31 @@ class RepoNodeApp:
                     "capacityBytes": self.capacity_bytes,
                     "memoryCacheBytes": self.memory_cache_bytes,
                     "memoryCacheUsedBytes": self._cache_bytes,
+                    "providerCapabilityHint": to_plain(ProviderCapabilityHint(
+                        provider_name=capability.repo_node,
+                        service_name=self.service_name,
+                        runtime_hint=GenericProviderRuntimeHint(
+                            provider_name=capability.repo_node,
+                            capacity_hints={
+                                "freeBytes": capability.free_bytes,
+                                "usedBytes": capability.used_bytes,
+                                "repoMode": capability.repo_mode,
+                            },
+                            confidence=capability.availability_score,
+                        ),
+                        service_payload_schema="ndnsf-repo-capability-v1",
+                        service_payload={
+                            "repoNode": capability.repo_node,
+                            "freeBytes": capability.free_bytes,
+                            "usedBytes": capability.used_bytes,
+                            "recentLoad": capability.recent_load,
+                            "availabilityScore": capability.availability_score,
+                            "failureDomain": capability.failure_domain,
+                            "repoMode": capability.repo_mode,
+                            "acceptsBackupReplica": capability.accepts_backup_replica,
+                            "storageClasses": list(capability.storage_classes),
+                        },
+                    )),
                 }, sort_keys=True).encode())
             if operation == "STORE":
                 manifest = RepoObjectManifest.from_dict(request["manifest"])
@@ -1991,6 +2101,12 @@ class RepoNodeApp:
                         "status": "skipped",
                         "repoNode": self.repo_node,
                         "objectName": manifest.object_name,
+                        **self._operation_status_payload(
+                            operation,
+                            "skipped",
+                            object_name=manifest.object_name,
+                            message="repo was not selected for this object",
+                        ),
                     }, sort_keys=True).encode())
                 if "payloadB64" in request:
                     object_payload = base64.b64decode(str(request["payloadB64"]))
@@ -2012,6 +2128,7 @@ class RepoNodeApp:
                     "status": "stored",
                     "repoNode": self.repo_node,
                     "manifest": manifest.to_dict(),
+                    **self._operation_status_payload(operation, "stored", manifest=manifest),
                 }, sort_keys=True).encode())
             if operation == "INSERT":
                 manifest = RepoObjectManifest.from_dict(request["manifest"])
@@ -2021,6 +2138,12 @@ class RepoNodeApp:
                         "status": "skipped",
                         "repoNode": self.repo_node,
                         "objectName": manifest.object_name,
+                        **self._operation_status_payload(
+                            operation,
+                            "skipped",
+                            object_name=manifest.object_name,
+                            message="repo was not selected for this object",
+                        ),
                     }, sort_keys=True).encode())
                 object_payload = self._catch_chunks(str(request["sourceName"]))
                 if len(object_payload) != manifest.size:
@@ -2043,6 +2166,7 @@ class RepoNodeApp:
                     "status": "inserted",
                     "repoNode": self.repo_node,
                     "manifest": manifest.to_dict(),
+                    **self._operation_status_payload(operation, "inserted", manifest=manifest),
                 }, sort_keys=True).encode())
             if operation == "STORE_PACKETS":
                 manifest = RepoObjectManifest.from_dict(request["manifest"])
@@ -2052,6 +2176,12 @@ class RepoNodeApp:
                         "status": "skipped",
                         "repoNode": self.repo_node,
                         "objectName": manifest.object_name,
+                        **self._operation_status_payload(
+                            operation,
+                            "skipped",
+                            object_name=manifest.object_name,
+                            message="repo was not selected for this object",
+                        ),
                     }, sort_keys=True).encode())
                 packets = [
                     self._decode_packet_object(packet, operation)
@@ -2088,6 +2218,7 @@ class RepoNodeApp:
                     "repoNode": self.repo_node,
                     "manifest": stored_manifest.to_dict(),
                     "dataName": serve_name,
+                    **self._operation_status_payload(operation, "stored-packets", manifest=stored_manifest),
                 }, sort_keys=True).encode())
             if operation in {"STORE_PACKET", "STORE_PACKET_BATCH"}:
                 manifest = RepoObjectManifest.from_dict(request["manifest"])
@@ -2576,13 +2707,24 @@ class NetworkDistributedRepoClient:
         return json.loads(response.payload.decode())
 
     @staticmethod
-    def _parse_ack_payload(payload: bytes) -> dict[str, str]:
-        fields: dict[str, str] = {}
-        for item in payload.decode(errors="replace").split(";"):
-            if not item or "=" not in item:
-                continue
-            key, value = item.split("=", 1)
-            fields[key] = value
+    def _parse_ack_payload(payload: bytes) -> dict[str, object]:
+        fields: dict[str, object] = parse_ack_metadata(payload)
+        capability_payload = fields.get("providerCapabilityHint")
+        if isinstance(capability_payload, dict):
+            try:
+                capability_hint = ProviderCapabilityHint.from_dict(capability_payload)
+                for key, value in capability_hint.service_payload.items():
+                    fields[key] = value
+                if capability_hint.runtime_hint is not None:
+                    fields["repoNode"] = capability_hint.provider_name
+            except Exception:
+                pass
+        if not fields:
+            for item in payload.decode(errors="replace").split(";"):
+                if not item or "=" not in item:
+                    continue
+                key, value = item.split("=", 1)
+                fields[key] = value
         return fields
 
     @staticmethod

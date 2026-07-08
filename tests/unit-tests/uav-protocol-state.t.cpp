@@ -494,6 +494,17 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frame_gap=45"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("frame_gap_pressure=35"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frames=45"), std::string::npos);
+
+  const auto health = decoded.toStreamHealth(
+    7, ndn::Name("/uav/A/video"), 3000, 123999);
+  BOOST_CHECK_EQUAL(health.streamId, "A-video");
+  BOOST_CHECK_EQUAL(health.sessionEpoch, 7);
+  BOOST_CHECK_EQUAL(health.nextSeq, decoded.receivedChunks + decoded.pendingChunks);
+  BOOST_CHECK_EQUAL(ndn_service_framework::toString(health.state), "DEGRADED");
+  BOOST_CHECK_EQUAL(health.metrics.timeouts, 2);
+  BOOST_CHECK_EQUAL(health.metrics.nacks, 1);
+  BOOST_CHECK_EQUAL(health.fetchDecision.window, 64);
+  BOOST_CHECK_EQUAL(health.metadata.at("primary_pressure"), "timeout");
 }
 
 BOOST_AUTO_TEST_CASE(VideoControlStateDerivesStartStopActions)

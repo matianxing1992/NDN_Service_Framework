@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Callable, Iterable, Optional
 
-from ndnsf import AckCandidate, ServiceUser
+from ndnsf import AckCandidate, ProviderCapabilityHint, ServiceUser, parse_ack_metadata
 
 from ._py_repoclient import (
     PlacementPolicy,
@@ -32,12 +32,22 @@ def manifest_to_dict(manifest: RepoObjectManifest) -> dict:
 
 
 def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
-    fields: dict[str, str] = {}
-    for item in bytes(candidate.payload).decode(errors="replace").split(";"):
-        if "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        fields[key.strip()] = value.strip()
+    fields: dict[str, object] = parse_ack_metadata(bytes(candidate.payload))
+    capability_payload = fields.get("providerCapabilityHint")
+    if isinstance(capability_payload, dict):
+        try:
+            hint = ProviderCapabilityHint.from_dict(capability_payload)
+            for key, value in hint.service_payload.items():
+                fields[key] = value
+            fields["repoNode"] = hint.provider_name
+        except Exception:
+            pass
+    if not fields:
+        for item in bytes(candidate.payload).decode(errors="replace").split(";"):
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            fields[key.strip()] = value.strip()
     repo_node = fields.get("repoNode") or candidate.provider_name
     try:
         capability = StorageCapability()
@@ -53,10 +63,12 @@ def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
         capability.accepts_backup_replica = _parse_bool(
             fields.get("acceptsBackupReplica", "true"))
         storage_classes = fields.get("storageClasses", "")
-        if storage_classes:
+        if isinstance(storage_classes, str) and storage_classes:
             capability.storage_classes = [
                 value for value in storage_classes.split(",") if value
             ]
+        elif isinstance(storage_classes, (list, tuple)):
+            capability.storage_classes = [str(value) for value in storage_classes]
         return capability
     except ValueError:
         return None

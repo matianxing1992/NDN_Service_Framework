@@ -26,6 +26,7 @@ from ndnsf_distributed_inference.runtime_v1 import (
     residency_ready_cost_ms,
     score_runtime_candidate,
 )
+from ndnsf import ProviderCapabilityHint
 
 
 def fragment(stage_index: int = 0, digest: str = "sha256:stage0") -> ModelFragmentKey:
@@ -145,6 +146,40 @@ class RuntimeAwarePlannerTest(unittest.TestCase):
         self.assertEqual(missing["reason"], "RUNTIME_METADATA_REQUIRED")
         self.assertTrue(fallback["valid"])
         self.assertEqual(fallback["reason"], "CONSERVATIVE_FALLBACK")
+
+    def test_provider_capability_hint_is_consumed_as_runtime_metadata(self) -> None:
+        key = fragment()
+        role = PlanRole("/Stage/0", key)
+        hint = ProviderCapabilityHint(
+            provider_name="/provider/core",
+            service_name="/Inference/NativeTracer",
+            runtime_hint=GenericProviderRuntimeHint(
+                provider_name="/provider/core",
+                queue_length=1,
+                estimated_queue_wait_ms=7,
+            ),
+            service_payload_schema="ndnsf-di-runtime-ack-v1",
+            service_payload={
+                "fragmentStates": [
+                    {
+                        "fragmentKey": key,
+                        "residency": "GPU_LOADED",
+                        "estimatedReadyMs": 0,
+                    }
+                ],
+                "estimatedComputeMs": 3,
+            },
+        )
+
+        score = score_runtime_candidate(
+            role,
+            {"providerName": "/provider/core", "providerCapabilityHint": hint},
+            runtime_required=True,
+        )
+
+        self.assertTrue(score["valid"])
+        self.assertEqual(score["provider"], "/provider/core")
+        self.assertEqual(score["residency"], "GPU_LOADED")
 
     def test_network_matrix_penalizes_unknown_and_stale_edges(self) -> None:
         matrix = ProviderNetworkMatrix.from_dict({
