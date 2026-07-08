@@ -18,7 +18,8 @@ public:
                       bool autoRepeatStopTest,
                       std::vector<std::string> droneIds,
                       double groundStationMapLat,
-                      double groundStationMapLon)
+                      double groundStationMapLon,
+                      uint64_t operatorAuthorityRefreshIntervalMs)
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_patrolControls(Gtk::ORIENTATION_HORIZONTAL, 6)
@@ -51,6 +52,7 @@ public:
     , m_refreshRecording("Find Rec.")
     , m_browseRepo("Browse Repo")
     , m_fetchParameters("Fetch Params")
+    , m_refreshAuthority("Refresh Lease")
     , m_playRecording("Play Rec.")
     , m_mapZoomIn("+")
     , m_mapZoomOut("-")
@@ -100,6 +102,7 @@ public:
     , m_autoApplyBitrateTest(autoApplyBitrateTest)
     , m_autoVideoPressureProfileTest(autoVideoPressureProfileTest)
     , m_autoRepeatStopTest(autoRepeatStopTest)
+    , m_operatorAuthorityRefreshIntervalMs(operatorAuthorityRefreshIntervalMs)
     , m_droneIds(std::move(droneIds))
   {
     set_title("NDNSF UAV Ground Station");
@@ -131,7 +134,8 @@ public:
     for (auto* button : {&m_start, &m_stop, &m_applyBitrate, &m_arm, &m_takeoff,
                          &m_land, &m_emergencyStop, &m_patrol, &m_startMission,
                          &m_stopPatrol, &m_controlToggle, &m_refreshRecording,
-                         &m_browseRepo, &m_fetchParameters, &m_playRecording}) {
+                         &m_browseRepo, &m_fetchParameters, &m_refreshAuthority,
+                         &m_playRecording}) {
       button->set_size_request(104, -1);
       button->set_hexpand(false);
       button->set_halign(Gtk::ALIGN_START);
@@ -585,6 +589,9 @@ public:
     });
     m_fetchParameters.signal_clicked().connect([this] {
       m_runtime.requestVehicleParameters();
+    });
+    m_refreshAuthority.signal_clicked().connect([this] {
+      triggerAuthorityLeaseRefresh("button");
     });
     m_playRecording.signal_clicked().connect([this] {
       beginLocalStreamView();
@@ -2234,6 +2241,9 @@ private:
     appendInspectorRow(authorityText, "Lease id", authorityLease.leaseId);
     appendInspectorRow(authorityText, "Expires", authorityLease.expiresMs == 0 ?
                        "never" : std::to_string(authorityLease.expiresMs));
+    appendInspectorRow(authorityText, "Revoked", authorityLease.revoked ? "true" : "false");
+    appendInspectorRow(authorityText, "Refresh", m_operatorAuthorityRefreshIntervalMs == 0 ?
+                       "manual" : std::to_string(m_operatorAuthorityRefreshIntervalMs) + " ms");
     appendInspectorRow(authorityText, "Selected control",
                        std::string(selectedControlAllowed ? "allowed" : "blocked") +
                        " (" + selectedControlReason + ")");
@@ -2706,6 +2716,39 @@ private:
     m_emergencyStop.set_tooltip_text(state.emergencyStopAvailable ?
                                      "Send emergency stop to Drone " + state.selectedDrone :
                                      "Select a drone before emergency stop");
+    m_refreshAuthority.set_sensitive(!m_authorityRefreshInFlight.load());
+    m_refreshAuthority.set_tooltip_text(
+      m_authorityRefreshInFlight.load() ? "Operator authority refresh is already running" :
+      "Query the authority issuer for revocation status of the active lease");
+  }
+
+  void
+  triggerAuthorityLeaseRefresh(const std::string& source)
+  {
+    bool expected = false;
+    if (!m_authorityRefreshInFlight.compare_exchange_strong(expected, true)) {
+      m_status.set_text("Operator authority refresh already in progress");
+      return;
+    }
+    m_refreshAuthority.set_sensitive(false);
+    m_status.set_text("Refreshing operator authority lease...");
+    std::thread([this, source] {
+      std::string reason;
+      Fields fields;
+      const bool revoked = m_runtime.refreshOperatorAuthorityLeaseFromIssuer(
+        m_runtime.config().groundStationIdentity, std::chrono::seconds(5), reason, &fields);
+      Glib::signal_idle().connect_once([this, source, revoked, reason, fields] {
+        m_authorityRefreshInFlight = false;
+        m_status.set_text(std::string("Authority refresh ") + source +
+                          ": " + (revoked ? "lease revoked" : "not revoked") +
+                          " (" + reason + ")");
+        NDN_LOG_INFO("AUTHORITY_GUI_REFRESH source=" << source
+                     << " revoked=" << (revoked ? "true" : "false")
+                     << " reason=" << reason
+                     << " revoker_operator=" << fieldOr(fields, "revoker_operator", "none"));
+        updateVehicleRows();
+      });
+    }).detach();
   }
 
   static std::string
@@ -4023,6 +4066,7 @@ private:
   Gtk::Button m_refreshRecording;
   Gtk::Button m_browseRepo;
   Gtk::Button m_fetchParameters;
+  Gtk::Button m_refreshAuthority;
   Gtk::Button m_playRecording;
   Gtk::Button m_mapZoomIn;
   Gtk::Button m_mapZoomOut;
@@ -4137,6 +4181,7 @@ private:
   bool m_autoApplyBitrateTest = false;
   bool m_autoVideoPressureProfileTest = false;
   bool m_autoRepeatStopTest = false;
+  uint64_t m_operatorAuthorityRefreshIntervalMs = 0;
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;
   uint64_t m_pendingSeq = 0;
   uint64_t m_pendingElapsedMs = 0;
@@ -4157,6 +4202,7 @@ private:
   std::atomic<bool> m_patrolUploadInFlight{false};
   std::atomic<bool> m_missionStartInFlight{false};
   std::atomic<bool> m_patrolStopInFlight{false};
+  std::atomic<bool> m_authorityRefreshInFlight{false};
   std::atomic<bool> m_useGamepad{false};
   std::atomic<bool> m_manualActive{false};
   std::atomic<int> m_manualX{0};

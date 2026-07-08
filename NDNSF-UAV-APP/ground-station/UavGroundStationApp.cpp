@@ -395,6 +395,7 @@ main(int argc, char** argv)
     const bool autoAuthorityPersistenceTest = getConfigBool(argc, argv, appConfig, "--auto-authority-persistence-test", "auto-authority-persistence-test", false);
     const bool autoAuthorityRevocationTest = getConfigBool(argc, argv, appConfig, "--auto-authority-revocation-test", "auto-authority-revocation-test", false);
     const bool autoAuthorityRefreshTest = getConfigBool(argc, argv, appConfig, "--auto-authority-refresh-test", "auto-authority-refresh-test", false);
+    const bool autoAuthorityRefreshTimerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-refresh-timer-test", "auto-authority-refresh-timer-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -491,6 +492,10 @@ main(int argc, char** argv)
       "operator-authority-state-file", "");
     const std::string operatorAdminIds = getConfigOption(
       argc, argv, appConfig, "--operator-admin-ids", "operator-admin-ids", "");
+    const auto operatorAuthorityRefreshIntervalMs = static_cast<uint64_t>(
+      std::stoull(getConfigOption(argc, argv, appConfig,
+                                  "--operator-authority-refresh-interval-ms",
+                                  "operator-authority-refresh-interval-ms", "0")));
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 
     if (objectDetectionMode) {
@@ -519,6 +524,7 @@ main(int argc, char** argv)
                                   autoAuthorityPersistenceTest ||
                                   autoAuthorityRevocationTest ||
                                   autoAuthorityRefreshTest ||
+                                  autoAuthorityRefreshTimerTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -533,7 +539,7 @@ main(int argc, char** argv)
       yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction,
       videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile,
       operatorId, operatorLeaseDrone, operatorLeaseScope, operatorLeaseTtlMs,
-      operatorAuthorityStateFile, operatorAdminIds);
+      operatorAuthorityStateFile, operatorAdminIds, operatorAuthorityRefreshIntervalMs);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
@@ -600,6 +606,11 @@ main(int argc, char** argv)
       std::cout << "GS_AUTHORITY_REFRESH_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoAuthorityRefreshTimerTest) {
+      const bool ok = runtime->runAuthorityLeaseRefreshTimerTest(std::chrono::seconds(10));
+      std::cout << "GS_AUTHORITY_REFRESH_TIMER_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
     if (autoTelemetryTest) {
       const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45),
                                                     !autoTelemetryAllowMockFields);
@@ -624,7 +635,8 @@ main(int argc, char** argv)
                                autoRepeatStopTest,
                                patrolDroneIds,
                                config.groundStationMapLat,
-                               config.groundStationMapLon);
+                               config.groundStationMapLon,
+                               operatorAuthorityRefreshIntervalMs);
     NDN_LOG_INFO("UavGroundStationApp GUI ready");
     std::cout << "GS_GUI_READY target_drone=" << targetDroneId
               << " auto_video_test=" << (autoStart ? "true" : "false")
@@ -647,6 +659,8 @@ main(int argc, char** argv)
               << " auto_authority_persistence_test=" << (autoAuthorityPersistenceTest ? "true" : "false")
               << " auto_authority_revocation_test=" << (autoAuthorityRevocationTest ? "true" : "false")
               << " auto_authority_refresh_test=" << (autoAuthorityRefreshTest ? "true" : "false")
+              << " auto_authority_refresh_timer_test=" << (autoAuthorityRefreshTimerTest ? "true" : "false")
+              << " operator_authority_refresh_interval_ms=" << operatorAuthorityRefreshIntervalMs
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
               << " video_bitrate_policy=" << videoBitratePolicy

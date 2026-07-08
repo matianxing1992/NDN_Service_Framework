@@ -23,7 +23,8 @@ public:
                        std::string operatorLeaseScope = "control",
                        uint64_t operatorLeaseTtlMs = 0,
                        std::string operatorAuthorityStateFile = "",
-                       std::string operatorAdminIds = "")
+                       std::string operatorAdminIds = "",
+                       uint64_t operatorAuthorityRefreshIntervalMs = 0)
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_coreContainer({
@@ -54,6 +55,7 @@ public:
     , m_defaultOperatorLeaseTtlMs(operatorLeaseTtlMs)
     , m_operatorAuthorityStateFile(std::move(operatorAuthorityStateFile))
     , m_operatorAdminIds(parseOperatorIdList(operatorAdminIds))
+    , m_operatorAuthorityRefreshIntervalMs(operatorAuthorityRefreshIntervalMs)
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
@@ -105,6 +107,9 @@ public:
     if (m_recordingPlaybackDecodeThread.joinable()) {
       m_recordingPlaybackDecodeThread.join();
     }
+    if (m_operatorAuthorityRefreshThread.joinable()) {
+      m_operatorAuthorityRefreshThread.join();
+    }
     m_face.getIoContext().stop();
     if (m_faceThread.joinable()) {
       m_faceThread.join();
@@ -133,6 +138,7 @@ public:
         m_coreContainer.start();
         m_containerReady = true;
         publishStatus("NDNSF runtime ready");
+        startOperatorAuthorityRefreshThread();
         m_yoloPrewarmThread = std::thread([this] {
           std::lock_guard<std::mutex> guard(m_yoloMutex);
           startYoloWorkerLocked();
@@ -178,6 +184,12 @@ public:
     return m_coreContainer.localRegistry();
   }
 
+  const UavRuntimeConfig&
+  config() const
+  {
+    return m_config;
+  }
+
   void
   setOperatorAuthorityLease(OperatorAuthorityLease lease)
   {
@@ -203,6 +215,18 @@ public:
                                           std::string& reason,
                                           Fields* revocationFields = nullptr)
   {
+    bool expected = false;
+    if (!m_operatorAuthorityRefreshInFlight.compare_exchange_strong(expected, true)) {
+      reason = "refresh-in-flight";
+      NDN_LOG_INFO("AUTHORITY_LEASE_REFRESH revoked=false reason=" << reason);
+      return false;
+    }
+    struct RefreshGuard
+    {
+      std::atomic<bool>& flag;
+      ~RefreshGuard() { flag = false; }
+    } guard{m_operatorAuthorityRefreshInFlight};
+
     const auto current = operatorAuthorityLease();
     if (current.leaseId.empty() || current.leaseId == "none") {
       reason = "no-active-lease";
@@ -228,6 +252,12 @@ public:
                  << " operator=" << current.operatorId
                  << " revoker_operator=" << fieldOr(fields, "revoker_operator", "none"));
     return revoked;
+  }
+
+  uint64_t
+  operatorAuthorityRefreshIntervalMs() const
+  {
+    return m_operatorAuthorityRefreshIntervalMs;
   }
 
   void
@@ -2419,6 +2449,89 @@ public:
   }
 
   bool
+  runAuthorityLeaseRefreshTimerTest(std::chrono::seconds timeout)
+  {
+    if (m_operatorAuthorityRefreshIntervalMs == 0) {
+      NDN_LOG_INFO("AUTHORITY_REFRESH_TIMER_RESULT ok=false reason=timer-disabled");
+      return false;
+    }
+    if (m_operatorAuthorityStateFile.empty()) {
+      NDN_LOG_INFO("AUTHORITY_REFRESH_TIMER_RESULT ok=false reason=missing-state-file");
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      m_issuedOperatorLeases.clear();
+      m_operatorRevocationRecords.clear();
+      persistIssuedOperatorLeasesLocked();
+    }
+
+    OperatorAuthorityLeaseRequest first;
+    first.requestId = "refresh-timer-first-" + std::to_string(nowMilliseconds());
+    first.operatorId = "/example/uav/operator/one";
+    first.droneId = targetDroneId();
+    first.scope = "control";
+    first.ttlMs = 60000;
+    first.requestedMs = nowMilliseconds();
+
+    OperatorAuthorityLease firstLease;
+    std::string firstReason;
+    const bool firstAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, first, timeout, firstLease, firstReason);
+    if (firstAccepted) {
+      setOperatorAuthorityLease(firstLease);
+    }
+
+    auto admin = first;
+    admin.requestId = "refresh-timer-admin-" + std::to_string(nowMilliseconds());
+    admin.operatorId = "/example/uav/operator/two";
+    admin.scope = "admin";
+    OperatorAuthorityLease adminLease;
+    std::string adminReason;
+    Fields adminFields;
+    const bool adminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, admin, timeout, adminLease, adminReason, &adminFields);
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::string afterReason = "not-checked";
+    bool afterAllowed = true;
+    bool timerRevoked = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto lease = operatorAuthorityLease();
+      std::string currentReason;
+      const bool currentAllowed = validateOperatorLease(targetDroneId(), "mission_assign",
+                                                        currentReason);
+      if (lease.revoked && !currentAllowed && currentReason == "lease-revoked") {
+        timerRevoked = true;
+        afterAllowed = currentAllowed;
+        afterReason = currentReason;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!timerRevoked) {
+      afterAllowed = validateOperatorLease(targetDroneId(), "mission_assign", afterReason);
+    }
+    const auto refreshedLease = operatorAuthorityLease();
+    const auto revokedIds = fieldOr(adminFields, "revoked_lease_ids", "");
+    const bool ok = firstAccepted && firstReason == "ok" &&
+                    adminAccepted && adminReason == "ok" &&
+                    revokedIds.find(firstLease.leaseId) != std::string::npos &&
+                    timerRevoked && refreshedLease.revoked &&
+                    !afterAllowed && afterReason == "lease-revoked";
+    NDN_LOG_INFO("AUTHORITY_REFRESH_TIMER_RESULT ok=" << (ok ? "true" : "false")
+                 << " first=" << (firstAccepted ? "accepted" : firstReason)
+                 << " admin=" << (adminAccepted ? "accepted" : adminReason)
+                 << " interval_ms=" << m_operatorAuthorityRefreshIntervalMs
+                 << " timer_revoked=" << (timerRevoked ? "true" : "false")
+                 << " refreshed_revoked=" << (refreshedLease.revoked ? "true" : "false")
+                 << " after_allowed=" << (afterAllowed ? "true" : "false")
+                 << " after_reason=" << afterReason
+                 << " revoked_lease_ids=" << revokedIds);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -3875,6 +3988,41 @@ private:
     details["active_lease_count"] = std::to_string(m_issuedOperatorLeases.size());
     persistIssuedOperatorLeasesLocked();
     return true;
+  }
+
+  void
+  startOperatorAuthorityRefreshThread()
+  {
+    if (m_operatorAuthorityRefreshIntervalMs == 0 ||
+        m_operatorAuthorityRefreshThread.joinable()) {
+      NDN_LOG_INFO("AUTHORITY_REFRESH_TIMER state="
+                   << (m_operatorAuthorityRefreshIntervalMs == 0 ? "disabled" : "already-running")
+                   << " interval_ms=" << m_operatorAuthorityRefreshIntervalMs);
+      return;
+    }
+    m_operatorAuthorityRefreshThread = std::thread([this] {
+      NDN_LOG_INFO("AUTHORITY_REFRESH_TIMER state=started interval_ms="
+                   << m_operatorAuthorityRefreshIntervalMs);
+      const auto interval = std::chrono::milliseconds(m_operatorAuthorityRefreshIntervalMs);
+      while (!m_done.load()) {
+        const auto sleepUntil = std::chrono::steady_clock::now() + interval;
+        while (!m_done.load() && std::chrono::steady_clock::now() < sleepUntil) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (m_done.load()) {
+          break;
+        }
+        std::string reason;
+        Fields fields;
+        const bool revoked = refreshOperatorAuthorityLeaseFromIssuer(
+          m_config.groundStationIdentity, std::chrono::seconds(5), reason, &fields);
+        NDN_LOG_INFO("AUTHORITY_REFRESH_TIMER_TICK revoked=" << (revoked ? "true" : "false")
+                     << " reason=" << reason
+                     << " lease_id=" << operatorAuthorityLease().leaseId
+                     << " revoker_operator=" << fieldOr(fields, "revoker_operator", "none"));
+      }
+      NDN_LOG_INFO("AUTHORITY_REFRESH_TIMER state=stopped");
+    });
   }
 
   bool
@@ -6993,6 +7141,9 @@ private:
   uint64_t m_defaultOperatorLeaseTtlMs = 0;
   std::string m_operatorAuthorityStateFile;
   std::set<std::string> m_operatorAdminIds;
+  uint64_t m_operatorAuthorityRefreshIntervalMs = 0;
+  std::thread m_operatorAuthorityRefreshThread;
+  std::atomic<bool> m_operatorAuthorityRefreshInFlight{false};
   std::mutex m_yoloMutex;
   std::thread m_yoloPrewarmThread;
   pid_t m_yoloWorkerPid = -1;
