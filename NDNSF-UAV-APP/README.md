@@ -1669,6 +1669,10 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-authority-revocation-test \
   --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-authority-refresh-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
 ```
 
 The expected success markers are
@@ -1683,7 +1687,8 @@ The expected success markers are
 `NDNSF_UAV_AUTHORITY_ISSUER_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_ARBITRATION_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_PERSISTENCE_MININDN_SMOKE_OK`, and
-`NDNSF_UAV_AUTHORITY_REVOCATION_MININDN_SMOKE_OK`. The repo catalog smoke
+`NDNSF_UAV_AUTHORITY_REVOCATION_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_AUTHORITY_REFRESH_MININDN_SMOKE_OK`. The repo catalog smoke
 records camera chunks to the drone's in-app repo, fetches the
 `/UAV/Camera/Repo/Catalog` service from the ground station, and verifies that
 chunk objects are summarized as one queryable UAV recording product. The
@@ -1706,8 +1711,10 @@ leases. The authority persistence smoke verifies an issuer-side active lease
 state file, admin allowlist rejection, authorized admin override, and
 response-carried revoked lease evidence. The authority revocation smoke verifies
 that revoked lease evidence can also be fetched later through
-`/UAV/GS/OperatorAuthority/Revocation`. This bundle intentionally uses mock
-flight-controller fields and
+`/UAV/GS/OperatorAuthority/Revocation`. The authority refresh smoke verifies
+that an operator can query that service for its active lease, mark the local
+lease as revoked, and reuse the existing command/mission gates to return
+`lease-revoked`. This bundle intentionally uses mock flight-controller fields and
 the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
 

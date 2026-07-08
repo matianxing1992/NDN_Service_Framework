@@ -181,6 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS verify authority lease persistence and admin authorization.")
     parser.add_argument("--auto-authority-revocation-test", action="store_true",
                         help="Have the GS verify fetchable operator authority revocation records.")
+    parser.add_argument("--auto-authority-refresh-test", action="store_true",
+                        help="Have the GS verify a revoked operator lease is detected by client-side refresh.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-single-mission-test", action="store_true",
@@ -888,7 +890,9 @@ def main() -> int:
         if args.auto_repeat_stop_test:
             gs_env["NDNSF_UAV_SIMULATE_STOP_DELAY_MS"] = "4000"
         authority_state_file = output_dir / "operator-authority-active-leases.conf"
-        if (args.auto_authority_persistence_test or args.auto_authority_revocation_test) and authority_state_file.exists():
+        if (args.auto_authority_persistence_test or
+                args.auto_authority_revocation_test or
+                args.auto_authority_refresh_test) and authority_state_file.exists():
             authority_state_file.unlink()
 
         controller_cmd = app_cmd(APP_CONTROLLER, [
@@ -1102,6 +1106,15 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "3000",
             ]
+        if args.auto_authority_refresh_test:
+            gs_argv += [
+                "--auto-authority-refresh-test",
+                "--operator-id", "/example/uav/operator/one",
+                "--operator-admin-ids", "/example/uav/operator/two",
+                "--operator-authority-state-file", str(authority_state_file),
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "3000",
+            ]
         if args.auto_patrol_test:
             patrol_timeout_ms = "30000" if should_start_jmavsim(args) else "3000"
             gs_argv += [
@@ -1136,6 +1149,7 @@ def main() -> int:
                 args.auto_authority_arbitration_test or
                 args.auto_authority_persistence_test or
                 args.auto_authority_revocation_test or
+                args.auto_authority_refresh_test or
                 args.auto_telemetry_test or args.auto_link_state_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
@@ -1318,6 +1332,19 @@ def main() -> int:
             require_log(gs_log, "AUTHORITY_REVOCATION_RESULT ok=true")
             require_log(gs_log, "GS_AUTHORITY_REVOCATION_EXIT ok=true")
             print("NDNSF_UAV_AUTHORITY_REVOCATION_MININDN_SMOKE_OK")
+        elif args.auto_authority_refresh_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station authority refresh smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "AUTHORITY_LEASE_REFRESH revoked=true")
+            require_log(gs_log, "revoker_operator=/example/uav/operator/two")
+            require_log(gs_log, "AUTHORITY_REFRESH_RESULT ok=true")
+            require_log(gs_log, "after_reason=lease-revoked")
+            require_log(gs_log, "GS_AUTHORITY_REFRESH_EXIT ok=true")
+            print("NDNSF_UAV_AUTHORITY_REFRESH_MININDN_SMOKE_OK")
         elif args.auto_telemetry_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=70)

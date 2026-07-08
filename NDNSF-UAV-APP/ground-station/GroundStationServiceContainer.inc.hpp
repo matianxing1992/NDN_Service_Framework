@@ -197,6 +197,39 @@ public:
     return m_operatorLease;
   }
 
+  bool
+  refreshOperatorAuthorityLeaseFromIssuer(const ndn::Name& issuerIdentity,
+                                          std::chrono::seconds timeout,
+                                          std::string& reason,
+                                          Fields* revocationFields = nullptr)
+  {
+    const auto current = operatorAuthorityLease();
+    if (current.leaseId.empty() || current.leaseId == "none") {
+      reason = "no-active-lease";
+      NDN_LOG_INFO("AUTHORITY_LEASE_REFRESH revoked=false reason=" << reason);
+      return false;
+    }
+
+    Fields fields;
+    const bool revoked = requestOperatorRevocationRecordFromIssuerSync(
+      issuerIdentity, current.leaseId, timeout, fields, reason);
+    if (revocationFields != nullptr) {
+      *revocationFields = fields;
+    }
+    if (revoked) {
+      auto updated = current;
+      updated.revoked = true;
+      setOperatorAuthorityLease(updated);
+      reason = fieldOr(fields, "reason", reason);
+    }
+    NDN_LOG_INFO("AUTHORITY_LEASE_REFRESH revoked=" << (revoked ? "true" : "false")
+                 << " reason=" << reason
+                 << " lease_id=" << current.leaseId
+                 << " operator=" << current.operatorId
+                 << " revoker_operator=" << fieldOr(fields, "revoker_operator", "none"));
+    return revoked;
+  }
+
   void
   setStatusCallback(std::function<void(std::string)> callback)
   {
@@ -2305,6 +2338,83 @@ public:
                  << " missing=" << (missingFound ? "found" : missingReason)
                  << " record_operator=" << fieldOr(recordFields, "revoked_operator", "none")
                  << " revoker_operator=" << fieldOr(recordFields, "revoker_operator", "none"));
+    return ok;
+  }
+
+  bool
+  runAuthorityLeaseRefreshTest(std::chrono::seconds timeout)
+  {
+    if (m_operatorAuthorityStateFile.empty()) {
+      NDN_LOG_INFO("AUTHORITY_REFRESH_RESULT ok=false reason=missing-state-file");
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      m_issuedOperatorLeases.clear();
+      m_operatorRevocationRecords.clear();
+      persistIssuedOperatorLeasesLocked();
+    }
+
+    OperatorAuthorityLeaseRequest first;
+    first.requestId = "refresh-first-" + std::to_string(nowMilliseconds());
+    first.operatorId = "/example/uav/operator/one";
+    first.droneId = targetDroneId();
+    first.scope = "control";
+    first.ttlMs = 60000;
+    first.requestedMs = nowMilliseconds();
+
+    OperatorAuthorityLease firstLease;
+    std::string firstReason;
+    const bool firstAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, first, timeout, firstLease, firstReason);
+    if (firstAccepted) {
+      setOperatorAuthorityLease(firstLease);
+    }
+
+    std::string beforeReason;
+    const bool beforeAllowed = validateOperatorLease(targetDroneId(), "mission_assign",
+                                                     beforeReason);
+
+    auto admin = first;
+    admin.requestId = "refresh-admin-" + std::to_string(nowMilliseconds());
+    admin.operatorId = "/example/uav/operator/two";
+    admin.scope = "admin";
+    OperatorAuthorityLease adminLease;
+    std::string adminReason;
+    Fields adminFields;
+    const bool adminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, admin, timeout, adminLease, adminReason, &adminFields);
+
+    std::string refreshReason;
+    Fields refreshFields;
+    const bool refreshRevoked = refreshOperatorAuthorityLeaseFromIssuer(
+      m_config.groundStationIdentity, timeout, refreshReason, &refreshFields);
+
+    const auto refreshedLease = operatorAuthorityLease();
+    std::string afterReason;
+    const bool afterAllowed = validateOperatorLease(targetDroneId(), "mission_assign",
+                                                    afterReason);
+    const auto revokedIds = fieldOr(adminFields, "revoked_lease_ids", "");
+    const bool ok = firstAccepted && firstReason == "ok" &&
+                    beforeAllowed && beforeReason == "ok" &&
+                    adminAccepted && adminReason == "ok" &&
+                    revokedIds.find(firstLease.leaseId) != std::string::npos &&
+                    refreshRevoked && refreshReason == "ok" &&
+                    refreshedLease.revoked &&
+                    fieldOr(refreshFields, "revoked_operator", "") == first.operatorId &&
+                    fieldOr(refreshFields, "revoker_operator", "") == admin.operatorId &&
+                    !afterAllowed && afterReason == "lease-revoked";
+    NDN_LOG_INFO("AUTHORITY_REFRESH_RESULT ok=" << (ok ? "true" : "false")
+                 << " first=" << (firstAccepted ? "accepted" : firstReason)
+                 << " before_reason=" << beforeReason
+                 << " admin=" << (adminAccepted ? "accepted" : adminReason)
+                 << " revoked_lease_ids=" << revokedIds
+                 << " refresh=" << (refreshRevoked ? "revoked" : refreshReason)
+                 << " refreshed_revoked=" << (refreshedLease.revoked ? "true" : "false")
+                 << " after_allowed=" << (afterAllowed ? "true" : "false")
+                 << " after_reason=" << afterReason
+                 << " revoked_operator=" << fieldOr(refreshFields, "revoked_operator", "none")
+                 << " revoker_operator=" << fieldOr(refreshFields, "revoker_operator", "none"));
     return ok;
   }
 
