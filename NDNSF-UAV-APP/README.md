@@ -1746,7 +1746,9 @@ reveals identities only when the requester matches the revoked or revoking
 operator. When the NDNSF requester identity maps to a configured operator, the
 audit service uses that authenticated mapping before the caller-supplied
 `requester_operator` fallback and reports `requester_operator_source` in the
-response. This bundle intentionally uses mock flight-controller fields and the
+response. Mapped operators must have admin authority to request
+`redaction=full`; otherwise the service returns
+`full-redaction-requires-admin`. This bundle intentionally uses mock flight-controller fields and the
 virtual camera path, so it does not require PX4, jMAVSim, a USB camera, or real
 UAV hardware.
 

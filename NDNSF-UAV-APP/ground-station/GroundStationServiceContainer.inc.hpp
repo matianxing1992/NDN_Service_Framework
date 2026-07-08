@@ -2721,6 +2721,7 @@ public:
     const bool auditOk = requestOperatorAuthorityAuditFromIssuerSync(
       m_config.groundStationIdentity, Fields{
         {"limit", "20"},
+        {"redaction", "self"},
       }, timeout, auditFields, auditReason);
 
     const auto returnedCount = unsignedFieldOr(auditFields, "returned_count", 0);
@@ -2768,6 +2769,7 @@ public:
         {"offset", "1"},
         {"limit", "1"},
         {"from_ms", std::to_string(firstLease.issuedMs)},
+        {"redaction", "self"},
       }, timeout, pageFields, pageReason);
     const bool pageMatchesDetected =
       pageOk &&
@@ -2845,7 +2847,29 @@ public:
                  << " revoked_operator=" << fieldOr(selfFields, "alert.0.revoked_operator", "none")
                  << " revoker_operator=" << fieldOr(selfFields, "alert.0.revoker_operator", "none")
                  << " redacted=" << fieldOr(selfFields, "alert.0.redacted", "false"));
-    return ok && pageMatchesDetected && summaryRedacted && identityPreferred;
+
+    Fields fullDeniedFields;
+    std::string fullDeniedReason;
+    const bool fullDeniedOk = requestOperatorAuthorityAuditFromIssuerSync(
+      m_config.groundStationIdentity, Fields{
+        {"offset", "0"},
+        {"limit", "1"},
+        {"redaction", "full"},
+      }, timeout, fullDeniedFields, fullDeniedReason);
+    const bool fullDenied =
+      !fullDeniedOk &&
+      fullDeniedReason == "full-redaction-requires-admin" &&
+      fieldOr(fullDeniedFields, "redaction", "") == "full" &&
+      fieldOr(fullDeniedFields, "requester_operator_source", "") == "requester-identity" &&
+      fieldOr(fullDeniedFields, "effective_requester_operator", "") == first.operatorId;
+    NDN_LOG_INFO("AUTHORITY_AUDIT_FULL_GATE_RESULT ok=" << (fullDenied ? "true" : "false")
+                 << " query=" << (fullDeniedOk ? "unexpected-ok" : fullDeniedReason)
+                 << " redaction=" << fieldOr(fullDeniedFields, "redaction", "none")
+                 << " source=" << fieldOr(fullDeniedFields, "requester_operator_source", "none")
+                 << " effective_requester_operator="
+                 << fieldOr(fullDeniedFields, "effective_requester_operator", "none")
+                 << " admin=" << (operatorHasAdminAuthority(first.operatorId) ? "true" : "false"));
+    return ok && pageMatchesDetected && summaryRedacted && identityPreferred && fullDenied;
   }
 
   bool
@@ -5956,6 +5980,30 @@ private:
     }
     else if (requesterOperator.empty()) {
       requesterOperatorSource = "none";
+    }
+    const bool fullRedactionAllowed =
+      redaction != "full" ||
+      requesterOperator.empty() ||
+      operatorHasAdminAuthority(requesterOperator);
+    if (!fullRedactionAllowed) {
+      Fields response{
+        {"type", "operator-authority-audit-response"},
+        {"ok", "false"},
+        {"reason", "full-redaction-requires-admin"},
+        {"redaction", redaction},
+        {"requester_identity", requesterIdentity.toUri()},
+        {"effective_requester_operator", requesterOperator},
+        {"requester_operator_source", requesterOperatorSource},
+      };
+      NDN_LOG_INFO("AUTHORITY_AUDIT_LOOKUP alert_count=0 matched_count=0 returned_count=0"
+                   << " offset=0 limit=0 from_ms=" << fromMs
+                   << " to_ms=" << toMs
+                   << " redaction=" << redaction
+                   << " requester_identity=" << requesterIdentity.toUri()
+                   << " effective_requester_operator=" << requesterOperator
+                   << " requester_operator_source=" << requesterOperatorSource
+                   << " reason=full-redaction-requires-admin");
+      return makeResponse(false, encodeFields(response), "full-redaction-requires-admin");
     }
     const auto alerts = operatorAuthorityAlertsSnapshot();
     std::vector<OperatorAuthorityAlert> matched;
