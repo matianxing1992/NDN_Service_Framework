@@ -1657,6 +1657,10 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-authority-issuer-test \
   --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-authority-arbitration-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
 ```
 
 The expected success markers are
@@ -1668,8 +1672,9 @@ The expected success markers are
 `NDNSF_UAV_PARAMETER_CACHE_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_LEASE_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_CONFIG_MININDN_SMOKE_OK`, and
-`NDNSF_UAV_AUTHORITY_ISSUER_MININDN_SMOKE_OK`. The repo catalog smoke records
-camera chunks to the drone's in-app repo, fetches the
+`NDNSF_UAV_AUTHORITY_ISSUER_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_AUTHORITY_ARBITRATION_MININDN_SMOKE_OK`. The repo catalog smoke
+records camera chunks to the drone's in-app repo, fetches the
 `/UAV/Camera/Repo/Catalog` service from the ground station, and verifies that
 chunk objects are summarized as one queryable UAV recording product. The
 parameter-cache smoke fetches `/UAV/MAVLink/Parameters` from the selected drone
@@ -1683,9 +1688,11 @@ configuration, rather than test-time injection, blocks control and mission
 assignment while allowing telemetry. The authority issuer smoke requests a
 control lease from `/UAV/GS/OperatorAuthority/Lease` through the normal NDNSF
 service path, applies the returned lease, and verifies that mission/control
-validation becomes allowed again. This is a service-distribution path for UAV
-operator leases, not yet a full multi-operator global conflict arbiter. This
-bundle intentionally uses mock
+validation becomes allowed again. The authority arbitration smoke verifies the
+minimal multi-operator conflict policy: monitor leases are non-exclusive,
+control/mission/admin leases are exclusive for overlapping drone targets, the
+same operator can renew, and an admin lease overrides existing exclusive
+leases. This bundle intentionally uses mock
 flight-controller fields and
 the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.

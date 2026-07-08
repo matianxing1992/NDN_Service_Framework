@@ -2075,6 +2075,80 @@ public:
   }
 
   bool
+  runAuthorityLeaseArbitrationTest(std::chrono::seconds timeout)
+  {
+    OperatorAuthorityLeaseRequest first;
+    first.requestId = "arbitration-first-" + std::to_string(nowMilliseconds());
+    first.operatorId = "/example/uav/operator/one";
+    first.droneId = targetDroneId();
+    first.scope = "control";
+    first.ttlMs = 60000;
+    first.requestedMs = nowMilliseconds();
+
+    OperatorAuthorityLease firstLease;
+    std::string firstReason;
+    const bool firstAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, first, timeout, firstLease, firstReason);
+
+    auto monitor = first;
+    monitor.requestId = "arbitration-monitor-" + std::to_string(nowMilliseconds());
+    monitor.operatorId = "/example/uav/operator/two";
+    monitor.scope = "monitor";
+    OperatorAuthorityLease monitorLease;
+    std::string monitorReason;
+    const bool monitorAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, monitor, timeout, monitorLease, monitorReason);
+
+    auto conflict = first;
+    conflict.requestId = "arbitration-conflict-" + std::to_string(nowMilliseconds());
+    conflict.operatorId = "/example/uav/operator/two";
+    OperatorAuthorityLease conflictLease;
+    std::string conflictReason;
+    const bool conflictAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, conflict, timeout, conflictLease, conflictReason);
+
+    auto renewal = first;
+    renewal.requestId = "arbitration-renew-" + std::to_string(nowMilliseconds());
+    OperatorAuthorityLease renewalLease;
+    std::string renewalReason;
+    const bool renewalAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, renewal, timeout, renewalLease, renewalReason);
+
+    auto admin = conflict;
+    admin.requestId = "arbitration-admin-" + std::to_string(nowMilliseconds());
+    admin.scope = "admin";
+    OperatorAuthorityLease adminLease;
+    std::string adminReason;
+    const bool adminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, admin, timeout, adminLease, adminReason);
+
+    auto postAdmin = first;
+    postAdmin.requestId = "arbitration-post-admin-" + std::to_string(nowMilliseconds());
+    OperatorAuthorityLease postAdminLease;
+    std::string postAdminReason;
+    const bool postAdminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, postAdmin, timeout, postAdminLease, postAdminReason);
+
+    const bool ok = firstAccepted && firstReason == "ok" &&
+                    monitorAccepted && monitorReason == "ok" &&
+                    !conflictAccepted && conflictReason == "lease-conflict" &&
+                    renewalAccepted && renewalReason == "ok" &&
+                    adminAccepted && adminReason == "ok" &&
+                    !postAdminAccepted && postAdminReason == "lease-conflict";
+    NDN_LOG_INFO("AUTHORITY_ARBITRATION_RESULT ok=" << (ok ? "true" : "false")
+                 << " first=" << (firstAccepted ? "accepted" : firstReason)
+                 << " monitor=" << (monitorAccepted ? "accepted" : monitorReason)
+                 << " conflict=" << (conflictAccepted ? "accepted" : conflictReason)
+                 << " renewal=" << (renewalAccepted ? "accepted" : renewalReason)
+                 << " admin=" << (adminAccepted ? "accepted" : adminReason)
+                 << " post_admin=" << (postAdminAccepted ? "accepted" : postAdminReason)
+                 << " first_operator=" << first.operatorId
+                 << " conflict_operator=" << conflict.operatorId
+                 << " drone=" << first.droneId);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -3186,6 +3260,82 @@ private:
     out = state->lease;
     reason = state->reason;
     return state->done && state->ok;
+  }
+
+  static bool
+  isExclusiveAuthorityScope(const std::string& scope)
+  {
+    return scope == "control" || scope == "mission" || scope == "admin";
+  }
+
+  static bool
+  leaseTargetsOverlap(const std::string& left, const std::string& right)
+  {
+    return left == "all" || right == "all" || left == right;
+  }
+
+  bool
+  issueOperatorAuthorityLease(const OperatorAuthorityLeaseRequest& leaseRequest,
+                              OperatorAuthorityLease& lease,
+                              std::string& reason,
+                              Fields& details)
+  {
+    const auto nowMs = nowMilliseconds();
+    const auto ttlMs = leaseRequest.ttlMs == 0 ? uint64_t{60000} : leaseRequest.ttlMs;
+    std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+    m_issuedOperatorLeases.erase(
+      std::remove_if(m_issuedOperatorLeases.begin(), m_issuedOperatorLeases.end(),
+                     [nowMs](const OperatorAuthorityLease& active) {
+                       return !active.isFresh(nowMs);
+                     }),
+      m_issuedOperatorLeases.end());
+
+    const bool requestedExclusive = isExclusiveAuthorityScope(leaseRequest.scope);
+    if (requestedExclusive && leaseRequest.scope != "admin") {
+      for (const auto& active : m_issuedOperatorLeases) {
+        if (!isExclusiveAuthorityScope(active.scope) ||
+            !leaseTargetsOverlap(active.droneId, leaseRequest.droneId) ||
+            active.operatorId == leaseRequest.operatorId) {
+          continue;
+        }
+        reason = "lease-conflict";
+        details["conflicting_lease_id"] = active.leaseId;
+        details["conflicting_operator"] = active.operatorId;
+        details["conflicting_scope"] = active.scope;
+        details["conflicting_drone"] = active.droneId;
+        details["active_lease_count"] = std::to_string(m_issuedOperatorLeases.size());
+        return false;
+      }
+    }
+
+    size_t overridden = 0;
+    m_issuedOperatorLeases.erase(
+      std::remove_if(m_issuedOperatorLeases.begin(), m_issuedOperatorLeases.end(),
+                     [&](const OperatorAuthorityLease& active) {
+                       if (!leaseTargetsOverlap(active.droneId, leaseRequest.droneId)) {
+                         return false;
+                       }
+                       if (leaseRequest.scope == "admin" && isExclusiveAuthorityScope(active.scope)) {
+                         ++overridden;
+                         return true;
+                       }
+                       return active.operatorId == leaseRequest.operatorId &&
+                              active.scope == leaseRequest.scope;
+                     }),
+      m_issuedOperatorLeases.end());
+
+    lease.leaseId = "issued-" + leaseRequest.requestId;
+    lease.operatorId = leaseRequest.operatorId;
+    lease.droneId = leaseRequest.droneId;
+    lease.scope = leaseRequest.scope;
+    lease.issuedMs = nowMs;
+    lease.expiresMs = nowMs + ttlMs;
+    m_issuedOperatorLeases.push_back(lease);
+
+    reason = "ok";
+    details["overridden_leases"] = std::to_string(overridden);
+    details["active_lease_count"] = std::to_string(m_issuedOperatorLeases.size());
+    return true;
   }
 
   bool
@@ -4464,23 +4614,40 @@ private:
     }
 
     OperatorAuthorityLease lease;
-    lease.leaseId = "issued-" + leaseRequest.requestId;
-    lease.operatorId = leaseRequest.operatorId;
-    lease.droneId = leaseRequest.droneId;
-    lease.scope = leaseRequest.scope;
-    lease.issuedMs = nowMilliseconds();
-    const auto ttlMs = leaseRequest.ttlMs == 0 ? uint64_t{60000} : leaseRequest.ttlMs;
-    lease.expiresMs = lease.issuedMs + ttlMs;
+    Fields arbitrationDetails;
+    const bool accepted = issueOperatorAuthorityLease(leaseRequest, lease, reason,
+                                                      arbitrationDetails);
+    if (!accepted) {
+      Fields response{
+        {"type", "operator-authority-lease-response"},
+        {"accepted", "false"},
+        {"reason", reason},
+        {"lease_request_id", leaseRequest.requestId},
+      };
+      response.insert(arbitrationDetails.begin(), arbitrationDetails.end());
+      NDN_LOG_INFO("AUTHORITY_LEASE_REJECTED request_id=" << leaseRequest.requestId
+                   << " operator=" << leaseRequest.operatorId
+                   << " drone=" << leaseRequest.droneId
+                   << " scope=" << leaseRequest.scope
+                   << " reason=" << reason
+                   << " conflicting_operator=" << fieldOr(response, "conflicting_operator", "none"));
+      return makeResponse(true, encodeFields(response), reason);
+    }
     auto response = lease.toFields();
     response["type"] = "operator-authority-lease-response";
     response["accepted"] = "true";
     response["reason"] = "ok";
-    response["lease_ttl_ms"] = std::to_string(ttlMs);
+    response["lease_request_id"] = leaseRequest.requestId;
+    response["lease_ttl_ms"] = std::to_string(leaseRequest.ttlMs == 0 ? uint64_t{60000} :
+                                              leaseRequest.ttlMs);
+    response.insert(arbitrationDetails.begin(), arbitrationDetails.end());
     NDN_LOG_INFO("AUTHORITY_LEASE_ISSUED request_id=" << leaseRequest.requestId
                  << " operator=" << lease.operatorId
                  << " drone=" << lease.droneId
                  << " scope=" << lease.scope
-                 << " expires_ms=" << lease.expiresMs);
+                 << " expires_ms=" << lease.expiresMs
+                 << " active_lease_count=" << fieldOr(response, "active_lease_count", "0")
+                 << " overridden_leases=" << fieldOr(response, "overridden_leases", "0"));
     return makeResponse(true, encodeFields(response));
   }
 
@@ -6178,6 +6345,7 @@ private:
   mutable std::mutex m_catalogMutex;
   mutable std::mutex m_parameterMutex;
   mutable std::mutex m_operatorLeaseMutex;
+  mutable std::mutex m_issuedOperatorLeaseMutex;
   std::vector<std::string> m_missionReadyDrones;
   MissionPlan m_latestMissionPlan;
   MissionProgressState m_latestMissionProgress;
@@ -6188,6 +6356,7 @@ private:
   std::map<std::string, UavDataProductCatalogState> m_catalogByDrone;
   std::map<std::string, VehicleParameterSnapshot> m_parameterSnapshots;
   OperatorAuthorityLease m_operatorLease;
+  std::vector<OperatorAuthorityLease> m_issuedOperatorLeases;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;
