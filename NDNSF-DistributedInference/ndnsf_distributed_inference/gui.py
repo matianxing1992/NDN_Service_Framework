@@ -781,8 +781,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-dependency-payload-mode",
                         choices=["raw", "streamchunk"],
                         default="raw",
-                        help=("Dependency payload mode for Qwen MiniNDN providers: "
-                              "raw or streamchunk."))
+                        help=("Dependency payload mode for Qwen MiniNDN providers. "
+                              "raw uses exact-name large-data fetches; streamchunk "
+                              "is an opt-in metadata-envelope experiment."))
     parser.add_argument("--experiment-dry-run", action="store_true",
                         help="Print/record the resolved Qwen MiniNDN command without running MiniNDN.")
     parser.add_argument("--experiment-extra-arg", action="append", default=[],

@@ -2297,9 +2297,11 @@ def main() -> int:
     parser.add_argument("--dependency-payload-mode",
                         choices=["raw", "streamchunk"],
                         default=default_value(profile_defaults, "dependency_payload_mode", "raw"),
-                        help=("Dependency large-data payload envelope for native provider "
-                              "collaboration: raw keeps the original tensor bundle bytes; "
-                              "streamchunk wraps them in core NDNSF StreamChunk TLV."))
+                        help=("Dependency large-data payload format for native provider "
+                              "collaboration. raw keeps exact-name tensor bundle objects "
+                              "on the normal large-data/SegmentFetcher path. streamchunk "
+                              "is an opt-in StreamChunk metadata-envelope experiment, "
+                              "not the default transfer mechanism for DI objects."))
     args = parser.parse_args()
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
