@@ -13,6 +13,9 @@ inline constexpr const char* ModelUnavailable = "MODEL_UNAVAILABLE";
 inline constexpr const char* PermissionDenied = "PERMISSION_DENIED";
 inline constexpr const char* UnsupportedRequest = "UNSUPPORTED_REQUEST";
 inline constexpr const char* InternalError = "INTERNAL_ERROR";
+inline constexpr const char* LeaseRejected = "LEASE_REJECTED";
+inline constexpr const char* LeaseExpired = "LEASE_EXPIRED";
+inline constexpr const char* OperationExpired = "OPERATION_EXPIRED";
 
 inline bool
 isRecommended(const std::string& reason)
@@ -23,7 +26,10 @@ isRecommended(const std::string& reason)
            reason == ModelUnavailable ||
            reason == PermissionDenied ||
            reason == UnsupportedRequest ||
-           reason == InternalError;
+           reason == InternalError ||
+           reason == LeaseRejected ||
+           reason == LeaseExpired ||
+           reason == OperationExpired;
 }
 
 } // namespace negative_ack_reason

@@ -215,6 +215,41 @@ struct StreamFetchDecision
   std::string reason = "stable";
 };
 
+enum class StreamHealthState
+{
+  Active,
+  Degraded,
+  Congested,
+  Stale,
+  Stopped,
+};
+
+struct StreamHealth
+{
+  std::string streamId;
+  uint64_t sessionEpoch = 0;
+  StreamHealthState state = StreamHealthState::Active;
+  uint64_t nextSeq = 0;
+  uint64_t lastChunkMs = 0;
+  uint64_t updatedMs = 0;
+  StreamMetrics metrics;
+  StreamFetchDecision fetchDecision;
+  std::string reason;
+  std::map<std::string, std::string> metadata;
+
+  static StreamHealth fromStream(const StreamInfo& info,
+                                 const StreamMetrics& metrics,
+                                 const std::optional<StreamFetchDecision>& fetchDecision = std::nullopt,
+                                 uint64_t nextSeq = 0,
+                                 uint64_t lastChunkMs = 0,
+                                 bool stopped = false,
+                                 uint64_t staleAfterMs = 3000,
+                                 uint64_t nowMs = 0);
+};
+
+const char*
+toString(StreamHealthState state);
+
 class StreamAdaptiveFetcherState
 {
 public:

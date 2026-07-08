@@ -70,6 +70,24 @@ readBinary(const ndn::Block& element)
 
 } // namespace
 
+const char*
+toString(StreamHealthState state)
+{
+  switch (state) {
+  case StreamHealthState::Active:
+    return "ACTIVE";
+  case StreamHealthState::Degraded:
+    return "DEGRADED";
+  case StreamHealthState::Congested:
+    return "CONGESTED";
+  case StreamHealthState::Stale:
+    return "STALE";
+  case StreamHealthState::Stopped:
+    return "STOPPED";
+  }
+  return "UNKNOWN";
+}
+
 uint64_t
 streamNowMs()
 {
@@ -613,6 +631,52 @@ StreamAdaptiveFetcherState::decide() const
   decision.missingTimeoutMs =
     std::min(maxMissingTimeoutMs, std::max(minMissingTimeoutMs, missing));
   return decision;
+}
+
+StreamHealth
+StreamHealth::fromStream(const StreamInfo& info,
+                         const StreamMetrics& metrics,
+                         const std::optional<StreamFetchDecision>& fetchDecision,
+                         uint64_t nextSeq,
+                         uint64_t lastChunkMs,
+                         bool stopped,
+                         uint64_t staleAfterMs,
+                         uint64_t nowMs)
+{
+  StreamHealth health;
+  health.streamId = info.streamId;
+  health.sessionEpoch = info.sessionEpoch;
+  health.nextSeq = nextSeq == 0 ? info.nextSeq : nextSeq;
+  health.lastChunkMs = lastChunkMs;
+  health.updatedMs = nowMs == 0 ? streamNowMs() : nowMs;
+  health.metrics = metrics;
+  if (fetchDecision) {
+    health.fetchDecision = *fetchDecision;
+  }
+
+  if (stopped) {
+    health.state = StreamHealthState::Stopped;
+    health.reason = "stopped";
+  }
+  else if (lastChunkMs > 0 && staleAfterMs > 0 && health.updatedMs > lastChunkMs &&
+           health.updatedMs - lastChunkMs > staleAfterMs) {
+    health.state = StreamHealthState::Stale;
+    health.reason = "stale";
+  }
+  else if (fetchDecision && fetchDecision->reason == "congested") {
+    health.state = StreamHealthState::Congested;
+    health.reason = "congested";
+  }
+  else if (metrics.gaps > 0 || metrics.timeouts > 0 || metrics.nacks > 0) {
+    health.state = StreamHealthState::Degraded;
+    health.reason = "loss-or-gap";
+  }
+  else {
+    health.state = StreamHealthState::Active;
+    health.reason = "active";
+  }
+
+  return health;
 }
 
 } // namespace ndn_service_framework

@@ -10,7 +10,7 @@ coordinators) remain in ``ndnsf_distributed_inference.runtime_v1``.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass, field, asdict, replace as dataclass_replace
+from dataclasses import dataclass, field, asdict, is_dataclass, replace as dataclass_replace
 from enum import Enum
 import hashlib
 import json
@@ -198,6 +198,28 @@ class AdmissionLeaseStatus(str, Enum):
     RELEASED = "RELEASED"
 
 
+class RejectionReason(str, Enum):
+    """Core reason-code vocabulary for negative ACKs and admission decisions."""
+
+    QUEUE_FULL = "QUEUE_FULL"
+    PROVIDER_BUSY = "PROVIDER_BUSY"
+    GPU_BUSY = "GPU_BUSY"
+    MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    UNSUPPORTED_REQUEST = "UNSUPPORTED_REQUEST"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+    LEASE_REJECTED = "LEASE_REJECTED"
+    LEASE_EXPIRED = "LEASE_EXPIRED"
+    OPERATION_EXPIRED = "OPERATION_EXPIRED"
+
+
+RECOMMENDED_REJECTION_REASONS: tuple[str, ...] = tuple(item.value for item in RejectionReason)
+
+
+def is_recommended_rejection_reason(reason: str) -> bool:
+    return str(reason) in RECOMMENDED_REJECTION_REASONS
+
+
 # ---------------------------------------------------------------------------
 # Fragment / residency ready-cost constants (service-neutral)
 # ---------------------------------------------------------------------------
@@ -223,6 +245,88 @@ class DeploymentStatus(str, Enum):
     DEGRADED = "DEGRADED"
     DISK_RESIDENT = "DISK_RESIDENT"
     EVICTED = "EVICTED"
+
+
+class ServiceOperationState(str, Enum):
+    """Reusable lifecycle states for long-running service operations."""
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    WAITING_INPUT = "WAITING_INPUT"
+    DONE = "DONE"
+    FAILED = "FAILED"
+    CANCELED = "CANCELED"
+    EXPIRED = "EXPIRED"
+
+
+TERMINAL_SERVICE_OPERATION_STATES: tuple[ServiceOperationState, ...] = (
+    ServiceOperationState.DONE,
+    ServiceOperationState.FAILED,
+    ServiceOperationState.CANCELED,
+    ServiceOperationState.EXPIRED,
+)
+
+
+@dataclass(frozen=True)
+class ServiceOperationStatus:
+    """App-neutral status envelope for long-running service work.
+
+    Repo insert/fetch operations, UAV missions/recordings, and DI provisioning or
+    execution may all expose this envelope while keeping their domain details in
+    ``metadata`` or in an app-specific result reference.
+    """
+
+    operation_id: str
+    operation: str
+    service_name: str = ""
+    provider_name: str = ""
+    request_id: str = ""
+    state: ServiceOperationState = ServiceOperationState.QUEUED
+    reason_code: str = ""
+    message: str = ""
+    progress: float = 0.0
+    result_reference: dict[str, Any] = field(default_factory=dict)
+    retry_after_ms: int = 0
+    created_at_ms: int = field(default_factory=now_ms)
+    updated_at_ms: int = field(default_factory=now_ms)
+    expires_at_ms: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.operation_id:
+            raise ValueError("operation_id is required")
+        if not self.operation:
+            raise ValueError("operation is required")
+        if not 0.0 <= float(self.progress) <= 1.0:
+            raise ValueError("progress must be between 0 and 1")
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ServiceOperationStatus":
+        return cls(
+            operation_id=str(payload.get("operationId", payload.get("operation_id", ""))),
+            operation=str(payload.get("operation", "")),
+            service_name=str(payload.get("serviceName", payload.get("service_name", ""))),
+            provider_name=str(payload.get("providerName", payload.get("provider_name", ""))),
+            request_id=str(payload.get("requestId", payload.get("request_id", ""))),
+            state=ServiceOperationState(payload.get("state", ServiceOperationState.QUEUED.value)),
+            reason_code=str(payload.get("reasonCode", payload.get("reason_code", ""))),
+            message=str(payload.get("message", "")),
+            progress=float(payload.get("progress", 0.0) or 0.0),
+            result_reference=dict(payload.get("resultReference", payload.get("result_reference", {})) or {}),
+            retry_after_ms=int(payload.get("retryAfterMs", payload.get("retry_after_ms", 0)) or 0),
+            created_at_ms=int(payload.get("createdAtMs", payload.get("created_at_ms", now_ms()))),
+            updated_at_ms=int(payload.get("updatedAtMs", payload.get("updated_at_ms", now_ms()))),
+            expires_at_ms=int(payload.get("expiresAtMs", payload.get("expires_at_ms", 0)) or 0),
+            metadata=dict(payload.get("metadata", {}) or {}),
+        )
+
+    @property
+    def terminal(self) -> bool:
+        return self.state in TERMINAL_SERVICE_OPERATION_STATES
+
+    def is_fresh(self, *, now_ms_value: int | None = None) -> bool:
+        current = now_ms() if now_ms_value is None else int(now_ms_value)
+        return not self.expires_at_ms or current < self.expires_at_ms
 
 
 @dataclass(frozen=True)
@@ -345,6 +449,134 @@ class GenericProviderRuntimeHint:
         )
 
 
+RuntimeHint = GenericProviderRuntimeHint
+
+
+@dataclass(frozen=True)
+class ProviderCapabilityHint:
+    """Reusable provider ACK/discovery envelope.
+
+    The envelope says whether a provider can currently accept a service request
+    and carries core runtime/lease/status fields. Domain-specific details stay
+    in ``service_payload`` under a declared ``service_payload_schema``.
+    """
+
+    provider_name: str
+    service_name: str
+    ready: bool = True
+    reason_code: str = ""
+    message: str = ""
+    runtime_hint: GenericProviderRuntimeHint | None = None
+    lease_offers: tuple["GenericAdmissionLease", ...] = ()
+    operation_status: ServiceOperationStatus | None = None
+    service_payload_schema: str = ""
+    service_payload: dict[str, Any] = field(default_factory=dict)
+    timestamp_ms: int = field(default_factory=now_ms)
+    expires_at_ms: int = 0
+    schema: str = "ndnsf-provider-capability-v1"
+
+    def __post_init__(self) -> None:
+        if not self.provider_name:
+            raise ValueError("provider_name is required")
+        if not self.service_name:
+            raise ValueError("service_name is required")
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ProviderCapabilityHint":
+        runtime_payload = payload.get("runtimeHint", payload.get("runtime_hint"))
+        operation_payload = payload.get("operationStatus", payload.get("operation_status"))
+        lease_payloads = payload.get("leaseOffers", payload.get("lease_offers", ())) or ()
+        return cls(
+            schema=str(payload.get("schema", "ndnsf-provider-capability-v1")),
+            provider_name=str(payload.get("providerName", payload.get("provider_name", ""))),
+            service_name=str(payload.get("serviceName", payload.get("service_name", ""))),
+            ready=bool(payload.get("ready", True)),
+            reason_code=str(payload.get("reasonCode", payload.get("reason_code", ""))),
+            message=str(payload.get("message", "")),
+            runtime_hint=(
+                None if runtime_payload in (None, {}) else
+                runtime_payload if isinstance(runtime_payload, GenericProviderRuntimeHint)
+                else GenericProviderRuntimeHint.from_dict(dict(runtime_payload))
+            ),
+            lease_offers=tuple(
+                item if isinstance(item, GenericAdmissionLease) else GenericAdmissionLease.from_dict(dict(item))
+                for item in lease_payloads
+            ),
+            operation_status=(
+                None if operation_payload in (None, {}) else
+                operation_payload if isinstance(operation_payload, ServiceOperationStatus)
+                else ServiceOperationStatus.from_dict(dict(operation_payload))
+            ),
+            service_payload_schema=str(payload.get(
+                "servicePayloadSchema",
+                payload.get("service_payload_schema", ""))),
+            service_payload=dict(payload.get("servicePayload", payload.get("service_payload", {})) or {}),
+            timestamp_ms=int(payload.get("timestampMs", payload.get("timestamp_ms", now_ms()))),
+            expires_at_ms=int(payload.get("expiresAtMs", payload.get("expires_at_ms", 0)) or 0),
+        )
+
+    def is_fresh(self, *, now_ms_value: int | None = None) -> bool:
+        current = now_ms() if now_ms_value is None else int(now_ms_value)
+        return not self.expires_at_ms or current < self.expires_at_ms
+
+    def to_ack_fields(self) -> dict[str, Any]:
+        return {"providerCapabilityHint": to_plain(self)}
+
+    @classmethod
+    def from_ack_fields(cls, fields: dict[str, Any]) -> "ProviderCapabilityHint":
+        payload = fields.get("providerCapabilityHint", fields.get("provider_capability_hint", {}))
+        if not isinstance(payload, dict):
+            raise ValueError("providerCapabilityHint field must be a JSON object")
+        return cls.from_dict(payload)
+
+
+@dataclass(frozen=True)
+class DataProductReference:
+    """App-neutral reference to a produced named data object or manifest."""
+
+    object_name: str
+    object_class: str = ""
+    content_type: str = "application/octet-stream"
+    producer_name: str = ""
+    version: str = ""
+    session_id: str = ""
+    large_data_reference: dict[str, Any] = field(default_factory=dict)
+    repo_manifest: dict[str, Any] = field(default_factory=dict)
+    encryption_info: dict[str, Any] = field(default_factory=dict)
+    size_bytes: int = 0
+    digest: str = ""
+    ttl_ms: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+    schema: str = "ndnsf-data-product-reference-v1"
+
+    def __post_init__(self) -> None:
+        if not self.object_name:
+            raise ValueError("object_name is required")
+        if self.size_bytes < 0:
+            raise ValueError("size_bytes must be non-negative")
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DataProductReference":
+        return cls(
+            schema=str(payload.get("schema", "ndnsf-data-product-reference-v1")),
+            object_name=str(payload.get("objectName", payload.get("object_name", ""))),
+            object_class=str(payload.get("objectClass", payload.get("object_class", ""))),
+            content_type=str(payload.get("contentType", payload.get("content_type", "application/octet-stream"))),
+            producer_name=str(payload.get("producerName", payload.get("producer_name", ""))),
+            version=str(payload.get("version", "")),
+            session_id=str(payload.get("sessionId", payload.get("session_id", ""))),
+            large_data_reference=dict(payload.get(
+                "largeDataReference",
+                payload.get("large_data_reference", {})) or {}),
+            repo_manifest=dict(payload.get("repoManifest", payload.get("repo_manifest", {})) or {}),
+            encryption_info=dict(payload.get("encryptionInfo", payload.get("encryption_info", {})) or {}),
+            size_bytes=int(payload.get("sizeBytes", payload.get("size_bytes", 0)) or 0),
+            digest=str(payload.get("digest", "")),
+            ttl_ms=int(payload.get("ttlMs", payload.get("ttl_ms", 0)) or 0),
+            metadata=dict(payload.get("metadata", {}) or {}),
+        )
+
+
 @dataclass(frozen=True)
 class GenericAdmissionLease:
     lease_id: str
@@ -461,6 +693,32 @@ class GenericAckMetadata:
         if not isinstance(payload, dict):
             raise ValueError("genericAckMetadata field must be a JSON object")
         return cls.from_dict(payload)
+
+    @classmethod
+    def from_provider_capability_hint(cls,
+                                      hint: ProviderCapabilityHint) -> "GenericAckMetadata":
+        runtime_payload = (
+            to_plain(hint.runtime_hint)
+            if hint.runtime_hint is not None
+            else {"providerName": hint.provider_name}
+        )
+        runtime_payload.setdefault("providerName", hint.provider_name)
+        return cls(
+            provider_runtime_hint=GenericProviderRuntimeHint.from_dict(runtime_payload),
+            lease_offers=tuple(
+                lease if isinstance(lease, GenericAdmissionLease)
+                else GenericAdmissionLease.from_dict(to_plain(lease))
+                for lease in hint.lease_offers
+            ),
+            service_payload_schema=hint.service_payload_schema,
+            service_payload={
+                **dict(hint.service_payload or {}),
+                "providerName": hint.provider_name,
+                "ready": hint.ready,
+                "reasonCode": hint.reason_code,
+            },
+            notes=hint.message,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -703,3 +961,30 @@ class ProviderNetworkMatrix:
             "penaltyMs": penalty,
             "totalMs": total,
         }
+
+    def rank_transfer_candidates(self, src_peer: str, dst_peers: Iterable[str],
+                                 bytes_count: int,
+                                 *, now_ms_value: int | None = None) -> list[dict[str, Any]]:
+        ranked: list[dict[str, Any]] = []
+        for dst_peer in dst_peers:
+            cost_ms, detail = self.transfer_cost_ms(
+                src_peer,
+                str(dst_peer),
+                bytes_count,
+                now_ms_value=now_ms_value,
+            )
+            detail["costMs"] = cost_ms
+            ranked.append(detail)
+        ranked.sort(key=lambda item: (float(item["costMs"]), str(item["dstPeer"])))
+        return ranked
+
+    def best_transfer_target(self, src_peer: str, dst_peers: Iterable[str],
+                             bytes_count: int,
+                             *, now_ms_value: int | None = None) -> dict[str, Any] | None:
+        ranked = self.rank_transfer_candidates(
+            src_peer,
+            dst_peers,
+            bytes_count,
+            now_ms_value=now_ms_value,
+        )
+        return ranked[0] if ranked else None

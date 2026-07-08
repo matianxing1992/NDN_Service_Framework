@@ -19,6 +19,14 @@ pythonWrapper/*.egg-info/
 
 # Generated/local outputs
 docs/
+!docs/
+docs/*
+!docs/README.md
+!docs/ndnsf-core-app-boundary.md
+!docs/NDNSF-DI-runtime-workflow.md
+!docs/reports/
+docs/reports/*
+!docs/reports/negative_ack_early_stop_minindn_20260702.md
 results/
 third_party/
 RELEASE/*

@@ -203,6 +203,33 @@ BOOST_AUTO_TEST_CASE(AdaptiveFetcherReactsToPressure)
   BOOST_CHECK_GT(congested.interestLifetimeMs, stable.interestLifetimeMs);
 }
 
+BOOST_AUTO_TEST_CASE(StreamHealthClassifiesGenericStreamState)
+{
+  StreamInfo info;
+  info.streamId = "video";
+  info.sessionEpoch = 4;
+  info.nextSeq = 10;
+
+  StreamMetrics degradedMetrics;
+  degradedMetrics.gaps = 1;
+  const auto degraded = StreamHealth::fromStream(info, degradedMetrics, std::nullopt,
+                                                 0, 0, false, 3000, 1000);
+  BOOST_CHECK_EQUAL(toString(degraded.state), "DEGRADED");
+  BOOST_CHECK_EQUAL(degraded.nextSeq, 10);
+
+  StreamAdaptiveFetcherState fetcher;
+  fetcher.setBacklogPressure(0.9);
+  const auto congestedDecision = fetcher.decide();
+  const auto congested = StreamHealth::fromStream(info, StreamMetrics{}, congestedDecision,
+                                                  11, 0, false, 3000, 1000);
+  BOOST_CHECK_EQUAL(toString(congested.state), "CONGESTED");
+  BOOST_CHECK_EQUAL(congested.nextSeq, 11);
+
+  const auto stale = StreamHealth::fromStream(info, StreamMetrics{}, std::nullopt,
+                                              0, 1, false, 100, 1000);
+  BOOST_CHECK_EQUAL(toString(stale.state), "STALE");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test

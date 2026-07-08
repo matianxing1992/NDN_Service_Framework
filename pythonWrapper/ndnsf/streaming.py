@@ -13,6 +13,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any, Deque, Iterable, Optional
 
 
@@ -421,6 +422,98 @@ class StreamFetchDecision:
     reason: str
 
 
+class StreamHealthState(str, Enum):
+    ACTIVE = "ACTIVE"
+    DEGRADED = "DEGRADED"
+    CONGESTED = "CONGESTED"
+    STALE = "STALE"
+    STOPPED = "STOPPED"
+
+
+@dataclass(frozen=True)
+class StreamHealth:
+    """App-neutral stream health snapshot.
+
+    Applications still own codecs and domain policy. This helper only reports
+    whether the generic stream session is fresh, congested, or producing gaps.
+    """
+
+    stream_id: str
+    session_epoch: int
+    state: StreamHealthState = StreamHealthState.ACTIVE
+    next_seq: int = 0
+    last_chunk_ms: int = 0
+    updated_ms: int = field(default_factory=stream_now_ms)
+    metrics: StreamMetrics = field(default_factory=StreamMetrics)
+    fetch_decision: StreamFetchDecision | None = None
+    reason: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_stream(cls,
+                    info: StreamInfo,
+                    metrics: StreamMetrics,
+                    *,
+                    next_seq: int | None = None,
+                    last_chunk_ms: int = 0,
+                    fetch_decision: StreamFetchDecision | None = None,
+                    stopped: bool = False,
+                    stale_after_ms: int = 3000,
+                    now_ms_value: int | None = None,
+                    reason: str = "",
+                    metadata: dict[str, Any] | None = None) -> "StreamHealth":
+        current = stream_now_ms() if now_ms_value is None else int(now_ms_value)
+        state = StreamHealthState.ACTIVE
+        computed_reason = reason
+        if stopped:
+            state = StreamHealthState.STOPPED
+            computed_reason = computed_reason or "stopped"
+        elif last_chunk_ms and stale_after_ms > 0 and current - int(last_chunk_ms) > stale_after_ms:
+            state = StreamHealthState.STALE
+            computed_reason = computed_reason or "stale"
+        elif fetch_decision is not None and fetch_decision.reason == "congested":
+            state = StreamHealthState.CONGESTED
+            computed_reason = computed_reason or "congested"
+        elif metrics.gaps or metrics.timeouts or metrics.nacks:
+            state = StreamHealthState.DEGRADED
+            computed_reason = computed_reason or "loss-or-gap"
+        return cls(
+            stream_id=info.stream_id,
+            session_epoch=info.session_epoch,
+            state=state,
+            next_seq=info.next_seq if next_seq is None else int(next_seq),
+            last_chunk_ms=int(last_chunk_ms),
+            updated_ms=current,
+            metrics=metrics,
+            fetch_decision=fetch_decision,
+            reason=computed_reason,
+            metadata=_clean_metadata(metadata),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "streamId": self.stream_id,
+            "sessionEpoch": int(self.session_epoch),
+            "state": self.state.value,
+            "nextSeq": int(self.next_seq),
+            "lastChunkMs": int(self.last_chunk_ms),
+            "updatedMs": int(self.updated_ms),
+            "metrics": self.metrics.to_dict(),
+            "reason": self.reason,
+            "metadata": _clean_metadata(self.metadata),
+        }
+        if self.fetch_decision is not None:
+            result["fetchDecision"] = {
+                "window": int(self.fetch_decision.window),
+                "lookahead": int(self.fetch_decision.lookahead),
+                "interestLifetimeMs": int(self.fetch_decision.interest_lifetime_ms),
+                "missingTimeoutMs": int(self.fetch_decision.missing_timeout_ms),
+                "pressure": float(self.fetch_decision.pressure),
+                "reason": self.fetch_decision.reason,
+            }
+        return result
+
+
 @dataclass
 class StreamAdaptiveFetcherState:
     """Generic adaptive fetch policy state.
@@ -506,6 +599,8 @@ __all__ = [
     "StreamConsumerReorderBuffer",
     "StreamFecInfo",
     "StreamFetchDecision",
+    "StreamHealth",
+    "StreamHealthState",
     "StreamInfo",
     "StreamMetrics",
     "StreamProducerBuffer",
