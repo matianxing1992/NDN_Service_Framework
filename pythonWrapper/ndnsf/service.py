@@ -19,6 +19,8 @@ import threading
 from typing import Any, Callable, Optional
 
 from . import _ndnsf
+from .runtime_telemetry import ProviderCapabilityHint, parse_ack_metadata
+from .service_discovery import ServiceDiscoveryRecord
 
 NEGATIVE_ACK_REASON_QUEUE_FULL = "QUEUE_FULL"
 NEGATIVE_ACK_REASON_PROVIDER_BUSY = "PROVIDER_BUSY"
@@ -75,6 +77,47 @@ class AckCandidate:
     message: str = ""
     payload: bytes = b""
     telemetry: Optional[dict[str, Any]] = None
+
+
+def _deployment_roles_from_ack_candidate(candidate: AckCandidate) -> list[str]:
+    """Return deployment roles represented by a ready or provisioning ACK.
+
+    Ready providers use the core ProviderCapabilityHint/ServiceDiscoveryRecord
+    path when present. Provisioning is intentionally narrower: a negative ACK is
+    recorded only when it explicitly says the model is unavailable and therefore
+    needs provisioning.
+    """
+
+    fields = parse_ack_metadata(bytes(candidate.payload))
+
+    def _roles_from(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return [str(value).strip()] if str(value).strip() else []
+
+    if candidate.status:
+        capability_payload = fields.get("providerCapabilityHint")
+        if isinstance(capability_payload, dict):
+            try:
+                hint = ProviderCapabilityHint.from_dict(capability_payload)
+                record = ServiceDiscoveryRecord.from_provider_capability_hint(hint)
+                if not record.ready_for_new_request():
+                    return []
+            except Exception:
+                return []
+        return _roles_from(fields.get("roles"))
+
+    reason = str(fields.get("negativeAckReason", candidate.message)).strip()
+    normalized_reason = reason.replace("_", "").replace("-", "").upper()
+    if normalized_reason != "MODELUNAVAILABLE":
+        return []
+    roles = _roles_from(fields.get("provisioningRole"))
+    roles.extend(role for role in _roles_from(fields.get("roles")) if role not in roles)
+    return roles
 
 
 @dataclass(frozen=True)
@@ -1921,21 +1964,8 @@ class ServiceUser:
 
         def _deploy_observer(candidates: list[AckCandidate]) -> None:
             for c in candidates:
-                payload_text = bytes(c.payload).decode("utf-8", errors="replace")
-                fields: dict[str, str] = {}
-                for item in payload_text.split(";"):
-                    eq = item.find("=")
-                    if eq == -1:
-                        continue
-                    fields[item[:eq].strip()] = item[eq+1:].strip()
-                role_text = fields.get("roles", "")
-                for role in role_text.split(","):
-                    role = role.strip()
-                    if not role:
-                        continue
-                    # Accept both ready and provisioning providers
-                    if c.status or fields.get("negativeAckReason") == "ModelUnavailable":
-                        selected_providers.setdefault(role, []).append(c.provider_name)
+                for role in _deployment_roles_from_ack_candidate(c):
+                    selected_providers.setdefault(role, []).append(c.provider_name)
 
         response = self.request_collaboration(
             service,
