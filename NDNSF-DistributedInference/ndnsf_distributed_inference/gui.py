@@ -778,6 +778,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Override Qwen MiniNDN target RPS when >= 0.")
     parser.add_argument("--experiment-open-loop-duration-s", type=float, default=-1.0,
                         help="Override Qwen MiniNDN open-loop duration when >= 0.")
+    parser.add_argument("--experiment-open-loop-driver-mode",
+                        choices=["child", "threaded", "process-pool"],
+                        default="process-pool",
+                        help=("Open-loop Qwen MiniNDN user-driver mode. "
+                              "process-pool reuses worker users and is the "
+                              "recommended GUI/headless sweep default."))
     parser.add_argument("--experiment-dependency-envelope-mode",
                         "--experiment-dependency-payload-mode",
                         dest="experiment_dependency_envelope_mode",
@@ -845,6 +851,11 @@ def build_qwen_minindn_command(profile: ThreeRoleGuiProfile,
         command.extend([
             "--open-loop-duration-s",
             str(args.experiment_open_loop_duration_s),
+        ])
+    if args.experiment_open_loop_driver_mode:
+        command.extend([
+            "--open-loop-driver-mode",
+            args.experiment_open_loop_driver_mode,
         ])
     if args.experiment_dry_run:
         command.append("--dry-run")
@@ -3021,6 +3032,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             ("Target RPS sweep list", "target_rps_list", "", ""),
             ("Sweep repeats", "sweep_repeats", "1", ""),
             ("Open-loop duration s", "open_loop_duration_s", "", ""),
+            ("Open-loop driver mode", "open_loop_driver_mode", "process-pool", ""),
             ("Dependency envelope mode", "dependency_envelope_mode", "raw", ""),
             ("Output JSON", "output_json", "/tmp/ndnsf-di-gui-qwen-minindn/gui-summary.json", "save"),
             ("Extra harness args", "extra_args", "", ""),
@@ -3100,6 +3112,9 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                 else self._float_value("target_rps", -1.0)
             ),
             experiment_open_loop_duration_s=self._float_value("open_loop_duration_s", -1.0),
+            experiment_open_loop_driver_mode=(
+                self.value("open_loop_driver_mode").strip() or "process-pool"
+            ),
             experiment_dependency_envelope_mode=self.value("dependency_envelope_mode") or "raw",
             experiment_dry_run=self.bool_value("dry_run"),
             experiment_extra_arg=split_extra_args(self.value("extra_args")),
@@ -3416,6 +3431,10 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             "meanMs": user_execution.get("meanMs", ""),
             "makespanMs": user_execution.get("makespanMs", ""),
             "throughputRps": user_execution.get("throughputRps", ""),
+            "localBackpressureCount": user_execution.get("localBackpressureCount", ""),
+            "localBackpressureWaitCount": user_execution.get("localBackpressureWaitCount", ""),
+            "maxScheduleSlipMs": user_execution.get("maxScheduleSlipMs", ""),
+            "openLoopDriverMode": user_execution.get("openLoopDriverMode", ""),
             "dependencyStatus": dependency_execution.get("status", ""),
             "dependencyEnvelopeMode": data.get(
                 "dependencyEnvelopeMode",
@@ -3456,6 +3475,10 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             "meanMs",
             "makespanMs",
             "throughputRps",
+            "localBackpressureCount",
+            "localBackpressureWaitCount",
+            "maxScheduleSlipMs",
+            "openLoopDriverMode",
             "dependencyStatus",
             "dependencyEnvelopeMode",
             "dependencyPayloadMode",

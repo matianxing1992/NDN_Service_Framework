@@ -1289,6 +1289,7 @@ def parse_request_indices(raw: str) -> list[int]:
 
 def run_worker_request_batch(user: ServiceUser,
                              args,
+                             service_plan: dict,
                              roles: list[dict],
                              key_scopes: dict[str, list[str]],
                              dependencies: list[dict],
@@ -1830,6 +1831,7 @@ def main() -> int:
             results = run_worker_request_batch(
                 user,
                 args,
+                service_plan,
                 roles,
                 key_scopes,
                 dependencies,

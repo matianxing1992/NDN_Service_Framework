@@ -315,6 +315,8 @@ class TkGuiHelperTests(unittest.TestCase):
             "0.5",
             "--experiment-open-loop-duration-s",
             "10",
+            "--experiment-open-loop-driver-mode",
+            "process-pool",
             "--experiment-dependency-envelope-mode",
             "streamchunk",
             "--experiment-dry-run",
@@ -339,6 +341,8 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertIn("--target-rps", command)
         self.assertIn("0.5", command)
         self.assertIn("--open-loop-duration-s", command)
+        self.assertIn("--open-loop-driver-mode", command)
+        self.assertIn("process-pool", command)
         self.assertIn("--dependency-envelope-mode", command)
         self.assertIn("streamchunk", command)
         self.assertIn("10.0", command)
