@@ -3022,6 +3022,31 @@ MissionPlanDocument::statusLine() const
          " saveable=" + std::string(isSaveable() ? "true" : "false");
 }
 
+void
+saveMissionPlanDocument(const MissionPlanDocument& document, const std::string& path)
+{
+  if (path.empty()) {
+    throw std::runtime_error("cannot save UAV mission plan: empty path");
+  }
+  std::ofstream output(path, std::ios::trunc);
+  if (!output) {
+    throw std::runtime_error("cannot save UAV mission plan: " + path);
+  }
+  output << "# NDNSF-UAV mission plan document\n";
+  for (const auto& [key, value] : document.toFields()) {
+    output << key << "=" << value << "\n";
+  }
+}
+
+MissionPlanDocument
+loadMissionPlanDocument(const std::string& path)
+{
+  if (path.empty()) {
+    throw std::runtime_error("cannot load UAV mission plan: empty path");
+  }
+  return MissionPlanDocument::fromFields(loadKeyValueConfig(path));
+}
+
 UavDataProductCatalogState
 UavDataProductCatalogState::fromFields(const Fields& fields)
 {

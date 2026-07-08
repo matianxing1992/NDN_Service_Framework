@@ -772,6 +772,12 @@ struct MissionPlanDocument
   std::string statusLine() const;
 };
 
+void
+saveMissionPlanDocument(const MissionPlanDocument& document, const std::string& path);
+
+MissionPlanDocument
+loadMissionPlanDocument(const std::string& path);
+
 struct UavDataProductCatalogState
 {
   uint64_t recordingProducts = 0;

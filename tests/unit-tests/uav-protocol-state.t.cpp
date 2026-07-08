@@ -2,6 +2,8 @@
 
 #include "NDNSF-UAV-APP/shared/UavProtocol.hpp"
 
+#include <cstdio>
+
 namespace ndn_service_framework::test {
 namespace {
 
@@ -39,6 +41,8 @@ using ndnsf::examples::uav::buildPatrolMissionPlan;
 using ndnsf::examples::uav::computeVideoAdaptivePolicy;
 using ndnsf::examples::uav::decodeVideoPacket;
 using ndnsf::examples::uav::encodeVideoPacket;
+using ndnsf::examples::uav::loadMissionPlanDocument;
+using ndnsf::examples::uav::saveMissionPlanDocument;
 using ndnsf::examples::uav::streamChunkToVideoPacket;
 using ndnsf::examples::uav::toServiceOperationStatus;
 using ndnsf::examples::uav::videoPacketToStreamChunk;
@@ -999,6 +1003,16 @@ BOOST_AUTO_TEST_CASE(UavMissionPlanDocumentSupportsPersistentOperationalPlan)
   BOOST_CHECK_EQUAL(roundTrip.rallyPoints.size(), 1);
   BOOST_CHECK_EQUAL(roundTrip.metadata.at("source"), "unit-test");
   BOOST_CHECK_NE(roundTrip.statusLine().find("saveable=true"), std::string::npos);
+
+  const auto path = std::string("/tmp/ndnsf-uav-mission-plan-document-test.conf");
+  saveMissionPlanDocument(document, path);
+  const auto loaded = loadMissionPlanDocument(path);
+  BOOST_CHECK_EQUAL(loaded.planId, document.planId);
+  BOOST_CHECK_EQUAL(loaded.plan.parts.size(), document.plan.parts.size());
+  BOOST_CHECK_EQUAL(loaded.geofence.size(), document.geofence.size());
+  BOOST_CHECK_EQUAL(loaded.rallyPoints.size(), document.rallyPoints.size());
+  BOOST_CHECK_EQUAL(loaded.metadata.at("source"), "unit-test");
+  std::remove(path.c_str());
 }
 
 BOOST_AUTO_TEST_CASE(UavDataProductCatalogSummarizesQueryableProducts)
