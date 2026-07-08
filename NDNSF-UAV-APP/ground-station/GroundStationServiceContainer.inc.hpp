@@ -244,6 +244,16 @@ public:
       auto updated = current;
       updated.revoked = true;
       setOperatorAuthorityLease(updated);
+      appendOperatorAuthorityAlert({
+        "lease-revoked-detected",
+        fieldOr(fields, "reason", reason),
+        current.leaseId,
+        fieldOr(fields, "revoked_operator", current.operatorId),
+        fieldOr(fields, "revoker_operator", "unknown"),
+        fieldOr(fields, "revoked_drone", current.droneId),
+        fieldOr(fields, "revoked_scope", current.scope),
+        nowMilliseconds()
+      });
       reason = fieldOr(fields, "reason", reason);
     }
     NDN_LOG_INFO("AUTHORITY_LEASE_REFRESH revoked=" << (revoked ? "true" : "false")
@@ -258,6 +268,13 @@ public:
   operatorAuthorityRefreshIntervalMs() const
   {
     return m_operatorAuthorityRefreshIntervalMs;
+  }
+
+  std::vector<OperatorAuthorityAlert>
+  operatorAuthorityAlertsSnapshot() const
+  {
+    std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+    return m_operatorAuthorityAlerts;
   }
 
   void
@@ -727,6 +744,10 @@ public:
     snapshot.updatedMs = nowMilliseconds();
     snapshot.missionPlan = missionPlanSnapshot();
     snapshot.missionProgress = missionProgressSnapshot();
+    {
+      std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+      snapshot.operatorAuthorityAlerts = m_operatorAuthorityAlerts;
+    }
 
     auto toAvailability = [] (const std::string& value) {
       if (value == "true" || value == "online" || value == "connected" || value == "ready") {
@@ -2532,6 +2553,87 @@ public:
   }
 
   bool
+  runAuthorityAlertHistoryTest(std::chrono::seconds timeout)
+  {
+    if (m_operatorAuthorityStateFile.empty()) {
+      NDN_LOG_INFO("AUTHORITY_ALERT_HISTORY_RESULT ok=false reason=missing-state-file");
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      m_issuedOperatorLeases.clear();
+      m_operatorRevocationRecords.clear();
+      persistIssuedOperatorLeasesLocked();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+      m_operatorAuthorityAlerts.clear();
+    }
+
+    OperatorAuthorityLeaseRequest first;
+    first.requestId = "alert-first-" + std::to_string(nowMilliseconds());
+    first.operatorId = "/example/uav/operator/one";
+    first.droneId = targetDroneId();
+    first.scope = "control";
+    first.ttlMs = 60000;
+    first.requestedMs = nowMilliseconds();
+
+    OperatorAuthorityLease firstLease;
+    std::string firstReason;
+    const bool firstAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, first, timeout, firstLease, firstReason);
+    if (firstAccepted) {
+      setOperatorAuthorityLease(firstLease);
+    }
+
+    auto admin = first;
+    admin.requestId = "alert-admin-" + std::to_string(nowMilliseconds());
+    admin.operatorId = "/example/uav/operator/two";
+    admin.scope = "admin";
+    OperatorAuthorityLease adminLease;
+    std::string adminReason;
+    Fields adminFields;
+    const bool adminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, admin, timeout, adminLease, adminReason, &adminFields);
+
+    std::string refreshReason;
+    Fields refreshFields;
+    const bool refreshRevoked = refreshOperatorAuthorityLeaseFromIssuer(
+      m_config.groundStationIdentity, timeout, refreshReason, &refreshFields);
+
+    const auto alerts = operatorAuthorityAlertsSnapshot();
+    bool sawOverride = false;
+    bool sawDetected = false;
+    for (const auto& alert : alerts) {
+      if (alert.type == "admin-override" &&
+          alert.leaseId == firstLease.leaseId &&
+          alert.revokedOperator == first.operatorId &&
+          alert.revokerOperator == admin.operatorId) {
+        sawOverride = true;
+      }
+      if (alert.type == "lease-revoked-detected" &&
+          alert.leaseId == firstLease.leaseId &&
+          alert.revokedOperator == first.operatorId &&
+          alert.revokerOperator == admin.operatorId) {
+        sawDetected = true;
+      }
+    }
+    const bool ok = firstAccepted && firstReason == "ok" &&
+                    adminAccepted && adminReason == "ok" &&
+                    refreshRevoked && refreshReason == "ok" &&
+                    sawOverride && sawDetected && alerts.size() >= 2;
+    NDN_LOG_INFO("AUTHORITY_ALERT_HISTORY_RESULT ok=" << (ok ? "true" : "false")
+                 << " first=" << (firstAccepted ? "accepted" : firstReason)
+                 << " admin=" << (adminAccepted ? "accepted" : adminReason)
+                 << " refresh=" << (refreshRevoked ? "revoked" : refreshReason)
+                 << " alert_count=" << alerts.size()
+                 << " saw_override=" << (sawOverride ? "true" : "false")
+                 << " saw_detected=" << (sawDetected ? "true" : "false")
+                 << " lease_id=" << firstLease.leaseId);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -3794,6 +3896,28 @@ private:
   }
 
   void
+  appendOperatorAuthorityAlert(OperatorAuthorityAlert alert)
+  {
+    if (alert.updatedMs == 0) {
+      alert.updatedMs = nowMilliseconds();
+    }
+    std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+    m_operatorAuthorityAlerts.push_back(std::move(alert));
+    while (m_operatorAuthorityAlerts.size() > 20) {
+      m_operatorAuthorityAlerts.erase(m_operatorAuthorityAlerts.begin());
+    }
+    const auto& latest = m_operatorAuthorityAlerts.back();
+    NDN_LOG_INFO("AUTHORITY_ALERT type=" << latest.type
+                 << " lease_id=" << latest.leaseId
+                 << " revoked_operator=" << latest.revokedOperator
+                 << " revoker_operator=" << latest.revokerOperator
+                 << " drone=" << latest.droneId
+                 << " scope=" << latest.scope
+                 << " reason=" << latest.reason
+                 << " count=" << m_operatorAuthorityAlerts.size());
+  }
+
+  void
   persistIssuedOperatorLeasesLocked() const
   {
     if (m_operatorAuthorityStateFile.empty()) {
@@ -3944,6 +4068,7 @@ private:
     size_t overridden = 0;
     std::vector<std::string> revokedLeaseIds;
     std::vector<std::string> revokedOperators;
+    std::vector<OperatorAuthorityAlert> overrideAlerts;
     m_issuedOperatorLeases.erase(
       std::remove_if(m_issuedOperatorLeases.begin(), m_issuedOperatorLeases.end(),
                      [&](const OperatorAuthorityLease& active) {
@@ -3966,6 +4091,16 @@ private:
                            {"revoker_operator", leaseRequest.operatorId},
                            {"revoker_request_id", leaseRequest.requestId},
                          };
+                         overrideAlerts.push_back({
+                           "admin-override",
+                           "ok",
+                           active.leaseId,
+                           active.operatorId,
+                           leaseRequest.operatorId,
+                           active.droneId,
+                           active.scope,
+                           nowMs
+                         });
                          return true;
                        }
                        return active.operatorId == leaseRequest.operatorId &&
@@ -3986,6 +4121,9 @@ private:
     details["revoked_lease_ids"] = joinTextList(revokedLeaseIds);
     details["revoked_operators"] = joinTextList(revokedOperators);
     details["active_lease_count"] = std::to_string(m_issuedOperatorLeases.size());
+    for (auto& alert : overrideAlerts) {
+      appendOperatorAuthorityAlert(std::move(alert));
+    }
     persistIssuedOperatorLeasesLocked();
     return true;
   }
@@ -7108,6 +7246,7 @@ private:
   mutable std::mutex m_parameterMutex;
   mutable std::mutex m_operatorLeaseMutex;
   mutable std::mutex m_issuedOperatorLeaseMutex;
+  mutable std::mutex m_operatorAuthorityAlertMutex;
   std::vector<std::string> m_missionReadyDrones;
   MissionPlan m_latestMissionPlan;
   MissionProgressState m_latestMissionProgress;
@@ -7120,6 +7259,7 @@ private:
   OperatorAuthorityLease m_operatorLease;
   std::vector<OperatorAuthorityLease> m_issuedOperatorLeases;
   std::map<std::string, Fields> m_operatorRevocationRecords;
+  std::vector<OperatorAuthorityAlert> m_operatorAuthorityAlerts;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
   std::vector<std::string> m_patrolDroneIds;

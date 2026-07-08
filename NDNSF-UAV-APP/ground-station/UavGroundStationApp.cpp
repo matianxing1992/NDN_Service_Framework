@@ -396,6 +396,7 @@ main(int argc, char** argv)
     const bool autoAuthorityRevocationTest = getConfigBool(argc, argv, appConfig, "--auto-authority-revocation-test", "auto-authority-revocation-test", false);
     const bool autoAuthorityRefreshTest = getConfigBool(argc, argv, appConfig, "--auto-authority-refresh-test", "auto-authority-refresh-test", false);
     const bool autoAuthorityRefreshTimerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-refresh-timer-test", "auto-authority-refresh-timer-test", false);
+    const bool autoAuthorityAlertHistoryTest = getConfigBool(argc, argv, appConfig, "--auto-authority-alert-history-test", "auto-authority-alert-history-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -525,6 +526,7 @@ main(int argc, char** argv)
                                   autoAuthorityRevocationTest ||
                                   autoAuthorityRefreshTest ||
                                   autoAuthorityRefreshTimerTest ||
+                                  autoAuthorityAlertHistoryTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -611,6 +613,11 @@ main(int argc, char** argv)
       std::cout << "GS_AUTHORITY_REFRESH_TIMER_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoAuthorityAlertHistoryTest) {
+      const bool ok = runtime->runAuthorityAlertHistoryTest(std::chrono::seconds(10));
+      std::cout << "GS_AUTHORITY_ALERT_HISTORY_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
     if (autoTelemetryTest) {
       const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45),
                                                     !autoTelemetryAllowMockFields);
@@ -660,6 +667,7 @@ main(int argc, char** argv)
               << " auto_authority_revocation_test=" << (autoAuthorityRevocationTest ? "true" : "false")
               << " auto_authority_refresh_test=" << (autoAuthorityRefreshTest ? "true" : "false")
               << " auto_authority_refresh_timer_test=" << (autoAuthorityRefreshTimerTest ? "true" : "false")
+              << " auto_authority_alert_history_test=" << (autoAuthorityAlertHistoryTest ? "true" : "false")
               << " operator_authority_refresh_interval_ms=" << operatorAuthorityRefreshIntervalMs
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")

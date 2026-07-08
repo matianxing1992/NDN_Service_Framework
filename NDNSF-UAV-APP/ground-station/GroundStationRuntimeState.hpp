@@ -97,6 +97,32 @@ struct RuntimeCommandSnapshot
   uint64_t timeoutMs = 0;
 };
 
+struct OperatorAuthorityAlert
+{
+  std::string type = "unknown";
+  std::string reason = "unknown";
+  std::string leaseId = "none";
+  std::string revokedOperator = "unknown";
+  std::string revokerOperator = "unknown";
+  std::string droneId = "unknown";
+  std::string scope = "unknown";
+  uint64_t updatedMs = 0;
+
+  std::string
+  statusLine() const
+  {
+    std::ostringstream os;
+    os << type
+       << " lease=" << leaseId
+       << " revoked=" << revokedOperator
+       << " revoker=" << revokerOperator
+       << " drone=" << droneId
+       << " scope=" << scope
+       << " reason=" << reason;
+    return os.str();
+  }
+};
+
 struct VehicleRuntimeState
 {
   std::string droneId = "unknown";
@@ -175,6 +201,7 @@ struct GroundStationRuntimeState
   std::map<std::string, VehicleRuntimeState> drones;
   std::optional<MissionPlan> missionPlan;
   std::optional<MissionProgressState> missionProgress;
+  std::vector<OperatorAuthorityAlert> operatorAuthorityAlerts;
   uint64_t updatedMs = 0;
 
   const VehicleRuntimeState*

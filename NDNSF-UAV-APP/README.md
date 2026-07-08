@@ -1677,6 +1677,10 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-authority-refresh-timer-test \
   --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-authority-alert-history-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
 ```
 
 The expected success markers are
@@ -1693,7 +1697,8 @@ The expected success markers are
 `NDNSF_UAV_AUTHORITY_PERSISTENCE_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_REVOCATION_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_AUTHORITY_REFRESH_MININDN_SMOKE_OK`, and
-`NDNSF_UAV_AUTHORITY_REFRESH_TIMER_MININDN_SMOKE_OK`. The repo catalog smoke
+`NDNSF_UAV_AUTHORITY_REFRESH_TIMER_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_AUTHORITY_ALERT_HISTORY_MININDN_SMOKE_OK`. The repo catalog smoke
 records camera chunks to the drone's in-app repo, fetches the
 `/UAV/Camera/Repo/Catalog` service from the ground station, and verifies that
 chunk objects are summarized as one queryable UAV recording product. The
@@ -1722,7 +1727,9 @@ lease as revoked, and reuse the existing command/mission gates to return
 `lease-revoked`. The authority refresh timer smoke verifies the same path
 through `--operator-authority-refresh-interval-ms`, while the GUI exposes a
 manual `Refresh Lease` button in the main controls and shows refresh mode in
-the Operator Authority inspector. This bundle intentionally uses mock flight-controller fields and
+the Operator Authority inspector. The authority alert-history smoke verifies
+that admin overrides and client-side revoked-lease detection are retained as
+operator-visible alert entries. This bundle intentionally uses mock flight-controller fields and
 the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
 

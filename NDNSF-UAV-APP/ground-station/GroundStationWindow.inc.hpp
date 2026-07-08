@@ -2250,6 +2250,13 @@ private:
     appendInspectorRow(authorityText, "Selected telemetry",
                        std::string(selectedTelemetryAllowed ? "allowed" : "blocked") +
                        " (" + selectedTelemetryReason + ")");
+    size_t alertIndex = 1;
+    for (auto it = snapshot.operatorAuthorityAlerts.rbegin();
+         it != snapshot.operatorAuthorityAlerts.rend() && alertIndex <= 3; ++it, ++alertIndex) {
+      const auto ageMs = nowMs > it->updatedMs ? nowMs - it->updatedMs : 0;
+      appendInspectorRow(authorityText, "Alert " + std::to_string(alertIndex),
+                         it->statusLine() + " age_ms=" + std::to_string(ageMs));
+    }
     m_authorityInspector.set_text(authorityText.str());
 
     std::ostringstream missionText;
