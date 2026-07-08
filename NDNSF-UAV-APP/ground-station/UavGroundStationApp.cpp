@@ -387,6 +387,7 @@ main(int argc, char** argv)
     const bool autoFlightControlsTest = getConfigBool(argc, argv, appConfig, "--auto-flight-controls-test", "auto-flight-controls-test", false);
     const bool autoRecordingPlaybackTest = getConfigBool(argc, argv, appConfig, "--auto-recording-playback-test", "auto-recording-playback-test", false);
     const bool autoRepoCatalogBrowseTest = getConfigBool(argc, argv, appConfig, "--auto-repo-catalog-browse-test", "auto-repo-catalog-browse-test", false);
+    const bool autoParameterCacheTest = getConfigBool(argc, argv, appConfig, "--auto-parameter-cache-test", "auto-parameter-cache-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -440,6 +441,7 @@ main(int argc, char** argv)
   config.serviceCameraVideoControlSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-video-control-suffix", "service-camera-video-control-suffix", config.serviceCameraVideoControlSuffix.toUri()));
   config.serviceCameraRecordingManifestSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-recording-manifest-suffix", "service-camera-recording-manifest-suffix", config.serviceCameraRecordingManifestSuffix.toUri()));
   config.serviceCameraRepoCatalogSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-repo-catalog-suffix", "service-camera-repo-catalog-suffix", config.serviceCameraRepoCatalogSuffix.toUri()));
+  config.serviceMavlinkParametersSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-parameters-suffix", "service-mavlink-parameters-suffix", config.serviceMavlinkParametersSuffix.toUri()));
   config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
   const auto groundStationMapLatText =
     getConfigOption(argc, argv, appConfig, "--ground-station-map-lat", "ground-station-map-lat", std::to_string(config.groundStationMapLat));
@@ -484,6 +486,7 @@ main(int argc, char** argv)
                                   autoFlightControlsTest ||
                                   autoRecordingPlaybackTest ||
                                   autoRepoCatalogBrowseTest ||
+                                  autoParameterCacheTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -521,6 +524,11 @@ main(int argc, char** argv)
     if (autoRepoCatalogBrowseTest) {
       const bool ok = runtime->runRepoCatalogBrowseTest(std::chrono::seconds(30));
       std::cout << "GS_REPO_CATALOG_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
+    if (autoParameterCacheTest) {
+      const bool ok = runtime->runParameterCacheTest(std::chrono::seconds(30));
+      std::cout << "GS_PARAMETER_CACHE_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
     if (autoTelemetryTest) {
@@ -562,6 +570,7 @@ main(int argc, char** argv)
               << " auto_flight_controls_test=" << (autoFlightControlsTest ? "true" : "false")
               << " auto_recording_playback_test=" << (autoRecordingPlaybackTest ? "true" : "false")
               << " auto_repo_catalog_browse_test=" << (autoRepoCatalogBrowseTest ? "true" : "false")
+              << " auto_parameter_cache_test=" << (autoParameterCacheTest ? "true" : "false")
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
               << " video_bitrate_policy=" << videoBitratePolicy

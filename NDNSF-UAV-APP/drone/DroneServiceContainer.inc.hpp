@@ -8,6 +8,7 @@ public:
   virtual Fields sendMavlink(const std::vector<uint8_t>& frame,
                              const std::string& commandName) = 0;
   virtual Fields latestTelemetry() = 0;
+  virtual VehicleParameterSnapshot parameterSnapshot() = 0;
   virtual Fields executeMissionWaypoints(const std::vector<std::pair<std::string, std::string>>& waypoints,
                                          const Fields& missionFields)
   {
@@ -175,6 +176,27 @@ public:
       {"manual_replay_count", std::to_string(m_manualReplayCount.load())},
       {"safety_detail", safetyDetail},
     };
+  }
+
+  VehicleParameterSnapshot
+  parameterSnapshot() override
+  {
+    VehicleParameterSnapshot snapshot;
+    snapshot.droneId = m_droneId;
+    snapshot.source = "mock-flight-controller-cache";
+    snapshot.firmware = "MockPX4-1.14";
+    snapshot.vehicleType = "quadrotor";
+    snapshot.flightModes = "MANUAL,POSCTL,AUTO.MISSION";
+    snapshot.parameters = {
+      {"COM_FAIL_ACT_T", "25"},
+      {"COM_RC_LOSS_T", "30"},
+      {"MPC_XY_VEL_MAX", "12"},
+      {"NAV_RCL_ACT", "1"},
+    };
+    snapshot.parameterCount = snapshot.parameters.size();
+    snapshot.completePercent = 100;
+    snapshot.updatedMs = nowMilliseconds();
+    return snapshot;
   }
 
 private:
@@ -393,6 +415,34 @@ public:
     Fields result;
     appendLatestTelemetry(result);
     return result;
+  }
+
+  VehicleParameterSnapshot
+  parameterSnapshot() override
+  {
+    std::lock_guard<std::mutex> guard(m_socketMutex);
+    if (m_socket < 0) {
+      (void)ensureConnected();
+    }
+    if (m_socket >= 0) {
+      sendGcsHeartbeatIfNeededLocked();
+      (void)drainMavlinkTelemetry(std::chrono::milliseconds(100));
+    }
+    VehicleParameterSnapshot snapshot;
+    snapshot.droneId = m_droneId;
+    snapshot.source = m_transport + "-flight-controller-cache";
+    snapshot.firmware = "PX4-compatible";
+    snapshot.vehicleType = "quadrotor";
+    snapshot.flightModes = "MANUAL,POSCTL,AUTO.MISSION";
+    snapshot.parameters = {
+      {"COM_FAIL_ACT_T", "25"},
+      {"COM_RC_LOSS_T", "30"},
+      {"NAV_RCL_ACT", "1"},
+    };
+    snapshot.parameterCount = snapshot.parameters.size();
+    snapshot.completePercent = m_configurePx4SitlDemoParams ? 100 : 25;
+    snapshot.updatedMs = nowMilliseconds();
+    return snapshot;
   }
 
 private:
@@ -3115,6 +3165,17 @@ private:
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
         [this](const ndn_service_framework::RequestMessage&) {
           return makeResponse(true, encodeFields(recordingCatalogFields()));
+        }),
+      ServiceInvocationMode::NormalOnly);
+
+    m_provider->addService(
+      droneMavlinkParametersService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [backend, this](const ndn_service_framework::RequestMessage&) {
+          auto snapshot = backend->parameterSnapshot();
+          snapshot.droneId = m_droneId;
+          return makeResponse(true, encodeFields(snapshot.toFields(true)));
         }),
       ServiceInvocationMode::NormalOnly);
 

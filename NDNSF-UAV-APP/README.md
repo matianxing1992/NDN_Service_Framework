@@ -1641,6 +1641,10 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-repo-catalog-browse-test \
   --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-parameter-cache-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
 ```
 
 The expected success markers are
@@ -1648,11 +1652,15 @@ The expected success markers are
 `NDNSF_UAV_MISSION_CONTROLS_MININDN_SMOKE_OK`,
 `NDNSF_UAV_GUI_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK`, and
-`NDNSF_UAV_REPO_CATALOG_MININDN_SMOKE_OK`. The repo catalog smoke records
+`NDNSF_UAV_REPO_CATALOG_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_PARAMETER_CACHE_MININDN_SMOKE_OK`. The repo catalog smoke records
 camera chunks to the drone's in-app repo, fetches the
 `/UAV/Camera/Repo/Catalog` service from the ground station, and verifies that
-chunk objects are summarized as one queryable UAV recording product. This
-bundle intentionally uses mock flight-controller fields and the virtual camera
+chunk objects are summarized as one queryable UAV recording product. The
+parameter-cache smoke fetches `/UAV/MAVLink/Parameters` from the selected drone
+and verifies that the ground station caches a usable vehicle capability and
+parameter view. This bundle intentionally uses mock flight-controller fields and
+the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
@@ -1811,6 +1819,11 @@ service-container workload:
    data-product pattern. Camera recording manifests are now parsed into
    typed `RecordingDataProductState` instances so GS playback and smoke tests
    reason about product availability/playability instead of ad hoc strings.
-7. **Distributed inference integration.** Future image and object-detection
+7. **Vehicle parameter view.** Drones now expose a per-drone
+   `/UAV/MAVLink/Parameters` service that returns `VehicleParameterSnapshot`.
+   The GS caches the response and shows firmware, vehicle type, modes, and a
+   small parameter subset. This is an operational capability/status view, not a
+   full QGroundControl-style parameter editor.
+8. **Distributed inference integration.** Future image and object-detection
    workflows can connect to `NDNSF-DistributedInference` when model execution is
    split across ground stations, drones, and edge machines.

@@ -179,6 +179,9 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   else if (key == "service-camera-repo-catalog-suffix") {
     config.serviceCameraRepoCatalogSuffix = ndn::Name(value);
   }
+  else if (key == "service-mavlink-parameters-suffix") {
+    config.serviceMavlinkParametersSuffix = ndn::Name(value);
+  }
   else if (key == "service-gs-object-detection") {
     config.serviceGsObjectDetection = ndn::Name(value);
   }
@@ -334,6 +337,22 @@ droneCameraRepoCatalogService(const UavRuntimeConfig& config, const std::string&
 {
   ndn::Name service = droneIdentity(config, droneId);
   for (const auto& component : config.serviceCameraRepoCatalogSuffix) {
+    service.append(component);
+  }
+  return service;
+}
+
+ndn::Name
+droneMavlinkParametersService(const std::string& droneId)
+{
+  return droneMavlinkParametersService(UavRuntimeConfig{}, droneId);
+}
+
+ndn::Name
+droneMavlinkParametersService(const UavRuntimeConfig& config, const std::string& droneId)
+{
+  ndn::Name service = droneIdentity(config, droneId);
+  for (const auto& component : config.serviceMavlinkParametersSuffix) {
     service.append(component);
   }
   return service;
