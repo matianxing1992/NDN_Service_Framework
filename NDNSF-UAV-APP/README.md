@@ -1739,9 +1739,15 @@ reloaded for post-mission review. The authority audit-query smoke verifies
 the same events can be fetched through `/UAV/GS/OperatorAuthority/Audit`
 over the NDNSF service path. Audit queries accept `offset`, `limit`, `from_ms`,
 and `to_ms` fields; responses report `matched_count` and `returned_count` so
-post-mission tools can page through a bounded time window. This bundle intentionally uses mock flight-controller fields and
-the virtual camera
-path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
+post-mission tools can page through a bounded time window. They also accept
+`redaction=full|summary|self` and `requester_operator`: `full` remains the
+default for compatibility, `summary` hides operator identities, and `self`
+reveals identities only when the requester matches the revoked or revoking
+operator. This is an app-level audit-output contract until a
+multi-ground-station deployment binds redaction to authenticated requester
+identity. This bundle intentionally uses mock flight-controller fields and the
+virtual camera path, so it does not require PX4, jMAVSim, a USB camera, or real
+UAV hardware.
 
 For the two-drone jMAVSim path, the launcher starts PX4 with explicit
 instances (`px4 -i 0`, `px4 -i 1`) instead of invoking the single-instance

@@ -2784,7 +2784,36 @@ public:
                  << " limit=" << fieldOr(pageFields, "limit", "0")
                  << " first_type=" << fieldOr(pageFields, "alert.0.type", "none")
                  << " lease_id=" << fieldOr(pageFields, "alert.0.lease_id", "none"));
-    return ok && pageMatchesDetected;
+
+    Fields redactedFields;
+    std::string redactedReason;
+    const bool redactedOk = requestOperatorAuthorityAuditFromIssuerSync(
+      m_config.groundStationIdentity, Fields{
+        {"offset", "0"},
+        {"limit", "1"},
+        {"redaction", "summary"},
+      }, timeout, redactedFields, redactedReason);
+    const bool summaryRedacted =
+      redactedOk &&
+      redactedReason == "ok" &&
+      fieldOr(redactedFields, "redaction", "") == "summary" &&
+      fieldOr(redactedFields, "returned_count", "0") == "1" &&
+      fieldOr(redactedFields, "alert.0.type", "") == "admin-override" &&
+      fieldOr(redactedFields, "alert.0.lease_id", "") == firstLease.leaseId &&
+      fieldOr(redactedFields, "alert.0.drone", "") == first.droneId &&
+      fieldOr(redactedFields, "alert.0.scope", "") == first.scope &&
+      fieldOr(redactedFields, "alert.0.revoked_operator", "") == "redacted" &&
+      fieldOr(redactedFields, "alert.0.revoker_operator", "") == "redacted" &&
+      fieldOr(redactedFields, "alert.0.redacted", "") == "true";
+    NDN_LOG_INFO("AUTHORITY_AUDIT_REDACTION_RESULT ok=" << (summaryRedacted ? "true" : "false")
+                 << " query=" << (redactedOk ? "ok" : redactedReason)
+                 << " redaction=" << fieldOr(redactedFields, "redaction", "none")
+                 << " returned_count=" << fieldOr(redactedFields, "returned_count", "0")
+                 << " first_type=" << fieldOr(redactedFields, "alert.0.type", "none")
+                 << " revoked_operator=" << fieldOr(redactedFields, "alert.0.revoked_operator", "none")
+                 << " revoker_operator=" << fieldOr(redactedFields, "alert.0.revoker_operator", "none")
+                 << " redacted=" << fieldOr(redactedFields, "alert.0.redacted", "false"));
+    return ok && pageMatchesDetected && summaryRedacted;
   }
 
   bool
@@ -5863,6 +5892,8 @@ private:
     const auto requestedOffset = unsignedFieldOr(fields, "offset", 0);
     const auto fromMs = unsignedFieldOr(fields, "from_ms", 0);
     const auto toMs = unsignedFieldOr(fields, "to_ms", 0);
+    const auto redaction = fieldOr(fields, "redaction", "full");
+    const auto requesterOperator = fieldOr(fields, "requester_operator", "");
     const auto alerts = operatorAuthorityAlertsSnapshot();
     std::vector<OperatorAuthorityAlert> matched;
     for (const auto& alert : alerts) {
@@ -5891,18 +5922,26 @@ private:
       {"limit", std::to_string(limit)},
       {"from_ms", std::to_string(fromMs)},
       {"to_ms", std::to_string(toMs)},
+      {"redaction", redaction},
     };
     for (uint64_t i = 0; i < returnedCount; ++i) {
       const auto& alert = matched[static_cast<size_t>(start + i)];
       const auto prefix = "alert." + std::to_string(i) + ".";
+      const bool revealOperators =
+        redaction == "full" ||
+        (redaction == "self" &&
+         !requesterOperator.empty() &&
+         (requesterOperator == alert.revokedOperator ||
+          requesterOperator == alert.revokerOperator));
       response[prefix + "type"] = alert.type;
       response[prefix + "reason"] = alert.reason;
       response[prefix + "lease_id"] = alert.leaseId;
-      response[prefix + "revoked_operator"] = alert.revokedOperator;
-      response[prefix + "revoker_operator"] = alert.revokerOperator;
+      response[prefix + "revoked_operator"] = revealOperators ? alert.revokedOperator : "redacted";
+      response[prefix + "revoker_operator"] = revealOperators ? alert.revokerOperator : "redacted";
       response[prefix + "drone"] = alert.droneId;
       response[prefix + "scope"] = alert.scope;
       response[prefix + "updated_ms"] = std::to_string(alert.updatedMs);
+      response[prefix + "redacted"] = revealOperators ? "false" : "true";
     }
 
     NDN_LOG_INFO("AUTHORITY_AUDIT_LOOKUP alert_count=" << alerts.size()
@@ -5912,6 +5951,7 @@ private:
                  << " limit=" << limit
                  << " from_ms=" << fromMs
                  << " to_ms=" << toMs
+                 << " redaction=" << redaction
                  << " reason=ok");
     return makeResponse(true, encodeFields(response));
   }
