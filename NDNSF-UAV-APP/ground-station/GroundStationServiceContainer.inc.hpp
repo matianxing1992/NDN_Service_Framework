@@ -2025,6 +2025,56 @@ public:
   }
 
   bool
+  runAuthorityLeaseIssuerTest(std::chrono::seconds timeout)
+  {
+    OperatorAuthorityLease monitorLease;
+    monitorLease.leaseId = "issuer-smoke-monitor";
+    monitorLease.operatorId = m_operatorId;
+    monitorLease.droneId = targetDroneId();
+    monitorLease.scope = "monitor";
+    monitorLease.issuedMs = nowMilliseconds();
+    monitorLease.expiresMs = monitorLease.issuedMs + 60000;
+    setOperatorAuthorityLease(monitorLease);
+
+    std::string beforeReason;
+    const bool beforeBlocked = !validateOperatorLease(targetDroneId(), "mission_assign", beforeReason);
+
+    OperatorAuthorityLeaseRequest request;
+    request.requestId = "issuer-smoke-" + std::to_string(nowMilliseconds());
+    request.operatorId = m_operatorId;
+    request.droneId = targetDroneId();
+    request.scope = "control";
+    request.ttlMs = 60000;
+    request.requestedMs = nowMilliseconds();
+
+    std::string responseReason;
+    OperatorAuthorityLease issuedLease;
+    const bool issued = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, request, timeout, issuedLease, responseReason);
+    if (issued) {
+      setOperatorAuthorityLease(issuedLease);
+    }
+
+    std::string afterReason;
+    const bool afterAllowed = validateOperatorLease(targetDroneId(), "mission_assign", afterReason);
+    const bool ok = beforeBlocked && beforeReason == "monitor-scope" &&
+                    issued && responseReason == "ok" &&
+                    issuedLease.scope == "control" &&
+                    issuedLease.droneId == targetDroneId() &&
+                    afterAllowed && afterReason == "ok";
+    NDN_LOG_INFO("AUTHORITY_ISSUER_RESULT ok=" << (ok ? "true" : "false")
+                 << " before_blocked=" << (beforeBlocked ? "true" : "false")
+                 << " before_reason=" << beforeReason
+                 << " issued=" << (issued ? "true" : "false")
+                 << " response_reason=" << responseReason
+                 << " issued_scope=" << issuedLease.scope
+                 << " issued_drone=" << issuedLease.droneId
+                 << " after_allowed=" << (afterAllowed ? "true" : "false")
+                 << " after_reason=" << afterReason);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -3076,6 +3126,69 @@ private:
   }
 
   bool
+  requestOperatorAuthorityLeaseFromIssuerSync(const ndn::Name& issuerIdentity,
+                                              const OperatorAuthorityLeaseRequest& leaseRequest,
+                                              std::chrono::seconds timeout,
+                                              OperatorAuthorityLease& out,
+                                              std::string& reason)
+  {
+    struct RequestState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      bool ok = false;
+      std::string reason = "timeout";
+      OperatorAuthorityLease lease;
+    };
+
+    auto state = std::make_shared<RequestState>();
+    boost::asio::post(m_face.getIoContext(), [this, issuerIdentity, leaseRequest, state] {
+      if (!m_containerReady.load() || !m_user) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->done = true;
+        state->ok = false;
+        state->reason = "runtime-not-ready";
+        state->cv.notify_one();
+        return;
+      }
+
+      auto requestMessage = makeRequest(encodeFields(leaseRequest.toFields()));
+      m_user->RequestService(
+        std::vector<ndn::Name>{issuerIdentity},
+        m_config.serviceGsOperatorAuthorityLease,
+        std::move(requestMessage),
+        m_ackTimeoutMs,
+        ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
+        m_timeoutMs,
+        [state](const ndn::Name&) {
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->done = true;
+          state->ok = false;
+          state->reason = "request-timeout";
+          state->cv.notify_one();
+        },
+        [state](const ndn_service_framework::ResponseMessage& response) {
+          const auto fields = decodeFields(responsePayload(response));
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->done = true;
+          state->reason = fieldOr(fields, "reason", "unknown");
+          state->ok = fieldOr(fields, "accepted", "false") == "true";
+          if (state->ok) {
+            state->lease = OperatorAuthorityLease::fromFields(fields);
+          }
+          state->cv.notify_one();
+        });
+    });
+
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, timeout, [&state] { return state->done; });
+    out = state->lease;
+    reason = state->reason;
+    return state->done && state->ok;
+  }
+
+  bool
   validateOperatorLease(const std::string& droneId,
                         const std::string& commandName,
                         std::string& reason) const
@@ -3389,6 +3502,7 @@ private:
     m_objectDetectionProvider->setHandlerThreads(2);
     m_objectDetectionProvider->setAckThreads(1);
     installObjectDetectionService();
+    installOperatorAuthorityLeaseService();
   }
 
   void
@@ -4283,6 +4397,91 @@ private:
           onTimeout();
         });
     });
+  }
+
+  void
+  installOperatorAuthorityLeaseService()
+  {
+    using ServiceInvocationMode = ndn_service_framework::ServiceProvider::ServiceInvocationMode;
+
+    m_coreContainer.localRegistry().registerLocalService(
+      m_config.serviceGsOperatorAuthorityLease,
+      [this](const ndn::Name&,
+             const ndn::Name&,
+             const ndn_service_framework::RequestMessage& request) {
+        return runOperatorAuthorityLeaseLocal(request);
+      });
+
+    m_objectDetectionProvider->addService(
+      m_config.serviceGsOperatorAuthorityLease,
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(
+        [this](const ndn_service_framework::RequestMessage&) {
+          ndn_service_framework::ServiceProvider::AckDecision decision;
+          decision.status = true;
+          decision.message = "operator authority lease issuer ready";
+          decision.payload = bufferFromString(encodeFields(Fields{
+            {"gs", m_config.groundStationIdentity.toUri()},
+            {"ready", "true"},
+            {"service", m_config.serviceGsOperatorAuthorityLease.toUri()},
+          }));
+          return decision;
+        }),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage& request) {
+          ndn_service_framework::ResponseMessage response;
+          m_coreContainer.localRegistry().localInvokeRawInto(
+            m_config.serviceGsOperatorAuthorityLease, request, response,
+            m_config.groundStationIdentity);
+          return response;
+        }),
+      ServiceInvocationMode::NormalOnly);
+  }
+
+  ndn_service_framework::ResponseMessage
+  runOperatorAuthorityLeaseLocal(const ndn_service_framework::RequestMessage& request)
+  {
+    const auto payload = request.getPayload();
+    const auto fields = decodeFields(std::string(
+      reinterpret_cast<const char*>(payload.data()), payload.size()));
+    const auto leaseRequest = OperatorAuthorityLeaseRequest::fromFields(fields);
+    std::string reason;
+    if (!leaseRequest.isValid(reason)) {
+      return makeResponse(false, encodeFields({
+        {"type", "operator-authority-lease-response"},
+        {"accepted", "false"},
+        {"reason", reason},
+      }), reason);
+    }
+    if (leaseRequest.droneId != "all" &&
+        std::find(m_patrolDroneIds.begin(), m_patrolDroneIds.end(), leaseRequest.droneId) ==
+          m_patrolDroneIds.end()) {
+      return makeResponse(false, encodeFields({
+        {"type", "operator-authority-lease-response"},
+        {"accepted", "false"},
+        {"reason", "unknown-drone"},
+        {"lease_drone", leaseRequest.droneId},
+      }), "unknown-drone");
+    }
+
+    OperatorAuthorityLease lease;
+    lease.leaseId = "issued-" + leaseRequest.requestId;
+    lease.operatorId = leaseRequest.operatorId;
+    lease.droneId = leaseRequest.droneId;
+    lease.scope = leaseRequest.scope;
+    lease.issuedMs = nowMilliseconds();
+    const auto ttlMs = leaseRequest.ttlMs == 0 ? uint64_t{60000} : leaseRequest.ttlMs;
+    lease.expiresMs = lease.issuedMs + ttlMs;
+    auto response = lease.toFields();
+    response["type"] = "operator-authority-lease-response";
+    response["accepted"] = "true";
+    response["reason"] = "ok";
+    response["lease_ttl_ms"] = std::to_string(ttlMs);
+    NDN_LOG_INFO("AUTHORITY_LEASE_ISSUED request_id=" << leaseRequest.requestId
+                 << " operator=" << lease.operatorId
+                 << " drone=" << lease.droneId
+                 << " scope=" << lease.scope
+                 << " expires_ms=" << lease.expiresMs);
+    return makeResponse(true, encodeFields(response));
   }
 
   std::vector<uint8_t>

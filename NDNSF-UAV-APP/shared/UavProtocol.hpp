@@ -841,6 +841,21 @@ struct OperatorAuthorityLease
   std::string statusLine() const;
 };
 
+struct OperatorAuthorityLeaseRequest
+{
+  std::string requestId = "lease-request";
+  std::string operatorId = "unknown";
+  std::string droneId = "all";
+  std::string scope = "monitor";
+  uint64_t ttlMs = 0;
+  uint64_t requestedMs = 0;
+
+  static OperatorAuthorityLeaseRequest fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool isValid(std::string& reason) const;
+  std::string statusLine() const;
+};
+
 MissionPlan
 buildPatrolMissionPlan(const std::string& taskId,
                        double centerLat,

@@ -23,6 +23,7 @@ using ndnsf::examples::uav::MissionWaypoint;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::RecordingDataProductState;
 using ndnsf::examples::uav::OperatorAuthorityLease;
+using ndnsf::examples::uav::OperatorAuthorityLeaseRequest;
 using ndnsf::examples::uav::SafetyState;
 using ndnsf::examples::uav::SelectedActionState;
 using ndnsf::examples::uav::SelectedDroneSummaryState;
@@ -1121,6 +1122,44 @@ BOOST_AUTO_TEST_CASE(OperatorAuthorityLeaseBlocksConflictingControl)
   BOOST_CHECK_EQUAL(roundTrip.leaseId, "lease-A");
   BOOST_CHECK_EQUAL(roundTrip.scope, "monitor");
   BOOST_CHECK_NE(roundTrip.statusLine().find("operator=operator-1"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(OperatorAuthorityLeaseRequestRoundTripsAndValidates)
+{
+  OperatorAuthorityLeaseRequest request;
+  request.requestId = "req-1";
+  request.operatorId = "operator-1";
+  request.droneId = "A";
+  request.scope = "mission";
+  request.ttlMs = 45000;
+  request.requestedMs = 1234;
+
+  std::string reason;
+  BOOST_CHECK(request.isValid(reason));
+  BOOST_CHECK_EQUAL(reason, "ok");
+
+  const auto fields = request.toFields();
+  BOOST_CHECK_EQUAL(fields.at("type"), "operator-authority-lease-request");
+  BOOST_CHECK_EQUAL(fields.at("lease_request_id"), "req-1");
+  BOOST_CHECK_EQUAL(fields.at("lease_operator"), "operator-1");
+  BOOST_CHECK_EQUAL(fields.at("lease_drone"), "A");
+  BOOST_CHECK_EQUAL(fields.at("lease_scope"), "mission");
+  BOOST_CHECK_EQUAL(fields.at("lease_ttl_ms"), "45000");
+  BOOST_CHECK_EQUAL(fields.at("lease_requested_ms"), "1234");
+
+  const auto roundTrip = OperatorAuthorityLeaseRequest::fromFields(fields);
+  BOOST_CHECK_EQUAL(roundTrip.requestId, "req-1");
+  BOOST_CHECK_EQUAL(roundTrip.operatorId, "operator-1");
+  BOOST_CHECK_EQUAL(roundTrip.droneId, "A");
+  BOOST_CHECK_EQUAL(roundTrip.scope, "mission");
+  BOOST_CHECK_EQUAL(roundTrip.ttlMs, 45000);
+  BOOST_CHECK_EQUAL(roundTrip.requestedMs, 1234);
+  BOOST_CHECK_NE(roundTrip.statusLine().find("scope=mission"), std::string::npos);
+
+  auto invalid = request;
+  invalid.scope = "fly-anywhere";
+  BOOST_CHECK(!invalid.isValid(reason));
+  BOOST_CHECK_EQUAL(reason, "unsupported-scope");
 }
 
 BOOST_AUTO_TEST_CASE(DroneListRowStateUsesSharedTelemetryMissionAndVideoModels)

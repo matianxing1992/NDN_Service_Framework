@@ -185,6 +185,9 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   else if (key == "service-gs-object-detection") {
     config.serviceGsObjectDetection = ndn::Name(value);
   }
+  else if (key == "service-gs-operator-authority-lease") {
+    config.serviceGsOperatorAuthorityLease = ndn::Name(value);
+  }
   else if (key == "ground-station-map-lat") {
     try {
       config.groundStationMapLat = std::stod(value);
@@ -3403,6 +3406,62 @@ OperatorAuthorityLease::statusLine() const
          " scope=" + scope +
          " revoked=" + std::string(revoked ? "true" : "false") +
          " expires=" + std::to_string(expiresMs);
+}
+
+OperatorAuthorityLeaseRequest
+OperatorAuthorityLeaseRequest::fromFields(const Fields& fields)
+{
+  OperatorAuthorityLeaseRequest request;
+  request.requestId = fieldOr(fields, "lease_request_id", request.requestId);
+  request.operatorId = fieldOr(fields, "lease_operator", request.operatorId);
+  request.droneId = fieldOr(fields, "lease_drone", request.droneId);
+  request.scope = fieldOr(fields, "lease_scope", request.scope);
+  request.ttlMs = uint64FieldOr(fields, "lease_ttl_ms", request.ttlMs);
+  request.requestedMs = uint64FieldOr(fields, "lease_requested_ms", request.requestedMs);
+  return request;
+}
+
+Fields
+OperatorAuthorityLeaseRequest::toFields() const
+{
+  return {
+    {"type", "operator-authority-lease-request"},
+    {"lease_request_id", requestId},
+    {"lease_operator", operatorId},
+    {"lease_drone", droneId},
+    {"lease_scope", scope},
+    {"lease_ttl_ms", std::to_string(ttlMs)},
+    {"lease_requested_ms", std::to_string(requestedMs)},
+  };
+}
+
+bool
+OperatorAuthorityLeaseRequest::isValid(std::string& reason) const
+{
+  if (operatorId.empty() || operatorId == "unknown") {
+    reason = "missing-operator";
+    return false;
+  }
+  if (droneId.empty()) {
+    reason = "missing-drone";
+    return false;
+  }
+  if (scope != "monitor" && scope != "control" && scope != "mission" && scope != "admin") {
+    reason = "unsupported-scope";
+    return false;
+  }
+  reason = "ok";
+  return true;
+}
+
+std::string
+OperatorAuthorityLeaseRequest::statusLine() const
+{
+  return "OperatorAuthorityLeaseRequest id=" + requestId +
+         " operator=" + operatorId +
+         " drone=" + droneId +
+         " scope=" + scope +
+         " ttl_ms=" + std::to_string(ttlMs);
 }
 
 SelectedDroneSummaryState

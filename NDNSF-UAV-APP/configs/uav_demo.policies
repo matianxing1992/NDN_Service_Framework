@@ -56,6 +56,7 @@ provider-policies
         allow
         {
             /UAV/GS/ObjectDetection
+            /UAV/GS/OperatorAuthority/Lease
         }
     }
 }
@@ -84,6 +85,7 @@ user-policies
             /example/uav/drone/C/UAV/Camera/Repo/Catalog
             /example/uav/drone/C/UAV/MAVLink/Parameters
             /UAV/GS/ObjectDetection
+            /UAV/GS/OperatorAuthority/Lease
         }
     }
 
@@ -93,6 +95,7 @@ user-policies
         allow
         {
             /UAV/GS/ObjectDetection
+            /UAV/GS/OperatorAuthority/Lease
         }
     }
 
@@ -102,6 +105,7 @@ user-policies
         allow
         {
             /UAV/GS/ObjectDetection
+            /UAV/GS/OperatorAuthority/Lease
         }
     }
 
@@ -111,6 +115,7 @@ user-policies
         allow
         {
             /UAV/GS/ObjectDetection
+            /UAV/GS/OperatorAuthority/Lease
         }
     }
 }
