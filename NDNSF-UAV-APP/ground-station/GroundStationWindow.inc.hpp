@@ -45,6 +45,8 @@ public:
     , m_patrol("Upload Mission")
     , m_startMission("Start Mission")
     , m_stopPatrol("Stop Patrol")
+    , m_saveMissionPlan("Save Plan")
+    , m_loadMissionPlan("Load Plan")
     , m_controlToggle("Control")
     , m_refreshRecording("Find Rec.")
     , m_playRecording("Play Rec.")
@@ -145,13 +147,21 @@ public:
       m_patrolLon.set_text(lonText.str());
     }
     m_patrolSizeMeters.set_text("140");
+    m_missionPlanFile.set_text(m_runtime.missionPlanFilePath());
     m_patrolLat.set_width_chars(9);
     m_patrolLon.set_width_chars(10);
     m_patrolSizeMeters.set_width_chars(6);
+    m_missionPlanFile.set_width_chars(30);
+    m_missionPlanFile.set_tooltip_text("Mission plan save/load file path");
+    m_saveMissionPlan.set_tooltip_text("Save the current mission preview or uploaded plan");
+    m_loadMissionPlan.set_tooltip_text("Load a saved mission plan file into the ground-station preview");
     m_patrolControls.pack_start(m_patrolHint, Gtk::PACK_SHRINK);
     m_patrolControls.pack_start(m_patrolLat, Gtk::PACK_SHRINK);
     m_patrolControls.pack_start(m_patrolLon, Gtk::PACK_SHRINK);
     m_patrolControls.pack_start(m_patrolSizeMeters, Gtk::PACK_SHRINK);
+    m_patrolControls.pack_start(m_missionPlanFile, Gtk::PACK_SHRINK);
+    m_patrolControls.pack_start(m_saveMissionPlan, Gtk::PACK_SHRINK);
+    m_patrolControls.pack_start(m_loadMissionPlan, Gtk::PACK_SHRINK);
     m_box.pack_start(m_patrolControls, Gtk::PACK_SHRINK);
 
     m_workspace.set_size_request(-1, 600);
@@ -584,6 +594,12 @@ public:
     });
     m_mapClearWp.signal_clicked().connect([this] {
       clearMissionWaypoints();
+    });
+    m_saveMissionPlan.signal_clicked().connect([this] {
+      saveMissionPlanFile();
+    });
+    m_loadMissionPlan.signal_clicked().connect([this] {
+      loadMissionPlanFile();
     });
     signal_key_press_event().connect(
       [this](GdkEventKey* event) {
@@ -3409,6 +3425,79 @@ private:
     refreshMapTile();
   }
 
+  std::optional<MissionPlan>
+  currentEditableMissionPlan() const
+  {
+    if (m_previewMissionPlan) {
+      return m_previewMissionPlan;
+    }
+    if (!m_planWaypoints.empty()) {
+      return buildMissionPlanPreview();
+    }
+    return m_runtime.missionPlanSnapshot();
+  }
+
+  static std::vector<std::pair<double, double>>
+  routeWaypointsFromPlan(const MissionPlan& plan)
+  {
+    std::vector<std::pair<double, double>> route;
+    for (const auto& part : plan.parts) {
+      const auto limit = part.returnHomePlanned && !part.waypoints.empty() ?
+                         part.waypoints.size() - 1 : part.waypoints.size();
+      for (size_t i = 0; i < limit; ++i) {
+        route.emplace_back(part.waypoints[i].lat, part.waypoints[i].lon);
+      }
+      if (!route.empty()) {
+        break;
+      }
+    }
+    return route;
+  }
+
+  void
+  saveMissionPlanFile()
+  {
+    const auto path = m_missionPlanFile.get_text();
+    const auto plan = currentEditableMissionPlan();
+    if (!plan) {
+      m_status.set_text("No mission plan preview or uploaded plan to save");
+      return;
+    }
+    std::string detail;
+    if (m_runtime.saveMissionPlanToFile(*plan, path, &detail)) {
+      m_runtime.setMissionPlanFilePath(path);
+      m_status.set_text("Mission plan saved: " + detail);
+      m_mapMission.set_text(mapWorkspaceStatusText("mission-plan-saved",
+                                                   m_runtime.targetDroneId(),
+                                                   path));
+    }
+    else {
+      m_status.set_text("Mission plan save failed: " + detail);
+    }
+  }
+
+  void
+  loadMissionPlanFile()
+  {
+    const auto path = m_missionPlanFile.get_text();
+    std::string detail;
+    if (!m_runtime.loadMissionPlanFromFile(path, &detail)) {
+      m_status.set_text("Mission plan load failed: " + detail);
+      return;
+    }
+    m_previewMissionPlan = m_runtime.missionPlanSnapshot();
+    if (m_previewMissionPlan) {
+      m_planWaypoints = routeWaypointsFromPlan(*m_previewMissionPlan);
+      updatePatrolInputsFromWaypoints();
+    }
+    updateVehicleRows();
+    m_mapMission.set_text(mapWorkspaceStatusText("mission-plan-loaded",
+                                                 m_runtime.targetDroneId(),
+                                                 path));
+    m_status.set_text("Mission plan loaded: " + detail);
+    refreshMapTile();
+  }
+
   void
   scheduleMissionStartPhase(int phase, size_t droneIndex)
   {
@@ -3838,6 +3927,8 @@ private:
   Gtk::Button m_patrol;
   Gtk::Button m_startMission;
   Gtk::Button m_stopPatrol;
+  Gtk::Button m_saveMissionPlan;
+  Gtk::Button m_loadMissionPlan;
   Gtk::Button m_controlToggle;
   Gtk::Button m_refreshRecording;
   Gtk::Button m_playRecording;
@@ -3852,6 +3943,7 @@ private:
   Gtk::Entry m_patrolLat;
   Gtk::Entry m_patrolLon;
   Gtk::Entry m_patrolSizeMeters;
+  Gtk::Entry m_missionPlanFile;
   Gtk::Box m_controlPanel;
   Gtk::Box m_inputModeRow;
   Gtk::Label m_inputModeHint;

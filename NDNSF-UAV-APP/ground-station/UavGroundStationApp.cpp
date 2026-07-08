@@ -421,6 +421,8 @@ main(int argc, char** argv)
       std::stoull(getConfigOption(argc, argv, appConfig,
                                   "--video-bitrate-auto-pressure-ms",
                                   "video-bitrate-auto-pressure-ms", "2500")));
+    const std::string missionPlanFile = getConfigOption(
+      argc, argv, appConfig, "--mission-plan-file", "mission-plan-file", "");
     UavRuntimeConfig config = loadUavRuntimeConfig(
       getConfigOption(argc, argv, appConfig, "--runtime-config", "runtime-config",
                       "NDNSF-UAV-APP/configs/uav_runtime.conf"));
@@ -489,7 +491,7 @@ main(int argc, char** argv)
       serveCertificates, ackTimeoutMs, timeoutMs, config, targetDroneId,
       videoBitrateKbps, videoFrameWidth, patrolDroneIds, yoloModel, yoloScript,
       yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction,
-      videoBitratePolicy, videoBitrateAutoPressureMs);
+      videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");

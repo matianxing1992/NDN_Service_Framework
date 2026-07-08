@@ -3372,6 +3372,7 @@ UavFunctionalityState::fromStates(const std::optional<MissionPlan>& missionPlan,
   UavFunctionalityState state;
   if (missionPlan && !missionPlan->parts.empty()) {
     state.missionEditor = "prototype";
+    state.persistentMissionFiles = "available";
   }
   if (selectedMissionPart && !selectedMissionPart->id.empty()) {
     state.perDroneMissionReview = "available";

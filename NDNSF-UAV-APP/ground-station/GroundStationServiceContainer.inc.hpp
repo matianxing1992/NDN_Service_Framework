@@ -16,7 +16,8 @@ public:
                        uint64_t linkLostMs = 8000,
                        std::string lostLinkAction = "notify",
                        std::string videoBitratePolicy = "manual",
-                       uint64_t videoBitrateAutoPressureMs = 2500)
+                       uint64_t videoBitrateAutoPressureMs = 2500,
+                       std::string missionPlanFilePath = "")
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_coreContainer({
@@ -40,6 +41,7 @@ public:
     , m_videoBitratePolicy(std::move(videoBitratePolicy))
     , m_videoBitrateAutoPressureMs(videoBitrateAutoPressureMs == 0 ?
                                    0 : std::max<uint64_t>(500, videoBitrateAutoPressureMs))
+    , m_missionPlanFilePath(std::move(missionPlanFilePath))
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
@@ -516,6 +518,97 @@ public:
       return std::nullopt;
     }
     return m_latestMissionPlan;
+  }
+
+  std::string
+  missionPlanFilePath() const
+  {
+    std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    return m_missionPlanFilePath;
+  }
+
+  void
+  setMissionPlanFilePath(std::string path)
+  {
+    std::lock_guard<std::mutex> guard(m_missionProgressMutex);
+    m_missionPlanFilePath = std::move(path);
+  }
+
+  bool
+  saveMissionPlanToFile(const MissionPlan& plan, const std::string& path,
+                        std::string* detail = nullptr) const
+  {
+    if (path.empty()) {
+      if (detail != nullptr) {
+        *detail = "mission plan file path is empty";
+      }
+      return false;
+    }
+    try {
+      auto document = MissionPlanDocument::fromPlan(
+        plan,
+        plan.taskId.empty() ? ("mission-" + std::to_string(nowMilliseconds())) : plan.taskId,
+        plan.taskId.empty() ? "Ground station mission" : ("Ground station mission " + plan.taskId),
+        m_config.groundStationIdentity.toUri(),
+        nowMilliseconds());
+      document.metadata["source"] = "ground-station";
+      saveMissionPlanDocument(document, path);
+      if (detail != nullptr) {
+        *detail = document.statusLine();
+      }
+      return true;
+    }
+    catch (const std::exception& e) {
+      if (detail != nullptr) {
+        *detail = e.what();
+      }
+      return false;
+    }
+  }
+
+  bool
+  saveCurrentMissionPlanToFile(const std::string& path, std::string* detail = nullptr) const
+  {
+    const auto plan = missionPlanSnapshot();
+    if (!plan) {
+      if (detail != nullptr) {
+        *detail = "no current mission plan";
+      }
+      return false;
+    }
+    return saveMissionPlanToFile(*plan, path, detail);
+  }
+
+  bool
+  loadMissionPlanFromFile(const std::string& path, std::string* detail = nullptr)
+  {
+    if (path.empty()) {
+      if (detail != nullptr) {
+        *detail = "mission plan file path is empty";
+      }
+      return false;
+    }
+    try {
+      const auto document = loadMissionPlanDocument(path);
+      if (!document.isSaveable()) {
+        if (detail != nullptr) {
+          *detail = "loaded mission plan is not saveable: " + document.statusLine();
+        }
+        return false;
+      }
+      updateMissionPlan(document.plan);
+      setMissionPlanFilePath(path);
+      if (detail != nullptr) {
+        *detail = document.statusLine();
+      }
+      return true;
+    }
+    catch (const std::exception& e) {
+      if (detail != nullptr) {
+        *detail = e.what();
+      }
+      return false;
+    }
   }
 
   GroundStationRuntimeState
@@ -5171,6 +5264,7 @@ private:
   std::string m_lostLinkAction = "notify";
   std::string m_videoBitratePolicy = "manual";
   uint64_t m_videoBitrateAutoPressureMs = 2500;
+  std::string m_missionPlanFilePath;
   std::mutex m_yoloMutex;
   std::thread m_yoloPrewarmThread;
   pid_t m_yoloWorkerPid = -1;

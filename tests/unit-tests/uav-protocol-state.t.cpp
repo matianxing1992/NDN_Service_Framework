@@ -861,14 +861,14 @@ BOOST_AUTO_TEST_CASE(UavFunctionalityStateTracksImplementedAndMissingCapabilitie
                                                                telemetry, true, 3);
   BOOST_CHECK_EQUAL(functionality.missionEditor, "prototype");
   BOOST_CHECK_EQUAL(functionality.perDroneMissionReview, "available");
-  BOOST_CHECK_EQUAL(functionality.persistentMissionFiles, "missing");
+  BOOST_CHECK_EQUAL(functionality.persistentMissionFiles, "available");
   BOOST_CHECK_EQUAL(functionality.recordingLogBrowsing, "available");
   BOOST_CHECK_EQUAL(functionality.parameterStatusInspection, "limited");
   BOOST_CHECK_EQUAL(functionality.objectDetectionDisplay, "metadata-only");
   BOOST_CHECK_EQUAL(functionality.multiDroneServiceSelection, "available");
-  BOOST_CHECK_EQUAL(functionality.implementedCapabilityCount(), 6);
-  BOOST_CHECK_NE(functionality.missingOrLimitedCapabilities().find("persistent-mission-files=missing"),
-                 std::string::npos);
+  BOOST_CHECK_EQUAL(functionality.implementedCapabilityCount(), 7);
+  BOOST_CHECK_EQUAL(functionality.missingOrLimitedCapabilities().find("persistent-mission-files"),
+                    std::string::npos);
   BOOST_CHECK_NE(functionality.statusLine().find("mission_editor=prototype"), std::string::npos);
 
   const auto roundTrip = UavFunctionalityState::fromFields(functionality.toFields());
