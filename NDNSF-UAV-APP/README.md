@@ -1649,6 +1649,10 @@ xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
 xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
   --drone-headless --auto-authority-lease-test \
   --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
+
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --drone-headless --auto-authority-config-test \
+  --no-cli --no-xhost --video-bitrate-kbps 8000 --video-width 480
 ```
 
 The expected success markers are
@@ -1658,7 +1662,8 @@ The expected success markers are
 `NDNSF_UAV_RECORDING_PLAYBACK_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_REPO_CATALOG_MININDN_SMOKE_OK`, and
 `NDNSF_UAV_PARAMETER_CACHE_MININDN_SMOKE_OK`, and
-`NDNSF_UAV_AUTHORITY_LEASE_MININDN_SMOKE_OK`. The repo catalog smoke records
+`NDNSF_UAV_AUTHORITY_LEASE_MININDN_SMOKE_OK`, and
+`NDNSF_UAV_AUTHORITY_CONFIG_MININDN_SMOKE_OK`. The repo catalog smoke records
 camera chunks to the drone's in-app repo, fetches the
 `/UAV/Camera/Repo/Catalog` service from the ground station, and verifies that
 chunk objects are summarized as one queryable UAV recording product. The
@@ -1667,7 +1672,11 @@ and verifies that the ground station caches a usable vehicle capability and
 parameter view. The authority lease smoke verifies that monitor-only or expired
 operator leases block control and mission assignment before network/MAVLink
 dispatch while the normal runtime keeps a default local control lease for demo
-compatibility. This bundle intentionally uses mock flight-controller fields and
+compatibility. The authority config smoke starts the GS with a configured
+monitor-only lease for the selected drone and verifies that startup lease
+configuration, rather than test-time injection, blocks control and mission
+assignment while allowing telemetry. This bundle intentionally uses mock
+flight-controller fields and
 the virtual camera
 path, so it does not require PX4, jMAVSim, a USB camera, or real UAV hardware.
 
@@ -1836,7 +1845,10 @@ service-container workload:
    `OperatorAuthorityLease` and validates it before direct MAVLink commands and
    mission assignment requests. The default local lease preserves existing
    single-operator demos; monitor-only or expired leases fast-fail before
-   network/MAVLink dispatch.
+   network/MAVLink dispatch. The local lease source is configurable with
+   `--operator-id`, `--operator-lease-drone`, `--operator-lease-scope`, and
+   `--operator-lease-ttl-ms`, and the GUI inspector shows the active operator
+   authority for the selected drone.
 9. **Distributed inference integration.** Future image and object-detection
    workflows can connect to `NDNSF-DistributedInference` when model execution is
    split across ground stations, drones, and edge machines.

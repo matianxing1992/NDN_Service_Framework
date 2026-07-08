@@ -17,7 +17,11 @@ public:
                        std::string lostLinkAction = "notify",
                        std::string videoBitratePolicy = "manual",
                        uint64_t videoBitrateAutoPressureMs = 2500,
-                       std::string missionPlanFilePath = "")
+                       std::string missionPlanFilePath = "",
+                       std::string operatorId = "",
+                       std::string operatorLeaseDrone = "all",
+                       std::string operatorLeaseScope = "control",
+                       uint64_t operatorLeaseTtlMs = 0)
     : m_serveCertificates(serveCertificates)
     , m_config(std::move(config))
     , m_coreContainer({
@@ -42,10 +46,23 @@ public:
     , m_videoBitrateAutoPressureMs(videoBitrateAutoPressureMs == 0 ?
                                    0 : std::max<uint64_t>(500, videoBitrateAutoPressureMs))
     , m_missionPlanFilePath(std::move(missionPlanFilePath))
+    , m_operatorId(std::move(operatorId))
+    , m_defaultOperatorLeaseDrone(std::move(operatorLeaseDrone))
+    , m_defaultOperatorLeaseScope(std::move(operatorLeaseScope))
+    , m_defaultOperatorLeaseTtlMs(operatorLeaseTtlMs)
     , m_videoPumpTimer(m_face.getIoContext())
   {
     if (m_patrolDroneIds.empty()) {
       m_patrolDroneIds.push_back(m_targetDroneId);
+    }
+    if (m_operatorId.empty()) {
+      m_operatorId = m_config.groundStationIdentity.toUri();
+    }
+    if (m_defaultOperatorLeaseDrone.empty()) {
+      m_defaultOperatorLeaseDrone = "all";
+    }
+    if (m_defaultOperatorLeaseScope.empty()) {
+      m_defaultOperatorLeaseScope = "control";
     }
     m_targetDroneLocked = !m_targetDroneId.empty();
     issueDefaultOperatorLease();
@@ -1980,6 +1997,34 @@ public:
   }
 
   bool
+  runConfiguredAuthorityLeaseTest(std::chrono::seconds)
+  {
+    const auto lease = operatorAuthorityLease();
+    std::string telemetryReason;
+    const bool telemetryAllowed = validateOperatorLease(targetDroneId(), "telemetry", telemetryReason);
+    const bool landBlocked = !sendMavlinkCommandToDrone(targetDroneId(), "land");
+    std::string missionReason;
+    const bool missionBlocked = !validateOperatorLease(targetDroneId(), "mission_assign", missionReason);
+    const bool expectedMonitorLease = lease.scope == "monitor" && lease.droneId == targetDroneId();
+    const bool ok = expectedMonitorLease &&
+                    telemetryAllowed && telemetryReason == "ok" &&
+                    landBlocked &&
+                    missionBlocked && missionReason == "monitor-scope";
+    NDN_LOG_INFO("AUTHORITY_CONFIG_RESULT ok=" << (ok ? "true" : "false")
+                 << " lease_id=" << lease.leaseId
+                 << " lease_operator=" << lease.operatorId
+                 << " lease_drone=" << lease.droneId
+                 << " lease_scope=" << lease.scope
+                 << " lease_expires_ms=" << lease.expiresMs
+                 << " telemetry_allowed=" << (telemetryAllowed ? "true" : "false")
+                 << " telemetry_reason=" << telemetryReason
+                 << " land_blocked=" << (landBlocked ? "true" : "false")
+                 << " mission_blocked=" << (missionBlocked ? "true" : "false")
+                 << " mission_reason=" << missionReason);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -3016,12 +3061,14 @@ private:
   issueDefaultOperatorLease()
   {
     OperatorAuthorityLease lease;
-    lease.leaseId = "default-gs-control";
-    lease.operatorId = m_config.groundStationIdentity.toUri();
-    lease.droneId = "all";
-    lease.scope = "control";
+    lease.leaseId = "default-gs-" + m_defaultOperatorLeaseScope + "-" +
+                    m_defaultOperatorLeaseDrone;
+    lease.operatorId = m_operatorId.empty() ? m_config.groundStationIdentity.toUri() : m_operatorId;
+    lease.droneId = m_defaultOperatorLeaseDrone;
+    lease.scope = m_defaultOperatorLeaseScope;
     lease.issuedMs = nowMilliseconds();
-    lease.expiresMs = 0;
+    lease.expiresMs = m_defaultOperatorLeaseTtlMs == 0 ?
+                      0 : lease.issuedMs + m_defaultOperatorLeaseTtlMs;
     {
       std::lock_guard<std::mutex> guard(m_operatorLeaseMutex);
       m_operatorLease = std::move(lease);
@@ -5957,6 +6004,10 @@ private:
   std::string m_videoBitratePolicy = "manual";
   uint64_t m_videoBitrateAutoPressureMs = 2500;
   std::string m_missionPlanFilePath;
+  std::string m_operatorId;
+  std::string m_defaultOperatorLeaseDrone = "all";
+  std::string m_defaultOperatorLeaseScope = "control";
+  uint64_t m_defaultOperatorLeaseTtlMs = 0;
   std::mutex m_yoloMutex;
   std::thread m_yoloPrewarmThread;
   pid_t m_yoloWorkerPid = -1;

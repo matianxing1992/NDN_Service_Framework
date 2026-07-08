@@ -171,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS fetch and cache the selected drone's MAVLink parameter snapshot.")
     parser.add_argument("--auto-authority-lease-test", action="store_true",
                         help="Have the GS verify operator authority leases fast-fail control commands.")
+    parser.add_argument("--auto-authority-config-test", action="store_true",
+                        help="Have the GS verify startup operator lease config blocks control commands.")
     parser.add_argument("--auto-patrol-test", action="store_true",
                         help="Run the GS patrol compensation smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-single-mission-test", action="store_true",
@@ -1047,6 +1049,16 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "3000",
             ]
+        if args.auto_authority_config_test:
+            gs_argv += [
+                "--auto-authority-config-test",
+                "--operator-id", "/example/uav/operator/test-monitor",
+                "--operator-lease-drone", args.drone_id,
+                "--operator-lease-scope", "monitor",
+                "--operator-lease-ttl-ms", "60000",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "3000",
+            ]
         if args.auto_patrol_test:
             patrol_timeout_ms = "30000" if should_start_jmavsim(args) else "3000"
             gs_argv += [
@@ -1076,6 +1088,7 @@ def main() -> int:
                 args.auto_repo_catalog_browse_test or
                 args.auto_parameter_cache_test or
                 args.auto_authority_lease_test or
+                args.auto_authority_config_test or
                 args.auto_telemetry_test or args.auto_link_state_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
@@ -1184,6 +1197,19 @@ def main() -> int:
             require_log(gs_log, "expired_reason=lease-expired")
             require_log(gs_log, "GS_AUTHORITY_LEASE_EXIT ok=true")
             print("NDNSF_UAV_AUTHORITY_LEASE_MININDN_SMOKE_OK")
+        elif args.auto_authority_config_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=45)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station authority config smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "AUTHORITY_CONFIG_RESULT ok=true")
+            require_log(gs_log, "lease_drone=" + args.drone_id)
+            require_log(gs_log, "lease_scope=monitor")
+            require_log(gs_log, "mission_reason=monitor-scope")
+            require_log(gs_log, "GS_AUTHORITY_CONFIG_EXIT ok=true")
+            print("NDNSF_UAV_AUTHORITY_CONFIG_MININDN_SMOKE_OK")
         elif args.auto_telemetry_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=70)

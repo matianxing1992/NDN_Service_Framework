@@ -332,7 +332,8 @@ public:
     for (auto* label : {&m_status, &m_linkStatus, &m_services, &m_telemetry,
                          &m_flightInspector, &m_cameraInspector, &m_videoInspector,
                          &m_commandHistory, &m_telemetryInspector, &m_missionInspector,
-                         &m_missionDetail, &m_catalogInspector, &m_parameterInspector,
+                         &m_missionDetail, &m_authorityInspector,
+                         &m_catalogInspector, &m_parameterInspector,
                          &m_functionalityInspector,
                          &m_practicalityInspector, &m_stabilityInspector}) {
       label->set_size_request(264, -1);
@@ -356,6 +357,7 @@ public:
     addInspectorSection(m_videoInspectorFrame, m_videoInspector, "Video");
     addInspectorSection(m_missionInspectorFrame, m_missionInspector, "Mission / Safety");
     addInspectorSection(m_missionDetailFrame, m_missionDetail, "Mission Detail");
+    addInspectorSection(m_authorityInspectorFrame, m_authorityInspector, "Operator Authority");
     addInspectorSection(m_catalogInspectorFrame, m_catalogInspector, "Repo Catalog");
     addInspectorSection(m_parameterInspectorFrame, m_parameterInspector, "Vehicle Parameters");
     addInspectorSection(m_functionalityInspectorFrame, m_functionalityInspector, "Functionality");
@@ -2107,6 +2109,7 @@ private:
     const auto missionProgress = m_runtime.missionProgressSnapshot();
     const auto missionPlan = m_runtime.missionPlanSnapshot();
     const auto missionPart = m_runtime.missionPartForDrone(selectedDrone);
+    const auto authorityLease = m_runtime.operatorAuthorityLease();
     const auto snapshot = m_runtime.runtimeSnapshot();
     const auto* droneRuntime = snapshot.findDrone(selectedDrone);
     const auto nowMs = nowMilliseconds();
@@ -2217,6 +2220,27 @@ private:
                          std::to_string(videoAdaptive->suggestedBitrateKbps) + " kbps");
     }
     m_videoInspector.set_text(videoText.str());
+
+    std::string selectedControlReason;
+    const bool selectedControlAllowed = authorityLease.allowsCommand(
+      selectedDrone, "land", nowMs, selectedControlReason);
+    std::string selectedTelemetryReason;
+    const bool selectedTelemetryAllowed = authorityLease.allowsCommand(
+      selectedDrone, "telemetry", nowMs, selectedTelemetryReason);
+    std::ostringstream authorityText;
+    appendInspectorRow(authorityText, "Operator", authorityLease.operatorId);
+    appendInspectorRow(authorityText, "Scope", authorityLease.scope);
+    appendInspectorRow(authorityText, "Lease drone", authorityLease.droneId);
+    appendInspectorRow(authorityText, "Lease id", authorityLease.leaseId);
+    appendInspectorRow(authorityText, "Expires", authorityLease.expiresMs == 0 ?
+                       "never" : std::to_string(authorityLease.expiresMs));
+    appendInspectorRow(authorityText, "Selected control",
+                       std::string(selectedControlAllowed ? "allowed" : "blocked") +
+                       " (" + selectedControlReason + ")");
+    appendInspectorRow(authorityText, "Selected telemetry",
+                       std::string(selectedTelemetryAllowed ? "allowed" : "blocked") +
+                       " (" + selectedTelemetryReason + ")");
+    m_authorityInspector.set_text(authorityText.str());
 
     std::ostringstream missionText;
     appendInspectorRow(missionText, "Mission", mission ? mission->phase : "idle");
@@ -3974,6 +3998,7 @@ private:
   Gtk::Frame m_videoInspectorFrame;
   Gtk::Frame m_missionInspectorFrame;
   Gtk::Frame m_missionDetailFrame;
+  Gtk::Frame m_authorityInspectorFrame;
   Gtk::Frame m_catalogInspectorFrame;
   Gtk::Frame m_parameterInspectorFrame;
   Gtk::Frame m_functionalityInspectorFrame;
@@ -4060,6 +4085,7 @@ private:
   Gtk::Label m_telemetryInspector;
   Gtk::Label m_missionInspector;
   Gtk::Label m_missionDetail;
+  Gtk::Label m_authorityInspector;
   Gtk::Label m_catalogInspector;
   Gtk::Label m_parameterInspector;
   Gtk::Label m_functionalityInspector;

@@ -389,6 +389,7 @@ main(int argc, char** argv)
     const bool autoRepoCatalogBrowseTest = getConfigBool(argc, argv, appConfig, "--auto-repo-catalog-browse-test", "auto-repo-catalog-browse-test", false);
     const bool autoParameterCacheTest = getConfigBool(argc, argv, appConfig, "--auto-parameter-cache-test", "auto-parameter-cache-test", false);
     const bool autoAuthorityLeaseTest = getConfigBool(argc, argv, appConfig, "--auto-authority-lease-test", "auto-authority-lease-test", false);
+    const bool autoAuthorityConfigTest = getConfigBool(argc, argv, appConfig, "--auto-authority-config-test", "auto-authority-config-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -467,6 +468,17 @@ main(int argc, char** argv)
   if (std::isnan(config.groundStationMapLon)) {
     config.groundStationMapLon = DEFAULT_GS_MAP_LON;
   }
+    const std::string operatorId = getConfigOption(
+      argc, argv, appConfig, "--operator-id", "operator-id",
+      config.groundStationIdentity.toUri());
+    const std::string operatorLeaseDrone = getConfigOption(
+      argc, argv, appConfig, "--operator-lease-drone", "operator-lease-drone", "all");
+    const std::string operatorLeaseScope = getConfigOption(
+      argc, argv, appConfig, "--operator-lease-scope", "operator-lease-scope", "control");
+    const auto operatorLeaseTtlMs = static_cast<uint64_t>(
+      std::stoull(getConfigOption(argc, argv, appConfig,
+                                  "--operator-lease-ttl-ms",
+                                  "operator-lease-ttl-ms", "0")));
     auto app = Gtk::Application::create("org.ndnsf.uav.gs", Gio::APPLICATION_NON_UNIQUE);
 
     if (objectDetectionMode) {
@@ -489,6 +501,7 @@ main(int argc, char** argv)
                                   autoRepoCatalogBrowseTest ||
                                   autoParameterCacheTest ||
                                   autoAuthorityLeaseTest ||
+                                  autoAuthorityConfigTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -501,7 +514,8 @@ main(int argc, char** argv)
       serveCertificates, ackTimeoutMs, timeoutMs, config, targetDroneId,
       videoBitrateKbps, videoFrameWidth, patrolDroneIds, yoloModel, yoloScript,
       yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction,
-      videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile);
+      videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile,
+      operatorId, operatorLeaseDrone, operatorLeaseScope, operatorLeaseTtlMs);
     runtime->start();
     if (!runtime->waitUntilReady(std::chrono::seconds(30))) {
       throw std::runtime_error("ground-station NDNSF runtime did not become ready");
@@ -536,6 +550,11 @@ main(int argc, char** argv)
     if (autoAuthorityLeaseTest) {
       const bool ok = runtime->runAuthorityLeaseGateTest(std::chrono::seconds(10));
       std::cout << "GS_AUTHORITY_LEASE_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
+    if (autoAuthorityConfigTest) {
+      const bool ok = runtime->runConfiguredAuthorityLeaseTest(std::chrono::seconds(10));
+      std::cout << "GS_AUTHORITY_CONFIG_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
     if (autoTelemetryTest) {
@@ -579,9 +598,14 @@ main(int argc, char** argv)
               << " auto_repo_catalog_browse_test=" << (autoRepoCatalogBrowseTest ? "true" : "false")
               << " auto_parameter_cache_test=" << (autoParameterCacheTest ? "true" : "false")
               << " auto_authority_lease_test=" << (autoAuthorityLeaseTest ? "true" : "false")
+              << " auto_authority_config_test=" << (autoAuthorityConfigTest ? "true" : "false")
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")
               << " video_bitrate_policy=" << videoBitratePolicy
+              << " operator_id=" << operatorId
+              << " operator_lease_drone=" << operatorLeaseDrone
+              << " operator_lease_scope=" << operatorLeaseScope
+              << " operator_lease_ttl_ms=" << operatorLeaseTtlMs
               << std::endl;
     const int rc = app->run(window);
     runtime->shutdownRuntime();
