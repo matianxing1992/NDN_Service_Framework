@@ -58,6 +58,7 @@ provider-policies
             /UAV/GS/ObjectDetection
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
+            /UAV/GS/OperatorAuthority/Audit
         }
     }
 }
@@ -88,6 +89,7 @@ user-policies
             /UAV/GS/ObjectDetection
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
+            /UAV/GS/OperatorAuthority/Audit
         }
     }
 
@@ -99,6 +101,7 @@ user-policies
             /UAV/GS/ObjectDetection
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
+            /UAV/GS/OperatorAuthority/Audit
         }
     }
 
@@ -110,6 +113,7 @@ user-policies
             /UAV/GS/ObjectDetection
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
+            /UAV/GS/OperatorAuthority/Audit
         }
     }
 
@@ -121,6 +125,7 @@ user-policies
             /UAV/GS/ObjectDetection
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation
+            /UAV/GS/OperatorAuthority/Audit
         }
     }
 }

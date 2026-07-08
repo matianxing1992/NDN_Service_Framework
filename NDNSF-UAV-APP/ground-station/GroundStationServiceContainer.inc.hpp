@@ -2667,6 +2667,102 @@ public:
   }
 
   bool
+  runAuthorityAuditQueryTest(std::chrono::seconds timeout)
+  {
+    if (m_operatorAuthorityStateFile.empty()) {
+      NDN_LOG_INFO("AUTHORITY_AUDIT_QUERY_RESULT ok=false reason=missing-state-file");
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      m_issuedOperatorLeases.clear();
+      m_operatorRevocationRecords.clear();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_operatorAuthorityAlertMutex);
+      m_operatorAuthorityAlerts.clear();
+    }
+    {
+      std::lock_guard<std::mutex> guard(m_issuedOperatorLeaseMutex);
+      persistIssuedOperatorLeasesLocked();
+    }
+
+    OperatorAuthorityLeaseRequest first;
+    first.requestId = "audit-first-" + std::to_string(nowMilliseconds());
+    first.operatorId = "/example/uav/operator/one";
+    first.droneId = targetDroneId();
+    first.scope = "control";
+    first.ttlMs = 60000;
+    first.requestedMs = nowMilliseconds();
+
+    OperatorAuthorityLease firstLease;
+    std::string firstReason;
+    const bool firstAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, first, timeout, firstLease, firstReason);
+    if (firstAccepted) {
+      setOperatorAuthorityLease(firstLease);
+    }
+
+    auto admin = first;
+    admin.requestId = "audit-admin-" + std::to_string(nowMilliseconds());
+    admin.operatorId = "/example/uav/operator/two";
+    admin.scope = "admin";
+    OperatorAuthorityLease adminLease;
+    std::string adminReason;
+    const bool adminAccepted = requestOperatorAuthorityLeaseFromIssuerSync(
+      m_config.groundStationIdentity, admin, timeout, adminLease, adminReason);
+
+    std::string refreshReason;
+    const bool refreshRevoked = refreshOperatorAuthorityLeaseFromIssuer(
+      m_config.groundStationIdentity, timeout, refreshReason);
+
+    Fields auditFields;
+    std::string auditReason;
+    const bool auditOk = requestOperatorAuthorityAuditFromIssuerSync(
+      m_config.groundStationIdentity, 20, timeout, auditFields, auditReason);
+
+    const auto returnedCount = unsignedFieldOr(auditFields, "returned_count", 0);
+    bool sawOverride = false;
+    bool sawDetected = false;
+    for (uint64_t i = 0; i < returnedCount; ++i) {
+      const auto prefix = "alert." + std::to_string(i) + ".";
+      const auto type = fieldOr(auditFields, prefix + "type", "");
+      const auto leaseId = fieldOr(auditFields, prefix + "lease_id", "");
+      const auto revokedOperator = fieldOr(auditFields, prefix + "revoked_operator", "");
+      const auto revokerOperator = fieldOr(auditFields, prefix + "revoker_operator", "");
+      if (type == "admin-override" &&
+          leaseId == firstLease.leaseId &&
+          revokedOperator == first.operatorId &&
+          revokerOperator == admin.operatorId) {
+        sawOverride = true;
+      }
+      if (type == "lease-revoked-detected" &&
+          leaseId == firstLease.leaseId &&
+          revokedOperator == first.operatorId &&
+          revokerOperator == admin.operatorId) {
+        sawDetected = true;
+      }
+    }
+
+    const bool ok = firstAccepted && firstReason == "ok" &&
+                    adminAccepted && adminReason == "ok" &&
+                    refreshRevoked && refreshReason == "ok" &&
+                    auditOk && auditReason == "ok" &&
+                    returnedCount >= 2 && sawOverride && sawDetected;
+    NDN_LOG_INFO("AUTHORITY_AUDIT_QUERY_RESULT ok=" << (ok ? "true" : "false")
+                 << " first=" << (firstAccepted ? "accepted" : firstReason)
+                 << " admin=" << (adminAccepted ? "accepted" : adminReason)
+                 << " refresh=" << (refreshRevoked ? "revoked" : refreshReason)
+                 << " audit=" << (auditOk ? "ok" : auditReason)
+                 << " alert_count=" << fieldOr(auditFields, "alert_count", "0")
+                 << " returned_count=" << returnedCount
+                 << " saw_override=" << (sawOverride ? "true" : "false")
+                 << " saw_detected=" << (sawDetected ? "true" : "false")
+                 << " lease_id=" << firstLease.leaseId);
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState
@@ -3848,6 +3944,70 @@ private:
     out = state->fields;
     reason = state->reason;
     return state->done && state->found;
+  }
+
+  bool
+  requestOperatorAuthorityAuditFromIssuerSync(const ndn::Name& issuerIdentity,
+                                              uint64_t maxRecords,
+                                              std::chrono::seconds timeout,
+                                              Fields& out,
+                                              std::string& reason)
+  {
+    struct RequestState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      bool done = false;
+      bool ok = false;
+      std::string reason = "timeout";
+      Fields fields;
+    };
+
+    auto state = std::make_shared<RequestState>();
+    boost::asio::post(m_face.getIoContext(), [this, issuerIdentity, maxRecords, state] {
+      if (!m_containerReady.load() || !m_user) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->done = true;
+        state->ok = false;
+        state->reason = "runtime-not-ready";
+        state->cv.notify_one();
+        return;
+      }
+
+      auto requestMessage = makeRequest(encodeFields(Fields{
+        {"type", "operator-authority-audit-query"},
+        {"max_records", std::to_string(maxRecords)},
+      }));
+      m_user->RequestService(
+        std::vector<ndn::Name>{issuerIdentity},
+        m_config.serviceGsOperatorAuthorityAudit,
+        std::move(requestMessage),
+        m_ackTimeoutMs,
+        ndn_service_framework::ServiceUser::AckSelectionStrategy::FirstRespondingSelection,
+        m_timeoutMs,
+        [state](const ndn::Name&) {
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->done = true;
+          state->ok = false;
+          state->reason = "request-timeout";
+          state->cv.notify_one();
+        },
+        [state](const ndn_service_framework::ResponseMessage& response) {
+          const auto fields = decodeFields(responsePayload(response));
+          std::lock_guard<std::mutex> guard(state->mutex);
+          state->done = true;
+          state->fields = fields;
+          state->reason = fieldOr(fields, "reason", "unknown");
+          state->ok = fieldOr(fields, "ok", "false") == "true";
+          state->cv.notify_one();
+        });
+    });
+
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, timeout, [&state] { return state->done; });
+    out = state->fields;
+    reason = state->reason;
+    return state->done && state->ok;
   }
 
   static bool
@@ -5522,6 +5682,38 @@ private:
           return response;
         }),
       ServiceInvocationMode::NormalOnly);
+
+    m_coreContainer.localRegistry().registerLocalService(
+      m_config.serviceGsOperatorAuthorityAudit,
+      [this](const ndn::Name&,
+             const ndn::Name&,
+             const ndn_service_framework::RequestMessage& request) {
+        return runOperatorAuthorityAuditLocal(request);
+      });
+
+    m_objectDetectionProvider->addService(
+      m_config.serviceGsOperatorAuthorityAudit,
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(
+        [this](const ndn_service_framework::RequestMessage&) {
+          ndn_service_framework::ServiceProvider::AckDecision decision;
+          decision.status = true;
+          decision.message = "operator authority audit lookup ready";
+          decision.payload = bufferFromString(encodeFields(Fields{
+            {"gs", m_config.groundStationIdentity.toUri()},
+            {"ready", "true"},
+            {"service", m_config.serviceGsOperatorAuthorityAudit.toUri()},
+          }));
+          return decision;
+        }),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage& request) {
+          ndn_service_framework::ResponseMessage response;
+          m_coreContainer.localRegistry().localInvokeRawInto(
+            m_config.serviceGsOperatorAuthorityAudit, request, response,
+            m_config.groundStationIdentity);
+          return response;
+        }),
+      ServiceInvocationMode::NormalOnly);
   }
 
   ndn_service_framework::ResponseMessage
@@ -5629,6 +5821,46 @@ private:
                  << " revoked_operator=" << fieldOr(response, "revoked_operator", "none")
                  << " revoker_operator=" << fieldOr(response, "revoker_operator", "none"));
     return makeResponse(true, encodeFields(response), fieldOr(response, "reason", "ok"));
+  }
+
+  ndn_service_framework::ResponseMessage
+  runOperatorAuthorityAuditLocal(const ndn_service_framework::RequestMessage& request)
+  {
+    const auto payload = request.getPayload();
+    const auto fields = decodeFields(std::string(
+      reinterpret_cast<const char*>(payload.data()), payload.size()));
+    const auto maxRecords = std::min<uint64_t>(
+      20, std::max<uint64_t>(1, unsignedFieldOr(fields, "max_records", 20)));
+    const auto alerts = operatorAuthorityAlertsSnapshot();
+    const auto returnedCount = std::min<uint64_t>(maxRecords, alerts.size());
+    const auto start = alerts.size() - static_cast<size_t>(returnedCount);
+
+    Fields response{
+      {"type", "operator-authority-audit-response"},
+      {"ok", "true"},
+      {"reason", "ok"},
+      {"alert_count", std::to_string(alerts.size())},
+      {"returned_count", std::to_string(returnedCount)},
+      {"max_records", std::to_string(maxRecords)},
+    };
+    for (uint64_t i = 0; i < returnedCount; ++i) {
+      const auto& alert = alerts[start + static_cast<size_t>(i)];
+      const auto prefix = "alert." + std::to_string(i) + ".";
+      response[prefix + "type"] = alert.type;
+      response[prefix + "reason"] = alert.reason;
+      response[prefix + "lease_id"] = alert.leaseId;
+      response[prefix + "revoked_operator"] = alert.revokedOperator;
+      response[prefix + "revoker_operator"] = alert.revokerOperator;
+      response[prefix + "drone"] = alert.droneId;
+      response[prefix + "scope"] = alert.scope;
+      response[prefix + "updated_ms"] = std::to_string(alert.updatedMs);
+    }
+
+    NDN_LOG_INFO("AUTHORITY_AUDIT_LOOKUP alert_count=" << alerts.size()
+                 << " returned_count=" << returnedCount
+                 << " max_records=" << maxRecords
+                 << " reason=ok");
+    return makeResponse(true, encodeFields(response));
   }
 
   std::vector<uint8_t>

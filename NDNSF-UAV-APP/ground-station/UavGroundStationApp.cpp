@@ -397,6 +397,7 @@ main(int argc, char** argv)
     const bool autoAuthorityRefreshTest = getConfigBool(argc, argv, appConfig, "--auto-authority-refresh-test", "auto-authority-refresh-test", false);
     const bool autoAuthorityRefreshTimerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-refresh-timer-test", "auto-authority-refresh-timer-test", false);
     const bool autoAuthorityAlertHistoryTest = getConfigBool(argc, argv, appConfig, "--auto-authority-alert-history-test", "auto-authority-alert-history-test", false);
+    const bool autoAuthorityAuditQueryTest = getConfigBool(argc, argv, appConfig, "--auto-authority-audit-query-test", "auto-authority-audit-query-test", false);
     const bool autoApplyBitrateTest = getConfigBool(argc, argv, appConfig, "--auto-apply-bitrate-test", "auto-apply-bitrate-test", false);
     const bool autoVideoPressureProfileTest = getConfigBool(argc, argv, appConfig, "--auto-video-pressure-profile-test", "auto-video-pressure-profile-test", false);
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
@@ -454,6 +455,7 @@ main(int argc, char** argv)
   config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
   config.serviceGsOperatorAuthorityLease = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-lease", "service-gs-operator-authority-lease", config.serviceGsOperatorAuthorityLease.toUri()));
   config.serviceGsOperatorAuthorityRevocation = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-revocation", "service-gs-operator-authority-revocation", config.serviceGsOperatorAuthorityRevocation.toUri()));
+  config.serviceGsOperatorAuthorityAudit = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-audit", "service-gs-operator-authority-audit", config.serviceGsOperatorAuthorityAudit.toUri()));
   const auto groundStationMapLatText =
     getConfigOption(argc, argv, appConfig, "--ground-station-map-lat", "ground-station-map-lat", std::to_string(config.groundStationMapLat));
   const auto groundStationMapLonText =
@@ -527,6 +529,7 @@ main(int argc, char** argv)
                                   autoAuthorityRefreshTest ||
                                   autoAuthorityRefreshTimerTest ||
                                   autoAuthorityAlertHistoryTest ||
+                                  autoAuthorityAuditQueryTest ||
                                   autoApplyBitrateTest ||
                                   autoPatrolTest || autoSingleMissionTest ||
                                   autoLoadedMissionPlanTest);
@@ -618,6 +621,11 @@ main(int argc, char** argv)
       std::cout << "GS_AUTHORITY_ALERT_HISTORY_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
+    if (autoAuthorityAuditQueryTest) {
+      const bool ok = runtime->runAuthorityAuditQueryTest(std::chrono::seconds(10));
+      std::cout << "GS_AUTHORITY_AUDIT_QUERY_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
     if (autoTelemetryTest) {
       const bool ok = runtime->runTelemetryLiveTest(std::chrono::seconds(45),
                                                     !autoTelemetryAllowMockFields);
@@ -668,6 +676,7 @@ main(int argc, char** argv)
               << " auto_authority_refresh_test=" << (autoAuthorityRefreshTest ? "true" : "false")
               << " auto_authority_refresh_timer_test=" << (autoAuthorityRefreshTimerTest ? "true" : "false")
               << " auto_authority_alert_history_test=" << (autoAuthorityAlertHistoryTest ? "true" : "false")
+              << " auto_authority_audit_query_test=" << (autoAuthorityAuditQueryTest ? "true" : "false")
               << " operator_authority_refresh_interval_ms=" << operatorAuthorityRefreshIntervalMs
               << " auto_apply_bitrate_test=" << (autoApplyBitrateTest ? "true" : "false")
               << " auto_video_pressure_profile_test=" << (autoVideoPressureProfileTest ? "true" : "false")

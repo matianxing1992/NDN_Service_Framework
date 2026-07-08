@@ -25,6 +25,7 @@ inline const ndn::Name SERVICE_MAVLINK_PARAMETERS_SUFFIX("/UAV/MAVLink/Parameter
 inline const ndn::Name SERVICE_GS_OBJECT_DETECTION("/UAV/GS/ObjectDetection");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_LEASE("/UAV/GS/OperatorAuthority/Lease");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION("/UAV/GS/OperatorAuthority/Revocation");
+inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_AUDIT("/UAV/GS/OperatorAuthority/Audit");
 inline constexpr double DEFAULT_GS_MAP_LAT = 35.1186;
 inline constexpr double DEFAULT_GS_MAP_LON = -89.9375;
 
@@ -46,6 +47,7 @@ struct UavRuntimeConfig
   ndn::Name serviceGsObjectDetection = SERVICE_GS_OBJECT_DETECTION;
   ndn::Name serviceGsOperatorAuthorityLease = SERVICE_GS_OPERATOR_AUTHORITY_LEASE;
   ndn::Name serviceGsOperatorAuthorityRevocation = SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION;
+  ndn::Name serviceGsOperatorAuthorityAudit = SERVICE_GS_OPERATOR_AUTHORITY_AUDIT;
   double groundStationMapLat = std::numeric_limits<double>::quiet_NaN();
   double groundStationMapLon = std::numeric_limits<double>::quiet_NaN();
 };
