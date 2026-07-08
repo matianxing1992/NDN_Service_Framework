@@ -26,6 +26,7 @@ REPO = Path(__file__).resolve().parents[2]
 HARNESS = REPO / "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
 SWEEP = REPO / "Experiments/NDNSF_DI_RuntimeAware_RpsSweep.py"
 STREAM_CHUNK_CAMPAIGN = REPO / "Experiments/NDNSF_DI_StreamChunk_Mode_Campaign.py"
+PLAN_TRACER = REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/plan_tracer.py"
 USER_DRIVER = REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py"
 ADVISORY_COORDINATOR = (
     REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/advisory_coordinator.py"
@@ -50,6 +51,20 @@ def load_user_driver_module():
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def load_plan_tracer_module():
+    tracer_dir = str(PLAN_TRACER.parent)
+    old_path = list(sys.path)
+    sys.path.insert(0, tracer_dir)
+    try:
+        spec = importlib.util.spec_from_file_location("native_tracer_plan_tracer", PLAN_TRACER)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path[:] = old_path
 
 
 def load_advisory_coordinator_module():
@@ -143,6 +158,63 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["dependencyEnvelopeMode"], "streamchunk")
         self.assertEqual(payload["dependencyPayloadMode"], "streamchunk")
+
+    def test_dry_run_accepts_provider_network_matrix_json(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = ":".join([
+            str(REPO / "NDNSF-DistributedInference"),
+            str(REPO / "pythonWrapper"),
+            str(REPO),
+            env.get("PYTHONPATH", ""),
+        ])
+        matrix_path = "/tmp/ndnsf-provider-network-matrix.json"
+        completed = subprocess.run([
+            sys.executable,
+            str(HARNESS),
+            "--dry-run",
+            "--runtime-aware-user-planner",
+            "--provider-network-matrix-json", matrix_path,
+            "--requests", "1",
+            "--concurrency", "1",
+        ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
+           stderr=subprocess.PIPE, check=True)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["providerNetworkMatrixJson"], matrix_path)
+        self.assertTrue(payload["runtimeAwareUserPlanner"])
+
+    def test_plan_tracer_loads_provider_pair_telemetry_summary_matrix(self) -> None:
+        plan_tracer = load_plan_tracer_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "previous-summary.json"
+            path.write_text(
+                json.dumps({
+                    "providerPairTelemetry": {
+                        "status": "collected",
+                        "matrix": {
+                            "defaultRttMs": 70,
+                            "unknownPenaltyMs": 123,
+                            "metrics": [{
+                                "srcPeer": "/P/backbone",
+                                "dstPeer": "/P/merge",
+                                "rttMs": 12,
+                                "bandwidthMbps": 100,
+                                "updatedAtMs": 4102444800000,
+                            }],
+                        },
+                    },
+                }),
+                encoding="utf-8")
+            matrix = plan_tracer.load_provider_network_matrix_input(str(path))
+
+        cost, detail = matrix.transfer_cost_ms(
+            "/P/backbone",
+            "/P/merge",
+            4096,
+            now_ms_value=4102444800000,
+        )
+        self.assertEqual(detail["rttMs"], 12.0)
+        self.assertFalse(detail["unknown"])
+        self.assertGreater(cost, 12.0)
 
     def test_user_driver_loads_role_assignments_from_csv(self) -> None:
         user_driver = load_user_driver_module()

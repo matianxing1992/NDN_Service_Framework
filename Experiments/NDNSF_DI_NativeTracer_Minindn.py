@@ -674,6 +674,7 @@ def run_plan_tracer(policy_dir: Path,
                     workload_concurrency: int,
                     target_rps: float,
                     runtime_aware_user_planner: bool = False,
+                    provider_network_matrix_json: str = "",
                     log_name: str = "plan-tracer") -> dict[str, object]:
     policy_dir = policy_dir.resolve()
     out_dir = out_dir.resolve()
@@ -706,6 +707,9 @@ def run_plan_tracer(policy_dir: Path,
     ]
     if runtime_aware_user_planner:
         command.append("--runtime-aware-user-planner")
+    if provider_network_matrix_json:
+        command.extend(["--provider-network-matrix-json",
+                        str(Path(provider_network_matrix_json).resolve())])
     run_logged(log_name, command, logs_dir, env)
     return json.loads(summary_path.read_text(encoding="utf-8"))
 
@@ -2440,6 +2444,7 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "policyBundle": args.policy_bundle,
             "llmPlannerMode": args.llm_planner_mode,
             "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
+            "providerNetworkMatrixJson": args.provider_network_matrix_json,
             "advisoryCoordinator": bool(args.advisory_coordinator),
             "coordinationService": COORDINATION_SERVICE if args.advisory_coordinator else "",
             "targetRps": args.target_rps,
@@ -2587,6 +2592,11 @@ def main() -> int:
     parser.add_argument("--runtime-aware-user-planner", action="store_true",
                         default=bool(default_value(profile_defaults, "runtime_aware_user_planner", False)),
                         help="Enable runtime-aware user-side planner metadata and campaign metrics")
+    parser.add_argument("--provider-network-matrix-json",
+                        default=default_value(profile_defaults, "provider_network_matrix_json", ""),
+                        help=("Optional core ProviderNetworkMatrix JSON, or a previous "
+                              "NativeTracer summary with providerPairTelemetry.matrix, "
+                              "for runtime-aware dependency edge scoring"))
     parser.add_argument("--lifecycle-experiment", action="store_true",
                         help="Run deployment lifecycle experiment instead of normal user driver")
     parser.add_argument("--advisory-coordinator", action="store_true",
@@ -2737,6 +2747,7 @@ def main() -> int:
             "policyBundle": args.policy_bundle,
             "llmPlannerMode": args.llm_planner_mode,
             "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
+            "providerNetworkMatrixJson": args.provider_network_matrix_json,
             "advisoryCoordinator": args.advisory_coordinator,
             "multiUserWorkload": multi_user_workload,
             "requests": args.requests,
@@ -2858,6 +2869,7 @@ def main() -> int:
                 args.concurrency,
                 args.target_rps,
                 args.runtime_aware_user_planner,
+                args.provider_network_matrix_json,
                 "plan-tracer-auto-probe")
             recommended = str(probe_summary.get(
                 "plannerRecommendedCandidate",
@@ -2891,6 +2903,7 @@ def main() -> int:
                 args.concurrency,
                 args.target_rps,
                 args.runtime_aware_user_planner,
+                args.provider_network_matrix_json,
                 "plan-tracer")
         add_worker_user_policies(policy_dir / "controller.policies", args.requests)
         add_advisory_coordination_policies(

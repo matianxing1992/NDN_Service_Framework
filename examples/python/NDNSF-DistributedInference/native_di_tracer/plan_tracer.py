@@ -16,6 +16,7 @@ from ndnsf_distributed_inference import (
     PlanDependency,
     PlanRole,
     PlanTemplate,
+    ProviderNetworkMatrix,
     choose_edge_aware_runtime_assignment,
     to_plain,
     write_json,
@@ -150,8 +151,29 @@ def apply_runtime_fragment_metadata(out_dir: Path) -> None:
 
 
 def generate_runtime_assignment_evidence(out_dir: Path, service_plan: dict) -> dict:
+    return generate_runtime_assignment_evidence_with_matrix(out_dir, service_plan, "")
+
+
+def load_provider_network_matrix_input(path: str) -> ProviderNetworkMatrix:
+    if not path:
+        return load_provider_network_matrix()
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload.get("providerPairTelemetry"), dict):
+        telemetry = payload["providerPairTelemetry"]
+        payload = telemetry.get("matrix", payload)
+    elif isinstance(payload.get("matrix"), dict):
+        payload = payload["matrix"]
+    return ProviderNetworkMatrix.from_dict(payload)
+
+
+def generate_runtime_assignment_evidence_with_matrix(
+    out_dir: Path,
+    service_plan: dict,
+    provider_network_matrix_json: str,
+) -> dict:
     template = build_runtime_plan_template(service_plan)
     metadata_by_provider = load_provider_ack_metadata()
+    network_matrix = load_provider_network_matrix_input(provider_network_matrix_json)
     candidates = {
         role.role_id: [
             {"providerName": provider, "genericAckMetadata": metadata}
@@ -164,7 +186,7 @@ def generate_runtime_assignment_evidence(out_dir: Path, service_plan: dict) -> d
         candidates,
         request_id="native-tracer-runtime-aware-dry-run",
         runtime_required=True,
-        network_matrix=load_provider_network_matrix(),
+        network_matrix=network_matrix,
     )
     assignment_path = out_dir / "planner-runtime-assignment.json"
     payload = {
@@ -202,6 +224,14 @@ def generate_runtime_assignment_evidence(out_dir: Path, service_plan: dict) -> d
         "runtimeAwareNodeCostMs": assignment.score_breakdown["nodeCostMs"],
         "runtimeAwareEdgeCostMs": assignment.score_breakdown["edgeCostMs"],
         "runtimeAwareTotalEstimatedMs": assignment.score_breakdown["totalEstimatedMs"],
+        "providerNetworkMatrix": {
+            "source": (
+                str(Path(provider_network_matrix_json))
+                if provider_network_matrix_json else
+                "runtime_aware_fixtures/provider_network_matrix.json"
+            ),
+            "metricCount": len(network_matrix.metrics),
+        },
     }
 
 
@@ -452,6 +482,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workload-concurrency", type=int, default=1)
     parser.add_argument("--target-rps", type=float, default=0.0)
     parser.add_argument("--runtime-aware-user-planner", action="store_true")
+    parser.add_argument("--provider-network-matrix-json", default="",
+                        help=("Optional ProviderNetworkMatrix JSON, or a previous "
+                              "NativeTracer summary containing providerPairTelemetry.matrix"))
     args = parser.parse_args(argv)
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
@@ -484,7 +517,11 @@ def main(argv: list[str] | None = None) -> int:
         "trustSchema": deployment.trust_schema,
     })
     if args.runtime_aware_user_planner:
-        summary.update(generate_runtime_assignment_evidence(out_dir, service_plan))
+        summary.update(generate_runtime_assignment_evidence_with_matrix(
+            out_dir,
+            service_plan,
+            args.provider_network_matrix_json,
+        ))
 
     if args.summary_json:
         Path(args.summary_json).write_text(
