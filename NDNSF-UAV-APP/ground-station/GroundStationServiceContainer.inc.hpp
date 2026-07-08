@@ -1760,6 +1760,51 @@ public:
   }
 
   bool
+  runLoadedMissionPlanUploadTest(std::chrono::seconds timeout, std::string path)
+  {
+    if (path.empty()) {
+      path = "/tmp/ndnsf-uav-loaded-mission-plan-test.conf";
+    }
+    const auto taskId = "loaded-mission-" + std::to_string(nowMilliseconds());
+    std::vector<MissionWaypoint> route{
+      {35.11860, -89.93750},
+      {35.11920, -89.93750},
+      {35.11920, -89.93680},
+      {35.11860, -89.93680},
+    };
+    MissionPlan plan = buildPatrolMissionPlan(taskId, 35.1186, -89.9375, 140.0,
+                                              m_patrolDroneIds, route);
+    plan.assignment = "loaded-mission-plan";
+    plan.completionObjective = "return-to-start";
+    plan.returnHomePlanned = true;
+    auto document = MissionPlanDocument::fromPlan(
+      plan, taskId, "Loaded mission smoke", m_config.groundStationIdentity.toUri(),
+      nowMilliseconds());
+    document.metadata["source"] = "auto-loaded-mission-plan-test";
+    saveMissionPlanDocument(document, path);
+    NDN_LOG_INFO("LOADED_MISSION_PLAN_FILE_SAVED path=" << path
+                 << " " << document.statusLine());
+    std::string detail;
+    if (!loadMissionPlanFromFile(path, &detail)) {
+      NDN_LOG_INFO("LOADED_MISSION_PLAN_LOAD_FAILED path=" << path
+                   << " detail=" << detail);
+      return false;
+    }
+    NDN_LOG_INFO("LOADED_MISSION_PLAN_FILE_LOADED path=" << path
+                 << " detail=" << detail);
+    const auto loaded = missionPlanSnapshot();
+    if (!loaded) {
+      NDN_LOG_INFO("LOADED_MISSION_PLAN_UPLOAD_FAILED reason=no-loaded-plan");
+      return false;
+    }
+    const bool ok = uploadMissionPlan(*loaded, timeout);
+    NDN_LOG_INFO("LOADED_MISSION_PLAN_UPLOAD_RESULT ok=" << (ok ? "true" : "false")
+                 << " task=" << loaded->taskId
+                 << " parts=" << loaded->parts.size());
+    return ok;
+  }
+
+  bool
   uploadMissionPlan(MissionPlan plan, std::chrono::seconds timeout)
   {
     struct UploadState

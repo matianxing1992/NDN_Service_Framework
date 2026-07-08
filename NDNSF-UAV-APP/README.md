@@ -1374,6 +1374,19 @@ four `UDP_FC_MISSION_REQUEST` / `UDP_FC_MISSION_ITEM_SENT` pairs for the
 default rectangle, `UDP_FC_MISSION_ACK ... result=accepted`, and
 `UDP_FC_COMMAND_ACK ... command=start_mission result=accepted`.
 
+To verify the reusable mission-file path, run:
+
+```bash
+xvfb-run -a sudo -E python3 Experiments/NDNSF_UAV_GUI_Minindn.py \
+  --auto-loaded-mission-plan-test \
+  --no-start-jmavsim --no-cli --no-xhost
+```
+
+This generates a `MissionPlanDocument`, saves it through the ground-station
+file helper, loads it back, and uploads the preserved per-drone mission parts
+through the normal `serviceMissionAssign` path. A successful run prints
+`NDNSF_UAV_LOADED_MISSION_PLAN_MININDN_SMOKE_OK`.
+
 For the non-interactive two-drone cooperative patrol smoke test:
 
 ```bash

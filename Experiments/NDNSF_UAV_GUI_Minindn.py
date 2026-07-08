@@ -171,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run a one-drone mission upload smoke test instead of the video GUI smoke.")
     parser.add_argument("--auto-single-mission-start-test", action="store_true",
                         help="After the single-drone mission upload smoke test, arm/takeoff/start mission.")
+    parser.add_argument("--auto-loaded-mission-plan-test", action="store_true",
+                        help="Run a file-backed mission plan load/upload smoke test.")
     parser.add_argument("--multi-drone-gui", action="store_true",
                         help="Start the patrol-drone set for an interactive multi-drone ground-station GUI.")
     parser.add_argument("--auto-stop-seconds", type=int, default=10)
@@ -245,7 +247,8 @@ def app_config_path(args: argparse.Namespace, filename: str) -> str:
 
 def active_drones(args: argparse.Namespace) -> list[tuple[str, str]]:
     interactive_default = not args.no_cli
-    if not (args.auto_patrol_test or args.auto_two_drone_switch_test or
+    if not (args.auto_patrol_test or args.auto_loaded_mission_plan_test or
+            args.auto_two_drone_switch_test or
             args.auto_video_selection_test or
             args.auto_mission_controls_test or
             args.auto_flight_controls_test or
@@ -944,7 +947,8 @@ def main() -> int:
                  args.auto_telemetry_test or
                  args.auto_manual_control_test or args.auto_two_drone_switch_test or
                  args.auto_recording_playback_test or
-                 args.auto_patrol_test or args.auto_single_mission_test)):
+                 args.auto_patrol_test or args.auto_single_mission_test or
+                 args.auto_loaded_mission_plan_test)):
                 if not wait_log_any(jmavsim_log, JMAVSIM_READY_MARKERS,
                                     args.jmavsim_ready_timeout_seconds,
                                     proc=jmavsim_proc):
@@ -1034,9 +1038,17 @@ def main() -> int:
             ]
             if args.auto_single_mission_start_test:
                 gs_argv += ["--auto-single-mission-start-test"]
+        if args.auto_loaded_mission_plan_test:
+            gs_argv += [
+                "--auto-loaded-mission-plan-test",
+                "--mission-plan-file", str(output_dir / "loaded-mission-plan.conf"),
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "30000",
+            ]
         gs_proc, gs_log = start(ndn.net[args.gs_node], "ground-station",
                                 app_cmd(APP_GS, gs_argv), gs_env, output_dir, processes)
         if not (args.auto_patrol_test or args.auto_single_mission_test or
+                args.auto_loaded_mission_plan_test or
                 args.auto_telemetry_test or args.auto_link_state_test) and not wait_log(gs_log, "GS_GUI_READY", 30, gs_proc):
             raise RuntimeError(f"ground station GUI did not start; see {gs_log}")
 
@@ -1095,6 +1107,21 @@ def main() -> int:
                 require_log(gs_log, "SINGLE_MISSION_COMMAND command=start_mission ok=true")
             require_log(gs_log, "GS_SINGLE_MISSION_EXIT ok=true")
             print("NDNSF_UAV_SINGLE_MISSION_MININDN_SMOKE_OK")
+        elif args.auto_loaded_mission_plan_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=70)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station loaded mission plan smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "LOADED_MISSION_PLAN_FILE_SAVED")
+            require_log(gs_log, "LOADED_MISSION_PLAN_FILE_LOADED")
+            require_log(gs_log, "MISSION_PLAN_UPLOAD_START")
+            require_log(gs_log, "MISSION_PLAN_UPLOAD_PART_DONE")
+            require_log(gs_log, "MISSION_PLAN_UPLOAD_DONE")
+            require_log(gs_log, "LOADED_MISSION_PLAN_UPLOAD_RESULT ok=true")
+            require_log(gs_log, "GS_LOADED_MISSION_PLAN_EXIT ok=true")
+            print("NDNSF_UAV_LOADED_MISSION_PLAN_MININDN_SMOKE_OK")
         elif args.auto_telemetry_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=70)

@@ -391,6 +391,7 @@ main(int argc, char** argv)
     const bool autoPatrolTest = getConfigBool(argc, argv, appConfig, "--auto-patrol-test", "auto-patrol-test", false);
     const bool autoSingleMissionTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-test", "auto-single-mission-test", false);
     const bool autoSingleMissionStartTest = getConfigBool(argc, argv, appConfig, "--auto-single-mission-start-test", "auto-single-mission-start-test", false);
+    const bool autoLoadedMissionPlanTest = getConfigBool(argc, argv, appConfig, "--auto-loaded-mission-plan-test", "auto-loaded-mission-plan-test", false);
     const bool autoRepeatStopTest = getConfigBool(argc, argv, appConfig, "--auto-repeat-stop-test", "auto-repeat-stop-test", false);
     const int autoStopSeconds = std::stoi(getConfigOption(argc, argv, appConfig, "--auto-stop-seconds", "auto-stop-seconds", "10"));
     const int autoStartDelayMs = std::stoi(getConfigOption(argc, argv, appConfig, "--auto-start-delay-ms", "auto-start-delay-ms", "3000"));
@@ -481,7 +482,8 @@ main(int argc, char** argv)
                                   autoFlightControlsTest ||
                                   autoRecordingPlaybackTest ||
                                   autoApplyBitrateTest ||
-                                  autoPatrolTest || autoSingleMissionTest);
+                                  autoPatrolTest || autoSingleMissionTest ||
+                                  autoLoadedMissionPlanTest);
     if (interactiveGui && !hasFlag(argc, argv, "--no-cert-dialog") &&
         !hasOption(argc, argv, "--ground-station-identity")) {
       config.groundStationIdentity = chooseGroundStationIdentity(config.groundStationIdentity);
@@ -505,6 +507,12 @@ main(int argc, char** argv)
       const bool ok = runtime->runSingleDroneMissionUploadTest(std::chrono::seconds(45),
                                                                autoSingleMissionStartTest);
       std::cout << "GS_SINGLE_MISSION_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
+    if (autoLoadedMissionPlanTest) {
+      const bool ok = runtime->runLoadedMissionPlanUploadTest(std::chrono::seconds(45),
+                                                              missionPlanFile);
+      std::cout << "GS_LOADED_MISSION_PLAN_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
     if (autoTelemetryTest) {
