@@ -200,6 +200,11 @@ buffer.put(chunk)
 Applications still own codecs, media capture, tensor semantics, FEC repair, and
 bitrate or workload-specific policy. See `docs/streaming-substrate.md`.
 
+This stream API is for continuous or near-live sequences. Large files, model
+artifacts, recordings, and planned DI tensor bundles should stay on the
+large-data path below, where they can be fetched by exact NDN name with
+SegmentFetcher-style segmented retrieval.
+
 ## Collaboration and Large Data
 
 The Python wrapper exposes the current generic collaboration path. Providers

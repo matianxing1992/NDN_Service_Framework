@@ -332,6 +332,23 @@ authorization or replay resistance. When the cached token pool is exhausted,
 the next `RequestServiceTargeted(...)` call automatically uses the bootstrap
 flow again.
 
+### Choosing the transfer API
+
+NDNSF separates continuous publication from exact-name object transfer:
+
+- Use the **streaming substrate** (`StreamInfo`, `StreamChunk`, stream buffers,
+  and stream fetch state) for video, telemetry, logs, and other live or
+  near-live sequences where freshness, sequence gaps, duplicate suppression,
+  reordering, and optional FEC metadata matter.
+- Use the **large-data / segmented object path** for large files, model
+  artifacts, catalog snapshots, recordings, and DI tensor bundles. These
+  objects already have exact NDN names, so they should be published with the
+  large-data helper or `CollaborationContext::publishLargeNamed(...)` and
+  fetched with `fetchLarge(...)` / SegmentFetcher-style retrieval.
+
+In short: a stream is an ongoing sequence; a large object is fetched by its
+exact name.
+
 For payloads that exceed the inline/single-segment threshold, NDNSF uses one
 common large-data reference abstraction. Small request and response payloads
 remain inline in `RequestMessage.payload` and `ResponseMessage.payload`.

@@ -73,6 +73,19 @@ struct StreamFecInfo
   bool wireDecode(const ndn::Block& block);
 };
 
+/**
+ * Metadata for a continuous or near-live sequence of named Data packets.
+ *
+ * Use StreamInfo/StreamChunk for data that evolves over time and benefits
+ * from stream sequence, freshness, gap, duplicate, reorder, or FEC metadata:
+ * video frames, telemetry, logs, and similar live feeds.
+ *
+ * This is not the right abstraction for large static objects such as files,
+ * model artifacts, catalog snapshots, or planned DI tensor bundles. Those
+ * objects already have exact NDN names and should use the large-data path:
+ * CollaborationContext::publishLarge(), publishLargeNamed(), and fetchLarge(),
+ * which are backed by segmented Data / SegmentFetcher-style retrieval.
+ */
 struct StreamInfo
 {
   std::string streamId;
@@ -95,6 +108,14 @@ struct StreamInfo
   bool wireDecode(const ndn::Block& block);
 };
 
+/**
+ * One chunk in a continuous or near-live StreamInfo sequence.
+ *
+ * A StreamChunk may carry arbitrary payload bytes, but the surrounding
+ * metadata assumes a stream sequence. For exact-name large-object transfer,
+ * prefer CollaborationContext::publishLarge(), publishLargeNamed(), and
+ * fetchLarge() instead of wrapping the object as a stream.
+ */
 struct StreamChunk
 {
   std::string streamId;

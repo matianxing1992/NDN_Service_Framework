@@ -257,16 +257,41 @@ namespace ndn_service_framework{
                 void publish(KeyScope keyScope,
                              Topic topic,
                              const ndn::Buffer& payload);
+                /**
+                 * Publish one exact-name segmented object for collaboration.
+                 *
+                 * Use this family for large static or planned objects such as
+                 * files, model artifacts, catalog snapshots, recordings, and
+                 * DI tensor bundles. Consumers retrieve the returned name with
+                 * fetchLarge(), which uses segmented Data / SegmentFetcher-style
+                 * exact-name retrieval. Do not use StreamChunk for these objects
+                 * unless an application explicitly needs a metadata-envelope
+                 * experiment.
+                 */
                 ndn::Name publishLarge(KeyScope keyScope,
                                        Topic topic,
                                        const ndn::Buffer& payload,
                                        size_t maxSegmentSize = 7000,
                                        int freshnessMs = 60000);
+                /**
+                 * Publish one segmented object under a caller-chosen exact name.
+                 *
+                 * This is the preferred collaboration primitive when a plan or
+                 * manifest already assigns the Data name, as in DI activation
+                 * exchange. It is separate from the continuous stream substrate.
+                 */
                 ndn::Name publishLargeNamed(KeyScope keyScope,
                                             const ndn::Name& dataName,
                                             const ndn::Buffer& payload,
                                             size_t maxSegmentSize = 7000,
                                             int freshnessMs = 60000);
+                /**
+                 * Fetch one exact-name segmented collaboration object.
+                 *
+                 * This is the large-object counterpart to publishLarge() and
+                 * publishLargeNamed(). It is intended for exact-name object
+                 * retrieval, not continuous stream consumption.
+                 */
                 std::optional<ndn::Buffer> fetchLarge(const ndn::Name& dataName,
                                                       KeyScope keyScope,
                                                       int timeoutMs);

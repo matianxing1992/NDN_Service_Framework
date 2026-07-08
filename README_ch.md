@@ -274,6 +274,21 @@ Targeted invocation 的安全模型：
 authorization 和 replay resistance。缓存 token pool 用完后，下一次
 `RequestServiceTargeted(...)` 会自动重新走 bootstrap/refill 流程。
 
+### 如何选择传输 API
+
+NDNSF 把连续发布和按名字精确获取对象分开：
+
+- **Streaming substrate**（`StreamInfo`、`StreamChunk`、stream buffer 和 stream
+  fetch state）适合 video、telemetry、log 等 live 或 near-live 序列，因为这些数据
+  关心 freshness、sequence gap、duplicate suppression、reordering，以及可选的
+  FEC metadata。
+- **large-data / segmented object path** 适合大文件、model artifact、catalog
+  snapshot、recording 和 DI tensor bundle。这类对象本来就有精确的 NDN name，
+  应该用 large-data helper 或 `CollaborationContext::publishLargeNamed(...)`
+  发布，并用 `fetchLarge(...)` / SegmentFetcher-style retrieval 按名字获取。
+
+简单说：stream 是持续发布的序列；large object 是按 exact name 获取的对象。
+
 对于超过 inline/single-segment 阈值的 service payload，NDNSF 使用统一的
 large-data reference abstraction。小 request/response payload 仍然内联放在
 `RequestMessage.payload` 和 `ResponseMessage.payload` 里。大的 request input 应该用
