@@ -39,7 +39,9 @@ public:
   void setCapacitySnapshotProvider(CapacitySnapshotProvider provider);
 
   ndn_service_framework::ServiceProvider::AckDecision
-  makeAckDecision(const std::string& rolesText) const;
+  makeAckDecision(const std::string& rolesText,
+                  const ndn::Name& providerName = ndn::Name(),
+                  const ndn::Name& serviceName = ndn::Name()) const;
 
 private:
   void set(Status status, std::string message);

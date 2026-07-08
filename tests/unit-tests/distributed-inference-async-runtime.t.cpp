@@ -2353,6 +2353,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(ackPayloadText(readyAck).find("hasModel=1") != std::string::npos);
   BOOST_CHECK(ackPayloadText(readyAck).find("queue=0") != std::string::npos);
   BOOST_CHECK(ackPayloadText(readyAck).find("workers=0") != std::string::npos);
+  BOOST_CHECK(ackPayloadText(readyAck).find("providerCapabilityHint=json64:") !=
+              std::string::npos);
 
   ProviderRoleWorkerSnapshot capacity;
   capacity.workerCount = 4;
@@ -2369,6 +2371,7 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(capacityPayload.find("activeWorkers=3") != std::string::npos);
   BOOST_CHECK(capacityPayload.find("workers=4") != std::string::npos);
   BOOST_CHECK(capacityPayload.find("idleWorkers=1") != std::string::npos);
+  BOOST_CHECK(capacityPayload.find("providerCapabilityHint=json64:") != std::string::npos);
 }
 
 } // namespace ndnsf::di::test

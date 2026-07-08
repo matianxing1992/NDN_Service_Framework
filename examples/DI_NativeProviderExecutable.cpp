@@ -871,7 +871,9 @@ main(int argc, char** argv)
          enableAdmissionLease = options.enableAdmissionLease,
          admissionLeaseTtlMs = options.admissionLeaseTtlMs](
           const ndn_service_framework::RequestMessage&) {
-          auto decision = provisioningState->makeAckDecision(rolesText);
+          auto decision = provisioningState->makeAckDecision(rolesText,
+                                                             providerName,
+                                                             serviceName);
           // Update NDNSD meta with live capacity from this ACK decision
           if (decision.status) {
             auto payloadText = bufferText(decision.payload);

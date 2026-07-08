@@ -29,6 +29,80 @@ appendEnvField(std::ostringstream& payload, const char* envName, const char* fie
   }
 }
 
+std::string
+envText(const char* envName)
+{
+  const char* value = std::getenv(envName);
+  return value == nullptr ? "" : std::string(value);
+}
+
+std::string
+jsonEscape(const std::string& text)
+{
+  std::ostringstream escaped;
+  for (const unsigned char ch : text) {
+    switch (ch) {
+    case '"':
+      escaped << "\\\"";
+      break;
+    case '\\':
+      escaped << "\\\\";
+      break;
+    case '\b':
+      escaped << "\\b";
+      break;
+    case '\f':
+      escaped << "\\f";
+      break;
+    case '\n':
+      escaped << "\\n";
+      break;
+    case '\r':
+      escaped << "\\r";
+      break;
+    case '\t':
+      escaped << "\\t";
+      break;
+    default:
+      if (ch < 0x20) {
+        escaped << "\\u00";
+        constexpr char hex[] = "0123456789abcdef";
+        escaped << hex[(ch >> 4) & 0x0f] << hex[ch & 0x0f];
+      }
+      else {
+        escaped << static_cast<char>(ch);
+      }
+      break;
+    }
+  }
+  return escaped.str();
+}
+
+std::string
+jsonString(const std::string& text)
+{
+  return "\"" + jsonEscape(text) + "\"";
+}
+
+std::string
+base64UrlEncode(const std::string& text)
+{
+  static constexpr char alphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  std::string encoded;
+  encoded.reserve(((text.size() + 2) / 3) * 4);
+  for (std::size_t i = 0; i < text.size(); i += 3) {
+    const auto b0 = static_cast<unsigned char>(text[i]);
+    const auto b1 = i + 1 < text.size() ? static_cast<unsigned char>(text[i + 1]) : 0;
+    const auto b2 = i + 2 < text.size() ? static_cast<unsigned char>(text[i + 2]) : 0;
+    encoded.push_back(alphabet[b0 >> 2]);
+    encoded.push_back(alphabet[((b0 & 0x03) << 4) | (b1 >> 4)]);
+    encoded.push_back(i + 1 < text.size() ? alphabet[((b1 & 0x0f) << 2) | (b2 >> 6)] : '=');
+    encoded.push_back(i + 2 < text.size() ? alphabet[b2 & 0x3f] : '=');
+  }
+  return encoded;
+}
+
 std::optional<long long>
 envInteger(const char* envName)
 {
@@ -115,6 +189,66 @@ evaluateNativeAdmission(const ProviderRoleWorkerSnapshot& capacity)
   return {};
 }
 
+std::string
+makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
+                               const std::string& rolesText,
+                               bool ready,
+                               const std::string& reasonCode,
+                               const std::string& message,
+                               const std::string& status,
+                               const ndn::Name& providerName,
+                               const ndn::Name& serviceName)
+{
+  const auto provider = providerName.size() == 0 ? "/" : providerName.toUri();
+  const auto service = serviceName.size() == 0 ? "/" : serviceName.toUri();
+  std::ostringstream json;
+  json << "{"
+       << "\"schema\":\"ndnsf-provider-capability-v1\","
+       << "\"providerName\":" << jsonString(provider) << ","
+       << "\"serviceName\":" << jsonString(service) << ","
+       << "\"ready\":" << (ready ? "true" : "false") << ","
+       << "\"reasonCode\":" << jsonString(reasonCode) << ","
+       << "\"message\":" << jsonString(message) << ","
+       << "\"runtimeHint\":{"
+       << "\"providerName\":" << jsonString(provider) << ","
+       << "\"activeWorkCount\":" << capacity.activeWorkerCount << ","
+       << "\"queueLength\":" << capacity.pendingWorkCount() << ","
+       << "\"capacityHints\":{"
+       << "\"roles\":" << jsonString(rolesText) << ","
+       << "\"readyQueue\":" << capacity.readyQueueDepth << ","
+       << "\"waitingInputs\":" << capacity.waitingForInputCount << ","
+       << "\"workers\":" << capacity.workerCount << ","
+       << "\"idleWorkers\":" << capacity.idleWorkerCount() << ","
+       << "\"hasModel\":" << (ready ? "true" : "false") << ","
+       << "\"runtimeStatus\":" << jsonString(status) << ","
+       << "\"canProvision\":false,"
+       << "\"backends\":[\"onnxruntime\"]";
+  const std::pair<const char*, const char*> envFields[] = {
+    {"NDNSF_DI_PROVIDER_GPU_MEMORY_MB", "gpuMemoryMb"},
+    {"NDNSF_DI_PROVIDER_RAM_MEMORY_MB", "ramMemoryMb"},
+    {"NDNSF_DI_PROVIDER_FLOPS_TFLOPS", "flopsTflops"},
+    {"NDNSF_DI_PROVIDER_LLM_STAGE_CAPACITY_MB", "llmStageCapacityMb"},
+    {"NDNSF_DI_PROVIDER_LLM_MAX_STAGE_LAYERS", "llmMaxStageLayers"},
+    {"NDNSF_DI_PROVIDER_MODEL_FAMILIES", "modelFamilies"},
+  };
+  for (const auto& item : envFields) {
+    const auto value = envText(item.first);
+    if (!value.empty()) {
+      json << "," << jsonString(item.second) << ":" << jsonString(value);
+    }
+  }
+  json << "}},"
+       << "\"servicePayloadSchema\":\"ndnsf-di-capability-v1\","
+       << "\"servicePayload\":{"
+       << "\"roles\":" << jsonString(rolesText) << ","
+       << "\"runtimeStatus\":" << jsonString(status) << ","
+       << "\"canProvision\":false,"
+       << "\"backends\":[\"onnxruntime\"]"
+       << "}"
+       << "}";
+  return json.str();
+}
+
 } // namespace
 
 void
@@ -177,7 +311,9 @@ NativeProviderReadinessState::setCapacitySnapshotProvider(
 }
 
 ndn_service_framework::ServiceProvider::AckDecision
-NativeProviderReadinessState::makeAckDecision(const std::string& rolesText) const
+NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
+                                              const ndn::Name& providerName,
+                                              const ndn::Name& serviceName) const
 {
   bool ready = false;
   std::string status;
@@ -252,6 +388,17 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText) cons
   decision.message = !ready ? negativeAckReason :
                      (!admission.accepted ? admission.reason :
                       "native DI provider ready: " + message);
+  const auto capabilityReason = decision.status ? std::string() :
+                                (!admission.accepted ? admission.reason : negativeAckReason);
+  const auto capabilityJson = makeProviderCapabilityHintJson(capacity,
+                                                             rolesText,
+                                                             decision.status,
+                                                             capabilityReason,
+                                                             decision.message,
+                                                             status,
+                                                             providerName,
+                                                             serviceName);
+  payload << "providerCapabilityHint=json64:" << base64UrlEncode(capabilityJson) << ";";
   decision.payload = toBuffer(payload.str());
   return decision;
 }
