@@ -33,6 +33,7 @@ using ndnsf::examples::uav::TelemetryState;
 using ndnsf::examples::uav::UavDataProductCatalogState;
 using ndnsf::examples::uav::UavFunctionalityState;
 using ndnsf::examples::uav::UavAnalyzeSnapshot;
+using ndnsf::examples::uav::UavOperatorDashboardSnapshot;
 using ndnsf::examples::uav::UavPracticalityState;
 using ndnsf::examples::uav::UavStabilityState;
 using ndnsf::examples::uav::VehicleParameterEditRequest;
@@ -1203,6 +1204,45 @@ BOOST_AUTO_TEST_CASE(PreflightAndAnalyzeContractsSupportQgcStylePanels)
   BOOST_CHECK_EQUAL(roundTrip.messages[1].messageId, 33);
   BOOST_CHECK_EQUAL(roundTrip.activeMessageCount(10000, 3000), 1);
   BOOST_CHECK_NE(roundTrip.statusLine().find("messages=2"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(OperatorDashboardSnapshotSummarizesQgcStyleState)
+{
+  UavOperatorDashboardSnapshot snapshot;
+  snapshot.droneId = "A";
+  snapshot.telemetryFreshness = "fresh";
+  snapshot.readiness = "ready";
+  snapshot.readinessReason = "ok";
+  snapshot.linkState = "connected";
+  snapshot.flightMode = "AUTO.MISSION";
+  snapshot.missionPhase = "executing";
+  snapshot.videoState = "streaming";
+  snapshot.parameterCacheStatus = "complete";
+  snapshot.parameterCount = 42;
+  snapshot.preflightTotal = 6;
+  snapshot.preflightBlockingFailures = 0;
+  snapshot.mavlinkMessageCount = 4;
+  snapshot.activeMavlinkMessageCount = 3;
+  snapshot.canArm = true;
+  snapshot.canTakeoff = true;
+  snapshot.canLand = true;
+  snapshot.canManualControl = true;
+  snapshot.canEmergencyStop = true;
+  snapshot.updatedMs = 12345;
+
+  BOOST_CHECK(snapshot.operatorReady());
+  const auto roundTrip = UavOperatorDashboardSnapshot::fromFields(snapshot.toFields());
+  BOOST_CHECK(roundTrip.operatorReady());
+  BOOST_CHECK_EQUAL(roundTrip.droneId, "A");
+  BOOST_CHECK_EQUAL(roundTrip.parameterCount, 42);
+  BOOST_CHECK_EQUAL(roundTrip.preflightTotal, 6);
+  BOOST_CHECK_EQUAL(roundTrip.activeMavlinkMessageCount, 3);
+  BOOST_CHECK(roundTrip.canEmergencyStop);
+  BOOST_CHECK_NE(roundTrip.statusLine().find("operator_ready=true"), std::string::npos);
+
+  auto blocked = roundTrip;
+  blocked.preflightBlockingFailures = 1;
+  BOOST_CHECK(!blocked.operatorReady());
 }
 
 BOOST_AUTO_TEST_CASE(OperatorAuthorityLeaseBlocksConflictingControl)

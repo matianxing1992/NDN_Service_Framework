@@ -3698,6 +3698,98 @@ UavAnalyzeSnapshot::statusLine() const
          " messages=" + std::to_string(messages.size());
 }
 
+UavOperatorDashboardSnapshot
+UavOperatorDashboardSnapshot::fromFields(const Fields& fields)
+{
+  UavOperatorDashboardSnapshot snapshot;
+  snapshot.droneId = fieldOr(fields, "dashboard_drone", snapshot.droneId);
+  snapshot.telemetryFreshness = fieldOr(fields, "dashboard_telemetry_freshness",
+                                        snapshot.telemetryFreshness);
+  snapshot.readiness = fieldOr(fields, "dashboard_readiness", snapshot.readiness);
+  snapshot.readinessReason = fieldOr(fields, "dashboard_readiness_reason",
+                                     snapshot.readinessReason);
+  snapshot.linkState = fieldOr(fields, "dashboard_link_state", snapshot.linkState);
+  snapshot.flightMode = fieldOr(fields, "dashboard_flight_mode", snapshot.flightMode);
+  snapshot.missionPhase = fieldOr(fields, "dashboard_mission_phase", snapshot.missionPhase);
+  snapshot.videoState = fieldOr(fields, "dashboard_video_state", snapshot.videoState);
+  snapshot.parameterCacheStatus = fieldOr(fields, "dashboard_parameter_cache",
+                                          snapshot.parameterCacheStatus);
+  snapshot.parameterCount = uint64FieldOr(fields, "dashboard_parameter_count",
+                                          snapshot.parameterCount);
+  snapshot.preflightTotal = uint64FieldOr(fields, "dashboard_preflight_total",
+                                          snapshot.preflightTotal);
+  snapshot.preflightBlockingFailures = uint64FieldOr(fields,
+                                                     "dashboard_preflight_blocking_failures",
+                                                     snapshot.preflightBlockingFailures);
+  snapshot.mavlinkMessageCount = uint64FieldOr(fields, "dashboard_mavlink_messages",
+                                               snapshot.mavlinkMessageCount);
+  snapshot.activeMavlinkMessageCount = uint64FieldOr(fields,
+                                                     "dashboard_active_mavlink_messages",
+                                                     snapshot.activeMavlinkMessageCount);
+  snapshot.canArm = fieldOr(fields, "dashboard_can_arm", "false") == "true";
+  snapshot.canTakeoff = fieldOr(fields, "dashboard_can_takeoff", "false") == "true";
+  snapshot.canLand = fieldOr(fields, "dashboard_can_land", "false") == "true";
+  snapshot.canManualControl = fieldOr(fields, "dashboard_can_manual_control", "false") == "true";
+  snapshot.canEmergencyStop = fieldOr(fields, "dashboard_can_emergency_stop", "false") == "true";
+  snapshot.updatedMs = uint64FieldOr(fields, "dashboard_updated_ms", snapshot.updatedMs);
+  return snapshot;
+}
+
+Fields
+UavOperatorDashboardSnapshot::toFields() const
+{
+  return {
+    {"type", "uav-operator-dashboard-snapshot"},
+    {"dashboard_drone", droneId},
+    {"dashboard_telemetry_freshness", telemetryFreshness},
+    {"dashboard_readiness", readiness},
+    {"dashboard_readiness_reason", readinessReason},
+    {"dashboard_link_state", linkState},
+    {"dashboard_flight_mode", flightMode},
+    {"dashboard_mission_phase", missionPhase},
+    {"dashboard_video_state", videoState},
+    {"dashboard_parameter_cache", parameterCacheStatus},
+    {"dashboard_parameter_count", std::to_string(parameterCount)},
+    {"dashboard_preflight_total", std::to_string(preflightTotal)},
+    {"dashboard_preflight_blocking_failures", std::to_string(preflightBlockingFailures)},
+    {"dashboard_mavlink_messages", std::to_string(mavlinkMessageCount)},
+    {"dashboard_active_mavlink_messages", std::to_string(activeMavlinkMessageCount)},
+    {"dashboard_can_arm", canArm ? "true" : "false"},
+    {"dashboard_can_takeoff", canTakeoff ? "true" : "false"},
+    {"dashboard_can_land", canLand ? "true" : "false"},
+    {"dashboard_can_manual_control", canManualControl ? "true" : "false"},
+    {"dashboard_can_emergency_stop", canEmergencyStop ? "true" : "false"},
+    {"dashboard_updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+bool
+UavOperatorDashboardSnapshot::operatorReady() const
+{
+  return telemetryFreshness == "fresh" && readiness == "ready" &&
+         preflightBlockingFailures == 0 && activeMavlinkMessageCount > 0;
+}
+
+std::string
+UavOperatorDashboardSnapshot::statusLine() const
+{
+  return "UavOperatorDashboardSnapshot drone=" + droneId +
+         " telemetry=" + telemetryFreshness +
+         " readiness=" + readiness +
+         " reason=" + readinessReason +
+         " link=" + linkState +
+         " mode=" + flightMode +
+         " mission=" + missionPhase +
+         " video=" + videoState +
+         " parameters=" + parameterCacheStatus +
+         " parameter_count=" + std::to_string(parameterCount) +
+         " preflight=" + std::to_string(preflightTotal) +
+         " blocking_failures=" + std::to_string(preflightBlockingFailures) +
+         " mavlink_active=" + std::to_string(activeMavlinkMessageCount) +
+         " can_takeoff=" + std::string(canTakeoff ? "true" : "false") +
+         " operator_ready=" + std::string(operatorReady() ? "true" : "false");
+}
+
 OperatorAuthorityLease
 OperatorAuthorityLease::fromFields(const Fields& fields)
 {

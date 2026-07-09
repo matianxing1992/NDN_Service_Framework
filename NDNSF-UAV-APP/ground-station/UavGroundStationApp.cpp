@@ -391,6 +391,7 @@ main(int argc, char** argv)
     const bool autoParameterEditTest = getConfigBool(argc, argv, appConfig, "--auto-parameter-edit-test", "auto-parameter-edit-test", false);
     const bool autoPreflightChecklistTest = getConfigBool(argc, argv, appConfig, "--auto-preflight-checklist-test", "auto-preflight-checklist-test", false);
     const bool autoAnalyzeSnapshotTest = getConfigBool(argc, argv, appConfig, "--auto-analyze-snapshot-test", "auto-analyze-snapshot-test", false);
+    const bool autoDashboardSnapshotTest = getConfigBool(argc, argv, appConfig, "--auto-dashboard-snapshot-test", "auto-dashboard-snapshot-test", false);
     const bool autoAuthorityLeaseTest = getConfigBool(argc, argv, appConfig, "--auto-authority-lease-test", "auto-authority-lease-test", false);
     const bool autoAuthorityConfigTest = getConfigBool(argc, argv, appConfig, "--auto-authority-config-test", "auto-authority-config-test", false);
     const bool autoAuthorityIssuerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-issuer-test", "auto-authority-issuer-test", false);
@@ -529,6 +530,7 @@ main(int argc, char** argv)
                                   autoParameterEditTest ||
                                   autoPreflightChecklistTest ||
                                   autoAnalyzeSnapshotTest ||
+                                  autoDashboardSnapshotTest ||
                                   autoAuthorityLeaseTest ||
                                   autoAuthorityConfigTest ||
                                   autoAuthorityIssuerTest ||
@@ -598,6 +600,11 @@ main(int argc, char** argv)
     if (autoAnalyzeSnapshotTest) {
       const bool ok = runtime->runAnalyzeSnapshotTest(std::chrono::seconds(30));
       std::cout << "GS_ANALYZE_SNAPSHOT_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
+    if (autoDashboardSnapshotTest) {
+      const bool ok = runtime->runOperatorDashboardSnapshotTest(std::chrono::seconds(30));
+      std::cout << "GS_DASHBOARD_SNAPSHOT_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
     if (autoAuthorityLeaseTest) {
@@ -694,6 +701,7 @@ main(int argc, char** argv)
               << " auto_parameter_edit_test=" << (autoParameterEditTest ? "true" : "false")
               << " auto_preflight_checklist_test=" << (autoPreflightChecklistTest ? "true" : "false")
               << " auto_analyze_snapshot_test=" << (autoAnalyzeSnapshotTest ? "true" : "false")
+              << " auto_dashboard_snapshot_test=" << (autoDashboardSnapshotTest ? "true" : "false")
               << " auto_authority_lease_test=" << (autoAuthorityLeaseTest ? "true" : "false")
               << " auto_authority_config_test=" << (autoAuthorityConfigTest ? "true" : "false")
               << " auto_authority_issuer_test=" << (autoAuthorityIssuerTest ? "true" : "false")

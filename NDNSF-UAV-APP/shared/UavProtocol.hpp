@@ -914,6 +914,35 @@ struct UavAnalyzeSnapshot
   std::string statusLine() const;
 };
 
+struct UavOperatorDashboardSnapshot
+{
+  std::string droneId = "unknown";
+  std::string telemetryFreshness = "unknown";
+  std::string readiness = "unknown";
+  std::string readinessReason = "unknown";
+  std::string linkState = "unknown";
+  std::string flightMode = "unknown";
+  std::string missionPhase = "unknown";
+  std::string videoState = "unknown";
+  std::string parameterCacheStatus = "unknown";
+  uint64_t parameterCount = 0;
+  uint64_t preflightTotal = 0;
+  uint64_t preflightBlockingFailures = 0;
+  uint64_t mavlinkMessageCount = 0;
+  uint64_t activeMavlinkMessageCount = 0;
+  bool canArm = false;
+  bool canTakeoff = false;
+  bool canLand = false;
+  bool canManualControl = false;
+  bool canEmergencyStop = false;
+  uint64_t updatedMs = 0;
+
+  static UavOperatorDashboardSnapshot fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool operatorReady() const;
+  std::string statusLine() const;
+};
+
 struct OperatorAuthorityLease
 {
   std::string leaseId = "none";

@@ -1296,6 +1296,76 @@ public:
     return found->second;
   }
 
+  UavOperatorDashboardSnapshot
+  operatorDashboardSnapshotForDrone(const std::string& droneId) const
+  {
+    UavOperatorDashboardSnapshot snapshot;
+    snapshot.droneId = droneId;
+    snapshot.updatedMs = nowMilliseconds();
+
+    const auto telemetry = telemetryForDrone(droneId);
+    if (telemetry) {
+      snapshot.telemetryFreshness = telemetry->telemetryFreshnessLabel();
+      snapshot.linkState = telemetry->linkState;
+      if (snapshot.videoState == "unknown") {
+        snapshot.videoState = telemetry->video;
+      }
+    }
+
+    const auto readiness = readinessForDrone(droneId);
+    if (readiness) {
+      snapshot.readiness = readiness->readiness;
+      snapshot.readinessReason = readiness->readinessReason;
+      snapshot.flightMode = readiness->mode;
+    }
+
+    const auto mission = missionForDrone(droneId);
+    if (mission) {
+      snapshot.missionPhase = mission->phase;
+    }
+
+    const auto video = videoForDrone(droneId);
+    if (video) {
+      snapshot.videoState = video->status;
+    }
+
+    const auto parameters = parameterSnapshotForDrone(droneId);
+    if (parameters) {
+      snapshot.parameterCacheStatus = parameters->isUsable() ? "available" : "empty";
+      snapshot.parameterCount = parameters->parameterCount == 0 ?
+                                parameters->parameters.size() : parameters->parameterCount;
+    }
+
+    const auto preflight = preflightChecklistForDrone(droneId);
+    snapshot.preflightTotal = preflight.size();
+    snapshot.preflightBlockingFailures = static_cast<uint64_t>(std::count_if(
+      preflight.begin(), preflight.end(), [] (const PreflightCheckItem& item) {
+        return item.isBlockingFailure();
+      }));
+
+    const auto analyze = analyzeSnapshotForDrone(droneId);
+    if (analyze) {
+      snapshot.linkState = analyze->linkState;
+      snapshot.flightMode = analyze->flightMode;
+      snapshot.missionPhase = analyze->missionPhase;
+      snapshot.videoState = analyze->videoState;
+      if (snapshot.parameterCacheStatus == "unknown") {
+        snapshot.parameterCacheStatus = analyze->parameterCacheStatus;
+      }
+      snapshot.mavlinkMessageCount = analyze->messages.size();
+      snapshot.activeMavlinkMessageCount = analyze->activeMessageCount(snapshot.updatedMs, 3000);
+    }
+
+    const auto safety = safetyForDrone(droneId);
+    const auto gate = FlightSafetyGateState::fromStates(droneId, readiness, safety);
+    snapshot.canArm = gate.canArm;
+    snapshot.canTakeoff = gate.canTakeoff;
+    snapshot.canLand = gate.canLand;
+    snapshot.canManualControl = gate.canManualControl;
+    snapshot.canEmergencyStop = gate.canEmergencyStop;
+    return snapshot;
+  }
+
   void
   playLatestRecording()
   {
@@ -2171,6 +2241,57 @@ public:
                  << " active_messages=" << active
                  << " heartbeat=" << (hasHeartbeat ? "true" : "false")
                  << " global_position=" << (hasPosition ? "true" : "false"));
+    return ok;
+  }
+
+  bool
+  runOperatorDashboardSnapshotTest(std::chrono::seconds timeout)
+  {
+    const auto droneId = targetDroneId();
+    const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    const auto telemetryFields = requestTelemetryStatusForDroneSync(droneId, wait);
+    if (!telemetryFields.empty()) {
+      auto telemetry = TelemetryState::fromFields(telemetryFields);
+      if (telemetry.droneId == "unknown") {
+        telemetry.droneId = droneId;
+      }
+      updateDroneState(telemetry, MissionState::fromFields(telemetryFields));
+    }
+    const auto parameters = requestVehicleParametersForDroneSync(droneId, wait);
+    const auto preflight = requestPreflightChecklistForDroneSync(droneId, wait);
+    const auto analyze = requestAnalyzeSnapshotForDroneSync(droneId, wait);
+    const auto dashboard = operatorDashboardSnapshotForDrone(droneId);
+
+    const bool ok = !telemetryFields.empty() &&
+                    parameters && parameters->isUsable() &&
+                    !preflight.empty() &&
+                    analyze && !analyze->messages.empty() &&
+                    dashboard.droneId == droneId &&
+                    dashboard.parameterCount > 0 &&
+                    dashboard.preflightTotal >= 5 &&
+                    dashboard.preflightBlockingFailures == 0 &&
+                    dashboard.mavlinkMessageCount >= 4 &&
+                    dashboard.activeMavlinkMessageCount >= 2 &&
+                    dashboard.canEmergencyStop;
+    NDN_LOG_INFO("OPERATOR_DASHBOARD_SNAPSHOT_RESULT ok=" << (ok ? "true" : "false")
+                 << " drone=" << droneId
+                 << " telemetry=" << dashboard.telemetryFreshness
+                 << " readiness=" << dashboard.readiness
+                 << " reason=" << dashboard.readinessReason
+                 << " parameters=" << dashboard.parameterCount
+                 << " preflight=" << dashboard.preflightTotal
+                 << " blocking_failures=" << dashboard.preflightBlockingFailures
+                 << " mavlink_messages=" << dashboard.mavlinkMessageCount
+                 << " active_mavlink_messages=" << dashboard.activeMavlinkMessageCount
+                 << " can_takeoff=" << (dashboard.canTakeoff ? "true" : "false"));
+    publishStatus(dashboard.statusLine());
+    publishStatus("Operator dashboard snapshot drone=" + droneId +
+                  " readiness=" + dashboard.readiness +
+                  " preflight=" + std::to_string(dashboard.preflightTotal) +
+                  " active_mavlink=" + std::to_string(dashboard.activeMavlinkMessageCount) +
+                  " parameter_count=" + std::to_string(dashboard.parameterCount));
     return ok;
   }
 
