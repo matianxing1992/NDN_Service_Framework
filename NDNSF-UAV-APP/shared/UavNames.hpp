@@ -23,6 +23,7 @@ inline const ndn::Name SERVICE_CAMERA_RECORDING_MANIFEST_SUFFIX("/UAV/Camera/Rec
 inline const ndn::Name SERVICE_CAMERA_REPO_CATALOG_SUFFIX("/UAV/Camera/Repo/Catalog");
 inline const ndn::Name SERVICE_MAVLINK_PARAMETERS_SUFFIX("/UAV/MAVLink/Parameters");
 inline const ndn::Name SERVICE_MAVLINK_PARAMETER_EDIT_SUFFIX("/UAV/MAVLink/ParameterEdit");
+inline const ndn::Name SERVICE_MAVLINK_ANALYZE_SNAPSHOT_SUFFIX("/UAV/MAVLink/AnalyzeSnapshot");
 inline const ndn::Name SERVICE_PREFLIGHT_CHECKLIST_SUFFIX("/UAV/Preflight/Checklist");
 inline const ndn::Name SERVICE_GS_OBJECT_DETECTION("/UAV/GS/ObjectDetection");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_LEASE("/UAV/GS/OperatorAuthority/Lease");
@@ -47,6 +48,7 @@ struct UavRuntimeConfig
   ndn::Name serviceCameraRepoCatalogSuffix = SERVICE_CAMERA_REPO_CATALOG_SUFFIX;
   ndn::Name serviceMavlinkParametersSuffix = SERVICE_MAVLINK_PARAMETERS_SUFFIX;
   ndn::Name serviceMavlinkParameterEditSuffix = SERVICE_MAVLINK_PARAMETER_EDIT_SUFFIX;
+  ndn::Name serviceMavlinkAnalyzeSnapshotSuffix = SERVICE_MAVLINK_ANALYZE_SNAPSHOT_SUFFIX;
   ndn::Name servicePreflightChecklistSuffix = SERVICE_PREFLIGHT_CHECKLIST_SUFFIX;
   ndn::Name serviceGsObjectDetection = SERVICE_GS_OBJECT_DETECTION;
   ndn::Name serviceGsOperatorAuthorityLease = SERVICE_GS_OPERATOR_AUTHORITY_LEASE;
@@ -94,6 +96,12 @@ droneMavlinkParameterEditService(const std::string& droneId);
 
 ndn::Name
 droneMavlinkParameterEditService(const UavRuntimeConfig& config, const std::string& droneId);
+
+ndn::Name
+droneMavlinkAnalyzeSnapshotService(const std::string& droneId);
+
+ndn::Name
+droneMavlinkAnalyzeSnapshotService(const UavRuntimeConfig& config, const std::string& droneId);
 
 ndn::Name
 dronePreflightChecklistService(const std::string& droneId);

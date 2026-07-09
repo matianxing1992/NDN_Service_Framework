@@ -3110,6 +3110,49 @@ public:
     return fields;
   }
 
+  Fields
+  analyzeSnapshotFields(const MissionState& mission)
+  {
+    const auto telemetry = latestTelemetryState();
+    const auto readiness = ReadinessState::fromTelemetry(telemetry);
+    const auto video = VideoState::fromFields(telemetry.toFields());
+    const auto now = nowMilliseconds();
+    UavAnalyzeSnapshot snapshot;
+    snapshot.droneId = m_droneId;
+    snapshot.linkState = telemetry.linkState;
+    snapshot.flightMode = readiness.mode;
+    snapshot.missionPhase = mission.phase;
+    snapshot.videoState = video.status;
+    snapshot.parameterCacheStatus = m_backend ? "available" : "unavailable";
+    snapshot.updatedMs = now;
+
+    auto addMessage = [&](std::string name, uint64_t id, uint64_t count,
+                          std::string rateHz, bool active) {
+      MavlinkMessageSummary summary;
+      summary.messageName = std::move(name);
+      summary.messageId = id;
+      summary.systemId = 1;
+      summary.componentId = 1;
+      summary.count = count;
+      summary.rateHz = std::move(rateHz);
+      summary.lastSeenMs = active ? now : 0;
+      snapshot.messages.push_back(std::move(summary));
+    };
+
+    addMessage("HEARTBEAT", 0, telemetry.heartbeatSeen == "true" ? 1 : 0,
+               "1.0", telemetry.heartbeatSeen == "true");
+    addMessage("LOCAL_POSITION_NED", 32,
+               telemetry.altitudeM != "unknown" ? 1 : 0,
+               "2.0", telemetry.altitudeM != "unknown");
+    addMessage("GLOBAL_POSITION_INT", 33,
+               telemetry.lat != "unknown" && telemetry.lon != "unknown" ? 1 : 0,
+               "2.0", telemetry.lat != "unknown" && telemetry.lon != "unknown");
+    addMessage("BATTERY_STATUS", 147,
+               telemetry.batteryPercent != "unknown" ? 1 : 0,
+               "0.5", telemetry.batteryPercent != "unknown");
+    return snapshot.toFields();
+  }
+
   std::string
   identityUri() const
   {
@@ -3332,6 +3375,20 @@ private:
       ndn_service_framework::ServiceProvider::SimpleRequestHandler(
         [this](const ndn_service_framework::RequestMessage&) {
           return makeResponse(true, encodeFields(preflightChecklistFields()));
+        }),
+      ServiceInvocationMode::NormalOnly);
+
+    m_provider->addService(
+      droneMavlinkAnalyzeSnapshotService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this, missionState, missionMutex](const ndn_service_framework::RequestMessage&) {
+          MissionState mission;
+          {
+            std::lock_guard<std::mutex> guard(*missionMutex);
+            mission = *missionState;
+          }
+          return makeResponse(true, encodeFields(analyzeSnapshotFields(mission)));
         }),
       ServiceInvocationMode::NormalOnly);
 

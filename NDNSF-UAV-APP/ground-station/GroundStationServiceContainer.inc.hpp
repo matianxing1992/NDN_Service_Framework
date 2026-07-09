@@ -1285,6 +1285,17 @@ public:
     return found->second;
   }
 
+  std::optional<UavAnalyzeSnapshot>
+  analyzeSnapshotForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_analyzeMutex);
+    const auto found = m_analyzeSnapshots.find(droneId);
+    if (found == m_analyzeSnapshots.end()) {
+      return std::nullopt;
+    }
+    return found->second;
+  }
+
   void
   playLatestRecording()
   {
@@ -2132,6 +2143,34 @@ public:
                  << " blocking_failures=" << blockingFailures
                  << " heartbeat_pass=" << (hasHeartbeat ? "true" : "false")
                  << " gps_pass=" << (hasGps ? "true" : "false"));
+    return ok;
+  }
+
+  bool
+  runAnalyzeSnapshotTest(std::chrono::seconds timeout)
+  {
+    const auto droneId = targetDroneId();
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto snapshot = requestAnalyzeSnapshotForDroneSync(
+      droneId, std::chrono::duration_cast<std::chrono::milliseconds>(timeout));
+    const auto now = nowMilliseconds();
+    const bool hasHeartbeat = snapshot && std::any_of(
+      snapshot->messages.begin(), snapshot->messages.end(), [] (const MavlinkMessageSummary& message) {
+        return message.messageName == "HEARTBEAT" && message.count > 0;
+      });
+    const bool hasPosition = snapshot && std::any_of(
+      snapshot->messages.begin(), snapshot->messages.end(), [] (const MavlinkMessageSummary& message) {
+        return message.messageName == "GLOBAL_POSITION_INT" && message.count > 0;
+      });
+    const auto active = snapshot ? snapshot->activeMessageCount(now, 3000) : 0;
+    const bool ok = snapshot && snapshot->messages.size() >= 4 &&
+                    active >= 2 && hasHeartbeat && hasPosition;
+    NDN_LOG_INFO("ANALYZE_SNAPSHOT_RESULT ok=" << (ok ? "true" : "false")
+                 << " drone=" << droneId
+                 << " messages=" << (snapshot ? snapshot->messages.size() : 0)
+                 << " active_messages=" << active
+                 << " heartbeat=" << (hasHeartbeat ? "true" : "false")
+                 << " global_position=" << (hasPosition ? "true" : "false"));
     return ok;
   }
 
@@ -5840,6 +5879,69 @@ private:
   }
 
   void
+  requestAnalyzeSnapshotForDrone(const std::string& droneId,
+                                 std::function<void(std::optional<UavAnalyzeSnapshot>)> onDone = {})
+  {
+    auto completion = std::make_shared<
+      std::function<void(std::optional<UavAnalyzeSnapshot>)>>(std::move(onDone));
+    postRequestForDrone(
+      droneId,
+      droneMavlinkAnalyzeSnapshotService(m_config, droneId),
+      encodeFields({{"type", "uav-analyze-snapshot-request"}}),
+      [this, droneId, completion](const std::string& payload) mutable {
+        const auto fields = decodeFields(payload);
+        auto snapshot = UavAnalyzeSnapshot::fromFields(fields);
+        if (snapshot.droneId == "unknown") {
+          snapshot.droneId = droneId;
+        }
+        {
+          std::lock_guard<std::mutex> guard(m_analyzeMutex);
+          m_analyzeSnapshots[droneId] = snapshot;
+        }
+        publishStatus(snapshot.statusLine());
+        publishStatus("Analyze snapshot drone=" + droneId +
+                      " messages=" + std::to_string(snapshot.messages.size()) +
+                      " active_messages=" +
+                      std::to_string(snapshot.activeMessageCount(nowMilliseconds(), 3000)) +
+                      " link=" + snapshot.linkState +
+                      " mode=" + snapshot.flightMode);
+        if (*completion) {
+          (*completion)(snapshot);
+        }
+      },
+      {},
+      [completion]() mutable {
+        if (*completion) {
+          (*completion)(std::nullopt);
+        }
+      });
+  }
+
+  std::optional<UavAnalyzeSnapshot>
+  requestAnalyzeSnapshotForDroneSync(const std::string& droneId, std::chrono::milliseconds timeout)
+  {
+    struct AnalyzeWaitState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      std::optional<UavAnalyzeSnapshot> snapshot;
+      bool done = false;
+    };
+    auto state = std::make_shared<AnalyzeWaitState>();
+    requestAnalyzeSnapshotForDrone(
+      droneId,
+      [state](std::optional<UavAnalyzeSnapshot> snapshot) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->snapshot = std::move(snapshot);
+        state->done = true;
+        state->cv.notify_all();
+      });
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, timeout, [&] { return state->done; });
+    return state->snapshot;
+  }
+
+  void
   startRecordingPlayback(const RecordingDataProductState& manifest)
   {
     if (!manifest.isAvailable()) {
@@ -8004,6 +8106,7 @@ private:
   mutable std::mutex m_catalogMutex;
   mutable std::mutex m_parameterMutex;
   mutable std::mutex m_preflightMutex;
+  mutable std::mutex m_analyzeMutex;
   mutable std::mutex m_operatorLeaseMutex;
   mutable std::mutex m_issuedOperatorLeaseMutex;
   mutable std::mutex m_operatorAuthorityAlertMutex;
@@ -8017,6 +8120,7 @@ private:
   std::map<std::string, UavDataProductCatalogState> m_catalogByDrone;
   std::map<std::string, VehicleParameterSnapshot> m_parameterSnapshots;
   std::map<std::string, std::vector<PreflightCheckItem>> m_preflightByDrone;
+  std::map<std::string, UavAnalyzeSnapshot> m_analyzeSnapshots;
   OperatorAuthorityLease m_operatorLease;
   std::vector<OperatorAuthorityLease> m_issuedOperatorLeases;
   std::map<std::string, Fields> m_operatorRevocationRecords;

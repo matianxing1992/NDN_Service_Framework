@@ -185,6 +185,9 @@ assignConfigValue(UavRuntimeConfig& config, const std::string& key, const std::s
   else if (key == "service-mavlink-parameter-edit-suffix") {
     config.serviceMavlinkParameterEditSuffix = ndn::Name(value);
   }
+  else if (key == "service-mavlink-analyze-snapshot-suffix") {
+    config.serviceMavlinkAnalyzeSnapshotSuffix = ndn::Name(value);
+  }
   else if (key == "service-preflight-checklist-suffix") {
     config.servicePreflightChecklistSuffix = ndn::Name(value);
   }
@@ -384,6 +387,22 @@ droneMavlinkParameterEditService(const UavRuntimeConfig& config, const std::stri
 {
   ndn::Name service = droneIdentity(config, droneId);
   for (const auto& component : config.serviceMavlinkParameterEditSuffix) {
+    service.append(component);
+  }
+  return service;
+}
+
+ndn::Name
+droneMavlinkAnalyzeSnapshotService(const std::string& droneId)
+{
+  return droneMavlinkAnalyzeSnapshotService(UavRuntimeConfig{}, droneId);
+}
+
+ndn::Name
+droneMavlinkAnalyzeSnapshotService(const UavRuntimeConfig& config, const std::string& droneId)
+{
+  ndn::Name service = droneIdentity(config, droneId);
+  for (const auto& component : config.serviceMavlinkAnalyzeSnapshotSuffix) {
     service.append(component);
   }
   return service;

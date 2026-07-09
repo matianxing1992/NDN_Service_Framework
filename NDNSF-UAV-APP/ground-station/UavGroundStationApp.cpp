@@ -390,6 +390,7 @@ main(int argc, char** argv)
     const bool autoParameterCacheTest = getConfigBool(argc, argv, appConfig, "--auto-parameter-cache-test", "auto-parameter-cache-test", false);
     const bool autoParameterEditTest = getConfigBool(argc, argv, appConfig, "--auto-parameter-edit-test", "auto-parameter-edit-test", false);
     const bool autoPreflightChecklistTest = getConfigBool(argc, argv, appConfig, "--auto-preflight-checklist-test", "auto-preflight-checklist-test", false);
+    const bool autoAnalyzeSnapshotTest = getConfigBool(argc, argv, appConfig, "--auto-analyze-snapshot-test", "auto-analyze-snapshot-test", false);
     const bool autoAuthorityLeaseTest = getConfigBool(argc, argv, appConfig, "--auto-authority-lease-test", "auto-authority-lease-test", false);
     const bool autoAuthorityConfigTest = getConfigBool(argc, argv, appConfig, "--auto-authority-config-test", "auto-authority-config-test", false);
     const bool autoAuthorityIssuerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-issuer-test", "auto-authority-issuer-test", false);
@@ -455,6 +456,7 @@ main(int argc, char** argv)
   config.serviceCameraRepoCatalogSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-camera-repo-catalog-suffix", "service-camera-repo-catalog-suffix", config.serviceCameraRepoCatalogSuffix.toUri()));
   config.serviceMavlinkParametersSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-parameters-suffix", "service-mavlink-parameters-suffix", config.serviceMavlinkParametersSuffix.toUri()));
   config.serviceMavlinkParameterEditSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-parameter-edit-suffix", "service-mavlink-parameter-edit-suffix", config.serviceMavlinkParameterEditSuffix.toUri()));
+  config.serviceMavlinkAnalyzeSnapshotSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-analyze-snapshot-suffix", "service-mavlink-analyze-snapshot-suffix", config.serviceMavlinkAnalyzeSnapshotSuffix.toUri()));
   config.servicePreflightChecklistSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-preflight-checklist-suffix", "service-preflight-checklist-suffix", config.servicePreflightChecklistSuffix.toUri()));
   config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
   config.serviceGsOperatorAuthorityLease = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-lease", "service-gs-operator-authority-lease", config.serviceGsOperatorAuthorityLease.toUri()));
@@ -526,6 +528,7 @@ main(int argc, char** argv)
                                   autoParameterCacheTest ||
                                   autoParameterEditTest ||
                                   autoPreflightChecklistTest ||
+                                  autoAnalyzeSnapshotTest ||
                                   autoAuthorityLeaseTest ||
                                   autoAuthorityConfigTest ||
                                   autoAuthorityIssuerTest ||
@@ -590,6 +593,11 @@ main(int argc, char** argv)
     if (autoPreflightChecklistTest) {
       const bool ok = runtime->runPreflightChecklistTest(std::chrono::seconds(30));
       std::cout << "GS_PREFLIGHT_CHECKLIST_EXIT ok=" << (ok ? "true" : "false") << std::endl;
+      return ok ? 0 : 2;
+    }
+    if (autoAnalyzeSnapshotTest) {
+      const bool ok = runtime->runAnalyzeSnapshotTest(std::chrono::seconds(30));
+      std::cout << "GS_ANALYZE_SNAPSHOT_EXIT ok=" << (ok ? "true" : "false") << std::endl;
       return ok ? 0 : 2;
     }
     if (autoAuthorityLeaseTest) {
@@ -685,6 +693,7 @@ main(int argc, char** argv)
               << " auto_parameter_cache_test=" << (autoParameterCacheTest ? "true" : "false")
               << " auto_parameter_edit_test=" << (autoParameterEditTest ? "true" : "false")
               << " auto_preflight_checklist_test=" << (autoPreflightChecklistTest ? "true" : "false")
+              << " auto_analyze_snapshot_test=" << (autoAnalyzeSnapshotTest ? "true" : "false")
               << " auto_authority_lease_test=" << (autoAuthorityLeaseTest ? "true" : "false")
               << " auto_authority_config_test=" << (autoAuthorityConfigTest ? "true" : "false")
               << " auto_authority_issuer_test=" << (autoAuthorityIssuerTest ? "true" : "false")

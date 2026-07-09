@@ -16,6 +16,7 @@ provider-policies
             /example/uav/drone/A/UAV/Camera/Repo/Catalog
             /example/uav/drone/A/UAV/MAVLink/Parameters
             /example/uav/drone/A/UAV/MAVLink/ParameterEdit
+            /example/uav/drone/A/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/A/UAV/Preflight/Checklist
         }
     }
@@ -34,6 +35,7 @@ provider-policies
             /example/uav/drone/B/UAV/Camera/Repo/Catalog
             /example/uav/drone/B/UAV/MAVLink/Parameters
             /example/uav/drone/B/UAV/MAVLink/ParameterEdit
+            /example/uav/drone/B/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/B/UAV/Preflight/Checklist
         }
     }
@@ -52,6 +54,7 @@ provider-policies
             /example/uav/drone/C/UAV/Camera/Repo/Catalog
             /example/uav/drone/C/UAV/MAVLink/Parameters
             /example/uav/drone/C/UAV/MAVLink/ParameterEdit
+            /example/uav/drone/C/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/C/UAV/Preflight/Checklist
         }
     }
@@ -85,18 +88,21 @@ user-policies
             /example/uav/drone/A/UAV/Camera/Repo/Catalog
             /example/uav/drone/A/UAV/MAVLink/Parameters
             /example/uav/drone/A/UAV/MAVLink/ParameterEdit
+            /example/uav/drone/A/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/A/UAV/Preflight/Checklist
             /example/uav/drone/B/UAV/Camera/Video
             /example/uav/drone/B/UAV/Camera/Recording/Manifest
             /example/uav/drone/B/UAV/Camera/Repo/Catalog
             /example/uav/drone/B/UAV/MAVLink/Parameters
             /example/uav/drone/B/UAV/MAVLink/ParameterEdit
+            /example/uav/drone/B/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/B/UAV/Preflight/Checklist
             /example/uav/drone/C/UAV/Camera/Video
             /example/uav/drone/C/UAV/Camera/Recording/Manifest
             /example/uav/drone/C/UAV/Camera/Repo/Catalog
             /example/uav/drone/C/UAV/MAVLink/Parameters
             /example/uav/drone/C/UAV/MAVLink/ParameterEdit
+            /example/uav/drone/C/UAV/MAVLink/AnalyzeSnapshot
             /example/uav/drone/C/UAV/Preflight/Checklist
             /UAV/GS/ObjectDetection
             /UAV/GS/OperatorAuthority/Lease
