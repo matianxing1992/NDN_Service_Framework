@@ -1274,6 +1274,17 @@ public:
     return found->second;
   }
 
+  std::vector<PreflightCheckItem>
+  preflightChecklistForDrone(const std::string& droneId) const
+  {
+    std::lock_guard<std::mutex> guard(m_preflightMutex);
+    const auto found = m_preflightByDrone.find(droneId);
+    if (found == m_preflightByDrone.end()) {
+      return {};
+    }
+    return found->second;
+  }
+
   void
   playLatestRecording()
   {
@@ -2093,6 +2104,35 @@ public:
                  << (after && after->parameters.find("NAV_RCL_ACT") != after->parameters.end() ?
                      after->parameters.at("NAV_RCL_ACT") : std::string("missing")));
     return verified;
+  }
+
+  bool
+  runPreflightChecklistTest(std::chrono::seconds timeout)
+  {
+    const auto droneId = targetDroneId();
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto items = requestPreflightChecklistForDroneSync(
+      droneId, std::chrono::duration_cast<std::chrono::milliseconds>(timeout));
+    const auto blockingFailures = static_cast<size_t>(std::count_if(
+      items.begin(), items.end(), [] (const PreflightCheckItem& item) {
+        return item.isBlockingFailure();
+      }));
+    const bool hasHeartbeat = std::any_of(
+      items.begin(), items.end(), [] (const PreflightCheckItem& item) {
+        return item.checkId == "heartbeat" && item.isPass();
+      });
+    const bool hasGps = std::any_of(
+      items.begin(), items.end(), [] (const PreflightCheckItem& item) {
+        return item.checkId == "gps" && item.isPass();
+      });
+    const bool ok = items.size() >= 5 && blockingFailures == 0 && hasHeartbeat && hasGps;
+    NDN_LOG_INFO("PREFLIGHT_CHECKLIST_RESULT ok=" << (ok ? "true" : "false")
+                 << " drone=" << droneId
+                 << " items=" << items.size()
+                 << " blocking_failures=" << blockingFailures
+                 << " heartbeat_pass=" << (hasHeartbeat ? "true" : "false")
+                 << " gps_pass=" << (hasGps ? "true" : "false"));
+    return ok;
   }
 
   bool
@@ -5724,6 +5764,82 @@ private:
   }
 
   void
+  requestPreflightChecklistForDrone(const std::string& droneId,
+                                    std::function<void(std::vector<PreflightCheckItem>)> onDone = {})
+  {
+    auto completion = std::make_shared<
+      std::function<void(std::vector<PreflightCheckItem>)>>(std::move(onDone));
+    postRequestForDrone(
+      droneId,
+      dronePreflightChecklistService(m_config, droneId),
+      encodeFields({{"type", "preflight-checklist-request"}}),
+      [this, droneId, completion](const std::string& payload) mutable {
+        const auto fields = decodeFields(payload);
+        std::vector<PreflightCheckItem> items;
+        const auto count = static_cast<size_t>(std::stoull(fieldOr(fields, "preflight_count", "0")));
+        items.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+          Fields itemFields;
+          const auto prefix = "check." + std::to_string(i) + ".";
+          for (const auto& [key, value] : fields) {
+            if (key.rfind(prefix, 0) == 0) {
+              itemFields[key.substr(prefix.size())] = value;
+            }
+          }
+          auto item = PreflightCheckItem::fromFields(itemFields);
+          if (item.droneId == "unknown") {
+            item.droneId = droneId;
+          }
+          items.push_back(std::move(item));
+        }
+        {
+          std::lock_guard<std::mutex> guard(m_preflightMutex);
+          m_preflightByDrone[droneId] = items;
+        }
+        const auto blockingFailures = static_cast<size_t>(std::count_if(
+          items.begin(), items.end(), [] (const PreflightCheckItem& item) {
+            return item.isBlockingFailure();
+          }));
+        publishStatus("Preflight checklist drone=" + droneId +
+                      " items=" + std::to_string(items.size()) +
+                      " blocking_failures=" + std::to_string(blockingFailures));
+        if (*completion) {
+          (*completion)(items);
+        }
+      },
+      {},
+      [completion]() mutable {
+        if (*completion) {
+          (*completion)({});
+        }
+      });
+  }
+
+  std::vector<PreflightCheckItem>
+  requestPreflightChecklistForDroneSync(const std::string& droneId, std::chrono::milliseconds timeout)
+  {
+    struct PreflightWaitState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      std::vector<PreflightCheckItem> items;
+      bool done = false;
+    };
+    auto state = std::make_shared<PreflightWaitState>();
+    requestPreflightChecklistForDrone(
+      droneId,
+      [state](std::vector<PreflightCheckItem> items) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->items = std::move(items);
+        state->done = true;
+        state->cv.notify_all();
+      });
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, timeout, [&] { return state->done; });
+    return state->items;
+  }
+
+  void
   startRecordingPlayback(const RecordingDataProductState& manifest)
   {
     if (!manifest.isAvailable()) {
@@ -7887,6 +8003,7 @@ private:
   mutable std::mutex m_recordingManifestMutex;
   mutable std::mutex m_catalogMutex;
   mutable std::mutex m_parameterMutex;
+  mutable std::mutex m_preflightMutex;
   mutable std::mutex m_operatorLeaseMutex;
   mutable std::mutex m_issuedOperatorLeaseMutex;
   mutable std::mutex m_operatorAuthorityAlertMutex;
@@ -7899,6 +8016,7 @@ private:
   std::map<std::string, RecordingDataProductState> m_recordingManifests;
   std::map<std::string, UavDataProductCatalogState> m_catalogByDrone;
   std::map<std::string, VehicleParameterSnapshot> m_parameterSnapshots;
+  std::map<std::string, std::vector<PreflightCheckItem>> m_preflightByDrone;
   OperatorAuthorityLease m_operatorLease;
   std::vector<OperatorAuthorityLease> m_issuedOperatorLeases;
   std::map<std::string, Fields> m_operatorRevocationRecords;

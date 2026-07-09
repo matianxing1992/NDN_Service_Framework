@@ -171,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS fetch and cache the selected drone's MAVLink parameter snapshot.")
     parser.add_argument("--auto-parameter-edit-test", action="store_true",
                         help="Have the GS edit a mock MAVLink parameter and verify the follow-up snapshot.")
+    parser.add_argument("--auto-preflight-checklist-test", action="store_true",
+                        help="Have the GS fetch and validate the selected drone's preflight checklist.")
     parser.add_argument("--auto-authority-lease-test", action="store_true",
                         help="Have the GS verify operator authority leases fast-fail control commands.")
     parser.add_argument("--auto-authority-config-test", action="store_true",
@@ -1075,6 +1077,12 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "12000",
             ]
+        if args.auto_preflight_checklist_test:
+            gs_argv += [
+                "--auto-preflight-checklist-test",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "12000",
+            ]
         if args.auto_authority_lease_test:
             gs_argv += [
                 "--auto-authority-lease-test",
@@ -1189,6 +1197,7 @@ def main() -> int:
                 args.auto_repo_catalog_browse_test or
                 args.auto_parameter_cache_test or
                 args.auto_parameter_edit_test or
+                args.auto_preflight_checklist_test or
                 args.auto_authority_lease_test or
                 args.auto_authority_config_test or
                 args.auto_authority_issuer_test or
@@ -1306,6 +1315,17 @@ def main() -> int:
             require_log(gs_log, "VEHICLE_PARAMETER_EDIT_RESULT ok=true")
             require_log(gs_log, "GS_PARAMETER_EDIT_EXIT ok=true")
             print("NDNSF_UAV_PARAMETER_EDIT_MININDN_SMOKE_OK")
+        elif args.auto_preflight_checklist_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=70)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station preflight checklist smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "Preflight checklist drone=" + args.drone_id)
+            require_log(gs_log, "PREFLIGHT_CHECKLIST_RESULT ok=true")
+            require_log(gs_log, "GS_PREFLIGHT_CHECKLIST_EXIT ok=true")
+            print("NDNSF_UAV_PREFLIGHT_CHECKLIST_MININDN_SMOKE_OK")
         elif args.auto_authority_lease_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=45)

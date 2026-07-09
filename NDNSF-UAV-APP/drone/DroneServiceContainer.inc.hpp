@@ -3049,6 +3049,67 @@ public:
     return VideoState::fromFields(latestTelemetryState().toFields());
   }
 
+  Fields
+  preflightChecklistFields()
+  {
+    const auto telemetry = latestTelemetryState();
+    const auto readiness = ReadinessState::fromTelemetry(telemetry);
+    const auto camera = cameraStatusFields();
+    const auto now = nowMilliseconds();
+    std::vector<PreflightCheckItem> items;
+    auto addItem = [&](std::string id, std::string label, std::string category,
+                       bool pass, std::string reason, bool blocking) {
+      PreflightCheckItem item;
+      item.checkId = std::move(id);
+      item.droneId = m_droneId;
+      item.label = std::move(label);
+      item.category = std::move(category);
+      item.status = pass ? "pass" : "fail";
+      item.reason = std::move(reason);
+      item.blocking = blocking;
+      item.order = static_cast<uint64_t>(items.size() + 1);
+      item.updatedMs = now;
+      items.push_back(std::move(item));
+    };
+
+    addItem("heartbeat", "Heartbeat", "Link",
+            telemetry.heartbeatSeen == "true",
+            telemetry.heartbeatSeen == "true" ? "ok" : "waiting-heartbeat",
+            true);
+    addItem("flight-controller", "Flight controller", "Vehicle",
+            telemetry.flightControllerAvailable != "false" &&
+              telemetry.flightControllerReady == "true",
+            telemetry.flightControllerReady == "true" ? "ok" : telemetry.flightControllerReason,
+            true);
+    addItem("gps", "GPS", "Sensors",
+            readiness.gpsReady == "true",
+            readiness.gpsReady == "true" ? "ok" : "gps-not-ready",
+            true);
+    addItem("battery", "Battery", "Power",
+            readiness.batteryReady == "true",
+            readiness.batteryReady == "true" ? "ok" : "battery-not-ready",
+            true);
+    addItem("camera", "Camera", "Payload",
+            fieldOr(camera, "camera_available", "unknown") == "true",
+            fieldOr(camera, "camera_reason", "camera-status-unknown"),
+            false);
+
+    Fields fields{
+      {"type", "preflight-checklist"},
+      {"preflight_drone", m_droneId},
+      {"preflight_count", std::to_string(items.size())},
+      {"preflight_updated_ms", std::to_string(now)},
+    };
+    for (size_t i = 0; i < items.size(); ++i) {
+      const auto itemFields = items[i].toFields();
+      const auto prefix = "check." + std::to_string(i) + ".";
+      for (const auto& [key, value] : itemFields) {
+        fields[prefix + key] = value;
+      }
+    }
+    return fields;
+  }
+
   std::string
   identityUri() const
   {
@@ -3262,6 +3323,15 @@ private:
                        << " verified_value=" << result.verifiedValue);
           return makeResponse(ok, encodeFields(result.toFields()),
                               ok ? "No error" : result.reason);
+        }),
+      ServiceInvocationMode::NormalOnly);
+
+    m_provider->addService(
+      dronePreflightChecklistService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [this](const ndn_service_framework::RequestMessage&) {
+          return makeResponse(true, encodeFields(preflightChecklistFields()));
         }),
       ServiceInvocationMode::NormalOnly);
 
