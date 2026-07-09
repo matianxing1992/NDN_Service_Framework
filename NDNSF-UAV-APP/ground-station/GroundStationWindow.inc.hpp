@@ -13,6 +13,7 @@ public:
                       bool autoMissionControlsTest,
                       bool autoFlightControlsTest,
                       bool autoRecordingPlaybackTest,
+                      bool autoDashboardPanelTest,
                       bool autoApplyBitrateTest,
                       bool autoVideoPressureProfileTest,
                       bool autoRepeatStopTest,
@@ -102,6 +103,7 @@ public:
     , m_autoApplyBitrateTest(autoApplyBitrateTest)
     , m_autoVideoPressureProfileTest(autoVideoPressureProfileTest)
     , m_autoRepeatStopTest(autoRepeatStopTest)
+    , m_autoDashboardPanelTest(autoDashboardPanelTest)
     , m_operatorAuthorityRefreshIntervalMs(operatorAuthorityRefreshIntervalMs)
     , m_droneIds(std::move(droneIds))
   {
@@ -334,6 +336,7 @@ public:
     m_telemetry.set_xalign(0.0F);
     m_linkStatus.set_xalign(0.0F);
     for (auto* label : {&m_status, &m_linkStatus, &m_services, &m_telemetry,
+                         &m_dashboardInspector,
                          &m_flightInspector, &m_cameraInspector, &m_videoInspector,
                          &m_commandHistory, &m_telemetryInspector, &m_missionInspector,
                          &m_missionDetail, &m_authorityInspector,
@@ -355,6 +358,7 @@ public:
       frame.add(label);
       m_statusPanel.pack_start(frame, Gtk::PACK_SHRINK);
     };
+    addInspectorSection(m_dashboardInspectorFrame, m_dashboardInspector, "Vehicle Summary");
     addInspectorSection(m_flightInspectorFrame, m_flightInspector, "Flight Controller");
     addInspectorSection(m_telemetryInspectorFrame, m_telemetryInspector, "Telemetry");
     addInspectorSection(m_cameraInspectorFrame, m_cameraInspector, "Camera");
@@ -1296,6 +1300,34 @@ public:
         });
       }).detach();
     }
+    if (m_autoDashboardPanelTest) {
+      std::thread([this] {
+        const bool refreshed = m_runtime.runOperatorDashboardSnapshotTest(std::chrono::seconds(30));
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        Glib::signal_idle().connect_once([this, refreshed] {
+          updateInspectorPanel();
+          logOperatorDashboardPanelState("auto-dashboard-panel");
+          const auto text = m_dashboardInspector.get_text();
+          const bool textOk = text.find("Operator ready") != std::string::npos &&
+                              text.find("Preflight") != std::string::npos &&
+                              text.find("MAVLink") != std::string::npos &&
+                              text.find("Parameters") != std::string::npos;
+          const auto dashboard = m_runtime.operatorDashboardSnapshotForDrone(m_runtime.targetDroneId());
+          const bool ok = refreshed && textOk &&
+                          dashboard.preflightTotal >= 5 &&
+                          dashboard.activeMavlinkMessageCount >= 2 &&
+                          dashboard.parameterCount > 0;
+          NDN_LOG_INFO("DASHBOARD_PANEL_RESULT ok=" << (ok ? "true" : "false")
+                       << " refreshed=" << (refreshed ? "true" : "false")
+                       << " text_ok=" << (textOk ? "true" : "false")
+                       << " drone=" << dashboard.droneId
+                       << " preflight=" << dashboard.preflightTotal
+                       << " active_mavlink=" << dashboard.activeMavlinkMessageCount
+                       << " parameters=" << dashboard.parameterCount);
+          hide();
+        });
+      }).detach();
+    }
     m_manualControlThread = std::thread([this] {
       runManualControlLoop();
     });
@@ -2102,6 +2134,60 @@ private:
     os << key << ": " << valueOr(value) << "\n";
   }
 
+  static std::string
+  dashboardInspectorText(const UavOperatorDashboardSnapshot& dashboard)
+  {
+    std::ostringstream os;
+    appendInspectorRow(os, "Drone", dashboard.droneId);
+    appendInspectorRow(os, "Operator ready", dashboard.operatorReady() ? "yes" : "no");
+    appendInspectorRow(os, "Telemetry", dashboard.telemetryFreshness);
+    appendInspectorRow(os, "Readiness", dashboard.readiness + " (" +
+                       dashboard.readinessReason + ")");
+    appendInspectorRow(os, "Link / mode", dashboard.linkState + " / " +
+                       dashboard.flightMode);
+    appendInspectorRow(os, "Mission", dashboard.missionPhase);
+    appendInspectorRow(os, "Video", dashboard.videoState);
+    appendInspectorRow(os, "Parameters", dashboard.parameterCacheStatus + " " +
+                       std::to_string(dashboard.parameterCount));
+    appendInspectorRow(os, "Preflight", std::to_string(dashboard.preflightTotal) +
+                       " checks, blocking=" +
+                       std::to_string(dashboard.preflightBlockingFailures));
+    appendInspectorRow(os, "MAVLink", std::to_string(dashboard.activeMavlinkMessageCount) +
+                       "/" + std::to_string(dashboard.mavlinkMessageCount) +
+                       " active");
+    appendInspectorRow(os, "Actions", std::string("arm=") +
+                       (dashboard.canArm ? "yes" : "no") +
+                       " takeoff=" + (dashboard.canTakeoff ? "yes" : "no") +
+                       " land=" + (dashboard.canLand ? "yes" : "no") +
+                       " manual=" + (dashboard.canManualControl ? "yes" : "no") +
+                       " e-stop=" + (dashboard.canEmergencyStop ? "yes" : "no"));
+    return os.str();
+  }
+
+  static std::string
+  oneLine(std::string text)
+  {
+    std::replace(text.begin(), text.end(), '\n', ' ');
+    return text;
+  }
+
+  void
+  logOperatorDashboardPanelState(const std::string& phase) const
+  {
+    const auto dashboard = m_runtime.operatorDashboardSnapshotForDrone(m_runtime.targetDroneId());
+    const auto text = dashboardInspectorText(dashboard);
+    NDN_LOG_INFO("OPERATOR_DASHBOARD_PANEL_STATE phase=" << phase
+                 << " selected=" << dashboard.droneId
+                 << " operator_ready=" << (dashboard.operatorReady() ? "true" : "false")
+                 << " telemetry=" << dashboard.telemetryFreshness
+                 << " readiness=" << dashboard.readiness
+                 << " preflight=" << dashboard.preflightTotal
+                 << " blocking_failures=" << dashboard.preflightBlockingFailures
+                 << " active_mavlink=" << dashboard.activeMavlinkMessageCount
+                 << " parameters=" << dashboard.parameterCount
+                 << " text=" << oneLine(text));
+  }
+
   void
   updateInspectorPanel()
   {
@@ -2158,6 +2244,9 @@ private:
       ? availabilityText(droneRuntime->videoReady) : "unknown";
     const std::string repoService = droneRuntime
       ? availabilityText(droneRuntime->repoReady) : "unknown";
+
+    const auto dashboard = m_runtime.operatorDashboardSnapshotForDrone(selectedDrone);
+    m_dashboardInspector.set_text(dashboardInspectorText(dashboard));
 
     std::ostringstream flight;
     appendInspectorRow(flight, "Drone", selectedDrone);
@@ -4042,6 +4131,7 @@ private:
   Gtk::Frame m_statusFrame;
   Gtk::ScrolledWindow m_statusScroll;
   Gtk::Box m_statusPanel;
+  Gtk::Frame m_dashboardInspectorFrame;
   Gtk::Frame m_flightInspectorFrame;
   Gtk::Frame m_telemetryInspectorFrame;
   Gtk::Frame m_cameraInspectorFrame;
@@ -4129,6 +4219,7 @@ private:
   Gtk::Label m_linkStatus;
   Gtk::Label m_services;
   Gtk::Label m_telemetry;
+  Gtk::Label m_dashboardInspector;
   Gtk::Label m_flightInspector;
   Gtk::Label m_cameraInspector;
   Gtk::Label m_videoInspector;
@@ -4188,6 +4279,7 @@ private:
   bool m_autoApplyBitrateTest = false;
   bool m_autoVideoPressureProfileTest = false;
   bool m_autoRepeatStopTest = false;
+  bool m_autoDashboardPanelTest = false;
   uint64_t m_operatorAuthorityRefreshIntervalMs = 0;
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;
   uint64_t m_pendingSeq = 0;
