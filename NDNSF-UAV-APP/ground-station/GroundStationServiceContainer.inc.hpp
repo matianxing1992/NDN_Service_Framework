@@ -1252,6 +1252,18 @@ public:
     requestVehicleParametersForDrone(targetDroneId());
   }
 
+  void
+  requestPreflightChecklist(std::function<void(std::vector<PreflightCheckItem>)> onDone = {})
+  {
+    requestPreflightChecklistForDrone(targetDroneId(), std::move(onDone));
+  }
+
+  void
+  requestAnalyzeSnapshot(std::function<void(std::optional<UavAnalyzeSnapshot>)> onDone = {})
+  {
+    requestAnalyzeSnapshotForDrone(targetDroneId(), std::move(onDone));
+  }
+
   std::optional<UavDataProductCatalogState>
   catalogForDrone(const std::string& droneId) const
   {

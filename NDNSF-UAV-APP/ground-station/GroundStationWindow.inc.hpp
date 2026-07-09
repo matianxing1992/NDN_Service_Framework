@@ -15,6 +15,7 @@ public:
                       bool autoRecordingPlaybackTest,
                       bool autoDashboardPanelTest,
                       bool autoDashboardDetailPanelTest,
+                      bool autoDashboardRefreshButtonsTest,
                       bool autoApplyBitrateTest,
                       bool autoVideoPressureProfileTest,
                       bool autoRepeatStopTest,
@@ -54,6 +55,8 @@ public:
     , m_refreshRecording("Find Rec.")
     , m_browseRepo("Browse Repo")
     , m_fetchParameters("Fetch Params")
+    , m_refreshPreflight("Preflight")
+    , m_refreshAnalyze("Analyze")
     , m_refreshAuthority("Refresh Lease")
     , m_playRecording("Play Rec.")
     , m_mapZoomIn("+")
@@ -106,6 +109,7 @@ public:
     , m_autoRepeatStopTest(autoRepeatStopTest)
     , m_autoDashboardPanelTest(autoDashboardPanelTest)
     , m_autoDashboardDetailPanelTest(autoDashboardDetailPanelTest)
+    , m_autoDashboardRefreshButtonsTest(autoDashboardRefreshButtonsTest)
     , m_operatorAuthorityRefreshIntervalMs(operatorAuthorityRefreshIntervalMs)
     , m_droneIds(std::move(droneIds))
   {
@@ -138,7 +142,8 @@ public:
     for (auto* button : {&m_start, &m_stop, &m_applyBitrate, &m_arm, &m_takeoff,
                          &m_land, &m_emergencyStop, &m_patrol, &m_startMission,
                          &m_stopPatrol, &m_controlToggle, &m_refreshRecording,
-                         &m_browseRepo, &m_fetchParameters, &m_refreshAuthority,
+                         &m_browseRepo, &m_fetchParameters, &m_refreshPreflight,
+                         &m_refreshAnalyze, &m_refreshAuthority,
                          &m_playRecording}) {
       button->set_size_request(104, -1);
       button->set_hexpand(false);
@@ -599,6 +604,12 @@ public:
     });
     m_fetchParameters.signal_clicked().connect([this] {
       m_runtime.requestVehicleParameters();
+    });
+    m_refreshPreflight.signal_clicked().connect([this] {
+      refreshPreflightPanelFromButton("button");
+    });
+    m_refreshAnalyze.signal_clicked().connect([this] {
+      refreshAnalyzePanelFromButton("button");
     });
     m_refreshAuthority.signal_clicked().connect([this] {
       triggerAuthorityLeaseRefresh("button");
@@ -1347,6 +1358,18 @@ public:
                          << " active_mavlink=" << dashboard.activeMavlinkMessageCount);
           }
           hide();
+        });
+      }).detach();
+    }
+    if (m_autoDashboardRefreshButtonsTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        Glib::signal_idle().connect_once([this] {
+          refreshPreflightPanelFromButton("auto-refresh-buttons");
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        Glib::signal_idle().connect_once([this] {
+          refreshAnalyzePanelFromButton("auto-refresh-buttons");
         });
       }).detach();
     }
@@ -2637,6 +2660,90 @@ private:
     services << "Services for Drone " << selectedDrone << ":\n";
     services << m_runtime.serviceCatalogForDrone(selectedDrone);
     m_services.set_text(services.str());
+  }
+
+  void
+  refreshPreflightPanelFromButton(const std::string& phase)
+  {
+    const auto droneId = m_runtime.targetDroneId();
+    m_status.set_text("Refreshing preflight checklist for Drone " + droneId);
+    m_runtime.requestPreflightChecklist(
+      [this, droneId, phase](std::vector<PreflightCheckItem> items) {
+        const auto blockingFailures = static_cast<size_t>(std::count_if(
+          items.begin(), items.end(), [] (const PreflightCheckItem& item) {
+            return item.isBlockingFailure();
+          }));
+        Glib::signal_idle().connect_once([this, droneId, phase,
+                                           count = items.size(),
+                                           blockingFailures] {
+          updateInspectorPanel();
+          const bool ok = count > 0 && blockingFailures == 0;
+          NDN_LOG_INFO("PREFLIGHT_REFRESH_BUTTON_RESULT ok=" << (ok ? "true" : "false")
+                       << " phase=" << phase
+                       << " drone=" << droneId
+                       << " items=" << count
+                       << " blocking_failures=" << blockingFailures);
+          if (m_autoDashboardRefreshButtonsTest) {
+            m_autoRefreshPreflightDone = true;
+            m_autoRefreshPreflightOk = ok;
+            maybeFinishDashboardRefreshButtonsTest();
+          }
+        });
+      });
+  }
+
+  void
+  refreshAnalyzePanelFromButton(const std::string& phase)
+  {
+    const auto droneId = m_runtime.targetDroneId();
+    m_status.set_text("Refreshing MAVLink Analyze snapshot for Drone " + droneId);
+    m_runtime.requestAnalyzeSnapshot(
+      [this, droneId, phase](std::optional<UavAnalyzeSnapshot> snapshot) {
+        const auto nowMs = nowMilliseconds();
+        const auto messageCount = snapshot ? snapshot->messages.size() : 0;
+        const auto active = snapshot ? snapshot->activeMessageCount(nowMs, 3000) : 0;
+        const bool hasHeartbeat = snapshot && std::any_of(
+          snapshot->messages.begin(), snapshot->messages.end(), [] (const MavlinkMessageSummary& message) {
+            return message.messageName == "HEARTBEAT" && message.count > 0;
+          });
+        const bool hasGlobalPosition = snapshot && std::any_of(
+          snapshot->messages.begin(), snapshot->messages.end(), [] (const MavlinkMessageSummary& message) {
+            return message.messageName == "GLOBAL_POSITION_INT" && message.count > 0;
+          });
+        Glib::signal_idle().connect_once([this, droneId, phase, messageCount,
+                                           active, hasHeartbeat, hasGlobalPosition] {
+          updateInspectorPanel();
+          const bool ok = messageCount > 0 && active >= 2 && hasHeartbeat && hasGlobalPosition;
+          NDN_LOG_INFO("ANALYZE_REFRESH_BUTTON_RESULT ok=" << (ok ? "true" : "false")
+                       << " phase=" << phase
+                       << " drone=" << droneId
+                       << " messages=" << messageCount
+                       << " active_messages=" << active
+                       << " heartbeat=" << (hasHeartbeat ? "true" : "false")
+                       << " global_position=" << (hasGlobalPosition ? "true" : "false"));
+          if (m_autoDashboardRefreshButtonsTest) {
+            m_autoRefreshAnalyzeDone = true;
+            m_autoRefreshAnalyzeOk = ok;
+            maybeFinishDashboardRefreshButtonsTest();
+          }
+        });
+      });
+  }
+
+  void
+  maybeFinishDashboardRefreshButtonsTest()
+  {
+    if (!m_autoRefreshPreflightDone || !m_autoRefreshAnalyzeDone) {
+      return;
+    }
+    updateInspectorPanel();
+    logOperatorDetailPanelState("auto-dashboard-refresh-buttons");
+    const auto ok = m_autoRefreshPreflightOk && m_autoRefreshAnalyzeOk;
+    NDN_LOG_INFO("DASHBOARD_REFRESH_BUTTONS_RESULT ok=" << (ok ? "true" : "false")
+                 << " preflight_ok=" << (m_autoRefreshPreflightOk ? "true" : "false")
+                 << " analyze_ok=" << (m_autoRefreshAnalyzeOk ? "true" : "false")
+                 << " drone=" << m_runtime.targetDroneId());
+    hide();
   }
 
   void
@@ -4262,6 +4369,8 @@ private:
   Gtk::Button m_refreshRecording;
   Gtk::Button m_browseRepo;
   Gtk::Button m_fetchParameters;
+  Gtk::Button m_refreshPreflight;
+  Gtk::Button m_refreshAnalyze;
   Gtk::Button m_refreshAuthority;
   Gtk::Button m_playRecording;
   Gtk::Button m_mapZoomIn;
@@ -4382,6 +4491,11 @@ private:
   bool m_autoRepeatStopTest = false;
   bool m_autoDashboardPanelTest = false;
   bool m_autoDashboardDetailPanelTest = false;
+  bool m_autoDashboardRefreshButtonsTest = false;
+  bool m_autoRefreshPreflightDone = false;
+  bool m_autoRefreshAnalyzeDone = false;
+  bool m_autoRefreshPreflightOk = false;
+  bool m_autoRefreshAnalyzeOk = false;
   uint64_t m_operatorAuthorityRefreshIntervalMs = 0;
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;
   uint64_t m_pendingSeq = 0;
