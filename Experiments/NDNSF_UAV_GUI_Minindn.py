@@ -171,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Have the GS fetch and cache the selected drone's MAVLink parameter snapshot.")
     parser.add_argument("--auto-parameter-edit-test", action="store_true",
                         help="Have the GS edit a mock MAVLink parameter and verify the follow-up snapshot.")
+    parser.add_argument("--auto-parameter-edit-panel-test", action="store_true",
+                        help="Start the GS GUI and verify the editable parameter panel applies a MAVLink parameter.")
     parser.add_argument("--auto-preflight-checklist-test", action="store_true",
                         help="Have the GS fetch and validate the selected drone's preflight checklist.")
     parser.add_argument("--auto-analyze-snapshot-test", action="store_true",
@@ -1091,6 +1093,12 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "12000",
             ]
+        if args.auto_parameter_edit_panel_test:
+            gs_argv += [
+                "--auto-parameter-edit-panel-test",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "12000",
+            ]
         if args.auto_preflight_checklist_test:
             gs_argv += [
                 "--auto-preflight-checklist-test",
@@ -1241,6 +1249,7 @@ def main() -> int:
                 args.auto_repo_catalog_browse_test or
                 args.auto_parameter_cache_test or
                 args.auto_parameter_edit_test or
+                args.auto_parameter_edit_panel_test or
                 args.auto_preflight_checklist_test or
                 args.auto_analyze_snapshot_test or
                 args.auto_dashboard_snapshot_test or
@@ -1364,6 +1373,19 @@ def main() -> int:
             require_log(gs_log, "VEHICLE_PARAMETER_EDIT_RESULT ok=true")
             require_log(gs_log, "GS_PARAMETER_EDIT_EXIT ok=true")
             print("NDNSF_UAV_PARAMETER_EDIT_MININDN_SMOKE_OK")
+        elif args.auto_parameter_edit_panel_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=70)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station parameter edit panel smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "PARAMETER_EDIT_PANEL_RESULT ok=true")
+            require_log(gs_log, "PARAMETER_EDIT_PANEL_CACHE_RESULT ok=true")
+            require_log(gs_log, "PARAMETER_EDIT_PANEL_DONE ok=true")
+            require_log(drone_logs[args.drone_id],
+                        "DRONE_PARAMETER_EDIT_RESULT drone=" + args.drone_id + " ok=true")
+            print("NDNSF_UAV_PARAMETER_EDIT_PANEL_MININDN_SMOKE_OK")
         elif args.auto_preflight_checklist_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=70)

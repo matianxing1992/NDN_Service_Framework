@@ -16,6 +16,7 @@ public:
                       bool autoDashboardPanelTest,
                       bool autoDashboardDetailPanelTest,
                       bool autoDashboardRefreshButtonsTest,
+                      bool autoParameterEditPanelTest,
                       bool autoApplyBitrateTest,
                       bool autoVideoPressureProfileTest,
                       bool autoRepeatStopTest,
@@ -26,6 +27,7 @@ public:
     : m_runtime(runtime)
     , m_box(Gtk::ORIENTATION_VERTICAL, 8)
     , m_patrolControls(Gtk::ORIENTATION_HORIZONTAL, 6)
+    , m_parameterControls(Gtk::ORIENTATION_HORIZONTAL, 6)
     , m_workspace(Gtk::ORIENTATION_HORIZONTAL, 10)
     , m_vehicleFrame("Vehicles")
     , m_vehiclePanel(Gtk::ORIENTATION_VERTICAL, 6)
@@ -57,6 +59,7 @@ public:
     , m_fetchParameters("Fetch Params")
     , m_refreshPreflight("Preflight")
     , m_refreshAnalyze("Analyze")
+    , m_applyParameterEdit("Apply Param")
     , m_refreshAuthority("Refresh Lease")
     , m_playRecording("Play Rec.")
     , m_mapZoomIn("+")
@@ -110,6 +113,7 @@ public:
     , m_autoDashboardPanelTest(autoDashboardPanelTest)
     , m_autoDashboardDetailPanelTest(autoDashboardDetailPanelTest)
     , m_autoDashboardRefreshButtonsTest(autoDashboardRefreshButtonsTest)
+    , m_autoParameterEditPanelTest(autoParameterEditPanelTest)
     , m_operatorAuthorityRefreshIntervalMs(operatorAuthorityRefreshIntervalMs)
     , m_droneIds(std::move(droneIds))
   {
@@ -178,6 +182,28 @@ public:
     m_patrolControls.pack_start(m_saveMissionPlan, Gtk::PACK_SHRINK);
     m_patrolControls.pack_start(m_loadMissionPlan, Gtk::PACK_SHRINK);
     m_box.pack_start(m_patrolControls, Gtk::PACK_SHRINK);
+
+    m_parameterHint.set_text("Parameter edit");
+    m_parameterName.set_text("NAV_RCL_ACT");
+    m_parameterExpectedValue.set_text("");
+    m_parameterRequestedValue.set_text("2");
+    m_parameterValueType.set_text("MAV_PARAM_TYPE_INT32");
+    m_parameterName.set_width_chars(14);
+    m_parameterExpectedValue.set_width_chars(8);
+    m_parameterRequestedValue.set_width_chars(8);
+    m_parameterValueType.set_width_chars(20);
+    m_parameterName.set_tooltip_text("MAVLink parameter name, for example NAV_RCL_ACT");
+    m_parameterExpectedValue.set_tooltip_text("Optional expected current value for conflict detection");
+    m_parameterRequestedValue.set_tooltip_text("New parameter value to apply");
+    m_parameterValueType.set_tooltip_text("MAVLink parameter value type");
+    m_applyParameterEdit.set_tooltip_text("Apply the parameter edit through NDNSF");
+    m_parameterControls.pack_start(m_parameterHint, Gtk::PACK_SHRINK);
+    m_parameterControls.pack_start(m_parameterName, Gtk::PACK_SHRINK);
+    m_parameterControls.pack_start(m_parameterExpectedValue, Gtk::PACK_SHRINK);
+    m_parameterControls.pack_start(m_parameterRequestedValue, Gtk::PACK_SHRINK);
+    m_parameterControls.pack_start(m_parameterValueType, Gtk::PACK_SHRINK);
+    m_parameterControls.pack_start(m_applyParameterEdit, Gtk::PACK_SHRINK);
+    m_box.pack_start(m_parameterControls, Gtk::PACK_SHRINK);
 
     m_workspace.set_size_request(-1, 600);
     m_workspace.set_vexpand(false);
@@ -604,6 +630,9 @@ public:
     });
     m_fetchParameters.signal_clicked().connect([this] {
       m_runtime.requestVehicleParameters();
+    });
+    m_applyParameterEdit.signal_clicked().connect([this] {
+      applyVehicleParameterEditFromPanel("button");
     });
     m_refreshPreflight.signal_clicked().connect([this] {
       refreshPreflightPanelFromButton("button");
@@ -1370,6 +1399,14 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
         Glib::signal_idle().connect_once([this] {
           refreshAnalyzePanelFromButton("auto-refresh-buttons");
+        });
+      }).detach();
+    }
+    if (m_autoParameterEditPanelTest) {
+      std::thread([this] {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        Glib::signal_idle().connect_once([this] {
+          prepareAndApplyParameterEditPanelForTest();
         });
       }).detach();
     }
@@ -2744,6 +2781,117 @@ private:
                  << " analyze_ok=" << (m_autoRefreshAnalyzeOk ? "true" : "false")
                  << " drone=" << m_runtime.targetDroneId());
     hide();
+  }
+
+  void
+  prepareAndApplyParameterEditPanelForTest()
+  {
+    const auto droneId = m_runtime.targetDroneId();
+    m_status.set_text("Preparing parameter edit for Drone " + droneId);
+    m_runtime.requestVehicleParameters(
+      [this, droneId](std::optional<VehicleParameterSnapshot> snapshot) {
+        Glib::signal_idle().connect_once([this, droneId, snapshot = std::move(snapshot)] {
+          if (!snapshot || snapshot->parameters.find("NAV_RCL_ACT") == snapshot->parameters.end()) {
+            NDN_LOG_INFO("PARAMETER_EDIT_PANEL_RESULT ok=false phase=auto-parameter-edit-panel"
+                         << " drone=" << droneId
+                         << " reason=no-before-snapshot");
+            hide();
+            return;
+          }
+          const auto previousValue = snapshot->parameters.at("NAV_RCL_ACT");
+          const auto requestedValue = previousValue == "1" ? std::string("2") : std::string("1");
+          m_parameterName.set_text("NAV_RCL_ACT");
+          m_parameterExpectedValue.set_text(previousValue);
+          m_parameterRequestedValue.set_text(requestedValue);
+          m_parameterValueType.set_text("MAV_PARAM_TYPE_INT32");
+          updateInspectorPanel();
+          applyVehicleParameterEditFromPanel("auto-parameter-edit-panel");
+        });
+      });
+  }
+
+  void
+  applyVehicleParameterEditFromPanel(const std::string& phase)
+  {
+    const auto droneId = m_runtime.targetDroneId();
+    VehicleParameterEditRequest request;
+    request.requestId = "gui-param-edit-" + std::to_string(nowMilliseconds());
+    request.operatorId = m_runtime.groundStationIdentity().toUri();
+    request.droneId = droneId;
+    request.parameterName = m_parameterName.get_text();
+    request.expectedValue = m_parameterExpectedValue.get_text();
+    request.requestedValue = m_parameterRequestedValue.get_text();
+    request.valueType = m_parameterValueType.get_text();
+    request.requestedMs = nowMilliseconds();
+
+    std::string invalidReason;
+    if (!request.isValid(invalidReason)) {
+      m_status.set_text("Parameter edit blocked: " + invalidReason);
+      NDN_LOG_INFO("PARAMETER_EDIT_PANEL_RESULT ok=false"
+                   << " phase=" << phase
+                   << " drone=" << droneId
+                   << " param=" << request.parameterName
+                   << " reason=" << invalidReason);
+      if (m_autoParameterEditPanelTest) {
+        hide();
+      }
+      return;
+    }
+
+    m_applyParameterEdit.set_sensitive(false);
+    m_status.set_text("Applying parameter " + request.parameterName +
+                      " on Drone " + droneId);
+    m_runtime.requestVehicleParameterEdit(
+      request,
+      [this, phase, droneId, param = request.parameterName,
+       requestedValue = request.requestedValue](std::optional<VehicleParameterEditResult> result) {
+        Glib::signal_idle().connect_once([this, phase, droneId, param,
+                                           requestedValue, result = std::move(result)] {
+          const bool ok = result && result->successful();
+          m_status.set_text(ok ? "Parameter edit verified: " + param + "=" + requestedValue :
+                            "Parameter edit failed: " +
+                              (result ? result->reason : std::string("no-response")));
+          NDN_LOG_INFO("PARAMETER_EDIT_PANEL_RESULT ok=" << (ok ? "true" : "false")
+                       << " phase=" << phase
+                       << " drone=" << droneId
+                       << " param=" << param
+                       << " requested=" << requestedValue
+                       << " accepted=" << (result && result->accepted ? "true" : "false")
+                       << " applied=" << (result && result->applied ? "true" : "false")
+                       << " verified=" << (result && result->verified ? "true" : "false")
+                       << " reason=" << (result ? result->reason : std::string("no-response"))
+                       << " verified_value=" << (result ? result->verifiedValue : std::string("missing")));
+          m_runtime.requestVehicleParameters(
+            [this, phase, droneId, param, requestedValue, ok](std::optional<VehicleParameterSnapshot> snapshot) {
+              Glib::signal_idle().connect_once([this, phase, droneId, param,
+                                                 requestedValue, ok,
+                                                 snapshot = std::move(snapshot)] {
+                updateInspectorPanel();
+                const bool cacheOk = snapshot &&
+                                     snapshot->parameters.find(param) != snapshot->parameters.end() &&
+                                     snapshot->parameters.at(param) == requestedValue;
+                NDN_LOG_INFO("PARAMETER_EDIT_PANEL_CACHE_RESULT ok="
+                             << (cacheOk ? "true" : "false")
+                             << " phase=" << phase
+                             << " drone=" << droneId
+                             << " param=" << param
+                             << " requested=" << requestedValue
+                             << " cache_value="
+                             << (snapshot && snapshot->parameters.find(param) != snapshot->parameters.end() ?
+                                 snapshot->parameters.at(param) : std::string("missing")));
+                m_applyParameterEdit.set_sensitive(true);
+                if (m_autoParameterEditPanelTest) {
+                  NDN_LOG_INFO("PARAMETER_EDIT_PANEL_DONE ok="
+                               << (ok && cacheOk ? "true" : "false")
+                               << " edit_ok=" << (ok ? "true" : "false")
+                               << " cache_ok=" << (cacheOk ? "true" : "false")
+                               << " drone=" << droneId);
+                  hide();
+                }
+              });
+            });
+        });
+      });
   }
 
   void
@@ -4316,6 +4464,7 @@ private:
   Gtk::Box m_box;
   Gtk::FlowBox m_buttons;
   Gtk::Box m_patrolControls;
+  Gtk::Box m_parameterControls;
   Gtk::Box m_workspace;
   Gtk::Frame m_vehicleFrame;
   Gtk::Box m_vehiclePanel;
@@ -4371,6 +4520,7 @@ private:
   Gtk::Button m_fetchParameters;
   Gtk::Button m_refreshPreflight;
   Gtk::Button m_refreshAnalyze;
+  Gtk::Button m_applyParameterEdit;
   Gtk::Button m_refreshAuthority;
   Gtk::Button m_playRecording;
   Gtk::Button m_mapZoomIn;
@@ -4385,6 +4535,11 @@ private:
   Gtk::Entry m_patrolLon;
   Gtk::Entry m_patrolSizeMeters;
   Gtk::Entry m_missionPlanFile;
+  Gtk::Label m_parameterHint;
+  Gtk::Entry m_parameterName;
+  Gtk::Entry m_parameterExpectedValue;
+  Gtk::Entry m_parameterRequestedValue;
+  Gtk::Entry m_parameterValueType;
   Gtk::Box m_controlPanel;
   Gtk::Box m_inputModeRow;
   Gtk::Label m_inputModeHint;
@@ -4492,6 +4647,7 @@ private:
   bool m_autoDashboardPanelTest = false;
   bool m_autoDashboardDetailPanelTest = false;
   bool m_autoDashboardRefreshButtonsTest = false;
+  bool m_autoParameterEditPanelTest = false;
   bool m_autoRefreshPreflightDone = false;
   bool m_autoRefreshAnalyzeDone = false;
   bool m_autoRefreshPreflightOk = false;

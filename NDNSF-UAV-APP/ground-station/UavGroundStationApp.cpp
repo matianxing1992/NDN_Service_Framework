@@ -395,6 +395,7 @@ main(int argc, char** argv)
     const bool autoDashboardPanelTest = getConfigBool(argc, argv, appConfig, "--auto-dashboard-panel-test", "auto-dashboard-panel-test", false);
     const bool autoDashboardDetailPanelTest = getConfigBool(argc, argv, appConfig, "--auto-dashboard-detail-panel-test", "auto-dashboard-detail-panel-test", false);
     const bool autoDashboardRefreshButtonsTest = getConfigBool(argc, argv, appConfig, "--auto-dashboard-refresh-buttons-test", "auto-dashboard-refresh-buttons-test", false);
+    const bool autoParameterEditPanelTest = getConfigBool(argc, argv, appConfig, "--auto-parameter-edit-panel-test", "auto-parameter-edit-panel-test", false);
     const bool autoAuthorityLeaseTest = getConfigBool(argc, argv, appConfig, "--auto-authority-lease-test", "auto-authority-lease-test", false);
     const bool autoAuthorityConfigTest = getConfigBool(argc, argv, appConfig, "--auto-authority-config-test", "auto-authority-config-test", false);
     const bool autoAuthorityIssuerTest = getConfigBool(argc, argv, appConfig, "--auto-authority-issuer-test", "auto-authority-issuer-test", false);
@@ -537,6 +538,7 @@ main(int argc, char** argv)
                                   autoDashboardPanelTest ||
                                   autoDashboardDetailPanelTest ||
                                   autoDashboardRefreshButtonsTest ||
+                                  autoParameterEditPanelTest ||
                                   autoAuthorityLeaseTest ||
                                   autoAuthorityConfigTest ||
                                   autoAuthorityIssuerTest ||
@@ -685,6 +687,7 @@ main(int argc, char** argv)
                                autoDashboardPanelTest,
                                autoDashboardDetailPanelTest,
                                autoDashboardRefreshButtonsTest,
+                               autoParameterEditPanelTest,
                                autoApplyBitrateTest,
                                autoVideoPressureProfileTest,
                                autoRepeatStopTest,
@@ -714,6 +717,7 @@ main(int argc, char** argv)
               << " auto_dashboard_panel_test=" << (autoDashboardPanelTest ? "true" : "false")
               << " auto_dashboard_detail_panel_test=" << (autoDashboardDetailPanelTest ? "true" : "false")
               << " auto_dashboard_refresh_buttons_test=" << (autoDashboardRefreshButtonsTest ? "true" : "false")
+              << " auto_parameter_edit_panel_test=" << (autoParameterEditPanelTest ? "true" : "false")
               << " auto_authority_lease_test=" << (autoAuthorityLeaseTest ? "true" : "false")
               << " auto_authority_config_test=" << (autoAuthorityConfigTest ? "true" : "false")
               << " auto_authority_issuer_test=" << (autoAuthorityIssuerTest ? "true" : "false")

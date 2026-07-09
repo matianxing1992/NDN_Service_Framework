@@ -413,6 +413,12 @@ public:
     return m_targetDroneId;
   }
 
+  const ndn::Name&
+  groundStationIdentity() const
+  {
+    return m_config.groundStationIdentity;
+  }
+
   void
   setTargetDroneId(std::string droneId)
   {
@@ -1247,9 +1253,16 @@ public:
   }
 
   void
-  requestVehicleParameters()
+  requestVehicleParameters(std::function<void(std::optional<VehicleParameterSnapshot>)> onDone = {})
   {
-    requestVehicleParametersForDrone(targetDroneId());
+    requestVehicleParametersForDrone(targetDroneId(), std::move(onDone));
+  }
+
+  void
+  requestVehicleParameterEdit(VehicleParameterEditRequest request,
+                              std::function<void(std::optional<VehicleParameterEditResult>)> onDone = {})
+  {
+    requestVehicleParameterEditForDrone(targetDroneId(), std::move(request), std::move(onDone));
   }
 
   void
