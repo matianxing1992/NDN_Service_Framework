@@ -14,6 +14,7 @@ public:
                       bool autoFlightControlsTest,
                       bool autoRecordingPlaybackTest,
                       bool autoDashboardPanelTest,
+                      bool autoDashboardDetailPanelTest,
                       bool autoApplyBitrateTest,
                       bool autoVideoPressureProfileTest,
                       bool autoRepeatStopTest,
@@ -104,6 +105,7 @@ public:
     , m_autoVideoPressureProfileTest(autoVideoPressureProfileTest)
     , m_autoRepeatStopTest(autoRepeatStopTest)
     , m_autoDashboardPanelTest(autoDashboardPanelTest)
+    , m_autoDashboardDetailPanelTest(autoDashboardDetailPanelTest)
     , m_operatorAuthorityRefreshIntervalMs(operatorAuthorityRefreshIntervalMs)
     , m_droneIds(std::move(droneIds))
   {
@@ -337,6 +339,8 @@ public:
     m_linkStatus.set_xalign(0.0F);
     for (auto* label : {&m_status, &m_linkStatus, &m_services, &m_telemetry,
                          &m_dashboardInspector,
+                         &m_preflightDetailInspector,
+                         &m_mavlinkDetailInspector,
                          &m_flightInspector, &m_cameraInspector, &m_videoInspector,
                          &m_commandHistory, &m_telemetryInspector, &m_missionInspector,
                          &m_missionDetail, &m_authorityInspector,
@@ -359,6 +363,8 @@ public:
       m_statusPanel.pack_start(frame, Gtk::PACK_SHRINK);
     };
     addInspectorSection(m_dashboardInspectorFrame, m_dashboardInspector, "Vehicle Summary");
+    addInspectorSection(m_preflightDetailInspectorFrame, m_preflightDetailInspector, "Preflight Checks");
+    addInspectorSection(m_mavlinkDetailInspectorFrame, m_mavlinkDetailInspector, "MAVLink Messages");
     addInspectorSection(m_flightInspectorFrame, m_flightInspector, "Flight Controller");
     addInspectorSection(m_telemetryInspectorFrame, m_telemetryInspector, "Telemetry");
     addInspectorSection(m_cameraInspectorFrame, m_cameraInspector, "Camera");
@@ -1300,18 +1306,25 @@ public:
         });
       }).detach();
     }
-    if (m_autoDashboardPanelTest) {
+    if (m_autoDashboardPanelTest || m_autoDashboardDetailPanelTest) {
       std::thread([this] {
         const bool refreshed = m_runtime.runOperatorDashboardSnapshotTest(std::chrono::seconds(30));
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         Glib::signal_idle().connect_once([this, refreshed] {
           updateInspectorPanel();
           logOperatorDashboardPanelState("auto-dashboard-panel");
+          logOperatorDetailPanelState("auto-dashboard-detail-panel");
           const auto text = m_dashboardInspector.get_text();
           const bool textOk = text.find("Operator ready") != std::string::npos &&
                               text.find("Preflight") != std::string::npos &&
                               text.find("MAVLink") != std::string::npos &&
                               text.find("Parameters") != std::string::npos;
+          const auto preflightText = m_preflightDetailInspector.get_text();
+          const auto mavlinkText = m_mavlinkDetailInspector.get_text();
+          const bool detailTextOk = preflightText.find("heartbeat") != std::string::npos &&
+                                    preflightText.find("gps") != std::string::npos &&
+                                    mavlinkText.find("HEARTBEAT") != std::string::npos &&
+                                    mavlinkText.find("GLOBAL_POSITION_INT") != std::string::npos;
           const auto dashboard = m_runtime.operatorDashboardSnapshotForDrone(m_runtime.targetDroneId());
           const bool ok = refreshed && textOk &&
                           dashboard.preflightTotal >= 5 &&
@@ -1324,6 +1337,15 @@ public:
                        << " preflight=" << dashboard.preflightTotal
                        << " active_mavlink=" << dashboard.activeMavlinkMessageCount
                        << " parameters=" << dashboard.parameterCount);
+          if (m_autoDashboardDetailPanelTest) {
+            NDN_LOG_INFO("DASHBOARD_DETAIL_PANEL_RESULT ok="
+                         << (ok && detailTextOk ? "true" : "false")
+                         << " refreshed=" << (refreshed ? "true" : "false")
+                         << " detail_text_ok=" << (detailTextOk ? "true" : "false")
+                         << " drone=" << dashboard.droneId
+                         << " preflight=" << dashboard.preflightTotal
+                         << " active_mavlink=" << dashboard.activeMavlinkMessageCount);
+          }
           hide();
         });
       }).detach();
@@ -2171,6 +2193,51 @@ private:
     return text;
   }
 
+  static std::string
+  preflightDetailText(const std::vector<PreflightCheckItem>& items)
+  {
+    if (items.empty()) {
+      return "No preflight checklist has been fetched.";
+    }
+    std::ostringstream os;
+    size_t index = 1;
+    for (const auto& item : items) {
+      os << index++ << ") " << item.checkId << "  " << item.status
+         << "  block=" << (item.blocking ? "yes" : "no") << "\n";
+      os << "   " << item.label << "\n";
+      os << "   " << item.reason << "\n";
+      if (index > 10) {
+        os << "... " << (items.size() - 9) << " more checks\n";
+        break;
+      }
+    }
+    return os.str();
+  }
+
+  static std::string
+  mavlinkDetailText(const std::optional<UavAnalyzeSnapshot>& snapshot, uint64_t nowMs)
+  {
+    if (!snapshot || snapshot->messages.empty()) {
+      return "No MAVLink Analyze snapshot has been fetched.";
+    }
+    std::ostringstream os;
+    os << "Mode: " << valueOr(snapshot->flightMode)
+       << "  Link: " << valueOr(snapshot->linkState) << "\n";
+    size_t index = 1;
+    for (const auto& message : snapshot->messages) {
+      os << index++ << ") " << message.messageName
+         << " id=" << message.messageId
+         << " count=" << message.count
+         << " rate=" << valueOr(message.rateHz, "0") << " Hz"
+         << " active=" << (message.isActive(nowMs, 3000) ? "yes" : "no") << "\n";
+      if (index > 10) {
+        os << "... " << (snapshot->messages.size() - 9) << " more messages\n";
+        break;
+      }
+    }
+    return os.str();
+  }
+
   void
   logOperatorDashboardPanelState(const std::string& phase) const
   {
@@ -2186,6 +2253,32 @@ private:
                  << " active_mavlink=" << dashboard.activeMavlinkMessageCount
                  << " parameters=" << dashboard.parameterCount
                  << " text=" << oneLine(text));
+  }
+
+  void
+  logOperatorDetailPanelState(const std::string& phase) const
+  {
+    const auto selectedDrone = m_runtime.targetDroneId();
+    const auto preflight = m_runtime.preflightChecklistForDrone(selectedDrone);
+    const auto analyze = m_runtime.analyzeSnapshotForDrone(selectedDrone);
+    const auto preflightText = preflightDetailText(preflight);
+    const auto mavlinkText = mavlinkDetailText(analyze, nowMilliseconds());
+    const bool hasHeartbeat = analyze && std::any_of(
+      analyze->messages.begin(), analyze->messages.end(), [] (const MavlinkMessageSummary& message) {
+        return message.messageName == "HEARTBEAT" && message.count > 0;
+      });
+    const bool hasGlobalPosition = analyze && std::any_of(
+      analyze->messages.begin(), analyze->messages.end(), [] (const MavlinkMessageSummary& message) {
+        return message.messageName == "GLOBAL_POSITION_INT" && message.count > 0;
+      });
+    NDN_LOG_INFO("OPERATOR_DETAIL_PANEL_STATE phase=" << phase
+                 << " selected=" << selectedDrone
+                 << " preflight_count=" << preflight.size()
+                 << " mavlink_count=" << (analyze ? analyze->messages.size() : 0)
+                 << " heartbeat=" << (hasHeartbeat ? "true" : "false")
+                 << " global_position=" << (hasGlobalPosition ? "true" : "false")
+                 << " preflight_text=" << oneLine(preflightText)
+                 << " mavlink_text=" << oneLine(mavlinkText));
   }
 
   void
@@ -2247,6 +2340,10 @@ private:
 
     const auto dashboard = m_runtime.operatorDashboardSnapshotForDrone(selectedDrone);
     m_dashboardInspector.set_text(dashboardInspectorText(dashboard));
+    m_preflightDetailInspector.set_text(preflightDetailText(
+      m_runtime.preflightChecklistForDrone(selectedDrone)));
+    m_mavlinkDetailInspector.set_text(mavlinkDetailText(
+      m_runtime.analyzeSnapshotForDrone(selectedDrone), nowMs));
 
     std::ostringstream flight;
     appendInspectorRow(flight, "Drone", selectedDrone);
@@ -4132,6 +4229,8 @@ private:
   Gtk::ScrolledWindow m_statusScroll;
   Gtk::Box m_statusPanel;
   Gtk::Frame m_dashboardInspectorFrame;
+  Gtk::Frame m_preflightDetailInspectorFrame;
+  Gtk::Frame m_mavlinkDetailInspectorFrame;
   Gtk::Frame m_flightInspectorFrame;
   Gtk::Frame m_telemetryInspectorFrame;
   Gtk::Frame m_cameraInspectorFrame;
@@ -4220,6 +4319,8 @@ private:
   Gtk::Label m_services;
   Gtk::Label m_telemetry;
   Gtk::Label m_dashboardInspector;
+  Gtk::Label m_preflightDetailInspector;
+  Gtk::Label m_mavlinkDetailInspector;
   Gtk::Label m_flightInspector;
   Gtk::Label m_cameraInspector;
   Gtk::Label m_videoInspector;
@@ -4280,6 +4381,7 @@ private:
   bool m_autoVideoPressureProfileTest = false;
   bool m_autoRepeatStopTest = false;
   bool m_autoDashboardPanelTest = false;
+  bool m_autoDashboardDetailPanelTest = false;
   uint64_t m_operatorAuthorityRefreshIntervalMs = 0;
   Glib::RefPtr<Gdk::Pixbuf> m_pendingPixbuf;
   uint64_t m_pendingSeq = 0;

@@ -181,6 +181,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-dashboard-panel-test", action="store_true",
                         help="Start the GS GUI, refresh the operator dashboard snapshot, "
                              "and verify the Vehicle Summary inspector panel renders it.")
+    parser.add_argument("--auto-dashboard-detail-panel-test", action="store_true",
+                        help="Start the GS GUI and verify Preflight Checks and MAVLink Messages "
+                             "inspector detail panels render cached UAV state.")
     parser.add_argument("--auto-authority-lease-test", action="store_true",
                         help="Have the GS verify operator authority leases fast-fail control commands.")
     parser.add_argument("--auto-authority-config-test", action="store_true",
@@ -1109,6 +1112,12 @@ def main() -> int:
                 "--ack-timeout-ms", "700",
                 "--timeout-ms", "12000",
             ]
+        if args.auto_dashboard_detail_panel_test:
+            gs_argv += [
+                "--auto-dashboard-detail-panel-test",
+                "--ack-timeout-ms", "700",
+                "--timeout-ms", "12000",
+            ]
         if args.auto_authority_lease_test:
             gs_argv += [
                 "--auto-authority-lease-test",
@@ -1227,6 +1236,7 @@ def main() -> int:
                 args.auto_analyze_snapshot_test or
                 args.auto_dashboard_snapshot_test or
                 args.auto_dashboard_panel_test or
+                args.auto_dashboard_detail_panel_test or
                 args.auto_authority_lease_test or
                 args.auto_authority_config_test or
                 args.auto_authority_issuer_test or
@@ -1387,6 +1397,16 @@ def main() -> int:
             require_log(gs_log, "OPERATOR_DASHBOARD_PANEL_STATE phase=auto-dashboard-panel")
             require_log(gs_log, "DASHBOARD_PANEL_RESULT ok=true")
             print("NDNSF_UAV_DASHBOARD_PANEL_MININDN_SMOKE_OK")
+        elif args.auto_dashboard_detail_panel_test and args.no_cli:
+            try:
+                gs_proc.wait(timeout=90)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(f"ground station dashboard detail panel smoke did not finish; see {gs_log}") from e
+            if gs_proc.returncode != 0:
+                raise RuntimeError(f"ground station exited with {gs_proc.returncode}; see {gs_log}")
+            require_log(gs_log, "OPERATOR_DETAIL_PANEL_STATE phase=auto-dashboard-detail-panel")
+            require_log(gs_log, "DASHBOARD_DETAIL_PANEL_RESULT ok=true")
+            print("NDNSF_UAV_DASHBOARD_DETAIL_PANEL_MININDN_SMOKE_OK")
         elif args.auto_authority_lease_test and args.no_cli:
             try:
                 gs_proc.wait(timeout=45)
