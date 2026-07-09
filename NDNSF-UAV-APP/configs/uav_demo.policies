@@ -15,6 +15,7 @@ provider-policies
             /example/uav/drone/A/UAV/Camera/Recording/Manifest
             /example/uav/drone/A/UAV/Camera/Repo/Catalog
             /example/uav/drone/A/UAV/MAVLink/Parameters
+            /example/uav/drone/A/UAV/MAVLink/ParameterEdit
         }
     }
 
@@ -31,6 +32,7 @@ provider-policies
             /example/uav/drone/B/UAV/Camera/Recording/Manifest
             /example/uav/drone/B/UAV/Camera/Repo/Catalog
             /example/uav/drone/B/UAV/MAVLink/Parameters
+            /example/uav/drone/B/UAV/MAVLink/ParameterEdit
         }
     }
 
@@ -47,6 +49,7 @@ provider-policies
             /example/uav/drone/C/UAV/Camera/Recording/Manifest
             /example/uav/drone/C/UAV/Camera/Repo/Catalog
             /example/uav/drone/C/UAV/MAVLink/Parameters
+            /example/uav/drone/C/UAV/MAVLink/ParameterEdit
         }
     }
 
@@ -78,14 +81,17 @@ user-policies
             /example/uav/drone/A/UAV/Camera/Recording/Manifest
             /example/uav/drone/A/UAV/Camera/Repo/Catalog
             /example/uav/drone/A/UAV/MAVLink/Parameters
+            /example/uav/drone/A/UAV/MAVLink/ParameterEdit
             /example/uav/drone/B/UAV/Camera/Video
             /example/uav/drone/B/UAV/Camera/Recording/Manifest
             /example/uav/drone/B/UAV/Camera/Repo/Catalog
             /example/uav/drone/B/UAV/MAVLink/Parameters
+            /example/uav/drone/B/UAV/MAVLink/ParameterEdit
             /example/uav/drone/C/UAV/Camera/Video
             /example/uav/drone/C/UAV/Camera/Recording/Manifest
             /example/uav/drone/C/UAV/Camera/Repo/Catalog
             /example/uav/drone/C/UAV/MAVLink/Parameters
+            /example/uav/drone/C/UAV/MAVLink/ParameterEdit
             /UAV/GS/ObjectDetection
             /UAV/GS/OperatorAuthority/Lease
             /UAV/GS/OperatorAuthority/Revocation

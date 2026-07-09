@@ -2046,6 +2046,56 @@ public:
   }
 
   bool
+  runParameterEditTest(std::chrono::seconds timeout)
+  {
+    const auto droneId = targetDroneId();
+    const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    const auto before = requestVehicleParametersForDroneSync(droneId, wait);
+    if (!before || before->parameters.find("NAV_RCL_ACT") == before->parameters.end()) {
+      NDN_LOG_INFO("VEHICLE_PARAMETER_EDIT_RESULT ok=false drone=" << droneId
+                   << " reason=no-before-snapshot");
+      return false;
+    }
+    const auto previousValue = before->parameters.at("NAV_RCL_ACT");
+    const auto requestedValue = previousValue == "1" ? std::string("2") : std::string("1");
+
+    VehicleParameterEditRequest request;
+    request.requestId = "auto-param-edit-" + std::to_string(nowMilliseconds());
+    request.operatorId = m_config.groundStationIdentity.toUri();
+    request.droneId = droneId;
+    request.parameterName = "NAV_RCL_ACT";
+    request.expectedValue = previousValue;
+    request.requestedValue = requestedValue;
+    request.valueType = "MAV_PARAM_TYPE_INT32";
+    request.requestedMs = nowMilliseconds();
+
+    const auto edit = requestVehicleParameterEditForDroneSync(droneId, request, wait);
+    if (!edit || !edit->successful()) {
+      NDN_LOG_INFO("VEHICLE_PARAMETER_EDIT_RESULT ok=false drone=" << droneId
+                   << " param=NAV_RCL_ACT previous=" << previousValue
+                   << " requested=" << requestedValue
+                   << " reason=" << (edit ? edit->reason : "no-edit-response"));
+      return false;
+    }
+
+    const auto after = requestVehicleParametersForDroneSync(droneId, wait);
+    const bool verified = after &&
+                          after->parameters.find("NAV_RCL_ACT") != after->parameters.end() &&
+                          after->parameters.at("NAV_RCL_ACT") == requestedValue;
+    NDN_LOG_INFO("VEHICLE_PARAMETER_EDIT_RESULT ok=" << (verified ? "true" : "false")
+                 << " drone=" << droneId
+                 << " param=NAV_RCL_ACT previous=" << previousValue
+                 << " requested=" << requestedValue
+                 << " edit_reason=" << edit->reason
+                 << " verified_value="
+                 << (after && after->parameters.find("NAV_RCL_ACT") != after->parameters.end() ?
+                     after->parameters.at("NAV_RCL_ACT") : std::string("missing")));
+    return verified;
+  }
+
+  bool
   runAuthorityLeaseGateTest(std::chrono::seconds)
   {
     OperatorAuthorityLease monitorLease;
@@ -5600,6 +5650,77 @@ private:
     std::unique_lock<std::mutex> lock(state->mutex);
     state->cv.wait_for(lock, timeout, [&] { return state->done; });
     return state->snapshot;
+  }
+
+  void
+  requestVehicleParameterEditForDrone(const std::string& droneId,
+                                      VehicleParameterEditRequest request,
+                                      std::function<void(std::optional<VehicleParameterEditResult>)> onDone = {})
+  {
+    auto completion = std::make_shared<
+      std::function<void(std::optional<VehicleParameterEditResult>)>>(std::move(onDone));
+    if (request.droneId == "unknown") {
+      request.droneId = droneId;
+    }
+    if (request.operatorId == "unknown") {
+      request.operatorId = m_config.groundStationIdentity.toUri();
+    }
+    postRequestForDrone(
+      droneId,
+      droneMavlinkParameterEditService(m_config, droneId),
+      encodeFields(request.toFields()),
+      [this, droneId, completion](const std::string& payload) mutable {
+        const auto fields = decodeFields(payload);
+        auto result = VehicleParameterEditResult::fromFields(fields);
+        if (result.droneId == "unknown") {
+          result.droneId = droneId;
+        }
+        publishStatus(result.statusLine());
+        publishStatus("Vehicle parameter edit drone=" + droneId +
+                      " param=" + result.parameterName +
+                      " accepted=" + std::string(result.accepted ? "true" : "false") +
+                      " applied=" + std::string(result.applied ? "true" : "false") +
+                      " verified=" + std::string(result.verified ? "true" : "false") +
+                      " reason=" + result.reason +
+                      " value=" + result.verifiedValue);
+        if (*completion) {
+          (*completion)(result);
+        }
+      },
+      {},
+      [completion]() mutable {
+        if (*completion) {
+          (*completion)(std::nullopt);
+        }
+      });
+  }
+
+  std::optional<VehicleParameterEditResult>
+  requestVehicleParameterEditForDroneSync(const std::string& droneId,
+                                          VehicleParameterEditRequest request,
+                                          std::chrono::milliseconds timeout)
+  {
+    struct ParameterEditWaitState
+    {
+      std::mutex mutex;
+      std::condition_variable cv;
+      std::optional<VehicleParameterEditResult> result;
+      bool done = false;
+    };
+    auto state = std::make_shared<ParameterEditWaitState>();
+    requestVehicleParameterEditForDrone(
+      droneId,
+      std::move(request),
+      [state](std::optional<VehicleParameterEditResult> result) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->result = std::move(result);
+        state->done = true;
+        state->cv.notify_all();
+      });
+
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, timeout, [&] { return state->done; });
+    return state->result;
   }
 
   void

@@ -9,6 +9,21 @@ public:
                              const std::string& commandName) = 0;
   virtual Fields latestTelemetry() = 0;
   virtual VehicleParameterSnapshot parameterSnapshot() = 0;
+  virtual VehicleParameterEditResult editParameter(const VehicleParameterEditRequest& request)
+  {
+    VehicleParameterEditResult result;
+    result.requestId = request.requestId;
+    result.droneId = request.droneId;
+    result.parameterName = request.parameterName;
+    result.valueType = request.valueType;
+    result.requestedValue = request.requestedValue;
+    result.accepted = false;
+    result.applied = false;
+    result.verified = false;
+    result.reason = "parameter-edit-unsupported";
+    result.updatedMs = nowMilliseconds();
+    return result;
+  }
   virtual Fields executeMissionWaypoints(const std::vector<std::pair<std::string, std::string>>& waypoints,
                                          const Fields& missionFields)
   {
@@ -53,6 +68,12 @@ public:
   explicit MockFlightControllerBackend(std::string droneId)
     : m_droneId(std::move(droneId))
   {
+    m_parameters = {
+      {"COM_FAIL_ACT_T", "25"},
+      {"COM_RC_LOSS_T", "30"},
+      {"MPC_XY_VEL_MAX", "12"},
+      {"NAV_RCL_ACT", "1"},
+    };
   }
 
   Fields
@@ -181,22 +202,62 @@ public:
   VehicleParameterSnapshot
   parameterSnapshot() override
   {
+    std::lock_guard<std::mutex> guard(m_parameterMutex);
     VehicleParameterSnapshot snapshot;
     snapshot.droneId = m_droneId;
     snapshot.source = "mock-flight-controller-cache";
     snapshot.firmware = "MockPX4-1.14";
     snapshot.vehicleType = "quadrotor";
     snapshot.flightModes = "MANUAL,POSCTL,AUTO.MISSION";
-    snapshot.parameters = {
-      {"COM_FAIL_ACT_T", "25"},
-      {"COM_RC_LOSS_T", "30"},
-      {"MPC_XY_VEL_MAX", "12"},
-      {"NAV_RCL_ACT", "1"},
-    };
+    snapshot.parameters = m_parameters;
     snapshot.parameterCount = snapshot.parameters.size();
     snapshot.completePercent = 100;
     snapshot.updatedMs = nowMilliseconds();
     return snapshot;
+  }
+
+  VehicleParameterEditResult
+  editParameter(const VehicleParameterEditRequest& request) override
+  {
+    VehicleParameterEditResult result;
+    result.requestId = request.requestId;
+    result.droneId = m_droneId;
+    result.parameterName = request.parameterName;
+    result.valueType = request.valueType;
+    result.requestedValue = request.requestedValue;
+    result.updatedMs = nowMilliseconds();
+
+    std::string reason;
+    if (!request.isValid(reason)) {
+      result.reason = reason;
+      return result;
+    }
+
+    std::lock_guard<std::mutex> guard(m_parameterMutex);
+    const auto found = m_parameters.find(request.parameterName);
+    if (found == m_parameters.end()) {
+      result.reason = "parameter-not-found";
+      return result;
+    }
+    result.previousValue = found->second;
+    if (!request.expectedValue.empty() && request.expectedValue != found->second) {
+      result.reason = "parameter-value-conflict";
+      result.verifiedValue = found->second;
+      return result;
+    }
+    result.accepted = true;
+    if (request.dryRun) {
+      result.reason = "dry-run";
+      result.verifiedValue = found->second;
+      result.verified = true;
+      return result;
+    }
+    found->second = request.requestedValue;
+    result.applied = true;
+    result.verifiedValue = found->second;
+    result.verified = result.verifiedValue == request.requestedValue;
+    result.reason = result.verified ? "ok" : "verify-mismatch";
+    return result;
   }
 
 private:
@@ -209,6 +270,8 @@ private:
   std::atomic<bool> m_manualNeutralSent{true};
   std::atomic<bool> m_manualControlRejected{false};
   std::atomic<size_t> m_manualReplayCount{0};
+  std::mutex m_parameterMutex;
+  Fields m_parameters;
 };
 
 class UdpFlightControllerBackend : public FlightControllerBackend
@@ -3176,6 +3239,29 @@ private:
           auto snapshot = backend->parameterSnapshot();
           snapshot.droneId = m_droneId;
           return makeResponse(true, encodeFields(snapshot.toFields(true)));
+        }),
+      ServiceInvocationMode::NormalOnly);
+
+    m_provider->addService(
+      droneMavlinkParameterEditService(m_config, m_droneId),
+      ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
+      ndn_service_framework::ServiceProvider::SimpleRequestHandler(
+        [backend, this](const ndn_service_framework::RequestMessage& request) {
+          const auto fields = decodeFields(payloadToString(request));
+          auto editRequest = VehicleParameterEditRequest::fromFields(fields);
+          if (editRequest.droneId == "unknown") {
+            editRequest.droneId = m_droneId;
+          }
+          auto result = backend->editParameter(editRequest);
+          result.droneId = m_droneId;
+          const bool ok = result.successful() || (result.accepted && result.verified && result.reason == "dry-run");
+          NDN_LOG_INFO("DRONE_PARAMETER_EDIT_RESULT drone=" << m_droneId
+                       << " ok=" << (ok ? "true" : "false")
+                       << " param=" << result.parameterName
+                       << " reason=" << result.reason
+                       << " verified_value=" << result.verifiedValue);
+          return makeResponse(ok, encodeFields(result.toFields()),
+                              ok ? "No error" : result.reason);
         }),
       ServiceInvocationMode::NormalOnly);
 

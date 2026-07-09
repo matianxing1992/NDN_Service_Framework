@@ -22,6 +22,7 @@ inline const ndn::Name SERVICE_CAMERA_VIDEO_CONTROL_SUFFIX("/UAV/Camera/Video");
 inline const ndn::Name SERVICE_CAMERA_RECORDING_MANIFEST_SUFFIX("/UAV/Camera/Recording/Manifest");
 inline const ndn::Name SERVICE_CAMERA_REPO_CATALOG_SUFFIX("/UAV/Camera/Repo/Catalog");
 inline const ndn::Name SERVICE_MAVLINK_PARAMETERS_SUFFIX("/UAV/MAVLink/Parameters");
+inline const ndn::Name SERVICE_MAVLINK_PARAMETER_EDIT_SUFFIX("/UAV/MAVLink/ParameterEdit");
 inline const ndn::Name SERVICE_GS_OBJECT_DETECTION("/UAV/GS/ObjectDetection");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_LEASE("/UAV/GS/OperatorAuthority/Lease");
 inline const ndn::Name SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION("/UAV/GS/OperatorAuthority/Revocation");
@@ -44,6 +45,7 @@ struct UavRuntimeConfig
   ndn::Name serviceCameraRecordingManifestSuffix = SERVICE_CAMERA_RECORDING_MANIFEST_SUFFIX;
   ndn::Name serviceCameraRepoCatalogSuffix = SERVICE_CAMERA_REPO_CATALOG_SUFFIX;
   ndn::Name serviceMavlinkParametersSuffix = SERVICE_MAVLINK_PARAMETERS_SUFFIX;
+  ndn::Name serviceMavlinkParameterEditSuffix = SERVICE_MAVLINK_PARAMETER_EDIT_SUFFIX;
   ndn::Name serviceGsObjectDetection = SERVICE_GS_OBJECT_DETECTION;
   ndn::Name serviceGsOperatorAuthorityLease = SERVICE_GS_OPERATOR_AUTHORITY_LEASE;
   ndn::Name serviceGsOperatorAuthorityRevocation = SERVICE_GS_OPERATOR_AUTHORITY_REVOCATION;
@@ -84,6 +86,12 @@ droneMavlinkParametersService(const std::string& droneId);
 
 ndn::Name
 droneMavlinkParametersService(const UavRuntimeConfig& config, const std::string& droneId);
+
+ndn::Name
+droneMavlinkParameterEditService(const std::string& droneId);
+
+ndn::Name
+droneMavlinkParameterEditService(const UavRuntimeConfig& config, const std::string& droneId);
 
 } // namespace ndnsf::examples::uav
 
