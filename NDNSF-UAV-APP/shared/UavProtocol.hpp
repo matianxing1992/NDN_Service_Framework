@@ -821,6 +821,99 @@ struct VehicleParameterSnapshot
   std::string statusLine() const;
 };
 
+struct VehicleParameterEditRequest
+{
+  std::string requestId = "parameter-edit-request";
+  std::string operatorId = "unknown";
+  std::string droneId = "unknown";
+  std::string parameterName;
+  std::string expectedValue;
+  std::string requestedValue;
+  std::string valueType = "unknown";
+  uint64_t targetSystem = 1;
+  uint64_t targetComponent = 1;
+  bool dryRun = false;
+  uint64_t requestedMs = 0;
+
+  static VehicleParameterEditRequest fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool isValid(std::string& reason) const;
+  std::string statusLine() const;
+};
+
+struct VehicleParameterEditResult
+{
+  std::string requestId = "parameter-edit-request";
+  std::string droneId = "unknown";
+  std::string parameterName;
+  std::string valueType = "unknown";
+  bool accepted = false;
+  bool applied = false;
+  bool verified = false;
+  std::string reason = "unknown";
+  std::string previousValue;
+  std::string requestedValue;
+  std::string verifiedValue;
+  uint64_t updatedMs = 0;
+
+  static VehicleParameterEditResult fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool successful() const;
+  std::string statusLine() const;
+};
+
+struct PreflightCheckItem
+{
+  std::string checkId = "unknown";
+  std::string droneId = "unknown";
+  std::string label = "unknown";
+  std::string category = "general";
+  std::string status = "pending";
+  std::string reason = "not-evaluated";
+  bool blocking = true;
+  uint64_t order = 0;
+  uint64_t updatedMs = 0;
+
+  static PreflightCheckItem fromFields(const Fields& fields);
+  Fields toFields() const;
+  bool isPass() const;
+  bool isBlockingFailure() const;
+  std::string statusLine() const;
+};
+
+struct MavlinkMessageSummary
+{
+  std::string messageName = "UNKNOWN";
+  uint64_t messageId = 0;
+  uint64_t systemId = 0;
+  uint64_t componentId = 0;
+  uint64_t count = 0;
+  std::string rateHz = "0";
+  uint64_t lastSeenMs = 0;
+
+  static MavlinkMessageSummary fromFields(const Fields& fields, const std::string& prefix = "");
+  Fields toFields(const std::string& prefix = "") const;
+  bool isActive(uint64_t nowMs = 0, uint64_t staleAfterMs = 3000) const;
+  std::string statusLine() const;
+};
+
+struct UavAnalyzeSnapshot
+{
+  std::string droneId = "unknown";
+  std::string linkState = "unknown";
+  std::string flightMode = "unknown";
+  std::string missionPhase = "unknown";
+  std::string videoState = "unknown";
+  std::string parameterCacheStatus = "unknown";
+  uint64_t updatedMs = 0;
+  std::vector<MavlinkMessageSummary> messages;
+
+  static UavAnalyzeSnapshot fromFields(const Fields& fields);
+  Fields toFields() const;
+  uint64_t activeMessageCount(uint64_t nowMs = 0, uint64_t staleAfterMs = 3000) const;
+  std::string statusLine() const;
+};
+
 struct OperatorAuthorityLease
 {
   std::string leaseId = "none";

@@ -20,6 +20,8 @@ using ndnsf::examples::uav::MissionPlan;
 using ndnsf::examples::uav::MissionProgressState;
 using ndnsf::examples::uav::MissionState;
 using ndnsf::examples::uav::MissionWaypoint;
+using ndnsf::examples::uav::MavlinkMessageSummary;
+using ndnsf::examples::uav::PreflightCheckItem;
 using ndnsf::examples::uav::ReadinessState;
 using ndnsf::examples::uav::RecordingDataProductState;
 using ndnsf::examples::uav::OperatorAuthorityLease;
@@ -30,8 +32,11 @@ using ndnsf::examples::uav::SelectedDroneSummaryState;
 using ndnsf::examples::uav::TelemetryState;
 using ndnsf::examples::uav::UavDataProductCatalogState;
 using ndnsf::examples::uav::UavFunctionalityState;
+using ndnsf::examples::uav::UavAnalyzeSnapshot;
 using ndnsf::examples::uav::UavPracticalityState;
 using ndnsf::examples::uav::UavStabilityState;
+using ndnsf::examples::uav::VehicleParameterEditRequest;
+using ndnsf::examples::uav::VehicleParameterEditResult;
 using ndnsf::examples::uav::VehicleParameterSnapshot;
 using ndnsf::examples::uav::VideoAdaptiveState;
 using ndnsf::examples::uav::VideoAdaptivePolicyInput;
@@ -1093,6 +1098,111 @@ BOOST_AUTO_TEST_CASE(VehicleParameterSnapshotCarriesCapabilityView)
   BOOST_CHECK_EQUAL(compact.parameterCount, 2);
   BOOST_CHECK(compact.parameters.empty());
   BOOST_CHECK(compact.isUsable());
+}
+
+BOOST_AUTO_TEST_CASE(VehicleParameterEditContractsRoundTripAndValidate)
+{
+  VehicleParameterEditRequest request;
+  request.requestId = "param-req-1";
+  request.operatorId = "operator-1";
+  request.droneId = "A";
+  request.parameterName = "NAV_RCL_ACT";
+  request.expectedValue = "2";
+  request.requestedValue = "1";
+  request.valueType = "MAV_PARAM_TYPE_INT32";
+  request.targetSystem = 7;
+  request.targetComponent = 1;
+  request.requestedMs = 4567;
+
+  std::string reason;
+  BOOST_CHECK(request.isValid(reason));
+  BOOST_CHECK_EQUAL(reason, "ok");
+  const auto requestRoundTrip = VehicleParameterEditRequest::fromFields(request.toFields());
+  BOOST_CHECK_EQUAL(requestRoundTrip.requestId, "param-req-1");
+  BOOST_CHECK_EQUAL(requestRoundTrip.parameterName, "NAV_RCL_ACT");
+  BOOST_CHECK_EQUAL(requestRoundTrip.requestedValue, "1");
+  BOOST_CHECK_EQUAL(requestRoundTrip.targetSystem, 7);
+  BOOST_CHECK_NE(requestRoundTrip.statusLine().find("valid=true"), std::string::npos);
+
+  auto invalid = request;
+  invalid.parameterName = "THIS_PARAM_NAME_IS_TOO_LONG";
+  BOOST_CHECK(!invalid.isValid(reason));
+  BOOST_CHECK_EQUAL(reason, "parameter-name-too-long");
+
+  VehicleParameterEditResult result;
+  result.requestId = request.requestId;
+  result.droneId = request.droneId;
+  result.parameterName = request.parameterName;
+  result.valueType = request.valueType;
+  result.accepted = true;
+  result.applied = true;
+  result.verified = true;
+  result.reason = "ok";
+  result.previousValue = "2";
+  result.requestedValue = "1";
+  result.verifiedValue = "1";
+  result.updatedMs = 5000;
+
+  BOOST_CHECK(result.successful());
+  const auto resultRoundTrip = VehicleParameterEditResult::fromFields(result.toFields());
+  BOOST_CHECK(resultRoundTrip.successful());
+  BOOST_CHECK_EQUAL(resultRoundTrip.verifiedValue, "1");
+  BOOST_CHECK_NE(resultRoundTrip.statusLine().find("verified=true"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(PreflightAndAnalyzeContractsSupportQgcStylePanels)
+{
+  PreflightCheckItem gps;
+  gps.checkId = "gps-fix";
+  gps.droneId = "A";
+  gps.label = "GPS Fix";
+  gps.category = "Sensors";
+  gps.status = "fail";
+  gps.reason = "waiting-for-3d-fix";
+  gps.blocking = true;
+  gps.order = 10;
+  gps.updatedMs = 1000;
+
+  BOOST_CHECK(gps.isBlockingFailure());
+  const auto gpsRoundTrip = PreflightCheckItem::fromFields(gps.toFields());
+  BOOST_CHECK(gpsRoundTrip.isBlockingFailure());
+  BOOST_CHECK_EQUAL(gpsRoundTrip.label, "GPS Fix");
+  BOOST_CHECK_NE(gpsRoundTrip.statusLine().find("blocking_failure=true"), std::string::npos);
+
+  MavlinkMessageSummary heartbeat;
+  heartbeat.messageName = "HEARTBEAT";
+  heartbeat.messageId = 0;
+  heartbeat.systemId = 1;
+  heartbeat.componentId = 1;
+  heartbeat.count = 120;
+  heartbeat.rateHz = "1.0";
+  heartbeat.lastSeenMs = 9000;
+
+  MavlinkMessageSummary position;
+  position.messageName = "GLOBAL_POSITION_INT";
+  position.messageId = 33;
+  position.systemId = 1;
+  position.componentId = 1;
+  position.count = 360;
+  position.rateHz = "3.0";
+  position.lastSeenMs = 3000;
+
+  UavAnalyzeSnapshot snapshot;
+  snapshot.droneId = "A";
+  snapshot.linkState = "connected";
+  snapshot.flightMode = "GUIDED";
+  snapshot.missionPhase = "executing";
+  snapshot.videoState = "streaming";
+  snapshot.parameterCacheStatus = "complete";
+  snapshot.updatedMs = 10000;
+  snapshot.messages = {heartbeat, position};
+
+  const auto roundTrip = UavAnalyzeSnapshot::fromFields(snapshot.toFields());
+  BOOST_CHECK_EQUAL(roundTrip.messages.size(), 2);
+  BOOST_CHECK_EQUAL(roundTrip.messages[0].messageName, "HEARTBEAT");
+  BOOST_CHECK_EQUAL(roundTrip.messages[1].messageId, 33);
+  BOOST_CHECK_EQUAL(roundTrip.activeMessageCount(10000, 3000), 1);
+  BOOST_CHECK_NE(roundTrip.statusLine().find("messages=2"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(OperatorAuthorityLeaseBlocksConflictingControl)

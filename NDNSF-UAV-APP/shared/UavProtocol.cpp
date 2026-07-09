@@ -3339,6 +3339,308 @@ VehicleParameterSnapshot::statusLine() const
          " usable=" + std::string(isUsable() ? "true" : "false");
 }
 
+VehicleParameterEditRequest
+VehicleParameterEditRequest::fromFields(const Fields& fields)
+{
+  VehicleParameterEditRequest request;
+  request.requestId = fieldOr(fields, "parameter_edit_request_id", request.requestId);
+  request.operatorId = fieldOr(fields, "parameter_operator", request.operatorId);
+  request.droneId = fieldOr(fields, "parameter_drone", request.droneId);
+  request.parameterName = fieldOr(fields, "parameter_name", request.parameterName);
+  request.expectedValue = fieldOr(fields, "parameter_expected_value", request.expectedValue);
+  request.requestedValue = fieldOr(fields, "parameter_requested_value", request.requestedValue);
+  request.valueType = fieldOr(fields, "parameter_value_type", request.valueType);
+  request.targetSystem = uint64FieldOr(fields, "parameter_target_system", request.targetSystem);
+  request.targetComponent = uint64FieldOr(fields, "parameter_target_component", request.targetComponent);
+  request.dryRun = fieldOr(fields, "parameter_dry_run", "false") == "true";
+  request.requestedMs = uint64FieldOr(fields, "parameter_requested_ms", request.requestedMs);
+  return request;
+}
+
+Fields
+VehicleParameterEditRequest::toFields() const
+{
+  return {
+    {"type", "vehicle-parameter-edit-request"},
+    {"parameter_edit_request_id", requestId},
+    {"parameter_operator", operatorId},
+    {"parameter_drone", droneId},
+    {"parameter_name", parameterName},
+    {"parameter_expected_value", expectedValue},
+    {"parameter_requested_value", requestedValue},
+    {"parameter_value_type", valueType},
+    {"parameter_target_system", std::to_string(targetSystem)},
+    {"parameter_target_component", std::to_string(targetComponent)},
+    {"parameter_dry_run", dryRun ? "true" : "false"},
+    {"parameter_requested_ms", std::to_string(requestedMs)},
+  };
+}
+
+bool
+VehicleParameterEditRequest::isValid(std::string& reason) const
+{
+  if (operatorId.empty() || operatorId == "unknown") {
+    reason = "missing-operator";
+    return false;
+  }
+  if (droneId.empty() || droneId == "unknown") {
+    reason = "missing-drone";
+    return false;
+  }
+  if (parameterName.empty()) {
+    reason = "missing-parameter";
+    return false;
+  }
+  if (parameterName.size() > 16) {
+    reason = "parameter-name-too-long";
+    return false;
+  }
+  if (!dryRun && requestedValue.empty()) {
+    reason = "missing-requested-value";
+    return false;
+  }
+  reason = "ok";
+  return true;
+}
+
+std::string
+VehicleParameterEditRequest::statusLine() const
+{
+  std::string reason;
+  const bool valid = isValid(reason);
+  return "VehicleParameterEditRequest request=" + requestId +
+         " operator=" + operatorId +
+         " drone=" + droneId +
+         " param=" + parameterName +
+         " type=" + valueType +
+         " dry_run=" + std::string(dryRun ? "true" : "false") +
+         " valid=" + std::string(valid ? "true" : "false") +
+         " reason=" + reason;
+}
+
+VehicleParameterEditResult
+VehicleParameterEditResult::fromFields(const Fields& fields)
+{
+  VehicleParameterEditResult result;
+  result.requestId = fieldOr(fields, "parameter_edit_request_id", result.requestId);
+  result.droneId = fieldOr(fields, "parameter_drone", result.droneId);
+  result.parameterName = fieldOr(fields, "parameter_name", result.parameterName);
+  result.valueType = fieldOr(fields, "parameter_value_type", result.valueType);
+  result.accepted = fieldOr(fields, "parameter_accepted", "false") == "true";
+  result.applied = fieldOr(fields, "parameter_applied", "false") == "true";
+  result.verified = fieldOr(fields, "parameter_verified", "false") == "true";
+  result.reason = fieldOr(fields, "parameter_reason", result.reason);
+  result.previousValue = fieldOr(fields, "parameter_previous_value", result.previousValue);
+  result.requestedValue = fieldOr(fields, "parameter_requested_value", result.requestedValue);
+  result.verifiedValue = fieldOr(fields, "parameter_verified_value", result.verifiedValue);
+  result.updatedMs = uint64FieldOr(fields, "parameter_updated_ms", result.updatedMs);
+  return result;
+}
+
+Fields
+VehicleParameterEditResult::toFields() const
+{
+  return {
+    {"type", "vehicle-parameter-edit-result"},
+    {"parameter_edit_request_id", requestId},
+    {"parameter_drone", droneId},
+    {"parameter_name", parameterName},
+    {"parameter_value_type", valueType},
+    {"parameter_accepted", accepted ? "true" : "false"},
+    {"parameter_applied", applied ? "true" : "false"},
+    {"parameter_verified", verified ? "true" : "false"},
+    {"parameter_reason", reason},
+    {"parameter_previous_value", previousValue},
+    {"parameter_requested_value", requestedValue},
+    {"parameter_verified_value", verifiedValue},
+    {"parameter_updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+bool
+VehicleParameterEditResult::successful() const
+{
+  return accepted && applied && verified;
+}
+
+std::string
+VehicleParameterEditResult::statusLine() const
+{
+  return "VehicleParameterEditResult request=" + requestId +
+         " drone=" + droneId +
+         " param=" + parameterName +
+         " accepted=" + std::string(accepted ? "true" : "false") +
+         " applied=" + std::string(applied ? "true" : "false") +
+         " verified=" + std::string(verified ? "true" : "false") +
+         " reason=" + reason;
+}
+
+PreflightCheckItem
+PreflightCheckItem::fromFields(const Fields& fields)
+{
+  PreflightCheckItem item;
+  item.checkId = fieldOr(fields, "preflight_check_id", item.checkId);
+  item.droneId = fieldOr(fields, "preflight_drone", item.droneId);
+  item.label = fieldOr(fields, "preflight_label", item.label);
+  item.category = fieldOr(fields, "preflight_category", item.category);
+  item.status = fieldOr(fields, "preflight_status", item.status);
+  item.reason = fieldOr(fields, "preflight_reason", item.reason);
+  item.blocking = fieldOr(fields, "preflight_blocking", "true") == "true";
+  item.order = uint64FieldOr(fields, "preflight_order", item.order);
+  item.updatedMs = uint64FieldOr(fields, "preflight_updated_ms", item.updatedMs);
+  return item;
+}
+
+Fields
+PreflightCheckItem::toFields() const
+{
+  return {
+    {"type", "preflight-check-item"},
+    {"preflight_check_id", checkId},
+    {"preflight_drone", droneId},
+    {"preflight_label", label},
+    {"preflight_category", category},
+    {"preflight_status", status},
+    {"preflight_reason", reason},
+    {"preflight_blocking", blocking ? "true" : "false"},
+    {"preflight_order", std::to_string(order)},
+    {"preflight_updated_ms", std::to_string(updatedMs)},
+  };
+}
+
+bool
+PreflightCheckItem::isPass() const
+{
+  return status == "pass" || status == "passed" || status == "ok";
+}
+
+bool
+PreflightCheckItem::isBlockingFailure() const
+{
+  return blocking && (status == "fail" || status == "failed" || status == "error");
+}
+
+std::string
+PreflightCheckItem::statusLine() const
+{
+  return "PreflightCheckItem id=" + checkId +
+         " drone=" + droneId +
+         " label=" + label +
+         " category=" + category +
+         " status=" + status +
+         " blocking_failure=" + std::string(isBlockingFailure() ? "true" : "false") +
+         " reason=" + reason;
+}
+
+MavlinkMessageSummary
+MavlinkMessageSummary::fromFields(const Fields& fields, const std::string& prefix)
+{
+  MavlinkMessageSummary summary;
+  summary.messageName = fieldOr(fields, prefix + "mavlink_message_name", summary.messageName);
+  summary.messageId = uint64FieldOr(fields, prefix + "mavlink_message_id", summary.messageId);
+  summary.systemId = uint64FieldOr(fields, prefix + "mavlink_system_id", summary.systemId);
+  summary.componentId = uint64FieldOr(fields, prefix + "mavlink_component_id", summary.componentId);
+  summary.count = uint64FieldOr(fields, prefix + "mavlink_message_count", summary.count);
+  summary.rateHz = fieldOr(fields, prefix + "mavlink_rate_hz", summary.rateHz);
+  summary.lastSeenMs = uint64FieldOr(fields, prefix + "mavlink_last_seen_ms", summary.lastSeenMs);
+  return summary;
+}
+
+Fields
+MavlinkMessageSummary::toFields(const std::string& prefix) const
+{
+  return {
+    {prefix + "mavlink_message_name", messageName},
+    {prefix + "mavlink_message_id", std::to_string(messageId)},
+    {prefix + "mavlink_system_id", std::to_string(systemId)},
+    {prefix + "mavlink_component_id", std::to_string(componentId)},
+    {prefix + "mavlink_message_count", std::to_string(count)},
+    {prefix + "mavlink_rate_hz", rateHz},
+    {prefix + "mavlink_last_seen_ms", std::to_string(lastSeenMs)},
+  };
+}
+
+bool
+MavlinkMessageSummary::isActive(uint64_t nowMs, uint64_t staleAfterMs) const
+{
+  const auto current = nowMs == 0 ? nowMilliseconds() : nowMs;
+  return lastSeenMs > 0 && current >= lastSeenMs && current - lastSeenMs <= staleAfterMs;
+}
+
+std::string
+MavlinkMessageSummary::statusLine() const
+{
+  return "MavlinkMessageSummary name=" + messageName +
+         " id=" + std::to_string(messageId) +
+         " sys=" + std::to_string(systemId) +
+         " comp=" + std::to_string(componentId) +
+         " count=" + std::to_string(count) +
+         " rate_hz=" + rateHz;
+}
+
+UavAnalyzeSnapshot
+UavAnalyzeSnapshot::fromFields(const Fields& fields)
+{
+  UavAnalyzeSnapshot snapshot;
+  snapshot.droneId = fieldOr(fields, "analyze_drone", snapshot.droneId);
+  snapshot.linkState = fieldOr(fields, "analyze_link_state", snapshot.linkState);
+  snapshot.flightMode = fieldOr(fields, "analyze_flight_mode", snapshot.flightMode);
+  snapshot.missionPhase = fieldOr(fields, "analyze_mission_phase", snapshot.missionPhase);
+  snapshot.videoState = fieldOr(fields, "analyze_video_state", snapshot.videoState);
+  snapshot.parameterCacheStatus = fieldOr(fields, "analyze_parameter_cache", snapshot.parameterCacheStatus);
+  snapshot.updatedMs = uint64FieldOr(fields, "analyze_updated_ms", snapshot.updatedMs);
+  const auto messageCount = uint64FieldOr(fields, "analyze_message_count", 0);
+  snapshot.messages.reserve(static_cast<size_t>(messageCount));
+  for (uint64_t i = 0; i < messageCount; ++i) {
+    snapshot.messages.push_back(MavlinkMessageSummary::fromFields(
+      fields, "message." + std::to_string(i) + "."));
+  }
+  return snapshot;
+}
+
+Fields
+UavAnalyzeSnapshot::toFields() const
+{
+  Fields fields{
+    {"type", "uav-analyze-snapshot"},
+    {"analyze_drone", droneId},
+    {"analyze_link_state", linkState},
+    {"analyze_flight_mode", flightMode},
+    {"analyze_mission_phase", missionPhase},
+    {"analyze_video_state", videoState},
+    {"analyze_parameter_cache", parameterCacheStatus},
+    {"analyze_updated_ms", std::to_string(updatedMs)},
+    {"analyze_message_count", std::to_string(messages.size())},
+  };
+  for (size_t i = 0; i < messages.size(); ++i) {
+    const auto messageFields = messages[i].toFields("message." + std::to_string(i) + ".");
+    fields.insert(messageFields.begin(), messageFields.end());
+  }
+  return fields;
+}
+
+uint64_t
+UavAnalyzeSnapshot::activeMessageCount(uint64_t nowMs, uint64_t staleAfterMs) const
+{
+  return static_cast<uint64_t>(std::count_if(
+    messages.begin(), messages.end(),
+    [=] (const MavlinkMessageSummary& message) {
+      return message.isActive(nowMs, staleAfterMs);
+    }));
+}
+
+std::string
+UavAnalyzeSnapshot::statusLine() const
+{
+  return "UavAnalyzeSnapshot drone=" + droneId +
+         " link=" + linkState +
+         " mode=" + flightMode +
+         " mission=" + missionPhase +
+         " video=" + videoState +
+         " parameters=" + parameterCacheStatus +
+         " messages=" + std::to_string(messages.size());
+}
+
 OperatorAuthorityLease
 OperatorAuthorityLease::fromFields(const Fields& fields)
 {
