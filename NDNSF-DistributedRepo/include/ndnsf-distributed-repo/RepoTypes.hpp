@@ -10,12 +10,41 @@
 
 namespace ndnsf_distributed_repo {
 
+namespace reason {
+inline constexpr const char* OperationConflict = "repo-operation-conflict";
+inline constexpr const char* GenerationConflict = "repo-generation-conflict";
+inline constexpr const char* WriteIncomplete = "repo-write-incomplete";
+inline constexpr const char* Overloaded = "repo-overloaded";
+inline constexpr const char* CapacityReserved = "repo-capacity-reserved";
+inline constexpr const char* IntegrityFailure = "repo-integrity-failure";
+inline constexpr const char* RepairUnavailable = "repo-repair-unavailable";
+} // namespace reason
+
 enum class RepoDeploymentMode
 {
   Remote,
   Embedded,
   Both,
 };
+
+enum class RepoWriteConsistency
+{
+  One,
+  Quorum,
+  All,
+};
+
+std::string
+toString(RepoWriteConsistency consistency);
+
+RepoWriteConsistency
+parseRepoWriteConsistency(const std::string& value);
+
+uint32_t
+requiredWriteAcks(uint32_t replicationFactor, RepoWriteConsistency consistency);
+
+std::string
+normalizeRepoOperationState(const std::string& value);
 
 struct RepoObjectManifest
 {
@@ -26,7 +55,60 @@ struct RepoObjectManifest
   uint32_t segmentCount = 1;
   uint32_t replicationFactor = 1;
   std::vector<std::string> replicaNodes;
+  // Ordered original Data names for packet-backed objects. Packet wire bytes
+  // are stored under these exact names, never under Repo-generated aliases.
+  std::vector<std::string> packetNames;
   std::string policyEpoch;
+  uint64_t generation = 0;
+  int64_t parentGeneration = -1;
+  std::string writeConsistency = "ALL";
+  uint32_t requiredWriteAcks = 0;
+  std::vector<std::string> confirmedReplicaNodes;
+  std::string operationId;
+  std::string lifecycleState = "COMMITTED";
+
+  std::string toJson() const;
+};
+
+struct RepoWriteIntent
+{
+  std::string operationId;
+  std::string objectName;
+  uint64_t generation = 0;
+  int64_t expectedGeneration = -1;
+  std::string digest;
+  uint32_t replicationFactor = 1;
+  uint32_t requiredAcks = 1;
+  std::string consistency = "ALL";
+  std::vector<std::string> selectedReplicas;
+  std::string state = "RECEIVED";
+  uint64_t createdAtMs = 0;
+  uint64_t updatedAtMs = 0;
+
+  std::string toJson() const;
+};
+
+struct RepoWriteReceipt
+{
+  std::string operationId;
+  std::string repoNode;
+  std::string objectName;
+  uint64_t generation = 0;
+  std::string digest;
+  uint64_t persistedBytes = 0;
+  std::string state = "COMMITTED";
+  uint64_t completedAtMs = 0;
+
+  std::string toJson() const;
+};
+
+struct RepoCapacityReservation
+{
+  std::string reservationId;
+  std::string operationId;
+  uint64_t reservedBytes = 0;
+  std::string state = "ACTIVE";
+  uint64_t expiresAtMs = 0;
 
   std::string toJson() const;
 };
@@ -56,6 +138,9 @@ struct RepoOperationStatus
   std::string message;
   uint64_t completedSegments = 0;
   uint64_t totalSegments = 0;
+  uint64_t createdAtMs = 0;
+  uint64_t updatedAtMs = 0;
+  uint64_t expiresAtMs = 0;
 
   std::string toJson() const;
 };
@@ -104,6 +189,26 @@ struct RepoCatalogDelta
   uint64_t sinceEpoch = 0;
   uint64_t catalogEpoch = 0;
   std::vector<RepoCatalogEntry> entries;
+
+  std::string toJson() const;
+};
+
+struct RepoCacheStatus
+{
+  std::string storageBackend = "unknown";
+  std::string authoritativeBackend = "unknown";
+  std::string cachePolicy = "disabled";
+  uint64_t budgetBytes = 0;
+  uint64_t usedBytes = 0;
+  uint64_t entryCount = 0;
+  uint64_t hits = 0;
+  uint64_t misses = 0;
+  uint64_t admissions = 0;
+  uint64_t evictions = 0;
+  uint64_t invalidations = 0;
+  uint64_t oversizedBypasses = 0;
+  uint64_t backingReads = 0;
+  uint64_t backingWrites = 0;
 
   std::string toJson() const;
 };
@@ -172,6 +277,8 @@ public:
   virtual std::vector<RepoObjectManifest> listManifests() const = 0;
 
   virtual uint64_t usedBytes() const = 0;
+
+  virtual RepoCacheStatus cacheStatus() const;
 };
 
 class InMemoryRepoStore : public RepoStoreBackend
@@ -193,6 +300,8 @@ public:
 
   uint64_t usedBytes() const override;
 
+  RepoCacheStatus cacheStatus() const override;
+
 private:
   std::map<std::string, StoredObject> m_objects;
 };
@@ -202,6 +311,14 @@ makeMemoryRepoStore();
 
 std::shared_ptr<RepoStoreBackend>
 makeSqliteRepoStore(const std::string& databasePath);
+
+std::shared_ptr<RepoStoreBackend>
+makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes);
+
+std::shared_ptr<RepoStoreBackend>
+makeTieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
+                    uint64_t memoryCacheBytes,
+                    std::string authoritativeBackend = "custom");
 
 } // namespace ndnsf_distributed_repo
 

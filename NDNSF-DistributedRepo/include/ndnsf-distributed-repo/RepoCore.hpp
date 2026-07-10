@@ -33,6 +33,13 @@ public:
 
   RepoObjectManifest putManifest(const RepoObjectManifest& manifest);
 
+  RepoObjectManifest putDataPacket(const std::string& dataName,
+                                   const std::vector<uint8_t>& wire);
+
+  std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
+
+  bool hasDataPacket(const std::string& dataName) const;
+
   std::vector<uint8_t> handleStore(const std::vector<uint8_t>& request);
 
   std::vector<uint8_t> handleStoreManifest(const std::vector<uint8_t>& request);
@@ -44,6 +51,10 @@ public:
   std::vector<uint8_t> handleInventory() const;
 
   std::vector<uint8_t> handleCapability() const;
+
+  RepoCacheStatus cacheStatus() const;
+
+  std::vector<uint8_t> handleCacheStatus() const;
 
   RepoCatalogStatus catalogStatus() const;
 

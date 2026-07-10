@@ -6,6 +6,7 @@
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/util/segmenter.hpp>
 
 #include <filesystem>
 #include <iostream>
@@ -166,14 +167,13 @@ main()
     ndn::security::SigningInfo(signingIdentity),
     insertPayloadOptions,
     8);
+  const auto insertPayloadManifest = node.getManifest(
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api");
   if (insertPayloadStatus.state != "DONE" ||
       insertPayloadStatus.completedSegments <= 1 ||
-      node.getManifest(
-        "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api")
-          .segmentCount != insertPayloadStatus.completedSegments ||
-      node.get(
-        "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/payload-api/ndn-data/0")
-          .empty()) {
+      insertPayloadManifest.segmentCount != insertPayloadStatus.completedSegments ||
+      insertPayloadManifest.packetNames.size() != insertPayloadStatus.completedSegments ||
+      node.getDataPacket(insertPayloadManifest.packetNames.front()).empty()) {
     std::cerr << "repo payload insert did not produce signed Data segments\n";
     return 1;
   }
@@ -192,17 +192,25 @@ main()
     return 1;
   }
 
-  const std::vector<std::vector<uint8_t>> fakeWirePackets = {
-    {'D', 'a', 't', 'a', '0'},
-    {'D', 'a', 't', 'a', '1'},
-  };
+  const std::string fetchedDataPrefix =
+    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/model";
+  ndn::Segmenter segmenter(keyChain, ndn::security::SigningInfo(signingIdentity));
+  const auto fetchedData = segmenter.segment(
+    ndn::span<const uint8_t>(largePayload.data(), largePayload.size()),
+    ndn::Name(fetchedDataPrefix),
+    8,
+    ndn::time::hours(1));
+  std::vector<std::vector<uint8_t>> fakeWirePackets;
+  for (const auto& data : fetchedData) {
+    const auto wire = data->wireEncode();
+    fakeWirePackets.emplace_back(wire.begin(), wire.end());
+  }
   std::vector<uint8_t> fakeConcatenated;
   for (const auto& packet : fakeWirePackets) {
     fakeConcatenated.insert(fakeConcatenated.end(), packet.begin(), packet.end());
   }
   node.setDataReferenceFetcher([&] (const RepoDataReference& reference) {
-    if (reference.dataPrefix !=
-        "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/model") {
+    if (reference.dataPrefix != fetchedDataPrefix) {
       throw std::runtime_error("unexpected fake data prefix");
     }
     return fakeWirePackets;
@@ -211,7 +219,7 @@ main()
   reference.objectName =
     "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/app-owned/model";
   reference.dataPrefix =
-    "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/model";
+    fetchedDataPrefix;
   reference.hasFinalSegment = true;
   reference.finalSegment = 1;
   reference.expectedSize = fakeConcatenated.size();
@@ -219,12 +227,14 @@ main()
   reference.objectType = "app-owned-segmented-data";
   const auto referenceStatus = RepoClient::insert(node, reference);
   const auto queriedReferenceStatus = RepoClient::status(node, referenceStatus.operationId);
+  const auto referenceManifest = node.getManifest(reference.objectName);
   if (referenceStatus.state != "DONE" ||
       queriedReferenceStatus.state != "DONE" ||
       queriedReferenceStatus.completedSegments != fakeWirePackets.size() ||
-      node.getManifest(reference.objectName).segmentCount != fakeWirePackets.size() ||
-      node.get(reference.objectName + "/ndn-data/0") != fakeWirePackets[0] ||
-      node.get(reference.objectName + "/ndn-data/1") != fakeWirePackets[1]) {
+      referenceManifest.segmentCount != fakeWirePackets.size() ||
+      referenceManifest.packetNames.size() != fakeWirePackets.size() ||
+      node.getDataPacket(referenceManifest.packetNames[0]) != fakeWirePackets[0] ||
+      node.getDataPacket(referenceManifest.packetNames[1]) != fakeWirePackets[1]) {
     std::cerr << "repo store-from-reference wire packet path mismatch\n";
     return 1;
   }
@@ -252,7 +262,9 @@ main()
   if (!localRegistry.hasService(
         makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STORE")) ||
       !localRegistry.hasService(
-        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "CATALOG_STATUS"))) {
+        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "CATALOG_STATUS")) ||
+      !localRegistry.hasService(
+        makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "CACHE_STATUS"))) {
     std::cerr << "embedded repo block local services not registered\n";
     return 1;
   }
@@ -263,6 +275,8 @@ main()
     payload,
     segmentedOptions);
   const auto localCatalogStatus = RepoClient::localCatalogStatus(
+    localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME));
+  const auto localCacheStatus = RepoClient::localCacheStatus(
     localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME));
   const auto localCatalogLookup = RepoClient::localCatalogLookup(
     localRegistry, ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
@@ -276,6 +290,7 @@ main()
       RepoClient::localList(localRegistry,
                             ndn::Name(RepoClient::DEFAULT_SERVICE_NAME)).empty() ||
       localCatalogStatus.repoNode != "/repo/in-app" ||
+      localCacheStatus.storageBackend != "memory" ||
       localCatalogLookup.manifest.objectName != localManifest.objectName ||
       !RepoClient::localRemove(localRegistry,
                                ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
@@ -294,16 +309,23 @@ main()
   {
     RepoCore persistentCore(
       {"/repo/persistent", 1024 * 1024, 0, 0.0, 1.0, "local", {"persistent"}},
-      makeSqliteRepoStore(sqlitePath.string()));
+      makeTieredRepoStore(sqlitePath.string(), 4096));
     persistentCore.put(persistentObjectName, payload, "persistent-object");
+    if (persistentCore.cacheStatus().authoritativeBackend != "sqlite" ||
+        persistentCore.cacheStatus().entryCount != 1) {
+      std::cerr << "tiered repo initial cache status mismatch\n";
+      return 1;
+    }
   }
   {
     RepoCore restartedCore(
       {"/repo/persistent", 1024 * 1024, 0, 0.0, 1.0, "local", {"persistent"}},
-      makeSqliteRepoStore(sqlitePath.string()));
+      makeTieredRepoStore(sqlitePath.string(), 4096));
     if (restartedCore.get(persistentObjectName) != payload ||
         restartedCore.getManifest(persistentObjectName).objectType !=
-          "persistent-object") {
+          "persistent-object" ||
+        restartedCore.cacheStatus().misses != 1 ||
+        restartedCore.cacheStatus().hits != 1) {
       std::cerr << "sqlite repo restart fetch mismatch\n";
       return 1;
     }

@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import os
+import json
 import re
+import shutil
 import subprocess
 import time
 import sys
 import argparse
+import csv
 from pathlib import Path
 import yaml  # type: ignore
 
@@ -17,6 +20,10 @@ MININDN_ROOT = Path("/tmp/minindn")
 sys.path.insert(0, str(REPO / "Experiments"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
+from repo_campaign_evidence import (  # noqa: E402
+    correlate_recovered_repairs,
+    parse_catalog_sync_metric,
+)
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
 from minindn.apps.nfd import Nfd  # noqa: E402
@@ -53,6 +60,45 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run only the core store/fetch/catalog/delete smoke.")
     parser.add_argument("--nlsr-wait-s", type=float, default=15.0)
     parser.add_argument("--repo-start-wait-s", type=float, default=25.0)
+    parser.add_argument("--tiered-cache-smoke", action="store_true",
+                        help="Validate SQLite restart plus bounded Repo hot-cache behavior.")
+    parser.add_argument("--tiered-cache-bytes", type=int, default=8192)
+    parser.add_argument("--tiered-cache-object-bytes", type=int, default=4096)
+    parser.add_argument("--tiered-restart-wait-s", type=float, default=20.0)
+    parser.add_argument("--exact-packet-smoke", action="store_true",
+                        help="Validate exact Data names and byte-identical wires after restart.")
+    parser.add_argument("--exact-packet-failover-smoke", action="store_true",
+                        help="Kill Repo A after one packet and validate atomic failover to Repo B.")
+    parser.add_argument("--ha-campaign", action="store_true",
+                        help="Run the headless Spec 077 read/write campaign.")
+    parser.add_argument("--campaign-duration-s", type=float, default=60.0)
+    parser.add_argument("--campaign-rps", type=float, default=1.0)
+    parser.add_argument("--campaign-concurrency", type=int, default=4)
+    parser.add_argument("--campaign-read-ratio", type=float, default=0.8)
+    parser.add_argument("--campaign-object-bytes", type=int, default=2048)
+    parser.add_argument("--campaign-object-mode", choices=("opaque", "exact"),
+                        default="opaque")
+    parser.add_argument("--campaign-replication-factor", type=int, default=2)
+    parser.add_argument("--campaign-write-consistency",
+                        choices=("ONE", "QUORUM", "ALL"), default="ALL")
+    parser.add_argument("--campaign-seed", type=int, default=77001)
+    parser.add_argument("--campaign-control-mode",
+                        choices=("normal", "targeted"), default="targeted")
+    parser.add_argument("--campaign-user-handler-threads", type=int, default=2)
+    parser.add_argument("--campaign-request-timeout-ms", type=int, default=30000)
+    parser.add_argument("--campaign-disable-targeted-fallback",
+                        action="store_true")
+    parser.add_argument("--campaign-gdb", action="store_true",
+                        help="Run only the campaign client under batch gdb.")
+    parser.add_argument("--campaign-fail-repo", choices=("", "repoA", "repoB", "repoC"),
+                        default="")
+    parser.add_argument("--campaign-fail-at-s", type=float, default=0.0)
+    parser.add_argument("--campaign-restart-after-s", type=float, default=0.0)
+    parser.add_argument(
+        "--campaign-auto-repair", action="store_true",
+        help="Run durable catalog repair workers during the HA campaign.")
+    parser.add_argument("--campaign-repair-workers", type=int, default=1)
+    parser.add_argument("--campaign-repair-max-jobs", type=int, default=4)
     return parser
 
 
@@ -252,7 +298,8 @@ def main() -> None:
             ]),
             "PYTHONUNBUFFERED": "1",
             "NDN_LOG": "ndn_service_framework.*=INFO",
-            "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
+            "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": os.environ.get(
+                "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD", "1024"),
         }
         env.pop("NDN_CLIENT_TRANSPORT", None)
 
@@ -282,23 +329,44 @@ def main() -> None:
         )
         start(CONTROLLER_NODE, "controller", base + perf.shell_quote(PY_DIR / "controller.py") + common)
         time.sleep(15.0)
-        repoA_proc, _ = start(
-            REPO_A_NODE,
-            "repoA",
+        exact_packet_mode = (
+            args.exact_packet_smoke or args.exact_packet_failover_smoke)
+        if args.tiered_cache_smoke or exact_packet_mode or args.ha_campaign:
+            shutil.rmtree(MININDN_ROOT / REPO_A_NODE / "repo-store",
+                          ignore_errors=True)
+        if args.exact_packet_failover_smoke or args.ha_campaign:
+            shutil.rmtree(MININDN_ROOT / REPO_B_NODE / "repo-store",
+                          ignore_errors=True)
+        if args.ha_campaign:
+            shutil.rmtree(MININDN_ROOT / REPO_C_NODE / "repo-store",
+                          ignore_errors=True)
+        repo_a_command = (
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoA --repo-node /example/repo/provider/repoA "
             "--failure-domain rack-a "
             f"--storage-dir {MININDN_ROOT}/{REPO_A_NODE}/repo-store "
-            "--advertise-stored-prefixes",
+            + (f"--memory-cache-bytes {args.tiered_cache_bytes} "
+               "--producer-retention-s 120 "
+               if args.tiered_cache_smoke or exact_packet_mode else "") +
+            "--advertise-stored-prefixes"
         )
-        repoB_proc, _ = start(
-            REPO_B_NODE,
-            "repoB",
+        repoA_proc, _ = start(
+            REPO_A_NODE,
+            "repoA",
+            repo_a_command,
+        )
+        repo_b_command = (
             base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
             " --provider-id repoB --repo-node /example/repo/provider/repoB "
             "--failure-domain rack-b "
             f"--storage-dir {MININDN_ROOT}/{REPO_B_NODE}/repo-store "
-            "--advertise-stored-prefixes",
+            + ("--producer-retention-s 120 " if exact_packet_mode else "") +
+            "--advertise-stored-prefixes"
+        )
+        repoB_proc, _ = start(
+            REPO_B_NODE,
+            "repoB",
+            repo_b_command,
         )
         repoC_proc, _ = start(
             REPO_C_NODE,
@@ -309,35 +377,612 @@ def main() -> None:
             f"--storage-dir {MININDN_ROOT}/{REPO_C_NODE}/repo-store "
             "--advertise-stored-prefixes",
         )
-        catalogA_proc, _ = start(
-            REPO_A_NODE,
-            "catalogA",
-            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
-            " --repo-node /example/repo/provider/repoA "
-            "--peer-repo-node /example/repo/provider/repoB "
-            "--peer-repo-node /example/repo/provider/repoC "
-            "--interval-s 10",
-        )
-        catalogB_proc, _ = start(
-            REPO_B_NODE,
-            "catalogB",
-            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
-            " --repo-node /example/repo/provider/repoB "
-            "--peer-repo-node /example/repo/provider/repoA "
-            "--peer-repo-node /example/repo/provider/repoC "
-            "--interval-s 10",
-        )
-        catalogC_proc, _ = start(
-            REPO_C_NODE,
-            "catalogC",
-            base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
-            " --repo-node /example/repo/provider/repoC "
-            "--peer-repo-node /example/repo/provider/repoA "
-            "--peer-repo-node /example/repo/provider/repoB "
-            "--interval-s 10",
-        )
+        catalog_sidecars = {
+            "repoA": (
+                REPO_A_NODE, "catalogA", "/example/repo/provider/repoA",
+                ("/example/repo/provider/repoB",
+                 "/example/repo/provider/repoC")),
+            "repoB": (
+                REPO_B_NODE, "catalogB", "/example/repo/provider/repoB",
+                ("/example/repo/provider/repoA",
+                 "/example/repo/provider/repoC")),
+            "repoC": (
+                REPO_C_NODE, "catalogC", "/example/repo/provider/repoC",
+                ("/example/repo/provider/repoA",
+                 "/example/repo/provider/repoB")),
+        }
+
+        def catalog_sidecar_command(repo_identity, peers, *, auto_repair=False):
+            peer_args = "".join(
+                f" --peer-repo-node {peer}" for peer in peers)
+            repair_arg = " --auto-repair" if auto_repair else ""
+            return (
+                base + perf.shell_quote(PY_DIR / "catalog_sync.py") + common +
+                f" --repo-node {repo_identity}" + peer_args +
+                f" --interval-s {campaign_catalog_interval}" + repair_arg +
+                f" --repair-workers {args.campaign_repair_workers}" +
+                f" --repair-max-jobs {args.campaign_repair_max_jobs}"
+            )
+
+        campaign_repair_arg = (
+            " --auto-repair"
+            if (args.ha_campaign and args.campaign_auto_repair and
+                not args.campaign_fail_repo) else "")
+        campaign_catalog_interval = (
+            2 if args.ha_campaign and args.campaign_auto_repair else 10)
+        startup_auto_repair = bool(campaign_repair_arg)
+        catalogA_proc, catalog_a_log = start(
+            catalog_sidecars["repoA"][0], catalog_sidecars["repoA"][1],
+            catalog_sidecar_command(
+                catalog_sidecars["repoA"][2], catalog_sidecars["repoA"][3],
+                auto_repair=startup_auto_repair))
+        catalogB_proc, catalog_b_log = start(
+            catalog_sidecars["repoB"][0], catalog_sidecars["repoB"][1],
+            catalog_sidecar_command(
+                catalog_sidecars["repoB"][2], catalog_sidecars["repoB"][3],
+                auto_repair=startup_auto_repair))
+        catalogC_proc, catalog_c_log = start(
+            catalog_sidecars["repoC"][0], catalog_sidecars["repoC"][1],
+            catalog_sidecar_command(
+                catalog_sidecars["repoC"][2], catalog_sidecars["repoC"][3],
+                auto_repair=startup_auto_repair))
+        catalog_logs = [catalog_a_log, catalog_b_log, catalog_c_log]
         log(f"Waiting {args.repo_start_wait_s:.1f}s for repo providers")
         time.sleep(args.repo_start_wait_s)
+        if args.ha_campaign:
+            campaign_dir = OUT / (
+                f"campaign-c{args.campaign_concurrency}-rps{args.campaign_rps:g}-"
+                f"seed{args.campaign_seed}")
+            shutil.rmtree(campaign_dir, ignore_errors=True)
+            ready_file = campaign_dir / "ready.json"
+            campaign_base = base
+            if args.campaign_gdb:
+                campaign_base = (
+                    f"cd {perf.shell_quote(REPO)} && exec gdb -batch "
+                    "-ex run -ex 'thread apply all bt' --args python3 ")
+            command = (
+                campaign_base + perf.shell_quote(PY_DIR / "repo_campaign.py") + common +
+                " --output-dir {} --duration-s {} --rps {} --concurrency {} "
+                "--read-ratio {} --object-bytes {} --object-mode {} "
+                "--replication-factor {} --write-consistency {} --seed {} "
+                "--ready-file {} --control-mode {} --handler-threads {} {} "
+                "--repo-node /example/repo/provider/repoA "
+                "--repo-node /example/repo/provider/repoB "
+                "--timeout-ms {} "
+                "--repo-node /example/repo/provider/repoC".format(
+                    perf.shell_quote(campaign_dir), args.campaign_duration_s,
+                    args.campaign_rps, args.campaign_concurrency,
+                    args.campaign_read_ratio, args.campaign_object_bytes,
+                    args.campaign_object_mode, args.campaign_replication_factor,
+                    args.campaign_write_consistency, args.campaign_seed,
+                    perf.shell_quote(ready_file),
+                    args.campaign_control_mode,
+                    args.campaign_user_handler_threads,
+                    ("--disable-targeted-fallback"
+                     if args.campaign_disable_targeted_fallback else ""),
+                    args.campaign_request_timeout_ms,
+                )
+            )
+            campaign_proc, campaign_log = start(
+                USER_NODE, "repo-ha-campaign", command)
+            repo_processes = {
+                "repoA": (repoA_proc, REPO_A_NODE, repo_a_command),
+                "repoB": (repoB_proc, REPO_B_NODE, repo_b_command),
+                "repoC": (repoC_proc, REPO_C_NODE,
+                          base + perf.shell_quote(PY_DIR / "repo_node.py") + common +
+                          " --provider-id repoC --repo-node /example/repo/provider/repoC "
+                          "--failure-domain rack-c "
+                          f"--storage-dir {MININDN_ROOT}/{REPO_C_NODE}/repo-store "
+                          "--advertise-stored-prefixes"),
+            }
+            failure_epoch_ms = 0
+            restart_epoch_ms = 0
+            if args.campaign_fail_repo and args.campaign_fail_at_s > 0:
+                ready_deadline = time.time() + 120.0
+                while not ready_file.exists() and time.time() < ready_deadline:
+                    if campaign_proc.poll() is not None:
+                        break
+                    time.sleep(0.2)
+                if not ready_file.exists():
+                    raise RuntimeError(
+                        f"Repo HA campaign did not reach ready barrier; "
+                        f"log={campaign_log}")
+                log(f"HA campaign ready barrier reached {ready_file}")
+                time.sleep(args.campaign_fail_at_s)
+                failed_proc, failed_host, restart_command = repo_processes[
+                    args.campaign_fail_repo]
+                failed_proc.terminate()
+                try:
+                    failed_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    failed_proc.kill()
+                failure_epoch_ms = int(time.time() * 1000)
+                log(f"HA campaign terminated {args.campaign_fail_repo}")
+                if args.campaign_auto_repair:
+                    for catalog_proc in (
+                            catalogA_proc, catalogB_proc, catalogC_proc):
+                        catalog_proc.terminate()
+                        try:
+                            catalog_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            catalog_proc.kill()
+                    for repo_name, sidecar in catalog_sidecars.items():
+                        host, label, repo_identity, peers = sidecar
+                        if repo_name == args.campaign_fail_repo:
+                            continue
+                        _, repair_log = start(
+                            host, f"{label}-repair",
+                            catalog_sidecar_command(
+                                repo_identity, peers, auto_repair=True))
+                        catalog_logs.append(repair_log)
+                    log("HA campaign enabled auto-repair after failure")
+                if args.campaign_restart_after_s > 0:
+                    time.sleep(args.campaign_restart_after_s)
+                    start(failed_host, f"{args.campaign_fail_repo}-restart",
+                          restart_command)
+                    restart_epoch_ms = int(time.time() * 1000)
+                    if args.campaign_auto_repair:
+                        host, label, repo_identity, peers = catalog_sidecars[
+                            args.campaign_fail_repo]
+                        _, recovered_catalog_log = start(
+                            host, f"{label}-recovered-repair",
+                            catalog_sidecar_command(
+                                repo_identity, peers, auto_repair=True))
+                        catalog_logs.append(recovered_catalog_log)
+                    log(f"HA campaign restarted {args.campaign_fail_repo}")
+            try:
+                campaign_rc = campaign_proc.wait(timeout=max(
+                    180.0, args.campaign_duration_s + 180.0))
+            except subprocess.TimeoutExpired:
+                campaign_proc.kill()
+                raise RuntimeError(
+                    f"Repo HA campaign timed out; log={campaign_log}")
+            summary_path = campaign_dir / "summary.json"
+            if not summary_path.exists():
+                raise RuntimeError(
+                    f"Repo HA campaign produced no summary; rc={campaign_rc} "
+                    f"log={campaign_log}")
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            lifecycle_rows = []
+            lifecycle_path = campaign_dir / "request-lifecycle.csv"
+            if lifecycle_path.exists():
+                with lifecycle_path.open(newline="", encoding="utf-8") as stream:
+                    lifecycle_rows = list(csv.DictReader(stream))
+
+            def percentile(values, quantile):
+                if not values:
+                    return 0.0
+                ordered = sorted(float(value) for value in values)
+                index = min(len(ordered) - 1, max(
+                    0, int(round(quantile * (len(ordered) - 1)))))
+                return ordered[index]
+
+            def summarize_phase(rows):
+                successes = [row for row in rows if int(row["success"])]
+                writes = [row for row in rows if row["operation"] == "write"]
+                successful_writes = [row for row in writes if int(row["success"])]
+                latencies = [float(row["latencyMs"]) for row in successes]
+                write_latencies = [
+                    float(row["latencyMs"]) for row in successful_writes]
+                receipts = [
+                    int(row["confirmedReplicas"]) for row in successful_writes]
+                return {
+                    "attempted": len(rows),
+                    "succeeded": len(successes),
+                    "failed": len(rows) - len(successes),
+                    "writes": len(writes),
+                    "successfulWrites": len(successful_writes),
+                    "latencyP50Ms": percentile(latencies, 0.50),
+                    "latencyP95Ms": percentile(latencies, 0.95),
+                    "writeP50Ms": percentile(write_latencies, 0.50),
+                    "writeP95Ms": percentile(write_latencies, 0.95),
+                    "minimumSuccessfulWriteReceipts": min(receipts, default=0),
+                    "maximumSuccessfulWriteReceipts": max(receipts, default=0),
+                }
+
+            phase_rows = {"preFailure": [], "overlappingFailure": [],
+                          "postFailure": []}
+            if failure_epoch_ms:
+                for row in lifecycle_rows:
+                    row_start = int(row.get("startedEpochMs", "0") or 0)
+                    row_end = int(row.get("completedEpochMs", "0") or 0)
+                    if row_end <= failure_epoch_ms:
+                        phase_rows["preFailure"].append(row)
+                    elif row_start < failure_epoch_ms < row_end:
+                        phase_rows["overlappingFailure"].append(row)
+                    else:
+                        phase_rows["postFailure"].append(row)
+            else:
+                phase_rows["preFailure"] = lifecycle_rows
+            phase_metrics = {
+                phase: summarize_phase(rows)
+                for phase, rows in phase_rows.items()
+            }
+            repair_events = []
+            repair_cycle_events = []
+            catalog_merge_events = []
+            for catalog_log in catalog_logs:
+                for line in Path(catalog_log).read_text(
+                        encoding="utf-8", errors="replace").splitlines():
+                    metric = parse_catalog_sync_metric(line)
+                    if metric is not None:
+                        metric["log"] = str(catalog_log)
+                        if metric["kind"] == "repairCycle":
+                            repair_cycle_events.append(metric)
+                        elif metric["kind"] == "catalogMerge":
+                            catalog_merge_events.append(metric)
+                    if "catalog_sync repaired" not in line:
+                        continue
+                    fields = {}
+                    for item in line.split():
+                        if "=" in item:
+                            key, value = item.split("=", 1)
+                            fields[key] = value
+                    event = {
+                        "repoNode": fields.get("repo", ""),
+                        "objectName": fields.get("object", ""),
+                        "sourceRepo": fields.get("source", ""),
+                        "timestampMs": int(fields.get("timestampMs", "0")),
+                    }
+                    if (not failure_epoch_ms or
+                            event["timestampMs"] >= failure_epoch_ms):
+                        repair_events.append(event)
+            repair_events.sort(key=lambda item: item["timestampMs"])
+            first_repair_latency_ms = None
+            if failure_epoch_ms and repair_events:
+                first_repair_latency_ms = max(
+                    0, repair_events[0]["timestampMs"] - failure_epoch_ms)
+            recovered_repo_identity = (
+                catalog_sidecars[args.campaign_fail_repo][2]
+                if args.campaign_fail_repo else "")
+            recovery_evidence = correlate_recovered_repairs(
+                lifecycle_rows,
+                repair_events,
+                recovered_repo=recovered_repo_identity,
+                failure_epoch_ms=failure_epoch_ms,
+                restart_epoch_ms=restart_epoch_ms,
+            )
+            repair_window_s = max(
+                0.0,
+                (int(summary.get("campaignEndEpochMs", 0) or 0) -
+                 restart_epoch_ms) / 1000.0,
+            ) if restart_epoch_ms else 0.0
+            recovery_evidence["repairWindowSeconds"] = repair_window_s
+            recovery_evidence["recoveredRepairThroughputPerSecond"] = (
+                int(recovery_evidence["recoveredTargetRepairEventCount"]) /
+                repair_window_s if repair_window_s > 0 else 0.0
+            )
+            recovered_cycles = [
+                event for event in repair_cycle_events
+                if (str(event.get("repo", "")) == recovered_repo_identity and
+                    (not restart_epoch_ms or
+                     int(event.get("timestampMs", 0) or 0) >= restart_epoch_ms))
+            ]
+            recovered_merges = [
+                event for event in catalog_merge_events
+                if (str(event.get("repo", "")) == recovered_repo_identity and
+                    (not restart_epoch_ms or
+                     int(event.get("timestampMs", 0) or 0) >= restart_epoch_ms))
+            ]
+            recovery_evidence["repairVisibility"] = {
+                "cycleCount": len(recovered_cycles),
+                "mergeCount": len(recovered_merges),
+                "maxClaimable": max(
+                    [int(event.get("claimable", 0) or 0)
+                     for event in recovered_cycles] or [0]),
+                "totalClaimed": sum(
+                    int(event.get("claimed", 0) or 0)
+                    for event in recovered_cycles),
+                "totalCompleted": sum(
+                    int(event.get("completed", 0) or 0)
+                    for event in recovered_cycles),
+                "scanTotalMs": sum(
+                    float(event.get("scanMs", 0) or 0)
+                    for event in recovered_cycles),
+                "claimTotalMs": sum(
+                    float(event.get("claimMs", 0) or 0)
+                    for event in recovered_cycles),
+                "transferTotalMs": sum(
+                    float(event.get("transferMs", 0) or 0)
+                    for event in recovered_cycles),
+                "mergeTotalMs": sum(
+                    float(event.get("durationMs", 0) or 0)
+                    for event in recovered_merges),
+                "mergeModeCounts": {
+                    mode: sum(
+                        1 for event in recovered_merges
+                        if str(event.get("mode", "legacy")) == mode)
+                    for mode in sorted({
+                        str(event.get("mode", "legacy"))
+                        for event in recovered_merges
+                    })
+                },
+                "mergePayloadBytes": sum(
+                    int(event.get("payloadBytes", 0) or 0)
+                    for event in recovered_merges),
+                "mergeSegments": sum(
+                    int(event.get("segments", 0) or 0)
+                    for event in recovered_merges),
+                "mergeBatches": sum(
+                    int(event.get("batches", 0) or 0)
+                    for event in recovered_merges),
+            }
+            fault_evidence = {
+                "autoRepair": bool(args.campaign_auto_repair),
+                "failedRepo": args.campaign_fail_repo,
+                "failureEpochMs": failure_epoch_ms,
+                "restartEpochMs": restart_epoch_ms,
+                "restartAfterSeconds": args.campaign_restart_after_s,
+                "repairWorkers": args.campaign_repair_workers,
+                "repairMaxJobs": args.campaign_repair_max_jobs,
+                "repairEventCount": len(repair_events),
+                "firstRepairLatencyMs": first_repair_latency_ms,
+                "phaseMetrics": phase_metrics,
+                "repairEvents": repair_events,
+                "repairCycleEvents": repair_cycle_events,
+                "catalogMergeEvents": catalog_merge_events,
+                "recovery": recovery_evidence,
+            }
+            summary["faultInjection"] = fault_evidence
+            summary_path.write_text(
+                json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            metadata = {
+                "summary": str(summary_path),
+                "clientLog": str(campaign_log),
+                "failedRepo": args.campaign_fail_repo,
+                "failAtSeconds": args.campaign_fail_at_s,
+                "restartAfterSeconds": args.campaign_restart_after_s,
+                "autoRepair": bool(args.campaign_auto_repair),
+                "repairWorkers": args.campaign_repair_workers,
+                "repairMaxJobs": args.campaign_repair_max_jobs,
+                "repairEventCount": len(repair_events),
+                "firstRepairLatencyMs": first_repair_latency_ms,
+                "returnCode": campaign_rc,
+            }
+            (campaign_dir / "minindn-metadata.json").write_text(
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+            log(
+                f"Repo HA campaign complete success={summary.get('succeeded')} "
+                f"failed={summary.get('failed')} summary={summary_path}")
+            return
+        if args.exact_packet_failover_smoke:
+            state_path = OUT / "exact-packet-state.json"
+            trigger_path = OUT / "exact-packet-failover-trigger.json"
+            resume_path = OUT / "exact-packet-failover-resume.json"
+            summary_path = OUT / "exact-packet-failover-summary.json"
+            client_log = OUT / "client-exact-packet-failover.log"
+            for path in (state_path, trigger_path, resume_path, summary_path):
+                path.unlink(missing_ok=True)
+            client_out = client_log.open("wb")
+            failover_client = getPopen(
+                ndn.net[USER_NODE],
+                base + perf.shell_quote(PY_DIR / "client.py") + common +
+                " --use-local-config --trust-schema {} --ack-timeout-ms 3000 "
+                "--timeout-ms 15000 --exact-packet-seed-smoke "
+                "--exact-packet-verify-smoke --exact-packet-state-file {} "
+                "--exact-packet-summary-file {} "
+                "--exact-packet-repo-node /example/repo/provider/repoA "
+                "--exact-packet-secondary-repo-node /example/repo/provider/repoB "
+                "--exact-packet-failover-trigger-file {} "
+                "--exact-packet-failover-resume-file {} "
+                "--exact-packet-failover-wait-s 120".format(
+                    perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
+                    perf.shell_quote(state_path),
+                    perf.shell_quote(summary_path),
+                    perf.shell_quote(trigger_path),
+                    perf.shell_quote(resume_path),
+                ),
+                envDict=node_env(USER_NODE),
+                shell=True,
+                stdout=client_out,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append((failover_client, client_out, client_log))
+            trigger_deadline = time.monotonic() + 240.0
+            while not trigger_path.exists():
+                if failover_client.poll() is not None:
+                    raise RuntimeError(
+                        "exact-packet failover client exited before trigger; "
+                        f"log={client_log}")
+                if time.monotonic() >= trigger_deadline:
+                    raise TimeoutError(
+                        "timed out waiting for exact-packet failover trigger")
+                time.sleep(0.1)
+
+            trigger = json.loads(trigger_path.read_text(encoding="utf-8"))
+            log(
+                "Terminating Repo A after first exact packet "
+                f"name={trigger.get('packetName', '')}")
+            repoA_proc.terminate()
+            repoA_proc.wait(timeout=30)
+            resume_path.write_text(json.dumps({
+                "repoAExited": True,
+                "timestampMs": time.time_ns() // 1_000_000,
+            }, sort_keys=True) + "\n", encoding="utf-8")
+
+            failover_client.wait(timeout=360)
+            client_text = client_log.read_text(errors="replace")
+            print(client_text)
+            if (failover_client.returncode != 0 or
+                    "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_SEED_OK"
+                    not in client_text or
+                    "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_FAILOVER_VERIFY_OK"
+                    not in client_text or not summary_path.exists()):
+                raise RuntimeError(
+                    "generic DistributedRepo exact-packet failover failed "
+                    f"rc={failover_client.returncode}; log={client_log}")
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            required_checks = (
+                "primaryOnePacketBeforeFailure",
+                "primaryFailureObserved",
+                "secondaryRestartedWholeSet",
+                "exactNames",
+                "wireIdentity",
+            )
+            checks = summary.get("checks", {})
+            if (not bool(summary.get("passed")) or
+                    not all(bool(checks.get(name)) for name in required_checks)):
+                raise RuntimeError(
+                    f"exact-packet failover summary failed: {summary}")
+            print(
+                "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_FAILOVER_MININDN_OK "
+                f"summary={summary_path}",
+                flush=True,
+            )
+            return
+
+        if args.exact_packet_smoke:
+            state_path = OUT / "exact-packet-state.json"
+            summary_path = OUT / "exact-packet-summary.json"
+            seed_log = OUT / "client-exact-packet-seed.log"
+            seed_out = seed_log.open("wb")
+            seed_client = getPopen(
+                ndn.net[USER_NODE],
+                base + perf.shell_quote(PY_DIR / "client.py") + common +
+                " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+                "--exact-packet-seed-smoke --exact-packet-state-file {} "
+                "--exact-packet-repo-node /example/repo/provider/repoA".format(
+                    perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
+                    perf.shell_quote(state_path),
+                ),
+                envDict=node_env(USER_NODE),
+                shell=True,
+                stdout=seed_out,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append((seed_client, seed_out, seed_log))
+            seed_client.wait(timeout=300)
+            seed_text = seed_log.read_text(errors="replace")
+            print(seed_text)
+            if (seed_client.returncode != 0 or
+                    "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_SEED_OK" not in seed_text or
+                    not state_path.exists()):
+                raise RuntimeError(
+                    "generic DistributedRepo exact-packet seed failed "
+                    f"rc={seed_client.returncode}; log={seed_log}")
+
+            repoA_proc.terminate()
+            repoA_proc.wait(timeout=30)
+            repoA_proc, _ = start(REPO_A_NODE, "repoA-exact-restart", repo_a_command)
+            time.sleep(args.tiered_restart_wait_s)
+
+            verify_log = OUT / "client-exact-packet-verify.log"
+            verify_out = verify_log.open("wb")
+            verify_client = getPopen(
+                ndn.net[USER_NODE],
+                base + perf.shell_quote(PY_DIR / "client.py") + common +
+                " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+                "--exact-packet-verify-smoke --exact-packet-state-file {} "
+                "--exact-packet-summary-file {} "
+                "--exact-packet-repo-node /example/repo/provider/repoA".format(
+                    perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
+                    perf.shell_quote(state_path),
+                    perf.shell_quote(summary_path),
+                ),
+                envDict=node_env(USER_NODE),
+                shell=True,
+                stdout=verify_out,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append((verify_client, verify_out, verify_log))
+            verify_client.wait(timeout=360)
+            verify_text = verify_log.read_text(errors="replace")
+            print(verify_text)
+            if (verify_client.returncode != 0 or
+                    "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_VERIFY_OK" not in verify_text or
+                    not summary_path.exists()):
+                raise RuntimeError(
+                    "generic DistributedRepo exact-packet verification failed "
+                    f"rc={verify_client.returncode}; log={verify_log}")
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            checks = summary.get("checks", {})
+            if (not bool(summary.get("passed")) or
+                    not bool(checks.get("batchPacketConsumer"))):
+                raise RuntimeError(f"exact-packet summary failed: {summary}")
+            print(
+                "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_MININDN_OK "
+                f"summary={summary_path}",
+                flush=True,
+            )
+            return
+        if args.tiered_cache_smoke:
+            state_path = OUT / "tiered-cache-state.json"
+            summary_path = OUT / "tiered-cache-summary.json"
+            seed_log = OUT / "client-tiered-cache-seed.log"
+            seed_out = seed_log.open("wb")
+            seed_client = getPopen(
+                ndn.net[USER_NODE],
+                base + perf.shell_quote(PY_DIR / "client.py") + common +
+                " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+                "--tiered-cache-seed-smoke --tiered-cache-state-file {} "
+                "--tiered-cache-repo-node /example/repo/provider/repoA "
+                "--tiered-cache-object-bytes {}".format(
+                    perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
+                    perf.shell_quote(state_path),
+                    args.tiered_cache_object_bytes,
+                ),
+                envDict=node_env(USER_NODE),
+                shell=True,
+                stdout=seed_out,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append((seed_client, seed_out, seed_log))
+            seed_client.wait(timeout=300)
+            seed_text = seed_log.read_text(errors="replace")
+            print(seed_text)
+            if (seed_client.returncode != 0 or
+                    "GENERIC_DISTRIBUTED_REPO_TIERED_CACHE_SEED_OK" not in seed_text or
+                    not state_path.exists()):
+                raise RuntimeError(
+                    "generic DistributedRepo tiered-cache seed failed "
+                    f"rc={seed_client.returncode}; log={seed_log}")
+
+            log("Stopping Repo A to clear process-local cache")
+            repoA_proc.terminate()
+            repoA_proc.wait(timeout=30)
+            repoA_proc, _ = start(REPO_A_NODE, "repoA-restart", repo_a_command)
+            log(f"Waiting {args.tiered_restart_wait_s:.1f}s for Repo A restart")
+            time.sleep(args.tiered_restart_wait_s)
+
+            verify_log = OUT / "client-tiered-cache-verify.log"
+            verify_out = verify_log.open("wb")
+            verify_client = getPopen(
+                ndn.net[USER_NODE],
+                base + perf.shell_quote(PY_DIR / "client.py") + common +
+                " --use-local-config --trust-schema {} --ack-timeout-ms 8000 "
+                "--tiered-cache-verify-smoke --tiered-cache-state-file {} "
+                "--tiered-cache-summary-file {} "
+                "--tiered-cache-repo-node /example/repo/provider/repoA".format(
+                    perf.shell_quote(Path(GEN_POLICY) / "trust-schema.conf"),
+                    perf.shell_quote(state_path),
+                    perf.shell_quote(summary_path),
+                ),
+                envDict=node_env(USER_NODE),
+                shell=True,
+                stdout=verify_out,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append((verify_client, verify_out, verify_log))
+            verify_client.wait(timeout=360)
+            verify_text = verify_log.read_text(errors="replace")
+            print(verify_text)
+            if (verify_client.returncode != 0 or
+                    "GENERIC_DISTRIBUTED_REPO_TIERED_CACHE_VERIFY_OK" not in verify_text or
+                    not summary_path.exists()):
+                raise RuntimeError(
+                    "generic DistributedRepo tiered-cache verification failed "
+                    f"rc={verify_client.returncode}; log={verify_log}")
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            if not bool(summary.get("passed")):
+                raise RuntimeError(f"tiered-cache summary failed: {summary}")
+            print(
+                "GENERIC_DISTRIBUTED_REPO_TIERED_CACHE_MININDN_OK "
+                f"summary={summary_path}",
+                flush=True,
+            )
+            return
         client_log = OUT / "client.log"
         out = client_log.open("wb")
         quick_client_args = (

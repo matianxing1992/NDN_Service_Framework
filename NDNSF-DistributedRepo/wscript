@@ -44,6 +44,27 @@ def build(bld):
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
                 install_path=None)
 
+    bld.program(name='DistributedRepoTieredCacheTest',
+                target='DistributedRepoTieredCacheTest',
+                source=['examples/DistributedRepoTieredCacheTest.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
+                install_path=None)
+
+    bld.program(name='DistributedRepoExactPacketTest',
+                target='DistributedRepoExactPacketTest',
+                source=['examples/DistributedRepoExactPacketTest.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
+                install_path=None)
+
+    bld.program(name='DistributedRepoHaTest',
+                target='DistributedRepoHaTest',
+                source=['examples/DistributedRepoHaTest.cpp'],
+                includes=['include', '..'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
+                install_path=None)
+
     bld.program(name='DistributedRepoNodeApp',
                 target='DistributedRepoNodeApp',
                 source=['apps/DistributedRepoNodeApp.cpp'],

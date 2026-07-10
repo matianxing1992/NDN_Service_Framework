@@ -46,6 +46,23 @@ public:
   static bool remove(RepoNode& node,
                      const std::string& objectName);
 
+  /** Store one signed Data packet under the exact name encoded in its wire. */
+  static RepoObjectManifest putDataPacket(RepoNode& node,
+                                          const std::vector<uint8_t>& wire);
+
+  /** Retrieve the original packet wire by its complete NDN Data name. */
+  static std::vector<uint8_t> getDataPacket(const RepoNode& node,
+                                            const std::string& dataName);
+
+  /**
+   * Retrieve an application-produced packet set by the manifest's ordered exact
+   * Data names. The operation validates the complete name encoded in every wire
+   * and throws before returning if the packet index is incomplete or invalid.
+   */
+  static std::vector<std::vector<uint8_t>> getDataPackets(
+    const RepoNode& node,
+    const RepoObjectManifest& manifest);
+
   static RepoOperationStatus insert(
     RepoNode& node,
     const RepoDataReference& reference);
@@ -54,7 +71,7 @@ public:
    * Convenience INSERT adapter for callers that have payload bytes instead of
    * pre-published Data. The adapter segments and signs the payload under
    * objectName using ndn-cxx Segmenter, then stores the resulting Data wire
-   * packets through the same opaque segment path used by insert().
+   * packets under their exact encoded Data names through insert().
    */
   static RepoOperationStatus insertPayload(
     RepoNode& node,
@@ -70,6 +87,8 @@ public:
 
   static RepoCatalogStatus catalogStatus(const RepoNode& node);
 
+  static RepoCacheStatus cacheStatus(const RepoNode& node);
+
   static RepoCatalogDelta catalogSnapshot(const RepoNode& node);
 
   static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
@@ -78,10 +97,11 @@ public:
                                         const std::string& objectName);
 
   /**
-   * Store a large object as object-level chunks named
+   * Legacy opaque-byte helper: store a large object as object-level chunks named
    * <objectName>/seg/<index>, then store a manifest-only parent object.
    *
-   * Repo storage is opaque: the repo does not perform APP trust, signature, or
+   * This is not the canonical NDN Data packet API. Repo storage is opaque here:
+   * the repo does not perform APP trust, signature, or
    * hash verification while storing. Use getSegmented() on the APP side to
    * reassemble and verify size/hash against the returned manifest.
    */
@@ -149,6 +169,10 @@ public:
     ndn_service_framework::LocalServiceRegistry& registry,
     const ndn::Name& repoServicePrefix);
 
+  static RepoCacheStatus localCacheStatus(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+
   static RepoCatalogDelta localCatalogSnapshot(
     ndn_service_framework::LocalServiceRegistry& registry,
     const ndn::Name& repoServicePrefix);
@@ -202,6 +226,13 @@ public:
     const std::vector<uint8_t>& payload);
 
   static ndn::Name requestCapability(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
+  static ndn::Name requestCacheStatus(
     ndn_service_framework::ServiceUser& user,
     const ndn::Name& repoServicePrefix,
     int timeoutMs,

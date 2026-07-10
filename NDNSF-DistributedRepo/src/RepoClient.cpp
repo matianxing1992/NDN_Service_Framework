@@ -3,9 +3,12 @@
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 
+#include <ndn-cxx/data.hpp>
+#include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
 
 #include <algorithm>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -111,6 +114,61 @@ RepoClient::remove(RepoNode& node, const std::string& objectName)
   return node.remove(objectName);
 }
 
+RepoObjectManifest
+RepoClient::putDataPacket(RepoNode& node, const std::vector<uint8_t>& wire)
+{
+  ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+  block.parse();
+  const ndn::Data data(block);
+  return node.putDataPacket(data.getName().toUri(), wire);
+}
+
+std::vector<uint8_t>
+RepoClient::getDataPacket(const RepoNode& node, const std::string& dataName)
+{
+  return node.getDataPacket(dataName);
+}
+
+std::vector<std::vector<uint8_t>>
+RepoClient::getDataPackets(const RepoNode& node,
+                           const RepoObjectManifest& manifest)
+{
+  if (manifest.packetNames.empty()) {
+    throw std::invalid_argument(
+      "repo-packet-index-invalid: manifest has no packet names: " +
+      manifest.objectName);
+  }
+  if (manifest.packetNames.size() != manifest.segmentCount) {
+    throw std::invalid_argument(
+      "repo-packet-index-invalid: packet count does not match segmentCount: " +
+      manifest.objectName);
+  }
+  const std::set<std::string> uniqueNames(manifest.packetNames.begin(),
+                                          manifest.packetNames.end());
+  if (uniqueNames.size() != manifest.packetNames.size()) {
+    throw std::invalid_argument(
+      "repo-packet-index-invalid: manifest contains duplicate packet names: " +
+      manifest.objectName);
+  }
+
+  std::vector<std::vector<uint8_t>> wires;
+  wires.reserve(manifest.packetNames.size());
+  for (const auto& expectedName : manifest.packetNames) {
+    auto wire = getDataPacket(node, expectedName);
+    ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+    block.parse();
+    const ndn::Data data(block);
+    const auto actualName = data.getName().toUri();
+    if (actualName != expectedName) {
+      throw std::runtime_error(
+        "repo-data-name-mismatch: manifest=" + expectedName +
+        " wire=" + actualName);
+    }
+    wires.push_back(std::move(wire));
+  }
+  return wires;
+}
+
 RepoOperationStatus
 RepoClient::insert(RepoNode& node,
                    const RepoDataReference& reference)
@@ -169,6 +227,12 @@ RepoCatalogStatus
 RepoClient::catalogStatus(const RepoNode& node)
 {
   return parseCatalogStatusJson(toString(node.handleCatalogStatus()));
+}
+
+RepoCacheStatus
+RepoClient::cacheStatus(const RepoNode& node)
+{
+  return parseCacheStatusJson(toString(node.handleCacheStatus()));
 }
 
 RepoCatalogDelta
@@ -323,6 +387,14 @@ RepoClient::localCatalogStatus(ndn_service_framework::LocalServiceRegistry& regi
     registry, repoServicePrefix, "CATALOG_STATUS", {})));
 }
 
+RepoCacheStatus
+RepoClient::localCacheStatus(ndn_service_framework::LocalServiceRegistry& registry,
+                             const ndn::Name& repoServicePrefix)
+{
+  return parseCacheStatusJson(toString(localRequest(
+    registry, repoServicePrefix, "CACHE_STATUS", {})));
+}
+
 RepoCatalogDelta
 RepoClient::localCatalogSnapshot(ndn_service_framework::LocalServiceRegistry& registry,
                                  const ndn::Name& repoServicePrefix)
@@ -454,6 +526,21 @@ RepoClient::requestCapability(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "CAPABILITY"),
+                             makeRequest({}),
+                             timeoutMs,
+                             std::move(onTimeout),
+                             std::move(onResponse));
+}
+
+ndn::Name
+RepoClient::requestCacheStatus(
+  ndn_service_framework::ServiceUser& user,
+  const ndn::Name& repoServicePrefix,
+  int timeoutMs,
+  ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+  ndn_service_framework::ServiceUser::ResponseHandler onResponse)
+{
+  return user.RequestService(makeRepoServiceName(repoServicePrefix, "CACHE_STATUS"),
                              makeRequest({}),
                              timeoutMs,
                              std::move(onTimeout),

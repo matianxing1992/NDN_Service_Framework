@@ -1,5 +1,8 @@
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 
+#include <ndn-cxx/data.hpp>
+#include <ndn-cxx/encoding/block.hpp>
+
 #include <stdexcept>
 #include <utility>
 
@@ -57,7 +60,6 @@ RepoCore::getManifest(const std::string& objectName) const
 std::vector<RepoObjectManifest>
 RepoCore::list() const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
   return m_store->listManifests();
 }
 
@@ -71,6 +73,72 @@ RepoObjectManifest
 RepoCore::putManifest(const RepoObjectManifest& manifest)
 {
   return parseManifestJson(toString(handleStoreManifest(encodeManifestRequest(manifest))));
+}
+
+RepoObjectManifest
+RepoCore::putDataPacket(const std::string& dataName,
+                        const std::vector<uint8_t>& wire)
+{
+  if (dataName.empty()) {
+    throw std::invalid_argument("NDN Data name must not be empty");
+  }
+  std::string encodedName;
+  try {
+    ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+    block.parse();
+    encodedName = ndn::Data(block).getName().toUri();
+  }
+  catch (const std::exception& e) {
+    throw std::invalid_argument(std::string("repo-invalid-data-wire: ") + e.what());
+  }
+  if (encodedName != dataName) {
+    throw std::invalid_argument(
+      "repo-data-name-mismatch: declared=" + dataName + " encoded=" + encodedName);
+  }
+
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_store->has(dataName)) {
+    const auto stored = m_store->get(dataName);
+    if (stored.manifest.objectType != "ndn-data-wire" || stored.payload != wire) {
+      throw std::runtime_error(
+        "repo-data-wire-conflict: immutable NDN Data name conflict: " + dataName);
+    }
+    return stored.manifest;
+  }
+  if (wire.size() > m_capability.freeBytes) {
+    throw std::runtime_error("repo node has insufficient free space for Data packet: " +
+                             dataName);
+  }
+
+  RepoObjectManifest manifest;
+  manifest.objectName = dataName;
+  manifest.objectType = "ndn-data-wire";
+  manifest.sha256 = sha256Hex(wire);
+  manifest.size = wire.size();
+  manifest.segmentCount = 1;
+  manifest.packetNames = {dataName};
+  m_store->put(manifest, wire);
+  refreshCapabilityUsage();
+  return manifest;
+}
+
+std::vector<uint8_t>
+RepoCore::getDataPacket(const std::string& dataName) const
+{
+  const auto stored = m_store->get(dataName);
+  if (stored.manifest.objectType != "ndn-data-wire") {
+    throw std::runtime_error("repo object is not an exact NDN Data packet: " + dataName);
+  }
+  return stored.payload;
+}
+
+bool
+RepoCore::hasDataPacket(const std::string& dataName) const
+{
+  if (!m_store->has(dataName)) {
+    return false;
+  }
+  return m_store->get(dataName).manifest.objectType == "ndn-data-wire";
 }
 
 std::vector<uint8_t>
@@ -111,7 +179,6 @@ std::vector<uint8_t>
 RepoCore::handleFetch(const std::vector<uint8_t>& request) const
 {
   const auto objectName = toString(request);
-  std::lock_guard<std::mutex> lock(m_mutex);
   return m_store->get(objectName).payload;
 }
 
@@ -119,14 +186,12 @@ std::vector<uint8_t>
 RepoCore::handleManifest(const std::vector<uint8_t>& request) const
 {
   const auto objectName = toString(request);
-  std::lock_guard<std::mutex> lock(m_mutex);
   return toBytes(m_store->get(objectName).manifest.toJson());
 }
 
 std::vector<uint8_t>
 RepoCore::handleInventory() const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
   return toBytes(encodeInventory(m_store->listManifests()));
 }
 
@@ -137,15 +202,28 @@ RepoCore::handleCapability() const
   return toBytes(m_capability.toJson());
 }
 
+RepoCacheStatus
+RepoCore::cacheStatus() const
+{
+  return m_store->cacheStatus();
+}
+
+std::vector<uint8_t>
+RepoCore::handleCacheStatus() const
+{
+  return toBytes(cacheStatus().toJson());
+}
+
 RepoCatalogStatus
 RepoCore::catalogStatus() const
 {
+  const auto objectCount = m_store->listManifests().size();
   std::lock_guard<std::mutex> lock(m_mutex);
   RepoCatalogStatus status;
   status.repoNode = m_capability.repoNode;
   status.repoMode = m_capability.repoMode;
   status.catalogEpoch = m_catalogEpoch;
-  status.objectCount = m_store->listManifests().size();
+  status.objectCount = objectCount;
   status.acceptsBackupReplica = m_capability.acceptsBackupReplica;
   return status;
 }
@@ -153,13 +231,13 @@ RepoCore::catalogStatus() const
 RepoCatalogDelta
 RepoCore::catalogSnapshot() const
 {
+  const auto manifests = m_store->listManifests();
   std::lock_guard<std::mutex> lock(m_mutex);
   RepoCatalogDelta snapshot;
   snapshot.repoNode = m_capability.repoNode;
   snapshot.repoMode = m_capability.repoMode;
   snapshot.sinceEpoch = 0;
   snapshot.catalogEpoch = m_catalogEpoch;
-  const auto manifests = m_store->listManifests();
   snapshot.entries.reserve(manifests.size());
   for (const auto& manifest : manifests) {
     snapshot.entries.push_back(makeCatalogEntry(manifest, "AVAILABLE", m_catalogEpoch));
@@ -187,8 +265,9 @@ RepoCore::catalogDelta(uint64_t sinceEpoch) const
 RepoCatalogEntry
 RepoCore::catalogLookup(const std::string& objectName) const
 {
+  const auto manifest = m_store->get(objectName).manifest;
   std::lock_guard<std::mutex> lock(m_mutex);
-  return makeCatalogEntry(m_store->get(objectName).manifest, "AVAILABLE", m_catalogEpoch);
+  return makeCatalogEntry(manifest, "AVAILABLE", m_catalogEpoch);
 }
 
 std::vector<uint8_t>

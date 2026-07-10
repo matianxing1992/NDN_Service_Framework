@@ -59,6 +59,9 @@ parseCatalogEntryJson(const std::string& entryJson);
 RepoCatalogStatus
 parseCatalogStatusJson(const std::string& statusJson);
 
+RepoCacheStatus
+parseCacheStatusJson(const std::string& statusJson);
+
 RepoCatalogDelta
 parseCatalogDeltaJson(const std::string& deltaJson);
 

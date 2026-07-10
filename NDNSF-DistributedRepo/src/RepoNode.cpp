@@ -2,7 +2,12 @@
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 
+#include <ndn-cxx/data.hpp>
+#include <ndn-cxx/encoding/block.hpp>
+
+#include <algorithm>
 #include <exception>
+#include <iterator>
 #include <stdexcept>
 #include <sstream>
 #include <utility>
@@ -82,10 +87,35 @@ RepoNode::list() const
   return m_core.list();
 }
 
+RepoCacheStatus
+RepoNode::cacheStatus() const
+{
+  return m_core.cacheStatus();
+}
+
 bool
 RepoNode::remove(const std::string& objectName)
 {
   return m_core.remove(objectName);
+}
+
+RepoObjectManifest
+RepoNode::putDataPacket(const std::string& dataName,
+                        const std::vector<uint8_t>& wire)
+{
+  return m_core.putDataPacket(dataName, wire);
+}
+
+std::vector<uint8_t>
+RepoNode::getDataPacket(const std::string& dataName) const
+{
+  return m_core.getDataPacket(dataName);
+}
+
+bool
+RepoNode::hasDataPacket(const std::string& dataName) const
+{
+  return m_core.hasDataPacket(dataName);
 }
 
 void
@@ -183,6 +213,19 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
             const ndn_service_framework::RequestMessage&) {
       try {
         return makeResponse(handleCapability());
+      }
+      catch (const std::exception& e) {
+        return makeError(e.what());
+      }
+    });
+
+  provider.addService(
+    makeRepoServiceName(m_servicePrefix, "CACHE_STATUS"),
+    ack,
+    [this] (const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+            const ndn_service_framework::RequestMessage&) {
+      try {
+        return makeResponse(handleCacheStatus());
       }
       catch (const std::exception& e) {
         return makeError(e.what());
@@ -309,6 +352,9 @@ RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& reg
   registerLocalRepoService("CAPABILITY", [this] (const std::vector<uint8_t>&) {
     return handleCapability();
   });
+  registerLocalRepoService("CACHE_STATUS", [this] (const std::vector<uint8_t>&) {
+    return handleCacheStatus();
+  });
   registerLocalRepoService("STATUS", [this] (const std::vector<uint8_t>& request) {
     return handleStatus(request);
   });
@@ -377,17 +423,32 @@ RepoNode::insertWirePackets(const RepoDataReference& reference,
   try {
     std::vector<uint8_t> concatenated;
     uint64_t totalSize = 0;
+    std::vector<std::string> packetNames;
+    packetNames.reserve(wirePackets.size());
+    const ndn::Name expectedPrefix(reference.dataPrefix);
     for (size_t i = 0; i < wirePackets.size(); ++i) {
       totalSize += wirePackets[i].size();
       concatenated.insert(concatenated.end(), wirePackets[i].begin(), wirePackets[i].end());
-      m_core.put(reference.objectName + "/ndn-data/" + std::to_string(i),
-                 wirePackets[i],
-                 reference.objectType + ".wire",
-                 1,
-                 "",
-                 {});
-      status.completedSegments = i + 1;
-      rememberStatus(status);
+      ndn::Block block(ndn::span<const uint8_t>(wirePackets[i].data(),
+                                                wirePackets[i].size()));
+      block.parse();
+      const ndn::Data data(block);
+      if (!expectedPrefix.isPrefixOf(data.getName())) {
+        throw std::runtime_error("repo-packet-set-invalid: Data name is outside "
+                                 "declared dataPrefix: " +
+                                 data.getName().toUri());
+      }
+      const auto dataName = data.getName().toUri();
+      if (std::find(packetNames.begin(), packetNames.end(), dataName) != packetNames.end()) {
+        throw std::runtime_error(
+          "repo-packet-set-invalid: duplicate NDN Data name: " + dataName);
+      }
+      if (m_core.hasDataPacket(dataName) &&
+          m_core.getDataPacket(dataName) != wirePackets[i]) {
+        throw std::runtime_error(
+          "repo-data-wire-conflict: immutable NDN Data name conflict: " + dataName);
+      }
+      packetNames.push_back(dataName);
     }
 
     if (reference.expectedSize != 0 && totalSize != reference.expectedSize) {
@@ -404,12 +465,19 @@ RepoNode::insertWirePackets(const RepoDataReference& reference,
       return status;
     }
 
+    for (size_t i = 0; i < wirePackets.size(); ++i) {
+      m_core.putDataPacket(packetNames[i], wirePackets[i]);
+      status.completedSegments = i + 1;
+      rememberStatus(status);
+    }
+
     RepoObjectManifest manifest;
     manifest.objectName = reference.objectName;
     manifest.objectType = reference.objectType;
     manifest.sha256 = sha256Hex(concatenated);
     manifest.size = totalSize;
     manifest.segmentCount = static_cast<uint32_t>(wirePackets.size());
+    manifest.packetNames = packetNames;
     m_core.putManifest(manifest);
 
     status.state = "DONE";
@@ -508,6 +576,12 @@ RepoNode::handleCapability() const
 }
 
 std::vector<uint8_t>
+RepoNode::handleCacheStatus() const
+{
+  return m_core.handleCacheStatus();
+}
+
+std::vector<uint8_t>
 RepoNode::handleCatalogStatus() const
 {
   return m_core.handleCatalogStatus();
@@ -591,6 +665,16 @@ RepoNode::rememberStatus(const RepoOperationStatus& status)
 {
   std::lock_guard<std::mutex> guard(m_statusMutex);
   m_statusById[status.operationId] = status;
+  constexpr size_t MaxRetainedStatuses = 1024;
+  while (m_statusById.size() > MaxRetainedStatuses) {
+    auto oldest = m_statusById.begin();
+    for (auto it = std::next(m_statusById.begin()); it != m_statusById.end(); ++it) {
+      if (it->second.updatedAtMs < oldest->second.updatedAtMs) {
+        oldest = it;
+      }
+    }
+    m_statusById.erase(oldest);
+  }
 }
 
 } // namespace ndnsf_distributed_repo

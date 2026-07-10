@@ -58,6 +58,13 @@ public:
 
   bool remove(const std::string& objectName);
 
+  RepoObjectManifest putDataPacket(const std::string& dataName,
+                                   const std::vector<uint8_t>& wire);
+
+  std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
+
+  bool hasDataPacket(const std::string& dataName) const;
+
   void setDataReferenceFetcher(DataReferenceFetcher fetcher);
 
   RepoOperationStatus insertWirePackets(
@@ -77,6 +84,10 @@ public:
   std::vector<uint8_t> handleInventory() const;
 
   std::vector<uint8_t> handleCapability() const;
+
+  RepoCacheStatus cacheStatus() const;
+
+  std::vector<uint8_t> handleCacheStatus() const;
 
   std::vector<uint8_t> handleCatalogStatus() const;
 

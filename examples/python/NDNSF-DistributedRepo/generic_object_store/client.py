@@ -6,9 +6,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from pathlib import Path
 import time
 
-from ndnsf import make_segmented_data_packets
+from ndnsf import DataPacket, make_segmented_data_packets
 from ndnsf_distributed_inference import APPDeployment, DistributedRepo
 from ndnsf_distributed_inference.repo import RepoObjectManifest, RepoRepairAction
 
@@ -22,6 +23,16 @@ CONFIG_OBJECT = (
 
 def deterministic_blob(size: int) -> bytes:
     seed = b"ndnsf-distributed-repo-generic-object-store"
+    output = bytearray()
+    counter = 0
+    while len(output) < size:
+        output.extend(hashlib.sha256(seed + counter.to_bytes(8, "big")).digest())
+        counter += 1
+    return bytes(output[:size])
+
+
+def deterministic_tiered_blob(index: int, size: int) -> bytes:
+    seed = f"ndnsf-repo-tiered-cache-{index}".encode()
     output = bytearray()
     counter = 0
     while len(output) < size:
@@ -131,6 +142,23 @@ def main() -> int:
     parser.add_argument("--uav-browse-object-class", default="",
                         help="Optional objectClass filter for UAV browsing")
     parser.add_argument("--uav-browse-mission-id", default="mission-demo")
+    parser.add_argument("--tiered-cache-seed-smoke", action="store_true")
+    parser.add_argument("--tiered-cache-verify-smoke", action="store_true")
+    parser.add_argument("--tiered-cache-state-file", default="")
+    parser.add_argument("--tiered-cache-summary-file", default="")
+    parser.add_argument("--tiered-cache-repo-node",
+                        default="/example/repo/provider/repoA")
+    parser.add_argument("--tiered-cache-object-bytes", type=int, default=4096)
+    parser.add_argument("--exact-packet-seed-smoke", action="store_true")
+    parser.add_argument("--exact-packet-verify-smoke", action="store_true")
+    parser.add_argument("--exact-packet-state-file", default="")
+    parser.add_argument("--exact-packet-summary-file", default="")
+    parser.add_argument("--exact-packet-repo-node",
+                        default="/example/repo/provider/repoA")
+    parser.add_argument("--exact-packet-secondary-repo-node", default="")
+    parser.add_argument("--exact-packet-failover-trigger-file", default="")
+    parser.add_argument("--exact-packet-failover-resume-file", default="")
+    parser.add_argument("--exact-packet-failover-wait-s", type=float, default=60.0)
     args = parser.parse_args()
 
     if args.use_local_config:
@@ -159,6 +187,358 @@ def main() -> int:
             timeout_ms=args.timeout_ms,
         )
         user_name = args.user
+
+    if args.exact_packet_seed_smoke:
+        if not args.exact_packet_state_file:
+            raise ValueError("--exact-packet-state-file is required")
+        repo.wait_until_ready(20.0)
+        suffix = str(int(time.time() * 1000))
+        payload = deterministic_blob(8 * 1024)
+        data_prefix = f"/data/ndnsf-repo/exact/{suffix}"
+        packets = make_segmented_data_packets(
+            data_prefix,
+            payload,
+            signing_identity=user_name,
+            # Keep a directly pushed packet plus base64/NDNSF security envelope
+            # below ndn-cxx's 8800-byte packet limit. Larger application objects
+            # still use any number of these exact immutable Data packets.
+            max_segment_size=2048,
+        )
+        replica_nodes = tuple(filter(None, (
+            args.exact_packet_repo_node,
+            args.exact_packet_secondary_repo_node,
+        )))
+        manifest = repo.put_signed_packets(
+            f"APP/ExactPackets/{suffix}",
+            packets,
+            object_type="exact-ndn-data-packets",
+            object_size=len(payload),
+            object_sha256=hashlib.sha256(payload).hexdigest(),
+            replication_factor=len(replica_nodes),
+            replica_nodes=replica_nodes,
+            policy_epoch="/Policy/generic-repo/exact-packets-v1",
+            data_name=data_prefix,
+        )
+        state = {
+            "schema": "ndnsf-repo-exact-packets-minindn-v1",
+            "repoNode": args.exact_packet_repo_node,
+            "repoNodes": list(replica_nodes),
+            "payloadSha256": hashlib.sha256(payload).hexdigest(),
+            "payloadSize": len(payload),
+            "manifest": manifest.to_dict(),
+            "packets": [
+                {
+                    "name": packet.name,
+                    "segment": packet.segment,
+                    "wireSha256": hashlib.sha256(packet.wire).hexdigest(),
+                }
+                for packet in packets
+            ],
+        }
+        state_path = Path(args.exact_packet_state_file)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n",
+                              encoding="utf-8")
+        print(
+            "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_SEED_OK "
+            f"repos={','.join(replica_nodes)} packets={len(packets)} "
+            f"state={state_path}",
+            flush=True,
+        )
+        if not args.exact_packet_verify_smoke:
+            return 0
+
+    if args.exact_packet_verify_smoke:
+        if not args.exact_packet_state_file or not args.exact_packet_summary_file:
+            raise ValueError(
+                "--exact-packet-state-file and --exact-packet-summary-file are required")
+        state = json.loads(Path(args.exact_packet_state_file).read_text(
+            encoding="utf-8"))
+        manifest = RepoObjectManifest.from_dict(state["manifest"])
+        repo_node = str(state["repoNode"])
+        repo_nodes = tuple(str(value) for value in state.get(
+            "repoNodes", [repo_node]))
+        expected_packets = list(state["packets"])
+        packet_names = [str(item["name"]) for item in expected_packets]
+        trigger_file = Path(args.exact_packet_failover_trigger_file) \
+            if args.exact_packet_failover_trigger_file else None
+        resume_file = Path(args.exact_packet_failover_resume_file) \
+            if args.exact_packet_failover_resume_file else None
+        failover_enabled = trigger_file is not None or resume_file is not None
+        if failover_enabled and (trigger_file is None or resume_file is None):
+            raise ValueError(
+                "exact packet failover requires both trigger and resume files")
+
+        attempts: list[dict[str, object]] = []
+        barrier_triggered_at_ms = 0
+        if failover_enabled:
+            original_fetch_packet = repo._client.fetch_packet
+            barrier_fired = False
+
+            def controlled_fetch_packet(target_repo: str, data_name: str) -> DataPacket:
+                nonlocal barrier_fired, barrier_triggered_at_ms
+                started_ms = time.time_ns() // 1_000_000
+                try:
+                    packet = original_fetch_packet(target_repo, data_name)
+                except Exception as exc:
+                    attempts.append({
+                        "repoNode": target_repo,
+                        "packetName": data_name,
+                        "success": False,
+                        "error": str(exc),
+                        "timestampMs": started_ms,
+                    })
+                    raise
+                attempts.append({
+                    "repoNode": target_repo,
+                    "packetName": data_name,
+                    "success": True,
+                    "error": "",
+                    "timestampMs": started_ms,
+                })
+                if target_repo == repo_node and not barrier_fired:
+                    barrier_fired = True
+                    barrier_triggered_at_ms = time.time_ns() // 1_000_000
+                    trigger_file.parent.mkdir(parents=True, exist_ok=True)
+                    trigger_file.write_text(json.dumps({
+                        "repoNode": target_repo,
+                        "packetName": data_name,
+                        "timestampMs": barrier_triggered_at_ms,
+                    }, sort_keys=True) + "\n", encoding="utf-8")
+                    deadline = time.monotonic() + max(
+                        1.0, args.exact_packet_failover_wait_s)
+                    while not resume_file.exists():
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                "timed out waiting for exact packet failover resume")
+                        time.sleep(0.05)
+                return packet
+
+            repo._client.fetch_packet = controlled_fetch_packet
+
+        fetch_started_ms = time.time_ns() // 1_000_000
+        fetched_packets = repo.get_signed_packets(
+            manifest.object_name,
+            manifest,
+            repo_node="" if failover_enabled else repo_node,
+        )
+        fetch_completed_ms = time.time_ns() // 1_000_000
+        fetched_names = [packet.name for packet in fetched_packets]
+        expected_wire_sha256 = [
+            str(packet["wireSha256"]) for packet in expected_packets
+        ]
+        actual_wire_sha256 = [
+            hashlib.sha256(packet.wire).hexdigest()
+            for packet in fetched_packets
+        ]
+        wire_matches = [
+            actual == expected
+            for actual, expected in zip(actual_wire_sha256, expected_wire_sha256)
+        ]
+        checks = {
+            "exactNames": fetched_names == packet_names,
+            "wireIdentity": all(wire_matches),
+            "manifestPacketIndex": list(manifest.packet_names) == packet_names,
+            "batchPacketConsumer": len(fetched_packets) == len(expected_packets),
+            "noRepoPacketAliases": not any(
+                "/ndn-data/" in name or f"{manifest.object_name}/seg/" in name
+                for name in packet_names
+            ),
+        }
+        if failover_enabled:
+            if len(repo_nodes) < 2:
+                raise ValueError("exact packet failover requires two replicas")
+            secondary_repo = repo_nodes[1]
+            primary_successes = [
+                str(item["packetName"]) for item in attempts
+                if item["repoNode"] == repo_node and item["success"]
+            ]
+            primary_failures = [
+                item for item in attempts
+                if item["repoNode"] == repo_node and not item["success"]
+            ]
+            secondary_successes = [
+                str(item["packetName"]) for item in attempts
+                if item["repoNode"] == secondary_repo and item["success"]
+            ]
+            checks.update({
+                "primaryOnePacketBeforeFailure": primary_successes == packet_names[:1],
+                "primaryFailureObserved": bool(primary_failures),
+                "secondaryRestartedWholeSet": secondary_successes == packet_names,
+            })
+        else:
+            payload = repo.get(manifest.object_name, manifest)
+            checks.update({
+                "restartPersistence": True,
+                "payloadReassembly": (
+                    len(payload) == int(state["payloadSize"]) and
+                    hashlib.sha256(payload).hexdigest() ==
+                    str(state["payloadSha256"])
+                ),
+            })
+        summary = {
+            "schema": (
+                "ndnsf-repo-exact-packet-failover-minindn-v1"
+                if failover_enabled else
+                "ndnsf-repo-exact-packets-minindn-result-v1"
+            ),
+            "repoNode": repo_node,
+            "replicaNodes": list(repo_nodes),
+            "objectName": manifest.object_name,
+            "packetCount": len(expected_packets),
+            "packetNames": packet_names,
+            "expectedPacketWireSha256": expected_wire_sha256,
+            "actualPacketWireSha256": actual_wire_sha256,
+            "attempts": attempts,
+            "latencyMs": fetch_completed_ms - fetch_started_ms,
+            "failoverLatencyMs": (
+                fetch_completed_ms - barrier_triggered_at_ms
+                if barrier_triggered_at_ms else 0
+            ),
+            "checks": checks,
+            "passed": all(checks.values()),
+        }
+        summary_path = Path(args.exact_packet_summary_file)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                                encoding="utf-8")
+        if not summary["passed"]:
+            raise RuntimeError(f"exact packet MiniNDN checks failed: {summary}")
+        print(
+            ("GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_FAILOVER_VERIFY_OK "
+             if failover_enabled else
+             "GENERIC_DISTRIBUTED_REPO_EXACT_PACKET_VERIFY_OK ") +
+            f"repo={repo_node} packets={len(expected_packets)} "
+            f"summary={summary_path}",
+            flush=True,
+        )
+        return 0
+
+    if args.tiered_cache_seed_smoke:
+        if not args.tiered_cache_state_file:
+            raise ValueError("--tiered-cache-state-file is required for seed smoke")
+        repo.wait_until_ready(20.0)
+        suffix = str(int(time.time() * 1000))
+        objects = []
+        for index in range(3):
+            payload = deterministic_tiered_blob(index, args.tiered_cache_object_bytes)
+            manifest = repo.put(
+                f"APP/TieredCache/{suffix}/object-{index}",
+                payload,
+                object_type="tiered-cache-smoke",
+                replication_factor=1,
+                replica_nodes=(args.tiered_cache_repo_node,),
+                policy_epoch="/Policy/generic-repo/tiered-cache-v1",
+            )
+            objects.append({
+                "index": index,
+                "objectName": manifest.object_name,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+                "manifest": manifest.to_dict(),
+            })
+        state = {
+            "schema": "ndnsf-repo-tiered-cache-minindn-v1",
+            "repoNode": args.tiered_cache_repo_node,
+            "objects": objects,
+            "seedCacheStatus": repo.cache_status(args.tiered_cache_repo_node),
+        }
+        state_path = Path(args.tiered_cache_state_file)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n",
+                              encoding="utf-8")
+        print(
+            "GENERIC_DISTRIBUTED_REPO_TIERED_CACHE_SEED_OK "
+            f"repo={args.tiered_cache_repo_node} objects={len(objects)} "
+            f"state={state_path}",
+            flush=True,
+        )
+        return 0
+
+    if args.tiered_cache_verify_smoke:
+        if not args.tiered_cache_state_file or not args.tiered_cache_summary_file:
+            raise ValueError(
+                "--tiered-cache-state-file and --tiered-cache-summary-file are required")
+        state = json.loads(Path(args.tiered_cache_state_file).read_text(encoding="utf-8"))
+        objects = list(state.get("objects", []))
+        if len(objects) != 3:
+            raise RuntimeError(f"tiered cache state needs three objects: {state}")
+        repo_node = str(state.get("repoNode", args.tiered_cache_repo_node))
+        baseline = repo.cache_status(repo_node)
+
+        def fetch_and_verify(item: dict) -> bytes:
+            manifest = RepoObjectManifest.from_dict(item["manifest"])
+            fetched = repo.get(manifest.object_name, manifest)
+            actual = hashlib.sha256(fetched).hexdigest()
+            if actual != str(item["sha256"]) or len(fetched) != int(item["size"]):
+                raise RuntimeError(
+                    f"tiered cache payload mismatch object={manifest.object_name} "
+                    f"sha256={actual} bytes={len(fetched)}")
+            return fetched
+
+        fetch_and_verify(objects[0])
+        after_cold = repo.cache_status(repo_node)
+        fetch_and_verify(objects[0])
+        after_hot = repo.cache_status(repo_node)
+        fetch_and_verify(objects[1])
+        fetch_and_verify(objects[2])
+        before_fallback = repo.cache_status(repo_node)
+        fetch_and_verify(objects[0])
+        final_status = repo.cache_status(repo_node)
+
+        checks = {
+            "restartPersistence": True,
+            "coldMiss": int(after_cold.get("misses", 0)) > int(baseline.get("misses", 0)),
+            "coldBackingRead": (
+                int(after_cold.get("backingReads", 0)) >
+                int(baseline.get("backingReads", 0))
+            ),
+            "repeatHit": int(after_hot.get("hits", 0)) > int(after_cold.get("hits", 0)),
+            "repeatAvoidedBackingRead": (
+                int(after_hot.get("backingReads", 0)) ==
+                int(after_cold.get("backingReads", 0))
+            ),
+            "evictionObserved": (
+                int(final_status.get("evictions", 0)) >
+                int(baseline.get("evictions", 0))
+            ),
+            "fallbackReadObserved": (
+                int(final_status.get("backingReads", 0)) >
+                int(before_fallback.get("backingReads", 0))
+            ),
+            "budgetRespected": (
+                int(final_status.get("usedBytes", 0)) <=
+                int(final_status.get("budgetBytes", 0))
+            ),
+            "sqliteAuthority": final_status.get("authoritativeBackend") == "sqlite",
+        }
+        summary = {
+            "schema": "ndnsf-repo-tiered-cache-minindn-result-v1",
+            "repoNode": repo_node,
+            "objectCount": len(objects),
+            "checks": checks,
+            "baseline": baseline,
+            "afterCold": after_cold,
+            "afterHot": after_hot,
+            "beforeFallback": before_fallback,
+            "final": final_status,
+            "passed": all(checks.values()),
+        }
+        summary_path = Path(args.tiered_cache_summary_file)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n",
+                                encoding="utf-8")
+        if not summary["passed"]:
+            raise RuntimeError(f"tiered cache MiniNDN checks failed: {summary}")
+        print(
+            "GENERIC_DISTRIBUTED_REPO_TIERED_CACHE_VERIFY_OK "
+            f"repo={repo_node} hits={final_status.get('hits', 0)} "
+            f"misses={final_status.get('misses', 0)} "
+            f"evictions={final_status.get('evictions', 0)} "
+            f"summary={summary_path}",
+            flush=True,
+        )
+        return 0
 
     if args.quick_core_smoke:
         capability = repo.wait_until_ready(15.0)
@@ -1000,7 +1380,7 @@ def main() -> int:
     )
     print(f"store pre-signed object={object_name} type={object_type} "
           f"segments={len(packets)} replicas=3", flush=True)
-    signed_manifest = repo._client.store_signed_packets(
+    signed_manifest = repo.put_signed_packets(
         object_name=object_name,
         packets=packets,
         object_type=object_type,
@@ -1011,6 +1391,9 @@ def main() -> int:
     )
     print(f"stored pre-signed object={object_name} "
           f"manifest={signed_manifest.to_dict()}", flush=True)
+    fetched_packets = repo.get_signed_packets(object_name, signed_manifest)
+    if [packet.wire for packet in fetched_packets] != [packet.wire for packet in packets]:
+        raise RuntimeError(f"repo exact packet fetch mismatch for {object_name}")
     fetched = repo.get(object_name, signed_manifest)
     print(f"fetched pre-signed object={object_name} size={len(fetched)}",
           flush=True)

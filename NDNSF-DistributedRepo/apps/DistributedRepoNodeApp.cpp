@@ -214,8 +214,9 @@ struct RepoAppConfig
   };
   RepoDeploymentMode deploymentMode = RepoDeploymentMode::Remote;
   bool serveCertificates = true;
-  std::string storageBackend = "memory";
-  std::string storagePath;
+  std::string storageBackend = "tiered";
+  std::string storagePath = "/tmp/ndnsf-distributed-repo/repo-node-A.sqlite3";
+  uint64_t memoryCacheBytes = 64 * 1024 * 1024;
 };
 
 RepoAppConfig
@@ -282,6 +283,9 @@ loadRepoAppConfig(int argc, char** argv)
   appConfig.storagePath = optionOrConfig(
     argc, argv, config, "--storage-path", "storage-path",
     appConfig.storagePath);
+  appConfig.memoryCacheBytes = std::stoull(optionOrConfig(
+    argc, argv, config, "--memory-cache-bytes", "memory-cache-bytes",
+    std::to_string(appConfig.memoryCacheBytes)));
   return appConfig;
 }
 
@@ -292,8 +296,10 @@ makeConfiguredStore(const RepoAppConfig& config)
   std::transform(backend.begin(), backend.end(), backend.begin(), [] (unsigned char ch) {
     return static_cast<char>(std::tolower(ch));
   });
-  if (backend.empty() || backend == "memory" || backend == "in-memory") {
-    return ndnsf_distributed_repo::makeMemoryRepoStore();
+  if (backend == "memory" || backend == "in-memory") {
+    throw std::invalid_argument(
+      "memory-only repo storage is unsupported; use tiered SQLite storage "
+      "with memory-cache-bytes=0 to disable the hot cache");
   }
   if (backend == "sqlite" || backend == "sqlite3") {
     if (config.storagePath.empty()) {
@@ -304,6 +310,18 @@ makeConfiguredStore(const RepoAppConfig& config)
       std::filesystem::create_directories(parent);
     }
     return ndnsf_distributed_repo::makeSqliteRepoStore(config.storagePath);
+  }
+  if (backend.empty() || backend == "tiered" || backend == "sqlite-memory" ||
+      backend == "sqlite+lru") {
+    if (config.storagePath.empty()) {
+      throw std::invalid_argument("tiered repo storage requires storage-path");
+    }
+    const auto parent = std::filesystem::path(config.storagePath).parent_path();
+    if (!parent.empty()) {
+      std::filesystem::create_directories(parent);
+    }
+    return ndnsf_distributed_repo::makeTieredRepoStore(
+      config.storagePath, config.memoryCacheBytes);
   }
   throw std::invalid_argument("unknown repo storage backend: " + config.storageBackend);
 }
@@ -325,13 +343,15 @@ runLocalSmoke(const RepoAppConfig& config, RepoNode& node)
     payload, options);
   auto fetched = RepoClient::localGet(registry, config.servicePrefix, manifest.objectName);
   auto inventory = RepoClient::localList(registry, config.servicePrefix);
+  auto cacheStatus = RepoClient::localCacheStatus(registry, config.servicePrefix);
   const bool removed = RepoClient::localRemove(registry, config.servicePrefix, manifest.objectName);
 
-  if (fetched != payload || inventory.empty() || !removed) {
+  if (fetched != payload || inventory.empty() || !removed ||
+      cacheStatus.authoritativeBackend != "sqlite") {
     throw std::runtime_error("local repo smoke failed");
   }
   std::cout << "DISTRIBUTED_REPO_NODE_APP_LOCAL_SMOKE_OK "
-            << manifest.toJson() << std::endl;
+            << manifest.toJson() << " cache=" << cacheStatus.toJson() << std::endl;
 }
 
 void
@@ -350,6 +370,7 @@ printConfigSummary(const RepoAppConfig& config)
             << " deployment_mode=" << ndnsf_distributed_repo::toString(config.deploymentMode)
             << " storage_backend=" << config.storageBackend
             << " storage_path=" << config.storagePath
+            << " memory_cache_bytes=" << config.memoryCacheBytes
             << " trust_schema=" << config.trustSchema
             << " serve_certificates=" << (config.serveCertificates ? "true" : "false")
             << std::endl;

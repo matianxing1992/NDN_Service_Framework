@@ -7,10 +7,14 @@
 #include <algorithm>
 #include <cctype>
 #include <iomanip>
+#include <limits>
+#include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace ndnsf_distributed_repo {
@@ -74,6 +78,77 @@ normalizeModeText(const std::string& value)
 }
 
 } // namespace
+
+std::string
+toString(RepoWriteConsistency consistency)
+{
+  switch (consistency) {
+  case RepoWriteConsistency::One:
+    return "ONE";
+  case RepoWriteConsistency::Quorum:
+    return "QUORUM";
+  case RepoWriteConsistency::All:
+    return "ALL";
+  }
+  throw std::invalid_argument("unsupported repo write consistency");
+}
+
+RepoWriteConsistency
+parseRepoWriteConsistency(const std::string& value)
+{
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (const char ch : value) {
+    normalized.push_back(static_cast<char>(
+      std::toupper(static_cast<unsigned char>(ch))));
+  }
+  if (normalized == "ONE") {
+    return RepoWriteConsistency::One;
+  }
+  if (normalized == "QUORUM") {
+    return RepoWriteConsistency::Quorum;
+  }
+  if (normalized == "ALL") {
+    return RepoWriteConsistency::All;
+  }
+  throw std::invalid_argument("unsupported repo write consistency: " + value);
+}
+
+uint32_t
+requiredWriteAcks(uint32_t replicationFactor, RepoWriteConsistency consistency)
+{
+  if (replicationFactor == 0) {
+    throw std::invalid_argument("repo replication factor must be >= 1");
+  }
+  switch (consistency) {
+  case RepoWriteConsistency::One:
+    return 1;
+  case RepoWriteConsistency::Quorum:
+    return replicationFactor / 2 + 1;
+  case RepoWriteConsistency::All:
+    return replicationFactor;
+  }
+  throw std::invalid_argument("unsupported repo write consistency");
+}
+
+std::string
+normalizeRepoOperationState(const std::string& value)
+{
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (const char ch : value) {
+    normalized.push_back(static_cast<char>(
+      std::toupper(static_cast<unsigned char>(ch))));
+  }
+  static const std::set<std::string> states = {
+    "RECEIVED", "RUNNING", "COMMITTED", "INCOMPLETE", "FAILED",
+    "CANCELLED", "EXPIRED",
+  };
+  if (states.count(normalized) == 0) {
+    throw std::invalid_argument("unsupported repo operation state: " + value);
+  }
+  return normalized;
+}
 
 class SqliteRepoStore : public RepoStoreBackend
 {
@@ -250,6 +325,14 @@ public:
     return static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
   }
 
+  RepoCacheStatus cacheStatus() const override
+  {
+    RepoCacheStatus status;
+    status.storageBackend = "sqlite";
+    status.authoritativeBackend = "sqlite";
+    return status;
+  }
+
 private:
   struct StatementGuard
   {
@@ -321,6 +404,200 @@ private:
   sqlite3* m_db = nullptr;
 };
 
+class TieredRepoStore : public RepoStoreBackend
+{
+public:
+  TieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
+                  uint64_t memoryCacheBytes,
+                  std::string authoritativeBackend)
+    : m_authoritativeStore(std::move(authoritativeStore))
+  {
+    if (m_authoritativeStore == nullptr) {
+      throw std::invalid_argument("tiered repo authoritative store must not be null");
+    }
+    m_status.authoritativeBackend = authoritativeBackend.empty()
+      ? "custom" : std::move(authoritativeBackend);
+    m_status.storageBackend = memoryCacheBytes == 0
+      ? m_status.authoritativeBackend : "tiered";
+    m_status.cachePolicy = memoryCacheBytes == 0 ? "disabled" : "lru";
+    m_status.budgetBytes = memoryCacheBytes;
+  }
+
+  void put(const RepoObjectManifest& manifest, std::vector<uint8_t> payload) override
+  {
+    StoredObject cached{manifest, payload};
+    m_authoritativeStore->put(manifest, std::move(payload));
+    std::lock_guard<std::mutex> lock(m_mutex);
+    ++m_status.backingWrites;
+    invalidate(manifest.objectName);
+    admitNoThrow(std::move(cached));
+  }
+
+  void putManifest(const RepoObjectManifest& manifest) override
+  {
+    m_authoritativeStore->putManifest(manifest);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    ++m_status.backingWrites;
+    invalidate(manifest.objectName);
+    admitNoThrow(StoredObject{manifest, {}});
+  }
+
+  StoredObject get(const std::string& objectName) const override
+  {
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const auto found = m_cache.find(objectName);
+      if (found != m_cache.end()) {
+        ++m_status.hits;
+        m_lru.splice(m_lru.end(), m_lru, found->second.recency);
+        return found->second.object;
+      }
+      ++m_status.misses;
+      ++m_status.backingReads;
+    }
+    auto object = m_authoritativeStore->get(objectName);
+    auto result = object;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      admitNoThrow(std::move(object));
+    }
+    return result;
+  }
+
+  bool has(const std::string& objectName) const override
+  {
+    return m_authoritativeStore->has(objectName);
+  }
+
+  bool erase(const std::string& objectName) override
+  {
+    const bool removed = m_authoritativeStore->erase(objectName);
+    if (removed) {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      ++m_status.backingWrites;
+      invalidate(objectName);
+    }
+    return removed;
+  }
+
+  size_t size() const override
+  {
+    return m_authoritativeStore->size();
+  }
+
+  std::vector<RepoObjectManifest> listManifests() const override
+  {
+    return m_authoritativeStore->listManifests();
+  }
+
+  uint64_t usedBytes() const override
+  {
+    return m_authoritativeStore->usedBytes();
+  }
+
+  RepoCacheStatus cacheStatus() const override
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto status = m_status;
+    status.usedBytes = m_usedBytes;
+    status.entryCount = m_cache.size();
+    return status;
+  }
+
+private:
+  struct CacheEntry
+  {
+    StoredObject object;
+    uint64_t chargeBytes = 0;
+    std::list<std::string>::iterator recency;
+  };
+
+  static uint64_t logicalCharge(const StoredObject& object)
+  {
+    const auto manifestJson = object.manifest.toJson();
+    const auto payloadBytes = static_cast<uint64_t>(object.payload.size());
+    const auto nameBytes = static_cast<uint64_t>(object.manifest.objectName.size());
+    const auto manifestBytes = static_cast<uint64_t>(manifestJson.size());
+    const auto max = std::numeric_limits<uint64_t>::max();
+    if (payloadBytes > max - nameBytes || payloadBytes + nameBytes > max - manifestBytes) {
+      return max;
+    }
+    return payloadBytes + nameBytes + manifestBytes;
+  }
+
+  void invalidate(const std::string& objectName) const
+  {
+    const auto found = m_cache.find(objectName);
+    if (found == m_cache.end()) {
+      return;
+    }
+    m_usedBytes -= found->second.chargeBytes;
+    m_lru.erase(found->second.recency);
+    m_cache.erase(found);
+    ++m_status.invalidations;
+  }
+
+  void admitNoThrow(StoredObject object) const noexcept
+  {
+    try {
+      admit(std::move(object));
+    }
+    catch (...) {
+      // The authoritative operation has already succeeded. Cache admission is
+      // optional acceleration and must not turn a durable write/read into a
+      // reported failure.
+    }
+  }
+
+  void admit(StoredObject object) const
+  {
+    if (m_status.budgetBytes == 0) {
+      return;
+    }
+
+    const auto chargeBytes = logicalCharge(object);
+    if (chargeBytes > m_status.budgetBytes) {
+      ++m_status.oversizedBypasses;
+      return;
+    }
+
+    invalidate(object.manifest.objectName);
+    while (!m_lru.empty() &&
+           m_usedBytes > m_status.budgetBytes - chargeBytes) {
+      const auto victimName = m_lru.front();
+      const auto victim = m_cache.find(victimName);
+      if (victim != m_cache.end()) {
+        m_usedBytes -= victim->second.chargeBytes;
+        m_cache.erase(victim);
+      }
+      m_lru.pop_front();
+      ++m_status.evictions;
+    }
+
+    const auto objectName = object.manifest.objectName;
+    m_lru.push_back(objectName);
+    const auto recency = std::prev(m_lru.end());
+    try {
+      m_cache.emplace(objectName,
+                      CacheEntry{std::move(object), chargeBytes, recency});
+    }
+    catch (...) {
+      m_lru.pop_back();
+      throw;
+    }
+    m_usedBytes += chargeBytes;
+    ++m_status.admissions;
+  }
+
+private:
+  std::shared_ptr<RepoStoreBackend> m_authoritativeStore;
+  mutable std::mutex m_mutex;
+  mutable std::unordered_map<std::string, CacheEntry> m_cache;
+  mutable std::list<std::string> m_lru;
+  mutable uint64_t m_usedBytes = 0;
+  mutable RepoCacheStatus m_status;
+};
+
 RepoDeploymentMode
 parseRepoDeploymentMode(const std::string& value)
 {
@@ -377,6 +654,17 @@ RepoObjectManifest::toJson() const
   os << "\"size\":" << size << ",";
   os << "\"segmentCount\":" << segmentCount << ",";
   os << "\"replicationFactor\":" << replicationFactor << ",";
+  os << "\"generation\":" << generation << ",";
+  os << "\"parentGeneration\":" << parentGeneration << ",";
+  os << "\"writeConsistency\":" << jsonQuote(writeConsistency) << ",";
+  os << "\"requiredWriteAcks\":"
+     << (requiredWriteAcks == 0
+           ? ndnsf_distributed_repo::requiredWriteAcks(
+               replicationFactor, parseRepoWriteConsistency(writeConsistency))
+           : requiredWriteAcks)
+     << ",";
+  os << "\"operationId\":" << jsonQuote(operationId) << ",";
+  os << "\"lifecycleState\":" << jsonQuote(lifecycleState) << ",";
   os << "\"policyEpoch\":" << jsonQuote(policyEpoch) << ",";
   os << "\"replicaNodes\":[";
   for (size_t i = 0; i < replicaNodes.size(); ++i) {
@@ -385,7 +673,83 @@ RepoObjectManifest::toJson() const
     }
     os << jsonQuote(replicaNodes[i]);
   }
+  os << "],";
+  os << "\"confirmedReplicaNodes\":[";
+  const auto& confirmed = confirmedReplicaNodes.empty()
+    ? replicaNodes : confirmedReplicaNodes;
+  for (size_t i = 0; i < confirmed.size(); ++i) {
+    if (i != 0) {
+      os << ",";
+    }
+    os << jsonQuote(confirmed[i]);
+  }
+  os << "],";
+  os << "\"packetNames\":[";
+  for (size_t i = 0; i < packetNames.size(); ++i) {
+    if (i != 0) {
+      os << ",";
+    }
+    os << jsonQuote(packetNames[i]);
+  }
   os << "]}";
+  return os.str();
+}
+
+std::string
+RepoWriteIntent::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"operationId\":" << jsonQuote(operationId) << ",";
+  os << "\"objectName\":" << jsonQuote(objectName) << ",";
+  os << "\"generation\":" << generation << ",";
+  os << "\"expectedGeneration\":" << expectedGeneration << ",";
+  os << "\"digest\":" << jsonQuote(digest) << ",";
+  os << "\"replicationFactor\":" << replicationFactor << ",";
+  os << "\"requiredWriteAcks\":" << requiredAcks << ",";
+  os << "\"writeConsistency\":" << jsonQuote(consistency) << ",";
+  os << "\"state\":" << jsonQuote(state) << ",";
+  os << "\"createdAtMs\":" << createdAtMs << ",";
+  os << "\"updatedAtMs\":" << updatedAtMs << ",";
+  os << "\"selectedReplicas\":[";
+  for (size_t i = 0; i < selectedReplicas.size(); ++i) {
+    if (i != 0) {
+      os << ",";
+    }
+    os << jsonQuote(selectedReplicas[i]);
+  }
+  os << "]}";
+  return os.str();
+}
+
+std::string
+RepoWriteReceipt::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"operationId\":" << jsonQuote(operationId) << ",";
+  os << "\"repoNode\":" << jsonQuote(repoNode) << ",";
+  os << "\"objectName\":" << jsonQuote(objectName) << ",";
+  os << "\"generation\":" << generation << ",";
+  os << "\"digest\":" << jsonQuote(digest) << ",";
+  os << "\"persistedBytes\":" << persistedBytes << ",";
+  os << "\"state\":" << jsonQuote(state) << ",";
+  os << "\"completedAtMs\":" << completedAtMs;
+  os << "}";
+  return os.str();
+}
+
+std::string
+RepoCapacityReservation::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"reservationId\":" << jsonQuote(reservationId) << ",";
+  os << "\"operationId\":" << jsonQuote(operationId) << ",";
+  os << "\"reservedBytes\":" << reservedBytes << ",";
+  os << "\"state\":" << jsonQuote(state) << ",";
+  os << "\"expiresAtMs\":" << expiresAtMs;
+  os << "}";
   return os.str();
 }
 
@@ -420,6 +784,9 @@ RepoOperationStatus::toJson() const
   os << "\"message\":" << jsonQuote(message) << ",";
   os << "\"completedSegments\":" << completedSegments << ",";
   os << "\"totalSegments\":" << totalSegments;
+  os << ",\"createdAtMs\":" << createdAtMs;
+  os << ",\"updatedAtMs\":" << updatedAtMs;
+  os << ",\"expiresAtMs\":" << expiresAtMs;
   os << "}";
   return os.str();
 }
@@ -506,6 +873,29 @@ RepoCatalogDelta::toJson() const
     os << entries[i].toJson();
   }
   os << "]}";
+  return os.str();
+}
+
+std::string
+RepoCacheStatus::toJson() const
+{
+  std::ostringstream os;
+  os << "{";
+  os << "\"storageBackend\":" << jsonQuote(storageBackend) << ",";
+  os << "\"authoritativeBackend\":" << jsonQuote(authoritativeBackend) << ",";
+  os << "\"cachePolicy\":" << jsonQuote(cachePolicy) << ",";
+  os << "\"budgetBytes\":" << budgetBytes << ",";
+  os << "\"usedBytes\":" << usedBytes << ",";
+  os << "\"entryCount\":" << entryCount << ",";
+  os << "\"hits\":" << hits << ",";
+  os << "\"misses\":" << misses << ",";
+  os << "\"admissions\":" << admissions << ",";
+  os << "\"evictions\":" << evictions << ",";
+  os << "\"invalidations\":" << invalidations << ",";
+  os << "\"oversizedBypasses\":" << oversizedBypasses << ",";
+  os << "\"backingReads\":" << backingReads << ",";
+  os << "\"backingWrites\":" << backingWrites;
+  os << "}";
   return os.str();
 }
 
@@ -666,6 +1056,21 @@ InMemoryRepoStore::usedBytes() const
   return used;
 }
 
+RepoCacheStatus
+RepoStoreBackend::cacheStatus() const
+{
+  return {};
+}
+
+RepoCacheStatus
+InMemoryRepoStore::cacheStatus() const
+{
+  RepoCacheStatus status;
+  status.storageBackend = "memory";
+  status.authoritativeBackend = "memory";
+  return status;
+}
+
 std::shared_ptr<RepoStoreBackend>
 makeMemoryRepoStore()
 {
@@ -676,6 +1081,24 @@ std::shared_ptr<RepoStoreBackend>
 makeSqliteRepoStore(const std::string& databasePath)
 {
   return std::make_shared<SqliteRepoStore>(databasePath);
+}
+
+std::shared_ptr<RepoStoreBackend>
+makeTieredRepoStore(const std::string& databasePath, uint64_t memoryCacheBytes)
+{
+  return makeTieredRepoStore(makeSqliteRepoStore(databasePath),
+                             memoryCacheBytes,
+                             "sqlite");
+}
+
+std::shared_ptr<RepoStoreBackend>
+makeTieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
+                    uint64_t memoryCacheBytes,
+                    std::string authoritativeBackend)
+{
+  return std::make_shared<TieredRepoStore>(std::move(authoritativeStore),
+                                           memoryCacheBytes,
+                                           std::move(authoritativeBackend));
 }
 
 } // namespace ndnsf_distributed_repo

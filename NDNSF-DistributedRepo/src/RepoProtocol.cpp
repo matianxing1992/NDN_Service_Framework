@@ -347,6 +347,9 @@ parseOperationStatusJson(const std::string& statusJson)
   status.message = extractJsonString(statusJson, "message");
   status.completedSegments = extractJsonUInt(statusJson, "completedSegments", 0);
   status.totalSegments = extractJsonUInt(statusJson, "totalSegments", 0);
+  status.createdAtMs = extractJsonUInt(statusJson, "createdAtMs", 0);
+  status.updatedAtMs = extractJsonUInt(statusJson, "updatedAtMs", 0);
+  status.expiresAtMs = extractJsonUInt(statusJson, "expiresAtMs", 0);
   return status;
 }
 
@@ -362,8 +365,46 @@ parseManifestJson(const std::string& manifestJson)
     extractJsonUInt(manifestJson, "segmentCount", 1));
   manifest.replicationFactor = static_cast<uint32_t>(
     extractJsonUInt(manifestJson, "replicationFactor", 1));
+  manifest.generation = extractJsonUInt(manifestJson, "generation", 0);
+  const auto parentText = extractJsonString(manifestJson, "parentGeneration");
+  (void)parentText;
+  const std::string parentMarker = "\"parentGeneration\":";
+  const auto parentStart = manifestJson.find(parentMarker);
+  if (parentStart != std::string::npos) {
+    const auto valueStart = parentStart + parentMarker.size();
+    size_t valueEnd = valueStart;
+    if (valueEnd < manifestJson.size() && manifestJson[valueEnd] == '-') {
+      ++valueEnd;
+    }
+    while (valueEnd < manifestJson.size() &&
+           manifestJson[valueEnd] >= '0' && manifestJson[valueEnd] <= '9') {
+      ++valueEnd;
+    }
+    manifest.parentGeneration = std::stoll(
+      manifestJson.substr(valueStart, valueEnd - valueStart));
+  }
+  manifest.writeConsistency = extractJsonString(manifestJson, "writeConsistency");
+  if (manifest.writeConsistency.empty()) {
+    manifest.writeConsistency = "ALL";
+  }
+  manifest.requiredWriteAcks = static_cast<uint32_t>(extractJsonUInt(
+    manifestJson, "requiredWriteAcks",
+    ndnsf_distributed_repo::requiredWriteAcks(
+      manifest.replicationFactor,
+      parseRepoWriteConsistency(manifest.writeConsistency))));
+  manifest.operationId = extractJsonString(manifestJson, "operationId");
+  manifest.lifecycleState = extractJsonString(manifestJson, "lifecycleState");
+  if (manifest.lifecycleState.empty()) {
+    manifest.lifecycleState = "COMMITTED";
+  }
   manifest.policyEpoch = extractJsonString(manifestJson, "policyEpoch");
   manifest.replicaNodes = extractJsonStringArray(manifestJson, "replicaNodes");
+  manifest.confirmedReplicaNodes = extractJsonStringArray(
+    manifestJson, "confirmedReplicaNodes");
+  if (manifest.confirmedReplicaNodes.empty()) {
+    manifest.confirmedReplicaNodes = manifest.replicaNodes;
+  }
+  manifest.packetNames = extractJsonStringArray(manifestJson, "packetNames");
   return manifest;
 }
 
@@ -409,6 +450,27 @@ parseCatalogStatusJson(const std::string& statusJson)
   status.catalogEpoch = extractJsonUInt(statusJson, "catalogEpoch", 0);
   status.objectCount = extractJsonUInt(statusJson, "objectCount", 0);
   status.acceptsBackupReplica = extractJsonBool(statusJson, "acceptsBackupReplica", true);
+  return status;
+}
+
+RepoCacheStatus
+parseCacheStatusJson(const std::string& statusJson)
+{
+  RepoCacheStatus status;
+  status.storageBackend = extractJsonString(statusJson, "storageBackend");
+  status.authoritativeBackend = extractJsonString(statusJson, "authoritativeBackend");
+  status.cachePolicy = extractJsonString(statusJson, "cachePolicy");
+  status.budgetBytes = extractJsonUInt(statusJson, "budgetBytes", 0);
+  status.usedBytes = extractJsonUInt(statusJson, "usedBytes", 0);
+  status.entryCount = extractJsonUInt(statusJson, "entryCount", 0);
+  status.hits = extractJsonUInt(statusJson, "hits", 0);
+  status.misses = extractJsonUInt(statusJson, "misses", 0);
+  status.admissions = extractJsonUInt(statusJson, "admissions", 0);
+  status.evictions = extractJsonUInt(statusJson, "evictions", 0);
+  status.invalidations = extractJsonUInt(statusJson, "invalidations", 0);
+  status.oversizedBypasses = extractJsonUInt(statusJson, "oversizedBypasses", 0);
+  status.backingReads = extractJsonUInt(statusJson, "backingReads", 0);
+  status.backingWrites = extractJsonUInt(statusJson, "backingWrites", 0);
   return status;
 }
 
