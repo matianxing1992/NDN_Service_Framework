@@ -1,9 +1,8 @@
 # Claude Code Instructions
 
 Read and follow `AGENTS.md` first. It is the canonical project guidance for
-NDNSF, including CodeGraph-first exploration, Spec Kit, GSD, DeepSeek delegation,
-Academic Research Suite (ARS), MiniNDN-first validation, git safety, and the
-completion bell.
+NDNSF, including CodeGraph-first exploration, Spec Kit, GSD, Academic Research
+Suite (ARS), MiniNDN-first validation, git safety, and the completion bell.
 
 Default to Chinese in conversation with the user. Use English only when the
 user explicitly asks for English, when writing source-code identifiers, or when
@@ -16,12 +15,13 @@ Claude Code on this machine is configured to reuse the existing Codex-local
 tooling instead of creating a second copy:
 
 - Skills: `~/.claude/skills -> ~/.codex/skills`
+- Caveman response skill: shared from `~/.codex/skills/caveman`; activation and
+  safety rules are defined in `AGENTS.md`
 - GSD: `/home/tianxing/.codex/gsd-core`
 - Context Mode: `/home/tianxing/.local/node-v22.23.1/bin/context-mode`
 - CodeGraph MCP: `codegraph serve --mcp`
 - Claude Code backend model: DeepSeek v4 Pro through DeepSeek's
   Anthropic-compatible endpoint
-- Optional DeepSeek delegate helper: `tools/ai/deepseek_delegate.py`
 
 ## Claude Code DeepSeek Backend
 
@@ -41,24 +41,8 @@ CLAUDE_CODE_EFFORT_LEVEL=max
 The API token is stored only in the local Claude settings file and should never
 be printed, committed, or copied into prompts.
 
-## DeepSeek Delegation
-
-Because Claude Code itself already uses DeepSeek v4 Pro as the backend, the
-delegate helper is optional. Use it only when a separate, isolated draft or
-second-pass review is useful:
-
-```bash
-python3 tools/ai/deepseek_delegate.py --model deepseek-v4-pro --mode plan --task "<short task>"
-python3 tools/ai/deepseek_delegate.py --model deepseek-v4-pro --mode patch --task "<short task>"
-python3 tools/ai/deepseek_delegate.py --model deepseek-v4-pro --mode review --task "<short review request>"
-```
-
-DeepSeek output is advisory only. Review any generated patch, apply only the
-parts that fit the architecture, and run the relevant tests yourself.
-
 Do not print or copy API keys, certificates, tokens, safebags, or other secrets
-into chat, commits, or DeepSeek prompts. The key is read from the local
-`DEEPSEEK_API_KEY_FILE` environment variable configured in Claude settings.
+into chat, commits, or model prompts.
 
 ## Finish Protocol
 
