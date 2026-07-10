@@ -366,11 +366,13 @@ class StoredDataProducer:
         packet_wires: list[bytes],
         *,
         signing_identity: str = "",
+        forwarding_route_prefixes: Optional[list[str]] = None,
     ) -> None:
         self._native = _ndnsf.StoredDataProducer(
             base_name,
             [bytes(packet) for packet in packet_wires],
             signing_identity,
+            list(forwarding_route_prefixes or []),
         )
 
     @property
@@ -387,6 +389,51 @@ class StoredDataProducer:
 
     def stop(self) -> None:
         self._native.stop()
+
+
+class RepoDataPlaneProducer:
+    """Serve repository Data through one callback-backed native Face."""
+
+    def __init__(
+        self,
+        lookup: Callable[[str, bool], Optional[bytes]],
+        *,
+        signing_identity: str = "",
+        forwarding_route_prefixes: Optional[list[str]] = None,
+    ) -> None:
+        self._native = _ndnsf.RepoDataPlaneProducer(
+            lookup,
+            signing_identity,
+            list(forwarding_route_prefixes or []),
+        )
+
+    def activate_prefix(self, prefix: str) -> None:
+        self._native.activate_prefix(prefix)
+
+    def start(self) -> "RepoDataPlaneProducer":
+        self._native.start()
+        return self
+
+    def stop(self) -> None:
+        self._native.stop()
+
+    @property
+    def status(self) -> dict[str, object]:
+        return {
+            "activePrefixCount": int(self._native.active_prefix_count),
+            "interestCount": int(self._native.interest_count),
+            "hitCount": int(self._native.hit_count),
+            "missCount": int(self._native.miss_count),
+            "threadCount": int(self._native.thread_count),
+            "error": str(self._native.error),
+        }
+
+
+def decode_data_packet(wire: bytes) -> DataPacket:
+    """Decode one immutable NDN Data wire packet without rewriting it."""
+
+    packet = _ndnsf.decode_data_packet(bytes(wire))
+    return DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
 
 
 def make_segmented_data_packets(
@@ -431,6 +478,24 @@ def fetch_segmented_data_packets(
         DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
         for packet in packets
     ]
+
+
+def fetch_exact_data_packet(
+    data_name: str,
+    *,
+    timeout_ms: int = 30000,
+    interest_lifetime_ms: Optional[int] = None,
+    forwarding_hints: Optional[list[str]] = None,
+) -> DataPacket:
+    """Fetch one stored Data packet by its complete exact name."""
+
+    packet = _ndnsf.fetch_exact_data_packet(
+        data_name,
+        int(timeout_ms),
+        int(interest_lifetime_ms or default_large_data_interest_lifetime_ms()),
+        list(forwarding_hints or []),
+    )
+    return DataPacket(str(packet.name), int(packet.segment), bytes(packet.wire))
 
 
 def fetch_segmented_object(
@@ -1388,6 +1453,7 @@ class ServiceProvider:
             bootstrap_token=bootstrap_token,
         )
         self._handlers: dict[str, Callable[[bytes], bytes | ServiceResponse]] = {}
+        self._context_handlers: set[str] = set()
         self._ack_handlers: dict[str, Callable[[bytes], bool | AckDecision]] = {}
         self._collaboration_services: set[str] = set()
 
@@ -1403,6 +1469,16 @@ class ServiceProvider:
             self.add_handler(service, fn)
             return fn
         return decorator
+
+    def add_context_handler(
+        self,
+        service: str,
+        handler: Callable[[dict[str, str], bytes], bytes | ServiceResponse],
+    ) -> None:
+        """Register a handler that receives authenticated invocation context."""
+
+        self._handlers[service] = handler
+        self._context_handlers.add(service)
 
     def set_ack_handler(
         self,
@@ -1421,8 +1497,10 @@ class ServiceProvider:
         if service not in self._handlers:
             raise ValueError(f"no handler registered for {service}")
 
-        def request_handler(payload: bytes):
-            result = self._handlers[service](payload)
+        include_context = service in self._context_handlers
+
+        def request_handler(*args):
+            result = self._handlers[service](*args)
             if isinstance(result, ServiceResponse):
                 return _to_native_response(result)
             return bytes(result)
@@ -1435,7 +1513,8 @@ class ServiceProvider:
                     return _to_native_ack(result)
                 return bool(result)
 
-        self._native.add_service(service, request_handler, ack_handler)
+        self._native.add_service(
+            service, request_handler, ack_handler, include_context)
 
     def add_collaboration_handler(
         self,
@@ -1626,6 +1705,24 @@ class ServiceUser:
         )
         return _from_native_response(response)
 
+    def request_service_targeted(
+        self,
+        provider: str,
+        service: str,
+        payload: bytes,
+        *,
+        timeout_ms: int = 5000,
+    ) -> ServiceResponse:
+        """Invoke a known provider through NDNSF's authenticated Targeted path."""
+
+        response = self._native.request_service_targeted(
+            provider,
+            service,
+            bytes(payload),
+            timeout_ms=timeout_ms,
+        )
+        return _from_native_response(response)
+
     def request_service_select(
         self,
         service: str,
@@ -1696,6 +1793,27 @@ class ServiceUser:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             strategy=strategy,
+        )
+
+    def request_service_targeted_async(
+        self,
+        provider: str,
+        service: str,
+        payload: bytes,
+        *,
+        on_response: Callable[[ServiceResponse], None],
+        on_timeout: Callable[[str], None],
+        timeout_ms: int = 5000,
+    ) -> None:
+        """Submit a known-provider Targeted request and return immediately."""
+
+        self._native.request_service_targeted_async(
+            provider,
+            service,
+            bytes(payload),
+            lambda response: on_response(_from_native_response(response)),
+            on_timeout,
+            timeout_ms=timeout_ms,
         )
 
     def publish_encrypted_large_data(

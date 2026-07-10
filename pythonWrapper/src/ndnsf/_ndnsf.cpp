@@ -29,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -242,6 +243,12 @@ dataFromWireBytes(const py::bytes& wireBytes)
   return std::make_shared<ndn::Data>(wire);
 }
 
+PyDataPacket
+decodeDataPacket(const py::bytes& wireBytes)
+{
+  return toPyDataPacket(*dataFromWireBytes(wireBytes));
+}
+
 class NativeSegmentedObjectProducer
 {
 public:
@@ -311,7 +318,11 @@ public:
         this->serveInterest(interest);
       },
       [] (const ndn::Name&) {},
-      [] (const ndn::Name&, const std::string&) {},
+      [this] (const ndn::Name& prefix, const std::string& reason) {
+        std::lock_guard<std::mutex> lock(m_errorMutex);
+        m_error = "failed to register stored Data prefix " + prefix.toUri() +
+                  ": " + reason;
+      },
       ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
                                  m_signingIdentity));
 
@@ -391,14 +402,29 @@ class NativeWireDataProducer
 public:
   NativeWireDataProducer(const std::string& baseName,
                          const std::vector<py::bytes>& packetWires,
-                         const std::string& signingIdentity)
+                         const std::string& signingIdentity,
+                         const std::vector<std::string>& forwardingRoutePrefixes)
     : m_baseName(baseName)
   {
     m_signingIdentity = signingIdentity.empty() ?
       ndn::Name("/ndnsf/python/stored-data-producer") : ndn::Name(signingIdentity);
     getOrCreateIdentity(m_keyChain, m_signingIdentity);
+    for (const auto& prefix : forwardingRoutePrefixes) {
+      if (!prefix.empty()) {
+        m_forwardingRoutePrefixes.emplace_back(prefix);
+      }
+    }
     for (const auto& packetWire : packetWires) {
       auto data = dataFromWireBytes(packetWire);
+      if (!m_baseName.isPrefixOf(data->getName())) {
+        throw std::invalid_argument("stored Data name is outside producer prefix: " +
+                                    data->getName().toUri());
+      }
+      const auto inserted = m_packetsByName.emplace(data->getName(), data);
+      if (!inserted.second && inserted.first->second->wireEncode() != data->wireEncode()) {
+        throw std::invalid_argument("conflicting stored Data wire for name: " +
+                                    data->getName().toUri());
+      }
       if (!data->getName().empty() && data->getName()[-1].isSegment()) {
         m_segments[data->getName()[-1].toSegment()] = data;
       }
@@ -429,6 +455,16 @@ public:
       [] (const ndn::Name&, const std::string&) {},
       ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
                                  m_signingIdentity));
+    for (const auto& prefix : m_forwardingRoutePrefixes) {
+      m_face.registerPrefix(
+        prefix,
+        [] (const ndn::Name&) {},
+        [this] (const ndn::Name& failedPrefix, const std::string& reason) {
+          std::lock_guard<std::mutex> lock(m_errorMutex);
+          m_error = "stored Data forwarding route registration failed for " +
+                    failedPrefix.toUri() + ": " + reason;
+        });
+    }
     m_thread = std::thread([this] {
       while (m_running.load()) {
         try {
@@ -462,7 +498,7 @@ public:
   size_t
   segmentCount() const
   {
-    return m_segments.size();
+    return m_packetsByName.size();
   }
 
   std::string
@@ -476,19 +512,23 @@ private:
   void
   serveInterest(const ndn::Interest& interest)
   {
-    if (m_segments.empty()) {
+    if (m_packetsByName.empty()) {
       return;
     }
-    uint64_t segmentNo = 0;
     const auto& name = interest.getName();
-    if (!name.empty() && name[-1].isSegment()) {
-      segmentNo = name[-1].toSegment();
-    }
-    auto it = m_segments.find(segmentNo);
-    if (it == m_segments.end()) {
+    const auto exact = m_packetsByName.find(name);
+    if (exact != m_packetsByName.end()) {
+      m_face.put(*exact->second);
       return;
     }
-    m_face.put(*it->second);
+    if (interest.getCanBePrefix()) {
+      for (const auto& item : m_packetsByName) {
+        if (name.isPrefixOf(item.first)) {
+          m_face.put(*item.second);
+          return;
+        }
+      }
+    }
   }
 
 private:
@@ -496,9 +536,198 @@ private:
   ndn::KeyChain m_keyChain;
   ndn::Name m_baseName;
   ndn::Name m_signingIdentity;
+  std::map<ndn::Name, std::shared_ptr<ndn::Data>> m_packetsByName;
   std::map<uint64_t, std::shared_ptr<ndn::Data>> m_segments;
+  std::vector<ndn::Name> m_forwardingRoutePrefixes;
   std::atomic_bool m_running{false};
   std::thread m_thread;
+  mutable std::mutex m_errorMutex;
+  std::string m_error;
+};
+
+class NativeRepoDataPlaneProducer
+{
+public:
+  NativeRepoDataPlaneProducer(py::function lookup,
+                              const std::string& signingIdentity,
+                              const std::vector<std::string>& forwardingRoutePrefixes)
+    : m_lookup(keepPyFunction(std::move(lookup)))
+  {
+    m_signingIdentity = signingIdentity.empty() ?
+      ndn::Name("/ndnsf/python/repo-data-plane") : ndn::Name(signingIdentity);
+    getOrCreateIdentity(m_keyChain, m_signingIdentity);
+    for (const auto& prefix : forwardingRoutePrefixes) {
+      if (!prefix.empty()) {
+        m_forwardingRoutePrefixes.emplace_back(prefix);
+      }
+    }
+  }
+
+  ~NativeRepoDataPlaneProducer()
+  {
+    stop();
+  }
+
+  void
+  activatePrefix(const std::string& prefixText)
+  {
+    const ndn::Name prefix(prefixText);
+    bool inserted = false;
+    {
+      std::lock_guard<std::mutex> lock(m_prefixMutex);
+      inserted = m_prefixes.insert(prefix).second;
+    }
+    if (!inserted) {
+      return;
+    }
+    if (m_running.load()) {
+      boost::asio::post(m_face.getIoContext(), [this, prefix] {
+        this->registerDataPrefix(prefix);
+      });
+    }
+  }
+
+  void
+  start()
+  {
+    bool expected = false;
+    if (!m_running.compare_exchange_strong(expected, true)) {
+      return;
+    }
+    for (const auto& prefix : m_forwardingRoutePrefixes) {
+      m_face.registerPrefix(
+        prefix,
+        [] (const ndn::Name&) {},
+        [this] (const ndn::Name& failedPrefix, const std::string& reason) {
+          this->setError("repo data-plane route registration failed for " +
+                         failedPrefix.toUri() + ": " + reason);
+        });
+    }
+    std::vector<ndn::Name> prefixes;
+    {
+      std::lock_guard<std::mutex> lock(m_prefixMutex);
+      prefixes.assign(m_prefixes.begin(), m_prefixes.end());
+    }
+    for (const auto& prefix : prefixes) {
+      registerDataPrefix(prefix);
+    }
+    m_thread = std::thread([this] {
+      while (m_running.load()) {
+        try {
+          processFaceEvents(m_face, ndn::time::milliseconds(25));
+        }
+        catch (const std::exception& e) {
+          setError(e.what());
+        }
+      }
+    });
+  }
+
+  void
+  stop()
+  {
+    bool expected = true;
+    if (!m_running.compare_exchange_strong(expected, false)) {
+      return;
+    }
+    try {
+      m_face.getIoContext().stop();
+    }
+    catch (const std::exception&) {
+    }
+    if (m_thread.joinable()) {
+      m_thread.join();
+    }
+  }
+
+  size_t
+  activePrefixCount() const
+  {
+    std::lock_guard<std::mutex> lock(m_prefixMutex);
+    return m_prefixes.size();
+  }
+
+  uint64_t interestCount() const { return m_interestCount.load(); }
+  uint64_t hitCount() const { return m_hitCount.load(); }
+  uint64_t missCount() const { return m_missCount.load(); }
+  size_t threadCount() const { return m_running.load() ? 1 : 0; }
+
+  std::string
+  error() const
+  {
+    std::lock_guard<std::mutex> lock(m_errorMutex);
+    return m_error;
+  }
+
+private:
+  void
+  setError(const std::string& error)
+  {
+    std::lock_guard<std::mutex> lock(m_errorMutex);
+    m_error = error;
+  }
+
+  void
+  registerDataPrefix(const ndn::Name& prefix)
+  {
+    m_face.setInterestFilter(
+      prefix,
+      [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+        this->serveInterest(interest);
+      },
+      [] (const ndn::Name&) {},
+      [this] (const ndn::Name& failedPrefix, const std::string& reason) {
+        this->setError("repo data-plane prefix registration failed for " +
+                       failedPrefix.toUri() + ": " + reason);
+      },
+      ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_ID,
+                                 m_signingIdentity));
+  }
+
+  void
+  serveInterest(const ndn::Interest& interest)
+  {
+    ++m_interestCount;
+    try {
+      py::gil_scoped_acquire gil;
+      py::object result = (*m_lookup)(
+        interest.getName().toUri(), interest.getCanBePrefix());
+      if (result.is_none()) {
+        ++m_missCount;
+        return;
+      }
+      auto data = dataFromWireBytes(result.cast<py::bytes>());
+      const bool nameMatches =
+        interest.getName() == data->getName() ||
+        (interest.getCanBePrefix() && interest.getName().isPrefixOf(data->getName()));
+      if (!nameMatches) {
+        ++m_missCount;
+        setError("repo data-plane callback returned mismatched Data name " +
+                 data->getName().toUri());
+        return;
+      }
+      m_face.put(*data);
+      ++m_hitCount;
+    }
+    catch (const std::exception& e) {
+      ++m_missCount;
+      setError(e.what());
+    }
+  }
+
+private:
+  ndn::Face m_face;
+  ndn::KeyChain m_keyChain;
+  ndn::Name m_signingIdentity;
+  PyFunctionPtr m_lookup;
+  std::vector<ndn::Name> m_forwardingRoutePrefixes;
+  mutable std::mutex m_prefixMutex;
+  std::set<ndn::Name> m_prefixes;
+  std::atomic_bool m_running{false};
+  std::thread m_thread;
+  std::atomic_uint64_t m_interestCount{0};
+  std::atomic_uint64_t m_hitCount{0};
+  std::atomic_uint64_t m_missCount{0};
   mutable std::mutex m_errorMutex;
   std::string m_error;
 };
@@ -707,6 +936,33 @@ fetchSegmentedDataPackets(const std::string& baseName,
     packets[segmentNo] = fetchOneDataPacket(face, interest, deadline);
   }
   return packets;
+}
+
+PyDataPacket
+fetchExactDataPacket(const std::string& dataName,
+                     int timeoutMs,
+                     int interestLifetimeMs,
+                     const std::vector<std::string>& forwardingHints)
+{
+  ndn::Face face;
+  const auto deadline = ndn::time::steady_clock::now() +
+    ndn::time::milliseconds(timeoutMs);
+  std::vector<ndn::Name> hintNames;
+  for (const auto& hint : forwardingHints) {
+    hintNames.emplace_back(hint);
+  }
+  auto packet = fetchOneDataPacketWithHintFallback(
+    face,
+    ndn::Name(dataName),
+    false,
+    ndn::time::milliseconds(interestLifetimeMs),
+    deadline,
+    hintNames);
+  if (packet.name != dataName) {
+    throw std::runtime_error("exact Data fetch name mismatch: requested=" + dataName +
+                             " received=" + packet.name);
+  }
+  return packet;
 }
 
 py::bytes
@@ -1557,7 +1813,8 @@ public:
   void
   addService(const std::string& serviceName,
              py::function requestHandler,
-             std::optional<py::function> ackHandler)
+             std::optional<py::function> ackHandler,
+             bool includeRequestContext = false)
   {
     if (!m_provider) {
       throw std::runtime_error("provider is not initialized");
@@ -1567,9 +1824,7 @@ public:
       m_ackHandlers.emplace(serviceName, *ackHandler);
     }
 
-    m_provider->addService(
-      ndn::Name(serviceName),
-      nsf::ServiceProvider::AckStrategyHandler(
+    auto ackAdapter = nsf::ServiceProvider::AckStrategyHandler(
         [this, serviceName](const nsf::RequestMessage& request) {
           nsf::ServiceProvider::AckDecision decision;
           auto it = m_ackHandlers.find(serviceName);
@@ -1599,17 +1854,29 @@ public:
             decision.message = e.what();
           }
           return decision;
-        }),
-      nsf::ServiceProvider::RequestHandler(
-        [this, serviceName](const ndn::Name&,
-                            const ndn::Name&,
-                            const ndn::Name&,
-                            const ndn::Name&,
+        });
+    auto requestAdapter = nsf::ServiceProvider::RequestHandler(
+        [this, serviceName, includeRequestContext](const ndn::Name& requesterIdentity,
+                            const ndn::Name& providerName,
+                            const ndn::Name& resolvedServiceName,
+                            const ndn::Name& requestId,
                             const nsf::RequestMessage& request) {
           nsf::ResponseMessage response;
           py::gil_scoped_acquire gil;
           try {
-            py::object result = m_handlers.at(serviceName)(toPyBytes(request.getPayload()));
+            py::object result;
+            if (includeRequestContext) {
+              py::dict context;
+              context["requesterIdentity"] = requesterIdentity.toUri();
+              context["providerName"] = providerName.toUri();
+              context["serviceName"] = resolvedServiceName.toUri();
+              context["requestId"] = requestId.toUri();
+              result = m_handlers.at(serviceName)(
+                std::move(context), toPyBytes(request.getPayload()));
+            }
+            else {
+              result = m_handlers.at(serviceName)(toPyBytes(request.getPayload()));
+            }
             if (py::isinstance<PyServiceResponse>(result)) {
               auto pyResponse = result.cast<PyServiceResponse>();
               response.setStatus(pyResponse.status);
@@ -1629,7 +1896,13 @@ public:
             response.setErrorInfo(e.what());
           }
           return response;
-        }));
+        });
+
+    m_provider->addService(
+      ndn::Name(serviceName),
+      std::move(ackAdapter),
+      std::move(requestAdapter),
+      nsf::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
   }
 
   void
@@ -2027,7 +2300,7 @@ public:
     }
   }
 
-PyServiceResponse
+  PyServiceResponse
   requestService(const std::string& serviceName,
                  const py::bytes& requestPayload,
                  int ackTimeoutMs,
@@ -2085,6 +2358,78 @@ PyServiceResponse
     std::lock_guard<std::mutex> callLock(m_callMutex);
     submit();
 
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeoutMs + 3000);
+    while (std::chrono::steady_clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (done) {
+          return output;
+        }
+      }
+      py::gil_scoped_release release;
+      processFaceEvents(m_face, pythonFacePollTimeout());
+    }
+    output.status = false;
+    output.error = "local deadline";
+    return output;
+  }
+
+  PyServiceResponse
+  requestServiceTargeted(const std::string& providerName,
+                         const std::string& serviceName,
+                         const py::bytes& requestPayload,
+                         int timeoutMs)
+  {
+    PyServiceResponse output;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+
+    auto payload = toBuffer(requestPayload);
+    auto submit = [&, payload]() mutable {
+      nsf::RequestMessage request;
+      request.setPayload(payload, payload.size());
+      m_user->RequestServiceTargeted(
+        ndn::Name(providerName),
+        ndn::Name(serviceName),
+        std::move(request),
+        timeoutMs,
+        [&](const ndn::Name& requestId) {
+          std::lock_guard<std::mutex> lock(mutex);
+          output.status = false;
+          output.error = "timeout: " + requestId.toUri();
+          done = true;
+          cv.notify_one();
+        },
+        [&](const nsf::ResponseMessage& response) {
+          py::gil_scoped_acquire gil;
+          std::lock_guard<std::mutex> lock(mutex);
+          output.status = response.getStatus();
+          output.payload = toPyBytes(response.getPayload());
+          output.error = response.getErrorInfo();
+          done = true;
+          cv.notify_one();
+        });
+    };
+
+    if (m_running.load()) {
+      boost::asio::post(m_face.getIoContext(), submit);
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(timeoutMs + 3000);
+      py::gil_scoped_release release;
+      std::unique_lock<std::mutex> lock(mutex);
+      cv.wait_until(lock, deadline, [&done] { return done; });
+      if (done) {
+        return output;
+      }
+      output.status = false;
+      output.error = "local deadline";
+      return output;
+    }
+
+    std::lock_guard<std::mutex> callLock(m_callMutex);
+    submit();
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(timeoutMs + 3000);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -2552,7 +2897,7 @@ PyServiceResponse
     boost::asio::post(m_face.getIoContext(),
       [this, serviceName, payload, selection, ackTimeoutMs, timeoutMs,
        responseCallback = std::move(responseCallback),
-       timeoutCallback = std::move(timeoutCallback)] {
+       timeoutCallback = std::move(timeoutCallback)]() mutable {
         m_user->RequestService(
           ndn::Name(serviceName),
           payload,
@@ -2576,6 +2921,54 @@ PyServiceResponse
             py::gil_scoped_acquire gil;
             try {
               (*timeoutCallback)(requestId.toUri());
+            }
+            catch (const py::error_already_set& e) {
+              PyErr_WriteUnraisable(e.value().ptr());
+            }
+          });
+      });
+  }
+
+  void
+  requestServiceTargetedAsync(const std::string& providerName,
+                              const std::string& serviceName,
+                              const py::bytes& requestPayload,
+                              py::function onResponse,
+                              py::function onTimeout,
+                              int timeoutMs)
+  {
+    start();
+    auto payload = toBuffer(requestPayload);
+    auto responseCallback = keepPyFunction(std::move(onResponse));
+    auto timeoutCallback = keepPyFunction(std::move(onTimeout));
+    boost::asio::post(m_face.getIoContext(),
+      [this, providerName, serviceName, payload, timeoutMs,
+       responseCallback = std::move(responseCallback),
+       timeoutCallback = std::move(timeoutCallback)]() mutable {
+        nsf::RequestMessage request;
+        request.setPayload(payload, payload.size());
+        m_user->RequestServiceTargeted(
+          ndn::Name(providerName),
+          ndn::Name(serviceName),
+          std::move(request),
+          timeoutMs,
+          [timeoutCallback](const ndn::Name& requestId) mutable {
+            py::gil_scoped_acquire gil;
+            try {
+              (*timeoutCallback)(requestId.toUri());
+            }
+            catch (const py::error_already_set& e) {
+              PyErr_WriteUnraisable(e.value().ptr());
+            }
+          },
+          [responseCallback](const nsf::ResponseMessage& response) mutable {
+            py::gil_scoped_acquire gil;
+            PyServiceResponse output;
+            output.status = response.getStatus();
+            output.payload = toPyBytes(response.getPayload());
+            output.error = response.getErrorInfo();
+            try {
+              (*responseCallback)(output);
             }
             catch (const py::error_already_set& e) {
               PyErr_WriteUnraisable(e.value().ptr());
@@ -2769,14 +3162,37 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_readwrite("forwarding_hints", &PySegmentHintRange::forwardingHints);
 
   py::class_<NativeWireDataProducer>(m, "StoredDataProducer")
-    .def(py::init<const std::string&, const std::vector<py::bytes>&, const std::string&>(),
+    .def(py::init<const std::string&,
+                  const std::vector<py::bytes>&,
+                  const std::string&,
+                  const std::vector<std::string>&>(),
          py::arg("base_name"),
          py::arg("packet_wires"),
-         py::arg("signing_identity") = "")
+         py::arg("signing_identity") = "",
+         py::arg("forwarding_route_prefixes") = std::vector<std::string>{})
     .def("start", &NativeWireDataProducer::start)
     .def("stop", &NativeWireDataProducer::stop)
     .def_property_readonly("segment_count", &NativeWireDataProducer::segmentCount)
     .def_property_readonly("error", &NativeWireDataProducer::error);
+
+  py::class_<NativeRepoDataPlaneProducer>(m, "RepoDataPlaneProducer")
+    .def(py::init<py::function,
+                  const std::string&,
+                  const std::vector<std::string>&>(),
+         py::arg("lookup"),
+         py::arg("signing_identity") = "",
+         py::arg("forwarding_route_prefixes") = std::vector<std::string>{})
+    .def("activate_prefix", &NativeRepoDataPlaneProducer::activatePrefix)
+    .def("start", &NativeRepoDataPlaneProducer::start)
+    .def("stop", &NativeRepoDataPlaneProducer::stop)
+    .def_property_readonly("active_prefix_count",
+                           &NativeRepoDataPlaneProducer::activePrefixCount)
+    .def_property_readonly("interest_count",
+                           &NativeRepoDataPlaneProducer::interestCount)
+    .def_property_readonly("hit_count", &NativeRepoDataPlaneProducer::hitCount)
+    .def_property_readonly("miss_count", &NativeRepoDataPlaneProducer::missCount)
+    .def_property_readonly("thread_count", &NativeRepoDataPlaneProducer::threadCount)
+    .def_property_readonly("error", &NativeRepoDataPlaneProducer::error);
 
   m.def("make_segmented_data_packets",
         &makeSegmentedDataPackets,
@@ -2786,6 +3202,10 @@ PYBIND11_MODULE(_ndnsf, m)
         py::arg("max_segment_size") = 6000,
         py::arg("freshness_ms") = 60000);
 
+  m.def("decode_data_packet",
+        &decodeDataPacket,
+        py::arg("wire"));
+
   m.def("fetch_segmented_data_packets",
         &fetchSegmentedDataPackets,
         py::arg("base_name"),
@@ -2793,27 +3213,38 @@ PYBIND11_MODULE(_ndnsf, m)
         py::arg("interest_lifetime_ms") = 10000,
         py::arg("forwarding_hints") = std::vector<std::string>{});
 
+  m.def("fetch_exact_data_packet",
+        &fetchExactDataPacket,
+        py::arg("data_name"),
+        py::arg("timeout_ms") = 30000,
+        py::arg("interest_lifetime_ms") = 2000,
+        py::arg("forwarding_hints") = std::vector<std::string>{},
+        py::call_guard<py::gil_scoped_release>());
+
   m.def("fetch_segmented_object",
         &fetchSegmentedObject,
         py::arg("base_name"),
         py::arg("timeout_ms") = 30000,
         py::arg("interest_lifetime_ms") = 10000,
         py::arg("init_cwnd") = 8.0,
-        py::arg("forwarding_hints") = std::vector<std::string>{});
+        py::arg("forwarding_hints") = std::vector<std::string>{},
+        py::call_guard<py::gil_scoped_release>());
 
   m.def("fetch_segmented_object_with_segment_hints",
         &fetchSegmentedObjectWithSegmentHints,
         py::arg("base_name"),
         py::arg("timeout_ms") = 30000,
         py::arg("interest_lifetime_ms") = 10000,
-        py::arg("hint_ranges") = std::vector<PySegmentHintRange>{});
+        py::arg("hint_ranges") = std::vector<PySegmentHintRange>{},
+        py::call_guard<py::gil_scoped_release>());
   m.def("fetch_known_segmented_object_with_segment_hints",
         &fetchKnownSegmentedObjectWithSegmentHints,
         py::arg("versioned_name"),
         py::arg("segment_count"),
         py::arg("timeout_ms") = 30000,
         py::arg("interest_lifetime_ms") = 10000,
-        py::arg("hint_ranges") = std::vector<PySegmentHintRange>{});
+        py::arg("hint_ranges") = std::vector<PySegmentHintRange>{},
+        py::call_guard<py::gil_scoped_release>());
 
   py::class_<PyCollaborationContext>(m, "CollaborationContext")
     .def_property_readonly("session_id", &PyCollaborationContext::sessionId)
@@ -2906,7 +3337,8 @@ PYBIND11_MODULE(_ndnsf, m)
     .def("add_service", &NativeServiceProvider::addService,
          py::arg("service"),
          py::arg("request_handler"),
-         py::arg("ack_handler") = std::optional<py::function>())
+         py::arg("ack_handler") = std::optional<py::function>(),
+         py::arg("include_request_context") = false)
     .def("add_collaboration_service", &NativeServiceProvider::addCollaborationService,
          py::arg("service"),
          py::arg("allowed_roles"),
@@ -2951,6 +3383,11 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 5000,
          py::arg("strategy") = "first-responding")
+    .def("request_service_targeted", &NativeServiceUser::requestServiceTargeted,
+         py::arg("provider"),
+         py::arg("service"),
+         py::arg("payload"),
+         py::arg("timeout_ms") = 5000)
     .def("request_service_select", &NativeServiceUser::requestServiceSelect,
          py::arg("service"),
          py::arg("payload"),
@@ -2966,6 +3403,13 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("ack_timeout_ms") = 300,
          py::arg("timeout_ms") = 5000,
          py::arg("strategy") = "first-responding")
+    .def("request_service_targeted_async", &NativeServiceUser::requestServiceTargetedAsync,
+         py::arg("provider"),
+         py::arg("service"),
+         py::arg("payload"),
+         py::arg("on_response"),
+         py::arg("on_timeout"),
+         py::arg("timeout_ms") = 5000)
     .def("publish_encrypted_large_data", &NativeServiceUser::publishEncryptedLargeData,
          py::arg("service"),
          py::arg("payload"),

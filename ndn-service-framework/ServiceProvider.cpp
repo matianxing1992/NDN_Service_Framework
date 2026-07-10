@@ -2887,7 +2887,8 @@ namespace ndn_service_framework
             return;
         }
 
-        constexpr size_t tokenPairCount = 8;
+        const size_t tokenPairCount = static_cast<size_t>(std::clamp(
+            intEnvOrDefault("NDNSF_TARGETED_TOKEN_BATCH_SIZE", 8), 1, 256));
         std::map<std::string, std::string> tokens = response.getTokens();
         std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
         for (size_t i = 0; i < tokenPairCount; ++i) {

@@ -1033,6 +1033,7 @@ namespace ndn_service_framework{
             std::mutex svs_mutex;
 
             std::map<ndn::Name, PendingCall> m_pendingCalls;
+            std::mutex m_targetedTokenPoolsMutex;
             std::map<std::string, std::deque<TargetedTokenPair>> m_targetedTokenPools;
             std::map<ndn::Name, std::map<std::string, uint64_t>>
                 m_recentAckProvidersByService;

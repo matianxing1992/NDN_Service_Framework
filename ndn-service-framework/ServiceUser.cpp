@@ -3376,6 +3376,7 @@ namespace ndn_service_framework
                                            const ndn::Name& serviceName,
                                            TargetedTokenPair& pair)
     {
+        std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
         auto poolIt =
             m_targetedTokenPools.find(makeTargetedTokenPoolKey(providerName, serviceName));
         if (poolIt == m_targetedTokenPools.end() || poolIt->second.empty()) {
@@ -3398,6 +3399,7 @@ namespace ndn_service_framework
             return;
         }
 
+        std::lock_guard<std::mutex> lock(m_targetedTokenPoolsMutex);
         auto& pool =
             m_targetedTokenPools[makeTargetedTokenPoolKey(providerName, serviceName)];
         const auto& tokens = responseMessage.getTokens();

@@ -1,5 +1,7 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
+#include <cstdlib>
+
 namespace ndn_service_framework::test {
 
 BOOST_AUTO_TEST_SUITE(GenericDynamicApi)
@@ -225,6 +227,55 @@ BOOST_AUTO_TEST_CASE(TargetedBootstrapExecutesAndReturnsTokenBatch)
   BOOST_CHECK_EQUAL(response.getTokens().at("targeted.count"), "8");
   BOOST_CHECK(response.getTokens().find("targeted.0.provider") != response.getTokens().end());
   BOOST_CHECK(response.getTokens().find("targeted.0.user") != response.getTokens().end());
+}
+
+BOOST_AUTO_TEST_CASE(TargetedBootstrapUsesConfiguredBoundedTokenBatch)
+{
+  ::setenv("NDNSF_TARGETED_TOKEN_BATCH_SIZE", "3", 1);
+  struct RestoreEnv {
+    ~RestoreEnv()
+    {
+      ::unsetenv("NDNSF_TARGETED_TOKEN_BATCH_SIZE");
+    }
+  } restoreEnv;
+
+  ndn::security::KeyChain keyChain("pib-memory:targeted-provider-config",
+                                   "tpm-memory:targeted-provider-config");
+  ndn::DummyClientFace face(keyChain);
+  const ndn::Name providerName("/test/provider/configured");
+  const ndn::Name requesterName("/test/user/configured");
+  const ndn::Name serviceName("/Repo/ObjectStore");
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-configured"));
+  LocalServiceProvider provider(face,
+                                ndn::Name("/test/group-configured"),
+                                providerCert,
+                                aaCert,
+                                "examples/trust-any.conf");
+  provider.applyPermissionResponse(
+    makePermissionResponse(providerName,
+                           tlv::ProviderPermission,
+                           providerName,
+                           serviceName));
+  provider.addTargetedService(
+    serviceName,
+    [](const RequestMessage&) {
+      ResponseMessage response;
+      response.setStatus(true);
+      return response;
+    });
+
+  auto request = makeRequestMessageWithUserToken("store", "user-token");
+  request.setRequestMode(tlv::TargetedBootstrapRequest);
+  request.setTargetProvider(providerName);
+  const auto response = provider.handleDecryptedRequestByName(
+    makeRequestNameV2(requesterName, serviceName, ndn::Name("/configured-batch")),
+    request);
+
+  BOOST_REQUIRE(response.getStatus());
+  BOOST_CHECK_EQUAL(response.getTokens().at("targeted.count"), "3");
+  BOOST_CHECK(response.getTokens().find("targeted.2.provider") != response.getTokens().end());
+  BOOST_CHECK(response.getTokens().find("targeted.3.provider") == response.getTokens().end());
 }
 
 BOOST_AUTO_TEST_CASE(TargetedServiceConsumesCachedTokenForFastPath)
