@@ -1,5 +1,6 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/CertificateBootstrap.hpp"
+#include "ndn-service-framework/ExecutionLease.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -3047,6 +3048,127 @@ private:
 
 PYBIND11_MODULE(_ndnsf, m)
 {
+  py::enum_<nsf::ExecutionLeaseState>(m, "ExecutionLeaseState")
+    .value("PREPARED", nsf::ExecutionLeaseState::Prepared)
+    .value("COMMITTED", nsf::ExecutionLeaseState::Committed)
+    .value("EXECUTING", nsf::ExecutionLeaseState::Executing)
+    .value("ABORTED", nsf::ExecutionLeaseState::Aborted)
+    .value("RELEASED", nsf::ExecutionLeaseState::Released)
+    .value("EXPIRED", nsf::ExecutionLeaseState::Expired);
+
+  py::class_<nsf::GenericExecutionLease>(m, "GenericExecutionLease")
+    .def(py::init<>())
+    .def_readwrite("schema", &nsf::GenericExecutionLease::schema)
+    .def_readwrite("lease_id", &nsf::GenericExecutionLease::leaseId)
+    .def_readwrite("provider_name", &nsf::GenericExecutionLease::providerName)
+    .def_readwrite("provider_epoch", &nsf::GenericExecutionLease::providerEpoch)
+    .def_readwrite("requester_name", &nsf::GenericExecutionLease::requesterName)
+    .def_readwrite("request_id", &nsf::GenericExecutionLease::requestId)
+    .def_readwrite("service_name", &nsf::GenericExecutionLease::serviceName)
+    .def_readwrite("plan_digest", &nsf::GenericExecutionLease::planDigest)
+    .def_readwrite("resource_binding_schema",
+                   &nsf::GenericExecutionLease::resourceBindingSchema)
+    .def_property("resource_binding_proof",
+                  [] (const nsf::GenericExecutionLease& lease) {
+                    return toPyBytes(lease.resourceBindingProof);
+                  },
+                  [] (nsf::GenericExecutionLease& lease, const py::bytes& value) {
+                    lease.resourceBindingProof = toBuffer(value);
+                  })
+    .def_readwrite("conflict_keys", &nsf::GenericExecutionLease::conflictKeys)
+    .def_readwrite("state", &nsf::GenericExecutionLease::state)
+    .def_readwrite("expires_at_ms", &nsf::GenericExecutionLease::expiresAtMs)
+    .def_readwrite("execution_deadline_ms",
+                   &nsf::GenericExecutionLease::executionDeadlineMs)
+    .def_readwrite("idempotency_key", &nsf::GenericExecutionLease::idempotencyKey);
+
+  py::class_<nsf::ExecutionLeaseBinding>(m, "ExecutionLeaseBinding")
+    .def(py::init<>())
+    .def_readwrite("requester_name", &nsf::ExecutionLeaseBinding::requesterName)
+    .def_readwrite("request_id", &nsf::ExecutionLeaseBinding::requestId)
+    .def_readwrite("service_name", &nsf::ExecutionLeaseBinding::serviceName)
+    .def_readwrite("plan_digest", &nsf::ExecutionLeaseBinding::planDigest)
+    .def_readwrite("resource_binding_schema",
+                   &nsf::ExecutionLeaseBinding::resourceBindingSchema)
+    .def_property("resource_binding_proof",
+                  [] (const nsf::ExecutionLeaseBinding& binding) {
+                    return toPyBytes(binding.resourceBindingProof);
+                  },
+                  [] (nsf::ExecutionLeaseBinding& binding, const py::bytes& value) {
+                    binding.resourceBindingProof = toBuffer(value);
+                  });
+
+  py::class_<nsf::ExecutionLeaseResult>(m, "ExecutionLeaseResult")
+    .def_readonly("status", &nsf::ExecutionLeaseResult::status)
+    .def_readonly("operation", &nsf::ExecutionLeaseResult::operation)
+    .def_readonly("reason_code", &nsf::ExecutionLeaseResult::reasonCode)
+    .def_readonly("lease", &nsf::ExecutionLeaseResult::lease)
+    .def_readonly("retry_after_ms", &nsf::ExecutionLeaseResult::retryAfterMs)
+    .def_readonly("idempotent_replay",
+                  &nsf::ExecutionLeaseResult::idempotentReplay);
+
+  py::class_<nsf::ExecutionLeaseCounters>(m, "ExecutionLeaseCounters")
+    .def_readonly("prepared", &nsf::ExecutionLeaseCounters::prepared)
+    .def_readonly("committed", &nsf::ExecutionLeaseCounters::committed)
+    .def_readonly("activated", &nsf::ExecutionLeaseCounters::activated)
+    .def_readonly("aborted", &nsf::ExecutionLeaseCounters::aborted)
+    .def_readonly("released", &nsf::ExecutionLeaseCounters::released)
+    .def_readonly("expired", &nsf::ExecutionLeaseCounters::expired)
+    .def_readonly("renewed", &nsf::ExecutionLeaseCounters::renewed)
+    .def_readonly("idempotent_replay",
+                  &nsf::ExecutionLeaseCounters::idempotentReplay)
+    .def_readonly("conflict", &nsf::ExecutionLeaseCounters::conflict)
+    .def_readonly("stale_epoch", &nsf::ExecutionLeaseCounters::staleEpoch)
+    .def_readonly("cleanup_timeout", &nsf::ExecutionLeaseCounters::cleanupTimeout)
+    .def_readonly("rejected_by_reason",
+                  &nsf::ExecutionLeaseCounters::rejectedByReason)
+    .def_readonly("active_prepared", &nsf::ExecutionLeaseCounters::activePrepared)
+    .def_readonly("active_committed", &nsf::ExecutionLeaseCounters::activeCommitted)
+    .def_readonly("active_executing", &nsf::ExecutionLeaseCounters::activeExecuting);
+
+  py::class_<nsf::ProviderExecutionLeaseTable>(m, "ProviderExecutionLeaseTable")
+    .def(py::init<std::string>(), py::arg("provider_epoch") = "")
+    .def_property_readonly("provider_epoch",
+                           &nsf::ProviderExecutionLeaseTable::providerEpoch)
+    .def("prepare", &nsf::ProviderExecutionLeaseTable::prepare,
+         py::arg("lease"), py::arg("now_ms"))
+    .def("commit", &nsf::ProviderExecutionLeaseTable::commit,
+         py::arg("lease_id"), py::arg("provider_epoch"),
+         py::arg("idempotency_key"), py::arg("now_ms"))
+    .def("validate_and_activate",
+         &nsf::ProviderExecutionLeaseTable::validateAndActivate,
+         py::arg("lease_id"), py::arg("provider_epoch"), py::arg("binding"),
+         py::arg("idempotency_key"), py::arg("now_ms"),
+         py::arg("execution_deadline_ms"))
+    .def("validate", &nsf::ProviderExecutionLeaseTable::validate,
+         py::arg("lease_id"), py::arg("provider_epoch"), py::arg("binding"),
+         py::arg("now_ms"))
+    .def("abort", &nsf::ProviderExecutionLeaseTable::abort,
+         py::arg("lease_id"), py::arg("provider_epoch"),
+         py::arg("idempotency_key"), py::arg("now_ms"))
+    .def("renew", &nsf::ProviderExecutionLeaseTable::renew,
+         py::arg("lease_id"), py::arg("provider_epoch"),
+         py::arg("idempotency_key"), py::arg("now_ms"),
+         py::arg("expires_at_ms"))
+    .def("release", &nsf::ProviderExecutionLeaseTable::release,
+         py::arg("lease_id"), py::arg("provider_epoch"),
+         py::arg("idempotency_key"), py::arg("now_ms"))
+    .def("cleanup_expired", &nsf::ProviderExecutionLeaseTable::cleanupExpired,
+         py::arg("now_ms"))
+    .def("find", &nsf::ProviderExecutionLeaseTable::find,
+         py::arg("lease_id"))
+    .def("has_active_conflict_key",
+         &nsf::ProviderExecutionLeaseTable::hasActiveConflictKey,
+         py::arg("conflict_key"), py::arg("now_ms"))
+    .def("has_pinned_binding_proof",
+         [] (nsf::ProviderExecutionLeaseTable& table,
+             const py::bytes& proof, uint64_t nowMs) {
+           return table.hasPinnedBindingProof(toBuffer(proof), nowMs);
+         },
+         py::arg("resource_binding_proof"), py::arg("now_ms"))
+    .def("counters", &nsf::ProviderExecutionLeaseTable::counters,
+         py::arg("now_ms"));
+
   m.def("encode_large_data_reference_payload",
         [](const std::string& dataName,
            const std::string& objectType,

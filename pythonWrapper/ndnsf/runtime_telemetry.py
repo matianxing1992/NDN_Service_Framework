@@ -18,6 +18,16 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import _ndnsf
+
+
+ExecutionLeaseState = _ndnsf.ExecutionLeaseState
+GenericExecutionLease = _ndnsf.GenericExecutionLease
+ExecutionLeaseBinding = _ndnsf.ExecutionLeaseBinding
+ExecutionLeaseResult = _ndnsf.ExecutionLeaseResult
+ExecutionLeaseCounters = _ndnsf.ExecutionLeaseCounters
+ProviderExecutionLeaseTable = _ndnsf.ProviderExecutionLeaseTable
+
 
 # ---------------------------------------------------------------------------
 # Rate limiter (token bucket)

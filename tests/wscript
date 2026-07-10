@@ -17,6 +17,7 @@ def build(bld):
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/Stream.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
+                            'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
                             'ndn-service-framework/common.cpp',
