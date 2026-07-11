@@ -1510,7 +1510,7 @@ public:
     m_acceptedFrameWidth = requestedWidth;
     m_encoderQuality = qualityForBitrate(m_acceptedBitrateKbps);
     m_fecDataShards = defaultFecDataShardsForBitrate(m_acceptedBitrateKbps.load());
-    m_fecParityShards = 1;
+    m_fecParityShards = parseVideoFecParityShards(requestFields);
     m_restartEncoder = true;
     ensureFrameFilterRegistered();
     m_streamId = "stream-" + std::to_string(nowMilliseconds());

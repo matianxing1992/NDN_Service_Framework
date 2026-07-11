@@ -124,6 +124,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Pressure duration before auto-after-pressure applies a bitrate change.")
     parser.add_argument("--video-width", type=int, default=480,
                         help="Requested encoded frame width passed to the drone video service.")
+    parser.add_argument("--video-fec-parity-shards", type=int, default=1,
+                        choices=(0, 1),
+                        help="Requested UAV XOR parity shards per video FEC group.")
     parser.add_argument("--output-dir", default=str(REPO / "results/uav_gui_minindn"))
     parser.add_argument("--nfd-log-level", default="WARN")
     parser.add_argument("--quick-smoke", action="store_true",
@@ -1018,6 +1021,7 @@ def main() -> int:
             "--video-bitrate-policy", args.video_bitrate_policy,
             "--video-bitrate-auto-pressure-ms", str(args.video_bitrate_auto_pressure_ms),
             "--video-width", str(args.video_width),
+            "--video-fec-parity-shards", str(args.video_fec_parity_shards),
             "--patrol-drones", ",".join(drone_id for drone_id, _ in drones),
             "--no-cert-dialog",
         ]

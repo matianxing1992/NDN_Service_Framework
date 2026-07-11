@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run matched UAV video stream parity acceptance campaigns in MiniNDN."""
+"""Run matched UAV H264/FEC/control acceptance campaigns in MiniNDN."""
 
 from __future__ import annotations
 
@@ -12,14 +12,17 @@ import re
 import statistics
 import subprocess
 import sys
-from typing import Any
+import time
+from typing import Any, Iterable
 
 
 REPO = Path(__file__).resolve().parents[1]
 LAUNCHER = REPO / "Experiments/NDNSF_UAV_GUI_Minindn.py"
-DEFAULT_TOPOLOGY = REPO / "Experiments/Topology/UAV_Stream_Parity_5pct.conf"
 ADAPTIVE_MARKER = "GS_VIDEO_ADAPTIVE_STATE"
 FIELD_RE = re.compile(r"([a-z_]+)=([^\s]+)")
+LOG_TIME_RE = re.compile(r"^(\d+(?:\.\d+)?)\s")
+DECODED_RE = re.compile(r"GS_DECODED_FRAMES count=(\d+)")
+PARITY_RE = re.compile(r"fec_parity_shards=(\d+)")
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -37,25 +40,139 @@ def fields_from_line(line: str) -> dict[str, str]:
     return {key: value for key, value in FIELD_RE.findall(line)}
 
 
-def parse_run(run_dir: Path, returncode: int, command: list[str]) -> dict[str, Any]:
+def parse_int_csv(value: str, *, minimum: int, maximum: int) -> list[int]:
+    values: list[int] = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        parsed = int(item)
+        if parsed < minimum or parsed > maximum:
+            raise ValueError(f"value {parsed} outside [{minimum}, {maximum}]")
+        if parsed not in values:
+            values.append(parsed)
+    if not values:
+        raise ValueError("at least one value is required")
+    return values
+
+
+def campaign_cells(losses: Iterable[int], parity_values: Iterable[int],
+                   runs: int) -> list[tuple[int, int, int]]:
+    return [
+        (loss, parity, repetition)
+        for loss in losses
+        for parity in parity_values
+        for repetition in range(1, runs + 1)
+    ]
+
+
+def topology_text(loss_percent: int, *, delay_ms: int = 1,
+                  bandwidth_mbps: int = 1000) -> str:
+    return (
+        "[nodes]\n"
+        "memphis:\n"
+        "ucla:\n\n"
+        "[links]\n"
+        f"memphis:ucla delay={delay_ms}ms bw={bandwidth_mbps} "
+        f"loss={loss_percent}\n"
+    )
+
+
+def build_command(*, run_dir: Path, topology: Path, duration_seconds: int,
+                  fec_parity_shards: int, include_mavlink: bool) -> list[str]:
+    timeout_seconds = max(180, duration_seconds + 120)
+    command = [
+        "sudo", "-n", "-E", "timeout", f"{timeout_seconds}s", "xvfb-run", "-a",
+        sys.executable, str(LAUNCHER),
+        "--topology-file", str(topology),
+        "--controller-node", "memphis",
+        "--gs-node", "memphis",
+        "--drone-node", "ucla",
+        "--drone-headless",
+        "--camera-mode", "file",
+        "--no-virtual-camera",
+        "--auto-video-test",
+        "--auto-stop-seconds", str(duration_seconds),
+        "--auto-start-delay-ms", "1000",
+        "--video-bitrate-kbps", "1200",
+        "--video-width", "320",
+        "--video-fec-parity-shards", str(fec_parity_shards),
+        "--output-dir", str(run_dir),
+        "--nfd-log-level", "WARN",
+        "--no-cli",
+        "--no-xhost",
+    ]
+    if include_mavlink:
+        command.append("--auto-mavlink-test")
+    return command
+
+
+def _line_timestamp(line: str) -> float | None:
+    match = LOG_TIME_RE.match(line)
+    return float(match.group(1)) if match else None
+
+
+def parse_run(run_dir: Path, returncode: int, command: list[str], *,
+              loss_percent: int = 5, fec_parity_shards: int = 1,
+              repetition: int = 1, duration_seconds: int = 0,
+              include_mavlink: bool = False,
+              elapsed_seconds: float = 0.0) -> dict[str, Any]:
     gs_log = run_dir / "ground-station.log"
     text = gs_log.read_text(encoding="utf-8", errors="replace") if gs_log.exists() else ""
+    lines = text.splitlines()
     snapshots = [
         fields_from_line(line)
-        for line in text.splitlines()
+        for line in lines
         if ADAPTIVE_MARKER in line
     ]
 
     def integer_values(field: str) -> list[int]:
         values: list[int] = []
         for snapshot in snapshots:
+            if field not in snapshot:
+                continue
             try:
-                values.append(int(snapshot.get(field, "0")))
+                values.append(int(snapshot[field]))
             except ValueError:
                 continue
         return values
 
     rtts = [float(value) for value in integer_values("rtt_ms")]
+    decoded_frames = [int(value) for value in DECODED_RE.findall(text)]
+    parity_values = [
+        int(match.group(1))
+        for line in lines if "GS_RESPONSE" in line
+        for match in [PARITY_RE.search(line)] if match
+    ]
+    start_times = [
+        timestamp for line in lines
+        if "GS_RESPONSE" in line and "status=streaming" in line
+        for timestamp in [_line_timestamp(line)] if timestamp is not None
+    ]
+    stop_times = [
+        timestamp for line in lines
+        if ("GS_VIDEO_ADAPTIVE_STATE reason=stop-ack" in line or
+            "GS_VIDEO_ADAPTIVE_STATE reason=stop-requested" in line)
+        for timestamp in [_line_timestamp(line)] if timestamp is not None
+    ]
+    stream_duration = (
+        max(0.0, stop_times[-1] - start_times[0])
+        if start_times and stop_times else 0.0
+    )
+    arm = f"MAVLink arm drone=A accepted=true" in text
+    takeoff = f"MAVLink takeoff drone=A accepted=true" in text
+    land = f"MAVLink land drone=A accepted=true" in text
+    controls_ok = not include_mavlink or (arm and takeoff and land)
+    accepted_parity = parity_values[-1] if parity_values else -1
+    duration_ok = duration_seconds <= 0 or stream_duration >= duration_seconds * 0.90
+    completion = (
+        returncode == 0 and
+        max(decoded_frames, default=0) >= 30 and
+        "GS_GUI_EXIT rc=0" in text and
+        accepted_parity == fec_parity_shards and
+        controls_ok and duration_ok
+    )
+
     pending_chunks = integer_values("pending_chunks")
     pending_bytes = integer_values("pending_bytes")
     decoded_gaps = integer_values("decoded_frame_gap")
@@ -63,17 +180,25 @@ def parse_run(run_dir: Path, returncode: int, command: list[str]) -> dict[str, A
     nacks = integer_values("nacks")
     duplicates = integer_values("duplicates")
     fec_recovered = integer_values("fec_recovered_chunks")
-    completion = (
-        returncode == 0 and
-        "GS_DECODED_FRAMES count=30" in text and
-        "GS_GUI_EXIT rc=0" in text
-    )
     return {
+        "runId": f"loss-{loss_percent:02d}-fec-{fec_parity_shards}-run-{repetition:02d}",
         "runDirectory": str(run_dir),
         "returncode": returncode,
         "command": command,
+        "lossPercent": loss_percent,
+        "fecParityShards": fec_parity_shards,
+        "acceptedFecParityShards": accepted_parity,
+        "repetition": repetition,
+        "durationSeconds": duration_seconds,
+        "streamDurationSeconds": stream_duration,
+        "elapsedSeconds": elapsed_seconds,
         "completion": completion,
+        "durationAccepted": duration_ok,
         "adaptiveSnapshotCount": len(snapshots),
+        "decodedFrames": max(decoded_frames, default=0),
+        "mavlinkArm": arm,
+        "mavlinkTakeoff": takeoff,
+        "mavlinkLand": land,
         "staleSessionRejectCount": text.count("GS_VIDEO_STALE_SESSION_"),
         "staleStreamRejectCount": text.count("GS_VIDEO_STALE_STREAM_"),
         "fecRecoveryLogCount": text.count("GS_VIDEO_FEC_RECOVERED"),
@@ -89,65 +214,118 @@ def parse_run(run_dir: Path, returncode: int, command: list[str]) -> dict[str, A
     }
 
 
-def write_csv(path: Path, runs: list[dict[str, Any]]) -> None:
-    fields = [
-        "runDirectory", "returncode", "completion", "adaptiveSnapshotCount",
-        "staleSessionRejectCount", "staleStreamRejectCount",
-        "fecRecoveryLogCount", "fecRecoveredChunks", "maxPendingChunks",
-        "maxPendingBytes", "maxDecodedFrameGap", "maxTimeouts", "maxNacks",
-        "maxDuplicates", "rttP50Ms", "rttP95Ms",
-    ]
+RUN_FIELDS = [
+    "runId", "runDirectory", "returncode", "lossPercent", "fecParityShards",
+    "acceptedFecParityShards", "repetition", "durationSeconds",
+    "streamDurationSeconds", "elapsedSeconds", "completion",
+    "durationAccepted", "adaptiveSnapshotCount", "decodedFrames",
+    "mavlinkArm", "mavlinkTakeoff", "mavlinkLand",
+    "staleSessionRejectCount", "staleStreamRejectCount",
+    "fecRecoveryLogCount", "fecRecoveredChunks", "maxPendingChunks",
+    "maxPendingBytes", "maxDecodedFrameGap", "maxTimeouts", "maxNacks",
+    "maxDuplicates", "rttP50Ms", "rttP95Ms",
+]
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
     with path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
-        for run in runs:
-            writer.writerow({field: run.get(field, "") for field in fields})
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fields})
+
+
+def aggregate_treatments(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for run in runs:
+        grouped.setdefault(
+            (int(run["lossPercent"]), int(run["fecParityShards"])), []
+        ).append(run)
+    aggregates: list[dict[str, Any]] = []
+    for (loss, parity), rows in sorted(grouped.items()):
+        aggregates.append({
+            "lossPercent": loss,
+            "fecParityShards": parity,
+            "runCount": len(rows),
+            "completedRuns": sum(bool(row["completion"]) for row in rows),
+            "completionRate": sum(bool(row["completion"]) for row in rows) / len(rows),
+            "meanDecodedFrames": statistics.fmean(row["decodedFrames"] for row in rows),
+            "meanFecRecoveredChunks": statistics.fmean(
+                row["fecRecoveredChunks"] for row in rows),
+            "meanTimeouts": statistics.fmean(row["maxTimeouts"] for row in rows),
+            "maxDecodedFrameGap": max(row["maxDecodedFrameGap"] for row in rows),
+            "maxPendingChunks": max(row["maxPendingChunks"] for row in rows),
+            "maxPendingBytes": max(row["maxPendingBytes"] for row in rows),
+            "meanRttP50Ms": statistics.fmean(row["rttP50Ms"] for row in rows),
+            "meanRttP95Ms": statistics.fmean(row["rttP95Ms"] for row in rows),
+            "controlsPassed": sum(
+                row["mavlinkArm"] and row["mavlinkTakeoff"] and row["mavlinkLand"]
+                for row in rows),
+        })
+    return aggregates
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--topology", default=str(DEFAULT_TOPOLOGY))
-    parser.add_argument("--auto-stop-seconds", type=int, default=8)
+    parser.add_argument("--loss-percentages", default="0,5")
+    parser.add_argument("--fec-parity-shards", default="0,1")
+    parser.add_argument("--auto-stop-seconds", type=int, default=60)
+    parser.add_argument("--link-delay-ms", type=int, default=1)
+    parser.add_argument("--bandwidth-mbps", type=int, default=1000)
     parser.add_argument("--max-pending-chunks", type=int, default=48)
     parser.add_argument("--max-pending-bytes", type=int, default=16 * 1024 * 1024)
+    parser.add_argument("--no-mavlink", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.runs < 1:
         raise SystemExit("--runs must be positive")
+    if args.auto_stop_seconds < 1:
+        raise SystemExit("--auto-stop-seconds must be positive")
+
+    try:
+        losses = parse_int_csv(args.loss_percentages, minimum=0, maximum=100)
+        parity_values = parse_int_csv(args.fec_parity_shards, minimum=0, maximum=1)
+    except (ValueError, TypeError) as exc:
+        raise SystemExit(str(exc)) from exc
 
     out_dir = Path(args.out).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    topology = Path(args.topology).expanduser().resolve()
-    runs: list[dict[str, Any]] = []
+    topology_dir = out_dir / "topologies"
+    topology_dir.mkdir(parents=True, exist_ok=True)
+    topologies: dict[int, Path] = {}
+    for loss in losses:
+        topology = topology_dir / f"uav-loss-{loss:02d}.conf"
+        topology.write_text(topology_text(
+            loss, delay_ms=args.link_delay_ms,
+            bandwidth_mbps=args.bandwidth_mbps), encoding="utf-8")
+        topologies[loss] = topology
 
-    for index in range(1, args.runs + 1):
-        run_dir = out_dir / f"run-{index:02d}"
-        command = [
-            "sudo", "-n", "-E", "timeout", "120s", "xvfb-run", "-a",
-            sys.executable, str(LAUNCHER),
-            "--topology-file", str(topology),
-            "--controller-node", "memphis",
-            "--gs-node", "memphis",
-            "--drone-node", "ucla",
-            "--drone-headless",
-            "--camera-mode", "file",
-            "--no-virtual-camera",
-            "--auto-video-test",
-            "--auto-stop-seconds", str(args.auto_stop_seconds),
-            "--auto-start-delay-ms", "1000",
-            "--video-bitrate-kbps", "1200",
-            "--video-width", "320",
-            "--output-dir", str(run_dir),
-            "--nfd-log-level", "WARN",
-            "--no-cli",
-            "--no-xhost",
-        ]
+    runs: list[dict[str, Any]] = []
+    include_mavlink = not args.no_mavlink
+    for loss, parity, repetition in campaign_cells(losses, parity_values, args.runs):
+        run_id = f"loss-{loss:02d}-fec-{parity}-run-{repetition:02d}"
+        run_dir = out_dir / run_id
+        command = build_command(
+            run_dir=run_dir,
+            topology=topologies[loss],
+            duration_seconds=args.auto_stop_seconds,
+            fec_parity_shards=parity,
+            include_mavlink=include_mavlink,
+        )
         if args.dry_run:
-            runs.append({"runDirectory": str(run_dir), "command": command})
+            runs.append({
+                "runId": run_id,
+                "runDirectory": str(run_dir),
+                "lossPercent": loss,
+                "fecParityShards": parity,
+                "repetition": repetition,
+                "durationSeconds": args.auto_stop_seconds,
+                "command": command,
+            })
             continue
         run_dir.mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
         with (run_dir / "campaign-launcher.log").open("w", encoding="utf-8") as output:
             completed = subprocess.run(
                 command,
@@ -157,46 +335,76 @@ def main() -> int:
                 stderr=subprocess.STDOUT,
                 check=False,
             )
-        runs.append(parse_run(run_dir, completed.returncode, command))
+        runs.append(parse_run(
+            run_dir, completed.returncode, command,
+            loss_percent=loss,
+            fec_parity_shards=parity,
+            repetition=repetition,
+            duration_seconds=args.auto_stop_seconds,
+            include_mavlink=include_mavlink,
+            elapsed_seconds=time.monotonic() - started,
+        ))
 
     if args.dry_run:
-        summary = {"status": "DRY_RUN", "topology": str(topology), "runs": runs}
-    else:
-        completed_runs = sum(bool(run["completion"]) for run in runs)
-        bounded = all(
-            int(run["maxPendingChunks"]) <= args.max_pending_chunks and
-            int(run["maxPendingBytes"]) <= args.max_pending_bytes
-            for run in runs
-        )
-        summary = {
-            "status": "SUCCESS" if completed_runs == args.runs and bounded else "FAILURE",
-            "topology": str(topology),
-            "lossPercent": 5,
-            "runCount": args.runs,
-            "completedRuns": completed_runs,
-            "boundedBuffering": bounded,
-            "maxPendingChunksThreshold": args.max_pending_chunks,
-            "maxPendingBytesThreshold": args.max_pending_bytes,
-            "aggregate": {
-                "meanRttP50Ms": statistics.fmean(run["rttP50Ms"] for run in runs),
-                "meanRttP95Ms": statistics.fmean(run["rttP95Ms"] for run in runs),
-                "fecRecoveryLogCount": sum(run["fecRecoveryLogCount"] for run in runs),
-                "maxPendingChunks": max(run["maxPendingChunks"] for run in runs),
-                "maxPendingBytes": max(run["maxPendingBytes"] for run in runs),
-                "maxDecodedFrameGap": max(run["maxDecodedFrameGap"] for run in runs),
-                "staleRejectCount": sum(
-                    run["staleSessionRejectCount"] + run["staleStreamRejectCount"]
-                    for run in runs
-                ),
+        summary: dict[str, Any] = {
+            "status": "DRY_RUN",
+            "constants": {
+                "lossPercentages": losses,
+                "fecParityShards": parity_values,
+                "runsPerTreatment": args.runs,
+                "durationSeconds": args.auto_stop_seconds,
+                "includeMavlink": include_mavlink,
+                "linkDelayMs": args.link_delay_ms,
+                "bandwidthMbps": args.bandwidth_mbps,
+                "videoBitrateKbps": 1200,
+                "videoWidth": 320,
             },
             "runs": runs,
         }
-        write_csv(out_dir / "campaign-summary.csv", runs)
+    else:
+        for run in runs:
+            run["bufferingAccepted"] = (
+                int(run["maxPendingChunks"]) <= args.max_pending_chunks and
+                int(run["maxPendingBytes"]) <= args.max_pending_bytes
+            )
+            run["staleAccepted"] = (
+                int(run["staleSessionRejectCount"]) > 0 or
+                int(run["staleStreamRejectCount"]) > 0
+            )
+            run["accepted"] = (
+                bool(run["completion"]) and bool(run["bufferingAccepted"]) and
+                not bool(run["staleAccepted"])
+            )
+        treatments = aggregate_treatments(runs)
+        all_accepted = all(bool(run["accepted"]) for run in runs)
+        summary = {
+            "status": "SUCCESS" if all_accepted else "FAILURE",
+            "constants": {
+                "lossPercentages": losses,
+                "fecParityShards": parity_values,
+                "runsPerTreatment": args.runs,
+                "durationSeconds": args.auto_stop_seconds,
+                "includeMavlink": include_mavlink,
+                "linkDelayMs": args.link_delay_ms,
+                "bandwidthMbps": args.bandwidth_mbps,
+                "videoBitrateKbps": 1200,
+                "videoWidth": 320,
+                "maxPendingChunks": args.max_pending_chunks,
+                "maxPendingBytes": args.max_pending_bytes,
+                "automaticRetry": False,
+            },
+            "runCount": len(runs),
+            "acceptedRuns": sum(bool(run["accepted"]) for run in runs),
+            "treatments": treatments,
+            "runs": runs,
+        }
+        write_csv(out_dir / "campaign-runs.csv", runs,
+                  RUN_FIELDS + ["bufferingAccepted", "staleAccepted", "accepted"])
+        write_csv(out_dir / "campaign-treatments.csv", treatments,
+                  list(treatments[0]) if treatments else [])
 
     (out_dir / "campaign-summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary["status"] in {"SUCCESS", "DRY_RUN"} else 1
 

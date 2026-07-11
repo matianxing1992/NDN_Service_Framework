@@ -423,6 +423,13 @@ main(int argc, char** argv)
       std::stoull(getConfigOption(argc, argv, appConfig, "--video-bitrate-kbps", "video-bitrate-kbps", "8000")));
     const auto videoFrameWidth = static_cast<uint64_t>(
       std::stoull(getConfigOption(argc, argv, appConfig, "--video-width", "video-width", "480")));
+    const auto videoFecParityShards = static_cast<uint64_t>(
+      std::stoull(getConfigOption(argc, argv, appConfig,
+                                  "--video-fec-parity-shards",
+                                  "video-fec-parity-shards", "1")));
+    if (videoFecParityShards > 1) {
+      throw std::invalid_argument("--video-fec-parity-shards must be 0 or 1");
+    }
     const std::string yoloModel = getConfigOption(argc, argv, appConfig, "--yolo-model", "yolo-model", "yolo26n.pt");
     const std::string yoloScript = getConfigOption(
       argc, argv, appConfig, "--yolo-script", "yolo-script",
@@ -559,7 +566,8 @@ main(int argc, char** argv)
 
     auto runtime = std::make_unique<GroundStationServiceContainer>(
       serveCertificates, ackTimeoutMs, timeoutMs, config, targetDroneId,
-      videoBitrateKbps, videoFrameWidth, patrolDroneIds, yoloModel, yoloScript,
+      videoBitrateKbps, videoFrameWidth, videoFecParityShards,
+      patrolDroneIds, yoloModel, yoloScript,
       yoloWorkerScript, linkStaleMs, linkLostMs, lostLinkAction,
       videoBitratePolicy, videoBitrateAutoPressureMs, missionPlanFile,
       operatorId, operatorLeaseDrone, operatorLeaseScope, operatorLeaseTtlMs,

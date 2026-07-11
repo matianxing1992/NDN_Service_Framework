@@ -49,6 +49,8 @@ using ndnsf::examples::uav::computeVideoAdaptivePolicy;
 using ndnsf::examples::uav::decodeVideoPacket;
 using ndnsf::examples::uav::encodeVideoPacket;
 using ndnsf::examples::uav::loadMissionPlanDocument;
+using ndnsf::examples::uav::makeVideoStartFields;
+using ndnsf::examples::uav::parseVideoFecParityShards;
 using ndnsf::examples::uav::saveMissionPlanDocument;
 using ndnsf::examples::uav::streamChunkToVideoPacket;
 using ndnsf::examples::uav::toServiceOperationStatus;
@@ -82,6 +84,28 @@ makeSafeState()
   safety.manualNeutralSent = "true";
   safety.detail = "ok";
   return safety;
+}
+
+BOOST_AUTO_TEST_CASE(UavVideoFecParityRequestContract)
+{
+  const auto disabled = makeVideoStartFields(30, 1200, 320, 0);
+  BOOST_CHECK_EQUAL(disabled.at("type"), "video-control");
+  BOOST_CHECK_EQUAL(disabled.at("action"), "start");
+  BOOST_CHECK_EQUAL(disabled.at("fec_parity_shards"), "0");
+  BOOST_CHECK_EQUAL(parseVideoFecParityShards(disabled), 0);
+
+  const auto enabled = makeVideoStartFields(30, 1200, 320, 1);
+  BOOST_CHECK_EQUAL(enabled.at("fec_parity_shards"), "1");
+  BOOST_CHECK_EQUAL(parseVideoFecParityShards(enabled), 1);
+  BOOST_CHECK_EQUAL(parseVideoFecParityShards(Fields{}), 1);
+
+  BOOST_CHECK_THROW(makeVideoStartFields(30, 1200, 320, 2), std::invalid_argument);
+  BOOST_CHECK_THROW(
+    parseVideoFecParityShards({{"fec_parity_shards", "2"}}),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    parseVideoFecParityShards({{"fec_parity_shards", "not-a-number"}}),
+    std::invalid_argument);
 }
 
 MissionState

@@ -7,7 +7,7 @@ public:
   GroundStationServiceContainer(bool serveCertificates, int ackTimeoutMs, int timeoutMs,
                        UavRuntimeConfig config,
                        std::string targetDroneId, uint64_t videoBitrateKbps,
-                       uint64_t videoFrameWidth,
+                       uint64_t videoFrameWidth, uint64_t videoFecParityShards,
                        std::vector<std::string> patrolDroneIds = {},
                        std::string yoloModel = "yolo26n.pt",
                        std::string yoloScript = "NDNSF-UAV-APP/tools/yolo_detect_once.py",
@@ -38,6 +38,7 @@ public:
     , m_targetDroneId(std::move(targetDroneId))
     , m_videoBitrateKbps(videoBitrateKbps)
     , m_videoFrameWidth(videoFrameWidth)
+    , m_videoFecParityShards(videoFecParityShards)
     , m_patrolDroneIds(std::move(patrolDroneIds))
     , m_yoloModel(std::move(yoloModel))
     , m_yoloScript(std::move(yoloScript))
@@ -5451,13 +5452,9 @@ private:
     }
     m_activeStreamId = makeVideoSessionId("live-start", droneId);
     postRequestForDrone(droneId, droneVideoControlService(m_config, droneId),
-                encodeFields({
-                  {"type", "video-control"},
-                  {"action", "start"},
-                  {"fps", std::to_string(VIDEO_FPS)},
-                  {"requested_bitrate_kbps", std::to_string(requestedBitrateKbps)},
-                  {"requested_frame_width", std::to_string(m_videoFrameWidth)},
-                }),
+                encodeFields(makeVideoStartFields(
+                  VIDEO_FPS, requestedBitrateKbps, m_videoFrameWidth,
+                  m_videoFecParityShards)),
                 [this, droneId, requestedBitrateKbps](const std::string& payload) {
                   const auto fields = decodeFields(payload);
                   const auto prefix = fieldOr(fields, "stream_prefix", "");
@@ -8310,6 +8307,7 @@ private:
   std::vector<OperatorAuthorityAlert> m_operatorAuthorityAlerts;
   std::atomic<uint64_t> m_videoBitrateKbps{8000};
   uint64_t m_videoFrameWidth = 480;
+  uint64_t m_videoFecParityShards = 1;
   std::vector<std::string> m_patrolDroneIds;
   mutable std::mutex m_patrolTaskMutex;
   std::string m_activePatrolTaskId;

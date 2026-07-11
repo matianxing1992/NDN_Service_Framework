@@ -5175,6 +5175,41 @@ makeMissionPayload(const std::string& missionId,
   });
 }
 
+Fields
+makeVideoStartFields(uint64_t fps, uint64_t requestedBitrateKbps,
+                     uint64_t requestedFrameWidth, uint64_t fecParityShards)
+{
+  if (fecParityShards > 1) {
+    throw std::invalid_argument("video fec parity shards must be 0 or 1");
+  }
+  return {
+    {"type", "video-control"},
+    {"action", "start"},
+    {"fps", std::to_string(fps)},
+    {"requested_bitrate_kbps", std::to_string(requestedBitrateKbps)},
+    {"requested_frame_width", std::to_string(requestedFrameWidth)},
+    {"fec_parity_shards", std::to_string(fecParityShards)},
+  };
+}
+
+uint64_t
+parseVideoFecParityShards(const Fields& fields, uint64_t fallback)
+{
+  const auto text = fieldOr(fields, "fec_parity_shards", std::to_string(fallback));
+  size_t consumed = 0;
+  uint64_t value = 0;
+  try {
+    value = std::stoull(text, &consumed);
+  }
+  catch (const std::exception&) {
+    throw std::invalid_argument("video fec parity shards must be 0 or 1");
+  }
+  if (consumed != text.size() || value > 1) {
+    throw std::invalid_argument("video fec parity shards must be 0 or 1");
+  }
+  return value;
+}
+
 std::string
 fieldOr(const Fields& fields, const std::string& key, const std::string& fallback)
 {

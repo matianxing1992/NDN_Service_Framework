@@ -1077,6 +1077,13 @@ makeMissionPayload(const std::string& missionId,
                    bool captureRequired,
                    const std::string& objectDetectionService = "/UAV/GS/ObjectDetection");
 
+Fields
+makeVideoStartFields(uint64_t fps, uint64_t requestedBitrateKbps,
+                     uint64_t requestedFrameWidth, uint64_t fecParityShards);
+
+uint64_t
+parseVideoFecParityShards(const Fields& fields, uint64_t fallback = 1);
+
 std::string
 fieldOr(const Fields& fields, const std::string& key, const std::string& fallback);
 

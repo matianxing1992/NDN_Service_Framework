@@ -32,12 +32,14 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             (run_dir / "ground-station.log").write_text(
+                "100.0 INFO GS_RESPONSE status=streaming fec_parity_shards=1\n"
                 "GS_VIDEO_ADAPTIVE_STATE reason=active VideoAdaptive drone=A "
                 "rtt_ms=40 pending_chunks=2 pending_bytes=7200 "
                 "fec_recovered_chunks=1 decoded_frame_gap=0 timeouts=1 "
                 "nacks=0 duplicates=0\n"
                 "GS_VIDEO_FEC_RECOVERED stream=A session=1 frame_seq=2 packet_seq=3\n"
                 "GS_DECODED_FRAMES count=30\n"
+                "101.0 INFO GS_VIDEO_ADAPTIVE_STATE reason=stop-ack state=stopped\n"
                 "GS_GUI_EXIT rc=0\n",
                 encoding="utf-8",
             )
@@ -49,6 +51,63 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         self.assertEqual(summary["maxPendingChunks"], 2)
         self.assertEqual(summary["maxPendingBytes"], 7200)
         self.assertEqual(summary["rttP50Ms"], 40.0)
+
+    def test_primary_matrix_and_command_are_matched(self) -> None:
+        campaign = load_campaign()
+        cells = campaign.campaign_cells([0, 5], [0, 1], 3)
+        self.assertEqual(len(cells), 12)
+        self.assertEqual(cells[0], (0, 0, 1))
+        self.assertEqual(cells[-1], (5, 1, 3))
+
+        command = campaign.build_command(
+            run_dir=Path("/tmp/run"),
+            topology=Path("/tmp/topology.conf"),
+            duration_seconds=60,
+            fec_parity_shards=0,
+            include_mavlink=True,
+        )
+        self.assertIn("--auto-video-test", command)
+        self.assertIn("--auto-mavlink-test", command)
+        parity_index = command.index("--video-fec-parity-shards")
+        self.assertEqual(command[parity_index + 1], "0")
+        duration_index = command.index("--auto-stop-seconds")
+        self.assertEqual(command[duration_index + 1], "60")
+
+    def test_treatment_aggregation_keeps_failed_runs(self) -> None:
+        campaign = load_campaign()
+        runs = [
+            {
+                "lossPercent": 5, "fecParityShards": 1,
+                "completion": True, "decodedFrames": 60,
+                "fecRecoveredChunks": 3, "maxTimeouts": 4,
+                "maxDecodedFrameGap": 0, "maxPendingChunks": 1,
+                "maxPendingBytes": 3600, "rttP50Ms": 20.0,
+                "rttP95Ms": 40.0, "mavlinkArm": True,
+                "mavlinkTakeoff": True, "mavlinkLand": True,
+            },
+            {
+                "lossPercent": 5, "fecParityShards": 1,
+                "completion": False, "decodedFrames": 0,
+                "fecRecoveredChunks": 0, "maxTimeouts": 9,
+                "maxDecodedFrameGap": 2, "maxPendingChunks": 4,
+                "maxPendingBytes": 7200, "rttP50Ms": 0.0,
+                "rttP95Ms": 0.0, "mavlinkArm": False,
+                "mavlinkTakeoff": False, "mavlinkLand": False,
+            },
+        ]
+        aggregate = campaign.aggregate_treatments(runs)[0]
+        self.assertEqual(aggregate["runCount"], 2)
+        self.assertEqual(aggregate["completedRuns"], 1)
+        self.assertEqual(aggregate["completionRate"], 0.5)
+        self.assertEqual(aggregate["maxDecodedFrameGap"], 2)
+
+    def test_invalid_parity_and_loss_values_fail(self) -> None:
+        campaign = load_campaign()
+        self.assertEqual(campaign.parse_int_csv("0,1", minimum=0, maximum=1), [0, 1])
+        with self.assertRaises(ValueError):
+            campaign.parse_int_csv("2", minimum=0, maximum=1)
+        with self.assertRaises(ValueError):
+            campaign.parse_int_csv("", minimum=0, maximum=100)
 
 
 if __name__ == "__main__":
