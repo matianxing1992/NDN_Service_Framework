@@ -16,7 +16,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from ndnsf_distributed_inference import (
+from ndnsf_distributed_inference.experimental.semantic_cache import (
     SemanticCacheDisposition,
     SemanticPatternMeta,
     SemanticServiceCacheEntry,

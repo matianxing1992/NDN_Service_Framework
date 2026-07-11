@@ -14,7 +14,6 @@ export PYTHONPATH="$REPO/NDNSF-DistributedInference:$REPO/pythonWrapper:$REPO/Ex
 echo "=== Starting MiniNDN harness (background) ==="
 sudo -n python3 "$REPO/Experiments/NDNSF_DI_NativeTracer_Minindn.py" \
   --out "$OUT" \
-  --advisory-coordinator \
   --runtime-aware-user-planner \
   --requests "$REQUESTS" \
   --concurrency 1 \

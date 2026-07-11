@@ -24,18 +24,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ndnsf import (
-    COORDINATION_ADVISORY_SERVICE,
-    CoordinationIntent,
-    CoordinationServiceClient,
     NdnMetrics,
-    NdnsdHealthTracker,
     ProviderNetworkMatrix,
     ServiceUser,
     TokenBucket,
     TraceCollector,
     build_network_matrix_from_ndnsd,
 )
-from ndnsf_distributed_inference.retry import RetryPolicy, retry_call
+from ndnsf_distributed_inference.retry import RetryPolicy, RetryReason, retry_call
 from ndnsf_distributed_inference.runtime_v1 import (
     PLACEMENT_STRATEGY_PRESETS,
     filter_feasible_providers,
@@ -79,23 +75,6 @@ def load_service_plan(path: Path, service: str) -> dict:
     return next(item for item in plan["services"] if item["service"] == service)
 
 
-def load_role_assignments(path: str) -> dict[str, dict[str, str]]:
-    if not path:
-        return {}
-    assignments: dict[str, dict[str, str]] = {}
-    with open(path, newline="", encoding="utf-8") as input_file:
-        for row in csv.DictReader(input_file):
-            role = str(row.get("role", "")).strip()
-            provider = str(row.get("provider", "")).strip()
-            if not role or not provider:
-                continue
-            assignments[role] = {
-                "provider": provider,
-                "assignment": str(row.get("assignment", "")).strip(),
-            }
-    return assignments
-
-
 def load_role_assignment_candidates(path: str) -> dict[str, list[dict[str, Any]]]:
     if not path:
         return {}
@@ -111,156 +90,6 @@ def load_role_assignment_candidates(path: str) -> dict[str, list[dict[str, Any]]
                 "assignment": str(row.get("assignment", "")).strip(),
             })
     return candidates
-
-
-def load_fragment_inventory(path: str) -> dict[str, dict[str, dict[str, Any]]]:
-    """Load fragment inventory JSON and convert to fragmentState format.
-
-    Reads ``latestByProviderRole`` from the inventory and builds a dict
-    keyed by provider, then role, with residency/fragmentDigest/readyCostMs.
-    """
-    if not path:
-        return {}
-    try:
-        with Path(path).expanduser().open(encoding="utf-8") as input_file:
-            payload = json.load(input_file)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    latest = payload.get("latestByProviderRole", {})
-    if not isinstance(latest, dict):
-        return {}
-    residency_cost = {
-        "GPU_LOADED": 0.0,
-        "CPU_RESIDENT": 8.0,
-        "DISK_RESIDENT": 35.0,
-        "REPO_AVAILABLE": 120.0,
-        "MISSING": 1_000_000.0,
-    }
-    fragment_state: dict[str, dict[str, dict[str, Any]]] = {}
-    for key, entry in latest.items():
-        if not isinstance(entry, dict):
-            continue
-        provider = str(entry.get("provider", "")).strip()
-        role = str(entry.get("role", "")).strip()
-        if not provider or not role:
-            continue
-        residency = str(entry.get("residency", "MISSING"))
-        fragment_state.setdefault(provider, {})[role] = {
-            "residency": residency,
-            "fragmentDigest": str(entry.get("fragmentDigest", "")),
-            "readyCostMs": residency_cost.get(residency, residency_cost["MISSING"]),
-            "backend": str(entry.get("backend", "")),
-            "path": str(entry.get("path", "")),
-            "observedAtMs": int(entry.get("epochMs", 0)),
-        }
-    return fragment_state
-
-
-def load_runtime_hints(path: str) -> dict[str, Any]:
-    if not path:
-        return {}
-    try:
-        with Path(path).expanduser().open(encoding="utf-8") as input_file:
-            payload = json.load(input_file)
-    except FileNotFoundError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _runtime_hint_for_candidate(runtime_hints: dict[str, Any],
-                                role: str,
-                                provider: str) -> dict[str, Any]:
-    provider_roles = runtime_hints.get("providerRoles", {})
-    if isinstance(provider_roles, dict):
-        direct = provider_roles.get(f"{provider}|{role}")
-        if isinstance(direct, dict):
-            return direct
-    providers = runtime_hints.get("providers", {})
-    if isinstance(providers, dict):
-        provider_payload = providers.get(provider, {})
-        if isinstance(provider_payload, dict):
-            roles = provider_payload.get("roles", {})
-            role_payload = roles.get(role, {}) if isinstance(roles, dict) else {}
-            if isinstance(role_payload, dict):
-                merged = dict(provider_payload)
-                merged.pop("roles", None)
-                merged.update(role_payload)
-                return merged
-            merged = dict(provider_payload)
-            merged.pop("roles", None)
-            return merged
-    return {}
-
-
-def enrich_role_candidates_with_runtime_hints(
-    candidates: dict[str, list[dict[str, Any]]],
-    runtime_hints: dict[str, Any],
-) -> dict[str, list[dict[str, Any]]]:
-    if not runtime_hints:
-        return candidates
-    enriched: dict[str, list[dict[str, Any]]] = {}
-    for role, items in candidates.items():
-        enriched_items = []
-        for item in items:
-            provider = str(item.get("provider", item.get("providerName", ""))).strip()
-            merged = dict(item)
-            hint = _runtime_hint_for_candidate(runtime_hints, role, provider)
-            runtime_hint = hint.get("runtimeHint", hint.get("runtime_hint", {}))
-            if isinstance(runtime_hint, dict):
-                merged["runtimeHint"] = runtime_hint
-            lease_offers = hint.get("leaseOffers", hint.get("lease_offers", []))
-            if isinstance(lease_offers, dict):
-                merged["leaseOffers"] = [lease_offers]
-            elif isinstance(lease_offers, list):
-                merged["leaseOffers"] = [
-                    offer for offer in lease_offers if isinstance(offer, dict)
-                ]
-            for key in (
-                "estimatedDurationMs",
-                "durationMs",
-                "readyCostMs",
-                "estimatedReadyMs",
-                "fragmentDigest",
-                "residency",
-            ):
-                if key in hint:
-                    merged[key] = hint[key]
-            enriched_items.append(merged)
-        enriched[role] = enriched_items
-    return enriched
-
-
-def role_provider_preference_from_advisory(advisory: dict,
-                                           roles: list[dict]) -> str:
-    if not advisory.get("enabled") or advisory.get("status") != "executed":
-        return ""
-    allowed_roles = {
-        str(item.get("role", "")).strip()
-        for item in roles
-        if str(item.get("role", "")).strip()
-    }
-    if not allowed_roles:
-        return ""
-    suggestions = advisory.get("suggestions", [])
-    if not suggestions:
-        return ""
-    first = suggestions[0] if isinstance(suggestions[0], dict) else {}
-    role_assignments = first.get("roleAssignments", {})
-    if not isinstance(role_assignments, dict):
-        return ""
-    preferences = []
-    for role in sorted(allowed_roles):
-        value = role_assignments.get(role)
-        provider = ""
-        if isinstance(value, dict):
-            provider = str(value.get("provider", value.get("providerName", ""))).strip()
-        elif value is not None:
-            provider = str(value).strip()
-        if provider:
-            preferences.append(f"{role}=>{provider}")
-    return ";".join(preferences) + (";" if preferences else "")
 
 
 @contextlib.contextmanager
@@ -448,19 +277,6 @@ def runtime_replan_metadata(args) -> dict:
     }
 
 
-def coordination_metadata(args) -> dict:
-    if not args.coordination_service:
-        return {"coordination": {"enabled": False}}
-    return {
-        "coordination": {
-            "enabled": True,
-            "service": args.coordination_service,
-            "ackTimeoutMs": args.coordination_ack_timeout_ms,
-            "timeoutMs": args.coordination_timeout_ms,
-        }
-    }
-
-
 def effective_timeout_ms(args) -> int:
     fast_fail = int(getattr(args, "overload_fast_fail_timeout_ms", 0) or 0)
     if fast_fail <= 0:
@@ -524,26 +340,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Bounded runtime-aware planner replan attempt budget")
     parser.add_argument("--runtime-aware-replan-reasons", default="",
                         help="Comma-separated diagnostic reasons to record in replan metrics")
-    parser.add_argument("--coordination-service", default="",
-                        help="Optional NDNSF coordination service for advisory planning")
     parser.add_argument("--execution-leases", action="store_true",
                         help="Acquire fail-closed provider execution leases before collaboration")
     parser.add_argument("--assignment-csv", default="",
-                        help="Optional role/provider assignment CSV included in advisory intents")
-    parser.add_argument("--runtime-hints-json", default="",
-                        help=("Optional provider runtime/lease hint snapshot merged "
-                              "into advisory role candidates"))
-    parser.add_argument("--fragment-inventory-json", default="",
-                        help=("Optional provider fragment inventory JSON used to "
-                              "enrich coordination intents with live fragment residency"))
+                        help="Role/provider candidate CSV used for local lease acquisition")
     parser.add_argument("--max-rps", type=float, default=0.0,
                         help="Per-user token-bucket rate limit (0 = unlimited)")
     parser.add_argument("--retry-max-attempts", type=int, default=0,
                         help="Max retry attempts per request (0 = no retry)")
     parser.add_argument("--wait-for-deployment", default="",
                         help="Wait for this deployment_id to become ACTIVE before starting requests")
-    parser.add_argument("--coordination-ack-timeout-ms", type=int, default=800)
-    parser.add_argument("--coordination-timeout-ms", type=int, default=5000)
+    parser.add_argument("--lease-timeout-ms", type=int, default=5000)
     parser.add_argument("--overload-fast-fail-timeout-ms", type=int, default=0,
                         help=("Use this shorter collaboration timeout for overload "
                               "experiments and record fast-fail diagnostics"))
@@ -559,91 +366,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help=argparse.SUPPRESS)
     parser.add_argument("--dry-run", action="store_true")
     return parser
-
-
-def request_advisory_suggestion(user: ServiceUser,
-                                args,
-                                service_plan: dict,
-                                index: int,
-                                observed_ack_runtime: dict[str, dict[str, Any]] | None = None) -> dict:
-    if not args.coordination_service:
-        return {"enabled": False, "mode": "local-placement"}
-    client = CoordinationServiceClient(
-        user,
-        service_name=args.coordination_service,
-        ack_timeout_ms=args.coordination_ack_timeout_ms,
-        timeout_ms=args.coordination_timeout_ms,
-    )
-    started = time.perf_counter()
-    role_assignments = load_role_assignments(args.assignment_csv)
-    role_candidates = load_role_assignment_candidates(args.assignment_csv)
-    runtime_hints = load_runtime_hints(args.runtime_hints_json)
-    role_candidates = enrich_role_candidates_with_runtime_hints(
-        role_candidates,
-        runtime_hints,
-    )
-    fragment_inventory = load_fragment_inventory(args.fragment_inventory_json)
-    intent_payload = {
-        "templateId": service_plan.get("planId", "native-tracer-plan"),
-        "service": args.service,
-        "roles": list(service_plan.get("roles", [])),
-        "roleAssignments": role_assignments,
-        "roleCandidates": role_candidates,
-        "runtimeHintSnapshot": {
-            "enabled": bool(runtime_hints),
-            "schema": runtime_hints.get("schema", "") if runtime_hints else "",
-            "generatedAtMs": runtime_hints.get("generatedAtMs", 0) if runtime_hints else 0,
-        },
-    }
-    if observed_ack_runtime:
-        intent_payload["observedAckRuntime"] = observed_ack_runtime
-    if fragment_inventory:
-        intent_payload["fragmentState"] = fragment_inventory
-    ndnsd_services = user.get_ndnsd_services()
-    if ndnsd_services:
-        health = NdnsdHealthTracker()
-        health.update_from_ndnsd(ndnsd_services)
-        intent_payload["ndnsdProviderState"] = health.snapshot()
-    intent = CoordinationIntent(
-        intent_id=f"{args.user}-intent-{index}",
-        request_id=f"native-tracer-{index}",
-        requester_name=args.user,
-        service_name=args.service,
-        purpose="advisory-planning",
-        nonce=secrets.token_hex(16),
-        expires_at_ms=int(time.time() * 1000) + max(1000, int(args.coordination_timeout_ms)),
-        payload_schema="ndnsf-di-plan-intent-v1",
-        payload=intent_payload,
-    )
-    try:
-        response = client.request([intent], metadata={"windowId": f"native-tracer-{index}"})
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        suggestions = [item.payload for item in response.suggestions]
-        score_breakdowns = [
-            item.score_breakdown for item in response.suggestions
-            if item.score_breakdown
-        ]
-        result = {
-            "enabled": True,
-            "status": "executed",
-            "service": args.coordination_service,
-            "suggestionCount": len(response.suggestions),
-            "elapsedMs": elapsed_ms,
-            "suggestions": suggestions,
-            "scoreBreakdowns": score_breakdowns,
-        }
-    except Exception as exc:
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        result = {
-            "enabled": True,
-            "status": "failed",
-            "service": args.coordination_service,
-            "suggestionCount": 0,
-            "elapsedMs": elapsed_ms,
-            "error": str(exc),
-        }
-    print("NDNSF_DI_ADVISORY_COORDINATION " + json.dumps(result, sort_keys=True), flush=True)
-    return result
 
 
 def parse_semicolon_fields(payload: bytes | str) -> dict[str, str]:
@@ -663,27 +385,14 @@ def execution_lease_plan_digest(service_plan: dict) -> str:
     return hashlib.sha256(wire).hexdigest()
 
 
-def execution_lease_provider_map(args, advisory: dict, roles: list[dict]) -> dict[str, str]:
+def execution_lease_provider_map(args, roles: list[dict]) -> dict[str, str]:
     role_names = [str(role.get("role", "")).strip() for role in roles]
     providers: dict[str, str] = {}
-    suggestions = advisory.get("suggestions", []) if isinstance(advisory, dict) else []
-    if suggestions and isinstance(suggestions[0], dict):
-        suggested = suggestions[0].get("roleAssignments", {})
-        if isinstance(suggested, dict):
-            for role, value in suggested.items():
-                provider = (
-                    str(value.get("provider", value.get("providerName", ""))).strip()
-                    if isinstance(value, dict)
-                    else str(value).strip()
-                )
-                if provider:
-                    providers[str(role)] = provider
-    if not providers:
-        for role, candidates in load_role_assignment_candidates(args.assignment_csv).items():
-            if candidates:
-                provider = str(candidates[0].get("provider", "")).strip()
-                if provider:
-                    providers[role] = provider
+    for role, candidates in load_role_assignment_candidates(args.assignment_csv).items():
+        if candidates:
+            provider = str(candidates[0].get("provider", "")).strip()
+            if provider:
+                providers[role] = provider
     missing = [role for role in role_names if role and role not in providers]
     if missing:
         raise RuntimeError(
@@ -694,8 +403,8 @@ def execution_lease_provider_map(args, advisory: dict, roles: list[dict]) -> dic
 
 
 def acquire_execution_leases(user: ServiceUser, args, service_plan: dict,
-                             advisory: dict, roles: list[dict], index: int):
-    provider_by_role = execution_lease_provider_map(args, advisory, roles)
+                             roles: list[dict], index: int):
+    provider_by_role = execution_lease_provider_map(args, roles)
     transaction_id = f"{args.user}:native-tracer:{index}"
     plan_digest = execution_lease_plan_digest(service_plan)
     roles_by_provider: dict[str, list[str]] = {}
@@ -725,10 +434,10 @@ def acquire_execution_leases(user: ServiceUser, args, service_plan: dict,
             )
         )
     transaction = DistributedLeaseTransaction(
-        NdnsfLeaseTransport(user, timeout_ms=args.coordination_timeout_ms)
+        NdnsfLeaseTransport(user, timeout_ms=args.lease_timeout_ms)
     )
     reservation_window_ms = (
-        max(int(args.ack_timeout_ms), int(args.coordination_timeout_ms)) + 2000
+        max(int(args.ack_timeout_ms), int(args.lease_timeout_ms)) + 2000
     )
     capacity_wait_ms = reservation_window_ms
     if args.overload_fast_fail_timeout_ms > 0:
@@ -816,8 +525,7 @@ def observed_ack_runtime_from_snapshots(snapshots: list[dict[str, Any]]) -> dict
     """Convert ack candidate snapshots into per-provider observed runtime state.
 
     For each provider, keep the latest (highest-valued) runtime counters
-    across all snapshots, so the advisory coordinator sees the worst-case
-    observed load.
+    across all snapshots for local runtime-aware replanning diagnostics.
     """
     providers: dict[str, dict[str, Any]] = {}
     for snap in snapshots:
@@ -856,26 +564,17 @@ def run_one_request(user: ServiceUser,
                     observed_ack_runtime: dict[str, dict[str, Any]] | None = None) -> dict:
     start = time.perf_counter()
     try:
-        advisory = request_advisory_suggestion(
-            user, args, service_plan, index,
-            observed_ack_runtime=observed_ack_runtime,
-        )
-        preference = role_provider_preference_from_advisory(advisory, roles)
+        preference = ""
         lease_transaction = None
         lease_set = None
         request_roles = roles
         if args.execution_leases:
             lease_transaction, lease_set, request_roles, lease_preference = (
                 acquire_execution_leases(
-                    user, args, service_plan, advisory, roles, index
+                    user, args, service_plan, roles, index
                 )
             )
             preference = lease_preference
-            advisory["executionLeaseProviders"] = [
-                lease.assignment.provider for lease in lease_set.leases
-            ]
-        if preference:
-            advisory["appliedRoleProviderPreference"] = preference
         ack_snapshots: list[dict[str, Any]] = []
 
         def observe_ack_candidates(candidates) -> None:
@@ -916,7 +615,6 @@ def run_one_request(user: ServiceUser,
             "payloadBytes": len(response.payload),
             "error": response.error,
             "elapsedMs": elapsed_ms,
-            "coordination": advisory,
             "ackCandidateSnapshot": ack_snapshots,
         }
         if is_overload_fast_fail_error(args, str(response.error), elapsed_ms):
@@ -935,7 +633,6 @@ def run_one_request(user: ServiceUser,
             "payloadBytes": 0,
             "error": error,
             "elapsedMs": elapsed_ms,
-            "coordination": {"enabled": bool(args.coordination_service), "status": "failed"},
         }
         if is_overload_fast_fail_error(args, error, elapsed_ms):
             result["overloadFastFail"] = True
@@ -1573,16 +1270,7 @@ def run_child_process_requests(args,
         ]
         if args.assignment_csv:
             command.extend(["--assignment-csv", args.assignment_csv])
-        if args.runtime_hints_json:
-            command.extend(["--runtime-hints-json", args.runtime_hints_json])
-        if args.fragment_inventory_json:
-            command.extend(["--fragment-inventory-json", args.fragment_inventory_json])
-        if args.coordination_service:
-            command.extend([
-                "--coordination-service", args.coordination_service,
-                "--coordination-ack-timeout-ms", str(args.coordination_ack_timeout_ms),
-                "--coordination-timeout-ms", str(args.coordination_timeout_ms),
-            ])
+        command.extend(["--lease-timeout-ms", str(args.lease_timeout_ms)])
         if args.execution_leases:
             command.append("--execution-leases")
         print(
@@ -1803,16 +1491,7 @@ def run_process_pool_open_loop_requests(args,
         ]
         if args.assignment_csv:
             command.extend(["--assignment-csv", args.assignment_csv])
-        if args.runtime_hints_json:
-            command.extend(["--runtime-hints-json", args.runtime_hints_json])
-        if args.fragment_inventory_json:
-            command.extend(["--fragment-inventory-json", args.fragment_inventory_json])
-        if args.coordination_service:
-            command.extend([
-                "--coordination-service", args.coordination_service,
-                "--coordination-ack-timeout-ms", str(args.coordination_ack_timeout_ms),
-                "--coordination-timeout-ms", str(args.coordination_timeout_ms),
-            ])
+        command.extend(["--lease-timeout-ms", str(args.lease_timeout_ms)])
         if args.execution_leases:
             command.append("--execution-leases")
         child_log = (
@@ -1937,7 +1616,6 @@ def main() -> int:
             "roleScopes": role_scopes,
         }
         payload.update(runtime_replan_metadata(args))
-        payload.update(coordination_metadata(args))
         payload.update(overload_fast_fail_metadata(args))
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
@@ -1959,20 +1637,6 @@ def main() -> int:
             "responseStatus": False,
             "payloadBytes": 0,
             "error": f"missing user permission for {args.service}; allowed={allowed}",
-            "elapsedMs": 0.0,
-        }
-        print("NDNSF_DI_NATIVE_TRACER_USER_EXECUTION " + json.dumps(result, sort_keys=True), flush=True)
-        return 1
-    if args.coordination_service and args.coordination_service not in allowed:
-        result = {
-            "status": "failed",
-            "service": args.service,
-            "responseStatus": False,
-            "payloadBytes": 0,
-            "error": (
-                f"missing user permission for {args.coordination_service}; "
-                f"allowed={allowed}"
-            ),
             "elapsedMs": 0.0,
         }
         print("NDNSF_DI_NATIVE_TRACER_USER_EXECUTION " + json.dumps(result, sort_keys=True), flush=True)
@@ -2043,7 +1707,6 @@ def main() -> int:
     results = []
     base_workload_metadata = {
         **runtime_replan_metadata(args),
-        **coordination_metadata(args),
         **overload_fast_fail_metadata(args),
     }
     workload_metadata = dict(base_workload_metadata)
@@ -2151,7 +1814,16 @@ def main() -> int:
                         user, args, service_plan, roles, key_scopes, dependencies,
                         scope_key_data_names, role_scopes, index,
                         observed_ack_runtime=observed_ack if observed_ack else None)
-                result = retry_call(_do_request, retry_policy)
+                result = retry_call(
+                    _do_request,
+                    retry_policy,
+                    idempotent=True,
+                    reason_getter=lambda item: (
+                        RetryReason.TIMEOUT
+                        if float(item.get("elapsedMs", 0.0)) >= effective_timeout_ms(args) * 0.9
+                        else RetryReason.NON_RETRYABLE
+                    ),
+                )
                 if result.get("retryAttempts", 0) > 0:
                     metrics.retry_total.labels(service=args.service).inc(result.get("retryAttempts", 0))
             else:

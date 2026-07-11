@@ -196,39 +196,11 @@ class PlannerBackendRegistry:
 
 
 def default_planner_registry() -> PlannerBackendRegistry:
-    """Return framework-level planner placeholders.
+    """Return the executable framework-level planner registry.
 
-    Model packages can extend or replace this registry with executable
-    backends.  These defaults keep the public planner vocabulary centralized.
+    Concrete ONNX and LLM packages register their handlers explicitly. An
+    empty default is preferable to advertising planner kinds that can only
+    raise ``NotImplementedError``.
     """
 
-    registry = PlannerBackendRegistry()
-    registry.register(PlannerBackend(
-        planner_kind=PlannerKind.ONNX_DAG,
-        model_family=ModelFamily.GENERIC_ONNX,
-        model_format=ModelFormat.ONNX,
-        name="Generic ONNX DAG planner",
-        description="Generic ONNX graph dependency planner.",
-    ))
-    registry.register(PlannerBackend(
-        planner_kind=PlannerKind.LLM_PIPELINE,
-        model_family=ModelFamily.LLM,
-        model_format=ModelFormat.UNKNOWN,
-        name="LLM pipeline planner placeholder",
-        description="Reserved planner kind for future LLM pipeline execution.",
-    ))
-    registry.register(PlannerBackend(
-        planner_kind=PlannerKind.LLM_PREFILL_DECODE,
-        model_family=ModelFamily.LLM,
-        model_format=ModelFormat.UNKNOWN,
-        name="LLM prefill/decode planner placeholder",
-        description="Reserved planner kind for future LLM prefill/decode split.",
-    ))
-    registry.register(PlannerBackend(
-        planner_kind=PlannerKind.LLM_TENSOR_PARALLEL,
-        model_family=ModelFamily.LLM,
-        model_format=ModelFormat.UNKNOWN,
-        name="LLM tensor-parallel planner placeholder",
-        description="Reserved planner kind for future LLM tensor parallelism.",
-    ))
-    return registry
+    return PlannerBackendRegistry()

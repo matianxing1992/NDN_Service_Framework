@@ -25,12 +25,8 @@ from ndnsf import (
 REPO = Path(__file__).resolve().parents[2]
 HARNESS = REPO / "Experiments/NDNSF_DI_NativeTracer_Minindn.py"
 SWEEP = REPO / "Experiments/NDNSF_DI_RuntimeAware_RpsSweep.py"
-STREAM_CHUNK_CAMPAIGN = REPO / "Experiments/NDNSF_DI_StreamChunk_Mode_Campaign.py"
 PLAN_TRACER = REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/plan_tracer.py"
 USER_DRIVER = REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/user_driver.py"
-ADVISORY_COORDINATOR = (
-    REPO / "examples/python/NDNSF-DistributedInference/native_di_tracer/advisory_coordinator.py"
-)
 FIXTURE = (
     REPO /
     "examples/python/NDNSF-DistributedInference/native_di_tracer/runtime_aware_fixtures/multi_user_requests.json"
@@ -67,14 +63,6 @@ def load_plan_tracer_module():
         sys.path[:] = old_path
 
 
-def load_advisory_coordinator_module():
-    spec = importlib.util.spec_from_file_location("native_tracer_advisory", ADVISORY_COORDINATOR)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
-    return module
-
-
 class RuntimeAwareCampaignTest(unittest.TestCase):
     def test_dry_run_accepts_multi_user_runtime_aware_arguments(self) -> None:
         env = dict(os.environ)
@@ -93,7 +81,6 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             "--runtime-aware-replan-reasons", "FRAGMENT_EVICTED",
             "--requests", "1",
             "--concurrency", "1",
-            "--dependency-envelope-mode", "streamchunk",
         ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
            stderr=subprocess.PIPE, check=True)
         payload = json.loads(completed.stdout)
@@ -102,62 +89,8 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(payload["multiUserWorkload"]["requestCount"], 2)
         self.assertEqual(payload["requests"], 2)
         self.assertEqual(payload["runtimeAwareMaxReplans"], 1)
-        self.assertEqual(payload["dependencyEnvelopeMode"], "streamchunk")
-        self.assertEqual(payload["dependencyPayloadMode"], "streamchunk")
-        self.assertEqual(payload["dependencyEnvelopeEnv"], {
-            "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": "1",
-            "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
-        })
-        self.assertEqual(payload["dependencyPayloadEnv"], {
-            "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": "1",
-            "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
-        })
         self.assertIn("--runtime-aware-max-replans 1", payload["userDriverCommand"])
         self.assertIn("FRAGMENT_EVICTED", payload["userDriverCommand"])
-
-    def test_streamchunk_mode_campaign_dry_run_builds_both_modes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            completed = subprocess.run([
-                sys.executable,
-                str(STREAM_CHUNK_CAMPAIGN),
-                "--out", str(Path(tmp) / "streamchunk-campaign"),
-                "--modes", "raw,streamchunk",
-                "--repeats", "2",
-                "--requests", "1",
-                "--concurrency", "1",
-                "--dry-run",
-                "--",
-                "--tracer-deterministic-runner",
-            ], cwd=str(REPO), text=True, stdout=subprocess.PIPE,
-               stderr=subprocess.PIPE, check=True)
-        payload = json.loads(completed.stdout)
-        commands = payload["commands"]
-        self.assertEqual(payload["status"], "DRY_RUN")
-        self.assertEqual(len(commands), 4)
-        joined = [" ".join(command) for command in commands]
-        self.assertTrue(any("--dependency-envelope-mode raw" in item for item in joined))
-        self.assertTrue(any("--dependency-envelope-mode streamchunk" in item for item in joined))
-
-    def test_legacy_dependency_payload_mode_alias_still_works(self) -> None:
-        env = os.environ.copy()
-        env["PYTHONPATH"] = ":".join([
-            str(REPO / "NDNSF-DistributedInference"),
-            str(REPO / "pythonWrapper"),
-            str(REPO),
-            env.get("PYTHONPATH", ""),
-        ])
-        completed = subprocess.run([
-            sys.executable,
-            str(HARNESS),
-            "--dry-run",
-            "--requests", "1",
-            "--concurrency", "1",
-            "--dependency-payload-mode", "streamchunk",
-        ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
-           stderr=subprocess.PIPE, check=True)
-        payload = json.loads(completed.stdout)
-        self.assertEqual(payload["dependencyEnvelopeMode"], "streamchunk")
-        self.assertEqual(payload["dependencyPayloadMode"], "streamchunk")
 
     def test_dry_run_accepts_provider_network_matrix_json(self) -> None:
         env = os.environ.copy()
@@ -277,29 +210,9 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
                 "default,/Backbone,/P/backbone\n"
                 "default,/Merge,/P/merge\n",
                 encoding="utf-8")
-            assignments = user_driver.load_role_assignments(str(path))
-        self.assertEqual(assignments["/Backbone"]["provider"], "/P/backbone")
-        self.assertEqual(assignments["/Merge"]["assignment"], "default")
-
-    def test_user_driver_builds_role_provider_preference_from_advisory(self) -> None:
-        user_driver = load_user_driver_module()
-        preference = user_driver.role_provider_preference_from_advisory(
-            {
-                "enabled": True,
-                "status": "executed",
-                "suggestions": [{
-                    "roleAssignments": {
-                        "/Backbone": {"provider": "/P/backbone"},
-                        "/Merge": {"providerName": "/P/merge"},
-                        "/NotRequested": {"provider": "/P/ignored"},
-                    },
-                }],
-            },
-            [{"role": "/Backbone"}, {"role": "/Merge"}],
-        )
-        self.assertIn("/Backbone=>/P/backbone;", preference)
-        self.assertIn("/Merge=>/P/merge;", preference)
-        self.assertNotIn("/NotRequested", preference)
+            assignments = user_driver.load_role_assignment_candidates(str(path))
+        self.assertEqual(assignments["/Backbone"][0]["provider"], "/P/backbone")
+        self.assertEqual(assignments["/Merge"][0]["assignment"], "default")
 
     def test_user_driver_role_preference_env_is_scoped(self) -> None:
         user_driver = load_user_driver_module()
@@ -373,208 +286,6 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(parsed["localBackpressureCount"], 0)
         self.assertEqual(parsed["localBackpressureWaitCount"], 69)
         self.assertEqual(parsed["maxScheduleSlipMs"], 7150.519)
-
-    def test_wire_advisory_coordinator_balances_role_candidates(self) -> None:
-        from ndnsf import CoordinationIntent, CoordinationRequest
-
-        module = load_advisory_coordinator_module()
-        args = type("Args", (), {
-            "provider": "/coord",
-            "service": "/NDNSF/Coordination/Advisory",
-            "suggestion_ttl_ms": 5000,
-            "proof_secret": "",
-            "default_role_duration_ms": 500.0,
-            "fairness_penalty_ms": 25.0,
-        })()
-        handler = module.make_handler(args)
-        request = CoordinationRequest((
-            CoordinationIntent(
-                intent_id="i1",
-                request_id="r1",
-                service_name="/Inference/NativeTracer",
-                expires_at_ms=4102444800000,
-                payload={
-                    "templateId": "native-tracer-plan",
-                    "roleCandidates": {
-                        "/Backbone": [
-                            {"provider": "/P/a", "assignment": "a"},
-                            {"provider": "/P/b", "assignment": "b"},
-                        ],
-                    },
-                },
-            ),
-            CoordinationIntent(
-                intent_id="i2",
-                request_id="r2",
-                service_name="/Inference/NativeTracer",
-                expires_at_ms=4102444800000,
-                payload={
-                    "templateId": "native-tracer-plan",
-                    "roleCandidates": {
-                        "/Backbone": [
-                            {"provider": "/P/a", "assignment": "a"},
-                            {"provider": "/P/b", "assignment": "b"},
-                        ],
-                    },
-                },
-            ),
-        ), metadata={"windowId": "w1"})
-
-        response = handler(request)
-        providers = [
-            item.payload["roleAssignments"]["/Backbone"]["provider"]
-            for item in response.suggestions
-        ]
-        self.assertEqual(set(providers), {"/P/a", "/P/b"})
-        self.assertEqual(response.suggestions[0].payload["windowVersion"], 1)
-        self.assertEqual(
-            response.suggestions[0].payload["advisoryMode"],
-            "lease-aware-rolling-window-with-fragments",
-        )
-
-    def test_wire_advisory_coordinator_scores_lease_and_runtime_hints(self) -> None:
-        from ndnsf import CoordinationIntent, CoordinationRequest
-
-        module = load_advisory_coordinator_module()
-        args = type("Args", (), {
-            "provider": "/coord",
-            "service": "/NDNSF/Coordination/Advisory",
-            "suggestion_ttl_ms": 5000,
-            "proof_secret": "",
-            "default_role_duration_ms": 500.0,
-            "fairness_penalty_ms": 25.0,
-        })()
-        handler = module.make_handler(args)
-        request = CoordinationRequest((
-            CoordinationIntent(
-                intent_id="i1",
-                request_id="r1",
-                service_name="/Inference/NativeTracer",
-                expires_at_ms=4102444800000,
-                payload={
-                    "templateId": "native-tracer-plan",
-                    "roleCandidates": {
-                        "/Backbone": [
-                            {
-                                "provider": "/P/rejected",
-                                "leaseOffers": [{"status": "REJECTED", "reasonCode": "QUEUE_FULL"}],
-                            },
-                            {
-                                "provider": "/P/slow",
-                                "runtimeHint": {"estimatedQueueWaitMs": 2000},
-                                "leaseOffers": [{"status": "GRANTED", "estimatedStartMs": 0}],
-                            },
-                            {
-                                "provider": "/P/fast",
-                                "runtimeHint": {"estimatedQueueWaitMs": 10},
-                                "leaseOffers": [{"status": "GRANTED", "estimatedStartMs": 0}],
-                            },
-                        ],
-                    },
-                },
-            ),
-        ), metadata={"windowId": "w-lease"})
-
-        response = handler(request)
-        suggestion = response.suggestions[0]
-        assignment = suggestion.payload["roleAssignments"]["/Backbone"]
-        self.assertEqual(assignment["provider"], "/P/fast")
-        self.assertEqual(assignment["leaseReason"], "LEASE_GRANTED")
-        rejected = suggestion.score_breakdown["rejectedCandidates"]
-        self.assertEqual(rejected[0]["provider"], "/P/rejected")
-        self.assertEqual(rejected[0]["reason"], "NO_VALID_LEASE")
-
-    def test_wire_advisory_coordinator_tolerates_malformed_hints(self) -> None:
-        from ndnsf import CoordinationIntent, CoordinationRequest
-
-        module = load_advisory_coordinator_module()
-        args = type("Args", (), {
-            "provider": "/coord",
-            "service": "/NDNSF/Coordination/Advisory",
-            "suggestion_ttl_ms": 5000,
-            "proof_secret": "",
-            "default_role_duration_ms": 500.0,
-            "fairness_penalty_ms": 25.0,
-        })()
-        handler = module.make_handler(args)
-        request = CoordinationRequest((
-            CoordinationIntent(
-                intent_id="i-bad-hints",
-                request_id="r-bad-hints",
-                service_name="/Inference/NativeTracer",
-                expires_at_ms=4102444800000,
-                payload={
-                    "templateId": "native-tracer-plan",
-                    "roleCandidates": {
-                        "/Backbone": [
-                            {
-                                "provider": "/P/bad",
-                                "runtimeHint": "not-a-dict",
-                                "leaseOffers": "not-a-list",
-                                "estimatedDurationMs": "not-a-number",
-                            },
-                            {
-                                "provider": "/P/good",
-                                "runtimeHint": {"estimatedQueueWaitMs": 5},
-                                "leaseOffers": [{"status": "GRANTED"}],
-                                "estimatedDurationMs": 100,
-                            },
-                        ],
-                    },
-                },
-            ),
-        ), metadata={"windowId": "w-bad-hints"})
-
-        response = handler(request)
-        suggestion = response.suggestions[0]
-        self.assertEqual(
-            suggestion.payload["roleAssignments"]["/Backbone"]["provider"],
-            "/P/good",
-        )
-        self.assertIn(
-            "/Backbone",
-            suggestion.score_breakdown["roleScores"],
-        )
-
-    def test_user_driver_enriches_role_candidates_with_runtime_hints(self) -> None:
-        user_driver = load_user_driver_module()
-        candidates = {
-            "/Backbone": [
-                {"provider": "/P/slow", "assignment": "primary"},
-                {"provider": "/P/fast", "assignment": "alternate"},
-            ],
-        }
-        runtime_hints = {
-            "schema": "ndnsf-di-runtime-hints-v1",
-            "providerRoles": {
-                "/P/slow|/Backbone": {
-                    "runtimeHint": {"estimatedQueueWaitMs": 500},
-                    "leaseOffers": [{"status": "GRANTED", "estimatedStartMs": 100}],
-                    "estimatedDurationMs": 50,
-                    "readyCostMs": 20,
-                    "residency": "DISK_RESIDENT",
-                },
-                "/P/fast|/Backbone": {
-                    "runtimeHint": {"estimatedQueueWaitMs": 0},
-                    "leaseOffers": [{"status": "GRANTED", "estimatedStartMs": 0}],
-                    "estimatedDurationMs": 20,
-                    "readyCostMs": 0,
-                    "residency": "GPU_LOADED",
-                },
-            },
-        }
-
-        enriched = user_driver.enrich_role_candidates_with_runtime_hints(
-            candidates,
-            runtime_hints,
-        )
-
-        slow, fast = enriched["/Backbone"]
-        self.assertEqual(slow["runtimeHint"]["estimatedQueueWaitMs"], 500)
-        self.assertEqual(slow["leaseOffers"][0]["estimatedStartMs"], 100)
-        self.assertEqual(slow["residency"], "DISK_RESIDENT")
-        self.assertEqual(fast["runtimeHint"]["estimatedQueueWaitMs"], 0)
-        self.assertEqual(fast["readyCostMs"], 0)
 
     def test_user_driver_builds_ack_candidate_snapshot(self) -> None:
         user_driver = load_user_driver_module()
@@ -665,49 +376,6 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(primary["runtimeHint"]["fragmentResidency"], "CPU_RESIDENT")
         self.assertEqual(alternate["runtimeHint"]["fragmentResidency"], "DISK_RESIDENT")
         self.assertGreater(alternate["readyCostMs"], primary["readyCostMs"])
-
-    def test_harness_refreshes_runtime_hints_from_provider_inventory(self) -> None:
-        harness = load_harness_module()
-        rows = [{
-            "assignment": "capacity-pool",
-            "role": "/Backbone",
-            "provider": "/P/backbone",
-            "node": "memphis",
-            "service": harness.SERVICE,
-        }]
-        inventory = {
-            "latestByProviderRole": {
-                "/P/backbone|/Backbone": {
-                    "provider": "/P/backbone",
-                    "role": "/Backbone",
-                    "fragmentDigest": "sha256:observed-backbone",
-                    "backend": "onnxruntime",
-                    "path": "artifacts/observed-backbone.onnx",
-                    "residency": "GPU_LOADED",
-                    "event": "EXECUTION_OBSERVED",
-                    "epochMs": "1000",
-                },
-            },
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "runtime-hints.json"
-            harness.write_runtime_hints_json(
-                path,
-                rows,
-                role_execution_delay_ms=50,
-                provider_admission_max_active_workers=1,
-                provider_admission_max_queue=1,
-            )
-            refresh = harness.refresh_runtime_hints_json_from_inventory(path, inventory)
-            payload = json.loads(path.read_text(encoding="utf-8"))
-
-        hint = payload["providerRoles"]["/P/backbone|/Backbone"]
-        self.assertEqual(refresh["updated"], 1)
-        self.assertEqual(payload["source"], "MiniNDN harness provider runtime inventory")
-        self.assertEqual(hint["source"], "provider-runtime-inventory")
-        self.assertEqual(hint["fragmentDigest"], "sha256:observed-backbone")
-        self.assertEqual(hint["runtimeHint"]["fragmentResidency"], "GPU_LOADED")
-        self.assertEqual(hint["artifactPath"], "artifacts/observed-backbone.onnx")
 
     def test_provider_ack_runtime_hints_are_aggregated(self) -> None:
         harness = load_harness_module()
@@ -1036,32 +704,11 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertIn("--enable-native-admission-lease", first)
         self.assertIn("--provider-check-timeout 60", first)
 
-    def test_rps_sweep_dry_run_builds_advisory_comparison_commands(self) -> None:
-        completed = subprocess.run([
-            sys.executable,
-            str(SWEEP),
-            "--dry-run",
-            "--compare-advisory-coordinator",
-            "--out", "/tmp/ndnsf-di-rps-sweep-advisory-dry-run",
-            "--rps", "0.2",
-            "--requests", "2",
-            "--concurrency", "2",
-        ], cwd=str(REPO), text=True, stdout=subprocess.PIPE,
-           stderr=subprocess.PIPE, check=True)
-        payload = json.loads(completed.stdout)
-        self.assertEqual(payload["status"], "DRY_RUN")
-        self.assertEqual(len(payload["commands"]), 2)
-        pure = " ".join(payload["commands"][0])
-        advisory = " ".join(payload["commands"][1])
-        self.assertNotIn("--advisory-coordinator", pure)
-        self.assertIn("--advisory-coordinator", advisory)
-
     def test_rps_sweep_dry_run_can_use_capacity_pool(self) -> None:
         completed = subprocess.run([
             sys.executable,
             str(SWEEP),
             "--dry-run",
-            "--compare-advisory-coordinator",
             "--capacity-pool",
             "--out", "/tmp/ndnsf-di-rps-sweep-capacity-pool-dry-run",
             "--rps", "0.2",
@@ -1071,15 +718,14 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
            stderr=subprocess.PIPE, check=True)
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["status"], "DRY_RUN")
+        self.assertEqual(len(payload["commands"]), 1)
         self.assertIn("--assignment capacity-pool", " ".join(payload["commands"][0]))
-        self.assertIn("--assignment capacity-pool", " ".join(payload["commands"][1]))
 
     def test_rps_sweep_dry_run_can_use_overload_fast_fail_timeout(self) -> None:
         completed = subprocess.run([
             sys.executable,
             str(SWEEP),
             "--dry-run",
-            "--compare-advisory-coordinator",
             "--overload-fast-fail-timeout-ms", "5000",
             "--out", "/tmp/ndnsf-di-rps-sweep-fast-fail-dry-run",
             "--rps", "0.2",
@@ -1088,34 +734,9 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         ], cwd=str(REPO), text=True, stdout=subprocess.PIPE,
            stderr=subprocess.PIPE, check=True)
         payload = json.loads(completed.stdout)
+        self.assertEqual(len(payload["commands"]), 1)
         self.assertIn("--overload-fast-fail-timeout-ms 5000",
                       " ".join(payload["commands"][0]))
-        self.assertIn("--overload-fast-fail-timeout-ms 5000",
-                      " ".join(payload["commands"][1]))
-
-    def test_native_tracer_dry_run_passes_advisory_to_user_driver(self) -> None:
-        env = dict(os.environ)
-        env["PYTHONPATH"] = ":".join([
-            str(REPO / "NDNSF-DistributedInference"),
-            str(REPO / "pythonWrapper"),
-            str(REPO / "Experiments"),
-            env.get("PYTHONPATH", ""),
-        ])
-        completed = subprocess.run([
-            sys.executable,
-            str(HARNESS),
-            "--dry-run",
-            "--advisory-coordinator",
-            "--requests", "1",
-            "--concurrency", "1",
-        ], cwd=str(REPO), env=env, text=True, stdout=subprocess.PIPE,
-           stderr=subprocess.PIPE, check=True)
-        payload = json.loads(completed.stdout)
-        self.assertTrue(payload["advisoryCoordinator"])
-        self.assertIn("--assignment-csv", payload["userDriverCommand"])
-        self.assertIn("--runtime-hints-json", payload["userDriverCommand"])
-        self.assertIn("--coordination-service /NDNSF/Coordination/Advisory",
-                      payload["userDriverCommand"])
 
     def test_native_tracer_dry_run_passes_fast_fail_timeout_to_user_driver(self) -> None:
         env = dict(os.environ)

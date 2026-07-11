@@ -52,19 +52,16 @@ RUNTIME_V1_PROVIDER_PROFILES = TRACER_DIR / "llm_provider_profiles_2_4_8.json"
 RUNTIME_AWARE_FIXTURES = TRACER_DIR / "runtime_aware_fixtures"
 RUNTIME_AWARE_MULTI_USER_WORKLOAD = RUNTIME_AWARE_FIXTURES / "multi_user_requests.json"
 USER_DRIVER = TRACER_DIR / "user_driver.py"
-ADVISORY_COORDINATOR = TRACER_DIR / "advisory_coordinator.py"
 PROVIDER_EXE = REPO / "build/examples/di-native-provider"
 PLAN_SCHEMA_EXE = REPO / "build/examples/di-native-plan-schema-smoke"
 PLAN_MANIFEST_EXE = REPO / "build/examples/di-native-plan-manifest-smoke"
 PROVIDER_SESSION_EXE = REPO / "build/examples/di-native-provider-session-smoke"
 DEFAULT_OUT = REPO / "results/native_di_real_minindn/latest"
 SERVICE = "/Inference/NativeTracer"
-COORDINATION_SERVICE = "/NDNSF/Coordination/Advisory"
 EXECUTION_LEASE_SERVICE = "/Inference/Control/Lease"
 GROUP = "/NDNSF-DI/Tracer/group"
 CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
-COORDINATOR_PROVIDER = "/NDNSF-DI/Tracer/provider/coordinator"
 IDENTITY_SAFEBAG_PASSPHRASE = "ndnsf-di-native-tracer"
 REQUIRED_ROLES = ["/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"]
 NEGATIVE_ACK_RECORDED_RE = re.compile(r"event=NEGATIVE_ACK_RECORDED\b.*?\breason=([^\s,]+)")
@@ -967,22 +964,6 @@ def provider_serve_command(row: dict[str, str],
     return f"cd {perf.shell_quote(str(TRACER_DIR))} && exec {shell_join(args)}"
 
 
-def advisory_coordinator_command(policy_dir: Path,
-                                 proof_secret: str = "") -> str:
-    policy_dir = policy_dir.resolve()
-    args = [
-        "python3", str(ADVISORY_COORDINATOR),
-        "--group", GROUP,
-        "--controller", CONTROLLER,
-        "--provider", COORDINATOR_PROVIDER,
-        "--service", COORDINATION_SERVICE,
-        "--trust-schema", str(policy_dir / "trust-schema.conf"),
-    ]
-    if proof_secret:
-        args.extend(["--proof-secret", proof_secret])
-    return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
-
-
 def controller_command(policy_dir: Path, assignment_rows: list[dict[str, str]]) -> str:
     policy_dir = policy_dir.resolve()
     code = (
@@ -1003,8 +984,6 @@ def user_driver_command(policy_dir: Path,
                         concurrency: int,
                         submission_spacing_ms: int,
                         assignment_csv: Optional[Path] = None,
-                        runtime_hints_json: Optional[Path] = None,
-                        fragment_inventory_json: Optional[Path] = None,
                         timeout_ms: int = 60000,
                         overload_fast_fail_timeout_ms: int = 0,
                         target_rps: float = 0.0,
@@ -1013,15 +992,10 @@ def user_driver_command(policy_dir: Path,
                         burst_admission_providers: Optional[list[str]] = None,
                         runtime_aware_max_replans: int = 0,
                         runtime_aware_replan_reasons: str = "",
-                        coordination_service: str = "",
                         execution_leases: bool = False) -> str:
     policy_dir = policy_dir.resolve()
     if assignment_csv is not None:
         assignment_csv = assignment_csv.resolve()
-    if runtime_hints_json is not None:
-        runtime_hints_json = runtime_hints_json.resolve()
-    if fragment_inventory_json is not None:
-        fragment_inventory_json = fragment_inventory_json.resolve()
     args = [
         "python3", str(USER_DRIVER),
         "--plan", str(policy_dir / "native-execution-plan.json"),
@@ -1044,10 +1018,6 @@ def user_driver_command(policy_dir: Path,
         ])
     if assignment_csv is not None:
         args.extend(["--assignment-csv", str(assignment_csv)])
-    if runtime_hints_json is not None:
-        args.extend(["--runtime-hints-json", str(runtime_hints_json)])
-    if fragment_inventory_json is not None:
-        args.extend(["--fragment-inventory-json", str(fragment_inventory_json)])
     if open_loop_duration_s > 0.0:
         args.extend([
             "--target-rps", str(target_rps),
@@ -1063,8 +1033,6 @@ def user_driver_command(policy_dir: Path,
         args.extend(["--runtime-aware-max-replans", str(runtime_aware_max_replans)])
     if runtime_aware_replan_reasons:
         args.extend(["--runtime-aware-replan-reasons", runtime_aware_replan_reasons])
-    if coordination_service:
-        args.extend(["--coordination-service", coordination_service])
     if execution_leases:
         args.append("--execution-leases")
     return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
@@ -1105,52 +1073,6 @@ def add_worker_user_policies(policy_path: Path, requests: int) -> None:
         raise RuntimeError(f"could not locate user-policies closing brace in {policy_path}")
     policy_path.write_text(text[:insert_at] + "\n" + "\n".join(blocks) + text[insert_at:],
                            encoding="utf-8")
-
-
-def add_advisory_coordination_policies(policy_path: Path,
-                                       requests: int,
-                                       enabled: bool) -> None:
-    if not enabled:
-        return
-    text = policy_path.read_text(encoding="utf-8")
-    if f"for {COORDINATOR_PROVIDER}\n" not in text:
-        provider_block = (
-            "    provider-policy\n"
-            "    {\n"
-            f"        for {COORDINATOR_PROVIDER}\n"
-            "        allow\n"
-            "        {\n"
-            f"            {COORDINATION_SERVICE}\n"
-            "        }\n"
-            "    }\n"
-        )
-        insert_at = text.find("\n}\n\nuser-policies")
-        if insert_at < 0:
-            raise RuntimeError(f"could not locate provider-policies closing brace in {policy_path}")
-        text = text[:insert_at] + "\n" + provider_block + text[insert_at:]
-    blocks = []
-    for identity in [USER, *user_worker_identities(requests)]:
-        marker = f"for {identity}\n"
-        start = text.find(marker)
-        already_allowed = start >= 0 and COORDINATION_SERVICE in text[start:start + 320]
-        if already_allowed:
-            continue
-        blocks.append(
-            "    user-policy\n"
-            "    {\n"
-            f"        for {identity}\n"
-            "        allow\n"
-            "        {\n"
-            f"            {COORDINATION_SERVICE}\n"
-            "        }\n"
-            "    }\n"
-        )
-    if blocks:
-        insert_at = text.rfind("\n}")
-        if insert_at < 0:
-            raise RuntimeError(f"could not locate user-policies closing brace in {policy_path}")
-        text = text[:insert_at] + "\n" + "\n".join(blocks) + text[insert_at:]
-    policy_path.write_text(text, encoding="utf-8")
 
 
 def add_execution_lease_policies(policy_path: Path) -> None:
@@ -1327,93 +1249,6 @@ def collect_stream_dependency_counters(logs_dir: Path) -> dict[str, object]:
         "dependencyPublishPayloadBytes": metric_stats(dependency_publish_payload_values),
         "examples": examples,
     }
-
-
-def refresh_runtime_hints_json_from_inventory(path: Path,
-                                              inventory: dict[str, object]) -> dict[str, object]:
-    if not path.exists():
-        return {"updated": 0, "path": str(path), "reason": "missing-runtime-hints-json"}
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    provider_roles = payload.get("providerRoles", {})
-    providers = payload.get("providers", {})
-    latest = inventory.get("latestByProviderRole", {})
-    if not isinstance(provider_roles, dict) or not isinstance(providers, dict) or not isinstance(latest, dict):
-        return {"updated": 0, "path": str(path), "reason": "invalid-runtime-hints-json"}
-    updated = 0
-    now_ms = int(time.time() * 1000)
-    for key, record in latest.items():
-        if not isinstance(record, dict):
-            continue
-        provider = str(record.get("provider", ""))
-        role = str(record.get("role", ""))
-        if not provider or not role:
-            continue
-        hint = provider_roles.get(key)
-        if not isinstance(hint, dict):
-            hint = {
-                "provider": provider,
-                "role": role,
-                "assignment": "",
-                "runtimeHint": {},
-                "leaseOffers": [{
-                    "status": "GRANTED",
-                    "estimatedStartMs": 0,
-                    "ttlMs": 60000,
-                    "source": "provider-runtime-inventory",
-                }],
-            }
-            provider_roles[key] = hint
-        residency = str(record.get("residency", ""))
-        if residency:
-            hint["residency"] = residency
-            runtime_hint = hint.setdefault("runtimeHint", {})
-            if isinstance(runtime_hint, dict):
-                runtime_hint["fragmentResidency"] = residency
-        if record.get("fragmentDigest"):
-            hint["fragmentDigest"] = str(record["fragmentDigest"])
-        if record.get("backend"):
-            hint["backend"] = str(record["backend"])
-        if record.get("path"):
-            hint["artifactPath"] = str(record["path"])
-        hint["source"] = "provider-runtime-inventory"
-        hint["inventoryEvent"] = str(record.get("event", ""))
-        epoch_ms = int_field({k: str(v) for k, v in record.items()}, "epochMs", 0)
-        runtime_hint = hint.setdefault("runtimeHint", {})
-        if isinstance(runtime_hint, dict):
-            runtime_hint["sampleAgeMs"] = max(0, now_ms - epoch_ms) if epoch_ms > 0 else 0
-            runtime_hint["source"] = "provider-runtime-inventory"
-        provider_payload = providers.get(provider)
-        if isinstance(provider_payload, dict):
-            roles = provider_payload.setdefault("roles", {})
-            if isinstance(roles, dict):
-                roles[role] = hint
-        updated += 1
-    payload["generatedAtMs"] = now_ms
-    payload["source"] = "MiniNDN harness provider runtime inventory"
-    payload["providerRoles"] = provider_roles
-    payload["providers"] = providers
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8")
-    return {
-        "updated": updated,
-        "path": str(path),
-        "source": payload["source"],
-    }
-
-
-def wait_for_provider_inventory(logs_dir: Path,
-                                expected_provider_roles: int,
-                                timeout_s: float) -> dict[str, object]:
-    deadline = time.time() + max(0.0, float(timeout_s))
-    last_inventory: dict[str, object] = collect_provider_fragment_inventory(logs_dir)
-    expected = max(0, int(expected_provider_roles))
-    while time.time() < deadline:
-        latest = last_inventory.get("latestByProviderRole", {})
-        if isinstance(latest, dict) and len(latest) >= expected:
-            return last_inventory
-        time.sleep(0.2)
-        last_inventory = collect_provider_fragment_inventory(logs_dir)
-    return last_inventory
 
 
 def float_field(fields: dict[str, str], key: str, fallback: float = 0.0) -> float:
@@ -2612,8 +2447,6 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "llmPlannerMode": args.llm_planner_mode,
             "runtimeAwareUserPlanner": args.runtime_aware_user_planner,
             "providerNetworkMatrixJson": args.provider_network_matrix_json,
-            "advisoryCoordinator": bool(args.advisory_coordinator),
-            "coordinationService": COORDINATION_SERVICE if args.advisory_coordinator else "",
             "targetRps": args.target_rps,
             "requests": args.requests,
             "concurrency": args.concurrency,
@@ -2774,8 +2607,6 @@ def main() -> int:
                         help=("Skip full-network dependency-edge ndnping probing. "
                               "By default the harness writes providerPairTelemetry "
                               "evidence before the user workload starts."))
-    parser.add_argument("--advisory-coordinator", action="store_true",
-                        help="Run the generic NDNSF coordination service before NativeTracer requests")
     parser.add_argument("--multi-user-workload",
                         default=default_value(profile_defaults, "multi_user_workload", ""),
                         help="Optional runtime-aware multi-user workload fixture")
@@ -2927,7 +2758,6 @@ def main() -> int:
             "providerNetworkMatrixJson": args.provider_network_matrix_json,
             "providerPairTelemetryProbeEnabled": (
                 not args.skip_provider_pair_telemetry_probe),
-            "advisoryCoordinator": args.advisory_coordinator,
             "multiUserWorkload": multi_user_workload,
             "requests": args.requests,
             "concurrency": args.concurrency,
@@ -2949,23 +2779,12 @@ def main() -> int:
                 args.concurrency,
                 args.submission_spacing_ms if args.concurrency > 1 else 0,
                 assignment_csv=Path(args.out) / "assignment.csv",
-                runtime_hints_json=(
-                    Path(args.out) / "runtime-hints.json"
-                    if args.advisory_coordinator else None
-                ),
-                fragment_inventory_json=(
-                    Path(args.out) / "fragment-inventory.json"
-                    if args.advisory_coordinator else None
-                ),
                 overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
                 target_rps=args.target_rps,
                 open_loop_duration_s=args.open_loop_duration_s,
                 open_loop_driver_mode=args.open_loop_driver_mode,
                 runtime_aware_max_replans=args.runtime_aware_max_replans,
                 runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
-                coordination_service=(
-                    COORDINATION_SERVICE if args.advisory_coordinator else ""
-                ),
                 execution_leases=args.enable_execution_leases),
         }, indent=2, sort_keys=True))
         return 0
@@ -3087,10 +2906,6 @@ def main() -> int:
                 args.provider_network_matrix_json,
                 "plan-tracer")
         add_worker_user_policies(policy_dir / "controller.policies", args.requests)
-        add_advisory_coordination_policies(
-            policy_dir / "controller.policies",
-            args.requests,
-            args.advisory_coordinator)
         add_execution_lease_policies(policy_dir / "controller.policies")
         summary["assignmentRequested"] = requested_assignment
         summary["assignmentResolved"] = resolved_assignment
@@ -3284,16 +3099,11 @@ def main() -> int:
                                           provider_rows,
                                           out_dir,
                                           logs_dir,
-                                          [
-                                              *user_worker_identities(args.requests),
-                                              *([COORDINATOR_PROVIDER] if args.advisory_coordinator else []),
-                                          ])
+                                          user_worker_identities(args.requests))
 
         routing = NdnRoutingHelper(ndn.net, "udp", "link-state")
         routing.addOrigin([ndn.net["memphis"]],
                           [CONTROLLER, GROUP, USER, *user_worker_identities(args.requests)])
-        if args.advisory_coordinator:
-            routing.addOrigin([ndn.net["memphis"]], [COORDINATOR_PROVIDER, COORDINATION_SERVICE])
         for row in launch_rows:
             routing.addOrigin([ndn.net[row["node"]]], [row["provider"], GROUP])
         routing.calculateRoutes()
@@ -3315,30 +3125,6 @@ def main() -> int:
 
             provider_logs = []
             provider_log_rows = []
-            if False:  # advisory-coordinator deprecated: placement now local, not central
-                coord_proc, coord_log = start_node_command(
-                    ndn.net["memphis"],
-                    "advisory-coordinator",
-                    advisory_coordinator_command(policy_dir),
-                    logs_dir,
-                    env,
-                    procs)
-                time.sleep(1.0)
-                if coord_proc.poll() is not None:
-                    raise RuntimeError(
-                        f"advisory coordinator exited before user execution; see {coord_log}")
-                summary["advisoryCoordinator"] = {
-                    "status": "started",
-                    "service": COORDINATION_SERVICE,
-                    "provider": COORDINATOR_PROVIDER,
-                    "log": str(coord_log),
-                }
-            else:
-                summary["advisoryCoordinator"] = {
-                    "status": "disabled",
-                    "service": "",
-                    "provider": "",
-                }
             for row in provider_rows:
                 node = ndn.net[row["node"]]
                 command = provider_serve_command(
@@ -3398,36 +3184,12 @@ def main() -> int:
                         "enabled": True,
                         "reason": str(exc),
                     }
-            if args.advisory_coordinator:
-                runtime_inventory = wait_for_provider_inventory(
-                    logs_dir,
-                    expected_provider_roles=len(assignment_rows),
-                    timeout_s=min(5.0, max(1.0, float(args.provider_check_timeout))),
-                )
-                summary["runtimeHintSnapshotRefresh"] = (
-                    refresh_runtime_hints_json_from_inventory(
-                        runtime_hints_json,
-                        runtime_inventory,
-                    )
-                )
-                fragment_inventory_json = out_dir / "fragment-inventory.json"
-                fragment_inventory_json.write_text(
-                    json.dumps(runtime_inventory, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8")
             time.sleep(8.0)
             user_command = user_driver_command(policy_dir,
                                     args.requests,
                                     args.concurrency,
                                     args.submission_spacing_ms if args.concurrency > 1 else 0,
                                     assignment_csv=assignment_csv,
-                                    runtime_hints_json=(
-                                        runtime_hints_json
-                                        if args.advisory_coordinator else None
-                                    ),
-                                    fragment_inventory_json=(
-                                        out_dir / "fragment-inventory.json"
-                                        if args.advisory_coordinator else None
-                                    ),
                                     overload_fast_fail_timeout_ms=args.overload_fast_fail_timeout_ms,
                                     target_rps=args.target_rps,
                                     open_loop_duration_s=args.open_loop_duration_s,
@@ -3438,8 +3200,6 @@ def main() -> int:
                                     ] if resolved_assignment == "capacity-pool" else None,
                                     runtime_aware_max_replans=args.runtime_aware_max_replans,
                                     runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
-                                    coordination_service=(
-                                        COORDINATION_SERVICE if args.advisory_coordinator else ""),
                                     execution_leases=args.enable_execution_leases)
             user_proc, user_log = start_node_command(
                 ndn.net["memphis"], "user-driver", user_command,

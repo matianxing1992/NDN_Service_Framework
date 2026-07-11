@@ -18,7 +18,7 @@ from pathlib import Path
 
 import provider as provider_mod
 from llama_server_lib import encode_chat_request
-from ndnsf_distributed_inference import (
+from ndnsf_distributed_inference.experimental.semantic_cache import (
     choose_semantic_cache_provider,
     semantic_cache_ack_fields,
 )

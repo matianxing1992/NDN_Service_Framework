@@ -24,7 +24,7 @@ from ndnsf.runtime_telemetry import (
     RESIDENCY_READY_COST_MS,
 )
 from ndnsf.ndnsd_health import NdnsdHealthTracker
-from ndnsf_distributed_inference.retry import RetryPolicy, retry_call
+from ndnsf_distributed_inference.retry import RetryPolicy, RetryReason, retry_call
 from ndnsf.metrics import NdnMetrics
 from ndnsf_distributed_inference.runtime_v1 import (
     Deployment,
@@ -203,24 +203,24 @@ class RetryPolicyTest(unittest.TestCase):
 
     def test_retry_on_timeout(self) -> None:
         p = RetryPolicy(max_attempts=3)
-        self.assertTrue(p.should_retry("timeout: /req-1", 1000))
+        self.assertTrue(p.should_retry(RetryReason.TIMEOUT, idempotent=True))
 
     def test_retry_on_lease_rejected(self) -> None:
         p = RetryPolicy(max_attempts=3)
-        self.assertTrue(p.should_retry("LEASE_EXPIRED", 500))
+        self.assertTrue(p.should_retry(RetryReason.LEASE_EXPIRED, idempotent=True))
 
     def test_retry_on_provider_busy(self) -> None:
         p = RetryPolicy(max_attempts=3)
-        self.assertTrue(p.should_retry("provider busy queue full", 200))
+        self.assertTrue(p.should_retry(RetryReason.PROVIDER_BUSY, idempotent=True))
 
     def test_no_retry_when_max_exceeded(self) -> None:
         p = RetryPolicy(max_attempts=1)
         p.attempts = 1
-        self.assertFalse(p.should_retry("timeout", 1000))
+        self.assertFalse(p.should_retry(RetryReason.TIMEOUT, idempotent=True))
 
     def test_no_retry_on_non_retryable_error(self) -> None:
         p = RetryPolicy(max_attempts=3)
-        self.assertFalse(p.should_retry("invalid request payload", 100))
+        self.assertFalse(p.should_retry(RetryReason.NON_RETRYABLE, idempotent=True))
 
     def test_backoff_increases(self) -> None:
         p = RetryPolicy(base_backoff_ms=100, multiplier=2.0, jitter=0)
@@ -234,7 +234,7 @@ class RetryPolicyTest(unittest.TestCase):
         def fn():
             calls[0] += 1
             return {"status": "executed", "elapsedMs": 10}
-        result = retry_call(fn, RetryPolicy(max_attempts=3))
+        result = retry_call(fn, RetryPolicy(max_attempts=3), idempotent=True)
         self.assertEqual(result["status"], "executed")
         self.assertEqual(calls[0], 1)
 
@@ -243,9 +243,9 @@ class RetryPolicyTest(unittest.TestCase):
         def fn():
             calls[0] += 1
             if calls[0] < 3:
-                return {"status": "failed", "error": "timeout", "elapsedMs": 100}
+                return {"status": "failed", "error": "timeout", "retryReason": "TIMEOUT", "elapsedMs": 100}
             return {"status": "executed", "elapsedMs": 10}
-        result = retry_call(fn, RetryPolicy(max_attempts=3, jitter=0))
+        result = retry_call(fn, RetryPolicy(max_attempts=3, jitter=0), idempotent=True)
         self.assertEqual(result["status"], "executed")
         self.assertEqual(calls[0], 3)
 

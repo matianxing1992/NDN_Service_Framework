@@ -133,10 +133,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="Use NativeTracer capacity-pool assignment with multiple candidates per role")
     parser.add_argument("--overload-fast-fail-timeout-ms", type=int, default=0,
                         help="Forward a shorter collaboration timeout for overload fast-fail evidence")
-    parser.add_argument("--compare-advisory-coordinator", action="store_true",
-                        help="Run both pure user-side and advisory coordinator wire-path modes")
-    parser.add_argument("--advisory-coordinator-only", action="store_true",
-                        help="Run only the advisory coordinator wire-path mode")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("extra_harness_args", nargs=argparse.REMAINDER,
                         help="Arguments appended to each NativeTracer MiniNDN run")
@@ -152,10 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     if extras and extras[0] == "--":
         extras = extras[1:]
 
-    modes = ["advisory"] if args.advisory_coordinator_only else (
-        ["pure", "advisory"] if args.compare_advisory_coordinator else ["pure"])
-
-    for mode in modes:
+    for mode in ["pure"]:
         for target_rps in args.rps:
             point_dir = out_dir / mode / f"rps-{str(target_rps).replace('.', 'p')}"
             cmd = [
@@ -181,8 +174,6 @@ def main(argv: list[str] | None = None) -> int:
                     "--overload-fast-fail-timeout-ms",
                     str(args.overload_fast_fail_timeout_ms),
                 ])
-            if mode == "advisory":
-                cmd.append("--advisory-coordinator")
             if args.open_loop_duration_s > 0.0:
                 cmd.extend(["--open-loop-duration-s", str(args.open_loop_duration_s)])
             cmd.extend(extras)
