@@ -10,11 +10,6 @@ namespace ndn_service_framework
 
     NDN_LOG_INIT(ndn_service_framework.utils);
 
-    std::string requestRegexString = "^(<>+)<NDNSF><REQUEST>(<>)(<>)(<>)(<>)";
-    std::string responseRegexString = "^(<>+)<NDNSF><RESPONSE>(<>+)(<>)(<>)(<>)$";
-    std::string RequestAckRegexString = "^(<>+)<NDNSF><ACK>(<>*)(<>)(<>)(<>)$";
-    std::string serviceSelectionRegexString = "^(<>+)<NDNSF><SELECTION>(<>+)(<>)(<>)(<>)$";
-    std::string permissionTokenRegexString = "^(<>+)<NDNSF><TOKEN>(<>)(<>)(<>)$";
 
     namespace
     {
@@ -165,158 +160,6 @@ namespace ndn_service_framework
             const auto encrypted = output.buf();
             return ndn::Buffer(encrypted->begin(), encrypted->end());
         }
-    }
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseRequestName(ndn::Name requestName)
-    {
-        std::shared_ptr<ndn::Regex> requestMatch = std::make_shared<ndn::Regex>(requestRegexString);
-        bool res = requestMatch->match(requestName);
-        if (res)
-        {
-            return std::make_tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>(
-                requestMatch->expand("\\1"),
-                requestMatch->expand("\\2"),
-                requestMatch->expand("\\3"),
-                requestMatch->expand("\\4"),
-                requestMatch->expand("\\5"));
-        }
-        else
-        {
-            return std::nullopt;
-        }
-    }
-
-    ndn::Name makeRequestName(const ndn::Name &requesterName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilter, const ndn::Name &RequestID)
-    {
-        ndn::Name requestName;
-        requestName.append(requesterName).append(ndn::Name("/NDNSF/REQUEST"))
-            .append(ServiceName).append(FunctionName).append(bloomFilter).append(RequestID);
-        return requestName;
-    }
-
-    ndn::Name makeRequestPrefixName(const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName)
-    {
-        ndn::Name requestPrefixName;
-        requestPrefixName.append(requesterName).append(ndn::Name("/NDNSF/REQUEST"))
-            .append(ServiceName).append(FunctionName);
-        return requestPrefixName;
-    }
-
-    ndn::Name makeRequestNameWithoutPrefix(const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilter, const ndn::Name &RequestID)
-    {
-        ndn::Name requestName;
-        requestName.append(ndn::Name("/NDNSF/REQUEST"))
-            .append(ServiceName).append(FunctionName).append(bloomFilter).append(RequestID);
-        return requestName;
-    }
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseResponseName(ndn::Name responseName)
-    {
-        std::shared_ptr<ndn::Regex> responseMatch = std::make_shared<ndn::Regex>(responseRegexString);
-        bool res = responseMatch->match(responseName);
-        if (res)
-        {
-            return std::make_tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>(
-                responseMatch->expand("\\1"),
-                responseMatch->expand("\\2"),
-                responseMatch->expand("\\3"),
-                responseMatch->expand("\\4"),
-                responseMatch->expand("\\5"));
-        }
-        else
-        {
-            return std::nullopt;
-        }
-    }
-
-    ndn::Name makeResponseName(const ndn::Name &ServiceProviderName,const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID)
-    {
-        ndn::Name ResponseName;
-        ResponseName.append(ServiceProviderName).append(ndn::Name("/NDNSF/RESPONSE")).append(requesterName)
-            .append(ServiceName).append(FunctionName).append(RequestID);
-        return ResponseName;
-    }
-
-    ndn::Name makeResponseNameWithoutPrefix(const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID)
-    {
-        ndn::Name ResponseName;
-        ResponseName.append(ndn::Name("/NDNSF/RESPONSE")).append(requesterName)
-            .append(ServiceName).append(FunctionName).append(RequestID);
-        return ResponseName;
-    }
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseRequestAckName(ndn::Name RequestAckName)
-    {
-        std::shared_ptr<ndn::Regex> RequestAckMatch = std::make_shared<ndn::Regex>(RequestAckRegexString);
-        bool res = RequestAckMatch->match(RequestAckName);
-        if (res)
-        {
-            return std::make_tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>(
-                RequestAckMatch->expand("\\1"),
-                RequestAckMatch->expand("\\2"),
-                RequestAckMatch->expand("\\3"),
-                RequestAckMatch->expand("\\4"),
-                RequestAckMatch->expand("\\5"));
-        }
-        else
-        {
-            return std::nullopt;
-        }
-    }
-
-    ndn::Name makeRequestAckName(const ndn::Name &ServiceProviderName,const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &ChallengeID)
-    {
-        ndn::Name RequestAckName;
-        RequestAckName.append(ServiceProviderName).append(ndn::Name("/NDNSF/ACK")).append(requesterName).append(ServiceName)
-            .append(FunctionName).append(ChallengeID);
-        return RequestAckName;
-    }
-
-    ndn::Name makeRequestAckNameWithoutPrefix(const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &ChallengeID)
-    {
-        ndn::Name RequestAckName;
-        RequestAckName.append(ndn::Name("/NDNSF/ACK")).append(requesterName).append(ServiceName)
-            .append(FunctionName).append(ChallengeID);
-        return RequestAckName;
-    }
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseServiceSelectionName(ndn::Name ServiceSelectionName)
-    {
-        std::shared_ptr<ndn::Regex> serviceSelectionMatch = std::make_shared<ndn::Regex>(serviceSelectionRegexString);
-        bool res = serviceSelectionMatch->match(ServiceSelectionName);
-        if (res)
-        {
-            return std::make_tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>(
-                serviceSelectionMatch->expand("\\1"),
-                serviceSelectionMatch->expand("\\2"),
-                serviceSelectionMatch->expand("\\3"),
-                serviceSelectionMatch->expand("\\4"),
-                serviceSelectionMatch->expand("\\5"));
-        }
-        else
-        {
-            return std::nullopt;
-        }
-    }
-
-    ndn::Name makeServiceSelectionName(const ndn::Name &requesterName, const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID)
-    {
-        ndn::Name serviceSelectionName;
-        serviceSelectionName.append(requesterName).append(ndn::Name("/NDNSF/SELECTION")).append(ServiceProviderName).append(ServiceName)
-            .append(FunctionName).append(msgID);
-        return serviceSelectionName;
-    }
-
-    ndn::Name makeServiceSelectionNameWithoutPrefix(const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID)
-    {
-        ndn::Name serviceSelectionName;
-        serviceSelectionName.append(ndn::Name("/NDNSF/SELECTION")).append(ServiceProviderName).append(ServiceName)
-            .append(FunctionName).append(msgID);
-        return serviceSelectionName;
     }
 
     ndn::Name makeRequestNameV2(const ndn::Name& requesterName,
@@ -765,33 +608,6 @@ namespace ndn_service_framework
         return parseLargeDataReferencePayload(payload).has_value();
     }
 
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parsePermissionTokenName(ndn::Name permissionTokenName)
-    {
-        std::shared_ptr<ndn::Regex> permissionTokenMatch = std::make_shared<ndn::Regex>("^(<>+)<NDNSF><TOKEN>(<>)(<>)(<>)$");
-        bool res = permissionTokenMatch->match(permissionTokenName);
-        if (res)
-        {
-            return std::make_tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name>(
-                permissionTokenMatch->expand("\\1"),
-                permissionTokenMatch->expand("\\2"),
-                permissionTokenMatch->expand("\\3"),
-                permissionTokenMatch->expand("\\4"));
-        }
-        else
-        {
-            return std::nullopt;
-        }
-    }
-
-    ndn::Name makePermissionTokenNameWithoutPrefix(const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &seqNum)
-    {
-        ndn::Name permissionTokenName;
-        permissionTokenName.append(ndn::Name("/NDNSF/TOKEN")).append(ServiceName)
-            .append(FunctionName).append(seqNum);
-        return permissionTokenName;
-    }
-
     std::shared_ptr<ndn::Buffer> CombineSegmentsIntoBuffer(ndn::nacabe::SPtrVector<ndn::Data> segments)
     {
         ndn::OBufferStream buf;
@@ -851,49 +667,7 @@ namespace ndn_service_framework
             return std::vector<std::string>{"/SERVICE" + selectionV2->serviceName.toUri()};
         }
 
-        std::shared_ptr<ndn::Regex> requestMatch = std::make_shared<ndn::Regex>(requestRegexString);
-        std::shared_ptr<ndn::Regex> responseMatch = std::make_shared<ndn::Regex>(responseRegexString);
-        std::shared_ptr<ndn::Regex> RequestAckMatch = std::make_shared<ndn::Regex>(RequestAckRegexString);
-        std::shared_ptr<ndn::Regex> serviceSelectionMatch = std::make_shared<ndn::Regex>(serviceSelectionRegexString);
-        std::shared_ptr<ndn::Regex> permissionTokenMatch = std::make_shared<ndn::Regex>(permissionTokenRegexString);
-        
-        std::vector<std::string> matchedAttributes;
-
-        if (requestMatch->match(name))
-        {
-            // attributes:{"/SERVICE/<serviceName>/<fucntionName>"}
-            matchedAttributes.push_back("/SERVICE"+requestMatch->expand("\\2").toUri()+requestMatch->expand("\\3").toUri());
-            return matchedAttributes;
-        }
-        else if (responseMatch->match(name))
-        {
-            // attributes:{"/ID/<requesterName>"}
-            matchedAttributes.push_back("/ID"+responseMatch->expand("\\2").toUri());
-            return matchedAttributes;
-        }
-        else if (RequestAckMatch->match(name))
-        {
-            // attributes:{"/ID/<requesterName>"}
-            matchedAttributes.push_back("/ID"+RequestAckMatch->expand("\\2").toUri());
-            return matchedAttributes;
-        }
-        else if (serviceSelectionMatch->match(name))
-        {
-            // attributes:{"/SERVICE/<serviceName>/<fucntionName>"}
-            matchedAttributes.push_back("/SERVICE"+serviceSelectionMatch->expand("\\3").toUri()+serviceSelectionMatch->expand("\\4").toUri());
-            return matchedAttributes;
-        }
-        else if (permissionTokenMatch->match(name))
-        {
-            // attributes:{"/PERMISSION/<providerName>/<serviceName>/<fucntionName>"}
-            matchedAttributes.push_back("/PERMISSION/"+permissionTokenMatch->expand("\\1").toUri()+
-                permissionTokenMatch->expand("\\2").toUri()+permissionTokenMatch->expand("\\3").toUri());
-            return matchedAttributes;
-        }
-        else
-        {
-            return std::nullopt;
-        }
+        return std::nullopt;
     }
     
     ndn::span<const uint8_t> blockToSpan(const ndn::Block &block)

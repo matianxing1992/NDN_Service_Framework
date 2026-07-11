@@ -307,6 +307,56 @@ BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
   BOOST_CHECK(!handlerCalled);
 }
 
+BOOST_AUTO_TEST_CASE(LegacySplitNameFailsClosed)
+{
+  ndn::Face face;
+  ndn::security::KeyChain keyChain("pib-memory:generic-v1-name-negative",
+                                   "tpm-memory:generic-v1-name-negative");
+  const ndn::Name requesterName("/test/user/alice");
+  const ndn::Name providerName("/test/provider/camera");
+  const ndn::Name serviceName("/ObjectDetection/YOLOv8");
+
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto providerCert = makeRsaIdentity(keyChain, providerName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-v1-name-negative"));
+
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+  ServiceProvider provider(ServiceProvider::LocalMockTag{},
+                           face,
+                           ndn::Name("/test/group"),
+                           providerCert,
+                           aaCert,
+                           "examples/trust-any.conf");
+
+  bool handlerCalled = false;
+  provider.addHandler<DynamicRequest, DynamicResponse>(
+    serviceName,
+    std::function<void(const ndn::Name&, const DynamicRequest&, DynamicResponse&)>(
+      [&] (const ndn::Name&, const DynamicRequest&, DynamicResponse&) {
+        handlerCalled = true;
+      }));
+  installPermissions(user, provider, requesterName, serviceName);
+
+  // A V1 request appended FunctionName and BloomFilter components after the
+  // service. V2 treats the complete suffix as one unified service name, so the
+  // exact authorization lookup must reject it before dispatch.
+  ndn::Name legacyName(requesterName);
+  legacyName.append("NDNSF")
+            .append("REQUEST")
+            .append("ObjectDetection")
+            .append("YOLOv8")
+            .append("legacy-function")
+            .append("legacy-bloom")
+            .append("request-v1");
+
+  const auto response = provider.handleDecryptedRequestByName(
+    legacyName, makeRequestMessageWithUserToken("payload"));
+  BOOST_CHECK(!response.getStatus());
+  BOOST_CHECK(response.getErrorInfo().find("Permission denied") != std::string::npos);
+  BOOST_CHECK(!handlerCalled);
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()

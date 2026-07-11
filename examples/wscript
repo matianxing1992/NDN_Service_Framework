@@ -178,9 +178,7 @@ def build(bld):
                 source=(["generic-dynamic-user-provider.cpp"] +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
-                            'ndn-service-framework/BloomFilter.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
-                            'ndn-service-framework/Service.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
@@ -199,9 +197,7 @@ def build(bld):
                 source=(["ServiceContainer_LocalHelper.cpp"] +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
-                            'ndn-service-framework/BloomFilter.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
-                            'ndn-service-framework/Service.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
@@ -222,12 +218,11 @@ def build(bld):
                         di_native_collaboration_sources +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
-                            'ndn-service-framework/BloomFilter.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
-                            'ndn-service-framework/Service.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',
+                            'ndn-service-framework/ExecutionLease.cpp',
                             'ndn-service-framework/NetworkTelemetry.cpp',
                             'ndn-service-framework/Stream.cpp',
                             'ndn-service-framework/TimelineTrace.cpp',
@@ -283,9 +278,7 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.cpp',
                             'NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.cpp',
                             'ndn-service-framework/NDNSFMessages.cpp',
-                            'ndn-service-framework/BloomFilter.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
-                            'ndn-service-framework/Service.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/HybridMessageCrypto.cpp',

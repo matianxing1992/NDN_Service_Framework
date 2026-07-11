@@ -4,8 +4,7 @@
 #include "common.hpp"
 #include "utils.hpp"
 
-#include "BloomFilter.hpp"
-#include "UserPermissionTable.hpp"
+#include "ServiceAuthorizationTable.hpp"
 #include "NDNSFMessages.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
@@ -30,7 +29,6 @@ namespace ndn_service_framework{
     struct AckInfo{
         ndn::Name providerName;
         ndn::Name serviceName;
-        ndn::Name functionName;
         ndn::Name requestID;
     };
 
@@ -310,7 +308,7 @@ namespace ndn_service_framework{
             void fetchPermissionsFromController(const ndn::Name& controllerPrefix);
             void applyPermissionResponse(const PermissionResponse& response);
             size_t getCurrentPolicyEpoch() const;
-            std::vector<std::tuple<std::string, std::string, std::string>>
+            std::vector<std::tuple<std::string, std::string, size_t>>
             getAllowedServices() const;
             /// Return received NDNSD service details keyed by provider identity.
             std::map<std::string, ndnsd::discovery::Details>
@@ -318,7 +316,7 @@ namespace ndn_service_framework{
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,
-                                                     UserPermissionTable& permissionTable);
+                                                     ServiceAuthorizationTable& permissionTable);
             void setRequestPublisher(RequestPublisher publisher);
             static ndn::Buffer makeGenericAdmissionLeaseSelectionPayload(
                 const std::string& leaseId,
@@ -399,7 +397,6 @@ namespace ndn_service_framework{
             selectAllResponderAcks(
                 const std::vector<ndn_service_framework::AckSelectionCandidate>& candidates);
 
-            void PublishRequest(const std::vector<ndn::Name>& serviceProviderNames,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &payload, const size_t& strategy=ndn_service_framework::tlv::FirstResponding);
             void PublishRequestV2(const std::vector<ndn::Name>& serviceProviderNames,
                                   const ndn::Name& serviceName,
                                   const ndn::Name& requestId,
@@ -693,7 +690,6 @@ namespace ndn_service_framework{
                                                ndn_service_framework::ResponseMessage responseMessage);
             void finishRequestAckOnEventLoop(const ndn::Name& providerName,
                                              const ndn::Name& ServiceName,
-                                             const ndn::Name& FunctionName,
                                              const ndn::Name& requestID,
                                              ndn_service_framework::RequestAckMessage AckMessage);
 
@@ -716,20 +712,24 @@ namespace ndn_service_framework{
 
             void OnRequestAck(const ndn::svs::SVSPubSub::SubscriptionData &subscription);
 
-            void OnRequestAckDecryptionSuccessCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID, const ndn::Buffer &buffer) ;
+            void OnRequestAckDecryptionSuccessCallback(const ndn::Name& providerName,
+                                                       const ndn::Name& serviceName,
+                                                       const ndn::Name& requestID,
+                                                       const ndn::Buffer& buffer);
 
-            void OnRequestAckDecryptionErrorCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID, const std::string &error) ;
+            void OnRequestAckDecryptionErrorCallback(const ndn::Name& providerName,
+                                                     const ndn::Name& serviceName,
+                                                     const ndn::Name& requestID,
+                                                     const std::string& error);
 
-            void PublishServiceSelectionMessage(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &requestID) ;
             void PublishServiceSelectionMessageV2(const ndn::Name& providerName,
                                                      const ndn::Name& serviceName,
                                                      const ndn::Name& requestId);
 
-            void OnResponseDecryptionErrorCallback(const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const std::string &);
-
-            void OnPermissionTokenDecryptionSuccessCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &seqNum, const ndn::Buffer &buffer) ;
-
-            void OnPermissionTokenDecryptionErrorCallback(const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &seqNum, const std::string &error) ;
+            void OnResponseDecryptionErrorCallback(const ndn::Name& providerName,
+                                                   const ndn::Name& serviceName,
+                                                   const ndn::Name& requestID,
+                                                   const std::string& error);
 
             bool replyFromIMS(const ndn::Interest &interest);
 
@@ -811,7 +811,7 @@ namespace ndn_service_framework{
                 bool scheduleImmediateAckTimeoutAfterPublish = false;
                 bool ackWindowExpired = false;
                 bool providerSelected = false;
-                bool directMode = false;
+                bool targetedMode = false;
                 bool timedOut = false;
                 bool timeoutGraceActive = false;
                 size_t ackDecryptsInFlight = 0;
@@ -857,9 +857,6 @@ namespace ndn_service_framework{
             };
 
             static ndn::Name makeRequestId();
-
-            static ndn::Name makeUnifiedServiceName(const ndn::Name& serviceName,
-                                                    const ndn::Name& functionName);
 
             static std::string sanitizeLargeDataObjectId(const std::string& objectLabel);
 
@@ -1019,7 +1016,7 @@ namespace ndn_service_framework{
             std::mutex _cache_mutex;
 
             OptionalServiceDiscovery m_ServiceDiscovery;
-            UserPermissionTable UPT;
+            ServiceAuthorizationTable m_authorizations;
 
             std::map<ndn::Name, size_t> m_strategyMap;
 

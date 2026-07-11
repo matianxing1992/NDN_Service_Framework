@@ -19,37 +19,6 @@
 
 namespace ndn_service_framework
 {
-    extern std::string requestRegexString;
-    extern std::string responseRegexString;
-    extern std::string RequestAckRegexString;
-    extern std::string serviceSelectionRegexString;
-    extern std::string permissionTokenRegexString;
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseRequestName(ndn::Name requestName);
-
-    ndn::Name makeRequestName(const ndn::Name &requesterName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilter, const ndn::Name &RequestID);
-    ndn::Name makeRequestPrefixName(const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName);
-    ndn::Name makeRequestNameWithoutPrefix(const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilter, const ndn::Name &RequestID);
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseResponseName(ndn::Name responseName);
-
-    ndn::Name makeResponseName(const ndn::Name &ServiceProviderName,const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID);
-    ndn::Name makeResponseNameWithoutPrefix(const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID);
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseRequestAckName(ndn::Name RequestAckName);
-
-    ndn::Name makeRequestAckName(const ndn::Name &ServiceProviderName,const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &ChallengeID);
-    ndn::Name makeRequestAckNameWithoutPrefix(const ndn::Name &requesterName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &ChallengeID);
-
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parseServiceSelectionName(ndn::Name serviceSelectionName);
-
-    ndn::Name makeServiceSelectionName(const ndn::Name &requesterName, const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
-    ndn::Name makeServiceSelectionNameWithoutPrefix(const ndn::Name &ServiceProviderName,const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID);
-
     struct RequestNameV2
     {
         ndn::Name requesterName;
@@ -115,7 +84,7 @@ namespace ndn_service_framework
         std::string digest;
     };
 
-    // V2 wire names use one unified serviceName endpoint path, never ServiceName + FunctionName.
+    // V2 wire names use one unified serviceName endpoint path.
     // NAC-ABE attributes follow message direction: REQUEST/SELECTION use
     // /SERVICE/<serviceName>; RESPONSE/ACK use /PERMISSION/<serviceName>.
     // Request:
@@ -197,11 +166,6 @@ namespace ndn_service_framework
 
     // /muas/drone1/NDNSF/TOKEN/ObjectDetection/YOLOv8/0
     // <provider> <service> <function> <seqNum>
-    std::optional<std::tuple<ndn::Name, ndn::Name, ndn::Name, ndn::Name>>
-    parsePermissionTokenName(ndn::Name permissionTokenName);
-
-    ndn::Name makePermissionTokenNameWithoutPrefix(const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &seqNum);
-
     std::shared_ptr<ndn::Buffer> CombineSegmentsIntoBuffer(ndn::nacabe::SPtrVector<ndn::Data> segments);
 
     std::string NameToRegexString(ndn::Name& name);

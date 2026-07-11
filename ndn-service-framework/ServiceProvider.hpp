@@ -3,11 +3,9 @@
 
 #include "common.hpp"
 
-#include "Service.hpp"
 #include "utils.hpp"
 
-#include "BloomFilter.hpp"
-#include "UserPermissionTable.hpp"
+#include "ServiceAuthorizationTable.hpp"
 #include "NDNSFMessages.hpp"
 #include "ConfigManager.hpp"
 #include "HybridMessageCrypto.hpp"
@@ -461,7 +459,7 @@ namespace ndn_service_framework{
             static bool handlePermissionResponseData(const ndn::Data& data,
                                                      const ndn::Name& identity,
                                                      ndn::KeyChain& keyChain,
-                                                     UserPermissionTable& permissionTable);
+                                                     ServiceAuthorizationTable& permissionTable);
 
             size_t getPendingRequestCountForTesting() const;
             size_t getSelectedOutstandingRequestCountForTesting() const;
@@ -496,7 +494,6 @@ namespace ndn_service_framework{
             static const char* providerRequestLifecycleStateToString(
                 ProviderRequestLifecycleState state);
 
-            void UpdateUPTWithServiceMetaInfo(ndnsd::discovery::Details serviceDetails);
             void publishServiceInfo(const ndn::Name& serviceName,
                                     int serviceLifetimeSeconds,
                                     std::map<std::string, std::string> serviceMetaInfo = {});
@@ -516,8 +513,6 @@ namespace ndn_service_framework{
             // After receiving service selection message, this function is called to consumeRequest.
             // Generic dynamic providers can rely on this safe default; legacy generated providers
             // may still override it for service-specific dispatch.
-            virtual void ConsumeRequest(const ndn::Name& RequesterName,const ndn::Name& providerName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID, RequestMessage& requestMessage);
-
             void addService(const ndn::Name& serviceName,
                             AckStrategyHandler ackHandler,
                             RequestHandler requestHandler);
@@ -677,14 +672,13 @@ namespace ndn_service_framework{
 
             void OnRequestDecryptionSuccessCallbackV2(const ndn::Name& requesterIdentity,
                                                        const ndn::Name& serviceName,
-                                                       const ndn::Name& bloomFilterName,
                                                        const ndn::Name& requestId,
                                                        const ndn::Buffer& buffer);
 
-            void OnRequestDecryptionSuccessCallback(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &bloomFilterName,  const ndn::Name &RequestID, const ndn::Buffer & buffer);
-    
-            // virtual void OnRequestDecryptionSuccessCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &);
-            void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const std::string &);
+            void OnRequestDecryptionErrorCallback(const ndn::Name& requesterIdentity,
+                                                  const ndn::Name& serviceName,
+                                                  const ndn::Name& requestId,
+                                                  const std::string& error);
             
             // ndnsd serviceinfo discovery callback
             void processNDNSDServiceInfoCallback(const ndnsd::discovery::Details& callback);
@@ -701,7 +695,6 @@ namespace ndn_service_framework{
                                          int attempt = 1);
             bool isAcceptablePolicyEpoch(size_t messageEpoch) const;
 
-            // void PublishResponse(const ndn::Name &requesterIdentity, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &RequestID, const ndn::Buffer& buffer);
 
             bool replyFromIMS(const ndn::Interest &interest);
             void rememberPendingImsInterest(const ndn::Interest& interest);
@@ -718,7 +711,6 @@ namespace ndn_service_framework{
 
             void serveDataWithIMS(ndn::nacabe::SPtrVector<ndn::Data>& contentData, ndn::nacabe::SPtrVector<ndn::Data>& ckData);
 
-            void PublishRequestAckMessage(const ndn::Name & requesterIdentity, const ndn::Name & ServiceName, const ndn::Name & FunctionName, const ndn::Name & RequestID, bool status, const std::string& msg, const ndn::Buffer& payload = ndn::Buffer(), const std::string& userToken = "", const std::string& providerToken = "");
             void PublishRequestAckMessageV2(const ndn::Name& requesterIdentity,
                                             const ndn::Name& serviceName,
                                             const ndn::Name& requestId,
@@ -746,14 +738,18 @@ namespace ndn_service_framework{
                                       std::function<void(const ndn::Buffer&)> onSuccess,
                                       std::function<void(const std::string&)> onError);
 
-            void OnServiceSelectionMessageDecryptionSuccessCallback(const ndn::Name &requesterName, const ndn::Name &providerName, const ndn::Name &ServiceName, const ndn::Name &FunctionName, const ndn::Name &msgID, const ndn::Buffer & buffer);
             void OnServiceSelectionMessageDecryptionSuccessCallbackV2(const ndn::Name& requesterName,
                                                                           const ndn::Name& providerName,
                                                                           const ndn::Name& serviceName,
                                                                           const ndn::Name& msgId,
                                                                           const ndn::Buffer& buffer);
 
-            void OnServiceSelectionMessageDecryptionErrorCallback(const ndn::Name& requesterName,const ndn::Name &providerName, const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& msgID,const std::string & reason);
+            void OnServiceSelectionMessageDecryptionErrorCallback(
+                const ndn::Name& requesterName,
+                const ndn::Name& providerName,
+                const ndn::Name& serviceName,
+                const ndn::Name& msgId,
+                const std::string& reason);
             
             // Register NDNSF Messages in the ndn-svs
             void registerNDNSFMessages();
@@ -808,13 +804,6 @@ namespace ndn_service_framework{
                                    const CollaborationData&)> onContextData;
             };
 
-            struct ParsedRequestName
-            {
-                ndn::Name requesterIdentity;
-                ndn::Name serviceName;
-                ndn::Name requestId;
-            };
-
             struct TargetedProviderTokenState
             {
                 ndn::Name requesterIdentity;
@@ -825,12 +814,6 @@ namespace ndn_service_framework{
             static ResponseMessage makeErrorResponse(const std::string& errorInfo);
 
             static AckDecision makeDefaultAckDecision();
-
-            static ndn::Name makeUnifiedServiceName(const ndn::Name& serviceName,
-                                                    const ndn::Name& functionName);
-
-            static std::optional<ParsedRequestName>
-            parseRequestNameForUnifiedService(const ndn::Name& requestName);
 
             void schedulePendingRequestCleanup(const ndn::Name& pendingKey,
                                                ndn::time::milliseconds ttl = ndn::time::seconds(30));
@@ -885,7 +868,6 @@ namespace ndn_service_framework{
             void finishDecodedRequestOnEventLoop(
                 const ndn::Name& requesterIdentity,
                 const ndn::Name& serviceName,
-                const ndn::Name& bloomFilterName,
                 const ndn::Name& requestId,
                 RequestMessage requestMessage);
             bool finishTargetedRequestOnEventLoop(
@@ -1040,7 +1022,7 @@ namespace ndn_service_framework{
 
             /*
                 pending requests waiting for Service Selection Message;
-                (/<requesterName>/<ServiceName>/<FunctionName>/<RequestID> -> RequestMessage)
+                (/<requesterName>/<serviceName>/<requestID> -> RequestMessage)
             */
             std::map<ndn::Name,std::shared_ptr<RequestMessage>> pendingRequests;
             std::map<ndn::Name,std::string> pendingProviderTokens;
@@ -1106,7 +1088,7 @@ namespace ndn_service_framework{
             ndn::scheduler::ScopedEventId m_ndnsdHeartbeatEvent;
             int m_ndnsdHeartbeatIntervalSeconds = 0;
 
-            UserPermissionTable UPT;
+            ServiceAuthorizationTable m_authorizations;
 
             ConfigManager m_configManager;
 

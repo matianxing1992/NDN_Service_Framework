@@ -786,12 +786,10 @@ BOOST_AUTO_TEST_CASE(ReplayedTargetedRuntimeRequestExecutesOnce)
 
   provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
                                                 serviceName,
-                                                ndn::Name(),
                                                 requestId,
                                                 encoded);
   provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
                                                 serviceName,
-                                                ndn::Name(),
                                                 requestId,
                                                 encoded);
 

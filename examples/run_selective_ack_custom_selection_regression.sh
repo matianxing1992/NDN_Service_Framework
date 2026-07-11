@@ -156,15 +156,15 @@ fi
 
 if [[ "${user_status}" -eq 0 ]] &&
    grep -q "Fetch user permissions: /example/hello/controller/NDNSF/PERMISSIONS/USER/example/hello/user" "${tmpdir}/user.log" &&
-   grep -q "Installed user permission provider=/example/hello/provider/A service=/HELLO" "${tmpdir}/user.log" &&
-   grep -q "Installed user permission provider=/example/hello/provider/B service=/HELLO" "${tmpdir}/user.log" &&
-   grep -q "Installed user permission provider=/example/hello/provider/C service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/A/HELLO service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/B/HELLO service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/C/HELLO service=/HELLO" "${tmpdir}/user.log" &&
    grep -q "Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/A" "${tmpdir}/provider-A.log" &&
    grep -q "Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/B" "${tmpdir}/provider-B.log" &&
    grep -q "Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider/C" "${tmpdir}/provider-C.log" &&
-   grep -q "Installed provider permission provider=/example/hello/provider/A service=/HELLO" "${tmpdir}/provider-A.log" &&
-   grep -q "Installed provider permission provider=/example/hello/provider/B service=/HELLO" "${tmpdir}/provider-B.log" &&
-   grep -q "Installed provider permission provider=/example/hello/provider/C service=/HELLO" "${tmpdir}/provider-C.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/A/HELLO service=/HELLO" "${tmpdir}/provider-A.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/B/HELLO service=/HELLO" "${tmpdir}/provider-B.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/C/HELLO service=/HELLO" "${tmpdir}/provider-C.log" &&
    grep -q "\\[PERMISSIONS/USER\\] Encrypted reply target=/example/hello/user" "${tmpdir}/controller.log" &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/A" "${tmpdir}/controller.log" &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider/B" "${tmpdir}/controller.log" &&

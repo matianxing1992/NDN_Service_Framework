@@ -206,9 +206,9 @@ def main() -> int:
             ("provider installed", provider_text, "NDNSF_CERT_BOOTSTRAP_INSTALLED identity=/example/hello/provider"),
             ("user installed", user_text, "NDNSF_CERT_BOOTSTRAP_INSTALLED identity=/example/hello/user"),
             ("user reused", reuse_text, "NDNSF_CERT_BOOTSTRAP_REUSED identity=/example/hello/user"),
-            ("provider permission", provider_text, "Installed provider permission provider=/example/hello/provider service=/HELLO"),
-            ("user permission", user_text, "Installed user permission provider=/example/hello/provider service=/HELLO"),
-            ("reuse user permission", reuse_text, "Installed user permission provider=/example/hello/provider service=/HELLO"),
+            ("provider permission", provider_text, "Installed provider permission provider=/example/hello/provider/HELLO service=/HELLO"),
+            ("user permission", user_text, "Installed user permission provider=/example/hello/provider/HELLO service=/HELLO"),
+            ("reuse user permission", reuse_text, "Installed user permission provider=/example/hello/provider/HELLO service=/HELLO"),
             ("hello response", user_text, "Received response: HELLO"),
             ("reuse hello response", reuse_text, "Received response: HELLO"),
         ]

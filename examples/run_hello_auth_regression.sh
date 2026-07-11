@@ -51,9 +51,9 @@ tail -n 140 "${tmpdir}/user.log"
 
 if [[ "${user_status}" -eq 0 ]] &&
    grep -q "Fetch user permissions: /example/hello/controller/NDNSF/PERMISSIONS/USER/example/hello/user" "${tmpdir}/user.log" &&
-   grep -q "Installed user permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/HELLO service=/HELLO" "${tmpdir}/user.log" &&
    grep -q "Fetch provider permissions: /example/hello/controller/NDNSF/PERMISSIONS/PROVIDER/example/hello/provider" "${tmpdir}/provider.log" &&
-   grep -q "Installed provider permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/provider.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/HELLO service=/HELLO" "${tmpdir}/provider.log" &&
    grep -q "\\[PERMISSIONS/USER\\] Encrypted reply target=/example/hello/user" "${tmpdir}/controller.log" &&
    grep -q "\\[PERMISSIONS/PROVIDER\\] Encrypted reply target=/example/hello/provider" "${tmpdir}/controller.log" &&
    grep -q "UserToken/ProviderToken runtime mode: enabled" "${tmpdir}/provider.log" &&

@@ -5919,8 +5919,8 @@ def main() -> None:
                 "NDNSF_SVS_PARALLEL_PRODUCTION_EXTRA_BLOCK", "0")
         if args_cli.native_providers and not args_cli.disable_exact_segment_fetch:
             env["NDNSF_COLLAB_LARGE_EXACT_SEGMENT_FETCH"] = "1"
-            env["NDNSF_SELECTION_DIRECT_PREFETCH"] = os.environ.get(
-                "NDNSF_SELECTION_DIRECT_PREFETCH", "1")
+            env["NDNSF_SELECTION_TARGETED_PREFETCH"] = os.environ.get(
+                "NDNSF_SELECTION_TARGETED_PREFETCH", "1")
         needs_native_runtime_timing = (
             (args_cli.native_providers and not args_cli.disable_native_runtime_timing) or
             not args_cli.quiet_perf_logs or

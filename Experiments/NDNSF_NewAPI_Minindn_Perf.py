@@ -215,6 +215,8 @@ def build_parser():
                         choices=["first-responding", "custom-selection",
                                  "random-selection", "all-selected"],
                         help="App_User benchmark strategy")
+    parser.add_argument("--targeted", action="store_true",
+                        help="Use RequestServiceTargeted against the first provider")
     parser.add_argument("--ack-timeout-ms", type=int, default=1000,
                         help="ACK collection timeout for custom selection")
     parser.add_argument("--timeout-ms", type=int, default=5000,
@@ -1869,7 +1871,7 @@ def provider_ready_state(log_path, provider_id):
             r"Provider {} registered service /HELLO|Registered service handler for /HELLO".format(
                 re.escape(provider_id)), text)),
         "provider_permission_installed": bool(re.search(
-            r"Installed provider permission provider=/example/hello/provider/{} service=/HELLO".format(
+            r"Installed provider permission provider=/example/hello/provider/{}/HELLO service=/HELLO".format(
                 re.escape(provider_id)), text)),
         "svs_initialized_or_subscribed": bool(re.search(
             r"Register NDNSF Messages in ndn-svs|SVS request subscription regex|"
@@ -4720,6 +4722,12 @@ def app_user_argv(args, app_csv):
                 ])
     if args.strategy == "custom-selection":
         user_args.append("--custom-selection")
+    if getattr(args, "targeted", False):
+        user_args.extend([
+            "--targeted",
+            "--targeted-provider",
+            provider_identity_prefix(selected_provider_ids(args)[0]),
+        ])
     if getattr(args, "performance_mode", False):
         user_args.append("--performance-mode")
     if getattr(args, "handler_threads", -1) >= 0:

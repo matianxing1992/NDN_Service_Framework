@@ -3,7 +3,7 @@
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
-#include "ndn-service-framework/UserPermissionTable.hpp"
+#include "ndn-service-framework/ServiceAuthorizationTable.hpp"
 #include "ndn-service-framework/utils.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
@@ -70,7 +70,7 @@ protected:
   validateAndApply(const PermissionResponse& response,
                    const ndn::Name& expectedIdentity,
                    size_t expectedPermissionKind,
-                   UserPermissionTable& table)
+                   ServiceAuthorizationTable& table)
   {
     if (response.getTargetIdentity() != expectedIdentity.toUri()) {
       return false;
@@ -79,18 +79,20 @@ protected:
       return false;
     }
 
+    std::vector<ServiceAuthorizationRecord> records;
     for (const auto& entry : response.getEntries()) {
       ndn::Name providerServiceName(entry.getProviderName());
       providerServiceName.append(ndn::Name(entry.getServiceName()));
-      table.insertPermission(providerServiceName.toUri(),
-                             entry.getServiceName(),
-                             entry.getToken());
+      records.push_back(ServiceAuthorizationRecord{
+        providerServiceName.toUri(), entry.getServiceName(),
+        response.getPermissionKind(), response.getPolicyEpoch()});
     }
-    return true;
+    return table.replacePermissions(response.getPermissionKind(),
+                                    response.getPolicyEpoch(), records);
   }
 
   static void
-  checkInstalledPermission(const UserPermissionTable& table,
+  checkInstalledPermission(const ServiceAuthorizationTable& table,
                            const std::string& providerName,
                            const std::string& serviceName,
                            const std::string& token)
@@ -98,9 +100,11 @@ protected:
     ndn::Name fullServiceName(providerName);
     fullServiceName.append(ndn::Name(serviceName));
 
-    auto installedToken = table.queryPermission(fullServiceName.toUri(), serviceName);
-    BOOST_REQUIRE(installedToken);
-    BOOST_CHECK_EQUAL(*installedToken, token);
+    (void)token;
+    auto record = table.find(fullServiceName.toUri());
+    BOOST_REQUIRE(record);
+    BOOST_CHECK_EQUAL(record->serviceName, serviceName);
+    BOOST_CHECK_GT(record->policyEpoch, 0);
   }
 
   static void
@@ -263,7 +267,7 @@ BOOST_FIXTURE_TEST_CASE(UserPermissionResponseEncryptDecryptAndApply,
   auto decrypted = decryptPermissionResponseWithKeyChain(decodedEncrypted, userKeyChain);
   checkSamePermissionResponse(decrypted, response);
 
-  UserPermissionTable table;
+  ServiceAuthorizationTable table;
   BOOST_CHECK(validateAndApply(decrypted, userIdentity, tlv::UserPermission, table));
   checkInstalledPermission(table, providerName, serviceName, token);
 }
@@ -320,7 +324,7 @@ BOOST_FIXTURE_TEST_CASE(ControllerSignedDataIsEncryptedForTargetOnly,
   auto decrypted = decryptPermissionResponseWithKeyChain(encrypted, userKeyChain);
   checkSamePermissionResponse(decrypted, response);
 
-  UserPermissionTable table;
+  ServiceAuthorizationTable table;
   BOOST_CHECK(validateAndApply(decrypted, userIdentity, tlv::UserPermission, table));
   checkInstalledPermission(table, providerName, serviceName, token);
 }
@@ -341,7 +345,7 @@ BOOST_FIXTURE_TEST_CASE(ProviderPermissionResponseEncryptDecryptAndApply,
   auto decrypted = decryptPermissionResponseWithKeyChain(decodedEncrypted, providerKeyChain);
   checkSamePermissionResponse(decrypted, response);
 
-  UserPermissionTable table;
+  ServiceAuthorizationTable table;
   BOOST_CHECK(validateAndApply(decrypted, providerIdentity, tlv::ProviderPermission, table));
   checkInstalledPermission(table, providerIdentity.toUri(), serviceName, token);
 }
@@ -358,9 +362,9 @@ BOOST_FIXTURE_TEST_CASE(TargetIdentityCheckRejectsWrongTarget,
   auto encrypted = encryptPermissionResponseForCertificate(wrongTarget, userCert);
   auto decrypted = decryptPermissionResponseWithKeyChain(encrypted, userKeyChain);
 
-  UserPermissionTable table;
+  ServiceAuthorizationTable table;
   BOOST_CHECK(!validateAndApply(decrypted, userIdentity, tlv::UserPermission, table));
-  BOOST_CHECK(table.dumpAll().empty());
+  BOOST_CHECK(table.snapshot().empty());
 }
 
 BOOST_FIXTURE_TEST_CASE(PermissionKindCheckRejectsWrongKind,
@@ -375,9 +379,9 @@ BOOST_FIXTURE_TEST_CASE(PermissionKindCheckRejectsWrongKind,
   auto encrypted = encryptPermissionResponseForCertificate(wrongKind, userCert);
   auto decrypted = decryptPermissionResponseWithKeyChain(encrypted, userKeyChain);
 
-  UserPermissionTable table;
+  ServiceAuthorizationTable table;
   BOOST_CHECK(!validateAndApply(decrypted, userIdentity, tlv::UserPermission, table));
-  BOOST_CHECK(table.dumpAll().empty());
+  BOOST_CHECK(table.snapshot().empty());
 }
 
 BOOST_FIXTURE_TEST_CASE(ServiceUserPermissionFetchCallbackHandlesEncryptedData,
@@ -396,7 +400,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceUserPermissionFetchCallbackHandlesEncryptedData,
                                                 userCert,
                                                 userKeyChain);
 
-  UserPermissionTable permissionTable;
+  ServiceAuthorizationTable permissionTable;
   BOOST_CHECK(ServiceUser::handlePermissionResponseData(data,
                                                         userIdentity,
                                                         userKeyChain,
@@ -411,7 +415,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceUserPermissionFetchCallbackHandlesEncryptedData,
                                                          userIdentity,
                                                          userKeyChain,
                                                          permissionTable));
-  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+  BOOST_CHECK_EQUAL(permissionTable.snapshot().size(), 1);
 
   auto wrongTarget = makeResponse(ndn::Name("/test/runtime/not-user"),
                                   tlv::UserPermission,
@@ -427,7 +431,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceUserPermissionFetchCallbackHandlesEncryptedData,
                                                          userIdentity,
                                                          userKeyChain,
                                                          permissionTable));
-  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+  BOOST_CHECK_EQUAL(permissionTable.snapshot().size(), 1);
 
   auto wrongKind = makeResponse(userIdentity,
                                 tlv::ProviderPermission,
@@ -443,7 +447,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceUserPermissionFetchCallbackHandlesEncryptedData,
                                                          userIdentity,
                                                          userKeyChain,
                                                          permissionTable));
-  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+  BOOST_CHECK_EQUAL(permissionTable.snapshot().size(), 1);
 }
 
 BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedData,
@@ -461,7 +465,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedDa
                                                 providerCert,
                                                 providerKeyChain);
 
-  UserPermissionTable permissionTable;
+  ServiceAuthorizationTable permissionTable;
   BOOST_CHECK(ServiceProvider::handlePermissionResponseData(data,
                                                             providerIdentity,
                                                             providerKeyChain,
@@ -479,7 +483,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedDa
                                                              providerIdentity,
                                                              providerKeyChain,
                                                              permissionTable));
-  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+  BOOST_CHECK_EQUAL(permissionTable.snapshot().size(), 1);
 
   auto wrongTarget = makeResponse(ndn::Name("/test/runtime/not-provider"),
                                   tlv::ProviderPermission,
@@ -495,7 +499,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedDa
                                                              providerIdentity,
                                                              providerKeyChain,
                                                              permissionTable));
-  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+  BOOST_CHECK_EQUAL(permissionTable.snapshot().size(), 1);
 
   auto wrongKind = makeResponse(providerIdentity,
                                 tlv::UserPermission,
@@ -511,7 +515,7 @@ BOOST_FIXTURE_TEST_CASE(ServiceProviderPermissionFetchCallbackHandlesEncryptedDa
                                                              providerIdentity,
                                                              providerKeyChain,
                                                              permissionTable));
-  BOOST_CHECK_EQUAL(permissionTable.dumpAll().size(), 1);
+  BOOST_CHECK_EQUAL(permissionTable.snapshot().size(), 1);
 }
 
 BOOST_FIXTURE_TEST_CASE(PermissionResponseDataValidationRejectsForgedData,
@@ -524,7 +528,7 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseDataValidationRejectsForgedData,
                                      "forged-token");
   const ndn::Name dataName("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice");
   MessageValidator validator("tests/reject-rsa-data.conf");
-  UserPermissionTable permissionTable;
+  ServiceAuthorizationTable permissionTable;
 
   auto unsignedData = makeUnsignedEncryptedPermissionData(dataName,
                                                           response,
@@ -542,7 +546,7 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseDataValidationRejectsForgedData,
       unsignedFailureCalled = true;
     });
   BOOST_CHECK(unsignedFailureCalled);
-  BOOST_CHECK(permissionTable.dumpAll().empty());
+  BOOST_CHECK(permissionTable.snapshot().empty());
 
   auto wrongSignedData = makeSignedEncryptedPermissionData(dataName,
                                                            response,
@@ -568,7 +572,7 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseDataValidationRejectsForgedData,
       wrongSignedFailureCalled = true;
     });
   BOOST_CHECK(wrongSignedFailureCalled || wrongSignedRejectedBeforeApply);
-  BOOST_CHECK(permissionTable.dumpAll().empty());
+  BOOST_CHECK(permissionTable.snapshot().empty());
 }
 
 BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureAndControllerMismatch,
@@ -581,7 +585,7 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
                                      "controller-token");
   const ndn::Name dataName("/test/controller/NDNSF/PERMISSIONS/USER/test/user/alice");
   MessageValidator validator("examples/trust-any.conf");
-  UserPermissionTable permissionTable;
+  ServiceAuthorizationTable permissionTable;
 
   auto digestSignedData = makeDigestSignedEncryptedPermissionData(dataName,
                                                                   response,
@@ -600,7 +604,7 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
       digestFailureCalled = true;
     });
   BOOST_CHECK(digestFailureCalled);
-  BOOST_CHECK(permissionTable.dumpAll().empty());
+  BOOST_CHECK(permissionTable.snapshot().empty());
 
   auto controllerSignedData = makeSignedEncryptedPermissionData(dataName,
                                                                 response,
@@ -628,7 +632,7 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
     [&] (const ndn::Data&, const ndn::security::ValidationError&) {
     });
   BOOST_CHECK(signerMismatchRejected);
-  BOOST_CHECK(permissionTable.dumpAll().empty());
+  BOOST_CHECK(permissionTable.snapshot().empty());
 }
 
 BOOST_FIXTURE_TEST_CASE(MessageValidatorFailureCallbackIsExplicit,
@@ -660,7 +664,7 @@ BOOST_FIXTURE_TEST_CASE(ValidatorFailureCallbacksAreExactlyOnceAndLeaveNoState,
                         EncryptedPermissionResponseFixture)
 {
   MessageValidator validator("tests/reject-rsa-data.conf");
-  UserPermissionTable permissionTable;
+  ServiceAuthorizationTable permissionTable;
 
   const auto response = makeResponse(userIdentity,
                                      tlv::UserPermission,
@@ -691,7 +695,7 @@ BOOST_FIXTURE_TEST_CASE(ValidatorFailureCallbacksAreExactlyOnceAndLeaveNoState,
 
     BOOST_CHECK_EQUAL(successCount, 0);
     BOOST_CHECK_EQUAL(failureCount, 1);
-    BOOST_CHECK(permissionTable.dumpAll().empty());
+    BOOST_CHECK(permissionTable.snapshot().empty());
   }
 
   BOOST_CHECK_EQUAL(validator.getFailureCountForTesting(), 20);

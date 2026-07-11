@@ -260,7 +260,7 @@ public:
     pendingCall.requestMessage.setUserToken(userToken);
     pendingCall.requestMessage.setRequestMode(tlv::TargetedRequest);
     pendingCall.requestMessage.setTargetProvider(providerName);
-    pendingCall.directMode = true;
+    pendingCall.targetedMode = true;
     pendingCall.expectedResponseProviders.push_back(providerName);
     m_pendingCalls[requestId] = pendingCall;
   }

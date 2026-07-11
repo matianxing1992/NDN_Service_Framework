@@ -356,7 +356,6 @@ BOOST_AUTO_TEST_CASE(FirstRespondingV2AckCallbackDoesNotFallThroughToLegacySelec
   ndn::Buffer firstAckBuffer(firstAckBlock.data(), firstAckBlock.size());
   user.OnRequestAckDecryptionSuccessCallback(providerA,
                                              serviceName,
-                                             ndn::Name(),
                                              requestId,
                                              firstAckBuffer);
   pumpFace(face, 50_ms);
@@ -368,7 +367,6 @@ BOOST_AUTO_TEST_CASE(FirstRespondingV2AckCallbackDoesNotFallThroughToLegacySelec
   ndn::Buffer secondAckBuffer(secondAckBlock.data(), secondAckBlock.size());
   user.OnRequestAckDecryptionSuccessCallback(providerB,
                                              serviceName,
-                                             ndn::Name(),
                                              requestId,
                                              secondAckBuffer);
   pumpFace(face, 50_ms);

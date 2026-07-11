@@ -120,7 +120,6 @@ BOOST_AUTO_TEST_CASE(AllSelectedProvidersExecuteOnlyAfterSelection)
 
   provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
                                                 serviceName,
-                                                ndn::Name("/bf"),
                                                 requestId,
                                                 requestBuffer);
   BOOST_CHECK_EQUAL(executions, 0);
@@ -244,14 +243,6 @@ BOOST_AUTO_TEST_CASE(BaseServiceProviderDefaultsAreSafe)
                            "examples/trust-any.conf");
 
   provider.registerServiceInfo();
-
-  RequestMessage requestMessage;
-  provider.ConsumeRequest(ndn::Name("/test/user/alice"),
-                          provider.getName(),
-                          ndn::Name("/Unregistered"),
-                          ndn::Name("/Endpoint"),
-                          ndn::Name("/request-default"),
-                          requestMessage);
 
   BOOST_CHECK(!provider.getName().empty());
 }

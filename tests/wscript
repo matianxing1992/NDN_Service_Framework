@@ -8,11 +8,9 @@ def build(bld):
                 source=(bld.path.ant_glob('**/*.cpp') +
                         bld.path.parent.ant_glob([
                             'ndn-service-framework/NDNSFMessages.cpp',
-                            'ndn-service-framework/BloomFilter.cpp',
                             'ndn-service-framework/CertificatePublisher.cpp',
                             'ndn-service-framework/ConfigManager.cpp',
                             'ndn-service-framework/PolicyParser.cpp',
-                            'ndn-service-framework/Service.cpp',
                             'ndn-service-framework/ServiceProvider.cpp',
                             'ndn-service-framework/ServiceUser.cpp',
                             'ndn-service-framework/Stream.cpp',

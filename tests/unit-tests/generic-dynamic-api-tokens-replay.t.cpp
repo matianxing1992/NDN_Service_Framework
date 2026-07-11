@@ -265,12 +265,10 @@ BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
   ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
   provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
                                                 serviceName,
-                                                ndn::Name(),
                                                 requestId,
                                                 requestBuffer);
   provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
                                                 serviceName,
-                                                ndn::Name(),
                                                 requestId,
                                                 requestBuffer);
   BOOST_CHECK_EQUAL(ackHandlerCalls, 1);
@@ -394,7 +392,6 @@ BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckSelectionResponsePa
       ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
       provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
                                                     serviceName,
-                                                    ndn::Name("/bf"),
                                                     requestId,
                                                     requestBuffer);
       BOOST_CHECK_EQUAL(providerHandlerCallCount, 0);
@@ -486,7 +483,6 @@ BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
   ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
   provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
                                                 serviceName,
-                                                ndn::Name("/bf"),
                                                 requestId,
                                                 requestBuffer);
   BOOST_CHECK(!provider.hasPendingRequestForTokenTest(requesterName, serviceName, requestId));

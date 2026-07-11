@@ -497,7 +497,8 @@ main(int argc, char** argv)
           response.setErrorInfo("No error");
           response.setPayload(responsePayload, responsePayload.size());
           return response;
-        }));
+        }),
+      ndn_service_framework::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
     provider.init();
     provider.fetchPermissionsFromController(CONTROLLER_PREFIX);
 

@@ -597,6 +597,7 @@ main(int argc, char** argv)
 
     const bool useCustomSelection = hasFlag(argc, argv, "--custom-selection");
     const bool benchmark = hasFlag(argc, argv, "--benchmark");
+    const bool targetedBenchmark = hasFlag(argc, argv, "--targeted");
     const bool performanceMode = hasFlag(argc, argv, "--performance-mode");
     auto perfLogGate = std::make_shared<SampledLogGate>(10);
     const bool useTokens = !hasFlag(argc, argv, "--disable-tokens");
@@ -710,6 +711,8 @@ main(int argc, char** argv)
     const std::string outputCsv = getOption(argc, argv, "--output-csv", "");
     const std::string benchmarkStrategyText = getOption(argc, argv, "--strategy", "custom-selection");
     const std::string expectedResponse = getOption(argc, argv, "--expect-response", "");
+    const ndn::Name targetedProvider(
+      getOption(argc, argv, "--targeted-provider", PROVIDER_IDENTITY.toUri()));
     const std::string bootstrapToken = getOption(argc, argv, "--bootstrap-token", "");
     const ndn::Name bootstrapName(
       getOption(argc, argv, "--bootstrap-name", USER_IDENTITY.toUri()));
@@ -1717,14 +1720,26 @@ main(int argc, char** argv)
                   });
               });
 
-            ndn::Name requestId = user.RequestService(
-              benchmarkServiceName,
-              request.getPayload(),
-              ackTimeoutMs,
-              benchmarkSelectionPolicy,
-              requestTimeoutMs,
-              onResponse,
-              onTimeout);
+            ndn::Name requestId;
+            if (targetedBenchmark) {
+              requestId = user.RequestServiceTargeted(
+                targetedProvider,
+                benchmarkServiceName,
+                request,
+                requestTimeoutMs,
+                onTimeout,
+                onResponse);
+            }
+            else {
+              requestId = user.RequestService(
+                benchmarkServiceName,
+                request.getPayload(),
+                ackTimeoutMs,
+                benchmarkSelectionPolicy,
+                requestTimeoutMs,
+                onResponse,
+                onTimeout);
+            }
 
             state->requestId = requestId.toUri();
             const bool admissionRejected =
@@ -2137,14 +2152,26 @@ main(int argc, char** argv)
           selectionPolicy = ndnsf::strategy::FirstResponding;
         }
 
-        ndn::Name requestId = user.RequestService(
-          benchmarkServiceName,
-          request.getPayload(),
-          ackTimeoutMs,
-          selectionPolicy,
-          timeoutMs,
-          onResponse,
-          onTimeout);
+        ndn::Name requestId;
+        if (targetedBenchmark) {
+          requestId = user.RequestServiceTargeted(
+            targetedProvider,
+            benchmarkServiceName,
+            request,
+            timeoutMs,
+            onTimeout,
+            onResponse);
+        }
+        else {
+          requestId = user.RequestService(
+            benchmarkServiceName,
+            request.getPayload(),
+            ackTimeoutMs,
+            selectionPolicy,
+            timeoutMs,
+            onResponse,
+            onTimeout);
+        }
 
         *currentRequestId = requestId.toUri();
         NDN_LOG_TRACE( "PERF_REQUEST_SENT id=" << *currentRequestId

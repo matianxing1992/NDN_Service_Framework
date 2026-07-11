@@ -72,7 +72,7 @@ wait_for_provider() {
   local deadline=$((SECONDS + 20))
   while (( SECONDS < deadline )); do
     if grep -q "Provider default registered service /HELLO" "${tmpdir}/provider.log" 2>/dev/null &&
-       grep -q "Installed provider permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/provider.log" 2>/dev/null; then
+       grep -q "Installed provider permission provider=/example/hello/provider/HELLO service=/HELLO" "${tmpdir}/provider.log" 2>/dev/null; then
       return 0
     fi
     if [[ -n "${provider_pid}" ]] && ! kill -0 "${provider_pid}" 2>/dev/null; then

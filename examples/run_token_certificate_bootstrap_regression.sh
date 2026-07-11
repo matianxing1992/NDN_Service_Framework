@@ -179,9 +179,9 @@ if [[ "${wrong_status}" -ne 0 ]] &&
    grep -q "NDNSF_CERT_BOOTSTRAP_INSTALLED identity=/example/hello/provider" "${tmpdir}/provider.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_INSTALLED identity=/example/hello/user" "${tmpdir}/user.log" &&
    grep -q "NDNSF_CERT_BOOTSTRAP_REUSED identity=/example/hello/user" "${tmpdir}/user-reuse.log" &&
-   grep -q "Installed provider permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/provider.log" &&
-   grep -q "Installed user permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/user.log" &&
-   grep -q "Installed user permission provider=/example/hello/provider service=/HELLO" "${tmpdir}/user-reuse.log" &&
+   grep -q "Installed provider permission provider=/example/hello/provider/HELLO service=/HELLO" "${tmpdir}/provider.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/HELLO service=/HELLO" "${tmpdir}/user.log" &&
+   grep -q "Installed user permission provider=/example/hello/provider/HELLO service=/HELLO" "${tmpdir}/user-reuse.log" &&
    grep -q "Received HELLO request" "${tmpdir}/provider.log" &&
    grep -q "Received response: HELLO" "${tmpdir}/user.log" &&
    grep -q "Received response: HELLO" "${tmpdir}/user-reuse.log"; then
