@@ -945,7 +945,7 @@ public:
     }
 
     if (autoMavlinkTest) {
-      std::thread([this] {
+      std::thread([this, autoStart] {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
         std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -955,9 +955,11 @@ public:
         std::this_thread::sleep_for(std::chrono::seconds(2));
         m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
         std::this_thread::sleep_for(std::chrono::seconds(3));
-        Glib::signal_idle().connect_once([this] {
-          hide();
-        });
+        if (!autoStart) {
+          Glib::signal_idle().connect_once([this] {
+            hide();
+          });
+        }
       }).detach();
     }
 

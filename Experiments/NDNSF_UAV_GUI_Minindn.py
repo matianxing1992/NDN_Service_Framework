@@ -1756,7 +1756,7 @@ def main() -> int:
         elif (args.auto_mavlink_test or args.auto_keyboard_test or
               args.auto_manual_control_test or args.auto_two_drone_switch_test) and args.no_cli:
             try:
-                gs_proc.wait(timeout=70)
+                gs_proc.wait(timeout=max(70, args.auto_stop_seconds + 35))
             except subprocess.TimeoutExpired as e:
                 raise RuntimeError(f"ground station MAVLink smoke did not finish; see {gs_log}") from e
             if gs_proc.returncode != 0:
