@@ -378,7 +378,7 @@ class NetworkRepoRestartFetchTest(unittest.TestCase):
                 "start": 0,
                 "end": 0,
                 "hints": [],
-                "routeStrategy": "direct-first",
+                "routeStrategy": "hint-first",
             },),
         )
         client = NetworkDistributedRepoClient.__new__(NetworkDistributedRepoClient)
@@ -391,18 +391,24 @@ class NetworkRepoRestartFetchTest(unittest.TestCase):
             self.assertEqual(expected_data_name, data_name)
             return {
                 "dataName": data_name,
-                "forwardingHints": [repo_node],
+                "versionedDataName": data_name + "/v=1",
+                "forwardingHints": [repo_node + "/NDNSF/REPO-SERVING"],
                 "manifest": manifest.to_dict(),
             }
 
-        def fetch(*_args, **_kwargs) -> bytes:
+        def fetch(*args, **kwargs) -> bytes:
             events.append("fetch")
+            self.assertEqual(args[0], data_name + "/v=1")
+            self.assertEqual(
+                kwargs["hint_ranges"][0].forwarding_hints,
+                ("/repo/A/NDNSF/REPO-SERVING",),
+            )
             return payload
 
         client._prepare_fetch_source = prepare
         with patch.object(
             repo_module,
-            "fetch_segmented_object_with_segment_hints",
+            "fetch_known_segmented_object_with_segment_hints",
             side_effect=fetch,
         ):
             self.assertEqual(client.fetch_object(object_name, manifest), payload)

@@ -4127,7 +4127,7 @@ class RepoNodeApp:
         return packet.wire
 
     def _serve_object(self, name: str, payload: bytes,
-                      object_name: str = "") -> RepoDataPlaneProducer:
+                      object_name: str = "") -> str:
         object_name = object_name or name
         generation = 0
         try:
@@ -4153,7 +4153,7 @@ class RepoNodeApp:
         versioned_prefix = _packet_set_versioned_data_name(packets)
         self._activate_serving_prefix(name, object_name, generation)
         self._activate_serving_prefix(versioned_prefix, object_name, generation)
-        return self._data_plane
+        return versioned_prefix
 
     def _serve_packets(self, packets: list[DataPacket],
                        serving_prefix: str = "") -> RepoDataPlaneProducer:
@@ -4895,9 +4895,11 @@ class RepoNodeApp:
                     }, sort_keys=True).encode())
                 data_name = self.data_name(self.repo_node, object_name)
                 fetched = bytes(stored_value)
-                self._serve_object(data_name, fetched, object_name)
+                versioned_data_name = self._serve_object(
+                    data_name, fetched, object_name)
                 return ServiceResponse(True, json.dumps({
                     "dataName": data_name,
+                    "versionedDataName": versioned_data_name,
                     "forwardingHints": [
                         self._serving_forwarding_hint(data_name)
                     ],
@@ -5178,6 +5180,10 @@ class RepoNodeApp:
                 lambda payload, registered=service_name:
                 self._ack(payload, registered),
             )
+        # Advertise one stable locator for this repo. Object Data names remain
+        # dynamic and are reached through this forwarding hint, avoiding one
+        # NLSR advertisement per stored object.
+        self._advertise_prefix(self._serving_forwarding_hint(""))
         self._data_plane.start()
         self._start_catalog_sync()
         try:
@@ -5811,17 +5817,6 @@ class NetworkDistributedRepoClient:
             raise ValueError(
                 "repo exact packet preparation name mismatch: "
                 f"requested={data_name} prepared={prepared.get('dataName', '')}")
-        versioned_prefix = (
-            data_name.rsplit("/seg=", 1)[0]
-            if "/seg=" in data_name else data_name
-        )
-        prepared_prefixes = getattr(self, "_prepared_packet_prefixes", set())
-        if versioned_prefix not in prepared_prefixes:
-            # The Repo has just advertised this app-owned prefix through NLSR.
-            # Wait once for route propagation; later segments reuse the route.
-            time.sleep(min(5.0, max(0.0, attempt_timeout_ms / 2000.0)))
-            prepared_prefixes.add(versioned_prefix)
-            self._prepared_packet_prefixes = prepared_prefixes
         raw_forwarding_hints = prepared.get("forwardingHints", [])
         if not isinstance(raw_forwarding_hints, list):
             raise ValueError(
@@ -7413,17 +7408,38 @@ class NetworkDistributedRepoClient:
                 if len(covered_segments) < manifest.segment_count:
                     continue
                 try:
+                    prepared_sources: dict[str, dict] = {}
                     for repo_node in sorted(source_repos):
-                        self._prepare_fetch_source(
+                        prepared_sources[repo_node] = self._prepare_fetch_source(
                             repo_node,
                             object_name,
                             expected_data_name=data_name,
                         )
+                    for index, location in enumerate(locations):
+                        if hint_ranges[index].forwarding_hints:
+                            continue
+                        prepared = prepared_sources.get(
+                            str(location.get("repoNode", "")), {})
+                        prepared_hints = tuple(
+                            str(hint) for hint in prepared.get(
+                                "forwardingHints", []) if str(hint)
+                        )
+                        if prepared_hints:
+                            hint_ranges[index] = SegmentHintRange(
+                                start=hint_ranges[index].start,
+                                end=hint_ranges[index].end,
+                                forwarding_hints=prepared_hints,
+                            )
                     versioned_names = {
                         str(location.get("versionedDataName", ""))
                         for location in locations
                         if location.get("versionedDataName")
                     }
+                    versioned_names.update(
+                        str(prepared.get("versionedDataName", ""))
+                        for prepared in prepared_sources.values()
+                        if prepared.get("versionedDataName")
+                    )
                     if len(versioned_names) == 1:
                         versioned_name = next(iter(versioned_names))
                         if route_strategy == "direct-first":

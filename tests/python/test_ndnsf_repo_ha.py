@@ -13,7 +13,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from ndnsf import make_segmented_data_packets
 
@@ -331,6 +331,45 @@ def make_repo(database: Path, *, budget: int = 4096) -> RepoNodeApp:
 
 
 class RepoContractTest(unittest.TestCase):
+    def test_run_advertises_one_stable_data_plane_locator(self) -> None:
+        class FakeProvider:
+            def add_context_handler(self, *args) -> None:
+                del args
+
+            def set_ack_handler(self, *args) -> None:
+                del args
+
+            def run(self) -> int:
+                return 0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = make_repo(Path(temp_dir) / "repo.sqlite3")
+            repo.provider = FakeProvider()
+            repo.advertise_stored_prefixes = True
+            repo.advertise_command = "nlsrc"
+            repo._advertised_prefixes = set()
+            repo._catalog_stop = threading.Event()
+            repo._catalog_thread = None
+            repo.peer_repo_nodes = ()
+            repo.catalog_sync_interval_s = 10.0
+            command_result = type("Result", (), {
+                "returncode": 0,
+                "stdout": "",
+            })()
+
+            with patch("subprocess.run", return_value=command_result) as run:
+                self.assertEqual(repo.run(), 0)
+
+            locator = "/provider/ha-test/NDNSF/REPO-SERVING"
+            run.assert_called_once_with(
+                ["nlsrc", "advertise", locator],
+                check=False,
+                stdout=ANY,
+                stderr=ANY,
+                text=True,
+            )
+            self.assertEqual(repo._advertised_prefixes, {locator})
+
     def test_unspecified_repair_floor_defaults_to_replication_factor(self) -> None:
         common = {
             "object_name": "/publisher/replicated",
