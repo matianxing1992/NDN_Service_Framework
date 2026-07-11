@@ -100,6 +100,15 @@ public:
     m_coreContainer.stop();
     m_streaming = false;
     m_recordingPlaybackActive = false;
+    if (m_operatorAuthorityRefreshThread.joinable()) {
+      m_operatorAuthorityRefreshThread.join();
+    }
+    m_face.getIoContext().stop();
+    if (m_faceThread.joinable()) {
+      m_faceThread.join();
+    }
+    // The face thread can create these workers during runtime initialization or
+    // callbacks. Quiesce it first so no joinable worker appears after its join check.
     if (m_yoloPrewarmThread.joinable()) {
       m_yoloPrewarmThread.join();
     }
@@ -107,13 +116,6 @@ public:
     stopDecoder();
     if (m_recordingPlaybackDecodeThread.joinable()) {
       m_recordingPlaybackDecodeThread.join();
-    }
-    if (m_operatorAuthorityRefreshThread.joinable()) {
-      m_operatorAuthorityRefreshThread.join();
-    }
-    m_face.getIoContext().stop();
-    if (m_faceThread.joinable()) {
-      m_faceThread.join();
     }
   }
 
@@ -1407,8 +1409,22 @@ public:
   bool
   sendMavlinkCommandToDrone(const std::string& droneId, const std::string& commandName, Fields params = {})
   {
+    const auto commandAttemptMs = nowMilliseconds();
+    NDN_LOG_INFO("UAV_CONTROL_COMMAND phase=attempt drone=" << droneId
+                 << " command=" << commandName
+                 << " timestamp_ms=" << commandAttemptMs
+                 << " elapsed_ms=0 accepted=unknown reason=attempt");
+    auto logLocalFailure = [&] (const std::string& phase, const std::string& reason) {
+      NDN_LOG_INFO("UAV_CONTROL_COMMAND phase=" << phase
+                   << " drone=" << droneId
+                   << " command=" << commandName
+                   << " timestamp_ms=" << nowMilliseconds()
+                   << " elapsed_ms=" << (nowMilliseconds() - commandAttemptMs)
+                   << " accepted=false reason=" << reason);
+    };
     std::string leaseReason;
     if (!validateOperatorLease(droneId, commandName, leaseReason)) {
+      logLocalFailure("blocked", leaseReason);
       recordBlockedCommand(droneId, commandName, leaseReason);
       publishStatus("MAVLink " + commandName + " blocked by operator lease drone=" +
                     droneId + " reason=" + leaseReason);
@@ -1419,6 +1435,7 @@ public:
     if (commandName == "arm") {
       std::string reason;
       if (!validateArmReadiness(droneId, reason)) {
+        logLocalFailure("blocked", reason);
         recordBlockedCommand(droneId, commandName, reason);
         publishStatus("Arm blocked drone=" + droneId + " reason=" + reason);
         return false;
@@ -1427,6 +1444,7 @@ public:
     if (isManualControl) {
       std::string reason;
       if (!validateManualControlReadiness(droneId, reason)) {
+        logLocalFailure("blocked", reason);
         recordBlockedCommand(droneId, commandName, reason);
         const auto now = nowMilliseconds();
         if (now > m_lastManualControlBlockedLogMs.load() + 1000) {
@@ -1439,6 +1457,7 @@ public:
     if (commandName == "land") {
       std::string reason;
       if (!validateLandReadiness(droneId, reason)) {
+        logLocalFailure("blocked", reason);
         recordBlockedCommand(droneId, commandName, reason);
         publishStatus("Land blocked drone=" + droneId + " reason=" + reason);
         return false;
@@ -1447,6 +1466,7 @@ public:
     if (commandName == "takeoff") {
       std::string reason;
       if (!validateTakeoffReadiness(droneId, reason)) {
+        logLocalFailure("blocked", reason);
         recordBlockedCommand(droneId, commandName, reason);
         publishStatus("Takeoff blocked drone=" + droneId + " reason=" + reason);
         return false;
@@ -1454,6 +1474,7 @@ public:
     }
     auto& inFlight = mavlinkInFlightFlag(isManualControl, isEmergencyStop);
     if (inFlight.exchange(true)) {
+      logLocalFailure("busy", "command-in-flight");
       recordBlockedCommand(droneId, commandName, "command-in-flight");
       if (!isManualControl) {
         publishStatus("MAVLink command busy; dropped " + commandName);
@@ -1505,6 +1526,12 @@ public:
         const auto altitude = fieldOr(fields, "altitude_m", "");
         const auto speed = fieldOr(fields, "groundspeed_mps", "");
         const auto battery = fieldOr(fields, "battery_percent", "");
+        NDN_LOG_INFO("UAV_CONTROL_COMMAND phase=response drone=" << droneId
+                     << " command=" << commandName
+                     << " timestamp_ms=" << nowMs
+                     << " elapsed_ms=" << (nowMs - requestStartMs)
+                     << " accepted=" << accepted
+                     << " reason=" << ackResult);
         publishStatus("MAVLink " + commandName +
                       " drone=" + droneId +
                       " accepted=" + accepted +
@@ -1515,8 +1542,14 @@ public:
                       (speed.empty() ? "" : " speed=" + speed + "m/s") +
                       (battery.empty() ? "" : " battery=" + battery + "%"));
       },
-      [this, commandName, isManualControl, isEmergencyStop, droneId] {
+      [this, commandName, isManualControl, isEmergencyStop, droneId, requestStartMs] {
         mavlinkInFlightFlag(isManualControl, isEmergencyStop) = false;
+        const auto timeoutMs = nowMilliseconds();
+        NDN_LOG_INFO("UAV_CONTROL_COMMAND phase=timeout drone=" << droneId
+                     << " command=" << commandName
+                     << " timestamp_ms=" << timeoutMs
+                     << " elapsed_ms=" << (timeoutMs - requestStartMs)
+                     << " accepted=false reason=timeout");
         auto timeoutState = FlightCommandState{
           droneId,
           commandName,
@@ -6740,10 +6773,20 @@ private:
                       std::function<void(std::string)> onSuccess,
                       std::function<void()> onTimeout = {})
   {
+    const auto queuedMs = nowMilliseconds();
+    NDN_LOG_INFO("GS_TARGETED_PHASE phase=queued provider=" << provider.toUri()
+                 << " service=" << service.toUri()
+                 << " request_id=none timestamp_ms=" << queuedMs
+                 << " elapsed_ms=0 status=queued");
     boost::asio::post(m_face.getIoContext(), [this, provider, service, payload,
                                 onSuccess = std::move(onSuccess),
-                                onTimeout = std::move(onTimeout)] {
+                                onTimeout = std::move(onTimeout), queuedMs] {
       if (!m_containerReady.load() || !m_user) {
+        NDN_LOG_INFO("GS_TARGETED_PHASE phase=dispatch-rejected provider="
+                     << provider.toUri() << " service=" << service.toUri()
+                     << " request_id=none timestamp_ms=" << nowMilliseconds()
+                     << " elapsed_ms=" << (nowMilliseconds() - queuedMs)
+                     << " status=runtime-not-ready");
         publishStatus("NDNSF runtime not ready for targeted " + service.toUri());
         if (onTimeout) {
           onTimeout();
@@ -6752,12 +6795,21 @@ private:
       }
       auto requestMessage = makeRequest(payload);
       const auto requestStartMs = nowMilliseconds();
-      m_user->RequestServiceTargeted(
+      auto requestId = std::make_shared<ndn::Name>();
+      *requestId = m_user->RequestServiceTargeted(
         provider,
         service,
         std::move(requestMessage),
         m_timeoutMs,
-        [this, service, onTimeout = std::move(onTimeout)](const ndn::Name&) {
+        [this, service, provider, requestId, requestStartMs,
+         onTimeout = std::move(onTimeout)](const ndn::Name&) {
+          const auto timeoutMs = nowMilliseconds();
+          NDN_LOG_INFO("GS_TARGETED_PHASE phase=timeout provider=" << provider.toUri()
+                       << " service=" << service.toUri()
+                       << " request_id=" << (requestId->empty() ? "none" : requestId->toUri())
+                       << " timestamp_ms=" << timeoutMs
+                       << " elapsed_ms=" << (timeoutMs - requestStartMs)
+                       << " status=timeout");
           if (onTimeout) {
             onTimeout();
           }
@@ -6765,8 +6817,15 @@ private:
             publishStatus("Timeout waiting for targeted " + service.toUri());
           }
         },
-        [this, onSuccess, service, provider, requestStartMs](
+        [this, onSuccess, service, provider, requestStartMs, requestId](
           const ndn_service_framework::ResponseMessage& response) {
+          const auto responseMs = nowMilliseconds();
+          NDN_LOG_INFO("GS_TARGETED_PHASE phase=response provider=" << provider.toUri()
+                       << " service=" << service.toUri()
+                       << " request_id=" << (requestId->empty() ? "none" : requestId->toUri())
+                       << " timestamp_ms=" << responseMs
+                       << " elapsed_ms=" << (responseMs - requestStartMs)
+                       << " status=" << (response.getStatus() ? "success" : "failure"));
           const auto payloadText = responsePayload(response);
           NDN_LOG_INFO("GS_TARGETED_RESPONSE service=" << service
                        << " payload=" << payloadText);
@@ -6776,6 +6835,14 @@ private:
                               std::to_string(nowMilliseconds() - requestStartMs));
           onSuccess(payloadText);
         });
+      NDN_LOG_INFO("GS_TARGETED_PHASE phase="
+                   << (requestId->empty() ? "dispatch-rejected" : "dispatched")
+                   << " provider=" << provider.toUri()
+                   << " service=" << service.toUri()
+                   << " request_id=" << (requestId->empty() ? "none" : requestId->toUri())
+                   << " timestamp_ms=" << nowMilliseconds()
+                   << " elapsed_ms=" << (nowMilliseconds() - queuedMs)
+                   << " status=" << (requestId->empty() ? "empty-request-id" : "pending"));
     });
   }
 

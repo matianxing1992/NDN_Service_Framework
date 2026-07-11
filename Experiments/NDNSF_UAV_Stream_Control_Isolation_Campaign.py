@@ -81,6 +81,19 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         include_video=video_required,
         elapsed_seconds=elapsed_seconds,
     )
+    log_text = (
+        (run_dir / "ground-station.log").read_text(encoding="utf-8", errors="replace")
+        if (run_dir / "ground-station.log").exists() else ""
+    )
+    targeted_phase_counts: dict[str, int] = {}
+    command_stages: dict[str, str] = {}
+    for line in log_text.splitlines():
+        fields = base.fields_from_line(line)
+        if "GS_TARGETED_PHASE" in line and "phase" in fields:
+            phase = fields["phase"]
+            targeted_phase_counts[phase] = targeted_phase_counts.get(phase, 0) + 1
+        if "UAV_CONTROL_COMMAND" in line and "command" in fields and "phase" in fields:
+            command_stages[fields["command"]] = fields["phase"]
     video_completion = bool(result["videoCompletion"]) if video_required else None
     control_completion = bool(result["controlCompletion"]) if control_required else None
     result.update({
@@ -91,6 +104,9 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         "fecParityShards": int(workload["parity"]),
         "videoCompletion": video_completion,
         "controlCompletion": control_completion,
+        "lifecycleAbort": "terminate called without an active exception" in log_text,
+        "targetedPhaseCounts": targeted_phase_counts,
+        "controlCommandStages": command_stages,
     })
     result["completion"] = (
         bool(result["processCompletion"]) and
@@ -152,6 +168,7 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if video_rows else None
             ),
             "meanElapsedSeconds": statistics.fmean(row["elapsedSeconds"] for row in rows),
+            "lifecycleAbortRuns": sum(bool(row["lifecycleAbort"]) for row in rows),
         })
     return aggregates
 

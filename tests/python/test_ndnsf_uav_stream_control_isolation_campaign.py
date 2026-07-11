@@ -57,6 +57,10 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
                 "MAVLink arm drone=A accepted=true\n"
                 "MAVLink takeoff drone=A accepted=true\n"
                 "MAVLink land drone=A accepted=true\n"
+                "GS_TARGETED_PHASE phase=dispatched provider=/P service=/S "
+                "request_id=/r timestamp_ms=10 elapsed_ms=1 status=pending\n"
+                "UAV_CONTROL_COMMAND phase=response drone=A command=land "
+                "timestamp_ms=20 elapsed_ms=5 accepted=true reason=ok\n"
                 "GS_GUI_EXIT rc=0\n",
                 encoding="utf-8",
             )
@@ -74,6 +78,30 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         self.assertIsNone(result["videoCompletion"])
         self.assertTrue(result["controlCompletion"])
         self.assertTrue(result["metricsValid"])
+        self.assertFalse(result["lifecycleAbort"])
+        self.assertEqual(result["targetedPhaseCounts"], {"dispatched": 1})
+        self.assertEqual(result["controlCommandStages"], {"land": "response"})
+
+    def test_lifecycle_abort_is_independent_of_command_completion(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "MAVLink arm drone=A accepted=true\n"
+                "MAVLink takeoff drone=A accepted=true\n"
+                "MAVLink land drone=A accepted=true\n"
+                "GS_GUI_EXIT rc=0\n"
+                "terminate called without an active exception\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, -6, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        self.assertTrue(result["lifecycleAbort"])
+        self.assertTrue(result["controlCompletion"])
+        self.assertFalse(result["processCompletion"])
+        self.assertFalse(result["accepted"])
 
     def test_video_mode_reuses_usable_frame_gate(self) -> None:
         campaign = load_campaign()
@@ -119,6 +147,7 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
             "rttP95Ms": 0.0,
             "maxTimeouts": 0,
             "elapsedSeconds": 8.0,
+            "lifecycleAbort": False,
         }]
         aggregate = campaign.aggregate_cells(rows)[0]
         self.assertEqual(aggregate["videoRunCount"], 0)
