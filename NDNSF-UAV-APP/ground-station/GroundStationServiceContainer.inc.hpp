@@ -97,16 +97,20 @@ public:
     if (m_done.exchange(true)) {
       return;
     }
-    m_coreContainer.stop();
+    NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=begin");
     m_streaming = false;
     m_recordingPlaybackActive = false;
     if (m_operatorAuthorityRefreshThread.joinable()) {
       m_operatorAuthorityRefreshThread.join();
     }
+    NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=refresh-joined");
     m_face.getIoContext().stop();
     if (m_faceThread.joinable()) {
       m_faceThread.join();
     }
+    NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=face-joined");
+    m_coreContainer.stop();
+    NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=container-stopped");
     // The face thread can create these workers during runtime initialization or
     // callbacks. Quiesce it first so no joinable worker appears after its join check.
     if (m_yoloPrewarmThread.joinable()) {
@@ -117,6 +121,7 @@ public:
     if (m_recordingPlaybackDecodeThread.joinable()) {
       m_recordingPlaybackDecodeThread.join();
     }
+    NDN_LOG_INFO("GS_RUNTIME_SHUTDOWN phase=workers-joined");
   }
 
   void
