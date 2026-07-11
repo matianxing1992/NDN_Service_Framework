@@ -2109,20 +2109,32 @@ def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
     compatibility_counters = AckCompatibilityCounters()
     scanned_logs = 0
     event_count = 0
+    parse_error_count = 0
+    parse_errors: list[dict[str, str]] = []
     for path in sorted(logs_dir.glob("*.log")):
         scanned_logs += 1
         text = read_log_text(path)
-        for line in text.splitlines():
+        for line_no, line in enumerate(text.splitlines(), start=1):
             if "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION" not in line:
                 continue
             fields = parse_trace_fields(line)
             payload_text = fields.get("payload", "").strip('"')
-            decoded = decode_provider_capability_ack(
-                payload_text,
-                counters=compatibility_counters,
-                provider_name=fields.get("provider", ""),
-                service_name=SERVICE,
-            )
+            try:
+                decoded = decode_provider_capability_ack(
+                    payload_text,
+                    counters=compatibility_counters,
+                    provider_name=fields.get("provider", ""),
+                    service_name=SERVICE,
+                )
+            except Exception as exc:
+                parse_error_count += 1
+                if len(parse_errors) < 5:
+                    parse_errors.append({
+                        "log": str(path),
+                        "line": str(line_no),
+                        "error": str(exc),
+                    })
+                continue
             hint = decoded.hint
             payload_fields = dict(hint.service_payload)
             if hint.runtime_hint is not None:
@@ -2183,6 +2195,8 @@ def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
     return {
         "scannedLogs": scanned_logs,
         "eventCount": event_count,
+        "parseErrorCount": parse_error_count,
+        "parseErrors": parse_errors,
         "ackCompatibilityCounters": compatibility_counters.snapshot(),
         "providers": dict(sorted(providers.items())),
     }

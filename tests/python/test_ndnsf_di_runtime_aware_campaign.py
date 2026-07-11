@@ -440,6 +440,26 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             "maxScheduleSlipMs": 12.5,
         })
 
+    def test_provider_ack_runtime_hint_collection_preserves_malformed_log_line(self) -> None:
+        harness = load_harness_module()
+        payload = _typed_native_ack_payload().decode("utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "provider.log"
+            log_path.write_text(
+                "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION "
+                "provider=/P/backbone roles=/Backbone status=1 "
+                f'payload="{payload}"\n'
+                "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION provider=\n",
+                encoding="utf-8",
+            )
+
+            summary = harness.collect_provider_ack_runtime_hints(Path(tmp))
+
+        self.assertEqual(summary["eventCount"], 1)
+        self.assertEqual(summary["parseErrorCount"], 1)
+        self.assertEqual(len(summary["parseErrors"]), 1)
+        self.assertEqual(summary["providers"]["/P/backbone"]["ackEvents"], 1)
+
     def test_user_driver_builds_ack_candidate_snapshot(self) -> None:
         user_driver = load_user_driver_module()
 
