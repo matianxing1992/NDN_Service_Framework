@@ -89,7 +89,8 @@ def topology_text(loss_percent: int, *, delay_ms: int = 1,
 
 
 def build_command(*, run_dir: Path, topology: Path, duration_seconds: int,
-                  fec_parity_shards: int, include_mavlink: bool) -> list[str]:
+                  fec_parity_shards: int, include_mavlink: bool,
+                  include_video: bool = True) -> list[str]:
     timeout_seconds = max(180, duration_seconds + 120)
     command = [
         "sudo", "-n", "-E", "timeout", f"{timeout_seconds}s", "xvfb-run", "-a",
@@ -101,17 +102,20 @@ def build_command(*, run_dir: Path, topology: Path, duration_seconds: int,
         "--drone-headless",
         "--camera-mode", "file",
         "--no-virtual-camera",
-        "--auto-video-test",
-        "--auto-stop-seconds", str(duration_seconds),
-        "--auto-start-delay-ms", "1000",
-        "--video-bitrate-kbps", "1200",
-        "--video-width", "320",
-        "--video-fec-parity-shards", str(fec_parity_shards),
         "--output-dir", str(run_dir),
         "--nfd-log-level", "WARN",
         "--no-cli",
         "--no-xhost",
     ]
+    if include_video:
+        command.extend([
+            "--auto-video-test",
+            "--auto-stop-seconds", str(duration_seconds),
+            "--auto-start-delay-ms", "1000",
+            "--video-bitrate-kbps", "1200",
+            "--video-width", "320",
+            "--video-fec-parity-shards", str(fec_parity_shards),
+        ])
     if include_mavlink:
         command.append("--auto-mavlink-test")
     return command
@@ -127,7 +131,8 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
               repetition: int = 1, duration_seconds: int = 0,
               include_mavlink: bool = False,
               elapsed_seconds: float = 0.0, expected_fps: int = 30,
-              min_decoded_frame_ratio: float = 0.5) -> dict[str, Any]:
+              min_decoded_frame_ratio: float = 0.5,
+              include_video: bool = True) -> dict[str, Any]:
     gs_log = run_dir / "ground-station.log"
     text = gs_log.read_text(encoding="utf-8", errors="replace") if gs_log.exists() else ""
     lines = text.splitlines()
@@ -137,7 +142,7 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
         if ADAPTIVE_MARKER in line and "VideoAdaptive" in line
     ]
     malformed_metrics: list[str] = []
-    if not snapshots:
+    if include_video and not snapshots:
         malformed_metrics.append("adaptiveSnapshot:missing")
     for index, snapshot in enumerate(snapshots):
         for field in REQUIRED_ADAPTIVE_METRICS:
@@ -188,17 +193,22 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
     land = f"MAVLink land drone=A accepted=true" in text
     controls_ok = not include_mavlink or (arm and takeoff and land)
     accepted_parity = parity_values[-1] if parity_values else -1
-    duration_ok = duration_seconds <= 0 or stream_duration >= duration_seconds * 0.90
+    duration_ok = (
+        not include_video or duration_seconds <= 0 or
+        stream_duration >= duration_seconds * 0.90
+    )
     minimum_decoded_frames = (
         max(30, int(duration_seconds * expected_fps * min_decoded_frame_ratio))
-        if duration_seconds > 0 else 30
+        if include_video and duration_seconds > 0 else (30 if include_video else 0)
     )
     decoded_frame_count = max(decoded_frames, default=0)
     video_completion = (
-        decoded_frame_count >= minimum_decoded_frames and
-        "GS_GUI_EXIT rc=0" in text and
-        accepted_parity == fec_parity_shards and
-        duration_ok
+        not include_video or (
+            decoded_frame_count >= minimum_decoded_frames and
+            "GS_GUI_EXIT rc=0" in text and
+            accepted_parity == fec_parity_shards and
+            duration_ok
+        )
     )
     completion = returncode == 0 and video_completion and controls_ok
 
