@@ -16,7 +16,7 @@ import time
 
 from ndnsf import ServiceUser, make_segmented_data_packets
 from ndnsf_distributed_inference import APPDeployment
-from ndnsf_distributed_inference.repo import (
+from py_repoclient.orchestration import (
     NetworkDistributedRepoClient,
     RepoIncompleteWriteError,
     RepoObjectManifest,

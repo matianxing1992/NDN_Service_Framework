@@ -36,19 +36,94 @@ repo_control_plane:
     auto_execute: false
 
 services:
-  - name: /NDNSF/DistributedRepo
-    model: /NDNSF/DistributedRepo
+  - name: /NDNSF/DistributedRepo/Object/v1/INSERT
+    model: /NDNSF/DistributedRepo/Object/v1/INSERT
     roles: []
     dependencies: []
-    users:
+    users: &repo_public_callers
       - /example/repo/user
       - /example/repo/provider/repoA
       - /example/repo/provider/repoB
       - /example/repo/provider/repoC
-    providers:
+    providers: &repo_providers
       - identity: /example/repo/provider/repoA
         roles: []
       - identity: /example/repo/provider/repoB
         roles: []
       - identity: /example/repo/provider/repoC
         roles: []
+  - name: /NDNSF/DistributedRepo/Object/v1/MANIFEST
+    model: /NDNSF/DistributedRepo/Object/v1/MANIFEST
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Object/v1/FETCH
+    model: /NDNSF/DistributedRepo/Object/v1/FETCH
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Object/v1/INVENTORY
+    model: /NDNSF/DistributedRepo/Object/v1/INVENTORY
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Object/v1/STATUS
+    model: /NDNSF/DistributedRepo/Object/v1/STATUS
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Object/v1/DELETE
+    model: /NDNSF/DistributedRepo/Object/v1/DELETE
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
+    model: /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
+    roles: []
+    dependencies: []
+    users: *repo_public_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Internal/v1/RESERVE_CAPACITY
+    model: /NDNSF/DistributedRepo/Internal/v1/RESERVE_CAPACITY
+    roles: []
+    dependencies: []
+    users: &repo_peer_callers
+      - /example/repo/provider/repoA
+      - /example/repo/provider/repoB
+      - /example/repo/provider/repoC
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Internal/v1/RELEASE_CAPACITY
+    model: /NDNSF/DistributedRepo/Internal/v1/RELEASE_CAPACITY
+    roles: []
+    dependencies: []
+    users: *repo_peer_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Internal/v1/REPLICA_COMMIT
+    model: /NDNSF/DistributedRepo/Internal/v1/REPLICA_COMMIT
+    roles: []
+    dependencies: []
+    users: *repo_peer_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Internal/v1/CATALOG_MERGE
+    model: /NDNSF/DistributedRepo/Internal/v1/CATALOG_MERGE
+    roles: []
+    dependencies: []
+    users: *repo_peer_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Internal/v1/CATALOG_DIGEST
+    model: /NDNSF/DistributedRepo/Internal/v1/CATALOG_DIGEST
+    roles: []
+    dependencies: []
+    users: *repo_peer_callers
+    providers: *repo_providers
+  - name: /NDNSF/DistributedRepo/Internal/v1/REPAIR
+    model: /NDNSF/DistributedRepo/Internal/v1/REPAIR
+    roles: []
+    dependencies: []
+    users: *repo_peer_callers
+    providers: *repo_providers

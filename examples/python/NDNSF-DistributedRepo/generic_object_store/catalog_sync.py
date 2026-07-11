@@ -12,12 +12,14 @@ import time
 
 from ndnsf import AckCandidate, SegmentedObjectProducer, ServiceUser
 from ndnsf_distributed_inference import APPDeployment
-from ndnsf_distributed_inference.repo import (
+from py_repoclient.orchestration import (
     DistributedRepo,
     NetworkDistributedRepoClient,
     RepoRepairAction,
+    decode_repo_request,
     encode_repo_request,
 )
+from py_repoclient.service_names import repo_service_for_operation
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
@@ -131,7 +133,8 @@ def request_repo(
         return []
 
     response = user.request_service_select(
-        REPO_SERVICE,
+        repo_service_for_operation(
+            str(decode_repo_request(payload)["operation"]), REPO_SERVICE),
         payload,
         selector,
         ack_timeout_ms=1000,

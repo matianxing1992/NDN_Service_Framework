@@ -13,8 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ndnsf import DataPacket, make_segmented_data_packets
-import ndnsf_distributed_inference.repo as repo_module
-from ndnsf_distributed_inference.repo import (
+import py_repoclient.orchestration as repo_module
+from py_repoclient.orchestration import (
     NetworkDistributedRepoClient,
     RepoNodeApp,
     RepoObjectManifest,

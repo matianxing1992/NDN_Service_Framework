@@ -19,8 +19,8 @@ from ndnsf_distributed_inference import (
     SplitArtifact,
     SplitServiceSpec,
     SplitterOutput,
-    repo_artifact_reference,
 )
+from ndnsf_distributed_inference.repo_reference import repo_artifact_reference
 from ndnsf_distributed_inference.llm_runtime import (
     call_openai_chat_runtime,
     decode_openai_chat_response,

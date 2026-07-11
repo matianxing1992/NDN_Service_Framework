@@ -56,8 +56,10 @@ from ndnsf_distributed_inference import (
     homogeneous_provider_profiles,
     nxm_stage_roles,
     recommend_sequential_splits,
-    repo_manifest_from_large_data_reference,
     write_onnx_graph_summary,
+)
+from ndnsf_distributed_inference.repo_reference import (
+    repo_manifest_from_large_data_reference,
 )
 from ndnsf_distributed_inference.plan import (
     ArtifactSpec,

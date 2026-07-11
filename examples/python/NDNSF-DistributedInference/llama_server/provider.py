@@ -13,12 +13,14 @@ from ndnsf_distributed_inference import (
     APPDeployment,
     APPProvider,
     ArtifactProvisioningState,
-    NetworkDistributedRepoClient,
     ProviderRuntimeContext,
+    artifact_references_need_repo_client,
+)
+from py_repoclient.orchestration import NetworkDistributedRepoClient
+from ndnsf_distributed_inference.experimental.semantic_cache import (
     SemanticPatternMeta,
     SemanticServiceCacheKey,
     SemanticServiceCacheManager,
-    artifact_references_need_repo_client,
     semantic_cache_token_saving_ratio,
 )
 from ndnsf_distributed_inference.llm_runtime import (

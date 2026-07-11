@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ndnsf import DataPacket, make_segmented_data_packets
-from ndnsf_distributed_inference.repo import (
+from py_repoclient.orchestration import (
     LocalDistributedRepo,
     NetworkDistributedRepoClient,
     RepoNodeApp,
@@ -284,7 +284,7 @@ class ExactPacketRepositoryTest(unittest.TestCase):
         )
 
         with patch(
-            "ndnsf_distributed_inference.repo.fetch_exact_data_packet",
+            "py_repoclient.orchestration.fetch_exact_data_packet",
             return_value=packet,
         ) as fetch:
             fetched = client.fetch_packet("/repo/B", packet.name)

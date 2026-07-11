@@ -34,14 +34,7 @@ public:
 
   const RepoCore& core() const;
 
-  void registerServices(ndn_service_framework::ServiceProvider& provider);
-
   void registerLocalServices(ndn_service_framework::LocalServiceRegistry& registry);
-
-  void registerDeploymentServices(
-    ndn_service_framework::ServiceProvider* provider,
-    ndn_service_framework::LocalServiceRegistry* registry,
-    RepoDeploymentMode mode);
 
   RepoObjectManifest put(const std::string& objectName,
                          const std::vector<uint8_t>& payload,
@@ -102,6 +95,10 @@ public:
   std::vector<uint8_t> handleStatus(const std::vector<uint8_t>& request) const;
 
 private:
+  // Kept private only while older object files remain source-compatible. The
+  // deployed Repo network runtime is py_repoclient's versioned adapter.
+  void registerServices(ndn_service_framework::ServiceProvider& provider);
+
   ndn_service_framework::ResponseMessage makeResponse(const std::vector<uint8_t>& payload) const;
 
   ndn_service_framework::ResponseMessage makeError(const std::string& error) const;

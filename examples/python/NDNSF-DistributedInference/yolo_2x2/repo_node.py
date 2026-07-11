@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import argparse
 
-from ndnsf_distributed_inference import APPDeployment, RepoNodeApp
+from ndnsf_distributed_inference import APPDeployment
+from py_repoclient.orchestration import RepoNodeApp
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml"

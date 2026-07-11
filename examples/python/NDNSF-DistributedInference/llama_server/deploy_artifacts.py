@@ -8,9 +8,11 @@ import json
 from pathlib import Path
 
 from ndnsf import ServiceUser
-from ndnsf_distributed_inference import (
-    APPDeployment,
+from ndnsf_distributed_inference import APPDeployment
+from py_repoclient.orchestration import (
+    LocalDistributedRepo,
     NetworkDistributedRepoClient,
+    StorageCapability,
 )
 
 from llama_server_lib import (
@@ -36,8 +38,6 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.local_smoke_export:
-        from ndnsf_distributed_inference import LocalDistributedRepo, StorageCapability
-
         repo = LocalDistributedRepo([
             StorageCapability(repo_node="/local/repo", free_bytes=8_000_000_000)
         ])

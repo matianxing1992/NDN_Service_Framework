@@ -11,14 +11,133 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from ndnsf import (
+    AckCandidate,
     ExecutionLeaseBinding,
     GenericExecutionLease,
+    ProviderCapabilityHint,
     ProviderExecutionLeaseTable,
+    ServiceDiscoveryRecord,
+    ServiceOperationState,
+    ServiceOperationStatus,
+    parse_ack_metadata,
+    to_plain,
 )
 
 
 LEASE_SERVICE_NAME = "/Inference/Control/Lease"
 LEASE_CODEC_SCHEMA = "ndnsf-di-execution-lease-operation-v1"
+
+
+def deployment_roles_from_ack_candidate(candidate: AckCandidate) -> list[str]:
+    """Return DI roles represented by a ready or provisioning ACK."""
+    fields = parse_ack_metadata(bytes(candidate.payload))
+
+    def roles_from(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return [str(value).strip()] if str(value).strip() else []
+
+    if candidate.status:
+        capability_payload = fields.get("providerCapabilityHint")
+        if isinstance(capability_payload, dict):
+            try:
+                hint = ProviderCapabilityHint.from_dict(capability_payload)
+                record = ServiceDiscoveryRecord.from_provider_capability_hint(hint)
+                if not record.ready_for_new_request():
+                    return []
+            except Exception:
+                return []
+        return roles_from(fields.get("roles"))
+    reason = str(fields.get("negativeAckReason", candidate.message)).strip()
+    if reason.replace("_", "").replace("-", "").upper() != "MODELUNAVAILABLE":
+        return []
+    roles = roles_from(fields.get("provisioningRole"))
+    roles.extend(role for role in roles_from(fields.get("roles")) if role not in roles)
+    return roles
+
+
+_DEPLOYMENT_STATUS_PRIORITY = {
+    "ACTIVE": 0, "IDLE": 1, "DEGRADED": 2, "DISK_RESIDENT": 3,
+    "PROVISIONING": 4, "EVICTED": 5, "REJECTED": 6, "NOT_FOUND": 7,
+}
+
+
+def deployment_operation_status(
+    deployment: dict[str, Any], *, operation: str = "DEPLOYMENT"
+) -> dict[str, Any]:
+    existing = deployment.get("operationStatus", deployment.get("operation_status"))
+    if isinstance(existing, dict):
+        try:
+            return to_plain(ServiceOperationStatus.from_dict(existing))
+        except Exception:
+            pass
+    status = str(deployment.get("status", "")).upper()
+    state = {
+        "PROVISIONING": ServiceOperationState.RUNNING,
+        "REJECTED": ServiceOperationState.FAILED,
+        "NOT_FOUND": ServiceOperationState.FAILED,
+        "EVICTED": ServiceOperationState.CANCELED,
+        "DEGRADED": ServiceOperationState.WAITING_INPUT,
+    }.get(status, ServiceOperationState.DONE)
+    progress = {
+        "PROVISIONING": 0.5, "REJECTED": 0.0, "NOT_FOUND": 0.0,
+        "DEGRADED": 0.75,
+    }.get(status, 1.0)
+    deployment_id = str(deployment.get("deploymentId", deployment.get("deployment_id", "")))
+    result = ServiceOperationStatus(
+        operation_id=deployment_id or operation.lower(),
+        operation=operation,
+        service_name=str(deployment.get("serviceName", deployment.get("service_name", ""))),
+        state=state,
+        reason_code=status if status in {"REJECTED", "NOT_FOUND"} else "",
+        message=str(deployment.get("reason", "")) or status.lower(),
+        progress=progress,
+        updated_at_ms=int(deployment.get("updatedAtMs", deployment.get("updated_at_ms", 0)) or 0),
+        metadata={
+            "deploymentStatus": status,
+            "planId": deployment.get("planId", deployment.get("plan_id", "")),
+            "refCount": deployment.get("refCount", deployment.get("ref_count", 0)),
+        },
+    )
+    return to_plain(result)
+
+
+def with_deployment_operation_status(
+    deployment: dict[str, Any], *, operation: str = "DEPLOYMENT"
+) -> dict[str, Any]:
+    result = dict(deployment)
+    result["operationStatus"] = deployment_operation_status(result, operation=operation)
+    return result
+
+
+def deployment_sort_key(deployment: dict[str, Any]) -> tuple[int, str]:
+    status = ""
+    payload = deployment.get("operationStatus", deployment.get("operation_status"))
+    if isinstance(payload, dict):
+        try:
+            operation_status = ServiceOperationStatus.from_dict(payload)
+            status = str(operation_status.metadata.get("deploymentStatus", "")).upper()
+            if not status:
+                priority = {
+                    ServiceOperationState.DONE: 0,
+                    ServiceOperationState.WAITING_INPUT: 2,
+                    ServiceOperationState.RUNNING: 4,
+                    ServiceOperationState.CANCELED: 5,
+                    ServiceOperationState.FAILED: 6,
+                    ServiceOperationState.EXPIRED: 6,
+                }
+                return (priority.get(operation_status.state, 99),
+                        str(deployment.get("deploymentId", "")))
+        except Exception:
+            status = ""
+    if not status:
+        status = str(deployment.get("status", "")).upper()
+    return (_DEPLOYMENT_STATUS_PRIORITY.get(status, 99),
+            str(deployment.get("deploymentId", "")))
 
 
 @dataclass(frozen=True)

@@ -65,12 +65,4 @@ def build(bld):
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
                 install_path=None)
 
-    bld.program(name='DistributedRepoNodeApp',
-                target='DistributedRepoNodeApp',
-                source=['apps/DistributedRepoNodeApp.cpp'],
-                includes=['include', '..'],
-                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3',
-                linkflags=['-Wl,-rpath,$ORIGIN/..'],
-                install_path=None)
-
     bld.add_post_fun(_install_py_repoclient)

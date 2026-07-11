@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from ndnsf import make_segmented_data_packets
 
-from ndnsf_distributed_inference.repo import (
+from py_repoclient.orchestration import (
     NetworkDistributedRepoClient,
     RepoIncompleteWriteError,
     RepoNodeApp,
@@ -78,7 +78,8 @@ class ControlDispatcherTest(unittest.TestCase):
             user=FakeUser(), control_mode="targeted",
             enable_targeted_fallback=False)
         try:
-            client._request_specific_repos_parallel({"/repo/A": b"request"})
+            client._request_specific_repos_parallel({
+                "/repo/A": encode_repo_request("STATUS")})
             self.assertGreater(client.control_metrics()["targetedCalls"], 0)
             client.reset_control_metrics()
             metrics = client.control_metrics()
@@ -175,8 +176,8 @@ class ControlDispatcherTest(unittest.TestCase):
         )
         try:
             responses, failures = client._request_specific_repos_parallel({
-                "/repo/A": b"A",
-                "/repo/B": b"B",
+                "/repo/A": encode_repo_request("STATUS", marker="A"),
+                "/repo/B": encode_repo_request("STATUS", marker="B"),
             }, timeout_ms=500)
             self.assertEqual(failures, {})
             self.assertEqual(list(responses), ["/repo/A", "/repo/B"])
@@ -214,8 +215,8 @@ class ControlDispatcherTest(unittest.TestCase):
         started = time.monotonic()
         try:
             responses, failures = client._request_specific_repos_parallel({
-                "/repo/A": b"A",
-                "/repo/B": b"B",
+                "/repo/A": encode_repo_request("STATUS", marker="A"),
+                "/repo/B": encode_repo_request("STATUS", marker="B"),
             }, timeout_ms=80)
             elapsed = time.monotonic() - started
             self.assertEqual(responses["/repo/A"].payload, b"A-ok")
@@ -258,7 +259,7 @@ class ControlDispatcherTest(unittest.TestCase):
         )
         try:
             responses, failures = client._request_specific_repos_parallel(
-                {"/repo/A": b"request"}, timeout_ms=1000)
+                {"/repo/A": encode_repo_request("STATUS")}, timeout_ms=1000)
             self.assertEqual(failures, {})
             self.assertEqual(responses["/repo/A"].payload, b"normal-ok")
             self.assertEqual(user.normal_calls, 1)
@@ -286,7 +287,7 @@ class ControlDispatcherTest(unittest.TestCase):
 
         def invoke() -> None:
             client._request_specific_repos_parallel(
-                {"/repo/A": b"request"}, timeout_ms=5000)
+                {"/repo/A": encode_repo_request("STATUS")}, timeout_ms=5000)
             finished.set()
 
         thread = threading.Thread(target=invoke)
@@ -1098,13 +1099,13 @@ class DurableCatalogRepairTest(unittest.TestCase):
             "maxReplicationFactor": 3,
         }
         with patch(
-                "ndnsf_distributed_inference.repo.fetch_segmented_object",
+                "py_repoclient.orchestration.fetch_segmented_object",
                 return_value=payload), patch(
-                "ndnsf_distributed_inference.repo.fetch_segmented_data_packets",
+                "py_repoclient.orchestration.fetch_segmented_data_packets",
                 return_value=packets), patch(
-                "ndnsf_distributed_inference.repo.SegmentedObjectProducer",
+                "py_repoclient.orchestration.SegmentedObjectProducer",
                 return_value=FakeProducer()), patch(
-                "ndnsf_distributed_inference.repo.time.sleep"):
+                "py_repoclient.orchestration.time.sleep"):
             first = client.catalog_repair("/repo/A", action)
             second = client.catalog_repair("/repo/A", action)
 
@@ -1141,7 +1142,7 @@ class DurableCatalogRepairTest(unittest.TestCase):
                 entryCount=0,
             )
             with patch(
-                    "ndnsf_distributed_inference.repo.fetch_segmented_object",
+                    "py_repoclient.orchestration.fetch_segmented_object",
                     return_value=merge_payload) as fetch:
                 accepted = repo._handle(request)
             self.assertTrue(accepted.status)
@@ -1149,7 +1150,7 @@ class DurableCatalogRepairTest(unittest.TestCase):
             fetch.assert_called_once()
 
             with patch(
-                    "ndnsf_distributed_inference.repo.fetch_segmented_object",
+                    "py_repoclient.orchestration.fetch_segmented_object",
                     return_value=merge_payload):
                 bad_hash = repo._handle(encode_repo_request(
                     "CATALOG_MERGE_PULL", schemaVersion=1,
@@ -1167,7 +1168,7 @@ class DurableCatalogRepairTest(unittest.TestCase):
             self.assertIn("entryCount mismatch", bad_count.error)
 
             with patch(
-                    "ndnsf_distributed_inference.repo.fetch_segmented_object") as fetch:
+                    "py_repoclient.orchestration.fetch_segmented_object") as fetch:
                 oversized = repo._handle(encode_repo_request(
                     "CATALOG_MERGE_PULL", schemaVersion=1,
                     sourceName="/repo/B/catalog/v=1",

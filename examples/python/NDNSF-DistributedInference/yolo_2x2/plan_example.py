@@ -11,8 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 
-from ndnsf_distributed_inference import (
-    APPDeployment,
+from ndnsf_distributed_inference import APPDeployment
+from py_repoclient.orchestration import (
     LocalDistributedRepo,
     PlacementPolicy,
     RepoObjectManifest,

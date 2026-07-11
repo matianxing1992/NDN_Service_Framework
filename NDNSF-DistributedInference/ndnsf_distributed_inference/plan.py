@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Optional
 
 from ndnsf import CollaborationDependency, CollaborationRole
-from .repo import large_data_reference_from_repo_manifest
+from .repo_reference import large_data_reference_from_repo_manifest
 
 
 class ModelFamily(str, Enum):

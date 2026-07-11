@@ -38,7 +38,13 @@ authorization_summary:
     - identity: /NDNSF-DistributeInference/example/user
       services:
         - /AI/YOLO/2x2Inference
-        - /NDNSF/DistributedRepo
+        - /NDNSF/DistributedRepo/Object/v1/INSERT
+        - /NDNSF/DistributedRepo/Object/v1/MANIFEST
+        - /NDNSF/DistributedRepo/Object/v1/FETCH
+        - /NDNSF/DistributedRepo/Object/v1/INVENTORY
+        - /NDNSF/DistributedRepo/Object/v1/STATUS
+        - /NDNSF/DistributedRepo/Object/v1/DELETE
+        - /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
   providers:
     - identity: /NDNSF-DistributeInference/example/provider
       services:
@@ -58,7 +64,7 @@ authorization_summary:
           roles: all
     - identity: /NDNSF-DistributeInference/example/provider/D
       services:
-        - service: /NDNSF/DistributedRepo
+        - service: /NDNSF/DistributedRepo/Object/v1/INSERT
           roles: []
 
 # generated model-plan section
@@ -116,12 +122,48 @@ services:
         output:
           dtype: float32
 
-  - name: /NDNSF/DistributedRepo
-    model: /NDNSF/DistributedRepo
-    users:
+  - name: /NDNSF/DistributedRepo/Object/v1/INSERT
+    model: /NDNSF/DistributedRepo/Object/v1/INSERT
+    users: &repo_users
       - /NDNSF-DistributeInference/example/user
-    providers:
+    providers: &repo_providers
       - identity: /NDNSF-DistributeInference/example/provider/D
         roles: []
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/MANIFEST
+    model: /NDNSF/DistributedRepo/Object/v1/MANIFEST
+    users: *repo_users
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/FETCH
+    model: /NDNSF/DistributedRepo/Object/v1/FETCH
+    users: *repo_users
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/INVENTORY
+    model: /NDNSF/DistributedRepo/Object/v1/INVENTORY
+    users: *repo_users
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/STATUS
+    model: /NDNSF/DistributedRepo/Object/v1/STATUS
+    users: *repo_users
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/DELETE
+    model: /NDNSF/DistributedRepo/Object/v1/DELETE
+    users: *repo_users
+    providers: *repo_providers
+    roles: []
+    dependencies: []
+  - name: /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
+    model: /NDNSF/DistributedRepo/Object/v1/CATALOG_QUERY
+    users: *repo_users
+    providers: *repo_providers
     roles: []
     dependencies: []

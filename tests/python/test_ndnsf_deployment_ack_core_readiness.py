@@ -11,7 +11,7 @@ from ndnsf import (
     ProviderCapabilityHint,
     encode_ack_metadata,
 )
-from ndnsf.service import _deployment_roles_from_ack_candidate
+from ndnsf_distributed_inference.deployment import deployment_roles_from_ack_candidate
 
 
 def _candidate(payload: bytes, *, status: bool = True, message: str = "ack") -> AckCandidate:
@@ -39,7 +39,7 @@ class DeploymentAckCoreReadinessTest(unittest.TestCase):
         })
 
         self.assertEqual(
-            _deployment_roles_from_ack_candidate(_candidate(payload)),
+            deployment_roles_from_ack_candidate(_candidate(payload)),
             ["/Backbone", "/Head"],
         )
 
@@ -55,13 +55,13 @@ class DeploymentAckCoreReadinessTest(unittest.TestCase):
             **hint.to_ack_fields(),
         })
 
-        self.assertEqual(_deployment_roles_from_ack_candidate(_candidate(payload)), [])
+        self.assertEqual(deployment_roles_from_ack_candidate(_candidate(payload)), [])
 
     def test_legacy_ready_ack_keeps_existing_role_capture(self) -> None:
         payload = b"roles=/Backbone,/Merge;runtimeStatus=ready;"
 
         self.assertEqual(
-            _deployment_roles_from_ack_candidate(_candidate(payload)),
+            deployment_roles_from_ack_candidate(_candidate(payload)),
             ["/Backbone", "/Merge"],
         )
 
@@ -72,7 +72,7 @@ class DeploymentAckCoreReadinessTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            _deployment_roles_from_ack_candidate(_candidate(payload, status=False)),
+            deployment_roles_from_ack_candidate(_candidate(payload, status=False)),
             ["/Backbone"],
         )
 
@@ -80,7 +80,7 @@ class DeploymentAckCoreReadinessTest(unittest.TestCase):
         payload = b"roles=/Backbone;negativeAckReason=QUEUE_FULL;"
 
         self.assertEqual(
-            _deployment_roles_from_ack_candidate(
+            deployment_roles_from_ack_candidate(
                 _candidate(payload, status=False, message="QUEUE_FULL")),
             [],
         )
@@ -88,4 +88,3 @@ class DeploymentAckCoreReadinessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

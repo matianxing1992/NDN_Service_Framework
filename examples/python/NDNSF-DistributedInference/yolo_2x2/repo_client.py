@@ -7,7 +7,8 @@ import argparse
 from pathlib import Path
 
 from ndnsf import ServiceUser
-from ndnsf_distributed_inference import APPDeployment, NetworkDistributedRepoClient
+from ndnsf_distributed_inference import APPDeployment
+from py_repoclient.orchestration import NetworkDistributedRepoClient
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml"

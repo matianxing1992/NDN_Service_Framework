@@ -6,16 +6,16 @@ from __future__ import annotations
 import unittest
 
 from ndnsf import ServiceOperationState, ServiceOperationStatus
-from ndnsf.service import (
-    _deployment_operation_status,
-    _deployment_sort_key,
-    _with_deployment_operation_status,
+from ndnsf_distributed_inference.deployment import (
+    deployment_operation_status,
+    deployment_sort_key,
+    with_deployment_operation_status,
 )
 
 
 class DeploymentOperationStatusTest(unittest.TestCase):
     def test_active_deployment_gets_done_operation_status(self) -> None:
-        deployment = _with_deployment_operation_status({
+        deployment = with_deployment_operation_status({
             "deploymentId": "dep-active",
             "planId": "plan-1",
             "serviceName": "/Inference/NativeTracer",
@@ -31,7 +31,7 @@ class DeploymentOperationStatusTest(unittest.TestCase):
         self.assertEqual(status.metadata["refCount"], 2)
 
     def test_provisioning_deployment_maps_to_running(self) -> None:
-        status = ServiceOperationStatus.from_dict(_deployment_operation_status({
+        status = ServiceOperationStatus.from_dict(deployment_operation_status({
             "deploymentId": "dep-provisioning",
             "serviceName": "/Inference/NativeTracer",
             "status": "PROVISIONING",
@@ -41,11 +41,11 @@ class DeploymentOperationStatusTest(unittest.TestCase):
         self.assertEqual(status.progress, 0.5)
 
     def test_evicted_and_rejected_are_terminal_core_states(self) -> None:
-        evicted = ServiceOperationStatus.from_dict(_deployment_operation_status({
+        evicted = ServiceOperationStatus.from_dict(deployment_operation_status({
             "deploymentId": "dep-evicted",
             "status": "EVICTED",
         }, operation="EVICT_DEPLOYMENT"))
-        rejected = ServiceOperationStatus.from_dict(_deployment_operation_status({
+        rejected = ServiceOperationStatus.from_dict(deployment_operation_status({
             "deploymentId": "dep-rejected",
             "status": "REJECTED",
             "reason": "DEPLOYMENT_IN_USE",
@@ -73,7 +73,7 @@ class DeploymentOperationStatusTest(unittest.TestCase):
             {"deploymentId": "legacy", "status": "IDLE"},
         ]
 
-        deployments.sort(key=_deployment_sort_key)
+        deployments.sort(key=deployment_sort_key)
 
         self.assertEqual([item["deploymentId"] for item in deployments],
                          ["hot", "legacy", "cold"])
@@ -85,7 +85,7 @@ class DeploymentOperationStatusTest(unittest.TestCase):
             {"deploymentId": "evicted", "status": "EVICTED"},
         ]
 
-        deployments.sort(key=_deployment_sort_key)
+        deployments.sort(key=deployment_sort_key)
 
         self.assertEqual([item["deploymentId"] for item in deployments],
                          ["active", "provisioning", "evicted"])
@@ -93,4 +93,3 @@ class DeploymentOperationStatusTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

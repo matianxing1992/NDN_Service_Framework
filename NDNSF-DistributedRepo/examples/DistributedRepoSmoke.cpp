@@ -41,18 +41,6 @@ main()
   PlacementPolicy policy;
   policy.replicationFactor = 2;
 
-  if (parseRepoDeploymentMode("") != RepoDeploymentMode::Remote ||
-      parseRepoDeploymentMode("embedded") != RepoDeploymentMode::Embedded ||
-      parseRepoDeploymentMode("local") != RepoDeploymentMode::Embedded ||
-      parseRepoDeploymentMode("in-app") != RepoDeploymentMode::Embedded ||
-      parseRepoDeploymentMode("both") != RepoDeploymentMode::Both ||
-      !enablesRemote(RepoDeploymentMode::Both) ||
-      !enablesEmbedded(RepoDeploymentMode::Both) ||
-      toString(RepoDeploymentMode::Embedded) != "embedded") {
-    std::cerr << "repo deployment mode helpers mismatch\n";
-    return 1;
-  }
-
   const auto replicas = selectReplicas(candidates, policy, payload.size());
   if (replicas.size() != 2) {
     std::cerr << "expected two replicas, got " << replicas.size() << "\n";
@@ -257,8 +245,7 @@ main()
   RepoNode embeddedNode(
     ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
     {"/repo/in-app", 1024 * 1024, 0, 0.0, 1.0, "local", {"embedded"}});
-  embeddedNode.registerDeploymentServices(nullptr, &localRegistry,
-                                          RepoDeploymentMode::Embedded);
+  embeddedNode.registerLocalServices(localRegistry);
   if (!localRegistry.hasService(
         makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STORE")) ||
       !localRegistry.hasService(

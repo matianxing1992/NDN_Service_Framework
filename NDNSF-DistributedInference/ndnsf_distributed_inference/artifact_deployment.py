@@ -35,7 +35,9 @@ from ndnsf import (
 )
 
 
-from .repo import NetworkDistributedRepoClient, RepoObjectManifest, repo_manifest_from_large_data_reference
+from py_repoclient.orchestration import NetworkDistributedRepoClient, RepoObjectManifest
+
+from .repo_reference import repo_manifest_from_large_data_reference
 
 
 class _ManifestOnlyRepoClient:

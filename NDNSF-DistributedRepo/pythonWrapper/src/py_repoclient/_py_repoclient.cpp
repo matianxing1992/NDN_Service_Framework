@@ -66,9 +66,45 @@ PYBIND11_MODULE(_py_repoclient, m)
     .def_readwrite("segment_count", &repo::RepoObjectManifest::segmentCount)
     .def_readwrite("replication_factor", &repo::RepoObjectManifest::replicationFactor)
     .def_readwrite("replica_nodes", &repo::RepoObjectManifest::replicaNodes)
+    .def_readwrite("packet_names", &repo::RepoObjectManifest::packetNames)
     .def_readwrite("policy_epoch", &repo::RepoObjectManifest::policyEpoch)
+    .def_readwrite("generation", &repo::RepoObjectManifest::generation)
+    .def_readwrite("parent_generation", &repo::RepoObjectManifest::parentGeneration)
+    .def_readwrite("write_consistency", &repo::RepoObjectManifest::writeConsistency)
+    .def_readwrite("required_write_acks", &repo::RepoObjectManifest::requiredWriteAcks)
+    .def_readwrite("confirmed_replica_nodes", &repo::RepoObjectManifest::confirmedReplicaNodes)
+    .def_readwrite("operation_id", &repo::RepoObjectManifest::operationId)
+    .def_readwrite("lifecycle_state", &repo::RepoObjectManifest::lifecycleState)
     .def("to_json", &repo::RepoObjectManifest::toJson)
     .def("__repr__", &manifestRepr);
+
+  py::class_<repo::RepoDataReference>(m, "RepoDataReference")
+    .def(py::init<>())
+    .def_readwrite("object_name", &repo::RepoDataReference::objectName)
+    .def_readwrite("data_prefix", &repo::RepoDataReference::dataPrefix)
+    .def_readwrite("first_segment", &repo::RepoDataReference::firstSegment)
+    .def_readwrite("final_segment", &repo::RepoDataReference::finalSegment)
+    .def_readwrite("has_final_segment", &repo::RepoDataReference::hasFinalSegment)
+    .def_readwrite("forwarding_hint", &repo::RepoDataReference::forwardingHint)
+    .def_readwrite("expected_sha256", &repo::RepoDataReference::expectedSha256)
+    .def_readwrite("expected_size", &repo::RepoDataReference::expectedSize)
+    .def_readwrite("store_wire_packets", &repo::RepoDataReference::storeWirePackets)
+    .def_readwrite("object_type", &repo::RepoDataReference::objectType)
+    .def("to_json", &repo::RepoDataReference::toJson);
+
+  py::class_<repo::RepoOperationStatus>(m, "RepoOperationStatus")
+    .def(py::init<>())
+    .def_readwrite("operation_id", &repo::RepoOperationStatus::operationId)
+    .def_readwrite("operation", &repo::RepoOperationStatus::operation)
+    .def_readwrite("state", &repo::RepoOperationStatus::state)
+    .def_readwrite("object_name", &repo::RepoOperationStatus::objectName)
+    .def_readwrite("message", &repo::RepoOperationStatus::message)
+    .def_readwrite("completed_segments", &repo::RepoOperationStatus::completedSegments)
+    .def_readwrite("total_segments", &repo::RepoOperationStatus::totalSegments)
+    .def_readwrite("created_at_ms", &repo::RepoOperationStatus::createdAtMs)
+    .def_readwrite("updated_at_ms", &repo::RepoOperationStatus::updatedAtMs)
+    .def_readwrite("expires_at_ms", &repo::RepoOperationStatus::expiresAtMs)
+    .def("to_json", &repo::RepoOperationStatus::toJson);
 
   py::class_<repo::StorageCapability>(m, "StorageCapability")
     .def(py::init<>())
@@ -90,6 +126,51 @@ PYBIND11_MODULE(_py_repoclient, m)
     .def_readwrite("avoid_same_failure_domain", &repo::PlacementPolicy::avoidSameFailureDomain)
     .def_readwrite("prefer_low_load", &repo::PlacementPolicy::preferLowLoad)
     .def_readwrite("prefer_high_availability", &repo::PlacementPolicy::preferHighAvailability);
+
+  py::class_<repo::RepoCatalogEntry>(m, "RepoCatalogEntry")
+    .def(py::init<>())
+    .def_readwrite("manifest", &repo::RepoCatalogEntry::manifest)
+    .def_readwrite("source_repo", &repo::RepoCatalogEntry::sourceRepo)
+    .def_readwrite("repo_mode", &repo::RepoCatalogEntry::repoMode)
+    .def_readwrite("state", &repo::RepoCatalogEntry::state)
+    .def_readwrite("catalog_epoch", &repo::RepoCatalogEntry::catalogEpoch)
+    .def("to_json", &repo::RepoCatalogEntry::toJson);
+
+  py::class_<repo::RepoCatalogStatus>(m, "RepoCatalogStatus")
+    .def(py::init<>())
+    .def_readwrite("repo_node", &repo::RepoCatalogStatus::repoNode)
+    .def_readwrite("repo_mode", &repo::RepoCatalogStatus::repoMode)
+    .def_readwrite("catalog_epoch", &repo::RepoCatalogStatus::catalogEpoch)
+    .def_readwrite("object_count", &repo::RepoCatalogStatus::objectCount)
+    .def_readwrite("accepts_backup_replica", &repo::RepoCatalogStatus::acceptsBackupReplica)
+    .def("to_json", &repo::RepoCatalogStatus::toJson);
+
+  py::class_<repo::RepoCatalogDelta>(m, "RepoCatalogDelta")
+    .def(py::init<>())
+    .def_readwrite("repo_node", &repo::RepoCatalogDelta::repoNode)
+    .def_readwrite("repo_mode", &repo::RepoCatalogDelta::repoMode)
+    .def_readwrite("since_epoch", &repo::RepoCatalogDelta::sinceEpoch)
+    .def_readwrite("catalog_epoch", &repo::RepoCatalogDelta::catalogEpoch)
+    .def_readwrite("entries", &repo::RepoCatalogDelta::entries)
+    .def("to_json", &repo::RepoCatalogDelta::toJson);
+
+  py::class_<repo::RepoCacheStatus>(m, "RepoCacheStatus")
+    .def(py::init<>())
+    .def_readwrite("storage_backend", &repo::RepoCacheStatus::storageBackend)
+    .def_readwrite("authoritative_backend", &repo::RepoCacheStatus::authoritativeBackend)
+    .def_readwrite("cache_policy", &repo::RepoCacheStatus::cachePolicy)
+    .def_readwrite("budget_bytes", &repo::RepoCacheStatus::budgetBytes)
+    .def_readwrite("used_bytes", &repo::RepoCacheStatus::usedBytes)
+    .def_readwrite("entry_count", &repo::RepoCacheStatus::entryCount)
+    .def_readwrite("hits", &repo::RepoCacheStatus::hits)
+    .def_readwrite("misses", &repo::RepoCacheStatus::misses)
+    .def_readwrite("admissions", &repo::RepoCacheStatus::admissions)
+    .def_readwrite("evictions", &repo::RepoCacheStatus::evictions)
+    .def_readwrite("invalidations", &repo::RepoCacheStatus::invalidations)
+    .def_readwrite("oversized_bypasses", &repo::RepoCacheStatus::oversizedBypasses)
+    .def_readwrite("backing_reads", &repo::RepoCacheStatus::backingReads)
+    .def_readwrite("backing_writes", &repo::RepoCacheStatus::backingWrites)
+    .def("to_json", &repo::RepoCacheStatus::toJson);
 
   m.def("sha256_hex",
         [](const py::bytes& payload) {
@@ -127,6 +208,21 @@ PYBIND11_MODULE(_py_repoclient, m)
   m.def("parse_manifest_json",
         &repo::parseManifestJson,
         py::arg("manifest_json"));
+
+  m.def("parse_data_reference_json", &repo::parseDataReferenceJson,
+        py::arg("reference_json"));
+  m.def("parse_operation_status_json", &repo::parseOperationStatusJson,
+        py::arg("status_json"));
+  m.def("parse_catalog_entry_json", &repo::parseCatalogEntryJson,
+        py::arg("entry_json"));
+  m.def("parse_catalog_status_json", &repo::parseCatalogStatusJson,
+        py::arg("status_json"));
+  m.def("parse_catalog_delta_json", &repo::parseCatalogDeltaJson,
+        py::arg("delta_json"));
+  m.def("parse_cache_status_json", &repo::parseCacheStatusJson,
+        py::arg("status_json"));
+  m.def("parse_inventory_json", &repo::parseInventoryJson,
+        py::arg("inventory_json"));
 
   m.def("encode_inventory",
         &repo::encodeInventory,

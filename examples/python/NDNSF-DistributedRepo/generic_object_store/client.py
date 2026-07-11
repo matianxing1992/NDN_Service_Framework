@@ -10,8 +10,12 @@ from pathlib import Path
 import time
 
 from ndnsf import DataPacket, make_segmented_data_packets
-from ndnsf_distributed_inference import APPDeployment, DistributedRepo
-from ndnsf_distributed_inference.repo import RepoObjectManifest, RepoRepairAction
+from ndnsf_distributed_inference import APPDeployment
+from py_repoclient.orchestration import (
+    DistributedRepo,
+    RepoObjectManifest,
+    RepoRepairAction,
+)
 
 
 CONFIG_FILE = "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"

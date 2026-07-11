@@ -293,6 +293,7 @@ def main() -> None:
             "PYTHONFAULTHANDLER": "1",
             "PYTHONPATH": ":".join([
                 str(REPO / "NDNSF-DistributedInference"),
+                str(REPO / "NDNSF-DistributedRepo/pythonWrapper"),
                 str(REPO / "pythonWrapper"),
                 os.environ.get("PYTHONPATH", ""),
             ]),

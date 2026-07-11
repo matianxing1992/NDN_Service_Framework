@@ -85,13 +85,13 @@ class AllowedService:
 
     provider_service is the full permission namespace, typically
     /<provider>/<service>. service is the unified service name applications pass
-    to request_service(), such as /HELLO. token is retained only for legacy
-    compatibility; current dynamic-runtime permissions normally leave it empty.
+    to request_service(), such as /HELLO. policy_epoch identifies the
+    controller policy snapshot that authorized this record.
     """
 
     provider_service: str
     service: str
-    token: str = ""
+    policy_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -910,9 +910,12 @@ class ServiceProvider:
             self._native.run()
             return 0
         if service is None:
-            if len(self._handlers) != 1:
-                raise ValueError("service must be specified when multiple handlers are registered")
-            service = next(iter(self._handlers))
+            if not self._handlers:
+                raise ValueError("at least one service handler must be registered")
+            for registered_service in self._handlers:
+                self._register_service(registered_service)
+            self._native.run()
+            return 0
         if service in self._handlers:
             self._register_service(service)
         self._native.run()
@@ -1294,9 +1297,9 @@ class ServiceUser:
             AllowedService(
                 provider_service=str(provider_service),
                 service=str(service),
-                token=str(token),
+                policy_epoch=int(policy_epoch),
             )
-            for provider_service, service, token in self._native.get_allowed_services()
+            for provider_service, service, policy_epoch in self._native.get_allowed_services()
         ]
 
     def get_ndnsd_services(self) -> list[dict[str, Any]]:

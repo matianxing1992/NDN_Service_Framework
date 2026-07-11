@@ -41,7 +41,7 @@ from .provider import (
     ProviderAdmissionPolicy,
     ProviderRuntimeContext,
 )
-from .repo import repo_manifest_from_large_data_reference
+from .repo_reference import repo_manifest_from_large_data_reference
 
 
 @dataclass(frozen=True)

@@ -376,28 +376,6 @@ RepoNode::registerLocalServices(ndn_service_framework::LocalServiceRegistry& reg
 }
 
 void
-RepoNode::registerDeploymentServices(
-  ndn_service_framework::ServiceProvider* provider,
-  ndn_service_framework::LocalServiceRegistry* registry,
-  RepoDeploymentMode mode)
-{
-  if (enablesRemote(mode)) {
-    if (provider == nullptr) {
-      throw std::invalid_argument("remote repo deployment mode requires a ServiceProvider");
-    }
-    registerServices(*provider);
-  }
-
-  if (enablesEmbedded(mode)) {
-    if (registry == nullptr) {
-      throw std::invalid_argument(
-        "embedded repo deployment mode requires a LocalServiceRegistry");
-    }
-    registerLocalServices(*registry);
-  }
-}
-
-void
 RepoNode::setDataReferenceFetcher(DataReferenceFetcher fetcher)
 {
   m_dataReferenceFetcher = std::move(fetcher);

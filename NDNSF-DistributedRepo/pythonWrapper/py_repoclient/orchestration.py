@@ -1,9 +1,8 @@
-"""NDNSF-DistributedRepo-facing helper API.
+"""NDNSF-DistributedRepo operational orchestration.
 
-This module is the Python-facing companion to the experimental C++
-``NDNSF-DistributedRepo`` subproject. It lets NDNSF-DI applications describe
-artifact/intermediate storage intent without embedding repo placement logic in
-model-specific splitters.
+The C++ Repo contract remains canonical. This module owns Python NDNSF network,
+persistence, placement, catalog and repair orchestration. Applications may use
+the public client and reference helpers but do not own these policies.
 """
 
 from __future__ import annotations
@@ -53,6 +52,12 @@ from ndnsf import (
     to_plain,
 )
 from py_repoclient import RepoDataPlaneProducer
+from py_repoclient.service_names import (
+    canonical_repo_operation,
+    is_internal_repo_service,
+    repo_service_for_operation,
+    repo_versioned_services,
+)
 
 
 def _pull_fetch_timeout_ms(segment_count: int) -> int:
@@ -1284,14 +1289,7 @@ class _BoundedRepoHotCache:
 
 
 class RepoNodeApp:
-    """Real NDNSF repo-node application using one shared service name.
-
-    Every repo node registers the same ``service_name``. Node identity and
-    capability are carried in ACK metadata, while request payloads carry the
-    operation. For a replicated INSERT/payload adapter request, the client includes selected
-    ``replicaNodes`` in the manifest; nodes not in that set acknowledge the
-    request but skip storing the payload.
-    """
+    """Real NDNSF repo node using versioned public and peer-only services."""
 
     def __init__(
         self,
@@ -1314,6 +1312,7 @@ class RepoNodeApp:
         repo_mode: str = "persistent",
         accepts_backup_replica: bool = True,
         peer_repo_nodes: tuple[str, ...] = (),
+        peer_provider_identities: tuple[str, ...] = (),
         catalog_sync_interval_s: float = 10.0,
         handler_threads: int = 4,
         ack_threads: int = 2,
@@ -1326,9 +1325,14 @@ class RepoNodeApp:
         self.group = group
         self.controller = controller
         self.trust_schema = trust_schema
+        self.provider_prefix = provider_prefix.rstrip("/")
         self.provider_name = (
-            f"{provider_prefix.rstrip('/')}/{provider_id.strip('/')}"
-            if provider_id else provider_prefix.rstrip("/")
+            f"{self.provider_prefix}/{provider_id.strip('/')}"
+            if provider_id else self.provider_prefix
+        )
+        self.peer_provider_identities = frozenset(
+            str(identity).rstrip("/")
+            for identity in peer_provider_identities if str(identity).strip()
         )
         if exact_data_validation_policy not in {
                 "wire-name-and-request-digest", "wire-name-only"}:
@@ -4248,12 +4252,52 @@ class RepoNodeApp:
     def _has_object(self, object_name: str) -> bool:
         return self._sqlite_has_object(object_name)
 
-    def _ack(self, payload: bytes) -> AckDecision:
+    def _validate_versioned_request(
+        self,
+        service_name: str,
+        payload: bytes,
+        requester_identity: str | None = None,
+    ) -> dict:
+        request = decode_repo_request(payload)
+        operation = str(request["operation"]).upper()
+        expected_service = repo_service_for_operation(operation, self.service_name)
+        if service_name != expected_service:
+            raise PermissionError(
+                "repo-operation-service-mismatch: "
+                f"operation={operation} expected={expected_service} got={service_name}"
+            )
+        if is_internal_repo_service(service_name) and requester_identity is not None:
+            requester = requester_identity.rstrip("/")
+            if not requester:
+                raise PermissionError("repo-peer-identity-required")
+            explicitly_allowed = getattr(self, "peer_provider_identities", frozenset())
+            provider_prefix = getattr(self, "provider_prefix", "").rstrip("/")
+            is_provider_identity = bool(
+                provider_prefix and (
+                    requester == provider_prefix or
+                    requester.startswith(provider_prefix + "/")
+                )
+            )
+            if explicitly_allowed:
+                is_provider_identity = (
+                    requester == self.provider_name.rstrip("/") or
+                    requester in explicitly_allowed
+                )
+            if not is_provider_identity:
+                raise PermissionError(
+                    f"repo-peer-identity-required: requester={requester}")
+        return request
+
+    def _ack(self, payload: bytes, service_name: str | None = None) -> AckDecision:
         has_manifest = False
         has_object = False
         try:
-            request = decode_repo_request(payload)
-            operation = str(request["operation"]).upper()
+            request = (
+                self._validate_versioned_request(service_name, payload)
+                if service_name is not None
+                else decode_repo_request(payload)
+            )
+            operation = canonical_repo_operation(request["operation"])
             object_name = str(request.get("objectName", ""))
             data_name = str(request.get("dataName", ""))
             has_manifest = bool(object_name and self._has_manifest(object_name))
@@ -4303,7 +4347,8 @@ class RepoNodeApp:
         }
         capability_hint = ProviderCapabilityHint(
             provider_name=capability.repo_node,
-            service_name=self.service_name,
+            service_name=(service_name or repo_service_for_operation(
+                operation, self.service_name)),
             ready=True,
             message="repo-ready",
             runtime_hint=GenericProviderRuntimeHint(
@@ -4360,7 +4405,7 @@ class RepoNodeApp:
         operation_status = ServiceOperationStatus(
             operation_id=f"{operation}:{object_name or (manifest.object_name if manifest else self.repo_node)}",
             operation=operation,
-            service_name=self.service_name,
+            service_name=repo_service_for_operation(operation, self.service_name),
             provider_name=self.repo_node,
             state=state,
             message=message or status,
@@ -4393,12 +4438,26 @@ class RepoNodeApp:
     def _handle_context(self, context: dict[str, str], payload: bytes) -> ServiceResponse:
         return self._handle(payload, str(context.get("requesterIdentity", "")))
 
+    def _handle_versioned_context(
+        self,
+        service_name: str,
+        context: dict[str, str],
+        payload: bytes,
+    ) -> ServiceResponse:
+        requester_identity = str(context.get("requesterIdentity", ""))
+        try:
+            self._validate_versioned_request(
+                service_name, payload, requester_identity)
+        except Exception as exc:  # noqa: BLE001
+            return ServiceResponse(False, str(exc).encode(), str(exc))
+        return self._handle(payload, requester_identity)
+
     def _handle(self, payload: bytes,
                 requester_identity: str = "") -> ServiceResponse:
         admission: Optional[tuple[str, float]] = None
         try:
             request = decode_repo_request(payload)
-            operation = str(request["operation"]).upper()
+            operation = canonical_repo_operation(request["operation"])
             self._enforce_request_ownership(
                 operation, request, requester_identity)
             admission = self._admit_operation(operation)
@@ -4427,7 +4486,8 @@ class RepoNodeApp:
                     **runtime,
                     "providerCapabilityHint": to_plain(ProviderCapabilityHint(
                         provider_name=capability.repo_node,
-                        service_name=self.service_name,
+                        service_name=repo_service_for_operation(
+                            operation, self.service_name),
                         runtime_hint=GenericProviderRuntimeHint(
                             provider_name=capability.repo_node,
                             timestamp_ms=int(runtime["metricsTimestampMs"]),
@@ -5053,7 +5113,7 @@ class RepoNodeApp:
             return []
 
         response = sync_user.request_service_select(
-            self.service_name,
+            repo_service_for_operation("CATALOG_DELTA", self.service_name),
             encode_repo_request("CATALOG_DELTA", sinceEpoch=since_epoch),
             selector,
             ack_timeout_ms=1000,
@@ -5119,12 +5179,21 @@ class RepoNodeApp:
         self._catalog_thread.start()
 
     def run(self) -> int:
-        self.provider.add_context_handler(self.service_name, self._handle_context)
-        self.provider.set_ack_handler(self.service_name, self._ack)
+        for service_name in repo_versioned_services(self.service_name):
+            self.provider.add_context_handler(
+                service_name,
+                lambda context, payload, registered=service_name:
+                self._handle_versioned_context(registered, context, payload),
+            )
+            self.provider.set_ack_handler(
+                service_name,
+                lambda payload, registered=service_name:
+                self._ack(payload, registered),
+            )
         self._data_plane.start()
         self._start_catalog_sync()
         try:
-            return self.provider.run(self.service_name)
+            return self.provider.run()
         finally:
             self._catalog_stop.set()
             self._stop_producers()
@@ -5166,7 +5235,7 @@ class RepoNodeApp:
 
 
 class NetworkDistributedRepoClient:
-    """NDNSF client for a shared-service-name DistributedRepo cluster."""
+    """NDNSF client for a versioned-operation DistributedRepo cluster."""
 
     def __init__(
         self,
@@ -5239,6 +5308,13 @@ class NetworkDistributedRepoClient:
         self.verbose = verbose
         self.max_store_batch_wire_bytes = max(1024, max_store_batch_wire_bytes)
         self.pull_store_threshold_bytes = max(0, pull_store_threshold_bytes)
+
+    def _service_for(self, operation: str) -> str:
+        return repo_service_for_operation(operation, self.service_name)
+
+    def _service_for_payload(self, payload: bytes) -> str:
+        request = decode_repo_request(payload)
+        return self._service_for(str(request["operation"]))
 
     def _log(self, message: str) -> None:
         if self.verbose:
@@ -5528,7 +5604,7 @@ class NetworkDistributedRepoClient:
 
     def capability(self, *, timeout_ms: int | None = None) -> dict:
         response = self._control_call(lambda: self.user.request_service(
-            self.service_name,
+            self._service_for("CAPABILITY"),
             encode_repo_request("CAPABILITY"),
             ack_timeout_ms=self.ack_timeout_ms,
             timeout_ms=timeout_ms if timeout_ms is not None else self.timeout_ms,
@@ -5991,7 +6067,7 @@ class NetworkDistributedRepoClient:
             return selected_providers
 
         response = self._control_call(lambda: self.user.request_service_select(
-            self.service_name,
+            self._service_for("CAPABILITY"),
             encode_repo_request("CAPABILITY", objectName=object_name),
             selector,
             ack_timeout_ms=self.ack_timeout_ms,
@@ -6021,7 +6097,7 @@ class NetworkDistributedRepoClient:
 
         self._metric_increment("normalCalls")
         response = self._control_call(lambda: self.user.request_service_select(
-            self.service_name,
+            self._service_for_payload(payload),
             payload,
             selector,
             ack_timeout_ms=self.ack_timeout_ms,
@@ -6119,7 +6195,7 @@ class NetworkDistributedRepoClient:
                     state["started"][repo_node] = time.monotonic()
                     targeted_async(
                         repo_node,
-                        self.service_name,
+                        self._service_for_payload(payload_by_repo[repo_node]),
                         payload_by_repo[repo_node],
                         on_response=(
                             lambda response, repo=repo_node:
@@ -6595,7 +6671,7 @@ class NetworkDistributedRepoClient:
 
             self._log(f"repo select request object={object_name}")
             response = self._control_call(lambda: self.user.request_service_select(
-                self.service_name,
+                self._service_for("CAPABILITY"),
                 encode_repo_request("CAPABILITY", objectName=object_name),
                 selector,
                 ack_timeout_ms=self.ack_timeout_ms,
@@ -6718,7 +6794,7 @@ class NetworkDistributedRepoClient:
                         producers.append(manifest_producer)
                         time.sleep(0.2)
                         response = self._control_call(lambda: self.user.request_service(
-                            self.service_name,
+                            self._service_for("STORE_PACKET_PULL"),
                             encode_repo_request(
                                 "STORE_PACKET_PULL",
                                 manifest=target_manifest.to_dict(),
@@ -6745,7 +6821,7 @@ class NetworkDistributedRepoClient:
                             f"segment={packet.segment} name={packet.name}",
                         )
                         response = self._control_call(lambda: self.user.request_service(
-                            self.service_name,
+                            self._service_for("STORE_PACKET"),
                             encode_repo_request(
                                 "STORE_PACKET",
                                 manifest=target_manifest.to_dict(),
@@ -7009,7 +7085,7 @@ class NetworkDistributedRepoClient:
             return []
 
         response = self._control_call(lambda: self.user.request_service_select(
-            self.service_name,
+            self._service_for("MANIFEST"),
             encode_repo_request("MANIFEST", objectName=object_name),
             selector,
             ack_timeout_ms=self.ack_timeout_ms,
@@ -7029,7 +7105,7 @@ class NetworkDistributedRepoClient:
             ][:1]
 
         response = self._control_call(lambda: self.user.request_service_select(
-            self.service_name,
+            self._service_for("INVENTORY"),
             encode_repo_request("INVENTORY"),
             selector,
             ack_timeout_ms=self.ack_timeout_ms,
@@ -7314,7 +7390,7 @@ class NetworkDistributedRepoClient:
             return selected
 
         response = self._control_call(lambda: self.user.request_service_select(
-            self.service_name,
+            self._service_for("DELETE"),
             encode_repo_request("DELETE", objectName=object_name),
             selector,
             ack_timeout_ms=self.ack_timeout_ms,
@@ -7601,8 +7677,8 @@ class DistributedRepo:
         timeout_ms: int = 10000,
         verbose: bool = False,
     ) -> "DistributedRepo":
-        from .app import APPDeployment
-        from .policy import load_config
+        from ndnsf_distributed_inference.app import APPDeployment
+        from ndnsf_distributed_inference.policy import load_config
 
         configure_repo_object_class_policies(load_config(config))
 

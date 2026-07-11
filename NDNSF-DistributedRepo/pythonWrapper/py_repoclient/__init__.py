@@ -21,7 +21,13 @@ from ndnsf import (
 
 from ._py_repoclient import (
     PlacementPolicy,
+    RepoCacheStatus,
+    RepoCatalogDelta,
+    RepoCatalogEntry,
+    RepoCatalogStatus,
+    RepoDataReference,
     RepoObjectManifest,
+    RepoOperationStatus,
     StorageCapability,
     decode_store_request,
     encode_inventory,
@@ -29,8 +35,22 @@ from ._py_repoclient import (
     make_manifest,
     make_repo_service_name,
     parse_manifest_json,
+    parse_cache_status_json,
+    parse_catalog_delta_json,
+    parse_catalog_entry_json,
+    parse_catalog_status_json,
+    parse_data_reference_json,
+    parse_inventory_json,
+    parse_operation_status_json,
     select_replicas,
     sha256_hex,
+)
+from .service_names import (
+    DEFAULT_REPO_SERVICE_ROOT,
+    canonical_repo_operation,
+    is_internal_repo_service,
+    repo_service_for_operation,
+    repo_versioned_services,
 )
 
 
@@ -156,8 +176,8 @@ def ready_capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapabi
 class RepoClient:
     """Small synchronous repo client built on NDNSF Python ``ServiceUser``.
 
-    The repo service is generic: all repo nodes share one service name, and the
-    operation is encoded in the request payload.
+    Public operations use versioned operation services. The payload operation
+    remains as a fail-closed consistency check, not as the authorization key.
     """
 
     def __init__(
@@ -172,6 +192,9 @@ class RepoClient:
         self.repo_service_name = repo_service_name
         self.ack_timeout_ms = ack_timeout_ms
         self.timeout_ms = timeout_ms
+
+    def _service_for(self, operation: str) -> str:
+        return repo_service_for_operation(operation, self.repo_service_name)
 
     @property
     def publisher_namespace(self) -> str:
@@ -220,7 +243,7 @@ class RepoClient:
 
     def capability(self) -> list[StorageCapability]:
         response = self.user.request_service(
-            self.repo_service_name,
+            self._service_for("CAPABILITY"),
             _request("CAPABILITY"),
             ack_timeout_ms=self.ack_timeout_ms,
             timeout_ms=self.timeout_ms,
@@ -259,7 +282,7 @@ class RepoClient:
         if selector is None:
             selector = _capacity_selector(replication_factor, len(payload))
         response = self.user.request_service_select(
-            self.repo_service_name,
+            self._service_for("STORE"),
             _request(
                 "STORE",
                 manifest=manifest_to_dict(manifest),
@@ -324,7 +347,7 @@ class RepoClient:
 
     def fetch(self, object_name: str) -> bytes:
         response = self.user.request_service(
-            self.repo_service_name,
+            self._service_for("FETCH"),
             _request("FETCH", objectName=object_name),
             ack_timeout_ms=self.ack_timeout_ms,
             timeout_ms=max(self.timeout_ms, 60000),
@@ -358,7 +381,7 @@ class RepoClient:
 
     def manifest(self, object_name: str) -> RepoObjectManifest:
         response = self.user.request_service(
-            self.repo_service_name,
+            self._service_for("MANIFEST"),
             _request("MANIFEST", objectName=object_name),
             ack_timeout_ms=self.ack_timeout_ms,
             timeout_ms=self.timeout_ms,
@@ -370,7 +393,7 @@ class RepoClient:
 
     def inventory(self) -> dict[str, RepoObjectManifest]:
         response = self.user.request_service(
-            self.repo_service_name,
+            self._service_for("INVENTORY"),
             _request("INVENTORY"),
             ack_timeout_ms=self.ack_timeout_ms,
             timeout_ms=self.timeout_ms,
@@ -390,7 +413,7 @@ class RepoClient:
 
     def delete(self, object_name: str) -> None:
         response = self.user.request_service(
-            self.repo_service_name,
+            self._service_for("DELETE"),
             _request("DELETE", objectName=object_name),
             ack_timeout_ms=self.ack_timeout_ms,
             timeout_ms=self.timeout_ms,
@@ -479,9 +502,17 @@ def _verify_manifest_payload(manifest: RepoObjectManifest, payload: bytes) -> No
 
 
 __all__ = [
+    "DEFAULT_REPO_SERVICE_ROOT",
+    "canonical_repo_operation",
     "PlacementPolicy",
     "RepoClient",
+    "RepoCacheStatus",
+    "RepoCatalogDelta",
+    "RepoCatalogEntry",
+    "RepoCatalogStatus",
+    "RepoDataReference",
     "RepoObjectManifest",
+    "RepoOperationStatus",
     "StorageCapability",
     "discovery_record_from_ack",
     "capability_from_ack",
@@ -492,7 +523,17 @@ __all__ = [
     "make_manifest",
     "make_repo_service_name",
     "manifest_to_dict",
+    "is_internal_repo_service",
     "parse_manifest_json",
+    "parse_cache_status_json",
+    "parse_catalog_delta_json",
+    "parse_catalog_entry_json",
+    "parse_catalog_status_json",
+    "parse_data_reference_json",
+    "parse_inventory_json",
+    "parse_operation_status_json",
     "select_replicas",
+    "repo_service_for_operation",
+    "repo_versioned_services",
     "sha256_hex",
 ]

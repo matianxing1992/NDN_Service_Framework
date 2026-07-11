@@ -23,6 +23,7 @@ def env() -> dict[str, str]:
     current = os.environ.copy()
     current["PYTHONPATH"] = (
         f"{REPO / 'NDNSF-DistributedInference'}:"
+        f"{REPO / 'NDNSF-DistributedRepo' / 'pythonWrapper'}:"
         f"{REPO / 'pythonWrapper'}:"
         f"{EXAMPLE}:"
         f"{current.get('PYTHONPATH', '')}"
@@ -206,7 +207,7 @@ HTTPServer((args.host, args.port), Handler).serve_forever()
 
 
 def run_repo_backed_materialize_smoke() -> None:
-    from ndnsf_distributed_inference import LocalDistributedRepo, StorageCapability
+    from py_repoclient.orchestration import LocalDistributedRepo, StorageCapability
     from llama_server_lib import (
         build_llama_server_artifact_references,
         decode_chat_response,

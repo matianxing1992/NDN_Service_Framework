@@ -13,9 +13,9 @@ from ndnsf import ServiceUser
 from ndnsf_distributed_inference import (
     APPController,
     APPDeployment,
-    NetworkDistributedRepoClient,
-    repo_artifact_reference,
 )
+from ndnsf_distributed_inference.repo_reference import repo_artifact_reference
+from py_repoclient.orchestration import NetworkDistributedRepoClient
 from yolo_2x2_lib import REPO_SERVICE, build_runner_script, yolo_inference_service
 
 

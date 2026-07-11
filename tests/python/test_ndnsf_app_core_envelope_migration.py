@@ -17,7 +17,7 @@ from ndnsf import (
     parse_ack_metadata,
 )
 from ndnsf_distributed_inference.artifact_deployment import ArtifactProvisioningState
-from ndnsf_distributed_inference.repo import (
+from py_repoclient.orchestration import (
     NetworkDistributedRepoClient,
     RepoNodeApp,
     RepoObjectManifest,
