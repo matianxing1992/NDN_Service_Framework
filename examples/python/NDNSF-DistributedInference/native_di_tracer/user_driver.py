@@ -1171,6 +1171,7 @@ def run_threaded_open_loop_requests(users: list[ServiceUser],
         item for item in results
         if item.get("error") == "local-open-loop-backpressure"
     ]
+    measurement_elapsed_ms = (time.perf_counter() - schedule_start) * 1000.0
     metadata = {
         "mode": "open-loop-threaded-service-user",
         "targetRps": args.target_rps,
@@ -1180,6 +1181,7 @@ def run_threaded_open_loop_requests(users: list[ServiceUser],
         "localBackpressureCount": len(dropped),
         "localBackpressureWaitCount": local_backpressure_waits,
         "maxScheduleSlipMs": round(max_schedule_slip_ms, 3),
+        "measurementElapsedMs": measurement_elapsed_ms,
         "offeredRps": planned / args.open_loop_duration_s if args.open_loop_duration_s > 0 else 0.0,
     }
     return sorted(results, key=lambda item: int(item.get("requestIndex", 0))), metadata

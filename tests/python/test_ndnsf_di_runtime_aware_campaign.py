@@ -345,6 +345,31 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(summary["throughputRps"], 2.0)
         self.assertEqual(summary["makespanMs"], 10000.0)
 
+    def test_threaded_driver_reports_measurement_interval_before_cleanup(self) -> None:
+        user_driver = load_user_driver_module()
+        args = type("Args", (), {
+            "requests": 2,
+            "concurrency": 1,
+            "target_rps": 1000.0,
+            "open_loop_duration_s": 0.002,
+            "service": "/Inference/NativeTracer",
+        })()
+        original = user_driver.run_one_request
+        user_driver.run_one_request = lambda *_args, **_kwargs: {
+            "status": "executed",
+            "elapsedMs": 0.1,
+            "payloadBytes": 1,
+        }
+        try:
+            results, metadata = user_driver.run_threaded_open_loop_requests(
+                [object()], args, {}, [], {}, [], {}, {})
+        finally:
+            user_driver.run_one_request = original
+
+        self.assertEqual(len(results), 2)
+        self.assertGreater(metadata["measurementElapsedMs"], 0.0)
+        self.assertLess(metadata["measurementElapsedMs"], 100.0)
+
     def test_user_driver_overload_fast_fail_metadata_uses_shorter_timeout(self) -> None:
         user_driver = load_user_driver_module()
         args = type("Args", (), {
