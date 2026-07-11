@@ -1084,6 +1084,14 @@ def parse_user_execution(log_path: Path) -> dict[str, object]:
     raise RuntimeError(f"user driver log did not contain execution JSON: {log_path}")
 
 
+def user_execution_measurement_fields(user_result: dict[str, object]) -> dict[str, object]:
+    return {
+        "measurementStartEpoch": user_result.get("measurementStartEpoch", 0.0),
+        "measurementElapsedMs": user_result.get("measurementElapsedMs", 0.0),
+        "maxScheduleSlipMs": user_result.get("maxScheduleSlipMs", 0.0),
+    }
+
+
 def observed_role_timings(log_paths: list[Path]) -> set[str]:
     roles: set[str] = set()
     for path in log_paths:
@@ -3194,7 +3202,7 @@ def main() -> int:
                 "submittedCount": user_result.get("submittedCount", user_result.get("successCount", 1)),
                 "localBackpressureCount": user_result.get("localBackpressureCount", 0),
                 "localBackpressureWaitCount": user_result.get("localBackpressureWaitCount", 0),
-                "maxScheduleSlipMs": user_result.get("maxScheduleSlipMs", 0.0),
+                **user_execution_measurement_fields(user_result),
                 "offeredRps": user_result.get("offeredRps", 0.0),
                 "requests": user_result.get("requests", []),
             }

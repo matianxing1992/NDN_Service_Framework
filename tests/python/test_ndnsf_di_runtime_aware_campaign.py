@@ -426,6 +426,20 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(parsed["localBackpressureWaitCount"], 69)
         self.assertEqual(parsed["maxScheduleSlipMs"], 7150.519)
 
+    def test_harness_projects_open_loop_measurement_metadata(self) -> None:
+        harness = load_harness_module()
+        fields = harness.user_execution_measurement_fields({
+            "measurementStartEpoch": 100.0,
+            "measurementElapsedMs": 5000.0,
+            "maxScheduleSlipMs": 12.5,
+        })
+
+        self.assertEqual(fields, {
+            "measurementStartEpoch": 100.0,
+            "measurementElapsedMs": 5000.0,
+            "maxScheduleSlipMs": 12.5,
+        })
+
     def test_user_driver_builds_ack_candidate_snapshot(self) -> None:
         user_driver = load_user_driver_module()
 
