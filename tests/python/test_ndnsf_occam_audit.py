@@ -82,6 +82,42 @@ class OccamAuditTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown rules"):
                 AUDIT.scan(Path(tmp), ["not-a-rule"])
 
+    def test_app_owned_types_and_internal_repo_binding_are_not_core_leaks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            files = {
+                "NDNSF-DistributedInference/plan.py": "ExecutionArtifactSpec()\n",
+                "NDNSF-DistributedRepo/adapter.py": "RepoDataPlaneProducer()\n",
+                "pythonWrapper/src/ndnsf/binding.cpp": "RepoDataPlaneProducer value;\n",
+                "pythonWrapper/ndnsf/runtime.py": "CoordinationIntent value;\n",
+            }
+            for name, content in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            findings = AUDIT.scan(root, ["core-application-leakage"])
+
+        self.assertEqual(
+            [(item.path, item.text) for item in findings],
+            [("pythonWrapper/ndnsf/runtime.py", "CoordinationIntent value;")],
+        )
+
+    def test_removed_di_and_repo_surfaces_are_actionable_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "di.py").write_text(
+                'mode = "process-pool"\nrepo_manifests = {}\n')
+            (root / "src" / "repo.py").write_text(
+                "InMemoryRepoStore()\nisolated_runtime = True\n")
+            di = AUDIT.scan(root, ["obsolete-di-surface"])
+            repo = AUDIT.scan(root, ["obsolete-repo-surface"])
+
+        self.assertEqual(len(di), 2)
+        self.assertTrue(all(item.classification == "active" for item in di))
+        self.assertEqual(len(repo), 2)
+        self.assertTrue(all(item.classification == "active" for item in repo))
+
 
 if __name__ == "__main__":
     unittest.main()

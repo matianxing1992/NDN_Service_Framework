@@ -24,13 +24,23 @@ RULES: dict[str, tuple[str, ...]] = {
         r"\bRepoDataPlaneProducer\b",
         r"\bCoordinationIntent\b",
     ),
-    "handler-less-planner": (
-        r"NotImplementedError",
-        r"handler\s*=\s*None",
+    "obsolete-di-surface": (
+        r"process[-_]pool",
+        r"worker-request-indices",
+        r"schedule-start-epoch",
+        r"\bRuntimeGuiProfile\b",
+        r"\bRuntimeRoleProfile\b",
+        r"\brepo_manifests\b",
+        r"NDNSF_DI_RuntimeAware_RpsSweep",
     ),
-    "legacy-contract-field": (
-        r"legacy[_-](?:field|status|capability|reason)",
-        r"operationStatus.*status|status.*operationStatus",
+    "obsolete-repo-surface": (
+        r"\bInMemoryRepoStore\b",
+        r"\bmakeMemoryRepoStore\b",
+        r"\bproducer_retention_s\b",
+        r"producer-retention-s",
+        r"\bisolated_runtime\b",
+        r"\blegacyStatus\b",
+        r"\blegacy_fields\b",
     ),
 }
 
@@ -74,19 +84,39 @@ def classify_path(relative: Path) -> str:
 def iter_files(root: Path) -> Iterable[Path]:
     ignored = {
         ".git", ".codegraph", ".venv", "__pycache__", "node_modules",
-        "third_party", ".planning", ".agents",
+        "third_party", ".planning", ".agents", ".claude", "results",
     }
     for path in root.rglob("*"):
         relative = path.relative_to(root)
         if (
             not path.is_file()
             or any(part in ignored for part in relative.parts)
+            or any(part.startswith(".waf") for part in relative.parts)
             or relative.parts[:2] == ("Experiments", "gRPC")
             or relative.as_posix() == "tools/maintenance/ndnsf_occam_audit.py"
         ):
             continue
         if path.suffix.lower() in TEXT_SUFFIXES or path.name in {"wscript", "README", "AGENTS.md", "CLAUDE.md"}:
             yield path
+
+
+def rule_applies(rule: str, relative: Path, line: str) -> bool:
+    if rule != "core-application-leakage":
+        return True
+
+    # Application-owned artifacts belong in DI, and RepoDataPlaneProducer is
+    # an intentionally internal binding used only by the Repo adapter. Neither
+    # is a Core ownership leak. Coordination/application symbols are findings
+    # only when they appear in the generic Core source trees.
+    if relative.parts and relative.parts[0] in {
+        "NDNSF-DistributedInference",
+        "NDNSF-DistributedRepo",
+        "NDNSF-UAV-APP",
+    }:
+        return False
+    if "RepoDataPlaneProducer" in line:
+        return False
+    return True
 
 
 def scan(root: Path, selected_rules: Iterable[str] | None = None) -> list[Finding]:
@@ -110,6 +140,8 @@ def scan(root: Path, selected_rules: Iterable[str] | None = None) -> list[Findin
             for rule, patterns in compiled.items():
                 for pattern, regex in patterns:
                     if regex.search(line):
+                        if not rule_applies(rule, relative, line):
+                            continue
                         findings.append(Finding(
                             rule=rule,
                             pattern=pattern,
