@@ -40,15 +40,16 @@ from ndnsf import (
     ServiceUser,
     SegmentHintRange,
     StoredDataProducer,
+    decode_provider_capability_ack,
     decode_data_packet,
     encode_ack_metadata,
+    encode_provider_capability_ack,
     fetch_exact_data_packet,
     fetch_segmented_data_packets,
     fetch_segmented_object,
     fetch_segmented_object_with_segment_hints,
     fetch_known_segmented_object_with_segment_hints,
     make_segmented_data_packets,
-    parse_ack_metadata,
     to_plain,
 )
 from py_repoclient import RepoDataPlaneProducer
@@ -4378,14 +4379,7 @@ class RepoNodeApp:
                 "storageClasses": list(capability.storage_classes),
             },
         )
-        flat_legacy_fields = {
-            key: value for key, value in legacy_fields.items()
-            if not (isinstance(value, str) and value == "")
-        }
-        ack_payload = encode_ack_metadata({
-            **flat_legacy_fields,
-            **capability_hint.to_ack_fields(),
-        })
+        ack_payload = encode_provider_capability_ack(capability_hint)
         return AckDecision(status=True, message="repo-ready", payload=ack_payload)
 
     def _operation_status_payload(self,
@@ -5928,23 +5922,11 @@ class NetworkDistributedRepoClient:
 
     @staticmethod
     def _parse_ack_payload(payload: bytes) -> dict[str, object]:
-        fields: dict[str, object] = parse_ack_metadata(payload)
-        capability_payload = fields.get("providerCapabilityHint")
-        if isinstance(capability_payload, dict):
-            try:
-                capability_hint = ProviderCapabilityHint.from_dict(capability_payload)
-                for key, value in capability_hint.service_payload.items():
-                    fields[key] = value
-                if capability_hint.runtime_hint is not None:
-                    fields["repoNode"] = capability_hint.provider_name
-            except Exception:
-                pass
-        if not fields:
-            for item in payload.decode(errors="replace").split(";"):
-                if not item or "=" not in item:
-                    continue
-                key, value = item.split("=", 1)
-                fields[key] = value
+        decoded = decode_provider_capability_ack(
+            payload, service_name="/NDNSF/DistributedRepo")
+        capability_hint = decoded.hint
+        fields: dict[str, object] = dict(capability_hint.service_payload)
+        fields["repoNode"] = capability_hint.provider_name
         return fields
 
     @staticmethod

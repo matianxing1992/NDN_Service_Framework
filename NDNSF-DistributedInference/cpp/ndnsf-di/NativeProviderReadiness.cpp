@@ -20,15 +20,6 @@ toBuffer(const std::string& text)
   return ndn::Buffer(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
 }
 
-void
-appendEnvField(std::ostringstream& payload, const char* envName, const char* fieldName)
-{
-  const char* value = std::getenv(envName);
-  if (value != nullptr && value[0] != '\0') {
-    payload << fieldName << "=" << value << ";";
-  }
-}
-
 std::string
 envText(const char* envName)
 {
@@ -196,6 +187,10 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
                                const std::string& reasonCode,
                                const std::string& message,
                                const std::string& status,
+                               const std::string& deploymentId,
+                               const std::string& provisioningRole,
+                               int64_t expectedReadyMs,
+                               const AdmissionDecision& admission,
                                const ndn::Name& providerName,
                                const ndn::Name& serviceName)
 {
@@ -203,7 +198,7 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
   const auto service = serviceName.size() == 0 ? "/" : serviceName.toUri();
   std::ostringstream json;
   json << "{"
-       << "\"schema\":\"ndnsf-provider-capability-v1\","
+       << "\"schema\":\"ndnsf-provider-capability-v2\","
        << "\"providerName\":" << jsonString(provider) << ","
        << "\"serviceName\":" << jsonString(service) << ","
        << "\"ready\":" << (ready ? "true" : "false") << ","
@@ -241,10 +236,37 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
        << "\"servicePayloadSchema\":\"ndnsf-di-capability-v1\","
        << "\"servicePayload\":{"
        << "\"roles\":" << jsonString(rolesText) << ","
+       << "\"queue\":" << capacity.pendingWorkCount() << ","
+       << "\"readyQueue\":" << capacity.readyQueueDepth << ","
+       << "\"waitingInputs\":" << capacity.waitingForInputCount << ","
+       << "\"activeWorkers\":" << capacity.activeWorkerCount << ","
+       << "\"workers\":" << capacity.workerCount << ","
+       << "\"idleWorkers\":" << capacity.idleWorkerCount() << ","
+       << "\"hasModel\":" << (ready ? "true" : "false") << ","
        << "\"runtimeStatus\":" << jsonString(status) << ","
        << "\"canProvision\":false,"
-       << "\"backends\":[\"onnxruntime\"]"
-       << "}"
+       << "\"backends\":[\"onnxruntime\"]";
+  for (const auto& item : envFields) {
+    const auto value = envText(item.first);
+    if (!value.empty()) {
+      json << "," << jsonString(item.second) << ":" << jsonString(value);
+    }
+  }
+  if (!reasonCode.empty()) {
+    json << ",\"negativeAckReason\":" << jsonString(reasonCode);
+  }
+  if (!deploymentId.empty()) {
+    json << ",\"deploymentId\":" << jsonString(deploymentId)
+         << ",\"provisioningRole\":" << jsonString(provisioningRole)
+         << ",\"expectedReadyMs\":" << expectedReadyMs;
+  }
+  if (!admission.accepted) {
+    json << ",\"status\":\"admission-rejected\""
+         << ",\"admissionPolicy\":\"native-provider-telemetry\""
+         << ",\"admissionLimit\":" << jsonString(admission.limit)
+         << ",\"admissionThreshold\":" << jsonString(admission.threshold);
+  }
+  json << "}"
        << "}";
   return json.str();
 }
@@ -340,47 +362,16 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
     capacity = capacitySnapshotProvider();
   }
 
-  std::ostringstream payload;
-  payload << "roles=" << rolesText
-          << ";queue=" << capacity.pendingWorkCount()
-          << ";readyQueue=" << capacity.readyQueueDepth
-          << ";waitingInputs=" << capacity.waitingForInputCount
-          << ";activeWorkers=" << capacity.activeWorkerCount
-          << ";workers=" << capacity.workerCount
-          << ";idleWorkers=" << capacity.idleWorkerCount()
-          << ";hasModel=" << (ready ? "1" : "0") << ";";
-  appendEnvField(payload, "NDNSF_DI_PROVIDER_GPU_MEMORY_MB", "gpuMemoryMb");
-  appendEnvField(payload, "NDNSF_DI_PROVIDER_RAM_MEMORY_MB", "ramMemoryMb");
-  appendEnvField(payload, "NDNSF_DI_PROVIDER_FLOPS_TFLOPS", "flopsTflops");
-  appendEnvField(payload, "NDNSF_DI_PROVIDER_LLM_STAGE_CAPACITY_MB", "llmStageCapacityMb");
-  appendEnvField(payload, "NDNSF_DI_PROVIDER_LLM_MAX_STAGE_LAYERS", "llmMaxStageLayers");
-  appendEnvField(payload, "NDNSF_DI_PROVIDER_MODEL_FAMILIES", "modelFamilies");
-  payload << ";canProvision=0;backends=onnxruntime;runtimeStatus="
-          << status << ";";
   const auto negativeAckReason = reasonForStatus(status);
-  if (!ready && !negativeAckReason.empty()) {
-    payload << "negativeAckReason=" << negativeAckReason << ";";
-  }
-  // When provisioning, include context so other users know WHY this
-  // provider is unavailable and WHEN it will be ready.
+  int64_t remainingReadyMs = 0;
   if (!ready && !deploymentId.empty()) {
-    payload << "deploymentId=" << deploymentId << ";";
-    payload << "provisioningRole=" << provisioningRole << ";";
     int64_t elapsed = std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - provisioningStartedMs);
-    int64_t remaining = std::max<int64_t>(0, expectedReadyMs - elapsed);
-    payload << "expectedReadyMs=" << remaining << ";";
+    remainingReadyMs = std::max<int64_t>(0, expectedReadyMs - elapsed);
   }
 
   auto admission = AdmissionDecision{};
   if (ready) {
     admission = evaluateNativeAdmission(capacity);
-    if (!admission.accepted) {
-      payload << "negativeAckReason=" << admission.reason
-              << ";status=admission-rejected"
-              << ";admissionPolicy=native-provider-telemetry"
-              << ";admissionLimit=" << admission.limit
-              << ";admissionThreshold=" << admission.threshold << ";";
-    }
   }
 
   ndn_service_framework::ServiceProvider::AckDecision decision;
@@ -396,8 +387,13 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
                                                              capabilityReason,
                                                              decision.message,
                                                              status,
+                                                             deploymentId,
+                                                             provisioningRole,
+                                                             remainingReadyMs,
+                                                             admission,
                                                              providerName,
                                                              serviceName);
+  std::ostringstream payload;
   payload << "providerCapabilityHint=json64:" << base64UrlEncode(capabilityJson) << ";";
   decision.payload = toBuffer(payload.str());
   return decision;

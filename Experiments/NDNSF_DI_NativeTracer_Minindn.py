@@ -26,11 +26,13 @@ sys.path.insert(0, str(REPO / "pythonWrapper"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
 from ndnsf import (  # noqa: E402
+    AckCompatibilityCounters,
     PeerNetworkMetric,
     ProviderCapabilityHint,
     ProviderNetworkMatrix,
     ServiceOperationState,
     ServiceOperationStatus,
+    decode_provider_capability_ack,
     parse_ack_metadata,
     to_plain,
 )
@@ -2096,6 +2098,7 @@ def collect_admission_lease_counters(logs_dir: Path) -> dict[str, object]:
 
 def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
     providers: dict[str, dict[str, object]] = {}
+    compatibility_counters = AckCompatibilityCounters()
     scanned_logs = 0
     event_count = 0
     for path in sorted(logs_dir.glob("*.log")):
@@ -2106,8 +2109,19 @@ def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
                 continue
             fields = parse_trace_fields(line)
             payload_text = fields.get("payload", "").strip('"')
-            payload_fields = parse_trace_fields(payload_text.replace(";", " "))
-            provider = fields.get("provider", "") or payload_fields.get("leaseProvider", "")
+            decoded = decode_provider_capability_ack(
+                payload_text,
+                counters=compatibility_counters,
+                provider_name=fields.get("provider", ""),
+                service_name=SERVICE,
+            )
+            hint = decoded.hint
+            payload_fields = dict(hint.service_payload)
+            if hint.runtime_hint is not None:
+                payload_fields["queue"] = hint.runtime_hint.queue_length
+                payload_fields["activeWorkers"] = hint.runtime_hint.active_work_count
+            payload_fields.setdefault("negativeAckReason", hint.reason_code)
+            provider = fields.get("provider", "") or hint.provider_name
             if not provider:
                 continue
             event_count += 1
@@ -2161,6 +2175,7 @@ def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
     return {
         "scannedLogs": scanned_logs,
         "eventCount": event_count,
+        "ackCompatibilityCounters": compatibility_counters.snapshot(),
         "providers": dict(sorted(providers.items())),
     }
 
@@ -2177,6 +2192,7 @@ def collect_core_envelope_summary(logs_dir: Path) -> dict[str, object]:
     scanned_logs = 0
     event_count = 0
     parse_errors: list[dict[str, str]] = []
+    compatibility_counters = AckCompatibilityCounters()
     for path in sorted(logs_dir.glob("*.log")):
         scanned_logs += 1
         for line_no, line in enumerate(read_log_text(path).splitlines(), start=1):
@@ -2188,7 +2204,12 @@ def collect_core_envelope_summary(logs_dir: Path) -> dict[str, object]:
             payload_fields = parse_ack_metadata(payload_text)
             if "providerCapabilityHint" in payload_fields:
                 try:
-                    hint = ProviderCapabilityHint.from_ack_fields(payload_fields)
+                    hint = decode_provider_capability_ack(
+                        payload_text,
+                        counters=compatibility_counters,
+                        provider_name=fields.get("provider", ""),
+                        service_name=SERVICE,
+                    ).hint
                     envelope_counts["providerCapabilityHint"] += 1
                     provider_readiness["ready" if hint.ready else "notReady"] += 1
                     if hint.reason_code:
@@ -2246,6 +2267,7 @@ def collect_core_envelope_summary(logs_dir: Path) -> dict[str, object]:
         "servicePayloadSchemas": dict(sorted(service_payload_schemas.items())),
         "operationStates": dict(sorted(operation_states.items())),
         "operations": dict(sorted(operation_names.items())),
+        "ackCompatibilityCounters": compatibility_counters.snapshot(),
         "latestProviders": dict(sorted(latest_providers.items())),
         "parseErrors": parse_errors,
     }

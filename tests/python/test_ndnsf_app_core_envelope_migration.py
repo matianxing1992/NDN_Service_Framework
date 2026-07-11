@@ -36,7 +36,7 @@ class _FakeRepoStore:
 
 
 class AppCoreEnvelopeMigrationTest(unittest.TestCase):
-    def test_repo_ack_carries_core_provider_capability_hint_and_legacy_fields(self) -> None:
+    def test_repo_ack_carries_only_core_provider_capability_hint(self) -> None:
         repo = RepoNodeApp.__new__(RepoNodeApp)
         repo.repo_node = "/repo/A"
         repo.service_name = "/NDNSF/DistributedRepo"
@@ -75,7 +75,8 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         hint = ProviderCapabilityHint.from_ack_fields(fields)
 
         self.assertTrue(decision.status)
-        self.assertEqual(fields["repoNode"], "/repo/A")
+        self.assertNotIn("repoNode", fields)
+        self.assertEqual(set(fields), {"providerCapabilityHint"})
         self.assertEqual(hint.provider_name, "/repo/A")
         self.assertEqual(hint.service_payload["freeBytes"], 1024)
         self.assertEqual(hint.service_payload_schema, "ndnsf-repo-capability-v1")

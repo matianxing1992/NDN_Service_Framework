@@ -24,12 +24,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ndnsf import (
+    AckCompatibilityCounters,
     NdnMetrics,
     ProviderNetworkMatrix,
     ServiceUser,
     TokenBucket,
     TraceCollector,
     build_network_matrix_from_ndnsd,
+    decode_provider_capability_ack,
 )
 from ndnsf_distributed_inference.retry import RetryPolicy, RetryReason, retry_call
 from ndnsf_distributed_inference.runtime_v1 import (
@@ -52,6 +54,7 @@ CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
 ROLE_PROVIDER_PREFERENCE_ENV = "NDNSF_COLLAB_ROLE_PROVIDER_PREFERENCE"
 ROLE_PROVIDER_PREFERENCE_LOCK = threading.Lock()
+ACK_COMPATIBILITY_COUNTERS = AckCompatibilityCounters()
 
 
 def encode_tensor_bundle() -> bytes:
@@ -483,7 +486,7 @@ def acquire_execution_leases(user: ServiceUser, args, service_plan: dict,
     return transaction, lease_set, leased_roles, preference
 
 
-def int_field(fields: dict[str, str], key: str, default: int = 0) -> int:
+def int_field(fields: dict[str, Any], key: str, default: int = 0) -> int:
     try:
         return int(float(fields.get(key, default)))
     except (TypeError, ValueError):
@@ -494,7 +497,20 @@ def ack_candidates_snapshot(candidates) -> list[dict[str, Any]]:
     snapshot = []
     for candidate in candidates:
         payload = bytes(candidate.payload)
-        fields = parse_semicolon_fields(payload)
+        decoded = decode_provider_capability_ack(
+            payload,
+            counters=ACK_COMPATIBILITY_COUNTERS,
+            provider_name=str(candidate.provider_name),
+            service_name=str(candidate.service_name),
+        )
+        hint = decoded.hint
+        fields = dict(hint.service_payload)
+        runtime_hint = hint.runtime_hint
+        if runtime_hint is not None:
+            fields["queue"] = runtime_hint.queue_length
+            fields["activeWorkers"] = runtime_hint.active_work_count
+        fields.setdefault("runtimeStatus", "ready" if hint.ready else "unavailable")
+        fields.setdefault("negativeAckReason", hint.reason_code)
         snapshot.append({
             "provider": candidate.provider_name,
             "service": candidate.service_name,
@@ -516,6 +532,8 @@ def ack_candidates_snapshot(candidates) -> list[dict[str, Any]]:
             "expectedReadyMs": fields.get("expectedReadyMs", ""),
             "leaseId": fields.get("leaseId", ""),
             "leaseExpiresAtMs": fields.get("leaseExpiresAtMs", ""),
+            "ackEnvelopeSource": decoded.source,
+            "ackCompatibilityCounters": decoded.counters,
             "telemetry": candidate.telemetry,
         })
     return snapshot

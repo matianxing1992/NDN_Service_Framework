@@ -21,6 +21,9 @@ from ndnsf import (
     ProviderCapabilityHint,
     ServiceProvider,
     ServiceResponse,
+    decode_provider_capability_ack,
+    encode_provider_capability_ack,
+    parse_ack_metadata,
     to_plain,
 )
 
@@ -34,7 +37,6 @@ from .plan import RoleDependencyView
 from .runtime_v1 import (
     ProviderProfileV1,
     RuntimeTelemetryV1,
-    encode_ack_metadata,
 )
 
 
@@ -553,30 +555,59 @@ class DistributedInferenceProvider:
         local_artifacts = dict(local_artifacts or {})
 
         def ack(_payload: bytes) -> AckDecision:
+            readiness_fields: dict[str, object] = {}
             if readiness_probe is not None:
                 readiness = readiness_probe()
                 if isinstance(readiness, AckDecision):
+                    if readiness.payload:
+                        parsed = parse_ack_metadata(bytes(readiness.payload))
+                        if "providerCapabilityHint" in parsed:
+                            decoded = decode_provider_capability_ack(bytes(readiness.payload))
+                            readiness_fields.update(decoded.hint.service_payload)
+                        else:
+                            readiness_fields.update(parsed)
                     if not readiness.status:
-                        return readiness
-                    readiness_payload = bytes(readiness.payload or b"")
+                        provider_name = getattr(self.provider, "provider", "")
+                        reason = readiness.message or NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE
+                        return AckDecision(
+                            status=False,
+                            message=reason,
+                            payload=encode_provider_capability_ack(ProviderCapabilityHint(
+                                provider_name=str(provider_name or "unknown-provider"),
+                                service_name=service,
+                                ready=False,
+                                reason_code=reason,
+                                message=reason,
+                                runtime_hint=GenericProviderRuntimeHint(
+                                    provider_name=str(provider_name or "unknown-provider")),
+                                service_payload_schema="ndnsf-di-capability-v1",
+                                service_payload=readiness_fields,
+                            )),
+                        )
                 else:
                     if not bool(readiness):
+                        provider_name = getattr(self.provider, "provider", "")
                         return AckDecision(
                             status=False,
                             message=NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
-                            payload=(
-                                b"status=installing;"
-                                b"negativeAckReason=MODEL_UNAVAILABLE;"
-                            ),
+                            payload=encode_provider_capability_ack(ProviderCapabilityHint(
+                                provider_name=str(provider_name or "unknown-provider"),
+                                service_name=service,
+                                ready=False,
+                                reason_code=NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
+                                message="model unavailable",
+                                runtime_hint=GenericProviderRuntimeHint(
+                                    provider_name=str(provider_name or "unknown-provider")),
+                                service_payload_schema="ndnsf-di-capability-v1",
+                                service_payload={"runtimeStatus": "installing"},
+                            )),
                         )
-                    readiness_payload = b""
-            else:
-                readiness_payload = b""
             fields: dict[str, object] = {
                 "roles": role_list,
                 "queue": queue_depth,
                 "hasModel": has_model,
                 "canProvision": can_provision,
+                **readiness_fields,
             }
             if len(role_list) == 1:
                 fields["role"] = role_list[0]
@@ -619,7 +650,7 @@ class DistributedInferenceProvider:
             if not (can_provision or has_model):
                 fields["negativeAckReason"] = NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE
                 fields["status"] = "model-unavailable"
-                fields.update(ProviderCapabilityHint(
+                capability_hint = ProviderCapabilityHint(
                     provider_name=runtime_hint.provider_name,
                     service_name=service,
                     ready=False,
@@ -628,11 +659,11 @@ class DistributedInferenceProvider:
                     runtime_hint=runtime_hint,
                     service_payload_schema="ndnsf-di-capability-v1",
                     service_payload={key: to_plain(value) for key, value in fields.items()},
-                ).to_ack_fields())
+                )
                 return AckDecision(
                     status=False,
                     message=NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
-                    payload=encode_ack_metadata(fields) + readiness_payload,
+                    payload=encode_provider_capability_ack(capability_hint),
                 )
             if admission_policy is not None and telemetry is not None:
                 accepted, reason, diagnostics = admission_policy.evaluate(telemetry)
@@ -640,7 +671,7 @@ class DistributedInferenceProvider:
                 if not accepted:
                     fields["negativeAckReason"] = reason
                     fields["status"] = "admission-rejected"
-                    fields.update(ProviderCapabilityHint(
+                    capability_hint = ProviderCapabilityHint(
                         provider_name=runtime_hint.provider_name,
                         service_name=service,
                         ready=False,
@@ -649,13 +680,13 @@ class DistributedInferenceProvider:
                         runtime_hint=runtime_hint,
                         service_payload_schema="ndnsf-di-capability-v1",
                         service_payload={key: to_plain(value) for key, value in fields.items()},
-                    ).to_ack_fields())
+                    )
                     return AckDecision(
                         status=False,
                         message=reason,
-                        payload=encode_ack_metadata(fields) + readiness_payload,
+                        payload=encode_provider_capability_ack(capability_hint),
                     )
-            fields.update(ProviderCapabilityHint(
+            capability_hint = ProviderCapabilityHint(
                 provider_name=runtime_hint.provider_name,
                 service_name=service,
                 ready=True,
@@ -663,11 +694,11 @@ class DistributedInferenceProvider:
                 runtime_hint=runtime_hint,
                 service_payload_schema="ndnsf-di-capability-v1",
                 service_payload={key: to_plain(value) for key, value in fields.items()},
-            ).to_ack_fields())
+            )
             return AckDecision(
                 status=True,
                 message="inference capability ready",
-                payload=encode_ack_metadata(fields) + readiness_payload,
+                payload=encode_provider_capability_ack(capability_hint),
             )
 
         class SimpleResponseContext:

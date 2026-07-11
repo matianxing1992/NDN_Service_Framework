@@ -66,6 +66,43 @@ ackPayloadText(const ndn_service_framework::ServiceProvider::AckDecision& decisi
   return std::string(decision.payload.begin(), decision.payload.end());
 }
 
+std::string
+typedCapabilityJson(const ndn_service_framework::ServiceProvider::AckDecision& decision)
+{
+  const auto payload = ackPayloadText(decision);
+  const std::string prefix = "providerCapabilityHint=json64:";
+  const auto begin = payload.find(prefix);
+  BOOST_REQUIRE(begin != std::string::npos);
+  const auto encodedBegin = begin + prefix.size();
+  const auto encodedEnd = payload.find(';', encodedBegin);
+  const auto encoded = payload.substr(
+    encodedBegin,
+    encodedEnd == std::string::npos ? std::string::npos : encodedEnd - encodedBegin);
+  auto valueOf = [] (char ch) -> int {
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '-' || ch == '+') return 62;
+    if (ch == '_' || ch == '/') return 63;
+    return -1;
+  };
+  std::string decoded;
+  int bits = 0;
+  int bitCount = 0;
+  for (const char ch : encoded) {
+    if (ch == '=') break;
+    const int value = valueOf(ch);
+    BOOST_REQUIRE(value >= 0);
+    bits = (bits << 6) | value;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      decoded.push_back(static_cast<char>((bits >> bitCount) & 0xff));
+    }
+  }
+  return decoded;
+}
+
 std::vector<uint8_t>
 floatPayload(std::initializer_list<float> values)
 {
@@ -2227,9 +2264,10 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK_EQUAL(readiness.statusText(), "installing");
   BOOST_CHECK_EQUAL(installingAck.message,
                     ndn_service_framework::negative_ack_reason::ModelUnavailable);
-  BOOST_CHECK(ackPayloadText(installingAck).find("runtimeStatus=installing") !=
+  const auto installingJson = typedCapabilityJson(installingAck);
+  BOOST_CHECK(installingJson.find("\"runtimeStatus\":\"installing\"") !=
               std::string::npos);
-  BOOST_CHECK(ackPayloadText(installingAck).find("hasModel=0") != std::string::npos);
+  BOOST_CHECK(installingJson.find("\"hasModel\":false") != std::string::npos);
 
   readiness.markFailed("artifact hash mismatch");
   auto failedAck = readiness.makeAckDecision("/Backbone,/Merge");
@@ -2237,9 +2275,10 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK_EQUAL(readiness.statusText(), "failed");
   BOOST_CHECK_EQUAL(failedAck.message,
                     ndn_service_framework::negative_ack_reason::InternalError);
-  BOOST_CHECK(ackPayloadText(failedAck).find("runtimeStatus=failed") !=
+  const auto failedJson = typedCapabilityJson(failedAck);
+  BOOST_CHECK(failedJson.find("\"runtimeStatus\":\"failed\"") !=
               std::string::npos);
-  BOOST_CHECK(ackPayloadText(failedAck).find("hasModel=0") != std::string::npos);
+  BOOST_CHECK(failedJson.find("\"hasModel\":false") != std::string::npos);
 
   readiness.markReady("native runner specs installed");
   auto readyAck = readiness.makeAckDecision("/Backbone,/Merge");
@@ -2248,11 +2287,12 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK_EQUAL(readiness.statusText(), "ready");
   BOOST_CHECK(readyAck.message.find("native runner specs installed") !=
               std::string::npos);
-  BOOST_CHECK(ackPayloadText(readyAck).find("runtimeStatus=ready") !=
+  const auto readyJson = typedCapabilityJson(readyAck);
+  BOOST_CHECK(readyJson.find("\"runtimeStatus\":\"ready\"") !=
               std::string::npos);
-  BOOST_CHECK(ackPayloadText(readyAck).find("hasModel=1") != std::string::npos);
-  BOOST_CHECK(ackPayloadText(readyAck).find("queue=0") != std::string::npos);
-  BOOST_CHECK(ackPayloadText(readyAck).find("workers=0") != std::string::npos);
+  BOOST_CHECK(readyJson.find("\"hasModel\":true") != std::string::npos);
+  BOOST_CHECK(readyJson.find("\"queue\":0") != std::string::npos);
+  BOOST_CHECK(readyJson.find("\"workers\":0") != std::string::npos);
   BOOST_CHECK(ackPayloadText(readyAck).find("providerCapabilityHint=json64:") !=
               std::string::npos);
 
@@ -2264,13 +2304,14 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   readiness.setCapacitySnapshotProvider([capacity] { return capacity; });
   auto capacityAck = readiness.makeAckDecision("/Backbone,/Merge");
   const auto capacityPayload = ackPayloadText(capacityAck);
+  const auto capacityJson = typedCapabilityJson(capacityAck);
   BOOST_CHECK(capacityAck.status);
-  BOOST_CHECK(capacityPayload.find("queue=6") != std::string::npos);
-  BOOST_CHECK(capacityPayload.find("readyQueue=2") != std::string::npos);
-  BOOST_CHECK(capacityPayload.find("waitingInputs=1") != std::string::npos);
-  BOOST_CHECK(capacityPayload.find("activeWorkers=3") != std::string::npos);
-  BOOST_CHECK(capacityPayload.find("workers=4") != std::string::npos);
-  BOOST_CHECK(capacityPayload.find("idleWorkers=1") != std::string::npos);
+  BOOST_CHECK(capacityJson.find("\"queue\":6") != std::string::npos);
+  BOOST_CHECK(capacityJson.find("\"readyQueue\":2") != std::string::npos);
+  BOOST_CHECK(capacityJson.find("\"waitingInputs\":1") != std::string::npos);
+  BOOST_CHECK(capacityJson.find("\"activeWorkers\":3") != std::string::npos);
+  BOOST_CHECK(capacityJson.find("\"workers\":4") != std::string::npos);
+  BOOST_CHECK(capacityJson.find("\"idleWorkers\":1") != std::string::npos);
   BOOST_CHECK(capacityPayload.find("providerCapabilityHint=json64:") != std::string::npos);
 }
 

@@ -34,6 +34,7 @@ from ndnsf.runtime_telemetry import (
     ProviderNetworkMatrix,
     _string_list,
     encode_ack_metadata,
+    encode_provider_capability_ack,
     now_ms,
     parse_ack_metadata,
     read_json,
@@ -2581,10 +2582,25 @@ def _cmd_provider(args: argparse.Namespace) -> int:
             max_context_tokens=profile.max_context_tokens,
         ),
     )
-    payload = encode_ack_metadata({
+    service_payload = {
         **profile.to_ack_fields(),
         **telemetry.to_ack_fields(),
-    })
+    }
+    payload = encode_provider_capability_ack(CoreProviderCapabilityHint(
+        provider_name=profile.provider,
+        service_name="/Inference/RuntimeV1",
+        ready=True,
+        runtime_hint=GenericProviderRuntimeHint(
+            provider_name=profile.provider,
+            active_work_count=telemetry.active_workers,
+            queue_length=telemetry.aggregate_queue,
+            estimated_queue_wait_ms=telemetry.queue_wait_ewma_ms,
+            free_memory_mb=telemetry.free_memory_mb,
+            capacity_hints=profile.to_ack_fields(),
+        ),
+        service_payload_schema="ndnsf-di-runtime-v1",
+        service_payload=service_payload,
+    ))
     if args.out:
         write_json(args.out, {
             "provider": profile.provider,

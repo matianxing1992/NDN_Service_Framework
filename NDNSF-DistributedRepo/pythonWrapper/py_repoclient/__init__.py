@@ -13,10 +13,9 @@ from typing import Callable, Iterable, Optional
 from ndnsf import _ndnsf
 from ndnsf import (
     AckCandidate,
-    ProviderCapabilityHint,
     ServiceDiscoveryRecord,
     ServiceUser,
-    parse_ack_metadata,
+    decode_provider_capability_ack,
 )
 
 from ._py_repoclient import (
@@ -97,22 +96,14 @@ def manifest_to_dict(manifest: RepoObjectManifest) -> dict:
 
 
 def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
-    fields: dict[str, object] = parse_ack_metadata(bytes(candidate.payload))
-    capability_payload = fields.get("providerCapabilityHint")
-    if isinstance(capability_payload, dict):
-        try:
-            hint = ProviderCapabilityHint.from_dict(capability_payload)
-            for key, value in hint.service_payload.items():
-                fields[key] = value
-            fields["repoNode"] = hint.provider_name
-        except Exception:
-            pass
-    if not fields:
-        for item in bytes(candidate.payload).decode(errors="replace").split(";"):
-            if "=" not in item:
-                continue
-            key, value = item.split("=", 1)
-            fields[key.strip()] = value.strip()
+    decoded = decode_provider_capability_ack(
+        bytes(candidate.payload),
+        provider_name=str(candidate.provider_name),
+        service_name=str(candidate.service_name),
+    )
+    hint = decoded.hint
+    fields: dict[str, object] = dict(hint.service_payload)
+    fields["repoNode"] = hint.provider_name
     repo_node = fields.get("repoNode") or candidate.provider_name
     try:
         capability = StorageCapability()
@@ -142,28 +133,18 @@ def capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:
 def discovery_record_from_ack(candidate: AckCandidate) -> ServiceDiscoveryRecord:
     """Parse a core service-discovery record from a Repo ACK.
 
-    Legacy-only ACKs are treated as ready so older repo providers keep working.
+    Legacy-only ACKs require the explicit ``mixed`` compatibility mode.
     Typed ``ProviderCapabilityHint`` ACKs can mark a provider unready or
     draining, which capacity selection should respect before applying
     storage-placement policy.
     """
 
-    fields: dict[str, object] = parse_ack_metadata(bytes(candidate.payload))
-    capability_payload = fields.get("providerCapabilityHint")
-    if isinstance(capability_payload, dict):
-        try:
-            hint = ProviderCapabilityHint.from_dict(capability_payload)
-            return ServiceDiscoveryRecord.from_provider_capability_hint(hint)
-        except Exception:
-            pass
-    return ServiceDiscoveryRecord(
+    hint = decode_provider_capability_ack(
+        bytes(candidate.payload),
         provider_name=str(candidate.provider_name),
         service_name=str(candidate.service_name),
-        ready=bool(candidate.status),
-        reason_code="" if candidate.status else "LEGACY_ACK_REJECTED",
-        message=str(candidate.message),
-        source="repo-legacy-ack",
-    )
+    ).hint
+    return ServiceDiscoveryRecord.from_provider_capability_hint(hint)
 
 
 def ready_capability_from_ack(candidate: AckCandidate) -> Optional[StorageCapability]:

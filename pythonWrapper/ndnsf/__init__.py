@@ -53,6 +53,9 @@ from .service_discovery import (
 )
 from .tracing import Span, TraceCollector
 from .runtime_telemetry import (
+    AckCompatibilityCounters,
+    AckCompatibilityMode,
+    AckMetadataDecodeError,
     AdmissionLeaseStatus,
     ExecutionLeaseBinding,
     ExecutionLeaseCounters,
@@ -63,6 +66,7 @@ from .runtime_telemetry import (
     DeploymentStatus,
     PlacementConstraint,
     ProviderCapabilityHint,
+    ProviderCapabilityAckDecodeResult,
     RECOMMENDED_REJECTION_REASONS,
     RejectionReason,
     RuntimeHint,
@@ -83,9 +87,11 @@ from .runtime_telemetry import (
     ProviderNetworkMatrix,
     RESIDENCY_READY_COST_MS,
     encode_ack_metadata,
+    encode_provider_capability_ack,
     is_recommended_rejection_reason,
     now_ms,
     parse_ack_metadata,
+    decode_provider_capability_ack,
     read_json,
     stable_digest,
     stable_json,
@@ -147,6 +153,9 @@ from .service import (
 )
 
 __all__ = [
+    "AckCompatibilityCounters",
+    "AckCompatibilityMode",
+    "AckMetadataDecodeError",
     "ApplicationConfig",
     "AckCandidate",
     "AckDecision",
@@ -195,6 +204,7 @@ __all__ = [
     "ProcessResult",
     "ProviderConfig",
     "ProviderCapabilityHint",
+    "ProviderCapabilityAckDecodeResult",
     "ProviderExecutionLeaseTable",
     "NON_READY_DRAIN_STATES",
     "RECOMMENDED_NEGATIVE_ACK_REASONS",
@@ -213,6 +223,7 @@ __all__ = [
     "ServiceUser",
     "StoredDataProducer",
     "decode_data_packet",
+    "decode_provider_capability_ack",
     "STREAM_CHUNK_MAGIC",
     "StreamAdaptiveFetcherState",
     "StreamChunk",
@@ -236,6 +247,7 @@ __all__ = [
     "decode_stream_chunk",
     "encode_coordination_request",
     "encode_coordination_response",
+    "encode_provider_capability_ack",
     "encode_large_data_reference_payload",
     "encode_stream_chunk",
     "fetch_segmented_object",

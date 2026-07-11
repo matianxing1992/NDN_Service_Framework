@@ -19,6 +19,7 @@ from ndnsf import (
     ServiceOperationState,
     ServiceOperationStatus,
     encode_ack_metadata,
+    encode_provider_capability_ack,
 )
 
 
@@ -47,6 +48,32 @@ def load_user_driver_module():
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def _typed_native_ack_payload(provider: str = "/P/backbone") -> bytes:
+    return encode_provider_capability_ack(ProviderCapabilityHint(
+        provider_name=provider,
+        service_name="/Inference/NativeTracer",
+        ready=True,
+        runtime_hint=GenericProviderRuntimeHint(
+            provider_name=provider,
+            queue_length=3,
+            active_work_count=1,
+        ),
+        service_payload_schema="ndnsf-di-capability-v1",
+        service_payload={
+            "roles": "/Backbone",
+            "queue": 3,
+            "readyQueue": 1,
+            "waitingInputs": 1,
+            "activeWorkers": 1,
+            "workers": 2,
+            "idleWorkers": 1,
+            "runtimeStatus": "ready",
+            "leaseId": "l0",
+            "leaseExpiresAtMs": "12345",
+        },
+    ))
 
 
 def load_plan_tracer_module():
@@ -296,18 +323,14 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             request_id = "/req/1"
             status = True
             message = "ready"
-            payload = (
-                b"roles=/Backbone;queue=2;readyQueue=1;waitingInputs=0;"
-                b"activeWorkers=1;workers=2;idleWorkers=1;runtimeStatus=ready;"
-                b"leaseId=l0;leaseExpiresAtMs=12345;"
-            )
+            payload = _typed_native_ack_payload()
             telemetry = {"rtt_ms": 3.0}
 
         snapshot = user_driver.ack_candidates_snapshot([Candidate()])
 
         self.assertEqual(snapshot[0]["provider"], "/P/backbone")
         self.assertEqual(snapshot[0]["roles"], "/Backbone")
-        self.assertEqual(snapshot[0]["queue"], 2)
+        self.assertEqual(snapshot[0]["queue"], 3)
         self.assertEqual(snapshot[0]["activeWorkers"], 1)
         self.assertEqual(snapshot[0]["leaseId"], "l0")
         self.assertEqual(snapshot[0]["telemetry"]["rtt_ms"], 3.0)
@@ -381,13 +404,12 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         harness = load_harness_module()
         with tempfile.TemporaryDirectory() as tmp:
             logs = Path(tmp)
+            ack_payload = _typed_native_ack_payload().decode("utf-8")
             (logs / "provider.log").write_text(
                 "NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION "
                 "provider=/P/backbone roles=/Backbone status=1 "
                 "message=\"native DI provider ready\" "
-                "payload=\"roles=/Backbone;queue=3;readyQueue=1;"
-                "waitingInputs=1;activeWorkers=1;workers=2;idleWorkers=1;"
-                "runtimeStatus=ready;leaseId=l0;leaseExpiresAtMs=12345;\"\n",
+                f"payload=\"{ack_payload}\"\n",
                 encoding="utf-8",
             )
             hints = harness.collect_provider_ack_runtime_hints(logs)

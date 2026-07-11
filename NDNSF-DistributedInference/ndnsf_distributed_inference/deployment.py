@@ -19,6 +19,7 @@ from ndnsf import (
     ServiceDiscoveryRecord,
     ServiceOperationState,
     ServiceOperationStatus,
+    decode_provider_capability_ack,
     parse_ack_metadata,
     to_plain,
 )
@@ -30,7 +31,13 @@ LEASE_CODEC_SCHEMA = "ndnsf-di-execution-lease-operation-v1"
 
 def deployment_roles_from_ack_candidate(candidate: AckCandidate) -> list[str]:
     """Return DI roles represented by a ready or provisioning ACK."""
-    fields = parse_ack_metadata(bytes(candidate.payload))
+    decoded = decode_provider_capability_ack(
+        bytes(candidate.payload),
+        provider_name=str(candidate.provider_name),
+        service_name=str(candidate.service_name),
+    )
+    hint = decoded.hint
+    fields = dict(hint.service_payload)
 
     def roles_from(value: Any) -> list[str]:
         if value is None:
@@ -42,17 +49,12 @@ def deployment_roles_from_ack_candidate(candidate: AckCandidate) -> list[str]:
         return [str(value).strip()] if str(value).strip() else []
 
     if candidate.status:
-        capability_payload = fields.get("providerCapabilityHint")
-        if isinstance(capability_payload, dict):
-            try:
-                hint = ProviderCapabilityHint.from_dict(capability_payload)
-                record = ServiceDiscoveryRecord.from_provider_capability_hint(hint)
-                if not record.ready_for_new_request():
-                    return []
-            except Exception:
-                return []
+        record = ServiceDiscoveryRecord.from_provider_capability_hint(hint)
+        if not record.ready_for_new_request():
+            return []
         return roles_from(fields.get("roles"))
-    reason = str(fields.get("negativeAckReason", candidate.message)).strip()
+    reason = str(hint.reason_code or fields.get(
+        "negativeAckReason", candidate.message)).strip()
     if reason.replace("_", "").replace("-", "").upper() != "MODELUNAVAILABLE":
         return []
     roles = roles_from(fields.get("provisioningRole"))

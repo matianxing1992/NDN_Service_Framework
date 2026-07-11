@@ -15,6 +15,8 @@
 #include <ndn-cxx/util/segmenter.hpp>
 
 #include <boost/asio/post.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
@@ -1199,9 +1201,121 @@ splitTextList(const std::string& text)
   return values;
 }
 
+std::string
+decodeBase64Url(const std::string& encoded)
+{
+  auto valueOf = [] (char ch) -> int {
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '-' || ch == '+') return 62;
+    if (ch == '_' || ch == '/') return 63;
+    return -1;
+  };
+  std::string decoded;
+  int bits = 0;
+  int bitCount = 0;
+  for (const char ch : encoded) {
+    if (ch == '=') {
+      break;
+    }
+    const int value = valueOf(ch);
+    if (value < 0) {
+      throw std::invalid_argument("malformed typed provider capability base64");
+    }
+    bits = (bits << 6) | value;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      decoded.push_back(static_cast<char>((bits >> bitCount) & 0xff));
+    }
+  }
+  return decoded;
+}
+
+std::optional<boost::property_tree::ptree>
+providerCapabilityFromAckPayload(const ndn::Buffer& payload)
+{
+  const auto text = bytesToString(payload);
+  const auto encoded = fieldFromText(text, "providerCapabilityHint");
+  if (encoded.empty()) {
+    return std::nullopt;
+  }
+  boost::property_tree::ptree root;
+  std::istringstream input(decodeBase64Url(encoded.rfind("json64:", 0) == 0 ?
+                                           encoded.substr(7) : encoded));
+  try {
+    boost::property_tree::read_json(input, root);
+  }
+  catch (const std::exception& exc) {
+    throw std::invalid_argument(
+      std::string("malformed typed provider capability JSON: ") + exc.what());
+  }
+  const auto schema = root.get<std::string>("schema", "ndnsf-provider-capability-v1");
+  if (schema != "ndnsf-provider-capability-v1" &&
+      schema != "ndnsf-provider-capability-v2") {
+    throw std::invalid_argument("unknown typed provider capability schema: " + schema);
+  }
+  if (!root.get_child_optional("servicePayload")) {
+    throw std::invalid_argument("typed provider capability has no servicePayload");
+  }
+  return root;
+}
+
+bool
+mixedAckReaderEnabled()
+{
+  const char* value = std::getenv("NDNSF_ACK_COMPATIBILITY_MODE");
+  return value != nullptr && std::string(value) == "mixed";
+}
+
+std::string
+typedServiceString(const boost::property_tree::ptree& root, const std::string& key)
+{
+  const auto path = "servicePayload." + key;
+  if (const auto scalar = root.get_optional<std::string>(path)) {
+    return *scalar;
+  }
+  if (const auto child = root.get_child_optional(path)) {
+    std::ostringstream values;
+    bool first = true;
+    for (const auto& item : *child) {
+      if (!first) values << ',';
+      values << item.second.get_value<std::string>();
+      first = false;
+    }
+    return values.str();
+  }
+  return "";
+}
+
+double
+typedServiceNumber(const boost::property_tree::ptree& root,
+                   const std::string& key,
+                   const std::string& runtimeKey = "")
+{
+  if (!runtimeKey.empty()) {
+    if (const auto value = root.get_optional<double>("runtimeHint." + runtimeKey)) {
+      return *value;
+    }
+  }
+  return root.get<double>("servicePayload." + key, 0.0);
+}
+
 std::vector<std::string>
 rolesFromAckPayload(const ndn::Buffer& payload)
 {
+  if (const auto capability = providerCapabilityFromAckPayload(payload)) {
+    auto roles = splitTextList(typedServiceString(*capability, "roles"));
+    if (!roles.empty()) {
+      return roles;
+    }
+    auto role = typedServiceString(*capability, "role");
+    return role.empty() ? std::vector<std::string>{} : std::vector<std::string>{role};
+  }
+  if (!mixedAckReaderEnabled()) {
+    return {};
+  }
   const auto text = bytesToString(payload);
   auto roles = splitTextList(fieldFromText(text, "roles"));
   if (!roles.empty()) {
@@ -1256,6 +1370,19 @@ capacityPressure(const CapacityAckScore& score)
 CapacityAckScore
 capacityScoreFromAckPayload(const ndn::Buffer& payload)
 {
+  if (const auto capability = providerCapabilityFromAckPayload(payload)) {
+    return CapacityAckScore{
+      typedServiceNumber(*capability, "queue", "queueLength"),
+      typedServiceNumber(*capability, "readyQueue"),
+      typedServiceNumber(*capability, "waitingInputs"),
+      typedServiceNumber(*capability, "activeWorkers", "activeWorkCount"),
+      typedServiceNumber(*capability, "idleWorkers"),
+      typedServiceNumber(*capability, "workers"),
+    };
+  }
+  if (!mixedAckReaderEnabled()) {
+    return {};
+  }
   const auto text = bytesToString(payload);
   return CapacityAckScore{
     numericFieldFromText(text, "queue"),

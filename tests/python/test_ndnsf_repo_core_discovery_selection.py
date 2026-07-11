@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from ndnsf import (
     AckCandidate,
@@ -195,15 +196,16 @@ class RepoCoreDiscoverySelectionTest(unittest.TestCase):
 
         self.assertEqual(selected, ["/repo/ready"])
 
-    def test_legacy_ack_remains_ready_fallback(self) -> None:
+    def test_legacy_ack_requires_explicit_mixed_reader(self) -> None:
         payload = (
             b"repoNode=/repo/legacy;freeBytes=2048;usedBytes=0;"
             b"availability=1;storageClasses=model;"
         )
         candidate = _candidate("/repo/legacy-provider", payload)
 
-        record = discovery_record_from_ack(candidate)
-        capability = ready_capability_from_ack(candidate)
+        with patch.dict("os.environ", {"NDNSF_ACK_COMPATIBILITY_MODE": "mixed"}):
+            record = discovery_record_from_ack(candidate)
+            capability = ready_capability_from_ack(candidate)
 
         self.assertTrue(record.ready_for_new_request())
         self.assertIsNotNone(capability)

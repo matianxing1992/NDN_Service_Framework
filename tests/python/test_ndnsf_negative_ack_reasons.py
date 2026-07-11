@@ -14,6 +14,7 @@ from ndnsf import (
     NEGATIVE_ACK_REASON_PROVIDER_BUSY,
     NEGATIVE_ACK_REASON_QUEUE_FULL,
     RECOMMENDED_NEGATIVE_ACK_REASONS,
+    decode_provider_capability_ack,
 )
 from ndnsf_distributed_inference.artifact_deployment import ArtifactProvisioningState
 from ndnsf_distributed_inference.provider import (
@@ -74,10 +75,11 @@ class NegativeAckReasonContractTest(unittest.TestCase):
         )
         self.assertIsNotNone(fake.ack)
         decision = fake.ack(b"request")
+        decoded = decode_provider_capability_ack(decision.payload)
         self.assertFalse(decision.status)
         self.assertEqual(decision.message, NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE)
-        self.assertIn(b"negativeAckReason=MODEL_UNAVAILABLE", decision.payload)
-        self.assertIn(b"status=model-unavailable", decision.payload)
+        self.assertEqual(decoded.hint.reason_code, NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE)
+        self.assertEqual(decoded.hint.service_payload["status"], "model-unavailable")
 
     def test_di_capability_admission_policy_is_opt_in(self) -> None:
         fake = _FakeProvider()
@@ -96,8 +98,9 @@ class NegativeAckReasonContractTest(unittest.TestCase):
             ),
         )
         decision = fake.ack(b"request")
+        decoded = decode_provider_capability_ack(decision.payload)
         self.assertTrue(decision.status)
-        self.assertIn(b"queue=103", decision.payload)
+        self.assertEqual(decoded.hint.runtime_hint.queue_length, 103)
 
     def test_di_capability_admission_policy_rejects_queue_full(self) -> None:
         fake = _FakeProvider()
@@ -118,10 +121,11 @@ class NegativeAckReasonContractTest(unittest.TestCase):
             admission_policy=ProviderAdmissionPolicy(max_queue=5),
         )
         decision = fake.ack(b"request")
+        decoded = decode_provider_capability_ack(decision.payload)
         self.assertFalse(decision.status)
         self.assertEqual(decision.message, NEGATIVE_ACK_REASON_QUEUE_FULL)
-        self.assertIn(b"negativeAckReason=QUEUE_FULL", decision.payload)
-        self.assertIn(b"admissionLimit=queue", decision.payload)
+        self.assertEqual(decoded.hint.reason_code, NEGATIVE_ACK_REASON_QUEUE_FULL)
+        self.assertEqual(decoded.hint.service_payload["admissionLimit"], "queue")
 
     def test_di_capability_admission_policy_rejects_gpu_busy(self) -> None:
         fake = _FakeProvider()
@@ -141,10 +145,12 @@ class NegativeAckReasonContractTest(unittest.TestCase):
             admission_policy=ProviderAdmissionPolicy(min_free_memory_mb=1024),
         )
         decision = fake.ack(b"request")
+        decoded = decode_provider_capability_ack(decision.payload)
         self.assertFalse(decision.status)
         self.assertEqual(decision.message, NEGATIVE_ACK_REASON_GPU_BUSY)
-        self.assertIn(b"negativeAckReason=GPU_BUSY", decision.payload)
-        self.assertIn(b"admissionLimit=freeMemoryMb", decision.payload)
+        self.assertEqual(decoded.hint.reason_code, NEGATIVE_ACK_REASON_GPU_BUSY)
+        self.assertEqual(
+            decoded.hint.service_payload["admissionLimit"], "freeMemoryMb")
 
     def test_native_tracer_summary_counts_negative_ack_reasons(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

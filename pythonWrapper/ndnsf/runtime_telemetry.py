@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, asdict, is_dataclass, replace as datac
 from enum import Enum
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -192,6 +193,152 @@ def parse_ack_metadata(payload: bytes | str) -> dict[str, Any]:
         else:
             fields[key] = value
     return fields
+
+
+PROVIDER_CAPABILITY_SCHEMA_V1 = "ndnsf-provider-capability-v1"
+PROVIDER_CAPABILITY_SCHEMA_V2 = "ndnsf-provider-capability-v2"
+KNOWN_PROVIDER_CAPABILITY_SCHEMAS = (
+    PROVIDER_CAPABILITY_SCHEMA_V1,
+    PROVIDER_CAPABILITY_SCHEMA_V2,
+)
+
+
+class AckCompatibilityMode(str, Enum):
+    TYPED_ONLY = "typed-only"
+    MIXED = "mixed"
+
+
+class AckMetadataDecodeError(ValueError):
+    """Typed ACK metadata is absent, malformed, or has an unknown schema."""
+
+
+class AckCompatibilityCounters:
+    """Thread-safe process-local counters for the bounded legacy reader epoch."""
+
+    def __init__(self) -> None:
+        self._lock = _threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._values = {
+                "typed": 0,
+                "legacy": 0,
+                "matchingDual": 0,
+                "conflictingDual": 0,
+                "malformedTyped": 0,
+                "unknownTypedVersion": 0,
+            }
+            self._field_conflicts: dict[str, int] = {}
+
+    def increment(self, key: str, *, fields: Iterable[str] = ()) -> None:
+        with self._lock:
+            self._values[key] = self._values.get(key, 0) + 1
+            for field_name in fields:
+                self._field_conflicts[field_name] = (
+                    self._field_conflicts.get(field_name, 0) + 1)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                **self._values,
+                "fieldConflicts": dict(sorted(self._field_conflicts.items())),
+            }
+
+
+@dataclass(frozen=True)
+class ProviderCapabilityAckDecodeResult:
+    hint: "ProviderCapabilityHint"
+    source: str
+    fields: dict[str, Any] = field(default_factory=dict)
+    conflicting_fields: tuple[str, ...] = ()
+    counters: dict[str, Any] = field(default_factory=dict)
+
+
+def _compatibility_mode(value: AckCompatibilityMode | str | None) -> AckCompatibilityMode:
+    if value is None:
+        value = os.environ.get("NDNSF_ACK_COMPATIBILITY_MODE", "typed-only")
+    if isinstance(value, AckCompatibilityMode):
+        return value
+    try:
+        return AckCompatibilityMode(str(value).strip().lower())
+    except ValueError as exc:
+        raise ValueError(f"unsupported ACK compatibility mode: {value}") from exc
+
+
+def _legacy_bool(value: Any) -> bool:
+    return str(value).strip().lower() not in {
+        "", "0", "false", "no", "off", "rejected", "unavailable",
+        "model-unavailable", "admission-rejected",
+    }
+
+
+def _legacy_provider_capability(fields: dict[str, Any], *,
+                                provider_name: str = "",
+                                service_name: str = "") -> "ProviderCapabilityHint":
+    provider = str(
+        fields.get("providerName", fields.get("provider", fields.get("repoNode", provider_name))))
+    service = str(fields.get("serviceName", fields.get("service", service_name)))
+    if not provider or not service:
+        raise AckMetadataDecodeError(
+            "legacy ACK requires provider and service identity in fields or decoder context")
+    queue_length = int(float(fields.get("queueLength", fields.get(
+        "queueDepth", fields.get("queue", 0))) or 0))
+    active_work = int(float(fields.get("activeWorkCount", fields.get(
+        "activeWorkers", fields.get("inflight", 0))) or 0))
+    ready_value = fields.get("ready", fields.get("status", "ready"))
+    reason = str(fields.get("reasonCode", fields.get("negativeAckReason", "")))
+    runtime_status = str(fields.get("runtimeStatus", fields.get("status", "")))
+    domain_fields = dict(fields)
+    return ProviderCapabilityHint(
+        schema=PROVIDER_CAPABILITY_SCHEMA_V1,
+        provider_name=provider,
+        service_name=service,
+        ready=_legacy_bool(ready_value) and not bool(reason),
+        reason_code=reason,
+        message=str(fields.get("message", "legacy ACK metadata")),
+        runtime_hint=GenericProviderRuntimeHint(
+            provider_name=provider,
+            active_work_count=max(0, active_work),
+            queue_length=max(0, queue_length),
+            capacity_hints=domain_fields,
+        ),
+        service_payload_schema="ndnsf-legacy-ack-fields-v1",
+        service_payload={**domain_fields, "runtimeStatus": runtime_status},
+    )
+
+
+def _dual_conflicts(hint: "ProviderCapabilityHint",
+                    fields: dict[str, Any]) -> tuple[str, ...]:
+    comparisons: list[tuple[str, tuple[str, ...], Any]] = [
+        ("providerName", ("providerName", "provider", "repoNode"), hint.provider_name),
+        ("serviceName", ("serviceName", "service"), hint.service_name),
+        ("reasonCode", ("reasonCode", "negativeAckReason"), hint.reason_code),
+    ]
+    if hint.runtime_hint is not None:
+        comparisons.extend([
+            ("queueLength", ("queueLength", "queueDepth", "queue"),
+             hint.runtime_hint.queue_length),
+            ("activeWorkCount", ("activeWorkCount", "activeWorkers", "inflight"),
+             hint.runtime_hint.active_work_count),
+        ])
+    conflicts: list[str] = []
+    for canonical, aliases, typed_value in comparisons:
+        for alias in aliases:
+            if alias not in fields:
+                continue
+            legacy_value = fields[alias]
+            if isinstance(typed_value, (int, float)):
+                try:
+                    matches = float(legacy_value) == float(typed_value)
+                except (TypeError, ValueError):
+                    matches = False
+            else:
+                matches = str(legacy_value) == str(typed_value)
+            if not matches:
+                conflicts.append(canonical)
+            break
+    return tuple(sorted(set(conflicts)))
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +631,7 @@ class ProviderCapabilityHint:
     service_payload: dict[str, Any] = field(default_factory=dict)
     timestamp_ms: int = field(default_factory=now_ms)
     expires_at_ms: int = 0
-    schema: str = "ndnsf-provider-capability-v1"
+    schema: str = PROVIDER_CAPABILITY_SCHEMA_V2
 
     def __post_init__(self) -> None:
         if not self.provider_name:
@@ -544,6 +691,79 @@ class ProviderCapabilityHint:
         if not isinstance(payload, dict):
             raise ValueError("providerCapabilityHint field must be a JSON object")
         return cls.from_dict(payload)
+
+
+def encode_provider_capability_ack(hint: ProviderCapabilityHint) -> bytes:
+    if hint.schema not in KNOWN_PROVIDER_CAPABILITY_SCHEMAS:
+        raise AckMetadataDecodeError(
+            f"unknown provider capability schema: {hint.schema}")
+    return encode_ack_metadata(hint.to_ack_fields())
+
+
+def decode_provider_capability_ack(
+        payload: bytes | str,
+        *,
+        mode: AckCompatibilityMode | str | None = None,
+        counters: AckCompatibilityCounters | None = None,
+        provider_name: str = "",
+        service_name: str = "") -> ProviderCapabilityAckDecodeResult:
+    compatibility = _compatibility_mode(mode)
+    metrics = counters if counters is not None else AckCompatibilityCounters()
+    fields = parse_ack_metadata(payload)
+    typed_present = "providerCapabilityHint" in fields or "provider_capability_hint" in fields
+    if typed_present:
+        typed_payload = fields.get(
+            "providerCapabilityHint", fields.get("provider_capability_hint"))
+        if not isinstance(typed_payload, dict):
+            metrics.increment("malformedTyped")
+            raise AckMetadataDecodeError("malformed typed provider capability envelope")
+        schema = str(typed_payload.get("schema", PROVIDER_CAPABILITY_SCHEMA_V1))
+        if schema not in KNOWN_PROVIDER_CAPABILITY_SCHEMAS:
+            metrics.increment("unknownTypedVersion")
+            raise AckMetadataDecodeError(
+                f"unknown typed provider capability schema: {schema}")
+        try:
+            hint = ProviderCapabilityHint.from_dict(typed_payload)
+        except Exception as exc:
+            metrics.increment("malformedTyped")
+            raise AckMetadataDecodeError(
+                f"malformed typed provider capability envelope: {exc}") from exc
+        metrics.increment("typed")
+        legacy_keys = {
+            "providerName", "provider", "repoNode", "serviceName", "service",
+            "reasonCode", "negativeAckReason", "queueLength", "queueDepth",
+            "queue", "activeWorkCount", "activeWorkers", "inflight",
+        }
+        has_dual = any(key in fields for key in legacy_keys)
+        conflicts = _dual_conflicts(hint, fields) if has_dual else ()
+        if has_dual:
+            if conflicts:
+                metrics.increment("conflictingDual", fields=conflicts)
+            else:
+                metrics.increment("matchingDual")
+        return ProviderCapabilityAckDecodeResult(
+            hint=hint,
+            source="typed",
+            fields=fields,
+            conflicting_fields=conflicts,
+            counters=metrics.snapshot(),
+        )
+    if compatibility != AckCompatibilityMode.MIXED:
+        raise AckMetadataDecodeError("typed provider capability envelope is required")
+    try:
+        hint = _legacy_provider_capability(
+            fields, provider_name=provider_name, service_name=service_name)
+    except AckMetadataDecodeError:
+        raise
+    except Exception as exc:
+        raise AckMetadataDecodeError(f"malformed legacy ACK metadata: {exc}") from exc
+    metrics.increment("legacy")
+    return ProviderCapabilityAckDecodeResult(
+        hint=hint,
+        source="legacy",
+        fields=fields,
+        counters=metrics.snapshot(),
+    )
 
 
 @dataclass(frozen=True)
