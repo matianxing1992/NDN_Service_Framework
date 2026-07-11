@@ -144,6 +144,39 @@ BOOST_AUTO_TEST_CASE(ConsumerSkipToUnblocksLaterChunks)
   BOOST_CHECK_EQUAL(emitted[1].payload[0], '3');
 }
 
+BOOST_AUTO_TEST_CASE(ConsumerPendingStateAndOverflowAreObservable)
+{
+  StreamConsumerReorderBuffer buffer("s", 1, 0, 2);
+  StreamChunk two;
+  two.streamId = "s";
+  two.sessionEpoch = 1;
+  two.seq = 2;
+  two.payload = {'2', '2'};
+  StreamChunk three = two;
+  three.seq = 3;
+  three.payload = {'3', '3', '3'};
+  StreamChunk four = two;
+  four.seq = 4;
+  four.payload = {'4'};
+
+  buffer.push(two);
+  buffer.push(three);
+  BOOST_CHECK_EQUAL(buffer.pendingCount(), 2);
+  BOOST_CHECK_EQUAL(buffer.pendingBytes(), 5);
+
+  buffer.push(four);
+  BOOST_CHECK_EQUAL(buffer.pendingCount(), 2);
+  BOOST_CHECK_EQUAL(buffer.pendingBytes(), 4);
+  BOOST_CHECK_EQUAL(buffer.metrics().overflows, 1);
+  BOOST_REQUIRE_EQUAL(buffer.pendingSequences().size(), 2);
+  BOOST_CHECK_EQUAL(buffer.pendingSequences()[0], 3);
+  buffer.skipTo(3);
+  const auto drained = buffer.drainReady();
+  BOOST_REQUIRE_EQUAL(drained.size(), 2);
+  BOOST_CHECK_EQUAL(drained[0].seq, 3);
+  BOOST_CHECK_EQUAL(drained[1].seq, 4);
+}
+
 BOOST_AUTO_TEST_CASE(ConsumerReorderAcceptsFecRecoveredChunkWithoutGap)
 {
   StreamConsumerReorderBuffer buffer("video", 11, 0);

@@ -317,8 +317,6 @@ class TkGuiHelperTests(unittest.TestCase):
             "10",
             "--experiment-open-loop-driver-mode",
             "process-pool",
-            "--experiment-dependency-envelope-mode",
-            "streamchunk",
             "--experiment-dry-run",
         ])
         command, out_dir = build_qwen_minindn_command(profile, args)
@@ -343,8 +341,7 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertIn("--open-loop-duration-s", command)
         self.assertIn("--open-loop-driver-mode", command)
         self.assertIn("process-pool", command)
-        self.assertIn("--dependency-envelope-mode", command)
-        self.assertIn("streamchunk", command)
+        self.assertNotIn("--dependency-envelope-mode", command)
         self.assertIn("10.0", command)
         self.assertIn("--dry-run", command)
 

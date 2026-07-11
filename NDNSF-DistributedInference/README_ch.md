@@ -351,10 +351,9 @@ segmented large data、pending Interests、encryption、permissions 和 wire beh
 Dependency transfer 边界：DI 的 model artifacts、runtime bundles、initial inputs
 和 activation tensor bundles 都是 exact-name objects。正常路径是 NDNSF
 large-data reference、repo materialization、`publishLargeNamed(...)`、
-`fetchLarge(...)` 和 SegmentFetcher-style retrieval。可选的
-`--dependency-envelope-mode streamchunk` 只是把一个完整 tensor bundle 包在
-StreamChunk metadata 里，然后仍然通过 large-data path fetch；它是 interoperability/debugging
-实验，不是 exact-name object retrieval 的替代机制。
+`fetchLarge(...)` 和 SegmentFetcher-style retrieval。
+Tensor bundle 是有限且预先规划的对象，因此 runtime 直接在该 large-data
+path 上发布它的字节，不再套用用于连续发布的 stream protocol。它不是 exact-name object retrieval 的替代机制。
 
 这些 native components 不改变 NDNSF Request/ACK/Selection/Response 语义，也不会
 把 AI-specific behavior 加进 NDNSF Core。

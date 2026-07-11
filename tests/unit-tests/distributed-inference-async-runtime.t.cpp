@@ -66,26 +66,6 @@ ackPayloadText(const ndn_service_framework::ServiceProvider::AckDecision& decisi
   return std::string(decision.payload.begin(), decision.payload.end());
 }
 
-DependencyEdge
-streamChunkDependencyEdge()
-{
-  DependencyEdge edge;
-  edge.scope = "stage0-to-stage1";
-  edge.producerRole = "/Backbone";
-  edge.consumerRole = "/Head";
-  edge.plannedDataName = "/NDNSF/DI/session-1/stage0-to-stage1";
-  edge.expectedSegments = 4;
-  edge.expectedBytes = 10;
-  edge.tensors = {"hidden-state"};
-  return edge;
-}
-
-ndn::Buffer
-blockToBuffer(const ndn::Block& block)
-{
-  return ndn::Buffer(block.data(), block.size());
-}
-
 std::vector<uint8_t>
 floatPayload(std::initializer_list<float> values)
 {
@@ -137,86 +117,6 @@ public:
   std::vector<std::string> prefetchedScopes;
   std::map<std::string, TensorBundle> publishedByScope;
 };
-
-BOOST_AUTO_TEST_CASE(NdnsfCollaborationDependencyIoWrapsTensorBundleAsStreamChunk)
-{
-  const auto edge = streamChunkDependencyEdge();
-  TensorBundle value;
-  value.name = "hidden-state";
-  value.payload = {'a', 'c', 't', 'i', 'v', 'a', 't', 'i', 'o', 'n'};
-  value.expectedSegments = edge.expectedSegments;
-  value.expectedBytes = edge.expectedBytes;
-
-  const auto wire = NdnsfCollaborationDependencyIo::encodeTensorBundleAsStreamChunk(
-    "session-1",
-    edge,
-    value);
-  ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
-  ndn_service_framework::StreamChunk chunk;
-  BOOST_REQUIRE(chunk.wireDecode(block));
-  BOOST_CHECK_EQUAL(chunk.streamId, edge.plannedDataName);
-  BOOST_CHECK_EQUAL(chunk.seq, 0);
-  BOOST_CHECK_EQUAL(chunk.segmentIndex, 0);
-  BOOST_CHECK_EQUAL(chunk.segmentCount, 1);
-  BOOST_CHECK_EQUAL(chunk.contentType,
-                    NdnsfCollaborationDependencyIo::StreamTensorBundleContentType);
-  BOOST_CHECK_EQUAL(chunk.metadata.at("sessionId"), "session-1");
-  BOOST_CHECK_EQUAL(chunk.metadata.at("scope"), edge.scope);
-  BOOST_CHECK_EQUAL(chunk.metadata.at("producerRole"), edge.producerRole);
-  BOOST_CHECK_EQUAL(chunk.metadata.at("consumerRole"), edge.consumerRole);
-  BOOST_CHECK_EQUAL(chunk.metadata.at("plannedDataName"), edge.plannedDataName);
-  BOOST_CHECK_EQUAL(chunk.metadata.at("bundleName"), "hidden-state");
-  BOOST_CHECK_EQUAL(chunk.metadata.at("tensors"), "hidden-state");
-  BOOST_CHECK_EQUAL(std::string(chunk.payload.begin(), chunk.payload.end()),
-                    "activation");
-
-  const auto decoded = NdnsfCollaborationDependencyIo::decodeTensorBundleFromStreamChunk(
-    "session-1",
-    edge,
-    wire);
-  BOOST_CHECK_EQUAL(decoded.name, "hidden-state");
-  BOOST_CHECK_EQUAL(payloadText(decoded), "activation");
-  BOOST_CHECK_EQUAL(decoded.expectedSegments, edge.expectedSegments);
-  BOOST_CHECK_EQUAL(decoded.expectedBytes, edge.expectedBytes);
-}
-
-BOOST_AUTO_TEST_CASE(NdnsfCollaborationDependencyIoRejectsInvalidStreamChunkPayload)
-{
-  const auto edge = streamChunkDependencyEdge();
-  ndn_service_framework::StreamChunk wrongContentType;
-  wrongContentType.streamId = edge.plannedDataName;
-  wrongContentType.sessionEpoch = 1;
-  wrongContentType.seq = 0;
-  wrongContentType.contentType = "application/octet-stream";
-  wrongContentType.segmentIndex = 0;
-  wrongContentType.segmentCount = 1;
-  wrongContentType.payload = {'x'};
-  wrongContentType.metadata["sessionId"] = "session-1";
-  wrongContentType.metadata["scope"] = edge.scope;
-  BOOST_CHECK_THROW(
-    NdnsfCollaborationDependencyIo::decodeTensorBundleFromStreamChunk(
-      "session-1",
-      edge,
-      blockToBuffer(wrongContentType.wireEncode())),
-    std::runtime_error);
-
-  ndn_service_framework::StreamChunk partialBundle;
-  partialBundle.streamId = edge.plannedDataName;
-  partialBundle.sessionEpoch = 1;
-  partialBundle.seq = 0;
-  partialBundle.contentType = NdnsfCollaborationDependencyIo::StreamTensorBundleContentType;
-  partialBundle.segmentIndex = 1;
-  partialBundle.segmentCount = 2;
-  partialBundle.payload = {'x'};
-  partialBundle.metadata["sessionId"] = "session-1";
-  partialBundle.metadata["scope"] = edge.scope;
-  BOOST_CHECK_THROW(
-    NdnsfCollaborationDependencyIo::decodeTensorBundleFromStreamChunk(
-      "session-1",
-      edge,
-      blockToBuffer(partialBundle.wireEncode())),
-    std::runtime_error);
-}
 
 class BlockingDependencyIo : public DependencyIo
 {

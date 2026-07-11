@@ -390,11 +390,10 @@ Interests, encryption, permissions, and wire behavior.
 Dependency transfer boundary: DI model artifacts, runtime bundles, initial
 inputs, and activation tensor bundles are exact-name objects. The normal path
 is NDNSF large-data reference, repo materialization, `publishLargeNamed(...)`,
-`fetchLarge(...)`, and SegmentFetcher-style retrieval. The optional
-`--dependency-envelope-mode streamchunk` path only wraps one complete tensor
-bundle in StreamChunk metadata while still fetching it through the large-data
-path; it is an interoperability/debugging experiment, not a replacement for
-exact-name object retrieval.
+`fetchLarge(...)`, and SegmentFetcher-style retrieval. Tensor bundles are
+finite planned objects, so the runtime publishes their bytes directly on this
+path. It does not wrap them in the continuous-publication stream protocol;
+that protocol is not a replacement for exact-name object retrieval.
 
 These native components do not change NDNSF Request/ACK/Selection/Response
 semantics and do not add AI-specific behavior to NDNSF Core.
@@ -2753,7 +2752,7 @@ active-put segment delivery, and direct Selection prefetch by default in the DI
 MiniNDN native-provider experiment. `NDNSF_COLLAB_LARGE_ACTIVE_PUT=1` keeps
 generated activation segments in IMS and also immediately pushes them to NFD so
 pre-issued exact segment Interests can be satisfied without waiting for an
-additional application-level notification path. `NDNSF_SELECTION_DIRECT_PREFETCH=1`
+additional application-level notification path. `NDNSF_SELECTION_TARGETED_PREFETCH=1`
 lets each provider pre-express an Interest for the predictable SelectionMessage
 name after it publishes an ACK; the user still publishes the same Selection via
 SVS, but also puts a signed Data packet under the same selection name. Providers
@@ -2762,7 +2761,7 @@ decrypt path, while the later SVS duplicate is suppressed by the normal
 duplicate guard. Core keeps this feature behind the environment variable; the
 DI native-provider runner enables it for this measured experiment. Disable
 these behaviors only for A/B diagnosis with
-`NDNSF_COLLAB_LARGE_ACTIVE_PUT=0` or `NDNSF_SELECTION_DIRECT_PREFETCH=0`.
+`NDNSF_COLLAB_LARGE_ACTIVE_PUT=0` or `NDNSF_SELECTION_TARGETED_PREFETCH=0`.
 
 This minimal recipe intentionally disables detailed dependency/control/crypto
 timing so the latency number is not dominated by tracing. Treat this 60-second

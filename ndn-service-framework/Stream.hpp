@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -150,6 +151,7 @@ struct StreamMetrics
   uint64_t gaps = 0;
   uint64_t timeouts = 0;
   uint64_t nacks = 0;
+  uint64_t overflows = 0;
   uint64_t bytesProduced = 0;
   uint64_t bytesReceived = 0;
 };
@@ -164,13 +166,14 @@ public:
   std::optional<ndn::Block> getEncoded(uint64_t seq) const;
   std::vector<uint64_t> sequences() const;
   size_t size() const;
-  const StreamMetrics& metrics() const;
+  StreamMetrics metrics() const;
 
 private:
   size_t m_maxChunks;
   std::map<uint64_t, StreamChunk> m_chunks;
   std::deque<uint64_t> m_order;
   StreamMetrics m_metrics;
+  mutable std::mutex m_mutex;
 };
 
 class StreamConsumerReorderBuffer
@@ -185,13 +188,18 @@ public:
   void reset(std::string streamId, uint64_t sessionEpoch, uint64_t nextSeq = 0);
   std::vector<StreamChunk> push(const StreamChunk& chunk);
   std::vector<uint64_t> missingSequences(size_t limit = 32) const;
+  std::vector<uint64_t> pendingSequences(size_t limit = 0) const;
+  std::vector<StreamChunk> drainReady();
   void skipTo(uint64_t seq);
   uint64_t nextSeq() const;
-  const StreamMetrics& metrics() const;
+  size_t pendingCount() const;
+  size_t pendingBytes() const;
+  StreamMetrics metrics() const;
 
 private:
   void markCompleted(uint64_t seq);
   void dropOldestPending();
+  std::vector<StreamChunk> drainReadyUnlocked();
 
 private:
   std::string m_streamId;
@@ -203,6 +211,7 @@ private:
   std::set<uint64_t> m_completed;
   std::deque<uint64_t> m_completedOrder;
   StreamMetrics m_metrics;
+  mutable std::mutex m_mutex;
 };
 
 struct StreamFetchDecision

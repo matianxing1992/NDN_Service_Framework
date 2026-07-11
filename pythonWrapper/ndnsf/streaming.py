@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import json
 import struct
-import threading
 import time
-from collections import deque
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Deque, Iterable, Optional
+from typing import Any, Iterable, Optional
+
+from ._ndnsf import (
+    NativeStreamAdaptiveFetcherState,
+    NativeStreamChunk,
+    NativeStreamConsumerReorderBuffer,
+    NativeStreamFecInfo,
+    NativeStreamMetrics,
+    NativeStreamProducerBuffer,
+)
 
 
 STREAM_CHUNK_MAGIC = b"NDS1"
@@ -257,6 +264,7 @@ class StreamMetrics:
     gaps: int = 0
     timeouts: int = 0
     nacks: int = 0
+    overflows: int = 0
     bytes_produced: int = 0
     bytes_received: int = 0
 
@@ -271,53 +279,129 @@ class StreamMetrics:
             "gaps": self.gaps,
             "timeouts": self.timeouts,
             "nacks": self.nacks,
+            "overflows": self.overflows,
             "bytesProduced": self.bytes_produced,
             "bytesReceived": self.bytes_received,
         }
+
+
+def _metrics_from_native(value: NativeStreamMetrics) -> StreamMetrics:
+    return StreamMetrics(
+        produced=value.produced,
+        evicted=value.evicted,
+        received=value.received,
+        emitted=value.emitted,
+        duplicates=value.duplicates,
+        stale=value.stale,
+        gaps=value.gaps,
+        timeouts=value.timeouts,
+        nacks=value.nacks,
+        overflows=value.overflows,
+        bytes_produced=value.bytes_produced,
+        bytes_received=value.bytes_received,
+    )
+
+
+def _fec_to_native(value: Optional[StreamFecInfo]) -> Optional[NativeStreamFecInfo]:
+    if value is None:
+        return None
+    native = NativeStreamFecInfo()
+    native.scheme = value.scheme
+    native.data_shards = value.data_shards
+    native.parity_shards = value.parity_shards
+    native.symbol_index = value.symbol_index
+    native.symbol_count = value.symbol_count
+    native.data_lengths = list(value.data_lengths)
+    native.source_block_id = value.source_block_id
+    native.repair_symbol = value.repair_symbol
+    native.metadata = {str(key): str(item) for key, item in value.metadata.items()}
+    return native
+
+
+def _fec_from_native(value: Optional[NativeStreamFecInfo]) -> Optional[StreamFecInfo]:
+    if value is None:
+        return None
+    return StreamFecInfo(
+        scheme=value.scheme,
+        data_shards=value.data_shards,
+        parity_shards=value.parity_shards,
+        symbol_index=value.symbol_index,
+        symbol_count=value.symbol_count,
+        data_lengths=tuple(value.data_lengths),
+        source_block_id=value.source_block_id,
+        repair_symbol=value.repair_symbol,
+        metadata=dict(value.metadata),
+    )
+
+
+def _chunk_to_native(value: StreamChunk) -> NativeStreamChunk:
+    native = NativeStreamChunk()
+    native.stream_id = value.stream_id
+    native.session_epoch = value.session_epoch
+    native.seq = value.seq
+    native.payload = value.payload
+    native.content_type = value.content_type
+    native.capture_ms = value.capture_ms
+    native.arrival_ms = value.arrival_ms
+    native.deadline_ms = value.deadline_ms
+    native.key_chunk = value.key_chunk
+    native.frame_id = value.frame_id
+    native.frame_first_seq = value.frame_first_seq
+    native.frame_last_seq = value.frame_last_seq
+    native.segment_index = value.segment_index
+    native.segment_count = value.segment_count
+    native.fec = _fec_to_native(value.fec)
+    native.metadata = {str(key): str(item) for key, item in value.metadata.items()}
+    return native
+
+
+def _chunk_from_native(value: NativeStreamChunk) -> StreamChunk:
+    return StreamChunk(
+        stream_id=value.stream_id,
+        session_epoch=value.session_epoch,
+        seq=value.seq,
+        payload=bytes(value.payload),
+        content_type=value.content_type,
+        capture_ms=value.capture_ms,
+        arrival_ms=value.arrival_ms,
+        deadline_ms=value.deadline_ms,
+        key_chunk=value.key_chunk,
+        frame_id=value.frame_id,
+        frame_first_seq=value.frame_first_seq,
+        frame_last_seq=value.frame_last_seq,
+        segment_index=value.segment_index,
+        segment_count=value.segment_count,
+        fec=_fec_from_native(value.fec),
+        metadata=dict(value.metadata),
+    )
 
 
 class StreamProducerBuffer:
     """Bounded sequence-indexed buffer for recently produced stream chunks."""
 
     def __init__(self, max_chunks: int = 600) -> None:
-        self._max_chunks = max(1, int(max_chunks))
-        self._chunks: dict[int, StreamChunk] = {}
-        self._order: Deque[int] = deque()
-        self._metrics = StreamMetrics()
-        self._lock = threading.Lock()
+        self._native = NativeStreamProducerBuffer(max(1, int(max_chunks)))
 
     @property
     def metrics(self) -> StreamMetrics:
-        with self._lock:
-            return replace(self._metrics)
+        return _metrics_from_native(self._native.metrics)
 
     def put(self, chunk: StreamChunk) -> None:
-        with self._lock:
-            if chunk.seq not in self._chunks:
-                self._order.append(chunk.seq)
-            self._chunks[chunk.seq] = chunk
-            self._metrics.produced += 1
-            self._metrics.bytes_produced += len(chunk.payload)
-            while len(self._order) > self._max_chunks:
-                old_seq = self._order.popleft()
-                if self._chunks.pop(old_seq, None) is not None:
-                    self._metrics.evicted += 1
+        self._native.put(_chunk_to_native(chunk))
 
     def get(self, seq: int) -> Optional[StreamChunk]:
-        with self._lock:
-            return self._chunks.get(int(seq))
+        value = self._native.get(int(seq))
+        return None if value is None else _chunk_from_native(value)
 
     def encoded(self, seq: int) -> Optional[bytes]:
         chunk = self.get(seq)
         return None if chunk is None else encode_stream_chunk(chunk)
 
     def seqs(self) -> list[int]:
-        with self._lock:
-            return list(self._order)
+        return list(self._native.sequences())
 
     def __len__(self) -> int:
-        with self._lock:
-            return len(self._chunks)
+        return self._native.size()
 
 
 class StreamConsumerReorderBuffer:
@@ -334,82 +418,50 @@ class StreamConsumerReorderBuffer:
     ) -> None:
         self.stream_id = stream_id
         self.session_epoch = int(session_epoch)
-        self.next_seq = int(next_seq)
         self.max_pending = max(1, int(max_pending))
-        self._pending: dict[int, StreamChunk] = {}
-        self._completed: set[int] = set()
-        self._completed_order: Deque[int] = deque()
-        self._history = max(1, int(history))
-        self._metrics = StreamMetrics()
-        self._lock = threading.Lock()
+        self._native = NativeStreamConsumerReorderBuffer(
+            stream_id,
+            int(session_epoch),
+            int(next_seq),
+            self.max_pending,
+            max(1, int(history)),
+        )
+
+    @property
+    def next_seq(self) -> int:
+        return self._native.next_seq
+
+    @property
+    def pending_count(self) -> int:
+        return self._native.pending_count
+
+    @property
+    def pending_bytes(self) -> int:
+        return self._native.pending_bytes
 
     @property
     def metrics(self) -> StreamMetrics:
-        with self._lock:
-            return replace(self._metrics)
+        return _metrics_from_native(self._native.metrics)
 
     def reset(self, stream_id: str, session_epoch: int, *, next_seq: int = 0) -> None:
-        with self._lock:
-            self.stream_id = stream_id
-            self.session_epoch = int(session_epoch)
-            self.next_seq = int(next_seq)
-            self._pending.clear()
-            self._completed.clear()
-            self._completed_order.clear()
+        self.stream_id = stream_id
+        self.session_epoch = int(session_epoch)
+        self._native.reset(stream_id, int(session_epoch), int(next_seq))
 
     def push(self, chunk: StreamChunk) -> list[StreamChunk]:
-        with self._lock:
-            if chunk.stream_id != self.stream_id or chunk.session_epoch != self.session_epoch:
-                self._metrics.stale += 1
-                return []
-            if chunk.seq < self.next_seq or chunk.seq in self._pending or chunk.seq in self._completed:
-                self._metrics.duplicates += 1
-                return []
-            if len(self._pending) >= self.max_pending:
-                self._drop_oldest_pending()
-            self._pending[chunk.seq] = chunk.with_arrival_ms(chunk.arrival_ms or stream_now_ms())
-            self._metrics.received += 1
-            self._metrics.bytes_received += len(chunk.payload)
-            emitted: list[StreamChunk] = []
-            while self.next_seq in self._pending:
-                ready = self._pending.pop(self.next_seq)
-                emitted.append(ready)
-                self._mark_completed(self.next_seq)
-                self.next_seq += 1
-            if not emitted and self._pending:
-                self._metrics.gaps += 1
-            self._metrics.emitted += len(emitted)
-            return emitted
+        return [_chunk_from_native(value) for value in self._native.push(_chunk_to_native(chunk))]
 
     def missing_sequences(self, *, limit: int = 32) -> list[int]:
-        with self._lock:
-            if not self._pending:
-                return []
-            highest = max(self._pending)
-            return [
-                seq for seq in range(self.next_seq, highest)
-                if seq not in self._pending
-            ][:max(0, int(limit))]
+        return list(self._native.missing_sequences(max(0, int(limit))))
+
+    def pending_sequences(self, *, limit: int = 0) -> list[int]:
+        return list(self._native.pending_sequences(max(0, int(limit))))
+
+    def drain_ready(self) -> list[StreamChunk]:
+        return [_chunk_from_native(value) for value in self._native.drain_ready()]
 
     def skip_to(self, seq: int) -> None:
-        with self._lock:
-            target = int(seq)
-            for old in [item for item in self._pending if item < target]:
-                self._pending.pop(old, None)
-            self.next_seq = max(self.next_seq, target)
-
-    def _mark_completed(self, seq: int) -> None:
-        self._completed.add(seq)
-        self._completed_order.append(seq)
-        while len(self._completed_order) > self._history:
-            self._completed.discard(self._completed_order.popleft())
-
-    def _drop_oldest_pending(self) -> None:
-        if not self._pending:
-            return
-        oldest = min(self._pending)
-        self._pending.pop(oldest, None)
-        self._metrics.stale += 1
+        self._native.skip_to(int(seq))
 
 
 @dataclass(frozen=True)
@@ -538,57 +590,65 @@ class StreamAdaptiveFetcherState:
     min_missing_timeout_ms: int = 80
     max_missing_timeout_ms: int = 1500
 
+    def _native_state(self) -> NativeStreamAdaptiveFetcherState:
+        native = NativeStreamAdaptiveFetcherState()
+        for python_name in (
+            "rtt_ms", "timeout_pressure", "nack_pressure",
+            "duplicate_pressure", "backlog_pressure", "min_window",
+            "base_window", "max_window", "min_lookahead", "base_lookahead",
+            "max_lookahead", "min_interest_lifetime_ms",
+            "max_interest_lifetime_ms", "min_missing_timeout_ms",
+            "max_missing_timeout_ms",
+        ):
+            setattr(native, python_name, getattr(self, python_name))
+        return native
+
+    def _sync_native(self, native: NativeStreamAdaptiveFetcherState) -> None:
+        self.rtt_ms = native.rtt_ms
+        self.timeout_pressure = native.timeout_pressure
+        self.nack_pressure = native.nack_pressure
+        self.duplicate_pressure = native.duplicate_pressure
+        self.backlog_pressure = native.backlog_pressure
+
     def observe_rtt(self, sample_ms: float, *, alpha: float = 0.25) -> None:
-        sample = max(1.0, float(sample_ms))
-        alpha = min(1.0, max(0.0, float(alpha)))
-        self.rtt_ms = self.rtt_ms * (1.0 - alpha) + sample * alpha
+        native = self._native_state()
+        native.observe_rtt(float(sample_ms), float(alpha))
+        self._sync_native(native)
 
     def record_timeout(self) -> None:
-        self.timeout_pressure = min(1.0, self.timeout_pressure + 0.25)
+        native = self._native_state()
+        native.record_timeout()
+        self._sync_native(native)
 
     def record_nack(self) -> None:
-        self.nack_pressure = min(1.0, self.nack_pressure + 0.2)
+        native = self._native_state()
+        native.record_nack()
+        self._sync_native(native)
 
     def record_duplicate(self) -> None:
-        self.duplicate_pressure = min(1.0, self.duplicate_pressure + 0.1)
+        native = self._native_state()
+        native.record_duplicate()
+        self._sync_native(native)
 
     def set_backlog_pressure(self, pressure: float) -> None:
-        self.backlog_pressure = min(1.0, max(0.0, float(pressure)))
+        native = self._native_state()
+        native.set_backlog_pressure(float(pressure))
+        self._sync_native(native)
 
     def decay(self, factor: float = 0.85) -> None:
-        factor = min(1.0, max(0.0, float(factor)))
-        self.timeout_pressure *= factor
-        self.nack_pressure *= factor
-        self.duplicate_pressure *= factor
-        self.backlog_pressure *= factor
+        native = self._native_state()
+        native.decay(float(factor))
+        self._sync_native(native)
 
     def decide(self) -> StreamFetchDecision:
-        pressure = max(
-            self.timeout_pressure,
-            self.nack_pressure,
-            self.duplicate_pressure * 0.5,
-            self.backlog_pressure,
-        )
-        pressure = min(1.0, max(0.0, pressure))
-        if pressure >= 0.65:
-            reason = "congested"
-        elif pressure >= 0.25:
-            reason = "cautious"
-        else:
-            reason = "stable"
-
-        window = int(round(self.base_window / (1.0 + pressure * 2.0)))
-        lookahead = int(round(self.base_lookahead / (1.0 + pressure * 1.5)))
-        lifetime = int(round(max(2.0 * self.rtt_ms, self.min_interest_lifetime_ms) * (1.0 + pressure)))
-        missing = int(round(max(1.5 * self.rtt_ms, self.min_missing_timeout_ms) * (1.0 + pressure)))
-
+        decision = self._native_state().decide()
         return StreamFetchDecision(
-            window=min(self.max_window, max(self.min_window, window)),
-            lookahead=min(self.max_lookahead, max(self.min_lookahead, lookahead)),
-            interest_lifetime_ms=min(self.max_interest_lifetime_ms, max(self.min_interest_lifetime_ms, lifetime)),
-            missing_timeout_ms=min(self.max_missing_timeout_ms, max(self.min_missing_timeout_ms, missing)),
-            pressure=pressure,
-            reason=reason,
+            window=decision.window,
+            lookahead=decision.lookahead,
+            interest_lifetime_ms=decision.interest_lifetime_ms,
+            missing_timeout_ms=decision.missing_timeout_ms,
+            pressure=decision.pressure,
+            reason=decision.reason,
         )
 
 

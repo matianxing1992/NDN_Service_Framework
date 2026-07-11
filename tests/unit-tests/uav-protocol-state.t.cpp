@@ -472,7 +472,9 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   state.primaryPressure = "timeout";
   state.policyReason = "pressure-timeout";
   state.pendingChunks = 12;
+  state.pendingBytes = 4096;
   state.receivedChunks = 100;
+  state.fecRecoveredChunks = 4;
   state.timeouts = 2;
   state.nacks = 1;
   state.duplicates = 3;
@@ -496,6 +498,8 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_EQUAL(decoded.timeoutPressure, 55);
   BOOST_CHECK_EQUAL(decoded.primaryPressure, "timeout");
   BOOST_CHECK_EQUAL(decoded.policyReason, "pressure-timeout");
+  BOOST_CHECK_EQUAL(decoded.pendingBytes, 4096);
+  BOOST_CHECK_EQUAL(decoded.fecRecoveredChunks, 4);
   BOOST_CHECK_EQUAL(decoded.publishedFrames, 90);
   BOOST_CHECK_EQUAL(decoded.decodedFrameGap, 45);
   BOOST_CHECK_EQUAL(decoded.frameGapPressure, 35);
@@ -506,6 +510,8 @@ BOOST_AUTO_TEST_CASE(VideoAdaptiveStateRoundTripsAndReportsPressure)
   BOOST_CHECK_NE(decoded.statusLine().find("primary_pressure=timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("policy_reason=pressure-timeout"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("window=64"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("pending_bytes=4096"), std::string::npos);
+  BOOST_CHECK_NE(decoded.statusLine().find("fec_recovered_chunks=4"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("published_frames=90"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("decoded_frame_gap=45"), std::string::npos);
   BOOST_CHECK_NE(decoded.statusLine().find("frame_gap_pressure=35"), std::string::npos);

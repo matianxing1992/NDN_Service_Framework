@@ -292,7 +292,9 @@ struct VideoAdaptiveState
   std::string primaryPressure = "none";
   std::string policyReason = "stable";
   uint64_t pendingChunks = 0;
+  uint64_t pendingBytes = 0;
   uint64_t receivedChunks = 0;
+  uint64_t fecRecoveredChunks = 0;
   uint64_t timeouts = 0;
   uint64_t nacks = 0;
   uint64_t duplicates = 0;

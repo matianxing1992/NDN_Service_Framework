@@ -4,6 +4,7 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/Stream.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -3001,7 +3002,7 @@ public:
     }
   }
 
-  std::vector<std::tuple<std::string, std::string, std::string>>
+  std::vector<std::tuple<std::string, std::string, size_t>>
   getAllowedServices() const
   {
     return m_user->getAllowedServices();
@@ -3056,6 +3057,123 @@ private:
 
 PYBIND11_MODULE(_ndnsf, m)
 {
+  py::class_<nsf::StreamFecInfo>(m, "NativeStreamFecInfo")
+    .def(py::init<>())
+    .def_readwrite("scheme", &nsf::StreamFecInfo::scheme)
+    .def_readwrite("data_shards", &nsf::StreamFecInfo::dataShards)
+    .def_readwrite("parity_shards", &nsf::StreamFecInfo::parityShards)
+    .def_readwrite("symbol_index", &nsf::StreamFecInfo::symbolIndex)
+    .def_readwrite("symbol_count", &nsf::StreamFecInfo::symbolCount)
+    .def_readwrite("data_lengths", &nsf::StreamFecInfo::dataLengths)
+    .def_readwrite("source_block_id", &nsf::StreamFecInfo::sourceBlockId)
+    .def_readwrite("repair_symbol", &nsf::StreamFecInfo::repairSymbol)
+    .def_readwrite("metadata", &nsf::StreamFecInfo::metadata)
+    .def_property_readonly("enabled", &nsf::StreamFecInfo::enabled);
+
+  py::class_<nsf::StreamChunk>(m, "NativeStreamChunk")
+    .def(py::init<>())
+    .def_readwrite("stream_id", &nsf::StreamChunk::streamId)
+    .def_readwrite("session_epoch", &nsf::StreamChunk::sessionEpoch)
+    .def_readwrite("seq", &nsf::StreamChunk::seq)
+    .def_property("payload",
+      [] (const nsf::StreamChunk& chunk) {
+        return py::bytes(reinterpret_cast<const char*>(chunk.payload.data()),
+                         chunk.payload.size());
+      },
+      [] (nsf::StreamChunk& chunk, const py::bytes& value) {
+        const auto bytes = static_cast<std::string>(value);
+        chunk.payload.assign(bytes.begin(), bytes.end());
+      })
+    .def_readwrite("content_type", &nsf::StreamChunk::contentType)
+    .def_readwrite("capture_ms", &nsf::StreamChunk::captureMs)
+    .def_readwrite("arrival_ms", &nsf::StreamChunk::arrivalMs)
+    .def_readwrite("deadline_ms", &nsf::StreamChunk::deadlineMs)
+    .def_readwrite("key_chunk", &nsf::StreamChunk::keyChunk)
+    .def_readwrite("frame_id", &nsf::StreamChunk::frameId)
+    .def_readwrite("frame_first_seq", &nsf::StreamChunk::frameFirstSeq)
+    .def_readwrite("frame_last_seq", &nsf::StreamChunk::frameLastSeq)
+    .def_readwrite("segment_index", &nsf::StreamChunk::segmentIndex)
+    .def_readwrite("segment_count", &nsf::StreamChunk::segmentCount)
+    .def_readwrite("fec", &nsf::StreamChunk::fec)
+    .def_readwrite("metadata", &nsf::StreamChunk::metadata);
+
+  py::class_<nsf::StreamMetrics>(m, "NativeStreamMetrics")
+    .def(py::init<>())
+    .def_readwrite("produced", &nsf::StreamMetrics::produced)
+    .def_readwrite("evicted", &nsf::StreamMetrics::evicted)
+    .def_readwrite("received", &nsf::StreamMetrics::received)
+    .def_readwrite("emitted", &nsf::StreamMetrics::emitted)
+    .def_readwrite("duplicates", &nsf::StreamMetrics::duplicates)
+    .def_readwrite("stale", &nsf::StreamMetrics::stale)
+    .def_readwrite("gaps", &nsf::StreamMetrics::gaps)
+    .def_readwrite("timeouts", &nsf::StreamMetrics::timeouts)
+    .def_readwrite("nacks", &nsf::StreamMetrics::nacks)
+    .def_readwrite("overflows", &nsf::StreamMetrics::overflows)
+    .def_readwrite("bytes_produced", &nsf::StreamMetrics::bytesProduced)
+    .def_readwrite("bytes_received", &nsf::StreamMetrics::bytesReceived);
+
+  py::class_<nsf::StreamProducerBuffer>(m, "NativeStreamProducerBuffer")
+    .def(py::init<size_t>(), py::arg("max_chunks") = 600)
+    .def("put", &nsf::StreamProducerBuffer::put)
+    .def("get", &nsf::StreamProducerBuffer::get)
+    .def("sequences", &nsf::StreamProducerBuffer::sequences)
+    .def("size", &nsf::StreamProducerBuffer::size)
+    .def_property_readonly("metrics", &nsf::StreamProducerBuffer::metrics);
+
+  py::class_<nsf::StreamConsumerReorderBuffer>(m, "NativeStreamConsumerReorderBuffer")
+    .def(py::init<std::string, uint64_t, uint64_t, size_t, size_t>(),
+         py::arg("stream_id"), py::arg("session_epoch"),
+         py::arg("next_seq") = 0, py::arg("max_pending") = 512,
+         py::arg("history") = 1024)
+    .def("reset", &nsf::StreamConsumerReorderBuffer::reset,
+         py::arg("stream_id"), py::arg("session_epoch"), py::arg("next_seq") = 0)
+    .def("push", &nsf::StreamConsumerReorderBuffer::push)
+    .def("missing_sequences", &nsf::StreamConsumerReorderBuffer::missingSequences,
+         py::arg("limit") = 32)
+    .def("pending_sequences", &nsf::StreamConsumerReorderBuffer::pendingSequences,
+         py::arg("limit") = 0)
+    .def("drain_ready", &nsf::StreamConsumerReorderBuffer::drainReady)
+    .def("skip_to", &nsf::StreamConsumerReorderBuffer::skipTo)
+    .def_property_readonly("next_seq", &nsf::StreamConsumerReorderBuffer::nextSeq)
+    .def_property_readonly("pending_count", &nsf::StreamConsumerReorderBuffer::pendingCount)
+    .def_property_readonly("pending_bytes", &nsf::StreamConsumerReorderBuffer::pendingBytes)
+    .def_property_readonly("metrics", &nsf::StreamConsumerReorderBuffer::metrics);
+
+  py::class_<nsf::StreamFetchDecision>(m, "NativeStreamFetchDecision")
+    .def(py::init<>())
+    .def_readwrite("window", &nsf::StreamFetchDecision::window)
+    .def_readwrite("lookahead", &nsf::StreamFetchDecision::lookahead)
+    .def_readwrite("interest_lifetime_ms", &nsf::StreamFetchDecision::interestLifetimeMs)
+    .def_readwrite("missing_timeout_ms", &nsf::StreamFetchDecision::missingTimeoutMs)
+    .def_readwrite("pressure", &nsf::StreamFetchDecision::pressure)
+    .def_readwrite("reason", &nsf::StreamFetchDecision::reason);
+
+  py::class_<nsf::StreamAdaptiveFetcherState>(m, "NativeStreamAdaptiveFetcherState")
+    .def(py::init<>())
+    .def_readwrite("rtt_ms", &nsf::StreamAdaptiveFetcherState::rttMs)
+    .def_readwrite("timeout_pressure", &nsf::StreamAdaptiveFetcherState::timeoutPressure)
+    .def_readwrite("nack_pressure", &nsf::StreamAdaptiveFetcherState::nackPressure)
+    .def_readwrite("duplicate_pressure", &nsf::StreamAdaptiveFetcherState::duplicatePressure)
+    .def_readwrite("backlog_pressure", &nsf::StreamAdaptiveFetcherState::backlogPressure)
+    .def_readwrite("min_window", &nsf::StreamAdaptiveFetcherState::minWindow)
+    .def_readwrite("base_window", &nsf::StreamAdaptiveFetcherState::baseWindow)
+    .def_readwrite("max_window", &nsf::StreamAdaptiveFetcherState::maxWindow)
+    .def_readwrite("min_lookahead", &nsf::StreamAdaptiveFetcherState::minLookahead)
+    .def_readwrite("base_lookahead", &nsf::StreamAdaptiveFetcherState::baseLookahead)
+    .def_readwrite("max_lookahead", &nsf::StreamAdaptiveFetcherState::maxLookahead)
+    .def_readwrite("min_interest_lifetime_ms", &nsf::StreamAdaptiveFetcherState::minInterestLifetimeMs)
+    .def_readwrite("max_interest_lifetime_ms", &nsf::StreamAdaptiveFetcherState::maxInterestLifetimeMs)
+    .def_readwrite("min_missing_timeout_ms", &nsf::StreamAdaptiveFetcherState::minMissingTimeoutMs)
+    .def_readwrite("max_missing_timeout_ms", &nsf::StreamAdaptiveFetcherState::maxMissingTimeoutMs)
+    .def("observe_rtt", &nsf::StreamAdaptiveFetcherState::observeRtt,
+         py::arg("sample_ms"), py::arg("alpha") = 0.25)
+    .def("record_timeout", &nsf::StreamAdaptiveFetcherState::recordTimeout)
+    .def("record_nack", &nsf::StreamAdaptiveFetcherState::recordNack)
+    .def("record_duplicate", &nsf::StreamAdaptiveFetcherState::recordDuplicate)
+    .def("set_backlog_pressure", &nsf::StreamAdaptiveFetcherState::setBacklogPressure)
+    .def("decay", &nsf::StreamAdaptiveFetcherState::decay, py::arg("factor") = 0.85)
+    .def("decide", &nsf::StreamAdaptiveFetcherState::decide);
+
   py::enum_<nsf::ExecutionLeaseState>(m, "ExecutionLeaseState")
     .value("PREPARED", nsf::ExecutionLeaseState::Prepared)
     .value("COMMITTED", nsf::ExecutionLeaseState::Committed)

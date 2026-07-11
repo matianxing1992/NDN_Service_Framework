@@ -206,8 +206,6 @@ NATIVE_TRACER_PROFILE_FIELDS = {
     "multi_user_workload": "multi_user_workload",
     "runtime_aware_max_replans": "runtime_aware_max_replans",
     "runtime_aware_replan_reasons": "runtime_aware_replan_reasons",
-    "dependency_envelope_mode": "dependency_envelope_mode",
-    "dependency_payload_mode": "dependency_envelope_mode",
 }
 
 
@@ -498,16 +496,6 @@ def provider_admission_env(args) -> dict[str, str]:
         env["NDNSF_DI_PROVIDER_ADMISSION_MIN_FREE_MEMORY_MB"] = str(
             args.provider_admission_min_free_memory_mb)
     return env
-
-
-def dependency_envelope_env(args) -> dict[str, str]:
-    mode = getattr(args, "dependency_envelope_mode", "raw")
-    return {
-        "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES": (
-            "1" if mode == "streamchunk" else "0"
-        ),
-        "NDNSF_DI_STREAM_DEPENDENCY_TRACE": "1",
-    }
 
 
 def shell_join(items: list[str]) -> str:
@@ -1164,16 +1152,11 @@ def collect_provider_fragment_inventory(logs_dir: Path) -> dict[str, object]:
     }
 
 
-def collect_stream_dependency_counters(logs_dir: Path) -> dict[str, object]:
+def collect_dependency_object_counters(logs_dir: Path) -> dict[str, object]:
     scanned_logs = 0
     event_count = 0
-    decode_error_count = 0
-    mode_counters: Counter[str] = Counter()
     direction_counters: Counter[str] = Counter()
     status_counters: Counter[str] = Counter()
-    payload_bytes_by_mode: Counter[str] = Counter()
-    wire_bytes_by_mode: Counter[str] = Counter()
-    envelope_bytes_by_mode: Counter[str] = Counter()
     dependency_fetch_payload_values: list[float] = []
     dependency_publish_payload_values: list[float] = []
     examples: list[dict[str, object]] = []
@@ -1181,23 +1164,13 @@ def collect_stream_dependency_counters(logs_dir: Path) -> dict[str, object]:
     for path in sorted(logs_dir.glob("*.log")):
         scanned_logs += 1
         for line in read_log_text(path).splitlines():
-            if "NDNSF_DI_STREAM_DEPENDENCY" not in line:
+            if "NDNSF_DI_DEPENDENCY_OBJECT" not in line:
                 continue
             fields = parse_trace_fields(line)
-            mode = fields.get("mode", "")
             direction = fields.get("direction", "")
             status = fields.get("status", "")
             payload_bytes = int_field(fields, "payload_bytes", 0)
-            wire_bytes = int_field(fields, "wire_bytes", 0)
-            envelope_bytes = int_field(fields, "envelope_bytes", 0)
             event_count += 1
-            if status == "decode-error":
-                decode_error_count += 1
-            if mode:
-                mode_counters[mode] += 1
-                payload_bytes_by_mode[mode] += payload_bytes
-                wire_bytes_by_mode[mode] += wire_bytes
-                envelope_bytes_by_mode[mode] += envelope_bytes
             if direction:
                 direction_counters[direction] += 1
                 if direction == "fetch":
@@ -1210,11 +1183,8 @@ def collect_stream_dependency_counters(logs_dir: Path) -> dict[str, object]:
                 examples.append({
                     "session": fields.get("session", ""),
                     "scope": fields.get("scope", ""),
-                    "mode": mode,
                     "direction": direction,
                     "payloadBytes": payload_bytes,
-                    "wireBytes": wire_bytes,
-                    "envelopeBytes": envelope_bytes,
                     "status": status,
                     "plannedName": fields.get("planned_name", ""),
                     "log": str(path),
@@ -1223,28 +1193,11 @@ def collect_stream_dependency_counters(logs_dir: Path) -> dict[str, object]:
     def by_mode(counter: Counter[str]) -> dict[str, int]:
         return {key: int(value) for key, value in sorted(counter.items())}
 
-    overhead_ratio_by_mode: dict[str, float] = {}
-    for mode, wire_bytes in wire_bytes_by_mode.items():
-        payload_bytes = payload_bytes_by_mode.get(mode, 0)
-        if payload_bytes:
-            overhead_ratio_by_mode[mode] = round(
-                max(0, wire_bytes - payload_bytes) / payload_bytes,
-                6,
-            )
-        else:
-            overhead_ratio_by_mode[mode] = 0.0
-
     return {
         "scannedLogs": scanned_logs,
         "eventCount": event_count,
-        "decodeErrorCount": decode_error_count,
-        "modeCounters": by_mode(mode_counters),
         "directionCounters": by_mode(direction_counters),
         "statusCounters": by_mode(status_counters),
-        "payloadBytesByMode": by_mode(payload_bytes_by_mode),
-        "wireBytesByMode": by_mode(wire_bytes_by_mode),
-        "envelopeBytesByMode": by_mode(envelope_bytes_by_mode),
-        "overheadRatioByMode": overhead_ratio_by_mode,
         "dependencyFetchPayloadBytes": metric_stats(dependency_fetch_payload_values),
         "dependencyPublishPayloadBytes": metric_stats(dependency_publish_payload_values),
         "examples": examples,
@@ -2352,8 +2305,6 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
         f"miniNDNStatus={summary['miniNDNStatus']}",
         f"miniNDNRun={summary['miniNDNRun']}",
         f"runnerMode={summary['runnerMode']}",
-        f"dependencyEnvelopeMode={summary.get('dependencyEnvelopeMode', summary.get('dependencyPayloadMode', 'raw'))}",
-        f"dependencyPayloadMode={summary.get('dependencyPayloadMode', summary.get('dependencyEnvelopeMode', 'raw'))}",
         f"activationPadBytes={summary.get('activationPadBytes', 0)}",
         f"roleExecutionDelayMs={summary.get('roleExecutionDelayMs', 0.0)}",
         f"requestCount={summary.get('requestCount', 1)}",
@@ -2400,14 +2351,13 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
             f"providerDecisions:{negative_ack.get('providerDecisions', {})};"
             f"payloadReasons:{negative_ack.get('payloadReasons', {})}"
         )
-    stream_counters = summary.get("streamChunkDependencyCounters", {})
-    if isinstance(stream_counters, dict):
+    dependency_counters = summary.get("dependencyObjectCounters", {})
+    if isinstance(dependency_counters, dict):
         lines.append(
-            "streamChunkDependencyCounters="
-            f"events:{stream_counters.get('eventCount', 0)};"
-            f"decodeErrors:{stream_counters.get('decodeErrorCount', 0)};"
-            f"modes:{stream_counters.get('modeCounters', {})};"
-            f"overhead:{stream_counters.get('overheadRatioByMode', {})}"
+            "dependencyObjectCounters="
+            f"events:{dependency_counters.get('eventCount', 0)};"
+            f"directions:{dependency_counters.get('directionCounters', {})};"
+            f"statuses:{dependency_counters.get('statusCounters', {})}"
         )
     core_envelopes = summary.get("coreEnvelopeSummary", {})
     if isinstance(core_envelopes, dict):
@@ -2457,15 +2407,9 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
             "enableNativeAdmissionLease": args.enable_native_admission_lease,
             "overloadFastFailTimeoutMs": args.overload_fast_fail_timeout_ms,
-            "dependencyEnvelopeMode": args.dependency_envelope_mode,
-            "dependencyPayloadMode": args.dependency_envelope_mode,
             "topologyFile": str(Path(args.topology_file).resolve()),
         },
         "topologyFile": str(Path(args.topology_file).resolve()),
-        "dependencyEnvelopeMode": args.dependency_envelope_mode,
-        "dependencyPayloadMode": args.dependency_envelope_mode,
-        "dependencyEnvelopeEnv": dependency_envelope_env(args),
-        "dependencyPayloadEnv": dependency_envelope_env(args),
         "nativePlan": str(policy_dir / "native-execution-plan.json"),
         "serviceManifest": str(policy_dir / "service-manifest.json"),
         "optimizationEvidence": {
@@ -2532,10 +2476,10 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
         "requestCount": args.requests,
         "concurrency": args.concurrency,
         "failureReason": "",
-        "streamChunkDependencyCounters": {
+        "dependencyObjectCounters": {
             "eventCount": 0,
-            "decodeErrorCount": 0,
-            "modeCounters": {},
+            "directionCounters": {},
+            "statusCounters": {},
         },
         "providerPairTelemetry": {
             "status": "not-started",
@@ -2688,19 +2632,6 @@ def main() -> int:
                         default=default_value(profile_defaults, "overload_fast_fail_timeout_ms", 0),
                         help=("Use a shorter user collaboration timeout for overload "
                               "fast-fail experiments"))
-    parser.add_argument("--dependency-envelope-mode",
-                        "--dependency-payload-mode",
-                        dest="dependency_envelope_mode",
-                        choices=["raw", "streamchunk"],
-                        default=default_value_any(
-                            profile_defaults,
-                            ["dependency_envelope_mode", "dependency_payload_mode"],
-                            "raw"),
-                        help=("Dependency large-data envelope format for native provider "
-                              "collaboration. raw keeps exact-name tensor bundle objects "
-                              "on the normal large-data/SegmentFetcher path. streamchunk "
-                              "is an opt-in StreamChunk metadata-envelope experiment, "
-                              "not the default transfer mechanism for DI objects."))
     args = parser.parse_args()
     if args.activation_pad_bytes < 0:
         raise SystemExit("--activation-pad-bytes must be non-negative")
@@ -2765,10 +2696,6 @@ def main() -> int:
             "runtimeAwareMaxReplans": args.runtime_aware_max_replans,
             "runtimeAwareReplanReasons": args.runtime_aware_replan_reasons,
             "topologyFile": str(topology_file),
-            "dependencyEnvelopeMode": args.dependency_envelope_mode,
-            "dependencyPayloadMode": args.dependency_envelope_mode,
-            "dependencyEnvelopeEnv": dependency_envelope_env(args),
-            "dependencyPayloadEnv": dependency_envelope_env(args),
             "plannerMetrics": {
                 "json": str(Path(args.out) / "planner-metrics.json"),
                 "csv": str(Path(args.out) / "planner-metrics.csv"),
@@ -2818,7 +2745,7 @@ def main() -> int:
         str(REPO / "build"),
         env.get("LD_LIBRARY_PATH", ""),
     ])
-    env.update(dependency_envelope_env(args))
+    env["NDNSF_DI_DEPENDENCY_OBJECT_TRACE"] = "1"
 
     summary = build_base_summary(args, out_dir, policy_dir, logs_dir)
     summary["multiUserWorkload"] = {
@@ -3136,7 +3063,6 @@ def main() -> int:
                     args.enable_execution_leases)
                 provider_env = llm_provider_resource_env(row["provider"])
                 provider_env.update(provider_admission_env(args))
-                provider_env.update(dependency_envelope_env(args))
                 proc, path = start_node_command(
                     node,
                     "provider-serve-" + safe_log_component(row["role"]) +
@@ -3296,7 +3222,6 @@ def main() -> int:
                 args.policy_bundle == "llm-proportional")
             provider_env = llm_provider_resource_env(row["provider"])
             provider_env.update(provider_admission_env(args))
-            provider_env.update(dependency_envelope_env(args))
             start_node_command(node,
                                "provider-check-" + safe_log_component(row["role"]) +
                                "--" + safe_log_component(row["provider"]),
@@ -3333,10 +3258,10 @@ def main() -> int:
         summary["providerAckRuntimeHints"] = collect_provider_ack_runtime_hints(logs_dir)
         summary["coreEnvelopeSummary"] = collect_core_envelope_summary(logs_dir)
         summary["providerFragmentInventory"] = collect_provider_fragment_inventory(logs_dir)
-        summary["streamChunkDependencyCounters"] = collect_stream_dependency_counters(logs_dir)
+        summary["dependencyObjectCounters"] = collect_dependency_object_counters(logs_dir)
         summary["providerPairTelemetry"] = collect_provider_pair_telemetry(out_dir)
-        (out_dir / "streamchunk_counters.json").write_text(
-            json.dumps(summary["streamChunkDependencyCounters"],
+        (out_dir / "dependency_object_counters.json").write_text(
+            json.dumps(summary["dependencyObjectCounters"],
                        indent=2,
                        sort_keys=True) + "\n",
             encoding="utf-8")

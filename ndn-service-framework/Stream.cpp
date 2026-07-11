@@ -367,6 +367,7 @@ StreamProducerBuffer::StreamProducerBuffer(size_t maxChunks)
 void
 StreamProducerBuffer::put(const StreamChunk& chunk)
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_chunks.find(chunk.seq) == m_chunks.end()) {
     m_order.push_back(chunk.seq);
   }
@@ -385,6 +386,7 @@ StreamProducerBuffer::put(const StreamChunk& chunk)
 std::optional<StreamChunk>
 StreamProducerBuffer::get(uint64_t seq) const
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   auto it = m_chunks.find(seq);
   if (it == m_chunks.end()) {
     return std::nullopt;
@@ -395,28 +397,32 @@ StreamProducerBuffer::get(uint64_t seq) const
 std::optional<ndn::Block>
 StreamProducerBuffer::getEncoded(uint64_t seq) const
 {
-  auto chunk = get(seq);
-  if (!chunk) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto it = m_chunks.find(seq);
+  if (it == m_chunks.end()) {
     return std::nullopt;
   }
-  return chunk->wireEncode();
+  return it->second.wireEncode();
 }
 
 std::vector<uint64_t>
 StreamProducerBuffer::sequences() const
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   return {m_order.begin(), m_order.end()};
 }
 
 size_t
 StreamProducerBuffer::size() const
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   return m_chunks.size();
 }
 
-const StreamMetrics&
+StreamMetrics
 StreamProducerBuffer::metrics() const
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   return m_metrics;
 }
 
@@ -437,6 +443,7 @@ void
 StreamConsumerReorderBuffer::reset(std::string streamId, uint64_t sessionEpoch,
                                    uint64_t nextSeq)
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   m_streamId = std::move(streamId);
   m_sessionEpoch = sessionEpoch;
   m_nextSeq = nextSeq;
@@ -448,6 +455,7 @@ StreamConsumerReorderBuffer::reset(std::string streamId, uint64_t sessionEpoch,
 std::vector<StreamChunk>
 StreamConsumerReorderBuffer::push(const StreamChunk& chunk)
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (chunk.streamId != m_streamId || chunk.sessionEpoch != m_sessionEpoch) {
     ++m_metrics.stale;
     return {};
@@ -468,17 +476,7 @@ StreamConsumerReorderBuffer::push(const StreamChunk& chunk)
   ++m_metrics.received;
   m_metrics.bytesReceived += stored.payload.size();
 
-  std::vector<StreamChunk> emitted;
-  while (true) {
-    auto it = m_pending.find(m_nextSeq);
-    if (it == m_pending.end()) {
-      break;
-    }
-    emitted.push_back(it->second);
-    m_pending.erase(it);
-    markCompleted(m_nextSeq);
-    ++m_nextSeq;
-  }
+  auto emitted = drainReadyUnlocked();
   if (emitted.empty() && !m_pending.empty()) {
     ++m_metrics.gaps;
   }
@@ -487,8 +485,34 @@ StreamConsumerReorderBuffer::push(const StreamChunk& chunk)
 }
 
 std::vector<uint64_t>
+StreamConsumerReorderBuffer::pendingSequences(size_t limit) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  std::vector<uint64_t> result;
+  const auto count = limit == 0 ? m_pending.size() : std::min(limit, m_pending.size());
+  result.reserve(count);
+  for (const auto& item : m_pending) {
+    if (limit != 0 && result.size() >= limit) {
+      break;
+    }
+    result.push_back(item.first);
+  }
+  return result;
+}
+
+std::vector<StreamChunk>
+StreamConsumerReorderBuffer::drainReady()
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  auto emitted = drainReadyUnlocked();
+  m_metrics.emitted += emitted.size();
+  return emitted;
+}
+
+std::vector<uint64_t>
 StreamConsumerReorderBuffer::missingSequences(size_t limit) const
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   std::vector<uint64_t> missing;
   if (m_pending.empty() || limit == 0) {
     return missing;
@@ -505,6 +529,7 @@ StreamConsumerReorderBuffer::missingSequences(size_t limit) const
 void
 StreamConsumerReorderBuffer::skipTo(uint64_t seq)
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   for (auto it = m_pending.begin(); it != m_pending.end();) {
     if (it->first < seq) {
       it = m_pending.erase(it);
@@ -519,12 +544,32 @@ StreamConsumerReorderBuffer::skipTo(uint64_t seq)
 uint64_t
 StreamConsumerReorderBuffer::nextSeq() const
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   return m_nextSeq;
 }
 
-const StreamMetrics&
+size_t
+StreamConsumerReorderBuffer::pendingCount() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  return m_pending.size();
+}
+
+size_t
+StreamConsumerReorderBuffer::pendingBytes() const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  size_t bytes = 0;
+  for (const auto& item : m_pending) {
+    bytes += item.second.payload.size();
+  }
+  return bytes;
+}
+
+StreamMetrics
 StreamConsumerReorderBuffer::metrics() const
 {
+  std::lock_guard<std::mutex> lock(m_mutex);
   return m_metrics;
 }
 
@@ -547,6 +592,24 @@ StreamConsumerReorderBuffer::dropOldestPending()
   }
   m_pending.erase(m_pending.begin());
   ++m_metrics.stale;
+  ++m_metrics.overflows;
+}
+
+std::vector<StreamChunk>
+StreamConsumerReorderBuffer::drainReadyUnlocked()
+{
+  std::vector<StreamChunk> emitted;
+  while (true) {
+    auto it = m_pending.find(m_nextSeq);
+    if (it == m_pending.end()) {
+      break;
+    }
+    emitted.push_back(it->second);
+    m_pending.erase(it);
+    markCompleted(m_nextSeq);
+    ++m_nextSeq;
+  }
+  return emitted;
 }
 
 void

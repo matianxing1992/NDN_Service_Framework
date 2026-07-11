@@ -5516,7 +5516,7 @@ private:
                   {
                     std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
                     m_chunkQueue.clear();
-                    m_pendingChunks.clear();
+                    m_decoderReorderBuffer.reset();
                     m_decoderPendingChunkCount = 0;
                     m_decoderOutBuffer.clear();
                   }
@@ -6115,7 +6115,7 @@ private:
     {
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
       m_chunkQueue.clear();
-      m_pendingChunks.clear();
+      m_decoderReorderBuffer.reset();
       m_recordingPlaybackChunks.clear();
       m_decoderOutBuffer.clear();
     }
@@ -7134,7 +7134,9 @@ private:
     state.primaryPressure = decision.primaryPressure;
     state.policyReason = decision.policyReason;
     state.pendingChunks = m_decoderPendingChunkCount.load();
+    state.pendingBytes = m_decoderPendingBytes.load();
     state.receivedChunks = m_receivedChunks.load();
+    state.fecRecoveredChunks = m_fecRecoveredChunks.load();
     state.timeouts = m_frameTimeouts.load();
     state.nacks = m_frameNacks.load();
     state.duplicates = m_duplicateVideoPackets.load();
@@ -7647,6 +7649,11 @@ private:
       recoveredChunk.arrivalMs = state.firstArrivalMs;
       insertStreamChunkForDecode(recoveredChunk, recoveredElapsed);
       state.shards[missingIdx] = recovered;
+      ++m_fecRecoveredChunks;
+      NDN_LOG_INFO("GS_VIDEO_FEC_RECOVERED stream=" << recoveredChunk.streamId
+                   << " session=" << recoveredChunk.sessionEpoch
+                   << " frame_seq=" << state.frameSeq
+                   << " packet_seq=" << recoveredSeq);
       state.complete = true;
       break;
     }
@@ -7742,6 +7749,28 @@ private:
                          elapsedMs);
   }
 
+  bool
+  appendDecoderReadyChunksUnderLock(
+    const std::vector<ndn_service_framework::StreamChunk>& readyChunks)
+  {
+    for (const auto& ready : readyChunks) {
+      DecoderStreamChunk chunk;
+      chunk.packetSeq = ready.seq;
+      chunk.arrivalMs = ready.arrivalMs;
+      chunk.streamSessionEpoch = ready.sessionEpoch;
+      chunk.streamId = ready.streamId;
+      chunk.payload = ready.payload;
+      try {
+        chunk.elapsedMs = std::stoull(ready.metadata.at("decoderElapsedMs"));
+      }
+      catch (const std::exception&) {
+        chunk.elapsedMs = 0;
+      }
+      m_chunkQueue.push_back(std::move(chunk));
+    }
+    return !readyChunks.empty();
+  }
+
   void
   insertChunkForDecode(uint64_t packetSeq,
                       const std::vector<uint8_t>& payload,
@@ -7752,57 +7781,64 @@ private:
     if (packetSeq == UINT64_MAX) {
       return;
     }
-    if (packetSeq < m_nextChunkSeqToDecode) {
-      ++m_decoderDroppedChunks;
-      return;
-    }
-
     bool notifyWriter = false;
     {
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
-      const auto inserted = m_pendingChunks.emplace(packetSeq, DecoderStreamChunk{});
-      if (inserted.second) {
-        DecoderStreamChunk chunk;
-        chunk.packetSeq = packetSeq;
-        chunk.arrivalMs = (m_firstFrameMs == 0 ? 0 : m_firstFrameMs + elapsedMs);
-        chunk.elapsedMs = elapsedMs;
-        chunk.streamSessionEpoch = streamSessionEpoch;
-        chunk.streamId = streamId;
-        chunk.payload = payload;
-        inserted.first->second = std::move(chunk);
-      }
-
-      while (!m_pendingChunks.empty()) {
-        auto it = m_pendingChunks.find(m_nextChunkSeqToDecode);
-        if (it == m_pendingChunks.end()) {
-          break;
-        }
-        m_chunkQueue.push_back(std::move(it->second));
-        m_pendingChunks.erase(it);
-        ++m_nextChunkSeqToDecode;
-        notifyWriter = true;
-      }
-
-      if (m_pendingChunks.size() > m_decoderBacklogLimit &&
-          !m_pendingChunks.empty()) {
-        auto first = m_pendingChunks.begin();
-        if (first->first > m_nextChunkSeqToDecode) {
-          NDN_LOG_DEBUG("GS_VIDEO_SKIP_MISSING_CHUNKS start="
-                       << m_nextChunkSeqToDecode << " to=" << first->first - 1);
-          m_decoderDroppedChunks += (first->first - m_nextChunkSeqToDecode);
-          m_nextChunkSeqToDecode = first->first;
-        }
-      }
-
-      if (m_pendingChunks.empty() || m_pendingChunks.begin()->first == m_nextChunkSeqToDecode) {
+      if (!m_decoderReorderBuffer ||
+          m_decoderReorderStreamId != streamId ||
+          m_decoderReorderSessionEpoch != streamSessionEpoch) {
+        m_decoderReorderBuffer =
+          std::make_unique<ndn_service_framework::StreamConsumerReorderBuffer>(
+            streamId, streamSessionEpoch, 0,
+            std::max<uint64_t>(1, m_decoderBacklogLimit));
+        m_decoderReorderStreamId = streamId;
+        m_decoderReorderSessionEpoch = streamSessionEpoch;
+        m_chunkQueue.clear();
         m_decoderMissingChunkSeq = UINT64_MAX;
         m_decoderMissingChunkStartMs = 0;
       }
-      else if (m_decoderMissingChunkSeq != m_nextChunkSeqToDecode) {
-        m_decoderMissingChunkSeq = m_nextChunkSeqToDecode;
+
+      ndn_service_framework::StreamChunk streamChunk;
+      streamChunk.streamId = streamId;
+      streamChunk.sessionEpoch = streamSessionEpoch;
+      streamChunk.seq = packetSeq;
+      streamChunk.payload = payload;
+      streamChunk.contentType = "video/h264";
+      streamChunk.arrivalMs = m_firstFrameMs == 0 ? 0 : m_firstFrameMs + elapsedMs;
+      streamChunk.metadata["decoderElapsedMs"] = std::to_string(elapsedMs);
+
+      const auto before = m_decoderReorderBuffer->metrics();
+      notifyWriter = appendDecoderReadyChunksUnderLock(
+        m_decoderReorderBuffer->push(streamChunk));
+      const auto after = m_decoderReorderBuffer->metrics();
+      m_decoderDroppedChunks +=
+        (after.duplicates - before.duplicates) + (after.stale - before.stale);
+      m_nextChunkSeqToDecode = m_decoderReorderBuffer->nextSeq();
+
+      if (m_decoderReorderBuffer->pendingCount() >= m_decoderBacklogLimit) {
+        const auto pending = m_decoderReorderBuffer->pendingSequences(1);
+        if (!pending.empty() && pending.front() > m_nextChunkSeqToDecode) {
+          NDN_LOG_DEBUG("GS_VIDEO_SKIP_MISSING_CHUNKS start="
+                       << m_nextChunkSeqToDecode << " to=" << pending.front() - 1);
+          m_decoderDroppedChunks += (pending.front() - m_nextChunkSeqToDecode);
+          m_decoderReorderBuffer->skipTo(pending.front());
+          notifyWriter = appendDecoderReadyChunksUnderLock(
+            m_decoderReorderBuffer->drainReady()) || notifyWriter;
+          m_nextChunkSeqToDecode = m_decoderReorderBuffer->nextSeq();
+        }
+      }
+
+      const auto missing = m_decoderReorderBuffer->missingSequences(1);
+      if (missing.empty()) {
+        m_decoderMissingChunkSeq = UINT64_MAX;
+        m_decoderMissingChunkStartMs = 0;
+      }
+      else if (m_decoderMissingChunkSeq != missing.front()) {
+        m_decoderMissingChunkSeq = missing.front();
         m_decoderMissingChunkStartMs = nowMilliseconds();
       }
-      m_decoderPendingChunkCount = m_pendingChunks.size();
+      m_decoderPendingChunkCount = m_decoderReorderBuffer->pendingCount();
+      m_decoderPendingBytes = m_decoderReorderBuffer->pendingBytes();
     }
 
     if (notifyWriter) {
@@ -7838,8 +7874,14 @@ private:
     {
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
       m_chunkQueue.clear();
-      m_pendingChunks.clear();
+      m_decoderReorderBuffer = std::make_unique<ndn_service_framework::StreamConsumerReorderBuffer>(
+        activeVideoStreamId(), videoStreamSessionEpoch(), 0,
+        std::max<uint64_t>(1, m_decoderBacklogLimit));
+      m_decoderReorderStreamId = activeVideoStreamId();
+      m_decoderReorderSessionEpoch = videoStreamSessionEpoch();
       m_decoderPendingChunkCount = 0;
+      m_decoderPendingBytes = 0;
+      m_fecRecoveredChunks = 0;
       m_nextChunkSeqToDecode = 0;
     }
 
@@ -7983,8 +8025,11 @@ private:
     {
       std::lock_guard<std::mutex> guard(m_decoderQueueMutex);
       m_chunkQueue.clear();
-      m_pendingChunks.clear();
+      m_decoderReorderBuffer.reset();
+      m_decoderReorderStreamId.clear();
+      m_decoderReorderSessionEpoch = 0;
       m_decoderPendingChunkCount = 0;
+      m_decoderPendingBytes = 0;
       m_decoderOutBuffer.clear();
       m_lastOutputChunkStreamId.clear();
       m_lastOutputChunkStreamSessionEpoch = 0;
@@ -8154,47 +8199,39 @@ private:
   void
   advanceMissingChunkUnderTimeout(uint64_t nowMs)
   {
-    if (m_decoderMissingChunkSeq == UINT64_MAX || m_pendingChunks.empty() ||
+    if (m_decoderMissingChunkSeq == UINT64_MAX || !m_decoderReorderBuffer ||
+        m_decoderReorderBuffer->pendingCount() == 0 ||
         m_decoderRunning.load() == false) {
       return;
     }
 
     const auto now = nowMs;
-    const auto first = m_pendingChunks.begin();
-    if (first->first <= m_nextChunkSeqToDecode) {
+    const auto pending = m_decoderReorderBuffer->pendingSequences(1);
+    if (pending.empty() || pending.front() <= m_nextChunkSeqToDecode) {
       m_decoderMissingChunkSeq = UINT64_MAX;
       m_decoderMissingChunkStartMs = 0;
       return;
     }
 
-    if (first->first > m_nextChunkSeqToDecode &&
+    if (pending.front() > m_nextChunkSeqToDecode &&
         now >= m_decoderMissingChunkStartMs + dynamicDecoderMissingTimeoutMs()) {
       NDN_LOG_DEBUG("GS_VIDEO_SKIP_MISSING_CHUNKS_TIMEOUT start=" << m_decoderMissingChunkSeq
-                     << " to=" << first->first - 1
+                     << " to=" << pending.front() - 1
                      << " timeoutMs=" << dynamicDecoderMissingTimeoutMs()
                      << " nowMs=" << now);
-      m_decoderDroppedChunks += (first->first - m_nextChunkSeqToDecode);
-      m_nextChunkSeqToDecode = first->first;
+      m_decoderDroppedChunks += (pending.front() - m_nextChunkSeqToDecode);
+      m_decoderReorderBuffer->skipTo(pending.front());
+      appendDecoderReadyChunksUnderLock(m_decoderReorderBuffer->drainReady());
+      m_nextChunkSeqToDecode = m_decoderReorderBuffer->nextSeq();
       m_decoderMissingChunkSeq = UINT64_MAX;
       m_decoderMissingChunkStartMs = 0;
 
-      while (!m_pendingChunks.empty()) {
-        auto it = m_pendingChunks.find(m_nextChunkSeqToDecode);
-        if (it == m_pendingChunks.end()) {
-          m_decoderMissingChunkSeq = m_nextChunkSeqToDecode;
-          m_decoderMissingChunkStartMs = nowMs;
-          break;
-        }
-        m_chunkQueue.push_back(std::move(it->second));
-        m_pendingChunks.erase(it);
-        ++m_nextChunkSeqToDecode;
+      const auto missing = m_decoderReorderBuffer->missingSequences(1);
+      if (!missing.empty()) {
+        m_decoderMissingChunkSeq = missing.front();
+        m_decoderMissingChunkStartMs = nowMs;
       }
-      if (m_pendingChunks.empty() ||
-          (!m_pendingChunks.empty() && m_pendingChunks.begin()->first == m_nextChunkSeqToDecode)) {
-        m_decoderMissingChunkSeq = UINT64_MAX;
-        m_decoderMissingChunkStartMs = 0;
-      }
-      m_decoderPendingChunkCount = m_pendingChunks.size();
+      m_decoderPendingChunkCount = m_decoderReorderBuffer->pendingCount();
       m_decoderQueueCv.notify_one();
     }
   }
@@ -8391,6 +8428,8 @@ private:
   std::atomic<uint64_t> m_videoProbePressurePercent{0};
   std::atomic<uint64_t> m_videoDuplicatePressurePercent{0};
   std::atomic<uint64_t> m_decoderPendingChunkCount{0};
+  std::atomic<uint64_t> m_decoderPendingBytes{0};
+  std::atomic<uint64_t> m_fecRecoveredChunks{0};
   std::atomic<bool> m_done{false};
   std::atomic<bool> m_videoPumpScheduled{false};
   std::mutex m_videoPacketTrackingMutex;
@@ -8401,7 +8440,9 @@ private:
   std::mutex m_decoderQueueMutex;
   std::condition_variable m_decoderQueueCv;
   std::deque<DecoderStreamChunk> m_chunkQueue;
-  std::map<uint64_t, DecoderStreamChunk> m_pendingChunks;
+  std::unique_ptr<ndn_service_framework::StreamConsumerReorderBuffer> m_decoderReorderBuffer;
+  std::string m_decoderReorderStreamId;
+  uint64_t m_decoderReorderSessionEpoch = 0;
   std::map<uint64_t, std::vector<uint8_t>> m_recordingPlaybackChunks;
   std::map<std::pair<uint64_t, uint64_t>, FecFrameState> m_fecFrames;
   std::vector<uint8_t> m_decoderOutBuffer;

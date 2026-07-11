@@ -52,6 +52,24 @@ REQUIRED_BY_FILE = {
     ],
 }
 
+FINITE_OBJECT_SOURCE_FILES = [
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.cpp",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
+    "Experiments/NDNSF_DI_NativeTracer_Minindn.py",
+    "Experiments/NDNSF_DI_LlmPipeline_Smoke.py",
+    "NDNSF-DistributedInference/ndnsf_distributed_inference/gui.py",
+]
+
+FINITE_OBJECT_FORBIDDEN = [
+    "StreamChunk",
+    "streamChunkDependencies",
+    "NDNSF_DI_STREAM_CHUNK_DEPENDENCIES",
+    "dependency-envelope-mode",
+    "dependency-payload-mode",
+]
+
 
 FORBIDDEN_CASE_INSENSITIVE = [
     "streamchunk replaces segmentfetcher",
@@ -93,6 +111,13 @@ def main() -> int:
     for path, text in documents.items():
         for needle in FORBIDDEN_CASE_INSENSITIVE:
             reject_case_insensitive(text, needle, path)
+
+    for path in FINITE_OBJECT_SOURCE_FILES:
+        text = read(path)
+        for needle in FINITE_OBJECT_FORBIDDEN:
+            if needle in text:
+                raise AssertionError(
+                    f"{path}: finite-object path contains stream-only symbol: {needle}")
 
     print("NDNSF_TRANSFER_BOUNDARY_DOCUMENTATION_REGRESSION_OK")
     return 0

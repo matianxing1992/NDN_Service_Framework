@@ -30,7 +30,6 @@ struct NativeProviderHandlerConfig
   std::size_t maxSegmentSize = 7000;
   int freshnessMs = 60000;
   std::size_t workerCount = 1;
-  bool streamChunkDependencies = false;
   ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
   std::string executionLeaseTargetService;
   uint64_t executionLeaseHardDeadlineMs = 120000;

@@ -784,16 +784,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=("Open-loop Qwen MiniNDN user-driver mode. "
                               "process-pool reuses worker users and is the "
                               "recommended GUI/headless sweep default."))
-    parser.add_argument("--experiment-dependency-envelope-mode",
-                        "--experiment-dependency-payload-mode",
-                        dest="experiment_dependency_envelope_mode",
-                        choices=["raw", "streamchunk"],
-                        default="raw",
-                        help=("Dependency envelope mode for Qwen MiniNDN providers. "
-                              "raw keeps exact-name large-data fetches; streamchunk "
-                              "is an opt-in metadata-envelope experiment. The old "
-                              "--experiment-dependency-payload-mode flag is accepted "
-                              "as a compatibility alias."))
     parser.add_argument("--experiment-dry-run", action="store_true",
                         help="Print/record the resolved Qwen MiniNDN command without running MiniNDN.")
     parser.add_argument("--experiment-extra-arg", action="append", default=[],
@@ -834,7 +824,6 @@ def build_qwen_minindn_command(profile: ThreeRoleGuiProfile,
         "--llm-planner-mode", "proportional",
         "--no-local-execution-only",
         "--full-network",
-        "--dependency-envelope-mode", args.experiment_dependency_envelope_mode,
     ]
     if args.experiment_requests > 0:
         command.extend(["--requests", str(args.experiment_requests)])
@@ -898,17 +887,9 @@ def run_headless_qwen_minindn(args: argparse.Namespace) -> dict[str, Any]:
         "runnerMode": harness_summary.get("runnerMode", ""),
         "userExecution": harness_summary.get("userExecution", {}),
         "dependencyExecution": harness_summary.get("dependencyExecution", {}),
-        "dependencyEnvelopeMode": harness_summary.get(
-            "dependencyEnvelopeMode",
-            harness_summary.get("dependencyPayloadMode", args.experiment_dependency_envelope_mode),
-        ),
-        "dependencyPayloadMode": harness_summary.get(
-            "dependencyPayloadMode",
-            harness_summary.get("dependencyEnvelopeMode", args.experiment_dependency_envelope_mode),
-        ),
         "coreEnvelopeSummary": harness_summary.get("coreEnvelopeSummary", {}),
         "providerAckRuntimeHints": harness_summary.get("providerAckRuntimeHints", {}),
-        "streamChunkDependencyCounters": harness_summary.get("streamChunkDependencyCounters", {}),
+        "dependencyObjectCounters": harness_summary.get("dependencyObjectCounters", {}),
         "providerUtilization": harness_summary.get("providerUtilization", {}),
         "failureReason": harness_summary.get("failureReason", ""),
         "elapsed_ms": round((time.time() - started_at) * 1000.0, 3),
@@ -3035,7 +3016,6 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             ("Sweep repeats", "sweep_repeats", "1", ""),
             ("Open-loop duration s", "open_loop_duration_s", "", ""),
             ("Open-loop driver mode", "open_loop_driver_mode", "process-pool", ""),
-            ("Dependency envelope mode", "dependency_envelope_mode", "raw", ""),
             ("Output JSON", "output_json", "/tmp/ndnsf-di-gui-qwen-minindn/gui-summary.json", "save"),
             ("Extra harness args", "extra_args", "", ""),
         ]
@@ -3117,7 +3097,6 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             experiment_open_loop_driver_mode=(
                 self.value("open_loop_driver_mode").strip() or "process-pool"
             ),
-            experiment_dependency_envelope_mode=self.value("dependency_envelope_mode") or "raw",
             experiment_dry_run=self.bool_value("dry_run"),
             experiment_extra_arg=split_extra_args(self.value("extra_args")),
             output_json=self.value("output_json"),
@@ -3342,17 +3321,9 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
                     "runnerMode": data.get("runnerMode"),
                     "userExecution": data.get("userExecution", {}),
                     "dependencyExecution": data.get("dependencyExecution", {}),
-                    "dependencyEnvelopeMode": data.get(
-                        "dependencyEnvelopeMode",
-                        data.get("dependencyPayloadMode", ""),
-                    ),
-                    "dependencyPayloadMode": data.get(
-                        "dependencyPayloadMode",
-                        data.get("dependencyEnvelopeMode", ""),
-                    ),
                     "coreEnvelopeSummary": data.get("coreEnvelopeSummary", {}),
                     "providerAckRuntimeHints": data.get("providerAckRuntimeHints", {}),
-                    "streamChunkDependencyCounters": data.get("streamChunkDependencyCounters", {}),
+                    "dependencyObjectCounters": data.get("dependencyObjectCounters", {}),
                     "summary_json": str(summary_path),
                     "out": str(summary_path.parent),
                 })
@@ -3438,20 +3409,9 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             "maxScheduleSlipMs": user_execution.get("maxScheduleSlipMs", ""),
             "openLoopDriverMode": user_execution.get("openLoopDriverMode", ""),
             "dependencyStatus": dependency_execution.get("status", ""),
-            "dependencyEnvelopeMode": data.get(
-                "dependencyEnvelopeMode",
-                data.get("dependencyPayloadMode", ""),
-            ),
-            "dependencyPayloadMode": data.get(
-                "dependencyPayloadMode",
-                data.get("dependencyEnvelopeMode", ""),
-            ),
             "dependencyEventCount": (
-                data.get("streamChunkDependencyCounters", {}) or {}
+                data.get("dependencyObjectCounters", {}) or {}
             ).get("eventCount", ""),
-            "dependencyDecodeErrorCount": (
-                data.get("streamChunkDependencyCounters", {}) or {}
-            ).get("decodeErrorCount", ""),
             "dependencyRoles": ",".join(dependency_execution.get("roles", []) or []),
             "providerCount": provider_count,
             "providerMeanUtilization": provider_mean_utilization,
@@ -3482,10 +3442,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             "maxScheduleSlipMs",
             "openLoopDriverMode",
             "dependencyStatus",
-            "dependencyEnvelopeMode",
-            "dependencyPayloadMode",
             "dependencyEventCount",
-            "dependencyDecodeErrorCount",
             "dependencyRoles",
             "providerCount",
             "providerMeanUtilization",

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from ndnsf.streaming import (
     StreamAdaptiveFetcherState,
@@ -107,6 +108,26 @@ class CoreStreamingTest(unittest.TestCase):
         buffer.skip_to(2)
         self.assertEqual([chunk.payload for chunk in buffer.push(StreamChunk("s", 1, 3, b"three"))],
                          [b"two", b"three"])
+
+    def test_consumer_reports_pending_bytes_and_overflow(self) -> None:
+        buffer = StreamConsumerReorderBuffer("s", 1, next_seq=0, max_pending=2)
+        buffer.push(StreamChunk("s", 1, 2, b"22"))
+        buffer.push(StreamChunk("s", 1, 3, b"333"))
+        self.assertEqual((buffer.pending_count, buffer.pending_bytes), (2, 5))
+
+        buffer.push(StreamChunk("s", 1, 4, b"4"))
+        self.assertEqual((buffer.pending_count, buffer.pending_bytes), (2, 4))
+        self.assertEqual(buffer.metrics.overflows, 1)
+
+    def test_native_producer_buffer_is_thread_safe(self) -> None:
+        buffer = StreamProducerBuffer(max_chunks=128)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            list(executor.map(
+                lambda seq: buffer.put(StreamChunk("s", 1, seq, b"x")),
+                range(100),
+            ))
+        self.assertEqual(len(buffer), 100)
+        self.assertEqual(buffer.metrics.produced, 100)
 
     def test_adaptive_fetcher_decision_reacts_to_pressure(self) -> None:
         state = StreamAdaptiveFetcherState(rtt_ms=100, base_window=32, base_lookahead=8)

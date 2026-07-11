@@ -1358,7 +1358,9 @@ VideoAdaptiveState::fromFields(const Fields& fields)
   state.primaryPressure = fieldOr(fields, "primary_pressure", state.primaryPressure);
   state.policyReason = fieldOr(fields, "policy_reason", state.policyReason);
   state.pendingChunks = uint64FieldOr(fields, "pending_chunks", state.pendingChunks);
+  state.pendingBytes = uint64FieldOr(fields, "pending_bytes", state.pendingBytes);
   state.receivedChunks = uint64FieldOr(fields, "received_chunks", state.receivedChunks);
+  state.fecRecoveredChunks = uint64FieldOr(fields, "fec_recovered_chunks", state.fecRecoveredChunks);
   state.timeouts = uint64FieldOr(fields, "timeouts", state.timeouts);
   state.nacks = uint64FieldOr(fields, "nacks", state.nacks);
   state.duplicates = uint64FieldOr(fields, "duplicates", state.duplicates);
@@ -1395,7 +1397,9 @@ VideoAdaptiveState::toFields() const
     {"primary_pressure", primaryPressure},
     {"policy_reason", policyReason},
     {"pending_chunks", std::to_string(pendingChunks)},
+    {"pending_bytes", std::to_string(pendingBytes)},
     {"received_chunks", std::to_string(receivedChunks)},
+    {"fec_recovered_chunks", std::to_string(fecRecoveredChunks)},
     {"timeouts", std::to_string(timeouts)},
     {"nacks", std::to_string(nacks)},
     {"duplicates", std::to_string(duplicates)},
@@ -1537,7 +1541,9 @@ VideoAdaptiveState::statusLine() const
          " primary_pressure=" + primaryPressure +
          " policy_reason=" + policyReason +
          " pending_chunks=" + std::to_string(pendingChunks) +
+         " pending_bytes=" + std::to_string(pendingBytes) +
          " received_chunks=" + std::to_string(receivedChunks) +
+         " fec_recovered_chunks=" + std::to_string(fecRecoveredChunks) +
          " timeouts=" + std::to_string(timeouts) +
          " nacks=" + std::to_string(nacks) +
          " duplicates=" + std::to_string(duplicates) +
