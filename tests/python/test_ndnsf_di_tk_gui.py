@@ -16,108 +16,24 @@ from ndnsf_distributed_inference.gui import (
     ProviderTabConfig,
     RoleRuntimeController,
     RoleProcessState,
-    RuntimeGuiProfile,
-    RuntimeRoleProfile,
     ThreeRoleGuiProfile,
     UserRequestConfig,
     UserTabConfig,
     apply_role_config_file,
     build_arg_parser,
     build_qwen_minindn_command,
-    build_role_command,
     format_core_envelope_summary,
-    load_runtime_profile,
     load_three_role_profile,
     payload_from_request,
     redact_mapping,
     run_headless,
     run_headless_qwen_minindn,
     split_extra_args,
-    write_runtime_profile,
     write_three_role_profile,
 )
 
 
 class TkGuiHelperTests(unittest.TestCase):
-    def test_runtime_profile_roundtrip(self) -> None:
-        profile = RuntimeGuiProfile(
-            controller=RuntimeRoleProfile(
-                role="controller",
-                config="policy.yaml",
-                generated_policy_dir="/tmp/policy",
-            ),
-            provider=RuntimeRoleProfile(
-                role="provider",
-                config="policy.yaml",
-                provider_id="P2",
-                roles="/Stage/0,/Stage/1",
-                extra_args="--queue-depth 4",
-            ),
-            user=RuntimeRoleProfile(
-                role="user",
-                config="policy.yaml",
-                ack_timeout_ms="700",
-                timeout_ms="45000",
-                extra_args='--payload "hello world"',
-            ),
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "profile.json"
-            write_runtime_profile(path, profile)
-            loaded = load_runtime_profile(path)
-        self.assertEqual(loaded.provider.provider_id, "P2")
-        self.assertEqual(loaded.provider.roles, "/Stage/0,/Stage/1")
-        self.assertEqual(loaded.user.extra_args, '--payload "hello world"')
-
-    def test_build_provider_command_uses_shell_style_extra_args(self) -> None:
-        command = build_role_command(
-            role="provider",
-            script_path="/repo/provider.py",
-            config="policy.yaml",
-            generated_policy_dir="/tmp/generated",
-            group="/group",
-            provider_id="P1",
-            roles="/Stage/0",
-            extra_args='--name "provider one"',
-            python_executable="python3",
-        )
-        self.assertEqual(command[:5], [
-            "python3",
-            "/repo/provider.py",
-            "--config",
-            "policy.yaml",
-            "--generated-policy-dir",
-        ])
-        self.assertIn("--provider-id", command)
-        self.assertIn("P1", command)
-        self.assertEqual(command[-2:], ["--name", "provider one"])
-
-    def test_build_controller_command_does_not_pass_group(self) -> None:
-        command = build_role_command(
-            role="controller",
-            script_path="/repo/controller.py",
-            config="policy.yaml",
-            generated_policy_dir="/tmp/generated",
-            group="/group",
-            python_executable="python3",
-        )
-        self.assertNotIn("--group", command)
-
-    def test_build_user_command_includes_timeouts(self) -> None:
-        command = build_role_command(
-            role="user",
-            script_path="/repo/user.py",
-            config="policy.yaml",
-            generated_policy_dir="/tmp/generated",
-            ack_timeout_ms="900",
-            timeout_ms="60000",
-            python_executable="python3",
-        )
-        self.assertIn("--ack-timeout-ms", command)
-        self.assertIn("900", command)
-        self.assertIn("--timeout-ms", command)
-        self.assertIn("60000", command)
-
     def test_split_extra_args_preserves_quoted_value(self) -> None:
         self.assertEqual(split_extra_args('--payload "hello world"'), [
             "--payload",
@@ -162,29 +78,6 @@ class TkGuiHelperTests(unittest.TestCase):
         self.assertEqual(loaded.provider.provider_id, "P1")
         self.assertEqual(loaded.user.request.payload, "hi")
         self.assertEqual(loaded.env.publication_fetch_window, "32")
-
-    def test_three_role_profile_can_migrate_legacy_profile(self) -> None:
-        legacy = RuntimeGuiProfile(
-            controller=RuntimeRoleProfile(role="controller"),
-            provider=RuntimeRoleProfile(
-                role="provider",
-                group="/legacy/group",
-                provider_id="P2",
-                service="/Legacy/Service",
-                roles="/Stage/0",
-            ),
-            user=RuntimeRoleProfile(
-                role="user",
-                group="/legacy/group",
-                service="/Legacy/Service",
-                ack_timeout_ms="700",
-                timeout_ms="9000",
-            ),
-        )
-        migrated = ThreeRoleGuiProfile.from_legacy(legacy)
-        self.assertEqual(migrated.provider.group, "/legacy/group")
-        self.assertEqual(migrated.provider.service_name, "/Legacy/Service")
-        self.assertEqual(migrated.user.request.ack_timeout_ms, 700)
 
     def test_payload_codecs(self) -> None:
         self.assertEqual(payload_from_request(UserRequestConfig(payload="hello")), b"hello")

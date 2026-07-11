@@ -41,61 +41,6 @@ DEFAULT_POLICY = Path(
 
 
 @dataclass
-class RuntimeRoleProfile:
-    role: str
-    config: str = str(DEFAULT_POLICY)
-    example: str = "YOLO 2x2"
-    generated_policy_dir: str = "/tmp/ndnsf-di-gui-policy"
-    group: str = ""
-    provider_id: str = "A"
-    roles: str = "all"
-    service: str = "/AI/YOLO/2x2Inference"
-    ack_timeout_ms: str = "1500"
-    timeout_ms: str = "60000"
-    extra_args: str = ""
-
-    @classmethod
-    def from_mapping(cls, role: str, data: dict[str, Any] | None) -> "RuntimeRoleProfile":
-        profile = cls(role=role)
-        if not isinstance(data, dict):
-            return profile
-        allowed = set(asdict(profile))
-        values = {key: str(value) for key, value in data.items() if key in allowed}
-        values["role"] = role
-        return cls(**values)
-
-
-@dataclass
-class RuntimeGuiProfile:
-    controller: RuntimeRoleProfile
-    provider: RuntimeRoleProfile
-    user: RuntimeRoleProfile
-
-    @classmethod
-    def default(cls) -> "RuntimeGuiProfile":
-        return cls(
-            controller=RuntimeRoleProfile(role="controller"),
-            provider=RuntimeRoleProfile(role="provider"),
-            user=RuntimeRoleProfile(role="user"),
-        )
-
-    @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> "RuntimeGuiProfile":
-        return cls(
-            controller=RuntimeRoleProfile.from_mapping("controller", data.get("controller")),
-            provider=RuntimeRoleProfile.from_mapping("provider", data.get("provider")),
-            user=RuntimeRoleProfile.from_mapping("user", data.get("user")),
-        )
-
-    def to_mapping(self) -> dict[str, Any]:
-        return {
-            "controller": asdict(self.controller),
-            "provider": asdict(self.provider),
-            "user": asdict(self.user),
-        }
-
-
-@dataclass
 class NdnsfSvsEnvConfig:
     enable_ndnsd: bool = True
     disable_ndnsd: bool = False
@@ -284,8 +229,6 @@ class ThreeRoleGuiProfile:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "ThreeRoleGuiProfile":
-        if "version" not in data and {"controller", "provider", "user"} <= set(data):
-            return cls.from_legacy(RuntimeGuiProfile.from_mapping(data))
         return cls(
             version=int(data.get("version", 2)),
             shared=SharedNdnsfConfig.from_mapping(data.get("shared")),
@@ -294,26 +237,6 @@ class ThreeRoleGuiProfile:
             provider=ProviderTabConfig.from_mapping(data.get("provider")),
             user=UserTabConfig.from_mapping(data.get("user")),
             persist_tokens=bool(data.get("persist_tokens", False)),
-        )
-
-    @classmethod
-    def from_legacy(cls, legacy: RuntimeGuiProfile) -> "ThreeRoleGuiProfile":
-        return cls(
-            controller=ControllerTabConfig(),
-            provider=ProviderTabConfig(
-                group=legacy.provider.group or ProviderTabConfig.group,
-                service_name=legacy.provider.service,
-                provider_id=legacy.provider.provider_id,
-                roles=legacy.provider.roles,
-            ),
-            user=UserTabConfig(
-                group=legacy.user.group or UserTabConfig.group,
-                request=UserRequestConfig(
-                    service_name=legacy.user.service,
-                    ack_timeout_ms=int(legacy.user.ack_timeout_ms or 1000),
-                    timeout_ms=int(legacy.user.timeout_ms or 10000),
-                ),
-            ),
         )
 
     def to_mapping(self) -> dict[str, Any]:
@@ -329,15 +252,6 @@ def load_three_role_profile(path: str | Path) -> ThreeRoleGuiProfile:
 
 
 def write_three_role_profile(path: str | Path, profile: ThreeRoleGuiProfile) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(profile.to_mapping(), indent=2), encoding="utf-8")
-
-
-def load_runtime_profile(path: str | Path) -> RuntimeGuiProfile:
-    return RuntimeGuiProfile.from_mapping(json.loads(Path(path).read_text(encoding="utf-8")))
-
-
-def write_runtime_profile(path: str | Path, profile: RuntimeGuiProfile) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(profile.to_mapping(), indent=2), encoding="utf-8")
 
@@ -1082,42 +996,6 @@ class RoleProcessState:
         return self.status
 
 
-def build_role_command(
-    *,
-    role: str,
-    script_path: str | Path,
-    config: str,
-    generated_policy_dir: str,
-    group: str = "",
-    provider_id: str = "",
-    roles: str = "",
-    ack_timeout_ms: str = "",
-    timeout_ms: str = "",
-    extra_args: str = "",
-    python_executable: str = sys.executable,
-) -> list[str]:
-    args = [
-        python_executable,
-        str(script_path),
-        "--config", config,
-        "--generated-policy-dir", generated_policy_dir,
-    ]
-    if group and role != "controller":
-        args.extend(["--group", group])
-    if role == "provider":
-        if provider_id:
-            args.extend(["--provider-id", provider_id])
-        if roles:
-            args.extend(["--roles", roles])
-    elif role == "user":
-        if ack_timeout_ms:
-            args.extend(["--ack-timeout-ms", ack_timeout_ms])
-        if timeout_ms:
-            args.extend(["--timeout-ms", timeout_ms])
-    args.extend(split_extra_args(extra_args))
-    return args
-
-
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -1626,7 +1504,7 @@ class CertificateTab(ttk.Frame):
         self.refresh()
 
 
-class DeploymentRunnerTab(ttk.Frame):
+class RegressionRunnerTab(ttk.Frame):
     REGRESSION_CASES = {
         "auto-split": ("YOLO_SPLIT_RESULT", "ok=true"),
         "yolo-2x2": ("YOLO_2X2_RESULT", "ok=true"),
@@ -1640,10 +1518,7 @@ class DeploymentRunnerTab(ttk.Frame):
     def __init__(self, parent, app: "DistributedInferenceGui"):
         super().__init__(parent)
         self.app = app
-        self.config_var = tk.StringVar(value=str(DEFAULT_POLICY))
-        self.provider_id_var = tk.StringVar(value="A")
         self.regression_case_var = tk.StringVar(value="yolo-2x2")
-        self.profile_path_var = tk.StringVar(value="examples/python/NDNSF-DistributedInference/gui_runtime_profile.json")
         self.processes: dict[str, subprocess.Popen[str]] = {}
         self.process_states: dict[str, RoleProcessState] = {}
         self.status_callbacks: dict[str, Callable[[str], None]] = {}
@@ -1653,72 +1528,24 @@ class DeploymentRunnerTab(ttk.Frame):
 
     def _build(self) -> None:
         self.columnconfigure(1, weight=1)
-        ttk.Label(self, text="Config").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(self, textvariable=self.config_var).grid(row=0, column=1, sticky="ew", padx=6)
-        ttk.Button(self, text="Browse", command=self.browse).grid(row=0, column=2, padx=6)
-        ttk.Label(self, text="Provider ID").grid(row=1, column=0, sticky="w", padx=6)
-        ttk.Entry(self, textvariable=self.provider_id_var).grid(row=1, column=1, sticky="ew", padx=6)
-        ttk.Label(self, text="Regression").grid(row=2, column=0, sticky="w", padx=6, pady=4)
+        ttk.Label(self, text="Regression").grid(row=0, column=0, sticky="w", padx=6, pady=4)
         ttk.Combobox(
             self,
             textvariable=self.regression_case_var,
             values=list(self.REGRESSION_CASES.keys()),
             state="readonly",
-        ).grid(row=2, column=1, sticky="ew", padx=6, pady=4)
+        ).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
         buttons = ttk.Frame(self)
-        buttons.grid(row=3, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
-        ttk.Button(buttons, text="Run Controller", command=self.run_controller).pack(side="left")
-        ttk.Button(buttons, text="Run Provider", command=self.run_provider).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Run User", command=self.run_user).pack(side="left")
+        buttons.grid(row=1, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
         ttk.Button(buttons, text="Run Selected Regression",
                    command=self.run_selected_regression).pack(side="left", padx=4)
         ttk.Button(buttons, text="Run YOLO 2x2 MiniNDN Smoke",
                    command=self.run_yolo_2x2_smoke).pack(side="left", padx=4)
         ttk.Button(buttons, text="Stop Processes", command=self.stop_processes).pack(side="left")
-        profile = ttk.Frame(self)
-        profile.grid(row=4, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
-        ttk.Label(profile, text="Runtime profile").pack(side="left")
-        ttk.Entry(profile, textvariable=self.profile_path_var).pack(side="left", fill="x",
-                                                                    expand=True, padx=6)
-        ttk.Button(profile, text="Load Profile", command=self.load_profile).pack(side="left")
-        ttk.Button(profile, text="Save Profile", command=self.save_profile).pack(side="left", padx=4)
-        ttk.Button(profile, text="Start All", command=self.start_all).pack(side="left")
-        ttk.Button(profile, text="Stop All", command=self.stop_processes).pack(side="left", padx=4)
-        ttk.Button(profile, text="Clear Logs", command=self.clear_logs).pack(side="left")
+        ttk.Button(buttons, text="Clear Logs", command=self.clear_logs).pack(side="left", padx=4)
         self.log = TextPane(self, height=25)
-        self.log.grid(row=5, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
-        self.rowconfigure(5, weight=1)
-
-    def browse(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select config",
-            filetypes=[("YAML/JSON", "*.yaml *.yml *.json"), ("All files", "*")],
-        )
-        if path:
-            self.config_var.set(path)
-
-    def _script_for_config(self, role: str) -> list[str]:
-        config = self.config_var.get()
-        if "yolo_split" in config:
-            base = "examples/python/NDNSF-DistributedInference/yolo_split"
-        elif "pytorch_eager_2x2" in config:
-            base = "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2"
-        else:
-            base = "examples/python/NDNSF-DistributedInference/yolo_2x2"
-        script = repo_root() / base / f"{role}.py"
-        args = [sys.executable, str(script), "--config", config]
-        if role == "provider":
-            args.extend(["--provider-id", self.provider_id_var.get()])
-        return args
-
-    def run_controller(self) -> None:
-        self._start(self._script_for_config("controller"), "controller")
-
-    def run_provider(self) -> None:
-        self._start(self._script_for_config("provider"), "provider")
-
-    def run_user(self) -> None:
-        self._start(self._script_for_config("user"), "user")
+        self.log.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
+        self.rowconfigure(2, weight=1)
 
     def run_selected_regression(self) -> None:
         case = self.regression_case_var.get()
@@ -1836,59 +1663,6 @@ class DeploymentRunnerTab(ttk.Frame):
 
     def clear_logs(self) -> None:
         self.log.set("")
-
-    def start_all(self) -> None:
-        self.app.controller_runtime.run_role()
-        self.app.provider_runtime.run_role()
-        self.app.user_runtime.run_role()
-
-    def profile(self) -> RuntimeGuiProfile:
-        return RuntimeGuiProfile(
-            controller=self.app.controller_runtime.profile(),
-            provider=self.app.provider_runtime.profile(),
-            user=self.app.user_runtime.profile(),
-        )
-
-    def apply_profile(self, profile: RuntimeGuiProfile) -> None:
-        self.app.controller_runtime.apply_profile(profile.controller)
-        self.app.provider_runtime.apply_profile(profile.provider)
-        self.app.user_runtime.apply_profile(profile.user)
-        self.config_var.set(profile.provider.config)
-        self.provider_id_var.set(profile.provider.provider_id)
-        self.app.set_status("Runtime profile loaded")
-
-    def load_profile(self) -> None:
-        path = self.profile_path_var.get().strip()
-        if not path or not Path(path).exists():
-            path = filedialog.askopenfilename(
-                title="Load runtime profile",
-                filetypes=[("JSON", "*.json"), ("All files", "*")],
-            )
-            if not path:
-                return
-            self.profile_path_var.set(path)
-        try:
-            self.apply_profile(load_runtime_profile(path))
-        except Exception as exc:
-            messagebox.showerror("Load profile failed", str(exc))
-
-    def save_profile(self) -> None:
-        path = self.profile_path_var.get().strip()
-        if not path:
-            path = filedialog.asksaveasfilename(
-                title="Save runtime profile",
-                defaultextension=".json",
-                filetypes=[("JSON", "*.json"), ("All files", "*")],
-            )
-            if not path:
-                return
-            self.profile_path_var.set(path)
-        try:
-            write_runtime_profile(path, self.profile())
-        except Exception as exc:
-            messagebox.showerror("Save profile failed", str(exc))
-            return
-        self.app.set_status(f"Saved runtime profile: {path}")
 
 
 class ControllerCertificateFrame(ttk.LabelFrame):
@@ -2101,191 +1875,6 @@ class ParticipantCertificateFrame(ttk.LabelFrame):
             return
         code, output = run_command(["ndnsec", "cert-install", "-f", cert_path])
         self.status.set(output or f"ndnsec cert-install exited with {code}")
-
-
-class RoleRuntimeTab(ttk.Frame):
-    """Role-specific APP runtime launcher.
-
-    One physical node can run any combination of these roles. The tab only
-    prepares and launches the corresponding APP-level process; permissions,
-    identities, artifacts, and service dependency graph still come from the
-    selected policy file.
-    """
-
-    EXAMPLE_BASES = {
-        "YOLO 2-stage": "examples/python/NDNSF-DistributedInference/yolo_split",
-        "YOLO 2x2": "examples/python/NDNSF-DistributedInference/yolo_2x2",
-        "PyTorch 2x2": "examples/python/NDNSF-DistributedInference/pytorch_eager_2x2",
-    }
-
-    def __init__(self, parent, app: "DistributedInferenceGui", role: str):
-        super().__init__(parent)
-        self.app = app
-        self.role = role
-        self.config_var = tk.StringVar(value=str(DEFAULT_POLICY))
-        self.example_var = tk.StringVar(value="YOLO 2x2")
-        self.generated_dir_var = tk.StringVar(value="/tmp/ndnsf-di-gui-policy")
-        self.group_var = tk.StringVar(value="")
-        self.provider_id_var = tk.StringVar(value="A")
-        self.roles_var = tk.StringVar(value="all")
-        self.service_var = tk.StringVar(value="/AI/YOLO/2x2Inference")
-        self.ack_timeout_var = tk.StringVar(value="1500")
-        self.timeout_var = tk.StringVar(value="60000")
-        self.extra_args_var = tk.StringVar(value="")
-        self.status_var = tk.StringVar(value="stopped")
-        if role == "controller":
-            self.identity_tools: ttk.Widget = ControllerCertificateFrame(self)
-        else:
-            self.identity_tools = ParticipantCertificateFrame(self, role)
-        self._build()
-        self.app.runner.register_status_callback(role, self.status_var.set)
-
-    def _build(self) -> None:
-        self.columnconfigure(1, weight=1)
-        row = 0
-        ttk.Label(self, text=f"{self.role.title()} runtime").grid(
-            row=row, column=0, columnspan=3, sticky="w", padx=6, pady=6)
-        row += 1
-        self._entry(row, "Policy config", self.config_var, browse=True)
-        row += 1
-        self._combo(row, "Example app", self.example_var, list(self.EXAMPLE_BASES))
-        row += 1
-        self._entry(row, "Generated policy dir", self.generated_dir_var)
-        row += 1
-        self._entry(row, "SVS group override", self.group_var)
-        row += 1
-
-        if self.role == "controller":
-            self._entry(row, "Extra controller args", self.extra_args_var)
-            row += 1
-        elif self.role == "provider":
-            self._entry(row, "Provider ID", self.provider_id_var)
-            row += 1
-            self._entry(row, "Roles", self.roles_var)
-            row += 1
-            self._entry(row, "Extra provider args", self.extra_args_var)
-            row += 1
-        else:
-            self._entry(row, "Service name (policy reference)", self.service_var)
-            row += 1
-            self._entry(row, "ACK timeout ms", self.ack_timeout_var)
-            row += 1
-            self._entry(row, "Total timeout ms", self.timeout_var)
-            row += 1
-            self._entry(row, "Extra user args", self.extra_args_var)
-            row += 1
-
-        buttons = ttk.Frame(self)
-        buttons.grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=8)
-        ttk.Button(buttons, text=f"Start {self.role.title()}",
-                   command=self.run_role).pack(side="left")
-        ttk.Button(buttons, text="Stop",
-                   command=self.stop_role).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Restart",
-                   command=self.restart_role).pack(side="left")
-        ttk.Button(buttons, text="Show Command",
-                   command=self.show_command).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Open Deployment Logs",
-                   command=lambda: self.app.select_tab("Deployment Runner")).pack(side="left")
-        row += 1
-        ttk.Label(self, text="Status").grid(row=row, column=0, sticky="w", padx=6)
-        ttk.Label(self, textvariable=self.status_var, anchor="w").grid(
-            row=row, column=1, columnspan=2, sticky="ew", padx=6, pady=4)
-        row += 1
-
-        self.output = TextPane(self, height=18)
-        self.output.grid(row=row, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
-        self.rowconfigure(row, weight=1)
-        row += 1
-
-        self.identity_tools.grid(row=row, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
-
-    def _entry(self, row: int, label: str, variable: tk.StringVar,
-               *, browse: bool = False) -> None:
-        ttk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(self, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=6, pady=4)
-        if browse:
-            ttk.Button(self, text="Browse", command=self._browse_config).grid(
-                row=row, column=2, padx=6, pady=4)
-
-    def _combo(self, row: int, label: str, variable: tk.StringVar,
-               values: list[str]) -> None:
-        ttk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=4)
-        ttk.Combobox(self, textvariable=variable, values=values, state="readonly").grid(
-            row=row, column=1, sticky="ew", padx=6, pady=4)
-
-    def _browse_config(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select policy config",
-            filetypes=[("YAML/JSON", "*.yaml *.yml *.json"), ("All files", "*")],
-        )
-        if path:
-            self.config_var.set(path)
-
-    def _script_path(self) -> Path:
-        base = self.EXAMPLE_BASES[self.example_var.get()]
-        return repo_root() / base / f"{self.role}.py"
-
-    def command(self) -> list[str]:
-        return build_role_command(
-            role=self.role,
-            script_path=self._script_path(),
-            config=self.config_var.get(),
-            generated_policy_dir=self.generated_dir_var.get(),
-            group=self.group_var.get(),
-            provider_id=self.provider_id_var.get(),
-            roles=self.roles_var.get(),
-            ack_timeout_ms=self.ack_timeout_var.get(),
-            timeout_ms=self.timeout_var.get(),
-            extra_args=self.extra_args_var.get(),
-        )
-
-    def show_command(self) -> None:
-        command = shlex.join(self.command())
-        self.output.set(command)
-        self.app.set_status(f"{self.role.title()} command prepared")
-
-    def run_role(self) -> None:
-        self.output.set("Starting through Deployment Runner log pane:\n" +
-                        shlex.join(self.command()))
-        self.app.runner._start(self.command(), self.role)
-        self.app.select_tab("Deployment Runner")
-
-    def stop_role(self) -> None:
-        self.app.runner.stop_role(self.role)
-
-    def restart_role(self) -> None:
-        self.stop_role()
-        self.after(300, self.run_role)
-
-    def profile(self) -> RuntimeRoleProfile:
-        return RuntimeRoleProfile(
-            role=self.role,
-            config=self.config_var.get(),
-            example=self.example_var.get(),
-            generated_policy_dir=self.generated_dir_var.get(),
-            group=self.group_var.get(),
-            provider_id=self.provider_id_var.get(),
-            roles=self.roles_var.get(),
-            service=self.service_var.get(),
-            ack_timeout_ms=self.ack_timeout_var.get(),
-            timeout_ms=self.timeout_var.get(),
-            extra_args=self.extra_args_var.get(),
-        )
-
-    def apply_profile(self, profile: RuntimeRoleProfile) -> None:
-        self.config_var.set(profile.config)
-        if profile.example in self.EXAMPLE_BASES:
-            self.example_var.set(profile.example)
-        self.generated_dir_var.set(profile.generated_policy_dir)
-        self.group_var.set(profile.group)
-        self.provider_id_var.set(profile.provider_id)
-        self.roles_var.set(profile.roles)
-        self.service_var.set(profile.service)
-        self.ack_timeout_var.set(profile.ack_timeout_ms)
-        self.timeout_var.set(profile.timeout_ms)
-        self.extra_args_var.set(profile.extra_args)
-        self.status_var.set("stopped")
 
 
 class JsonTextPane(TextPane):
@@ -3773,10 +3362,7 @@ class DistributedInferenceGui(tk.Tk):
         self.model_split = ModelSplitTab(self.notebook, self)
         self.certificates = CertificateTab(self.notebook, self)
         self.qwen_minindn = QwenMiniNdnExperimentTab(self.notebook, self)
-        self.runner = DeploymentRunnerTab(self.notebook, self)
-        self.controller_runtime = RoleRuntimeTab(self.notebook, self, "controller")
-        self.user_runtime = RoleRuntimeTab(self.notebook, self, "user")
-        self.provider_runtime = RoleRuntimeTab(self.notebook, self, "provider")
+        self.runner = RegressionRunnerTab(self.notebook, self)
         self.notebook.add(self.user_tab, text="User")
         self.notebook.add(self.provider_tab, text="Provider")
         self.notebook.add(self.controller_tab, text="Controller")
@@ -3785,10 +3371,7 @@ class DistributedInferenceGui(tk.Tk):
         self.notebook.add(self.model_split, text="Model Split")
         self.notebook.add(self.certificates, text="Certificates")
         self.notebook.add(self.qwen_minindn, text="Qwen MiniNDN")
-        self.notebook.add(self.runner, text="Script Runner")
-        self.notebook.add(self.controller_runtime, text="Script Controller")
-        self.notebook.add(self.user_runtime, text="Script User")
-        self.notebook.add(self.provider_runtime, text="Script Provider")
+        self.notebook.add(self.runner, text="Regression Runner")
         ttk.Label(self, textvariable=self.status, anchor="w").pack(fill="x")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 

@@ -348,7 +348,6 @@ class APPClient:
                               freshness_ms: int = 60000,
                               dynamic_provisioning: bool | None = None,
                               runtime: RuntimeSpec | None = None,
-                              repo_manifests: dict | str | Path | None = None,
                               artifact_references: dict | str | Path | None = None) -> InferenceResult:
         """Run one distributed inference request for a deployed service.
 
@@ -362,8 +361,6 @@ class APPClient:
         """
 
         service_policy = self.deployment.service_policy(service)
-        artifact_references = self._select_artifact_references(
-            repo_manifests, artifact_references)
         payload = self.encode_input(service, value)
         if dynamic_provisioning is None:
             dynamic_provisioning = bool(service_policy.artifacts or artifact_references)
@@ -392,7 +389,6 @@ class APPClient:
         service: str,
         *,
         runtime: RuntimeSpec | None = None,
-        repo_manifests: dict | str | Path | None = None,
         artifact_references: dict | str | Path | None = None,
     ) -> DistributedInferencePlan:
         """Build a dynamic provisioning plan from a service policy.
@@ -404,8 +400,6 @@ class APPClient:
         """
 
         service_policy = self.deployment.service_policy(service)
-        artifact_references = self._select_artifact_references(
-            repo_manifests, artifact_references)
         if not service_policy.artifacts:
             raise ValueError(
                 f"service {service} has no artifact descriptions; "
@@ -418,7 +412,7 @@ class APPClient:
             backend=runtime.backend or self._default_backend(service),
         )
         for artifact in service_policy.artifacts:
-            role_manifests = self._repo_manifests_for_role(manifests, artifact.role)
+            role_manifests = self._artifact_references_for_role(manifests, artifact.role)
             role_runtime = runtime
             if role_manifests and runtime.artifact is not None and "runner" in role_manifests:
                 runner_reference = self._large_data_reference_for_entry(role_manifests["runner"])
@@ -516,35 +510,17 @@ class APPClient:
         )
 
     @staticmethod
-    def _select_artifact_references(
-        repo_manifests: dict | str | Path | None,
-        artifact_references: dict | str | Path | None,
-    ) -> dict | str | Path | None:
-        if artifact_references is None:
-            return repo_manifests
-        if repo_manifests is None:
-            return artifact_references
-        raise ValueError(
-            "pass either artifact_references or legacy repo_manifests, not both")
-
-    @staticmethod
     def _load_artifact_references(
         artifact_references: dict | str | Path | None,
     ) -> dict:
-        return APPClient._load_repo_manifests(artifact_references)
-
-    @staticmethod
-    def _load_repo_manifests(
-        repo_manifests: dict | str | Path | None,
-    ) -> dict:
-        if repo_manifests is None:
+        if artifact_references is None:
             return {}
-        if isinstance(repo_manifests, dict):
-            return dict(repo_manifests)
-        return json.loads(Path(repo_manifests).read_text(encoding="utf-8"))
+        if isinstance(artifact_references, dict):
+            return dict(artifact_references)
+        return json.loads(Path(artifact_references).read_text(encoding="utf-8"))
 
     @staticmethod
-    def _repo_manifests_for_role(manifests: dict, role: str) -> dict:
+    def _artifact_references_for_role(manifests: dict, role: str) -> dict:
         if not manifests:
             return {}
         roles = manifests.get("roles", manifests)
@@ -712,14 +688,11 @@ class APPClient:
         freshness_ms: int = 60000,
         dynamic_provisioning: bool | None = None,
         runtime: RuntimeSpec | None = None,
-        repo_manifests: dict | str | Path | None = None,
         artifact_references: dict | str | Path | None = None,
         on_result: Callable[[InferenceResult], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> Future:
         service_policy = self.deployment.service_policy(service)
-        artifact_references = self._select_artifact_references(
-            repo_manifests, artifact_references)
         payload = self.encode_input(service, value)
         if dynamic_provisioning is None:
             dynamic_provisioning = bool(service_policy.artifacts or artifact_references)

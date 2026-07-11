@@ -894,9 +894,8 @@ tools can still call `client.service_plan(service, ...)` when they need to
 inspect or reuse the generated plan. The optional `artifact_references`
 argument to `distributed_inference(...)`, `async_distributed_inference(...)`,
 and `service_plan(...)` refers to model/runtime artifacts stored in
-NDNSF-DistributedRepo, not to input images or activation tensors. The legacy
-name `repo_manifests` is still accepted for existing scripts, but new code
-should use `artifact_references` because the same entry carries both
+NDNSF-DistributedRepo, not to input images or activation tensors. The
+`artifact_references` name reflects that the same entry carries both
 `repoManifest` and `largeDataReference` metadata. Inputs and intermediate
 tensors use the service payload contract plus NDNSF large-data or
 dependency-object helpers.
