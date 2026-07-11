@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
+sys.path.insert(0, str(REPO / "NDNSF-DistributedRepo" / "pythonWrapper"))
 sys.path.insert(0, str(REPO / "Experiments"))
 sys.path.insert(0, str(REPO / "pythonWrapper"))
 
@@ -59,6 +60,7 @@ PROVIDER_SESSION_EXE = REPO / "build/examples/di-native-provider-session-smoke"
 DEFAULT_OUT = REPO / "results/native_di_real_minindn/latest"
 SERVICE = "/Inference/NativeTracer"
 COORDINATION_SERVICE = "/NDNSF/Coordination/Advisory"
+EXECUTION_LEASE_SERVICE = "/Inference/Control/Lease"
 GROUP = "/NDNSF-DI/Tracer/group"
 CONTROLLER = "/NDNSF-DI/Tracer/controller"
 USER = "/NDNSF-DI/Tracer/user"
@@ -938,7 +940,8 @@ def provider_check_command(row: dict[str, str],
 def provider_serve_command(row: dict[str, str],
                            policy_dir: Path,
                            deterministic_runner: bool = False,
-                           enable_admission_lease: bool = False) -> str:
+                           enable_admission_lease: bool = False,
+                           require_execution_lease: bool = False) -> str:
     policy_dir = policy_dir.resolve()
     args = [
         str(PROVIDER_EXE),
@@ -959,6 +962,8 @@ def provider_serve_command(row: dict[str, str],
         args.append("--tracer-deterministic-runner")
     if enable_admission_lease:
         args.extend(["--enable-admission-lease", "--admission-lease-ttl-ms", "60000"])
+    if require_execution_lease:
+        args.append("--require-execution-lease")
     return f"cd {perf.shell_quote(str(TRACER_DIR))} && exec {shell_join(args)}"
 
 
@@ -1008,7 +1013,8 @@ def user_driver_command(policy_dir: Path,
                         burst_admission_providers: Optional[list[str]] = None,
                         runtime_aware_max_replans: int = 0,
                         runtime_aware_replan_reasons: str = "",
-                        coordination_service: str = "") -> str:
+                        coordination_service: str = "",
+                        execution_leases: bool = False) -> str:
     policy_dir = policy_dir.resolve()
     if assignment_csv is not None:
         assignment_csv = assignment_csv.resolve()
@@ -1059,6 +1065,8 @@ def user_driver_command(policy_dir: Path,
         args.extend(["--runtime-aware-replan-reasons", runtime_aware_replan_reasons])
     if coordination_service:
         args.extend(["--coordination-service", coordination_service])
+    if execution_leases:
+        args.append("--execution-leases")
     return f"cd {perf.shell_quote(str(REPO))} && exec {shell_join(args)}"
 
 
@@ -1142,6 +1150,17 @@ def add_advisory_coordination_policies(policy_path: Path,
         if insert_at < 0:
             raise RuntimeError(f"could not locate user-policies closing brace in {policy_path}")
         text = text[:insert_at] + "\n" + "\n".join(blocks) + text[insert_at:]
+    policy_path.write_text(text, encoding="utf-8")
+
+
+def add_execution_lease_policies(policy_path: Path) -> None:
+    """Allow every NativeTracer user/provider to use the DI lease service."""
+
+    text = policy_path.read_text(encoding="utf-8")
+    marker = f"            {SERVICE}\n"
+    addition = marker + f"            {EXECUTION_LEASE_SERVICE}\n"
+    if EXECUTION_LEASE_SERVICE not in text:
+        text = text.replace(marker, addition)
     policy_path.write_text(text, encoding="utf-8")
 
 
@@ -2755,8 +2774,6 @@ def main() -> int:
                         help=("Skip full-network dependency-edge ndnping probing. "
                               "By default the harness writes providerPairTelemetry "
                               "evidence before the user workload starts."))
-    parser.add_argument("--lifecycle-experiment", action="store_true",
-                        help="Run deployment lifecycle experiment instead of normal user driver")
     parser.add_argument("--advisory-coordinator", action="store_true",
                         help="Run the generic NDNSF coordination service before NativeTracer requests")
     parser.add_argument("--multi-user-workload",
@@ -2834,6 +2851,8 @@ def main() -> int:
     parser.add_argument("--enable-native-admission-lease", action="store_true",
                         default=bool(default_value(profile_defaults, "enable_native_admission_lease", False)),
                         help="Require NativeTracer generic admission leases before selected role execution")
+    parser.add_argument("--enable-execution-leases", action="store_true",
+                        help="Acquire fail-closed provider execution leases before collaboration")
     parser.add_argument("--overload-fast-fail-timeout-ms", type=int,
                         default=default_value(profile_defaults, "overload_fast_fail_timeout_ms", 0),
                         help=("Use a shorter user collaboration timeout for overload "
@@ -2946,7 +2965,8 @@ def main() -> int:
                 runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
                 coordination_service=(
                     COORDINATION_SERVICE if args.advisory_coordinator else ""
-                )),
+                ),
+                execution_leases=args.enable_execution_leases),
         }, indent=2, sort_keys=True))
         return 0
 
@@ -2969,6 +2989,7 @@ def main() -> int:
     env = os.environ.copy()
     env["PYTHONPATH"] = ":".join([
         str(REPO / "NDNSF-DistributedInference"),
+        str(REPO / "NDNSF-DistributedRepo" / "pythonWrapper"),
         str(REPO / "pythonWrapper"),
         str(REPO / "Experiments"),
         str(REPO),
@@ -3070,6 +3091,7 @@ def main() -> int:
             policy_dir / "controller.policies",
             args.requests,
             args.advisory_coordinator)
+        add_execution_lease_policies(policy_dir / "controller.policies")
         summary["assignmentRequested"] = requested_assignment
         summary["assignmentResolved"] = resolved_assignment
         summary["assignment"] = resolved_assignment
@@ -3324,7 +3346,8 @@ def main() -> int:
                     policy_dir,
                     args.tracer_deterministic_runner or
                     args.policy_bundle == "llm-proportional",
-                    args.enable_native_admission_lease)
+                    args.enable_native_admission_lease,
+                    args.enable_execution_leases)
                 provider_env = llm_provider_resource_env(row["provider"])
                 provider_env.update(provider_admission_env(args))
                 provider_env.update(dependency_envelope_env(args))
@@ -3392,16 +3415,7 @@ def main() -> int:
                     json.dumps(runtime_inventory, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8")
             time.sleep(8.0)
-            if args.lifecycle_experiment:
-                lifecycle_script = (
-                    REPO / "Experiments/NDNSF_DI_Deployment_Lifecycle_Experiment.py")
-                user_command = (
-                    f"cd {REPO} && exec python3 {lifecycle_script} "
-                    f"--out {out_dir} --requests {args.requests} "
-                    f"--permission-wait-ms 5000"
-                )
-            else:
-                user_command = user_driver_command(policy_dir,
+            user_command = user_driver_command(policy_dir,
                                     args.requests,
                                     args.concurrency,
                                     args.submission_spacing_ms if args.concurrency > 1 else 0,
@@ -3425,7 +3439,8 @@ def main() -> int:
                                     runtime_aware_max_replans=args.runtime_aware_max_replans,
                                     runtime_aware_replan_reasons=args.runtime_aware_replan_reasons,
                                     coordination_service=(
-                                        COORDINATION_SERVICE if args.advisory_coordinator else ""))
+                                        COORDINATION_SERVICE if args.advisory_coordinator else ""),
+                                    execution_leases=args.enable_execution_leases)
             user_proc, user_log = start_node_command(
                 ndn.net["memphis"], "user-driver", user_command,
                 logs_dir, env, procs)

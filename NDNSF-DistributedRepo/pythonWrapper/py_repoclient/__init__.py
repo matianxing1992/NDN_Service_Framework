@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Callable, Iterable, Optional
 
+from ndnsf import _ndnsf
 from ndnsf import (
     AckCandidate,
     ProviderCapabilityHint,
@@ -31,6 +32,44 @@ from ._py_repoclient import (
     select_replicas,
     sha256_hex,
 )
+
+
+class RepoDataPlaneProducer:
+    """Serve repository Data through one callback-backed native Face."""
+
+    def __init__(
+        self,
+        lookup: Callable[[str, bool], Optional[bytes]],
+        *,
+        signing_identity: str = "",
+        forwarding_route_prefixes: Optional[list[str]] = None,
+    ) -> None:
+        self._native = _ndnsf.RepoDataPlaneProducer(
+            lookup,
+            signing_identity,
+            list(forwarding_route_prefixes or []),
+        )
+
+    def activate_prefix(self, prefix: str) -> None:
+        self._native.activate_prefix(prefix)
+
+    def start(self) -> "RepoDataPlaneProducer":
+        self._native.start()
+        return self
+
+    def stop(self) -> None:
+        self._native.stop()
+
+    @property
+    def status(self) -> dict[str, object]:
+        return {
+            "activePrefixCount": int(self._native.active_prefix_count),
+            "interestCount": int(self._native.interest_count),
+            "hitCount": int(self._native.hit_count),
+            "missCount": int(self._native.miss_count),
+            "threadCount": int(self._native.thread_count),
+            "error": str(self._native.error),
+        }
 
 
 def manifest_to_dict(manifest: RepoObjectManifest) -> dict:

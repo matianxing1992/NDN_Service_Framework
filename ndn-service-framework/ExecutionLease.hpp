@@ -4,6 +4,7 @@
 #include <ndn-cxx/encoding/buffer.hpp>
 
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -113,7 +114,8 @@ public:
 
   ExecutionLeaseResult
   commit(const std::string& leaseId, const std::string& providerEpoch,
-         const std::string& idempotencyKey, uint64_t nowMs);
+         const std::string& requesterName, const std::string& idempotencyKey,
+         uint64_t nowMs);
 
   ExecutionLeaseResult
   validateAndActivate(const std::string& leaseId,
@@ -131,16 +133,19 @@ public:
 
   ExecutionLeaseResult
   abort(const std::string& leaseId, const std::string& providerEpoch,
-        const std::string& idempotencyKey, uint64_t nowMs);
+        const std::string& requesterName, const std::string& idempotencyKey,
+        uint64_t nowMs);
 
   ExecutionLeaseResult
   renew(const std::string& leaseId, const std::string& providerEpoch,
-        const std::string& idempotencyKey, uint64_t nowMs,
+        const std::string& requesterName, const std::string& idempotencyKey,
+        uint64_t nowMs,
         uint64_t expiresAtMs);
 
   ExecutionLeaseResult
   release(const std::string& leaseId, const std::string& providerEpoch,
-          const std::string& idempotencyKey, uint64_t nowMs);
+          const std::string& requesterName, const std::string& idempotencyKey,
+          uint64_t nowMs);
 
   size_t
   cleanupExpired(uint64_t nowMs);
@@ -200,6 +205,8 @@ private:
   uint64_t m_nextLeaseId = 1;
   std::map<std::string, GenericExecutionLease> m_leases;
   std::map<std::string, ReplayRecord> m_replays;
+  std::map<std::string, std::deque<std::string>> m_waitersByConflictKey;
+  std::map<std::string, uint64_t> m_waiterExpiresAt;
   ExecutionLeaseCounters m_counters;
 };
 

@@ -58,6 +58,17 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         repo._store = _FakeRepoStore()
         repo._has_manifest = lambda _name: False
         repo._has_object = lambda _name: False
+        repo._capability = lambda: repo.capability
+        repo._runtime_snapshot = lambda: {
+            "metricsTimestampMs": 1,
+            "inflightReads": 0,
+            "inflightWrites": 0,
+            "inflightRepair": 0,
+            "queueDepth": 0,
+            "storageReadLatencyMs": 0.0,
+            "storageWriteLatencyMs": 0.0,
+            "rejected": 0,
+        }
 
         decision = repo._ack(b'{"operation":"CAPABILITY"}')
         fields = parse_ack_metadata(decision.payload)
@@ -81,6 +92,17 @@ class AppCoreEnvelopeMigrationTest(unittest.TestCase):
         repo._store = _FakeRepoStore()
         repo._has_manifest = lambda _name: False
         repo._has_object = lambda _name: False
+        repo._capability = lambda: repo.capability
+        repo._runtime_snapshot = lambda: {
+            "metricsTimestampMs": 1,
+            "inflightReads": 0,
+            "inflightWrites": 0,
+            "inflightRepair": 0,
+            "queueDepth": 0,
+            "storageReadLatencyMs": 0.0,
+            "storageWriteLatencyMs": 0.0,
+            "rejected": 0,
+        }
         decision = repo._ack(b'{"operation":"STORE","objectName":"/missing"}')
 
         candidate = AckCandidate(

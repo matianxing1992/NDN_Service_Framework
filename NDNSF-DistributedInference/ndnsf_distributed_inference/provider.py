@@ -13,9 +13,6 @@ from typing import Callable, Sequence
 from ndnsf import (
     AckDecision,
     CollaborationContext,
-    ExecutionArtifact,
-    ExecutionArtifactSpec,
-    ExecutionContext,
     GenericProviderRuntimeHint,
     NEGATIVE_ACK_REASON_GPU_BUSY,
     NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
@@ -27,6 +24,12 @@ from ndnsf import (
     to_plain,
 )
 
+from .artifact_deployment import (
+    ExecutionArtifact,
+    ExecutionArtifactSpec,
+    ExecutionContext,
+    prepare_execution,
+)
 from .plan import RoleDependencyView
 from .runtime_v1 import (
     ProviderProfileV1,
@@ -488,7 +491,8 @@ class DistributedInferenceProvider:
 
         def wrapped(ctx: CollaborationContext, request: bytes) -> None:
             try:
-                execution = ctx.prepare_execution(
+                execution = prepare_execution(
+                    ctx,
                     temp_root=temp_dir,
                     allow_executables=allow_executables,
                 )
@@ -723,7 +727,8 @@ class DistributedInferenceProvider:
                         local_artifacts=local_artifacts,
                     )
                 elif assigned_artifact and assigned_artifact != "/":
-                    execution = ctx.prepare_execution(
+                    execution = prepare_execution(
+                        ctx,
                         temp_root=temp_dir,
                         allow_executables=allow_executables,
                     )

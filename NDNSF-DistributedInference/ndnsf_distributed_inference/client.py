@@ -14,6 +14,7 @@ from typing import Callable, Iterable
 
 from ndnsf import CollaborationDependency, CollaborationRole, ServiceResponse, ServiceUser
 
+from .artifact_deployment import publish_execution_artifact_spec
 from .plan import DistributedInferencePlan, InferenceDependency
 
 
@@ -194,7 +195,8 @@ class DistributedInferenceClient:
     ) -> dict[str, str]:
         artifact_data_names: dict[str, str] = {}
         for role in plan.roles:
-            published = self.user.publish_execution_artifact_spec(
+            published = publish_execution_artifact_spec(
+                self.user,
                 plan.service,
                 role=role.role,
                 backend=role.backend,

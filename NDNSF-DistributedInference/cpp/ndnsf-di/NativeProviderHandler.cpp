@@ -12,6 +12,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -217,12 +218,48 @@ public:
     }
   }
 
+  void
+  completeExecutionLease(
+    ndn_service_framework::ProviderExecutionLeaseTable* table,
+    const std::string& leaseId,
+    const std::string& providerEpoch,
+    const std::string& requesterName,
+    const std::string& role,
+    std::size_t expectedRoles,
+    bool completedLocalPlan)
+  {
+    if (table == nullptr || leaseId.empty()) {
+      return;
+    }
+    bool shouldRelease = false;
+    {
+      std::lock_guard<std::mutex> lock(executionLeaseMutex);
+      auto& completed = completedRolesByLease[leaseId];
+      completed.insert(role);
+      shouldRelease = completedLocalPlan ||
+        completed.size() >= std::max<std::size_t>(1, expectedRoles);
+      if (shouldRelease) {
+        completedRolesByLease.erase(leaseId);
+      }
+    }
+    if (shouldRelease) {
+      const auto now = static_cast<uint64_t>(std::max<long long>(0, epochMs()));
+      table->release(leaseId,
+                     providerEpoch,
+                     requesterName,
+                     "provider-complete:" + leaseId,
+                     now);
+    }
+  }
+
   NativeExecutionPlan plan;
   NativeProviderAssignment baseAssignment;
   std::vector<NativeModelRunnerSpec> runnerSpecs;
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
   std::string localProviderName;
   NativeProviderRuntime runtime;
+  std::mutex executionLeaseMutex;
+  std::map<std::string, std::set<std::string>> completedRolesByLease;
 };
 
 void
@@ -543,6 +580,22 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
   runtime.handler = [config = std::move(config), state = std::move(state)] (
 	           ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
 	           const ndn_service_framework::RequestMessage& request) mutable {
+    std::string activatedLeaseId;
+    std::string activatedProviderEpoch;
+    std::string activatedRequester;
+    std::string activatedRole;
+    std::size_t expectedProviderRoles = 1;
+    bool completedLocalPlan = false;
+    auto completeExecutionLease = [&] {
+      state->completeExecutionLease(config.executionLeaseTable,
+                                    activatedLeaseId,
+                                    activatedProviderEpoch,
+                                    activatedRequester,
+                                    activatedRole,
+                                    expectedProviderRoles,
+                                    completedLocalPlan);
+      activatedLeaseId.clear();
+    };
     try {
       auto assignment = state->baseAssignment;
       for (const auto& item : ctx.assignment().roleProviders) {
@@ -561,6 +614,63 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           streamChunkDependenciesEnvEnabled());
 
       const auto role = ctx.role();
+      if (config.executionLeaseTable != nullptr) {
+        const auto fields = parseNativeProviderAssignmentFields(
+          ctx.assignment().assignmentPayload);
+        const auto leaseId = nativeProviderFieldValue(fields, {"executionLeaseId"});
+        const auto providerEpoch = nativeProviderFieldValue(
+          fields, {"executionLeaseEpoch"});
+        const auto transactionId = nativeProviderFieldValue(
+          fields, {"executionLeaseTransactionId"});
+        const auto planDigest = nativeProviderFieldValue(
+          fields, {"executionLeasePlanDigest"});
+        const auto bindingProofText = nativeProviderFieldValue(
+          fields, {"executionLeaseBindingProof"});
+        const auto providerRoleCountText = nativeProviderFieldValue(
+          fields, {"executionLeaseProviderRoleCount"});
+        if (leaseId.empty() || providerEpoch.empty() || transactionId.empty() ||
+            planDigest.empty() || bindingProofText.empty() ||
+            config.executionLeaseTargetService.empty()) {
+          ctx.fail("LEASE_BINDING_MISMATCH");
+          return;
+        }
+        ndn_service_framework::ExecutionLeaseBinding binding;
+        binding.requesterName = ctx.requesterName().toUri();
+        binding.requestId = transactionId;
+        binding.serviceName = config.executionLeaseTargetService;
+        binding.planDigest = planDigest;
+        binding.resourceBindingSchema = "ndnsf-di-binding-v1";
+        binding.resourceBindingProof = ndn::Buffer(
+          reinterpret_cast<const uint8_t*>(bindingProofText.data()),
+          bindingProofText.size());
+        const auto now = static_cast<uint64_t>(std::max<long long>(0, epochMs()));
+        const auto activated = config.executionLeaseTable->validateAndActivate(
+          leaseId,
+          providerEpoch,
+          binding,
+          "activate:" + transactionId,
+          now,
+          now + std::max<uint64_t>(1, config.executionLeaseHardDeadlineMs));
+        if (!activated.status) {
+          ctx.fail(activated.reasonCode);
+          return;
+        }
+        activatedLeaseId = leaseId;
+        activatedProviderEpoch = providerEpoch;
+        activatedRequester = binding.requesterName;
+        activatedRole = role;
+        if (!providerRoleCountText.empty()) {
+          try {
+            expectedProviderRoles = std::max<std::size_t>(
+              1, static_cast<std::size_t>(std::stoull(providerRoleCountText)));
+          }
+          catch (const std::exception&) {
+            completeExecutionLease();
+            ctx.fail("LEASE_BINDING_MISMATCH");
+            return;
+          }
+        }
+      }
       const auto bindingError =
         validateNativeProviderAssignmentPayload(state->runnerSpecs,
                                                 role,
@@ -573,6 +683,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                     << " reason=" << *bindingError
                     << std::endl;
         }
+        completeExecutionLease();
         ctx.fail(*bindingError);
         return;
       }
@@ -591,6 +702,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         allPlanRolesAssignedToLocal(state->plan,
                                     assignment,
                                     ctx.localProvider().toUri());
+      completedLocalPlan = localFullPlan;
       auto initialInputs = (localFullPlan || roleSpec.inputs.empty())
         ? initialInputsFromRequest(ctx, request)
         : std::map<std::string, TensorBundle>{};
@@ -628,6 +740,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                           role,
                           "after_complete",
                           state->runtime.snapshot());
+      completeExecutionLease();
       if (nativeTraceEnabled()) {
         std::cout << "\nNDNSF_DI_NATIVE_FINAL_RESPONSE_DECISION"
                   << " session=" << ctx.sessionId()
@@ -647,6 +760,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
     }
 	    catch (const std::exception& exc) {
+	      completeExecutionLease();
 	      ctx.fail(exc.what());
 	    }
 	  };

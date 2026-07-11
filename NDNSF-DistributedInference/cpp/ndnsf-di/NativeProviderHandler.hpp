@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/ExecutionLease.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -30,6 +31,9 @@ struct NativeProviderHandlerConfig
   int freshnessMs = 60000;
   std::size_t workerCount = 1;
   bool streamChunkDependencies = false;
+  ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
+  std::string executionLeaseTargetService;
+  uint64_t executionLeaseHardDeadlineMs = 120000;
 };
 
 std::optional<std::vector<uint8_t>>

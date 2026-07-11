@@ -24,7 +24,7 @@ from ndnsf.runtime_telemetry import (
     RESIDENCY_READY_COST_MS,
 )
 from ndnsf.ndnsd_health import NdnsdHealthTracker
-from ndnsf.retry import RetryPolicy, retry_call
+from ndnsf_distributed_inference.retry import RetryPolicy, retry_call
 from ndnsf.metrics import NdnMetrics
 from ndnsf_distributed_inference.runtime_v1 import (
     Deployment,
@@ -44,7 +44,7 @@ from ndnsf_distributed_inference.runtime_v1 import (
 
 
 class DeploymentLifecycleTest(unittest.TestCase):
-    """Deployment state machine and ref_count tests."""
+    """Deployment metadata is descriptive; providers own eviction authority."""
 
     def test_deployment_created_in_provisioning(self) -> None:
         dep = Deployment(deployment_id="dep-1", service_name="/Svc")
@@ -65,17 +65,17 @@ class DeploymentLifecycleTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("NOT_READY", reason)
 
-    def test_active_with_ref_count_cannot_evict(self) -> None:
+    def test_descriptive_ref_count_is_not_eviction_authority(self) -> None:
         dep = Deployment(deployment_id="dep-1", status=DepStatus.ACTIVE, ref_count=3)
         ok, reason = dep.can_evict()
         self.assertFalse(ok)
-        self.assertIn("DEPLOYMENT_IN_USE", reason)
-        self.assertIn("3", reason)
+        self.assertEqual(reason, "PROVIDER_EXECUTION_LEASE_CHECK_REQUIRED")
 
-    def test_active_with_ref_count_zero_can_evict(self) -> None:
+    def test_zero_ref_count_still_requires_provider_lease_check(self) -> None:
         dep = Deployment(deployment_id="dep-1", status=DepStatus.ACTIVE, ref_count=0)
         ok, reason = dep.can_evict()
-        self.assertTrue(ok)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "PROVIDER_EXECUTION_LEASE_CHECK_REQUIRED")
 
     def test_from_dict_round_trip(self) -> None:
         payload = {

@@ -33,7 +33,6 @@ from ndnsf import (
     DataProductReference,
     GenericProviderRuntimeHint,
     ProviderCapabilityHint,
-    RepoDataPlaneProducer,
     SegmentedObjectProducer,
     ServiceProvider,
     ServiceOperationState,
@@ -53,6 +52,7 @@ from ndnsf import (
     parse_ack_metadata,
     to_plain,
 )
+from py_repoclient import RepoDataPlaneProducer
 
 
 def _pull_fetch_timeout_ms(segment_count: int) -> int:

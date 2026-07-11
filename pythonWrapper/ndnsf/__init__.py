@@ -36,7 +36,6 @@ from .coordination import (
 )
 from .metrics import NdnMetrics, start_metrics_server
 from .ndnsd_health import NdnsdHealthTracker, NdnsdProviderState
-from .retry import RetryPolicy, retry_call
 from .service_discovery import (
     DRAIN_ACTIVE,
     DRAIN_DRAINING,
@@ -119,9 +118,6 @@ from .service import (
     CollaborationDependency,
     CollaborationRole,
     DataPacket,
-    ExecutionArtifact,
-    ExecutionArtifactSpec,
-    ExecutionContext,
     LargeDataReference,
     LargeDataPublishResult,
     NEGATIVE_ACK_REASON_GPU_BUSY,
@@ -132,7 +128,6 @@ from .service import (
     NEGATIVE_ACK_REASON_QUEUE_FULL,
     NEGATIVE_ACK_REASON_UNSUPPORTED_REQUEST,
     RECOMMENDED_NEGATIVE_ACK_REASONS,
-    RepoDataPlaneProducer,
     SegmentHintRange,
     SegmentedObjectProducer,
     ServiceController,
@@ -180,9 +175,6 @@ __all__ = [
     "DRAIN_PROVISIONING",
     "DRAIN_READY",
     "DRAIN_UNAVAILABLE",
-    "ExecutionArtifact",
-    "ExecutionArtifactSpec",
-    "ExecutionContext",
     "ExecutionLeaseBinding",
     "ExecutionLeaseCounters",
     "ExecutionLeaseResult",
@@ -208,7 +200,6 @@ __all__ = [
     "RECOMMENDED_NEGATIVE_ACK_REASONS",
     "RECOMMENDED_REJECTION_REASONS",
     "RejectionReason",
-    "RepoDataPlaneProducer",
     "RuntimeHint",
     "SegmentHintRange",
     "SegmentedObjectProducer",

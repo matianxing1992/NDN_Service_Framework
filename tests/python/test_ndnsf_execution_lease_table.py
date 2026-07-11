@@ -46,7 +46,9 @@ class ProviderExecutionLeaseTableBindingTest(unittest.TestCase):
         self.assertTrue(prepared.status)
         self.assertEqual(prepared.lease.state, ndnsf.ExecutionLeaseState.PREPARED)
 
-        committed = table.commit(prepared.lease.lease_id, "epoch-A", "commit-1", 1100)
+        committed = table.commit(
+            prepared.lease.lease_id, "epoch-A", "/user/A", "commit-1", 1100
+        )
         self.assertTrue(committed.status)
         self.assertTrue(
             table.has_pinned_binding_proof(b"role=/Backbone;fragment=f1", 1100)
@@ -62,7 +64,7 @@ class ProviderExecutionLeaseTableBindingTest(unittest.TestCase):
         self.assertTrue(activated.status)
         self.assertEqual(activated.lease.state, ndnsf.ExecutionLeaseState.EXECUTING)
         released = table.release(
-            prepared.lease.lease_id, "epoch-A", "release-1", 1300
+            prepared.lease.lease_id, "epoch-A", "/user/A", "release-1", 1300
         )
         self.assertTrue(released.status)
         self.assertEqual(released.lease.state, ndnsf.ExecutionLeaseState.RELEASED)
@@ -78,7 +80,15 @@ class ProviderExecutionLeaseTableBindingTest(unittest.TestCase):
         self.assertFalse(conflict.status)
         self.assertEqual(conflict.reason_code, "LEASE_CAPACITY_REJECTED")
 
-        stale = table.commit(first.lease.lease_id, "epoch-old", "commit-1", 1200)
+        wrong_requester = table.commit(
+            first.lease.lease_id, "epoch-A", "/user/other", "commit-other", 1150
+        )
+        self.assertFalse(wrong_requester.status)
+        self.assertEqual(wrong_requester.reason_code, "LEASE_REQUESTER_MISMATCH")
+
+        stale = table.commit(
+            first.lease.lease_id, "epoch-old", "/user/A", "commit-1", 1200
+        )
         self.assertFalse(stale.status)
         self.assertEqual(stale.reason_code, "LEASE_STALE_EPOCH")
 

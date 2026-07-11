@@ -184,6 +184,19 @@ ProviderExecutionLeaseTable::replayOrConflict(const std::string& operation,
     return reject(operation, "LEASE_IDEMPOTENCY_CONFLICT",
                   &it->second.result.lease);
   }
+  if (!it->second.result.lease.leaseId.empty()) {
+    const auto leaseIt = m_leases.find(it->second.result.lease.leaseId);
+    if (leaseIt == m_leases.end()) {
+      return reject(operation, "LEASE_NOT_FOUND");
+    }
+    if (leaseIt->second.state != it->second.result.lease.state) {
+      return reject(
+        operation,
+        leaseIt->second.state == ExecutionLeaseState::Expired
+          ? "LEASE_EXPIRED" : "LEASE_INVALID_TRANSITION",
+        &leaseIt->second);
+    }
+  }
   auto result = it->second.result;
   result.idempotentReplay = true;
   ++m_counters.idempotentReplay;
@@ -236,6 +249,30 @@ ProviderExecutionLeaseTable::prepare(GenericExecutionLease lease, uint64_t nowMs
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   cleanupExpiredLocked(nowMs);
+  for (auto it = m_waitersByConflictKey.begin();
+       it != m_waitersByConflictKey.end();) {
+    auto& waiters = it->second;
+    waiters.erase(
+      std::remove_if(waiters.begin(), waiters.end(), [this, nowMs] (const auto& key) {
+        const auto expiry = m_waiterExpiresAt.find(key);
+        return expiry == m_waiterExpiresAt.end() || expiry->second <= nowMs;
+      }),
+      waiters.end());
+    if (waiters.empty()) {
+      it = m_waitersByConflictKey.erase(it);
+    }
+    else {
+      ++it;
+    }
+  }
+  for (auto it = m_waiterExpiresAt.begin(); it != m_waiterExpiresAt.end();) {
+    if (it->second <= nowMs) {
+      it = m_waiterExpiresAt.erase(it);
+    }
+    else {
+      ++it;
+    }
+  }
   const auto fingerprint = prepareFingerprint(lease);
   bool handled = false;
   auto replay = replayOrConflict("PREPARE", lease.idempotencyKey,
@@ -249,6 +286,9 @@ ProviderExecutionLeaseTable::prepare(GenericExecutionLease lease, uint64_t nowMs
       lease.resourceBindingProof.empty() || lease.expiresAtMs <= nowMs) {
     return reject("PREPARE", "LEASE_UNAVAILABLE");
   }
+  const auto waiterKey = lease.requesterName + '\n' + lease.requestId + '\n' +
+                         lease.serviceName;
+  bool mustWait = false;
   for (const auto& conflictKey : lease.conflictKeys) {
     if (conflictKey.empty()) {
       return reject("PREPARE", "LEASE_CAPACITY_REJECTED");
@@ -257,10 +297,41 @@ ProviderExecutionLeaseTable::prepare(GenericExecutionLease lease, uint64_t nowMs
       if (isActive(item.second.state) &&
           std::find(item.second.conflictKeys.begin(), item.second.conflictKeys.end(),
                     conflictKey) != item.second.conflictKeys.end()) {
-        return reject("PREPARE", "LEASE_CAPACITY_REJECTED", &item.second);
+        mustWait = true;
+        break;
       }
     }
+    const auto queue = m_waitersByConflictKey.find(conflictKey);
+    if (queue != m_waitersByConflictKey.end() && !queue->second.empty() &&
+        queue->second.front() != waiterKey) {
+      mustWait = true;
+    }
   }
+  if (mustWait) {
+    m_waiterExpiresAt[waiterKey] = lease.expiresAtMs;
+    for (const auto& conflictKey : lease.conflictKeys) {
+      auto& queue = m_waitersByConflictKey[conflictKey];
+      if (std::find(queue.begin(), queue.end(), waiterKey) == queue.end()) {
+        queue.push_back(waiterKey);
+      }
+    }
+    auto result = reject("PREPARE", "LEASE_CAPACITY_REJECTED");
+    result.retryAfterMs = 100;
+    return result;
+  }
+  for (const auto& conflictKey : lease.conflictKeys) {
+    auto queue = m_waitersByConflictKey.find(conflictKey);
+    if (queue == m_waitersByConflictKey.end()) {
+      continue;
+    }
+    auto& waiters = queue->second;
+    waiters.erase(std::remove(waiters.begin(), waiters.end(), waiterKey),
+                  waiters.end());
+    if (waiters.empty()) {
+      m_waitersByConflictKey.erase(queue);
+    }
+  }
+  m_waiterExpiresAt.erase(waiterKey);
   if (lease.leaseId.empty()) {
     lease.leaseId = m_providerEpoch + "-lease-" + std::to_string(m_nextLeaseId++);
   }
@@ -280,15 +351,20 @@ ProviderExecutionLeaseTable::prepare(GenericExecutionLease lease, uint64_t nowMs
 ExecutionLeaseResult
 ProviderExecutionLeaseTable::commit(const std::string& leaseId,
                                     const std::string& providerEpoch,
+                                    const std::string& requesterName,
                                     const std::string& idempotencyKey,
                                     uint64_t nowMs)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   cleanupExpiredLocked(nowMs);
-  const auto fingerprint = operationFingerprint(leaseId, providerEpoch);
+  const auto fingerprint = operationFingerprint(leaseId, providerEpoch) + '\n' +
+                           requesterName;
   bool handled = false;
   auto replay = replayOrConflict("COMMIT", idempotencyKey, fingerprint, handled);
   if (handled) return replay;
+  if (providerEpoch != m_providerEpoch) {
+    return reject("COMMIT", "LEASE_STALE_EPOCH");
+  }
   auto it = m_leases.find(leaseId);
   if (it == m_leases.end()) return reject("COMMIT", "LEASE_NOT_FOUND");
   auto& lease = it->second;
@@ -297,6 +373,9 @@ ProviderExecutionLeaseTable::commit(const std::string& leaseId,
   }
   if (lease.state == ExecutionLeaseState::Expired) {
     return reject("COMMIT", "LEASE_EXPIRED", &lease);
+  }
+  if (lease.requesterName != requesterName) {
+    return reject("COMMIT", "LEASE_REQUESTER_MISMATCH", &lease);
   }
   if (lease.state != ExecutionLeaseState::Prepared) {
     return reject("COMMIT", "LEASE_INVALID_TRANSITION", &lease);
@@ -323,6 +402,9 @@ ProviderExecutionLeaseTable::validateAndActivate(
   auto replay = replayOrConflict("VALIDATE_AND_ACTIVATE", idempotencyKey,
                                  fingerprint, handled);
   if (handled) return replay;
+  if (providerEpoch != m_providerEpoch) {
+    return reject("VALIDATE_AND_ACTIVATE", "LEASE_STALE_EPOCH");
+  }
   auto it = m_leases.find(leaseId);
   if (it == m_leases.end()) {
     return reject("VALIDATE_AND_ACTIVATE", "LEASE_NOT_FOUND");
@@ -360,6 +442,9 @@ ProviderExecutionLeaseTable::validate(const std::string& leaseId,
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   cleanupExpiredLocked(nowMs);
+  if (providerEpoch != m_providerEpoch) {
+    return reject("VALIDATE", "LEASE_STALE_EPOCH");
+  }
   auto it = m_leases.find(leaseId);
   if (it == m_leases.end()) return reject("VALIDATE", "LEASE_NOT_FOUND");
   auto& lease = it->second;
@@ -382,20 +467,28 @@ ProviderExecutionLeaseTable::validate(const std::string& leaseId,
 ExecutionLeaseResult
 ProviderExecutionLeaseTable::abort(const std::string& leaseId,
                                    const std::string& providerEpoch,
+                                   const std::string& requesterName,
                                    const std::string& idempotencyKey,
                                    uint64_t nowMs)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   cleanupExpiredLocked(nowMs);
-  const auto fingerprint = operationFingerprint(leaseId, providerEpoch);
+  const auto fingerprint = operationFingerprint(leaseId, providerEpoch) + '\n' +
+                           requesterName;
   bool handled = false;
   auto replay = replayOrConflict("ABORT", idempotencyKey, fingerprint, handled);
   if (handled) return replay;
+  if (providerEpoch != m_providerEpoch) {
+    return reject("ABORT", "LEASE_STALE_EPOCH");
+  }
   auto it = m_leases.find(leaseId);
   if (it == m_leases.end()) return reject("ABORT", "LEASE_NOT_FOUND");
   auto& lease = it->second;
   if (providerEpoch != m_providerEpoch || lease.providerEpoch != providerEpoch) {
     return reject("ABORT", "LEASE_STALE_EPOCH", &lease);
+  }
+  if (lease.requesterName != requesterName) {
+    return reject("ABORT", "LEASE_REQUESTER_MISMATCH", &lease);
   }
   if (lease.state != ExecutionLeaseState::Prepared &&
       lease.state != ExecutionLeaseState::Committed) {
@@ -411,21 +504,29 @@ ProviderExecutionLeaseTable::abort(const std::string& leaseId,
 ExecutionLeaseResult
 ProviderExecutionLeaseTable::renew(const std::string& leaseId,
                                    const std::string& providerEpoch,
+                                   const std::string& requesterName,
                                    const std::string& idempotencyKey,
                                    uint64_t nowMs, uint64_t expiresAtMs)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   cleanupExpiredLocked(nowMs);
   const auto fingerprint = operationFingerprint(leaseId, providerEpoch,
-                                                expiresAtMs);
+                                                expiresAtMs) + '\n' +
+                           requesterName;
   bool handled = false;
   auto replay = replayOrConflict("RENEW", idempotencyKey, fingerprint, handled);
   if (handled) return replay;
+  if (providerEpoch != m_providerEpoch) {
+    return reject("RENEW", "LEASE_STALE_EPOCH");
+  }
   auto it = m_leases.find(leaseId);
   if (it == m_leases.end()) return reject("RENEW", "LEASE_NOT_FOUND");
   auto& lease = it->second;
   if (providerEpoch != m_providerEpoch || lease.providerEpoch != providerEpoch) {
     return reject("RENEW", "LEASE_STALE_EPOCH", &lease);
+  }
+  if (lease.requesterName != requesterName) {
+    return reject("RENEW", "LEASE_REQUESTER_MISMATCH", &lease);
   }
   if (!isActive(lease.state)) {
     return reject("RENEW", lease.state == ExecutionLeaseState::Expired
@@ -447,20 +548,35 @@ ProviderExecutionLeaseTable::renew(const std::string& leaseId,
 ExecutionLeaseResult
 ProviderExecutionLeaseTable::release(const std::string& leaseId,
                                      const std::string& providerEpoch,
+                                     const std::string& requesterName,
                                      const std::string& idempotencyKey,
                                      uint64_t nowMs)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
   cleanupExpiredLocked(nowMs);
-  const auto fingerprint = operationFingerprint(leaseId, providerEpoch);
+  const auto fingerprint = operationFingerprint(leaseId, providerEpoch) + '\n' +
+                           requesterName;
   bool handled = false;
   auto replay = replayOrConflict("RELEASE", idempotencyKey, fingerprint, handled);
   if (handled) return replay;
+  if (providerEpoch != m_providerEpoch) {
+    return reject("RELEASE", "LEASE_STALE_EPOCH");
+  }
   auto it = m_leases.find(leaseId);
   if (it == m_leases.end()) return reject("RELEASE", "LEASE_NOT_FOUND");
   auto& lease = it->second;
   if (providerEpoch != m_providerEpoch || lease.providerEpoch != providerEpoch) {
     return reject("RELEASE", "LEASE_STALE_EPOCH", &lease);
+  }
+  if (lease.requesterName != requesterName) {
+    return reject("RELEASE", "LEASE_REQUESTER_MISMATCH", &lease);
+  }
+  if (lease.state == ExecutionLeaseState::Released) {
+    auto result = success("RELEASE", lease);
+    result.idempotentReplay = true;
+    ++m_counters.idempotentReplay;
+    rememberReplay("RELEASE", idempotencyKey, fingerprint, result);
+    return result;
   }
   if (lease.state != ExecutionLeaseState::Committed &&
       lease.state != ExecutionLeaseState::Executing) {

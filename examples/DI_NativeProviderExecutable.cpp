@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderReadiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderSession.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
@@ -92,6 +93,7 @@ struct Options
   bool wiringCheckOnly = false;
   bool tracerDeterministicRunner = false;
   bool enableAdmissionLease = false;
+  bool requireExecutionLease = false;
   int admissionLeaseTtlMs = 60000;
 };
 
@@ -536,6 +538,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--enable-admission-lease") {
       options.enableAdmissionLease = true;
     }
+    else if (arg == "--require-execution-lease") {
+      options.requireExecutionLease = true;
+    }
     else if (arg == "--admission-lease-ttl-ms") {
       options.admissionLeaseTtlMs = parsePositiveInt(readValue(), "--admission-lease-ttl-ms");
     }
@@ -753,6 +758,7 @@ printUsage(const char* program)
     << "[--repo-fetch-timeout-ms <ms>] [--repo-ack-timeout-ms <ms>] "
     << "[--repo-permission-wait-ms <ms>] [--wiring-check-only] "
     << "[--tracer-deterministic-runner] [--enable-admission-lease] "
+    << "[--require-execution-lease] "
     << "[--admission-lease-ttl-ms <ms>]\n";
 }
 
@@ -859,6 +865,102 @@ main(int argc, char** argv)
                   << std::endl;
       }
 
+      auto executionLeaseServiceRef =
+        std::make_shared<ndnsf::di::ExecutionLeaseService*>(nullptr);
+      auto executionLeaseService = std::make_shared<ndnsf::di::ExecutionLeaseService>(
+        options.providerName,
+        options.serviceName,
+        [executionLeaseServiceRef,
+         providerName = options.providerName,
+         workerCount = std::max<std::size_t>(1, options.workers)](
+          const ndnsf::di::LeaseOperationRequest&,
+          const ndnsf::di::ExecutionLeaseRequestContext&) {
+          if (*executionLeaseServiceRef == nullptr) {
+            return std::vector<std::string>{};
+          }
+          for (std::size_t slot = 0; slot < workerCount; ++slot) {
+            const auto key = providerName + ":compute-slot:" + std::to_string(slot);
+            if (!(*executionLeaseServiceRef)->table().hasActiveConflictKey(
+                  key, static_cast<std::uint64_t>(std::max<long long>(0, epochMs())))) {
+              return std::vector<std::string>{key};
+            }
+          }
+          return std::vector<std::string>{};
+        });
+      *executionLeaseServiceRef = executionLeaseService.get();
+      provider.addService(
+        ndn::Name(ndnsf::di::EXECUTION_LEASE_SERVICE_NAME),
+        ndn_service_framework::ServiceProvider::AckStrategyHandler(
+          [] (const ndn_service_framework::RequestMessage&) {
+            ndn_service_framework::ServiceProvider::AckDecision decision;
+            decision.status = true;
+            decision.message = "execution lease service ready";
+            return decision;
+          }),
+        ndn_service_framework::ServiceProvider::RequestHandler(
+          [executionLeaseService](
+            const ndn::Name& requesterIdentity,
+            const ndn::Name& providerName,
+            const ndn::Name& serviceName,
+            const ndn::Name& requestId,
+            const ndn_service_framework::RequestMessage& request) {
+            const auto requestPayload = request.getPayload();
+            const std::string payload(
+              reinterpret_cast<const char*>(requestPayload.data()),
+              requestPayload.size());
+            const ndnsf::di::ExecutionLeaseRequestContext context{
+              requesterIdentity.toUri(), providerName.toUri(), serviceName.toUri(),
+              requestId.toUri()};
+            const auto now = static_cast<std::uint64_t>(
+              std::max<long long>(0, epochMs()));
+            const auto responsePayload = executionLeaseService->handle(
+              context, payload, now);
+            const auto leaseResponse =
+              ndnsf::di::decodeLeaseOperationResponse(responsePayload);
+            const auto counters = executionLeaseService->table().counters(now);
+            const auto operationName = [&leaseResponse] {
+              switch (leaseResponse.operation) {
+                case ndnsf::di::LeaseOperation::Prepare: return "PREPARE";
+                case ndnsf::di::LeaseOperation::Commit: return "COMMIT";
+                case ndnsf::di::LeaseOperation::Abort: return "ABORT";
+                case ndnsf::di::LeaseOperation::Renew: return "RENEW";
+                case ndnsf::di::LeaseOperation::Release: return "RELEASE";
+              }
+              return "UNKNOWN";
+            }();
+            std::cout << "NDNSF_DI_EXECUTION_LEASE_OPERATION"
+                      << " provider=" << providerName
+                      << " requester=" << requesterIdentity
+                      << " operation=" << operationName
+                      << " status=" << (leaseResponse.status ? "accepted" : "rejected")
+                      << " reason=" << leaseResponse.reasonCode
+                      << " leaseId=" << leaseResponse.leaseId
+                      << " prepared=" << counters.prepared
+                      << " committed=" << counters.committed
+                      << " activated=" << counters.activated
+                      << " released=" << counters.released
+                      << " expired=" << counters.expired
+                      << " conflicts=" << counters.conflict
+                      << " staleEpoch=" << counters.staleEpoch
+                      << " activePrepared=" << counters.activePrepared
+                      << " activeCommitted=" << counters.activeCommitted
+                      << " activeExecuting=" << counters.activeExecuting
+                      << std::endl;
+            ndn_service_framework::ResponseMessage response;
+            response.setStatus(true);
+            ndn::Buffer bytes(
+              reinterpret_cast<const uint8_t*>(responsePayload.data()),
+              responsePayload.size());
+            response.setPayload(bytes, bytes.size());
+            return response;
+          }),
+        ndn_service_framework::ServiceProvider::ServiceInvocationMode::NormalAndTargeted);
+      std::cout << "NDNSF_DI_EXECUTION_LEASE_SERVICE_READY provider="
+                << options.providerName
+                << " service=" << ndnsf::di::EXECUTION_LEASE_SERVICE_NAME
+                << " workers=" << options.workers
+                << std::endl;
+
       provider.addCollaborationHandler(
         ndn::Name(options.serviceName),
         allowedRoles,
@@ -961,6 +1063,7 @@ main(int argc, char** argv)
          provisioningState,
          readyHandler,
          readyHandlerMutex,
+         executionLeaseService,
          &provider] () mutable {
           try {
             provisioningState->markInstalling(
@@ -1055,6 +1158,12 @@ main(int argc, char** argv)
             config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
             config.workerCount = options.workers;
+            if (options.requireExecutionLease) {
+              config.executionLeaseTable = &executionLeaseService->table();
+              config.executionLeaseTargetService = options.serviceName;
+            }
+            config.executionLeaseHardDeadlineMs = static_cast<uint64_t>(
+              std::max(1000, options.admissionLeaseTtlMs));
 
             auto runtime = makeNativeProviderCollaborationRuntime(std::move(config));
             provisioningState->setCapacitySnapshotProvider(runtime.capacitySnapshot);

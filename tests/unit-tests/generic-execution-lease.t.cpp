@@ -54,7 +54,7 @@ BOOST_AUTO_TEST_CASE(PrepareCommitActivateRelease)
   BOOST_CHECK(!prepared.lease.leaseId.empty());
 
   auto committed = table.commit(prepared.lease.leaseId, "epoch-A",
-                                "commit-request-1", 1100);
+                                "/user/A", "commit-request-1", 1100);
   BOOST_REQUIRE(committed.status);
   BOOST_CHECK(committed.lease.state == ExecutionLeaseState::Committed);
   BOOST_CHECK(table.hasPinnedBindingProof(
@@ -68,7 +68,7 @@ BOOST_AUTO_TEST_CASE(PrepareCommitActivateRelease)
   BOOST_CHECK_EQUAL(activated.lease.executionDeadlineMs, 10000);
 
   auto released = table.release(prepared.lease.leaseId, "epoch-A",
-                                "release-request-1", 1300);
+                                "/user/A", "release-request-1", 1300);
   BOOST_REQUIRE(released.status);
   BOOST_CHECK(released.lease.state == ExecutionLeaseState::Released);
   BOOST_CHECK(!table.hasPinnedBindingProof(
@@ -125,9 +125,11 @@ BOOST_AUTO_TEST_CASE(IdempotencyReplaysOnlyIdenticalOperation)
   BOOST_CHECK(!conflict.status);
   BOOST_CHECK_EQUAL(conflict.reasonCode, "LEASE_IDEMPOTENCY_CONFLICT");
 
-  auto committed = table.commit(first.lease.leaseId, "epoch-A", "commit-1", 1100);
+  auto committed = table.commit(first.lease.leaseId, "epoch-A", "/user/A",
+                                "commit-1", 1100);
   BOOST_REQUIRE(committed.status);
-  auto commitReplay = table.commit(first.lease.leaseId, "epoch-A", "commit-1", 1101);
+  auto commitReplay = table.commit(first.lease.leaseId, "epoch-A", "/user/A",
+                                   "commit-1", 1101);
   BOOST_REQUIRE(commitReplay.status);
   BOOST_CHECK(commitReplay.idempotentReplay);
 }
@@ -138,7 +140,7 @@ BOOST_AUTO_TEST_CASE(ValidationRejectsStaleEpochAndBindingMismatch)
   auto prepared = table.prepare(makeLease(), 1000);
   BOOST_REQUIRE(prepared.status);
   auto committed = table.commit(prepared.lease.leaseId, "epoch-current",
-                                "commit-1", 1100);
+                                "/user/A", "commit-1", 1100);
   BOOST_REQUIRE(committed.status);
 
   auto stale = table.validate(prepared.lease.leaseId, "epoch-old",
@@ -189,17 +191,18 @@ BOOST_AUTO_TEST_CASE(AbortRenewAndInvalidTransitionsFailClosed)
   auto prepared = table.prepare(makeLease(), 1000);
   BOOST_REQUIRE(prepared.status);
 
-  auto renewed = table.renew(prepared.lease.leaseId, "epoch-A", "renew-1",
+  auto renewed = table.renew(prepared.lease.leaseId, "epoch-A", "/user/A", "renew-1",
                              1100, 7000);
   BOOST_REQUIRE(renewed.status);
   BOOST_CHECK_EQUAL(renewed.lease.expiresAtMs, 7000);
 
-  auto aborted = table.abort(prepared.lease.leaseId, "epoch-A", "abort-1", 1200);
+  auto aborted = table.abort(prepared.lease.leaseId, "epoch-A", "/user/A",
+                             "abort-1", 1200);
   BOOST_REQUIRE(aborted.status);
   BOOST_CHECK(aborted.lease.state == ExecutionLeaseState::Aborted);
 
   auto commitAfterAbort = table.commit(prepared.lease.leaseId, "epoch-A",
-                                       "commit-after-abort", 1300);
+                                       "/user/A", "commit-after-abort", 1300);
   BOOST_CHECK(!commitAfterAbort.status);
   BOOST_CHECK_EQUAL(commitAfterAbort.reasonCode, "LEASE_INVALID_TRANSITION");
 }
@@ -209,7 +212,8 @@ BOOST_AUTO_TEST_CASE(ExecutingLeasePinsConflictUntilHardDeadline)
   ProviderExecutionLeaseTable table("epoch-A");
   auto prepared = table.prepare(makeLease(), 1000);
   BOOST_REQUIRE(prepared.status);
-  BOOST_REQUIRE(table.commit(prepared.lease.leaseId, "epoch-A", "commit-1", 1100).status);
+  BOOST_REQUIRE(table.commit(prepared.lease.leaseId, "epoch-A", "/user/A",
+                             "commit-1", 1100).status);
   BOOST_REQUIRE(table.validateAndActivate(
     prepared.lease.leaseId, "epoch-A", makeBinding(), "activate-1",
     1200, 3000).status);
@@ -226,7 +230,8 @@ BOOST_AUTO_TEST_CASE(ExecutingLeasePinsConflictUntilHardDeadline)
 BOOST_AUTO_TEST_CASE(MissingExpiryAndReplayBoundariesAreExplicit)
 {
   ProviderExecutionLeaseTable table("epoch-A");
-  auto missing = table.commit("missing", "epoch-A", "commit-missing", 1000);
+  auto missing = table.commit("missing", "epoch-A", "/user/A",
+                              "commit-missing", 1000);
   BOOST_CHECK(!missing.status);
   BOOST_CHECK_EQUAL(missing.reasonCode, "LEASE_NOT_FOUND");
 
@@ -234,14 +239,16 @@ BOOST_AUTO_TEST_CASE(MissingExpiryAndReplayBoundariesAreExplicit)
   lease.expiresAtMs = 1500;
   auto prepared = table.prepare(lease, 1000);
   BOOST_REQUIRE(prepared.status);
-  auto expired = table.commit(prepared.lease.leaseId, "epoch-A", "commit-expired", 1500);
+  auto expired = table.commit(prepared.lease.leaseId, "epoch-A", "/user/A",
+                              "commit-expired", 1500);
   BOOST_CHECK(!expired.status);
   BOOST_CHECK_EQUAL(expired.reasonCode, "LEASE_EXPIRED");
 
   ProviderExecutionLeaseTable activeTable("epoch-B");
   auto active = activeTable.prepare(makeLease(), 1000);
   BOOST_REQUIRE(active.status);
-  BOOST_REQUIRE(activeTable.commit(active.lease.leaseId, "epoch-B", "commit-1", 1100).status);
+  BOOST_REQUIRE(activeTable.commit(active.lease.leaseId, "epoch-B", "/user/A",
+                                   "commit-1", 1100).status);
   auto activated = activeTable.validateAndActivate(
     active.lease.leaseId, "epoch-B", makeBinding(), "activate-1", 1200, 3000);
   BOOST_REQUIRE(activated.status);
@@ -254,17 +261,68 @@ BOOST_AUTO_TEST_CASE(MissingExpiryAndReplayBoundariesAreExplicit)
   BOOST_CHECK_EQUAL(replayConflict.reasonCode, "LEASE_IDEMPOTENCY_CONFLICT");
 
   auto beyondHardDeadline = activeTable.renew(
-    active.lease.leaseId, "epoch-B", "renew-too-far", 1300, 3001);
+    active.lease.leaseId, "epoch-B", "/user/A", "renew-too-far", 1300, 3001);
   BOOST_CHECK(!beyondHardDeadline.status);
   BOOST_CHECK_EQUAL(beyondHardDeadline.reasonCode, "LEASE_EXPIRED");
 
   auto released = activeTable.release(
-    active.lease.leaseId, "epoch-B", "release-1", 1400);
+    active.lease.leaseId, "epoch-B", "/user/A", "release-1", 1400);
   BOOST_REQUIRE(released.status);
   auto releaseReplay = activeTable.release(
-    active.lease.leaseId, "epoch-B", "release-1", 1401);
+    active.lease.leaseId, "epoch-B", "/user/A", "release-1", 1401);
   BOOST_REQUIRE(releaseReplay.status);
   BOOST_CHECK(releaseReplay.idempotentReplay);
+  auto releaseFromUserAfterProviderCompletion = activeTable.release(
+    active.lease.leaseId, "epoch-B", "/user/A", "release-final", 1402);
+  BOOST_REQUIRE(releaseFromUserAfterProviderCompletion.status);
+  BOOST_CHECK(releaseFromUserAfterProviderCompletion.idempotentReplay);
+
+  auto staleActivationReplay = activeTable.validateAndActivate(
+    active.lease.leaseId, "epoch-B", makeBinding(), "activate-1", 1402, 3000);
+  BOOST_CHECK(!staleActivationReplay.status);
+  BOOST_CHECK_EQUAL(staleActivationReplay.reasonCode, "LEASE_INVALID_TRANSITION");
+}
+
+BOOST_AUTO_TEST_CASE(CapacityWaitersAreGrantedInArrivalOrder)
+{
+  ProviderExecutionLeaseTable table("epoch-fifo");
+  auto firstLease = makeLease();
+  firstLease.requestId = "request-A";
+  firstLease.idempotencyKey = "prepare-A";
+  auto first = table.prepare(firstLease, 1000);
+  BOOST_REQUIRE(first.status);
+  BOOST_REQUIRE(table.commit(first.lease.leaseId, "epoch-fifo", "/user/A",
+                             "commit-A", 1001).status);
+
+  auto secondLease = makeLease();
+  secondLease.requesterName = "/user/B";
+  secondLease.requestId = "request-B";
+  secondLease.idempotencyKey = "prepare-B-1";
+  auto secondWaiting = table.prepare(secondLease, 1010);
+  BOOST_CHECK(!secondWaiting.status);
+  BOOST_CHECK_EQUAL(secondWaiting.reasonCode, "LEASE_CAPACITY_REJECTED");
+  BOOST_CHECK_EQUAL(secondWaiting.retryAfterMs, 100);
+
+  auto thirdLease = makeLease();
+  thirdLease.requesterName = "/user/C";
+  thirdLease.requestId = "request-C";
+  thirdLease.idempotencyKey = "prepare-C-1";
+  BOOST_CHECK(!table.prepare(thirdLease, 1020).status);
+
+  BOOST_REQUIRE(table.release(first.lease.leaseId, "epoch-fifo", "/user/A",
+                              "release-A", 1030).status);
+  thirdLease.idempotencyKey = "prepare-C-2";
+  BOOST_CHECK(!table.prepare(thirdLease, 1040).status);
+
+  secondLease.idempotencyKey = "prepare-B-2";
+  auto second = table.prepare(secondLease, 1050);
+  BOOST_REQUIRE(second.status);
+  BOOST_REQUIRE(table.abort(second.lease.leaseId, "epoch-fifo", "/user/B",
+                           "abort-B", 1060).status);
+
+  thirdLease.idempotencyKey = "prepare-C-3";
+  auto third = table.prepare(thirdLease, 1070);
+  BOOST_REQUIRE(third.status);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

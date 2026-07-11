@@ -19,7 +19,7 @@ import zlib
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from ndnsf.coordination import (
     CoordinationIntent,
@@ -263,11 +263,9 @@ class Deployment:
         )
 
     def can_evict(self) -> tuple[bool, str]:
-        if self.ref_count > 0:
-            return False, f"DEPLOYMENT_IN_USE;ref_count={self.ref_count}"
         if self.status == DeploymentStatus.PROVISIONING:
             return False, "DEPLOYMENT_NOT_READY"
-        return True, "OK"
+        return False, "PROVIDER_EXECUTION_LEASE_CHECK_REQUIRED"
 
     def role_provider(self, role_id: str) -> str:
         assignments = self.fragment_map.get(role_id, [])
@@ -281,87 +279,6 @@ class Deployment:
         if self.status == DeploymentStatus.DISK_RESIDENT:
             return RESIDENCY_READY_COST_MS["DISK_RESIDENT"]
         return self.ready_cost_ms
-
-
-class DeploymentLeaseTable:
-    """Tracks active execution leases per deployment. Thread-safe."""
-
-    def __init__(self) -> None:
-        import threading as _threading
-        self._leases: dict[str, ExecutionLease] = {}
-        self._lock = _threading.Lock()
-
-    def grant(self, lease: ExecutionLease) -> ExecutionLease:
-        with self._lock:
-            self._leases[lease.lease_id] = lease
-        return lease
-
-    def release(self, lease_id: str) -> bool:
-        with self._lock:
-            lease = self._leases.get(lease_id)
-            if lease is None:
-                return False
-            lease.release()
-            return True
-
-    def active_count(self, deployment_id: str, *, now_ms_value: int | None = None) -> int:
-        current = now_ms() if now_ms_value is None else int(now_ms_value)
-        with self._lock:
-            return sum(
-                1 for lease in self._leases.values()
-                if lease.deployment_id == deployment_id and lease.is_valid(now_ms_value=current)
-            )
-
-    def expire_stale(self, *, now_ms_value: int | None = None) -> int:
-        current = now_ms() if now_ms_value is None else int(now_ms_value)
-        expired = 0
-        with self._lock:
-            for lease in list(self._leases.values()):
-                if not lease.released and lease.expires_at_ms and current >= lease.expires_at_ms:
-                    lease.released = True
-                    expired += 1
-        return expired
-
-    def active_leases(self) -> list[ExecutionLease]:
-        with self._lock:
-            return [l for l in self._leases.values() if l.is_valid()]
-
-
-# ---------------------------------------------------------------------------
-# Deployment Garbage Collector
-# ---------------------------------------------------------------------------
-
-class DeploymentGc:
-    """Scans deployments, expires stale execution leases, transitions IDLE→DISK_RESIDENT."""
-
-    def __init__(self, lease_table: DeploymentLeaseTable, idle_timeout_s: int = 300):
-        self.lease_table = lease_table
-        self.idle_timeout_s = max(10, int(idle_timeout_s))
-        self._last_scan_ms = now_ms()
-
-    def scan(self, deployments: list[Deployment],
-             *, now_ms_value: int | None = None) -> list[Deployment]:
-        """Scan and update deployment states. Returns updated list."""
-        current = now_ms() if now_ms_value is None else int(now_ms_value)
-        self._last_scan_ms = current
-        # Expire stale leases
-        self.lease_table.expire_stale(now_ms_value=current)
-        updated = []
-        for dep in deployments:
-            ref_count = self.lease_table.active_count(dep.deployment_id, now_ms_value=current)
-            changed = False
-            if dep.ref_count != ref_count:
-                dep.ref_count = ref_count
-                dep.updated_at_ms = current
-                changed = True
-            if (dep.status == DeploymentStatus.ACTIVE and ref_count == 0 and
-                    current - dep.updated_at_ms > self.idle_timeout_s * 1000):
-                dep.status = DeploymentStatus.IDLE
-                dep.updated_at_ms = current
-                changed = True
-            if changed:
-                updated.append(dep)
-        return updated
 
 
 @dataclass(frozen=True)
@@ -757,6 +674,7 @@ class ProviderFragmentInventoryEntry:
     cpu_resident: bool = False
     gpu_loaded: bool = False
     last_used_ms: int = 0
+    lease_binding_proof: bytes = b""
 
 
 class ProviderFragmentInventoryManager:
@@ -777,7 +695,8 @@ class ProviderFragmentInventoryManager:
                  active_role_count: int = 0,
                  queue_length: int = 0,
                  estimated_queue_wait_ms: float = 0.0,
-                 confidence: float = 1.0):
+                 confidence: float = 1.0,
+                 lease_pin_checker: Callable[[bytes, int], bool] | None = None):
         if not provider_name:
             raise ValueError("provider_name is required")
         self.provider_name = provider_name
@@ -788,6 +707,7 @@ class ProviderFragmentInventoryManager:
         self.queue_length = int(queue_length)
         self.estimated_queue_wait_ms = float(estimated_queue_wait_ms)
         self.confidence = float(confidence)
+        self._lease_pin_checker = lease_pin_checker
         self._entries: dict[str, ProviderFragmentInventoryEntry] = {}
 
     def register_fragment(self,
@@ -797,6 +717,7 @@ class ProviderFragmentInventoryManager:
                           memory_footprint_mb: float = 0.0,
                           repo_available: bool = False,
                           pinned: bool = False,
+                          lease_binding_proof: bytes = b"",
                           confidence: float = 1.0) -> ProviderFragmentInventoryEntry:
         entry = ProviderFragmentInventoryEntry(
             fragment_key=fragment_key,
@@ -804,6 +725,7 @@ class ProviderFragmentInventoryManager:
             memory_footprint_mb=float(memory_footprint_mb),
             repo_available=bool(repo_available),
             pinned=bool(pinned),
+            lease_binding_proof=bytes(lease_binding_proof),
             confidence=float(confidence),
         )
         self._entries[fragment_key.digest()] = entry
@@ -828,6 +750,12 @@ class ProviderFragmentInventoryManager:
 
     def evict(self, fragment_key: ModelFragmentKey, *, from_gpu: bool = True, from_cpu: bool = False) -> None:
         entry = self._entry_for(fragment_key)
+        if entry.pinned or (
+            entry.lease_binding_proof
+            and self._lease_pin_checker is not None
+            and self._lease_pin_checker(entry.lease_binding_proof, now_ms())
+        ):
+            raise RuntimeError("LEASE_BINDING_PINNED")
         if from_gpu:
             entry.gpu_loaded = False
         if from_cpu:

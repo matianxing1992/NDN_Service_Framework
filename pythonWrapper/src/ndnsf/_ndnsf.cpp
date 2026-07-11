@@ -1511,6 +1511,14 @@ public:
         ";requiresProvisioning=" +
         (role.allowDynamicProvisioning ? "1" : "0") +
         ";provisioningTimeoutMs=" + std::to_string(role.provisioningTimeoutMs) + ";";
+      if (!role.appRequirement.empty()) {
+        assignment.append(
+          reinterpret_cast<const char*>(role.appRequirement.data()),
+          role.appRequirement.size());
+        if (!assignment.empty() && assignment.back() != ';') {
+          assignment.push_back(';');
+        }
+      }
 
       auto artifactData = m_artifactDataNames.find(role.role);
       if (artifactData != m_artifactDataNames.end()) {
@@ -3134,7 +3142,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("lease"), py::arg("now_ms"))
     .def("commit", &nsf::ProviderExecutionLeaseTable::commit,
          py::arg("lease_id"), py::arg("provider_epoch"),
-         py::arg("idempotency_key"), py::arg("now_ms"))
+         py::arg("requester_name"), py::arg("idempotency_key"),
+         py::arg("now_ms"))
     .def("validate_and_activate",
          &nsf::ProviderExecutionLeaseTable::validateAndActivate,
          py::arg("lease_id"), py::arg("provider_epoch"), py::arg("binding"),
@@ -3145,14 +3154,17 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("now_ms"))
     .def("abort", &nsf::ProviderExecutionLeaseTable::abort,
          py::arg("lease_id"), py::arg("provider_epoch"),
-         py::arg("idempotency_key"), py::arg("now_ms"))
+         py::arg("requester_name"), py::arg("idempotency_key"),
+         py::arg("now_ms"))
     .def("renew", &nsf::ProviderExecutionLeaseTable::renew,
          py::arg("lease_id"), py::arg("provider_epoch"),
-         py::arg("idempotency_key"), py::arg("now_ms"),
+         py::arg("requester_name"), py::arg("idempotency_key"),
+         py::arg("now_ms"),
          py::arg("expires_at_ms"))
     .def("release", &nsf::ProviderExecutionLeaseTable::release,
          py::arg("lease_id"), py::arg("provider_epoch"),
-         py::arg("idempotency_key"), py::arg("now_ms"))
+         py::arg("requester_name"), py::arg("idempotency_key"),
+         py::arg("now_ms"))
     .def("cleanup_expired", &nsf::ProviderExecutionLeaseTable::cleanupExpired,
          py::arg("now_ms"))
     .def("find", &nsf::ProviderExecutionLeaseTable::find,

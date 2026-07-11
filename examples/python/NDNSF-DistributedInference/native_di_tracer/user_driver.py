@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import contextlib
 import csv
+import hashlib
 import json
 import math
 import os
@@ -28,17 +30,23 @@ from ndnsf import (
     NdnMetrics,
     NdnsdHealthTracker,
     ProviderNetworkMatrix,
-    RetryPolicy,
     ServiceUser,
     TokenBucket,
     TraceCollector,
     build_network_matrix_from_ndnsd,
-    retry_call,
 )
+from ndnsf_distributed_inference.retry import RetryPolicy, retry_call
 from ndnsf_distributed_inference.runtime_v1 import (
     PLACEMENT_STRATEGY_PRESETS,
     filter_feasible_providers,
     pick_optimal_placement,
+)
+from ndnsf_distributed_inference.deployment import (
+    LEASE_SERVICE_NAME,
+    DistributedLeaseTransaction,
+    NdnsfLeaseTransport,
+    ProviderLeaseAssignment,
+    wait_deployment,
 )
 
 
@@ -518,6 +526,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Comma-separated diagnostic reasons to record in replan metrics")
     parser.add_argument("--coordination-service", default="",
                         help="Optional NDNSF coordination service for advisory planning")
+    parser.add_argument("--execution-leases", action="store_true",
+                        help="Acquire fail-closed provider execution leases before collaboration")
     parser.add_argument("--assignment-csv", default="",
                         help="Optional role/provider assignment CSV included in advisory intents")
     parser.add_argument("--runtime-hints-json", default="",
@@ -648,6 +658,122 @@ def parse_semicolon_fields(payload: bytes | str) -> dict[str, str]:
     return fields
 
 
+def execution_lease_plan_digest(service_plan: dict) -> str:
+    wire = json.dumps(service_plan, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(wire).hexdigest()
+
+
+def execution_lease_provider_map(args, advisory: dict, roles: list[dict]) -> dict[str, str]:
+    role_names = [str(role.get("role", "")).strip() for role in roles]
+    providers: dict[str, str] = {}
+    suggestions = advisory.get("suggestions", []) if isinstance(advisory, dict) else []
+    if suggestions and isinstance(suggestions[0], dict):
+        suggested = suggestions[0].get("roleAssignments", {})
+        if isinstance(suggested, dict):
+            for role, value in suggested.items():
+                provider = (
+                    str(value.get("provider", value.get("providerName", ""))).strip()
+                    if isinstance(value, dict)
+                    else str(value).strip()
+                )
+                if provider:
+                    providers[str(role)] = provider
+    if not providers:
+        for role, candidates in load_role_assignment_candidates(args.assignment_csv).items():
+            if candidates:
+                provider = str(candidates[0].get("provider", "")).strip()
+                if provider:
+                    providers[role] = provider
+    missing = [role for role in role_names if role and role not in providers]
+    if missing:
+        raise RuntimeError(
+            "execution lease requires an explicit provider for every role: "
+            + ",".join(missing)
+        )
+    return {role: providers[role] for role in role_names if role}
+
+
+def acquire_execution_leases(user: ServiceUser, args, service_plan: dict,
+                             advisory: dict, roles: list[dict], index: int):
+    provider_by_role = execution_lease_provider_map(args, advisory, roles)
+    transaction_id = f"{args.user}:native-tracer:{index}"
+    plan_digest = execution_lease_plan_digest(service_plan)
+    roles_by_provider: dict[str, list[str]] = {}
+    for role, provider in provider_by_role.items():
+        roles_by_provider.setdefault(provider, []).append(role)
+    assignments = []
+    proofs: dict[str, bytes] = {}
+    for provider, provider_roles in sorted(roles_by_provider.items()):
+        proof_payload = json.dumps(
+            {
+                "schema": "ndnsf-di-binding-v1",
+                "transactionId": transaction_id,
+                "planDigest": plan_digest,
+                "provider": provider,
+                "roles": sorted(provider_roles),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        proof = hashlib.sha256(proof_payload).hexdigest().encode()
+        proofs[provider] = proof
+        assignments.append(
+            ProviderLeaseAssignment(
+                provider=provider,
+                roles=tuple(sorted(provider_roles)),
+                resource_binding_proof=proof,
+            )
+        )
+    transaction = DistributedLeaseTransaction(
+        NdnsfLeaseTransport(user, timeout_ms=args.coordination_timeout_ms)
+    )
+    reservation_window_ms = (
+        max(int(args.ack_timeout_ms), int(args.coordination_timeout_ms)) + 2000
+    )
+    capacity_wait_ms = reservation_window_ms
+    if args.overload_fast_fail_timeout_ms > 0:
+        capacity_wait_ms = min(
+            capacity_wait_ms, int(args.overload_fast_fail_timeout_ms)
+        )
+    lease_set = transaction.acquire(
+        request_id=transaction_id,
+        plan_digest=plan_digest,
+        service_name=args.service,
+        assignments=assignments,
+        # This deadline covers prepare/commit through provider activation only.
+        # NativeProviderHandler installs the longer execution hard deadline
+        # atomically when model work starts.
+        expires_at_ms=int(time.time() * 1000) + reservation_window_ms,
+        capacity_wait_ms=capacity_wait_ms,
+        reservation_ttl_ms=reservation_window_ms,
+    )
+    leases_by_provider = {
+        lease.assignment.provider: lease for lease in lease_set.leases
+    }
+    leased_roles = []
+    for role in roles:
+        role_copy = dict(role)
+        provider = provider_by_role[str(role_copy["role"])]
+        lease = leases_by_provider[provider]
+        fields = (
+            f"executionLeaseId={lease.lease_id};"
+            f"executionLeaseEpoch={lease.provider_epoch};"
+            f"executionLeaseTransactionId={transaction_id};"
+            f"executionLeasePlanDigest={plan_digest};"
+            f"executionLeaseBindingProof={proofs[provider].decode()};"
+            f"executionLeaseProviderRoleCount={len(lease.assignment.roles)};"
+        ).encode()
+        existing = bytes(role_copy.get("app_requirement", b""))
+        if existing and not existing.endswith(b";"):
+            existing += b";"
+        role_copy["app_requirement"] = existing + fields
+        leased_roles.append(role_copy)
+    preference = ";".join(
+        f"{role}=>{provider}" for role, provider in sorted(provider_by_role.items())
+    ) + ";"
+    return transaction, lease_set, leased_roles, preference
+
+
 def int_field(fields: dict[str, str], key: str, default: int = 0) -> int:
     try:
         return int(float(fields.get(key, default)))
@@ -735,6 +861,19 @@ def run_one_request(user: ServiceUser,
             observed_ack_runtime=observed_ack_runtime,
         )
         preference = role_provider_preference_from_advisory(advisory, roles)
+        lease_transaction = None
+        lease_set = None
+        request_roles = roles
+        if args.execution_leases:
+            lease_transaction, lease_set, request_roles, lease_preference = (
+                acquire_execution_leases(
+                    user, args, service_plan, advisory, roles, index
+                )
+            )
+            preference = lease_preference
+            advisory["executionLeaseProviders"] = [
+                lease.assignment.provider for lease in lease_set.leases
+            ]
         if preference:
             advisory["appliedRoleProviderPreference"] = preference
         ack_snapshots: list[dict[str, Any]] = []
@@ -742,19 +881,30 @@ def run_one_request(user: ServiceUser,
         def observe_ack_candidates(candidates) -> None:
             ack_snapshots.extend(ack_candidates_snapshot(candidates))
 
-        with role_provider_preference_env(preference):
-            response = user.request_collaboration(
-                args.service,
-                encode_tensor_bundle(),
-                roles=roles,
-                key_scopes=key_scopes,
-                dependencies=dependencies,
-                scope_key_data_names=scope_key_data_names,
-                role_scopes=role_scopes,
-                ack_timeout_ms=args.ack_timeout_ms,
-                timeout_ms=effective_timeout_ms(args),
-                ack_observer=observe_ack_candidates,
-            )
+        try:
+            with role_provider_preference_env(preference):
+                response = user.request_collaboration(
+                    args.service,
+                    encode_tensor_bundle(),
+                    roles=request_roles,
+                    key_scopes=key_scopes,
+                    dependencies=dependencies,
+                    scope_key_data_names=scope_key_data_names,
+                    role_scopes=role_scopes,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=effective_timeout_ms(args),
+                    ack_observer=observe_ack_candidates,
+                )
+        except Exception:
+            if lease_transaction is not None and lease_set is not None:
+                lease_transaction.release(lease_set)
+            raise
+        if (
+            not response.status
+            and lease_transaction is not None
+            and lease_set is not None
+        ):
+            lease_transaction.release(lease_set)
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         result = {
             "status": "executed" if response.status else "failed",
@@ -1433,6 +1583,8 @@ def run_child_process_requests(args,
                 "--coordination-ack-timeout-ms", str(args.coordination_ack_timeout_ms),
                 "--coordination-timeout-ms", str(args.coordination_timeout_ms),
             ])
+        if args.execution_leases:
+            command.append("--execution-leases")
         print(
             "NDNSF_DI_NATIVE_TRACER_USER_SUBMIT "
             + json.dumps({
@@ -1661,6 +1813,8 @@ def run_process_pool_open_loop_requests(args,
                 "--coordination-ack-timeout-ms", str(args.coordination_ack_timeout_ms),
                 "--coordination-timeout-ms", str(args.coordination_timeout_ms),
             ])
+        if args.execution_leases:
+            command.append("--execution-leases")
         child_log = (
             child_log_dir / f"user-worker-pool-{worker_offset}.log"
             if child_log_dir is not None else
@@ -1823,6 +1977,20 @@ def main() -> int:
         }
         print("NDNSF_DI_NATIVE_TRACER_USER_EXECUTION " + json.dumps(result, sort_keys=True), flush=True)
         return 1
+    if args.execution_leases and LEASE_SERVICE_NAME not in allowed:
+        result = {
+            "status": "failed",
+            "service": args.service,
+            "responseStatus": False,
+            "payloadBytes": 0,
+            "error": (
+                f"missing user permission for {LEASE_SERVICE_NAME}; "
+                f"allowed={allowed}"
+            ),
+            "elapsedMs": 0.0,
+        }
+        print("NDNSF_DI_NATIVE_TRACER_USER_EXECUTION " + json.dumps(result, sort_keys=True), flush=True)
+        return 1
     if args.worker_child:
         if not args.scope_key_data_names_json:
             raise SystemExit("--scope-key-data-names-json is required for worker children")
@@ -1858,7 +2026,9 @@ def main() -> int:
         flush=True,
     )
     if args.wait_for_deployment:
-        dep = user.wait_deployment(args.wait_for_deployment, timeout_ms=30000)
+        dep = wait_deployment(
+            user, args.wait_for_deployment, timeout_ms=30000
+        )
         if dep and dep.get("status") == "ACTIVE":
             print("NDNSF_DI_NATIVE_TRACER_WAIT_DEPLOYMENT " + json.dumps({
                 "deploymentId": args.wait_for_deployment,

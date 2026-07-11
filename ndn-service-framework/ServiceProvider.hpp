@@ -302,6 +302,7 @@ namespace ndn_service_framework{
                                      CollaborationAssignment assignment);
 
                 SessionId sessionId() const;
+                ndn::Name requesterName() const;
                 CollaborationRole role() const;
                 ndn::Name localProvider() const;
                 const CollaborationAssignment& assignment() const;

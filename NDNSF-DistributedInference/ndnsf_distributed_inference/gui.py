@@ -2920,13 +2920,15 @@ class UserDirectTab(DirectRoleTab):
                             "Collaboration request failed: user runtime is not running or lacks request_collaboration.\n"))
             return
         try:
-            response = runtime.request_collaboration(
+            from .deployment import request_collaboration_with_deployment
+            response = request_collaboration_with_deployment(
+                runtime,
                 req.service_name,
                 payload_from_request(req),
                 **collaboration_args,
                 ack_timeout_ms=req.ack_timeout_ms,
                 timeout_ms=req.timeout_ms,
-                deployment_id=req.deployment_id or None,
+                deployment_id=req.deployment_id,
             )
             elapsed_ms = (time.time() - started) * 1000.0
             payload = getattr(response, "payload", b"")

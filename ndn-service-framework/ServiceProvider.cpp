@@ -2057,6 +2057,11 @@ namespace ndn_service_framework
         return m_requestId.toUri();
     }
 
+    ndn::Name ServiceProvider::CollaborationContext::requesterName() const
+    {
+        return m_requesterName;
+    }
+
     CollaborationRole ServiceProvider::CollaborationContext::role() const
     {
         return m_assignment.role;
