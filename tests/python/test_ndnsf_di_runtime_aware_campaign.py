@@ -258,6 +258,93 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             else:
                 os.environ[user_driver.ROLE_PROVIDER_PREFERENCE_ENV] = original
 
+    def test_user_driver_keeps_base_publisher_started_for_workload(self) -> None:
+        user_driver = load_user_driver_module()
+
+        class FakeUser:
+            def __init__(self) -> None:
+                self.events = []
+
+            def start(self) -> None:
+                self.events.append("start")
+
+            def stop(self) -> None:
+                self.events.append("stop")
+
+        user = FakeUser()
+        result = user_driver.run_with_started_user(
+            user,
+            lambda: user.events.append("work") or "completed",
+        )
+
+        self.assertEqual(result, "completed")
+        self.assertEqual(user.events, ["start", "work", "stop"])
+
+    def test_user_driver_stops_base_publisher_when_workload_raises(self) -> None:
+        user_driver = load_user_driver_module()
+
+        class FakeUser:
+            def __init__(self) -> None:
+                self.events = []
+
+            def start(self) -> None:
+                self.events.append("start")
+
+            def stop(self) -> None:
+                self.events.append("stop")
+
+        user = FakeUser()
+
+        def fail() -> None:
+            user.events.append("work")
+            raise RuntimeError("expected")
+
+        with self.assertRaisesRegex(RuntimeError, "expected"):
+            user_driver.run_with_started_user(user, fail)
+        self.assertEqual(user.events, ["start", "work", "stop"])
+
+    def test_process_pool_schedule_observation_records_actual_slip(self) -> None:
+        user_driver = load_user_driver_module()
+
+        observation = user_driver.process_pool_schedule_observation(
+            schedule_start_epoch=100.0,
+            request_index=3,
+            target_rps=2.0,
+            actual_start_epoch=101.25,
+        )
+
+        self.assertEqual(observation["scheduledEpoch"], 101.0)
+        self.assertEqual(observation["actualStartEpoch"], 101.25)
+        self.assertEqual(observation["scheduleSlipMs"], 250.0)
+
+    def test_workload_throughput_uses_process_pool_measurement_interval(self) -> None:
+        user_driver = load_user_driver_module()
+        results = [
+            {"status": "executed", "elapsedMs": 100.0, "payloadBytes": 1}
+            for _index in range(10)
+        ]
+
+        metadata = user_driver.process_pool_measurement_metadata(
+            schedule_start_epoch=100.0,
+            completion_epoch=105.0,
+            results=[
+                {"scheduleSlipMs": 10.0},
+                {"scheduleSlipMs": 30.0},
+            ],
+        )
+        summary = user_driver.summarize_workload(
+            results,
+            makespan_ms=10000.0,
+            service="/Inference/NativeTracer",
+            concurrency=4,
+            metadata=metadata,
+        )
+
+        self.assertEqual(summary["measurementElapsedMs"], 5000.0)
+        self.assertEqual(summary["maxScheduleSlipMs"], 30.0)
+        self.assertEqual(summary["throughputRps"], 2.0)
+        self.assertEqual(summary["makespanMs"], 10000.0)
+
     def test_user_driver_overload_fast_fail_metadata_uses_shorter_timeout(self) -> None:
         user_driver = load_user_driver_module()
         args = type("Args", (), {

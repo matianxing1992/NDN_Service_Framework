@@ -209,6 +209,41 @@ def percentile_nearest_rank(values: list[float], percentile: float) -> float:
     return float(ordered[min(rank, len(ordered)) - 1])
 
 
+def run_with_started_user(user: ServiceUser, workload):
+    user.start()
+    try:
+        return workload()
+    finally:
+        user.stop()
+
+
+def process_pool_schedule_observation(schedule_start_epoch: float,
+                                      request_index: int,
+                                      target_rps: float,
+                                      actual_start_epoch: float) -> dict[str, float]:
+    scheduled_epoch = schedule_start_epoch + ((request_index - 1) / target_rps)
+    return {
+        "scheduledEpoch": scheduled_epoch,
+        "actualStartEpoch": actual_start_epoch,
+        "scheduleSlipMs": max(
+            0.0, (actual_start_epoch - scheduled_epoch) * 1000.0),
+    }
+
+
+def process_pool_measurement_metadata(schedule_start_epoch: float,
+                                      completion_epoch: float,
+                                      results: list[dict]) -> dict[str, float]:
+    return {
+        "measurementStartEpoch": schedule_start_epoch,
+        "measurementElapsedMs": max(
+            0.0, (completion_epoch - schedule_start_epoch) * 1000.0),
+        "maxScheduleSlipMs": max(
+            (float(item.get("scheduleSlipMs", 0.0) or 0.0) for item in results),
+            default=0.0,
+        ),
+    }
+
+
 def open_loop_planned_requests(args) -> int:
     return max(1, min(
         args.requests,
@@ -223,6 +258,11 @@ def summarize_workload(results: list[dict],
                        metadata: Optional[dict] = None) -> dict:
     latencies = [float(item.get("elapsedMs", 0.0)) for item in results]
     successes = [item for item in results if item.get("status") == "executed"]
+    measurement_elapsed_ms = makespan_ms
+    if metadata is not None:
+        candidate = float(metadata.get("measurementElapsedMs", 0.0) or 0.0)
+        if candidate > 0.0:
+            measurement_elapsed_ms = candidate
     summary = {
         "status": "executed" if len(successes) == len(results) else "failed",
         "service": service,
@@ -239,7 +279,9 @@ def summarize_workload(results: list[dict],
         "p95Ms": percentile_nearest_rank(latencies, 95.0),
         "minMs": min(latencies) if latencies else 0.0,
         "maxMs": max(latencies) if latencies else 0.0,
-        "throughputRps": (len(successes) / (makespan_ms / 1000.0)) if makespan_ms > 0 else 0.0,
+        "throughputRps": (
+            len(successes) / (measurement_elapsed_ms / 1000.0)
+            if measurement_elapsed_ms > 0 else 0.0),
         "overloadFastFailCount": sum(
             1 for item in results
             if bool(item.get("overloadFastFail", False))
@@ -1166,11 +1208,18 @@ def run_worker_request_batch(user: ServiceUser,
     results: list[dict] = []
     observed_ack: dict[str, dict[str, Any]] = {}
     for index in indices:
+        schedule_observation: dict[str, float] = {}
         if args.schedule_start_epoch > 0.0 and args.target_rps > 0.0:
             target_time = args.schedule_start_epoch + ((index - 1) / args.target_rps)
             delay = target_time - time.time()
             if delay > 0:
                 time.sleep(delay)
+            schedule_observation = process_pool_schedule_observation(
+                args.schedule_start_epoch,
+                index,
+                args.target_rps,
+                time.time(),
+            )
         result = run_one_request(
             user,
             args,
@@ -1189,6 +1238,7 @@ def run_worker_request_batch(user: ServiceUser,
             "child-process-service-user")
         result["targetRps"] = args.target_rps if args.open_loop_duration_s > 0 else 0.0
         result["openLoopDurationS"] = args.open_loop_duration_s
+        result.update(schedule_observation)
         print("NDNSF_DI_NATIVE_TRACER_USER_REQUEST " +
               json.dumps(result, sort_keys=True), flush=True)
         results.append(result)
@@ -1595,6 +1645,11 @@ def run_process_pool_open_loop_requests(args,
         "submittedCount": len(results) - len(dropped),
         "localBackpressureCount": len(dropped),
         "offeredRps": planned / args.open_loop_duration_s if args.open_loop_duration_s > 0 else 0.0,
+        **process_pool_measurement_metadata(
+            schedule_start_epoch,
+            time.time(),
+            results,
+        ),
     }
     return results, metadata
 
@@ -1763,15 +1818,18 @@ def main() -> int:
                     raise RuntimeError(
                         f"missing worker permission for {args.service}; "
                         f"user={worker_user.user}; allowed={allowed_worker}")
-            results, workload_metadata = run_threaded_open_loop_requests(
-                worker_users,
-                args,
-                service_plan,
-                roles,
-                key_scopes,
-                dependencies,
-                scope_key_data_names,
-                role_scopes)
+            results, workload_metadata = run_with_started_user(
+                user,
+                lambda: run_threaded_open_loop_requests(
+                    worker_users,
+                    args,
+                    service_plan,
+                    roles,
+                    key_scopes,
+                    dependencies,
+                    scope_key_data_names,
+                    role_scopes),
+            )
         elif args.open_loop_driver_mode == "process-pool":
             user.start()
             try:
