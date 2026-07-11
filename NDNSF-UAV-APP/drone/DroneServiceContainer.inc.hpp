@@ -1434,14 +1434,15 @@ public:
       capability.freeBytes = 4'000'000'000ULL;
       capability.storageClasses = {"video", "camera-recording"};
       if (m_cameraOptions.recordRepoPath.empty()) {
-        m_recordingRepo = std::make_unique<ndnsf_distributed_repo::RepoCore>(
-          capability);
+        auto repoId = m_droneId;
+        std::replace(repoId.begin(), repoId.end(), '/', '_');
+        m_cameraOptions.recordRepoPath =
+          "/tmp/ndnsf-uav-" + repoId + "-camera.sqlite3";
       }
-      else {
-        m_recordingRepo = std::make_unique<ndnsf_distributed_repo::RepoCore>(
-          capability,
-          ndnsf_distributed_repo::makeSqliteRepoStore(m_cameraOptions.recordRepoPath));
-      }
+      m_recordingRepo = std::make_unique<ndnsf_distributed_repo::RepoCore>(
+        capability,
+        ndnsf_distributed_repo::makeTieredRepoStore(
+          m_cameraOptions.recordRepoPath, 64 * 1024 * 1024));
       m_recordingSessionId = "record-" + std::to_string(nowMilliseconds());
       m_recordingKeyId = droneIdentity(m_config, m_droneId)
         .append("repo")
@@ -1642,8 +1643,7 @@ public:
   std::string
   recordingRepoPath() const
   {
-    return m_cameraOptions.recordRepoPath.empty() ? std::string("memory-db")
-                                                 : m_cameraOptions.recordRepoPath;
+    return m_cameraOptions.recordRepoPath;
   }
 
   std::string
@@ -2135,10 +2135,6 @@ private:
   ndn::Buffer
   loadOrCreateRecordingContentKey() const
   {
-    if (m_cameraOptions.recordRepoPath.empty()) {
-      return randomRecordingContentKey();
-    }
-
     const auto keyPath = m_cameraOptions.recordRepoPath + ".content-key";
     {
       std::ifstream input(keyPath, std::ios::binary);

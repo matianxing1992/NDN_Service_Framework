@@ -45,8 +45,7 @@ def main() -> int:
                 return 1
             for entry in services:
                 provider = entry.provider_service or "-"
-                token = entry.token or "-"
-                print(f"{entry.service}\tprovider={provider}\ttoken={token}")
+                print(f"{entry.service}\tprovider={provider}")
             return 0
 
         response = user.request_service(
