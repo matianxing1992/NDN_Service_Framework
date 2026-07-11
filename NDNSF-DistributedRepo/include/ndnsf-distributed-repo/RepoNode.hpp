@@ -23,7 +23,6 @@ public:
   using DataReferenceFetcher =
     std::function<std::vector<std::vector<uint8_t>>(const RepoDataReference&)>;
 
-  RepoNode(ndn::Name servicePrefix, StorageCapability capability);
   RepoNode(ndn::Name servicePrefix,
            StorageCapability capability,
            std::shared_ptr<RepoStoreBackend> store);

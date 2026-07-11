@@ -25,7 +25,6 @@ def main() -> int:
     parser.add_argument("--repo-node", required=True)
     parser.add_argument("--free-bytes", type=int, default=2_000_000_000)
     parser.add_argument("--memory-cache-bytes", type=int, default=64 * 1024 * 1024)
-    parser.add_argument("--producer-retention-s", type=float, default=120.0)
     parser.add_argument("--preallocate-bytes", type=int, default=0)
     parser.add_argument("--failure-domain", default="")
     parser.add_argument("--storage-dir", default="")
@@ -63,7 +62,6 @@ def main() -> int:
         memory_cache_bytes=args.memory_cache_bytes,
         preallocate_bytes=args.preallocate_bytes,
         advertise_stored_prefixes=args.advertise_stored_prefixes,
-        producer_retention_s=args.producer_retention_s,
     )
     app.seed_object(
         args.config_object,

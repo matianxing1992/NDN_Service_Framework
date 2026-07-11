@@ -988,93 +988,10 @@ selectReplicas(const std::vector<StorageCapability>& candidates,
   return selected;
 }
 
-void
-InMemoryRepoStore::put(const RepoObjectManifest& manifest,
-                       std::vector<uint8_t> payload)
-{
-  if (manifest.objectName.empty()) {
-    throw std::invalid_argument("repo object name must not be empty");
-  }
-  m_objects[manifest.objectName] = StoredObject{manifest, std::move(payload)};
-}
-
-void
-InMemoryRepoStore::putManifest(const RepoObjectManifest& manifest)
-{
-  if (manifest.objectName.empty()) {
-    throw std::invalid_argument("repo object name must not be empty");
-  }
-  m_objects[manifest.objectName] = StoredObject{manifest, {}};
-}
-
-StoredObject
-InMemoryRepoStore::get(const std::string& objectName) const
-{
-  auto it = m_objects.find(objectName);
-  if (it == m_objects.end()) {
-    throw std::out_of_range("repo object not found: " + objectName);
-  }
-  return it->second;
-}
-
-bool
-InMemoryRepoStore::has(const std::string& objectName) const
-{
-  return m_objects.count(objectName) != 0;
-}
-
-bool
-InMemoryRepoStore::erase(const std::string& objectName)
-{
-  return m_objects.erase(objectName) != 0;
-}
-
-size_t
-InMemoryRepoStore::size() const
-{
-  return m_objects.size();
-}
-
-std::vector<RepoObjectManifest>
-InMemoryRepoStore::listManifests() const
-{
-  std::vector<RepoObjectManifest> manifests;
-  manifests.reserve(m_objects.size());
-  for (const auto& item : m_objects) {
-    manifests.push_back(item.second.manifest);
-  }
-  return manifests;
-}
-
-uint64_t
-InMemoryRepoStore::usedBytes() const
-{
-  uint64_t used = 0;
-  for (const auto& item : m_objects) {
-    used += item.second.payload.size();
-  }
-  return used;
-}
-
 RepoCacheStatus
 RepoStoreBackend::cacheStatus() const
 {
   return {};
-}
-
-RepoCacheStatus
-InMemoryRepoStore::cacheStatus() const
-{
-  RepoCacheStatus status;
-  status.storageBackend = "memory";
-  status.authoritativeBackend = "memory";
-  return status;
-}
-
-std::shared_ptr<RepoStoreBackend>
-makeMemoryRepoStore()
-{
-  return std::make_shared<InMemoryRepoStore>();
 }
 
 std::shared_ptr<RepoStoreBackend>

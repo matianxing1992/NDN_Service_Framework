@@ -210,7 +210,6 @@ class ArtifactProvisioningState:
                 progress=1.0 if state == ServiceOperationState.DONE else 0.0,
                 metadata={
                     "component": self.component,
-                    "legacyStatus": status,
                 },
             ),
         }

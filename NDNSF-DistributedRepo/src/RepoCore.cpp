@@ -8,11 +8,6 @@
 
 namespace ndnsf_distributed_repo {
 
-RepoCore::RepoCore(StorageCapability capability)
-  : RepoCore(std::move(capability), makeMemoryRepoStore())
-{
-}
-
 RepoCore::RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBackend> store)
   : m_capability(std::move(capability))
   , m_capacityBytes(m_capability.freeBytes + m_capability.usedBytes)

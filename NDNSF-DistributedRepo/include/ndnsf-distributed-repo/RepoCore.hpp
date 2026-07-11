@@ -13,7 +13,6 @@ namespace ndnsf_distributed_repo {
 class RepoCore
 {
 public:
-  explicit RepoCore(StorageCapability capability);
   RepoCore(StorageCapability capability, std::shared_ptr<RepoStoreBackend> store);
 
   RepoObjectManifest put(const std::string& objectName,

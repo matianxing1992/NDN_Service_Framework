@@ -55,47 +55,52 @@ require(bool condition, const std::string& message)
 class RejectableStore : public RepoStoreBackend
 {
 public:
+  explicit RejectableStore(std::shared_ptr<RepoStoreBackend> delegate)
+    : m_delegate(std::move(delegate))
+  {
+  }
+
   void put(const RepoObjectManifest& manifest, std::vector<uint8_t> payload) override
   {
     rejectIfRequested();
-    m_delegate.put(manifest, std::move(payload));
+    m_delegate->put(manifest, std::move(payload));
   }
 
   void putManifest(const RepoObjectManifest& manifest) override
   {
     rejectIfRequested();
-    m_delegate.putManifest(manifest);
+    m_delegate->putManifest(manifest);
   }
 
   StoredObject get(const std::string& objectName) const override
   {
-    return m_delegate.get(objectName);
+    return m_delegate->get(objectName);
   }
 
   bool has(const std::string& objectName) const override
   {
-    return m_delegate.has(objectName);
+    return m_delegate->has(objectName);
   }
 
   bool erase(const std::string& objectName) override
   {
     rejectIfRequested();
-    return m_delegate.erase(objectName);
+    return m_delegate->erase(objectName);
   }
 
   size_t size() const override
   {
-    return m_delegate.size();
+    return m_delegate->size();
   }
 
   std::vector<RepoObjectManifest> listManifests() const override
   {
-    return m_delegate.listManifests();
+    return m_delegate->listManifests();
   }
 
   uint64_t usedBytes() const override
   {
-    return m_delegate.usedBytes();
+    return m_delegate->usedBytes();
   }
 
   void setRejectWrites(bool reject)
@@ -112,7 +117,7 @@ private:
   }
 
 private:
-  InMemoryRepoStore m_delegate;
+  std::shared_ptr<RepoStoreBackend> m_delegate;
   bool m_rejectWrites = false;
 };
 
@@ -168,7 +173,12 @@ main()
               "cache status JSON round-trip mismatch");
     }
 
-    auto rejectable = std::make_shared<RejectableStore>();
+    const auto failureSqlitePath = std::filesystem::temp_directory_path() /
+      ("ndnsf-distributed-repo-tiered-failure-" +
+       std::to_string(getpid()) + ".sqlite3");
+    removeDatabase(failureSqlitePath);
+    auto rejectable = std::make_shared<RejectableStore>(
+      makeSqliteRepoStore(failureSqlitePath.string()));
     auto failureStore = makeTieredRepoStore(rejectable, 4096, "test-store");
     const std::string failureName = "/repo/tiered/write-failure";
     const std::vector<uint8_t> oldPayload(64, 0x11);
@@ -197,9 +207,9 @@ main()
     const auto manifestC = makeManifest("/repo/tiered/lru/C", lruPayload);
     const auto twoEntryBudget = logicalCharge(manifestA, lruPayload) +
                                 logicalCharge(manifestB, lruPayload);
-    auto lruStore = makeTieredRepoStore(makeMemoryRepoStore(),
+    auto lruStore = makeTieredRepoStore(makeSqliteRepoStore(sqlitePath.string()),
                                         twoEntryBudget,
-                                        "memory-test-authority");
+                                        "sqlite");
     lruStore->put(manifestA, lruPayload);
     lruStore->put(manifestB, lruPayload);
     require(lruStore->cacheStatus().entryCount == 2,
@@ -220,8 +230,8 @@ main()
             "evicted object did not follow backing read-through");
 
     const std::vector<uint8_t> oversizedPayload(512, 0x44);
-    auto oversizedStore = makeTieredRepoStore(makeMemoryRepoStore(), 128,
-                                              "memory-test-authority");
+    auto oversizedStore = makeTieredRepoStore(
+      makeSqliteRepoStore(sqlitePath.string()), 128, "sqlite");
     const auto oversizedManifest = makeManifest("/repo/tiered/oversized",
                                                 oversizedPayload);
     oversizedStore->put(oversizedManifest, oversizedPayload);
@@ -237,8 +247,8 @@ main()
             oversizedStatus.oversizedBypasses == 2,
             "oversized read-through was admitted");
 
-    auto disabledStore = makeTieredRepoStore(makeMemoryRepoStore(), 0,
-                                             "memory-test-authority");
+    auto disabledStore = makeTieredRepoStore(
+      makeSqliteRepoStore(sqlitePath.string()), 0, "sqlite");
     disabledStore->put(manifestA, lruPayload);
     require(disabledStore->get(manifestA.objectName).payload == lruPayload,
             "zero-budget store lost authoritative object");
@@ -256,8 +266,8 @@ main()
             disabledSqliteStatus.cachePolicy == "disabled",
             "zero-budget SQLite status contract mismatch");
 
-    auto deleteStore = makeTieredRepoStore(makeMemoryRepoStore(), 4096,
-                                           "memory-test-authority");
+    auto deleteStore = makeTieredRepoStore(
+      makeSqliteRepoStore(sqlitePath.string()), 4096, "sqlite");
     deleteStore->put(manifestA, lruPayload);
     require(deleteStore->erase(manifestA.objectName), "delete did not reach authority");
     const auto deleteStatus = deleteStore->cacheStatus();
@@ -272,8 +282,8 @@ main()
     }
     require(missingAfterDelete, "deleted object remained readable");
 
-    auto concurrentStore = makeTieredRepoStore(makeMemoryRepoStore(), 4096,
-                                               "memory-test-authority");
+    auto concurrentStore = makeTieredRepoStore(
+      makeSqliteRepoStore(sqlitePath.string()), 4096, "sqlite");
     concurrentStore->put(manifestA, lruPayload);
     std::atomic<bool> concurrentOk{true};
     std::vector<std::thread> threads;
@@ -300,6 +310,7 @@ main()
             "concurrent cache reads were inconsistent");
 
     removeDatabase(sqlitePath);
+    removeDatabase(failureSqlitePath);
     std::cout << "DISTRIBUTED_REPO_TIERED_CACHE_TEST_OK "
               << concurrentStatus.toJson() << std::endl;
     return 0;

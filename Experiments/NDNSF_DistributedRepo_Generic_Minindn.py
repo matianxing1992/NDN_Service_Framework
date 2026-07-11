@@ -347,7 +347,6 @@ def main() -> None:
             "--failure-domain rack-a "
             f"--storage-dir {MININDN_ROOT}/{REPO_A_NODE}/repo-store "
             + (f"--memory-cache-bytes {args.tiered_cache_bytes} "
-               "--producer-retention-s 120 "
                if args.tiered_cache_smoke or exact_packet_mode else "") +
             "--advertise-stored-prefixes"
         )
@@ -361,7 +360,6 @@ def main() -> None:
             " --provider-id repoB --repo-node /example/repo/provider/repoB "
             "--failure-domain rack-b "
             f"--storage-dir {MININDN_ROOT}/{REPO_B_NODE}/repo-store "
-            + ("--producer-retention-s 120 " if exact_packet_mode else "") +
             "--advertise-stored-prefixes"
         )
         repoB_proc, _ = start(

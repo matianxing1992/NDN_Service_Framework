@@ -14,7 +14,6 @@ as both a reusable C++ API and an NDNSF service layer:
   object-level catalog metadata for replica discovery and recovery.
 - `PlacementPolicy`: controlled replication requirements.
 - `selectReplicas`: deterministic placement over candidate storage nodes.
-- `InMemoryRepoStore`: a local smoke-test store used by examples.
 - `RepoCore`: reusable in-process storage logic with no dependency on NDNSF
   networking.
 - `RepoNode`: a repo node that can register NDNSF services on a
@@ -564,9 +563,8 @@ RepoCore core(capability, makeTieredRepoStore(
   64 * 1024 * 1024));
 ```
 
-The in-memory C++ backend remains an internal test double for direct unit tests;
-it is not a supported Repo-node deployment mode. The standalone app rejects
-`storage-backend memory` instead of silently losing persistence.
+There is no memory-authoritative backend or default memory-only constructor.
+Tests use temporary SQLite databases or test-local fault-injection backends.
 
 `DistributedRepoNodeApp` reads this from config:
 
@@ -592,9 +590,9 @@ SQLite path under `/tmp/ndnsf-distributed-repo/` when no storage directory is
 given. It does not duplicate all persistent payloads in an unbounded Python
 dictionary. After a restart, a network fetch first sends `FETCH_PREPARE` to the
 selected Repo. The Repo loads the complete object or packet set through the hot
-cache/SQLite path, starts a bounded-lifetime Data producer, and then the client
-uses the normal segmented NDN fetch path. Temporary producers are serving
-resources, not authoritative storage or hot-cache entries.
+cache/SQLite path, makes it available through the always-on Repo data plane,
+and then the client uses the normal segmented NDN fetch path. The data plane is
+a serving resource, not authoritative storage or a hot-cache entry.
 
 The packet API is distinct from the legacy opaque-object chunking helper.
 Already-signed Data is stored once in `data_packets` under its exact Data name;

@@ -23,6 +23,17 @@ main()
   ndn::Name signerIdentity("/example/repo/user/smoke");
   signerIdentity.appendNumber(static_cast<uint64_t>(getpid()));
   const auto signingIdentity = keyChain.createIdentity(signerIdentity);
+  const auto tempPrefix = std::filesystem::temp_directory_path() /
+    ("ndnsf-distributed-repo-smoke-" + std::to_string(getpid()));
+  const auto nodeSqlitePath = tempPrefix.string() + "-node.sqlite3";
+  const auto embeddedCoreSqlitePath = tempPrefix.string() + "-core.sqlite3";
+  const auto embeddedNodeSqlitePath = tempPrefix.string() + "-embedded.sqlite3";
+  for (const auto& path : {nodeSqlitePath, embeddedCoreSqlitePath,
+                           embeddedNodeSqlitePath}) {
+    std::filesystem::remove(path);
+    std::filesystem::remove(path + "-wal");
+    std::filesystem::remove(path + "-shm");
+  }
 
   const std::vector<uint8_t> payload = {'n', 'd', 'n', 's', 'f', '-', 'r', 'e', 'p', 'o'};
   std::vector<StorageCapability> candidates = {
@@ -55,7 +66,8 @@ main()
 
   RepoNode node(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
                 {"/repo/A", 1024 * 1024, 0, 0.10, 0.99, "rack-a",
-                 {"model", "intermediate"}});
+                 {"model", "intermediate"}},
+                makeTieredRepoStore(nodeSqlitePath, 4096));
   StorageCapability persistentModeProbe;
   persistentModeProbe.repoNode = "/repo/A";
   persistentModeProbe.repoMode = "persistent";
@@ -228,7 +240,8 @@ main()
   }
 
   RepoCore embeddedCore({"/repo/embedded", 1024 * 1024, 0, 0.0, 1.0,
-                         "local", {"embedded"}});
+                         "local", {"embedded"}},
+                        makeTieredRepoStore(embeddedCoreSqlitePath, 4096));
   const auto embeddedManifest = embeddedCore.put(
     "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/local/core-object",
     payload,
@@ -244,7 +257,8 @@ main()
   ndn_service_framework::LocalServiceRegistry localRegistry;
   RepoNode embeddedNode(
     ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
-    {"/repo/in-app", 1024 * 1024, 0, 0.0, 1.0, "local", {"embedded"}});
+    {"/repo/in-app", 1024 * 1024, 0, 0.0, 1.0, "local", {"embedded"}},
+    makeTieredRepoStore(embeddedNodeSqlitePath, 4096));
   embeddedNode.registerLocalServices(localRegistry);
   if (!localRegistry.hasService(
         makeRepoServiceName(ndn::Name(RepoClient::DEFAULT_SERVICE_NAME), "STORE")) ||
@@ -277,7 +291,8 @@ main()
       RepoClient::localList(localRegistry,
                             ndn::Name(RepoClient::DEFAULT_SERVICE_NAME)).empty() ||
       localCatalogStatus.repoNode != "/repo/in-app" ||
-      localCacheStatus.storageBackend != "memory" ||
+      localCacheStatus.storageBackend != "tiered" ||
+      localCacheStatus.authoritativeBackend != "sqlite" ||
       localCatalogLookup.manifest.objectName != localManifest.objectName ||
       !RepoClient::localRemove(localRegistry,
                                ndn::Name(RepoClient::DEFAULT_SERVICE_NAME),
@@ -286,8 +301,7 @@ main()
     return 1;
   }
 
-  const auto sqlitePath = std::filesystem::temp_directory_path() /
-    "ndnsf-distributed-repo-smoke.sqlite3";
+  const auto sqlitePath = std::filesystem::path(tempPrefix.string() + "-restart.sqlite3");
   std::filesystem::remove(sqlitePath);
   std::filesystem::remove(sqlitePath.string() + "-wal");
   std::filesystem::remove(sqlitePath.string() + "-shm");

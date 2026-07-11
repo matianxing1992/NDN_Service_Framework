@@ -2,7 +2,6 @@
 #define NDNSF_DISTRIBUTED_REPO_REPO_TYPES_HPP
 
 #include <cstdint>
-#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -280,34 +279,6 @@ public:
 
   virtual RepoCacheStatus cacheStatus() const;
 };
-
-class InMemoryRepoStore : public RepoStoreBackend
-{
-public:
-  void put(const RepoObjectManifest& manifest, std::vector<uint8_t> payload) override;
-
-  void putManifest(const RepoObjectManifest& manifest) override;
-
-  StoredObject get(const std::string& objectName) const override;
-
-  bool has(const std::string& objectName) const override;
-
-  bool erase(const std::string& objectName) override;
-
-  size_t size() const override;
-
-  std::vector<RepoObjectManifest> listManifests() const override;
-
-  uint64_t usedBytes() const override;
-
-  RepoCacheStatus cacheStatus() const override;
-
-private:
-  std::map<std::string, StoredObject> m_objects;
-};
-
-std::shared_ptr<RepoStoreBackend>
-makeMemoryRepoStore();
 
 std::shared_ptr<RepoStoreBackend>
 makeSqliteRepoStore(const std::string& databasePath);

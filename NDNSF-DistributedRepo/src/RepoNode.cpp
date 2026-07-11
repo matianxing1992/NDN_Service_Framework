@@ -25,12 +25,6 @@ payloadOf(const ndn_service_framework::RequestMessage& request)
 
 } // namespace
 
-RepoNode::RepoNode(ndn::Name servicePrefix, StorageCapability capability)
-  : m_servicePrefix(std::move(servicePrefix))
-  , m_core(std::move(capability))
-{
-}
-
 RepoNode::RepoNode(ndn::Name servicePrefix,
                    StorageCapability capability,
                    std::shared_ptr<RepoStoreBackend> store)

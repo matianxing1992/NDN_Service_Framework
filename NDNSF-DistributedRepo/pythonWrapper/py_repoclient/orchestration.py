@@ -1318,7 +1318,6 @@ class RepoNodeApp:
         handler_threads: int = 4,
         ack_threads: int = 2,
         serve_certificates: bool = True,
-        producer_retention_s: float = 120.0,
         exact_data_validation_policy: str = "wire-name-and-request-digest",
     ) -> None:
         self.repo_node = repo_node
@@ -1377,10 +1376,6 @@ class RepoNodeApp:
             reserve = self.storage_dir / "repo.reserve"
             with reserve.open("ab") as file:
                 file.truncate(preallocate_bytes)
-        # Kept as an accepted constructor option for callers from the former
-        # per-request producer path. The always-on data plane has no retention
-        # timer and serves every persisted prefix until shutdown.
-        _ = producer_retention_s
         self.advertise_stored_prefixes = advertise_stored_prefixes
         self.advertise_command = advertise_command
         self._advertised_prefixes: set[str] = set()
@@ -4325,7 +4320,7 @@ class RepoNodeApp:
         capability = self._capability()
         cache_status = self._cache_status()
         runtime = self._runtime_snapshot()
-        legacy_fields: dict[str, object] = {
+        capability_fields: dict[str, object] = {
             "repoNode": capability.repo_node,
             "freeBytes": capability.free_bytes,
             "usedBytes": capability.used_bytes,
@@ -4375,7 +4370,7 @@ class RepoNodeApp:
             ),
             service_payload_schema="ndnsf-repo-capability-v1",
             service_payload={
-                **legacy_fields,
+                **capability_fields,
                 "storageClasses": list(capability.storage_classes),
             },
         )
@@ -4408,7 +4403,6 @@ class RepoNodeApp:
                 {"objectName": object_name or manifest.object_name}
                 if object_name or manifest is not None else {}
             ),
-            metadata={"legacyStatus": status},
         )
         payload: dict[str, object] = {"operationStatus": to_plain(operation_status)}
         if manifest is not None and state == ServiceOperationState.DONE:
@@ -6250,11 +6244,7 @@ class NetworkDistributedRepoClient:
         repo_node: str,
         payload: bytes,
         timeout_ms: int | None = None,
-        isolated_runtime: bool = False,
     ) -> ServiceResponse:
-        # isolated_runtime remains accepted for source compatibility. Creating
-        # a second ServiceUser with the same identity/SVS session is unsafe.
-        _ = isolated_runtime
         responses, failures = self._request_specific_repos_parallel(
             {repo_node: payload}, timeout_ms=timeout_ms)
         if repo_node in responses:
@@ -7010,7 +7000,6 @@ class NetworkDistributedRepoClient:
                     # Reuse the existing ServiceUser across packet batches.
                     # Each request has its own request ID; rebuilding the SVS
                     # runtime per packet adds seconds of bootstrap latency.
-                    isolated_runtime=False,
                 )
                 response_obj = json.loads(response.payload.decode())
                 validate_write_receipts(
@@ -7041,7 +7030,6 @@ class NetworkDistributedRepoClient:
                         writeIntent=intent.to_dict(),
                     ),
                     timeout_ms=max(self.timeout_ms, 60000),
-                    isolated_runtime=False,
                 )
                 response_obj = json.loads(response.payload.decode())
                 receipts.append(RepoWriteReceipt.from_dict(response_obj["writeReceipt"]))
@@ -7109,7 +7097,6 @@ class NetworkDistributedRepoClient:
             repo_node=repo_node,
             payload=encode_repo_request("CATALOG_LOOKUP", objectName=object_name),
             timeout_ms=self.timeout_ms,
-            isolated_runtime=True,
         )
         decoded = json.loads(response.payload.decode())
         if not isinstance(decoded, dict):
@@ -7121,7 +7108,6 @@ class NetworkDistributedRepoClient:
             repo_node=repo_node,
             payload=encode_repo_request("CATALOG_QUERY", query=dict(query)),
             timeout_ms=self.timeout_ms,
-            isolated_runtime=True,
         )
         decoded = json.loads(response.payload.decode())
         if not isinstance(decoded, dict):
@@ -7133,7 +7119,6 @@ class NetworkDistributedRepoClient:
             repo_node=repo_node,
             payload=encode_repo_request("CATALOG_STATUS"),
             timeout_ms=self.timeout_ms,
-            isolated_runtime=True,
         )
         decoded = json.loads(response.payload.decode())
         if not isinstance(decoded, dict):
@@ -7154,7 +7139,6 @@ class NetworkDistributedRepoClient:
                 sourceStatus=source_status or {},
             ),
             timeout_ms=self.timeout_ms,
-            isolated_runtime=True,
         )
         decoded = json.loads(response.payload.decode())
         if not isinstance(decoded, dict):
@@ -7179,7 +7163,6 @@ class NetworkDistributedRepoClient:
             repo_node=source_repo,
             payload=encode_repo_request("FETCH_PREPARE", objectName=object_name),
             timeout_ms=min(max(self.timeout_ms, 5000), 10000),
-            isolated_runtime=True,
         )
         prepared = json.loads(prepared_response.payload.decode())
         if not isinstance(prepared, dict):
@@ -7286,7 +7269,6 @@ class NetworkDistributedRepoClient:
                     self.timeout_ms,
                     _pull_fetch_timeout_ms(repair_manifest.segment_count) + 30000,
                 ),
-                isolated_runtime=True,
             )
         finally:
             try:
@@ -7332,7 +7314,6 @@ class NetworkDistributedRepoClient:
             repo_node=repo_node,
             payload=encode_repo_request("CATALOG_SNAPSHOT"),
             timeout_ms=self.timeout_ms,
-            isolated_runtime=True,
         )
         decoded = json.loads(response.payload.decode())
         if not isinstance(decoded, dict):
@@ -7353,7 +7334,6 @@ class NetworkDistributedRepoClient:
                     repo_node=repo_node,
                     payload=payload,
                     timeout_ms=max(self.timeout_ms, 120000),
-                    isolated_runtime=True,
                 )
                 try:
                     obj = json.loads(response.payload.decode())
