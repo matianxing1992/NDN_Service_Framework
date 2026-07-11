@@ -46,6 +46,9 @@ class UavStreamParityCampaignTest(unittest.TestCase):
             summary = campaign.parse_run(run_dir, 0, ["launcher"])
 
         self.assertTrue(summary["completion"])
+        self.assertTrue(summary["metricsValid"])
+        self.assertTrue(summary["videoCompletion"])
+        self.assertTrue(summary["controlCompletion"])
         self.assertEqual(summary["fecRecoveryLogCount"], 1)
         self.assertEqual(summary["fecRecoveredChunks"], 1)
         self.assertEqual(summary["maxPendingChunks"], 2)
@@ -73,12 +76,43 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         duration_index = command.index("--auto-stop-seconds")
         self.assertEqual(command[duration_index + 1], "60")
 
+    def test_sixty_second_run_requires_usable_decoded_frame_rate(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "100.0 INFO GS_RESPONSE status=streaming fec_parity_shards=1\n"
+                "MAVLink arm drone=A accepted=true\n"
+                "MAVLink takeoff drone=A accepted=true\n"
+                "MAVLink land drone=A accepted=true\n"
+                "GS_DECODED_FRAMES count=90\n"
+                "161.0 INFO GS_VIDEO_ADAPTIVE_STATE reason=stop-ack state=stopped\n"
+                "GS_GUI_EXIT rc=0\n",
+                encoding="utf-8",
+            )
+            summary = campaign.parse_run(
+                run_dir,
+                0,
+                ["launcher"],
+                duration_seconds=60,
+                include_mavlink=True,
+            )
+
+        self.assertTrue(summary["processCompletion"])
+        self.assertTrue(summary["durationAccepted"])
+        self.assertTrue(summary["controlCompletion"])
+        self.assertFalse(summary["videoCompletion"])
+        self.assertFalse(summary["completion"])
+        self.assertEqual(summary["minimumDecodedFrames"], 900)
+        self.assertAlmostEqual(summary["decodedFrameRate"], 90 / 61)
+
     def test_treatment_aggregation_keeps_failed_runs(self) -> None:
         campaign = load_campaign()
         runs = [
             {
                 "lossPercent": 5, "fecParityShards": 1,
-                "completion": True, "decodedFrames": 60,
+                "completion": True, "videoCompletion": True,
+                "controlCompletion": True, "decodedFrames": 60,
                 "fecRecoveredChunks": 3, "maxTimeouts": 4,
                 "maxDecodedFrameGap": 0, "maxPendingChunks": 1,
                 "maxPendingBytes": 3600, "rttP50Ms": 20.0,
@@ -87,7 +121,8 @@ class UavStreamParityCampaignTest(unittest.TestCase):
             },
             {
                 "lossPercent": 5, "fecParityShards": 1,
-                "completion": False, "decodedFrames": 0,
+                "completion": False, "videoCompletion": False,
+                "controlCompletion": False, "decodedFrames": 0,
                 "fecRecoveredChunks": 0, "maxTimeouts": 9,
                 "maxDecodedFrameGap": 2, "maxPendingChunks": 4,
                 "maxPendingBytes": 7200, "rttP50Ms": 0.0,
@@ -99,7 +134,35 @@ class UavStreamParityCampaignTest(unittest.TestCase):
         self.assertEqual(aggregate["runCount"], 2)
         self.assertEqual(aggregate["completedRuns"], 1)
         self.assertEqual(aggregate["completionRate"], 0.5)
+        self.assertEqual(aggregate["videoCompletionRate"], 0.5)
+        self.assertEqual(aggregate["controlCompletionRate"], 0.5)
         self.assertEqual(aggregate["maxDecodedFrameGap"], 2)
+
+    def test_malformed_required_metric_is_reported(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "100.0 INFO GS_RESPONSE status=streaming fec_parity_shards=1\n"
+                "GS_VIDEO_ADAPTIVE_STATE reason=active VideoAdaptive "
+                "rtt_ms=20 pending_chunks=0 pending_bytes=0 "
+                "fec_recovered_chunks=0 decoded_frame_gap=0 timeouts=bad "
+                "nacks=0 duplicates=0\n"
+                "GS_DECODED_FRAMES count=30\n"
+                "101.0 INFO GS_VIDEO_ADAPTIVE_STATE reason=stop-ack state=stopped\n"
+                "GS_GUI_EXIT rc=0\n",
+                encoding="utf-8",
+            )
+            summary = campaign.parse_run(run_dir, 0, ["launcher"])
+
+        self.assertTrue(summary["completion"])
+        self.assertFalse(summary["metricsValid"])
+        self.assertIn("timeouts:invalid", summary["malformedMetrics"])
+        self.assertFalse(campaign.is_run_accepted(
+            summary,
+            max_pending_chunks=48,
+            max_pending_bytes=16 * 1024 * 1024,
+        ))
 
     def test_invalid_parity_and_loss_values_fail(self) -> None:
         campaign = load_campaign()

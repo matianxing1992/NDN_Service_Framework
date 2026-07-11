@@ -19,6 +19,16 @@ from typing import Any, Iterable
 REPO = Path(__file__).resolve().parents[1]
 LAUNCHER = REPO / "Experiments/NDNSF_UAV_GUI_Minindn.py"
 ADAPTIVE_MARKER = "GS_VIDEO_ADAPTIVE_STATE"
+REQUIRED_ADAPTIVE_METRICS = (
+    "rtt_ms",
+    "pending_chunks",
+    "pending_bytes",
+    "fec_recovered_chunks",
+    "timeouts",
+    "nacks",
+    "duplicates",
+    "decoded_frame_gap",
+)
 FIELD_RE = re.compile(r"([a-z_]+)=([^\s]+)")
 LOG_TIME_RE = re.compile(r"^(\d+(?:\.\d+)?)\s")
 DECODED_RE = re.compile(r"GS_DECODED_FRAMES count=(\d+)")
@@ -116,15 +126,29 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
               loss_percent: int = 5, fec_parity_shards: int = 1,
               repetition: int = 1, duration_seconds: int = 0,
               include_mavlink: bool = False,
-              elapsed_seconds: float = 0.0) -> dict[str, Any]:
+              elapsed_seconds: float = 0.0, expected_fps: int = 30,
+              min_decoded_frame_ratio: float = 0.5) -> dict[str, Any]:
     gs_log = run_dir / "ground-station.log"
     text = gs_log.read_text(encoding="utf-8", errors="replace") if gs_log.exists() else ""
     lines = text.splitlines()
     snapshots = [
         fields_from_line(line)
         for line in lines
-        if ADAPTIVE_MARKER in line
+        if ADAPTIVE_MARKER in line and "VideoAdaptive" in line
     ]
+    malformed_metrics: list[str] = []
+    if not snapshots:
+        malformed_metrics.append("adaptiveSnapshot:missing")
+    for index, snapshot in enumerate(snapshots):
+        for field in REQUIRED_ADAPTIVE_METRICS:
+            value = snapshot.get(field)
+            if value is None:
+                malformed_metrics.append(f"snapshot-{index}:{field}:missing")
+                continue
+            try:
+                int(value)
+            except ValueError:
+                malformed_metrics.append(f"snapshot-{index}:{field}:invalid")
 
     def integer_values(field: str) -> list[int]:
         values: list[int] = []
@@ -165,13 +189,18 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
     controls_ok = not include_mavlink or (arm and takeoff and land)
     accepted_parity = parity_values[-1] if parity_values else -1
     duration_ok = duration_seconds <= 0 or stream_duration >= duration_seconds * 0.90
-    completion = (
-        returncode == 0 and
-        max(decoded_frames, default=0) >= 30 and
+    minimum_decoded_frames = (
+        max(30, int(duration_seconds * expected_fps * min_decoded_frame_ratio))
+        if duration_seconds > 0 else 30
+    )
+    decoded_frame_count = max(decoded_frames, default=0)
+    video_completion = (
+        decoded_frame_count >= minimum_decoded_frames and
         "GS_GUI_EXIT rc=0" in text and
         accepted_parity == fec_parity_shards and
-        controls_ok and duration_ok
+        duration_ok
     )
+    completion = returncode == 0 and video_completion and controls_ok
 
     pending_chunks = integer_values("pending_chunks")
     pending_bytes = integer_values("pending_bytes")
@@ -193,9 +222,18 @@ def parse_run(run_dir: Path, returncode: int, command: list[str], *,
         "streamDurationSeconds": stream_duration,
         "elapsedSeconds": elapsed_seconds,
         "completion": completion,
+        "processCompletion": returncode == 0,
+        "videoCompletion": video_completion,
+        "controlCompletion": controls_ok,
         "durationAccepted": duration_ok,
         "adaptiveSnapshotCount": len(snapshots),
-        "decodedFrames": max(decoded_frames, default=0),
+        "metricsValid": not malformed_metrics,
+        "malformedMetrics": ";".join(malformed_metrics),
+        "decodedFrames": decoded_frame_count,
+        "minimumDecodedFrames": minimum_decoded_frames,
+        "decodedFrameRate": (
+            decoded_frame_count / stream_duration if stream_duration > 0 else 0.0
+        ),
         "mavlinkArm": arm,
         "mavlinkTakeoff": takeoff,
         "mavlinkLand": land,
@@ -218,7 +256,10 @@ RUN_FIELDS = [
     "runId", "runDirectory", "returncode", "lossPercent", "fecParityShards",
     "acceptedFecParityShards", "repetition", "durationSeconds",
     "streamDurationSeconds", "elapsedSeconds", "completion",
+    "processCompletion", "videoCompletion", "controlCompletion",
     "durationAccepted", "adaptiveSnapshotCount", "decodedFrames",
+    "metricsValid", "malformedMetrics",
+    "minimumDecodedFrames", "decodedFrameRate",
     "mavlinkArm", "mavlinkTakeoff", "mavlinkLand",
     "staleSessionRejectCount", "staleStreamRejectCount",
     "fecRecoveryLogCount", "fecRecoveredChunks", "maxPendingChunks",
@@ -235,6 +276,18 @@ def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None
             writer.writerow({field: row.get(field, "") for field in fields})
 
 
+def is_run_accepted(run: dict[str, Any], *, max_pending_chunks: int,
+                    max_pending_bytes: int) -> bool:
+    return (
+        bool(run["completion"]) and
+        bool(run["metricsValid"]) and
+        int(run["maxPendingChunks"]) <= max_pending_chunks and
+        int(run["maxPendingBytes"]) <= max_pending_bytes and
+        int(run["staleSessionRejectCount"]) == 0 and
+        int(run["staleStreamRejectCount"]) == 0
+    )
+
+
 def aggregate_treatments(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for run in runs:
@@ -249,6 +302,10 @@ def aggregate_treatments(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "runCount": len(rows),
             "completedRuns": sum(bool(row["completion"]) for row in rows),
             "completionRate": sum(bool(row["completion"]) for row in rows) / len(rows),
+            "videoCompletedRuns": sum(bool(row["videoCompletion"]) for row in rows),
+            "videoCompletionRate": sum(bool(row["videoCompletion"]) for row in rows) / len(rows),
+            "controlCompletedRuns": sum(bool(row["controlCompletion"]) for row in rows),
+            "controlCompletionRate": sum(bool(row["controlCompletion"]) for row in rows) / len(rows),
             "meanDecodedFrames": statistics.fmean(row["decodedFrames"] for row in rows),
             "meanFecRecoveredChunks": statistics.fmean(
                 row["fecRecoveredChunks"] for row in rows),
@@ -274,15 +331,20 @@ def main() -> int:
     parser.add_argument("--auto-stop-seconds", type=int, default=60)
     parser.add_argument("--link-delay-ms", type=int, default=1)
     parser.add_argument("--bandwidth-mbps", type=int, default=1000)
+    parser.add_argument("--min-decoded-frame-ratio", type=float, default=0.5)
     parser.add_argument("--max-pending-chunks", type=int, default=48)
     parser.add_argument("--max-pending-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--no-mavlink", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--reparse-existing", action="store_true",
+                        help="Rebuild summaries from existing immutable run logs without executing MiniNDN.")
     args = parser.parse_args()
     if args.runs < 1:
         raise SystemExit("--runs must be positive")
     if args.auto_stop_seconds < 1:
         raise SystemExit("--auto-stop-seconds must be positive")
+    if not 0.0 < args.min_decoded_frame_ratio <= 1.0:
+        raise SystemExit("--min-decoded-frame-ratio must be in (0, 1]")
 
     try:
         losses = parse_int_csv(args.loss_percentages, minimum=0, maximum=100)
@@ -291,6 +353,13 @@ def main() -> int:
         raise SystemExit(str(exc)) from exc
 
     out_dir = Path(args.out).expanduser().resolve()
+    prior_runs: dict[str, dict[str, Any]] = {}
+    if args.reparse_existing:
+        summary_path = out_dir / "campaign-summary.json"
+        if not summary_path.exists():
+            raise SystemExit("--reparse-existing requires campaign-summary.json")
+        prior = json.loads(summary_path.read_text(encoding="utf-8"))
+        prior_runs = {str(run.get("runId", "")): run for run in prior.get("runs", [])}
     topology_dir = out_dir / "topologies"
     topology_dir.mkdir(parents=True, exist_ok=True)
     topologies: dict[int, Path] = {}
@@ -313,6 +382,23 @@ def main() -> int:
             fec_parity_shards=parity,
             include_mavlink=include_mavlink,
         )
+        if args.reparse_existing:
+            previous = prior_runs.get(run_id)
+            if previous is None:
+                raise SystemExit(f"missing prior run record: {run_id}")
+            runs.append(parse_run(
+                run_dir,
+                int(previous.get("returncode", 1)),
+                list(previous.get("command", command)),
+                loss_percent=loss,
+                fec_parity_shards=parity,
+                repetition=repetition,
+                duration_seconds=args.auto_stop_seconds,
+                include_mavlink=include_mavlink,
+                elapsed_seconds=float(previous.get("elapsedSeconds", 0.0)),
+                min_decoded_frame_ratio=args.min_decoded_frame_ratio,
+            ))
+            continue
         if args.dry_run:
             runs.append({
                 "runId": run_id,
@@ -343,6 +429,7 @@ def main() -> int:
             duration_seconds=args.auto_stop_seconds,
             include_mavlink=include_mavlink,
             elapsed_seconds=time.monotonic() - started,
+            min_decoded_frame_ratio=args.min_decoded_frame_ratio,
         ))
 
     if args.dry_run:
@@ -358,6 +445,7 @@ def main() -> int:
                 "bandwidthMbps": args.bandwidth_mbps,
                 "videoBitrateKbps": 1200,
                 "videoWidth": 320,
+                "minDecodedFrameRatio": args.min_decoded_frame_ratio,
             },
             "runs": runs,
         }
@@ -371,9 +459,10 @@ def main() -> int:
                 int(run["staleSessionRejectCount"]) > 0 or
                 int(run["staleStreamRejectCount"]) > 0
             )
-            run["accepted"] = (
-                bool(run["completion"]) and bool(run["bufferingAccepted"]) and
-                not bool(run["staleAccepted"])
+            run["accepted"] = is_run_accepted(
+                run,
+                max_pending_chunks=args.max_pending_chunks,
+                max_pending_bytes=args.max_pending_bytes,
             )
         treatments = aggregate_treatments(runs)
         all_accepted = all(bool(run["accepted"]) for run in runs)
@@ -389,6 +478,7 @@ def main() -> int:
                 "bandwidthMbps": args.bandwidth_mbps,
                 "videoBitrateKbps": 1200,
                 "videoWidth": 320,
+                "minDecodedFrameRatio": args.min_decoded_frame_ratio,
                 "maxPendingChunks": args.max_pending_chunks,
                 "maxPendingBytes": args.max_pending_bytes,
                 "automaticRetry": False,
