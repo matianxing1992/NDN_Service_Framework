@@ -460,6 +460,28 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(len(summary["parseErrors"]), 1)
         self.assertEqual(summary["providers"]["/P/backbone"]["ackEvents"], 1)
 
+    def test_dependency_collection_separates_interleaved_trace_line(self) -> None:
+        harness = load_harness_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "provider.log"
+            log_path.write_text(
+                "NDNSF_DI_DEPENDENCY_OBJECT session=/s/1 scope=edge "
+                "producer=/A consumer=/B direction=fetch payload_bytes=65 "
+                "planned_name=/data/1 status=ok\n"
+                "NDNSF_DI_DEPENDENCY_OBJECT session=/s/2 scope=edge "
+                "producer=/A consumer=/B direction=fetch payload_bytes=65e "
+                "planned_name=/data/2d status=oker\n",
+                encoding="utf-8",
+            )
+
+            summary = harness.collect_dependency_object_counters(Path(tmp))
+
+        self.assertEqual(summary["observedLineCount"], 2)
+        self.assertEqual(summary["eventCount"], 1)
+        self.assertEqual(summary["statusCounters"], {"ok": 1})
+        self.assertEqual(summary["parseErrorCount"], 1)
+        self.assertEqual(len(summary["parseErrors"]), 1)
+
     def test_user_driver_builds_ack_candidate_snapshot(self) -> None:
         user_driver = load_user_driver_module()
 

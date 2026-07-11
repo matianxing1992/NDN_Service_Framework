@@ -1164,22 +1164,48 @@ def collect_provider_fragment_inventory(logs_dir: Path) -> dict[str, object]:
 
 def collect_dependency_object_counters(logs_dir: Path) -> dict[str, object]:
     scanned_logs = 0
+    observed_line_count = 0
     event_count = 0
+    parse_error_count = 0
     direction_counters: Counter[str] = Counter()
     status_counters: Counter[str] = Counter()
     dependency_fetch_payload_values: list[float] = []
     dependency_publish_payload_values: list[float] = []
     examples: list[dict[str, object]] = []
+    parse_errors: list[dict[str, str]] = []
 
     for path in sorted(logs_dir.glob("*.log")):
         scanned_logs += 1
-        for line in read_log_text(path).splitlines():
+        for line_no, line in enumerate(read_log_text(path).splitlines(), start=1):
             if "NDNSF_DI_DEPENDENCY_OBJECT" not in line:
                 continue
+            observed_line_count += 1
             fields = parse_trace_fields(line)
             direction = fields.get("direction", "")
             status = fields.get("status", "")
-            payload_bytes = int_field(fields, "payload_bytes", 0)
+            try:
+                required = (
+                    "session", "scope", "producer", "consumer",
+                    "direction", "payload_bytes", "planned_name", "status",
+                )
+                if any(not fields.get(key, "") for key in required):
+                    raise ValueError("dependency trace is missing required fields")
+                if direction not in {"fetch", "publish"}:
+                    raise ValueError(f"invalid dependency direction: {direction}")
+                if status != "ok":
+                    raise ValueError(f"invalid dependency status: {status}")
+                payload_bytes = int(fields["payload_bytes"])
+                if payload_bytes < 0:
+                    raise ValueError("dependency payload_bytes must be non-negative")
+            except (TypeError, ValueError) as exc:
+                parse_error_count += 1
+                if len(parse_errors) < 5:
+                    parse_errors.append({
+                        "log": str(path),
+                        "line": str(line_no),
+                        "error": str(exc),
+                    })
+                continue
             event_count += 1
             if direction:
                 direction_counters[direction] += 1
@@ -1205,7 +1231,10 @@ def collect_dependency_object_counters(logs_dir: Path) -> dict[str, object]:
 
     return {
         "scannedLogs": scanned_logs,
+        "observedLineCount": observed_line_count,
         "eventCount": event_count,
+        "parseErrorCount": parse_error_count,
+        "parseErrors": parse_errors,
         "directionCounters": by_mode(direction_counters),
         "statusCounters": by_mode(status_counters),
         "dependencyFetchPayloadBytes": metric_stats(dependency_fetch_payload_values),
