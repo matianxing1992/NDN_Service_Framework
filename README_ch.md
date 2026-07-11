@@ -671,6 +671,11 @@ inference API。当前路径支持 ONNX chunk policy、dependency-driven executi
 tests。它仍然是 NDNSF core 之上的应用包；model-specific splitter 和 planner 保留在该包中，
 不会放进 framework core。
 
+Spec 084 简化完成后，多个 user 不再依赖 advisory coordinator。每个 user 根据 typed
+provider hint 独立规划；只有 provider 自己签发并 fail-closed 管理的 lease 才能授权独占
+执行。被拒绝的 user 做有界重规划。模型生命周期和调度策略仍归 DI，通用 lease 与
+telemetry facts 归 Core。
+
 `NDNSF-DistributedRepo` 是 repository-oriented application layer。它应该保存和服务应用
 已经发布的 NDN Data segments 或 references，而不是重新定义 NDNSF service security。
 Repo 细节有意保持在 core service invocation protocol 之外。
@@ -679,6 +684,9 @@ Repo 细节有意保持在 core service invocation protocol 之外。
 video、recording discovery 和 mission operations 走 NDNSF remote/Targeted services。
 同进程 helper 可以通过 `container.addLocalService(...)` 使用
 `ServiceContainer::localRegistry()`，但 local helper 不是外部可选择的 service。
+
+最终的 Core/应用 ownership matrix 见 `docs/ndnsf-core-app-boundary.md`。新应用应复用
+typed Core envelope，不应把存储、模型、任务安全或 codec policy 移进 framework。
 
 ### 3.9 这些 regression 对应的安全机制
 

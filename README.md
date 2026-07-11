@@ -915,6 +915,12 @@ metadata, fragment residency, directed provider-to-provider metrics, and
 optional admission leases. The workflow entry point is
 `docs/NDNSF-DI-runtime-workflow.md`.
 
+After the Spec 084 simplification, users do not share an advisory coordinator.
+Each user plans independently from typed provider hints; provider-owned,
+fail-closed leases are the only authority for exclusive execution, and a
+rejected user performs bounded replanning. Model lifecycle and scheduling stay
+in DI, while the generic lease and telemetry facts stay in Core.
+
 `NDNSF-DistributedRepo` is a repository-oriented application layer. It should
 store and serve application-published NDN Data segments or references without
 redefining NDNSF service security. Repo details are intentionally outside the
@@ -925,6 +931,11 @@ telemetry, video, recording discovery, and mission operations use NDNSF
 remote/Targeted services. Same-process helpers may use
 `ServiceContainer::localRegistry()` through `container.addLocalService(...)`,
 but local helpers are not externally selectable services.
+
+The complete accepted ownership matrix is documented in
+`docs/ndnsf-core-app-boundary.md`. New application features should reuse the
+typed Core envelopes without moving storage, model, mission, or codec policy
+into the framework.
 
 ### 3.9 Security-mechanism alignment for these regressions
 
