@@ -158,7 +158,7 @@ class NativeTracerProfile:
     concurrency: int = 1
     target_rps: float = 0.0
     open_loop_duration_s: float = 0.0
-    open_loop_driver_mode: str = "child"
+    open_loop_driver_mode: str = "threaded"
     submission_spacing_ms: int = 250
     provider_check_timeout: int = 45
     local_execution_only: bool = True
@@ -380,7 +380,7 @@ def validate_profile_payload(payload: dict[str, Any], require_di: bool = False) 
     if planner_mode and planner_mode not in {"greedy", "proportional"}:
         errors.append("distributed_inference.native_tracer.llm_planner_mode has unsupported value")
     driver_mode = native.get("open_loop_driver_mode")
-    if driver_mode and driver_mode not in {"child", "threaded", "process-pool"}:
+    if driver_mode and driver_mode not in {"child", "threaded"}:
         errors.append("distributed_inference.native_tracer.open_loop_driver_mode has unsupported value")
 
     if require_di and native and native.get("enabled") is not True:

@@ -524,8 +524,8 @@ def main(argv: list[str] | None = None) -> int:
                         default=default_value(profile_defaults, "open_loop_duration_s", 0.0),
                         help="Run each workload as fixed-rate open-loop for this many seconds")
     parser.add_argument("--open-loop-driver-mode",
-                        choices=["child", "threaded", "process-pool"],
-                        default=default_value(profile_defaults, "open_loop_driver_mode", "child"),
+                        choices=["child", "threaded"],
+                        default=default_value(profile_defaults, "open_loop_driver_mode", "threaded"),
                         help="User driver implementation for open-loop workloads")
     parser.add_argument("--submission-spacing-ms", type=int,
                         default=default_value(profile_defaults, "submission_spacing_ms", 0))

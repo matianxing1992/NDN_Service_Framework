@@ -779,11 +779,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-open-loop-duration-s", type=float, default=-1.0,
                         help="Override Qwen MiniNDN open-loop duration when >= 0.")
     parser.add_argument("--experiment-open-loop-driver-mode",
-                        choices=["child", "threaded", "process-pool"],
-                        default="process-pool",
+                        choices=["child", "threaded"],
+                        default="threaded",
                         help=("Open-loop Qwen MiniNDN user-driver mode. "
-                              "process-pool reuses worker users and is the "
-                              "recommended GUI/headless sweep default."))
+                              "threaded is the validated measurement path; "
+                              "child retains process-isolation diagnostics."))
     parser.add_argument("--experiment-dry-run", action="store_true",
                         help="Print/record the resolved Qwen MiniNDN command without running MiniNDN.")
     parser.add_argument("--experiment-extra-arg", action="append", default=[],
@@ -3015,7 +3015,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             ("Target RPS sweep list", "target_rps_list", "", ""),
             ("Sweep repeats", "sweep_repeats", "1", ""),
             ("Open-loop duration s", "open_loop_duration_s", "", ""),
-            ("Open-loop driver mode", "open_loop_driver_mode", "process-pool", ""),
+            ("Open-loop driver mode", "open_loop_driver_mode", "threaded", ""),
             ("Output JSON", "output_json", "/tmp/ndnsf-di-gui-qwen-minindn/gui-summary.json", "save"),
             ("Extra harness args", "extra_args", "", ""),
         ]
@@ -3095,7 +3095,7 @@ class QwenMiniNdnExperimentTab(ttk.Frame):
             ),
             experiment_open_loop_duration_s=self._float_value("open_loop_duration_s", -1.0),
             experiment_open_loop_driver_mode=(
-                self.value("open_loop_driver_mode").strip() or "process-pool"
+                self.value("open_loop_driver_mode").strip() or "threaded"
             ),
             experiment_dry_run=self.bool_value("dry_run"),
             experiment_extra_arg=split_extra_args(self.value("extra_args")),

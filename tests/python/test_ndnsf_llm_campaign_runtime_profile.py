@@ -44,7 +44,7 @@ class LlmCampaignRuntimeProfileTests(unittest.TestCase):
                                 "llm_stage_execution_delay_scale": 3.0,
                                 "target_rps": 4.0,
                                 "open_loop_duration_s": 2.0,
-                                "open_loop_driver_mode": "process-pool",
+                                "open_loop_driver_mode": "threaded",
                                 "submission_spacing_ms": 33,
                                 "runtime_v1_context_tokens": 2048,
                                 "runtime_v1_generated_tokens": 64,
@@ -64,7 +64,7 @@ class LlmCampaignRuntimeProfileTests(unittest.TestCase):
             self.assertEqual(defaults["stage_execution_delay_scale"], 3.0)
             self.assertEqual(defaults["target_rps"], 4.0)
             self.assertEqual(defaults["open_loop_duration_s"], 2.0)
-            self.assertEqual(defaults["open_loop_driver_mode"], "process-pool")
+            self.assertEqual(defaults["open_loop_driver_mode"], "threaded")
             self.assertEqual(defaults["submission_spacing_ms"], 33)
             self.assertEqual(defaults["runtime_v1_context_tokens"], 2048)
             self.assertEqual(defaults["runtime_v1_generated_tokens"], 64)
