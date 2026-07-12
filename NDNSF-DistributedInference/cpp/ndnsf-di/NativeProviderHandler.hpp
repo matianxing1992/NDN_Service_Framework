@@ -119,6 +119,7 @@ struct NativeProviderCollaborationRuntime
 {
   ndn_service_framework::ServiceProvider::CollaborationHandler handler;
   std::function<ProviderRoleWorkerSnapshot()> capacitySnapshot;
+  std::vector<ExecutionEvidence> executionEvidence;
 };
 
 NativeProviderCollaborationRuntime

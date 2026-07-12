@@ -2282,6 +2282,20 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(failedJson.find("\"hasModel\":false") != std::string::npos);
 
   readiness.markReady("native runner specs installed");
+  ExecutionEvidence readinessEvidence;
+  readinessEvidence.providerName = "/provider/A";
+  readinessEvidence.providerBootId = "boot-a";
+  readinessEvidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+  readinessEvidence.realCompute = true;
+  readinessEvidence.deviceKind = "cuda";
+  readinessEvidence.deviceId = "GPU-1";
+  readinessEvidence.runtimeVersion = "ort";
+  readinessEvidence.modelDigest = "sha256:model";
+  readinessEvidence.planDigest = "sha256:plan";
+  readinessEvidence.artifactDigests["/Backbone"] = "sha256:artifact";
+  readinessEvidence.roles = {"/Backbone"};
+  readinessEvidence.createdAtMs = 1;
+  readiness.setExecutionEvidence(readinessEvidence);
   auto readyAck = readiness.makeAckDecision("/Backbone,/Merge");
   BOOST_CHECK(readyAck.status);
   BOOST_CHECK(readiness.isReady());
@@ -2292,6 +2306,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(readyJson.find("\"runtimeStatus\":\"ready\"") !=
               std::string::npos);
   BOOST_CHECK(readyJson.find("\"hasModel\":true") != std::string::npos);
+  BOOST_CHECK(readyJson.find("\"executionEvidence\"") != std::string::npos);
+  BOOST_CHECK(readyJson.find("\"runnerKind\":\"onnxruntime-cuda\"") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"queue\":0") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"workers\":0") != std::string::npos);
   BOOST_CHECK(ackPayloadText(readyAck).find("providerCapabilityHint=json64:") !=

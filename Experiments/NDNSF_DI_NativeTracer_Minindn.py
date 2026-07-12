@@ -70,6 +70,7 @@ NEGATIVE_ACK_RECORDED_RE = re.compile(r"event=NEGATIVE_ACK_RECORDED\b.*?\breason
 NATIVE_ACK_DECISION_RE = re.compile(
     r"NDNSF_DI_NATIVE_PROVIDER_ACK_DECISION\b.*?\bstatus=0\b.*?\bmessage=\"([^\"]*)\"")
 NEGATIVE_ACK_PAYLOAD_RE = re.compile(r"\bnegativeAckReason=([^;\s]+)")
+EXECUTION_EVIDENCE_PREFIX = "NDNSF_DI_EXECUTION_EVIDENCE "
 
 
 def _execution_operation_state(status: str, reason: str = "") -> ServiceOperationState:
@@ -2206,6 +2207,7 @@ def collect_provider_ack_runtime_hints(logs_dir: Path) -> dict[str, object]:
                 "negativeAckReason": payload_fields.get("negativeAckReason", ""),
                 "leaseId": payload_fields.get("leaseId", ""),
                 "leaseExpiresAtMs": payload_fields.get("leaseExpiresAtMs", ""),
+                "executionEvidence": payload_fields.get("executionEvidence", {}),
                 "log": str(path),
             }
             for payload_key, output_key in {
@@ -2279,6 +2281,8 @@ def collect_core_envelope_summary(logs_dir: Path) -> dict[str, object]:
                         "queueLength": runtime_hint.queue_length if runtime_hint else 0,
                         "activeWorkCount": runtime_hint.active_work_count if runtime_hint else 0,
                         "leaseOfferCount": len(hint.lease_offers),
+                        "executionEvidence": dict(hint.service_payload).get(
+                            "executionEvidence", {}),
                         "log": str(path),
                     }
                     if hint.operation_status is not None:
@@ -2359,6 +2363,56 @@ def build_failure_breakdown(user_result: dict[str, object],
     }
 
 
+def collect_provider_execution_evidence(paths: list[Path]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        for line_no, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            marker = line.find(EXECUTION_EVIDENCE_PREFIX)
+            if marker < 0:
+                continue
+            payload = line[marker + len(EXECUTION_EVIDENCE_PREFIX):].strip()
+            record = json.loads(payload)
+            record["sourceLog"] = str(path)
+            record["sourceLine"] = line_no
+            records.append(record)
+    return records
+
+
+def derive_runner_classification(records: list[dict[str, object]]) -> str:
+    if not records:
+        return "invalid-evidence"
+    identities = {
+        (
+            str(item.get("runnerKind", "unknown")),
+            bool(item.get("realCompute", False)),
+            str(item.get("modelDigest", "")),
+            str(item.get("planDigest", "")),
+        )
+        for item in records
+    }
+    if len(identities) != 1:
+        return "invalid-evidence"
+    kind, real_compute, model_digest, plan_digest = next(iter(identities))
+    if not model_digest or not plan_digest:
+        return "invalid-evidence"
+    real_kinds = {"onnxruntime-cpu", "onnxruntime-cuda", "transformers", "llama-server"}
+    if real_compute != (kind in real_kinds):
+        return "invalid-evidence"
+    roles: dict[str, str] = {}
+    for item in records:
+        artifacts = item.get("artifactDigests", {})
+        if not isinstance(artifacts, dict) or not artifacts:
+            return "invalid-evidence"
+        for role, digest in artifacts.items():
+            role_text, digest_text = str(role), str(digest)
+            if role_text in roles and roles[role_text] != digest_text:
+                return "invalid-evidence"
+            roles[role_text] = digest_text
+    return kind
+
+
 def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "summary.json").write_text(
@@ -2377,6 +2431,7 @@ def write_summary(out_dir: Path, summary: dict[str, object]) -> None:
         f"assignmentResolved={summary.get('assignmentResolved', summary.get('assignment', ''))}",
         f"miniNDNStatus={summary['miniNDNStatus']}",
         f"miniNDNRun={summary['miniNDNRun']}",
+        f"runnerClassification={summary.get('runnerClassification', 'invalid-evidence')}",
         f"runnerMode={summary['runnerMode']}",
         f"activationPadBytes={summary.get('activationPadBytes', 0)}",
         f"roleExecutionDelayMs={summary.get('roleExecutionDelayMs', 0.0)}",
@@ -2506,6 +2561,8 @@ def build_base_summary(args, out_dir: Path, policy_dir: Path, logs_dir: Path) ->
             "reason": "local execution baseline has not run yet",
         },
         "providerChecks": [],
+        "executionEvidence": [],
+        "runnerClassification": "invalid-evidence",
         "runnerMode": "none",
         "userExecution": {
             "status": "gated",
@@ -3265,7 +3322,11 @@ def main() -> int:
             if missing_roles:
                 raise RuntimeError(
                     f"missing provider role timing logs for {missing_roles}; logs={provider_logs}")
-            summary["runnerMode"] = "qwen-onnx-native"
+            execution_evidence = collect_provider_execution_evidence(provider_logs)
+            runner_classification = derive_runner_classification(execution_evidence)
+            summary["executionEvidence"] = execution_evidence
+            summary["runnerClassification"] = runner_classification
+            summary["runnerMode"] = runner_classification
             summary["providerChecks"] = [
                 {
                     "log": str(path),

@@ -543,6 +543,7 @@ def ack_candidates_snapshot(candidates) -> list[dict[str, Any]]:
             "expectedReadyMs": fields.get("expectedReadyMs", ""),
             "leaseId": fields.get("leaseId", ""),
             "leaseExpiresAtMs": fields.get("leaseExpiresAtMs", ""),
+            "executionEvidence": fields.get("executionEvidence", {}),
             "ackEnvelopeSource": decoded.source,
             "ackCompatibilityCounters": decoded.counters,
             "telemetry": candidate.telemetry,

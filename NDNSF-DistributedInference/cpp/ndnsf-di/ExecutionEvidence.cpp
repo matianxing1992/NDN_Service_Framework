@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -172,6 +173,39 @@ ExecutionEvidence executionEvidenceFromJson(const std::string& json)
   }
   evidence.roles = readStringArray(root, "roles");
   evidence.createdAtMs = root.get<std::uint64_t>("createdAtMs", 0);
+  evidence.validate();
+  return evidence;
+}
+
+ExecutionEvidence executionEvidenceFromRunnerSpec(const NativeModelRunnerSpec& spec,
+                                                  RunnerKind kind,
+                                                  std::string runtimeVersion,
+                                                  std::string deviceKind,
+                                                  std::string deviceId)
+{
+  auto metadata = [&spec] (const std::string& key) {
+    const auto found = spec.metadata.find(key);
+    return found == spec.metadata.end() ? std::string() : found->second;
+  };
+  ExecutionEvidence evidence;
+  evidence.providerName = metadata("evidence.providerName");
+  evidence.providerBootId = metadata("evidence.providerBootId");
+  evidence.evidenceEpoch = static_cast<std::uint64_t>(
+    std::stoull(metadata("evidence.epoch").empty() ? "0" : metadata("evidence.epoch")));
+  evidence.runnerKind = kind;
+  evidence.realCompute = isRealRunner(kind);
+  evidence.deviceKind = std::move(deviceKind);
+  evidence.deviceId = std::move(deviceId);
+  evidence.runtimeVersion = std::move(runtimeVersion);
+  evidence.modelDigest = metadata("evidence.modelDigest");
+  evidence.planDigest = metadata("evidence.planDigest");
+  auto artifactDigest = metadata("evidence.artifactDigest");
+  if (artifactDigest.empty()) artifactDigest = metadata("sha256");
+  if (artifactDigest.empty()) artifactDigest = metadata("digest");
+  evidence.artifactDigests[spec.role] = artifactDigest;
+  evidence.roles = {spec.role};
+  evidence.createdAtMs = static_cast<std::uint64_t>(
+    std::stoull(metadata("evidence.createdAtMs").empty() ? "0" : metadata("evidence.createdAtMs")));
   evidence.validate();
   return evidence;
 }

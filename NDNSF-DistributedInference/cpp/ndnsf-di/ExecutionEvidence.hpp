@@ -8,6 +8,8 @@
 
 namespace ndnsf::di {
 
+struct NativeModelRunnerSpec;
+
 enum class RunnerKind
 {
   SyntheticDelay,
@@ -44,6 +46,12 @@ struct ExecutionEvidence
 
 std::string executionEvidenceToJson(const ExecutionEvidence& evidence);
 ExecutionEvidence executionEvidenceFromJson(const std::string& json);
+
+ExecutionEvidence executionEvidenceFromRunnerSpec(const NativeModelRunnerSpec& spec,
+                                                  RunnerKind kind,
+                                                  std::string runtimeVersion,
+                                                  std::string deviceKind,
+                                                  std::string deviceId = "");
 
 enum class TerminalReason
 {

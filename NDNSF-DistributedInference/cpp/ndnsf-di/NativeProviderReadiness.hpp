@@ -2,11 +2,13 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_PROVIDER_READINESS_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace ndnsf::di {
@@ -37,6 +39,7 @@ public:
   using CapacitySnapshotProvider = std::function<ProviderRoleWorkerSnapshot()>;
 
   void setCapacitySnapshotProvider(CapacitySnapshotProvider provider);
+  void setExecutionEvidence(ExecutionEvidence evidence);
 
   ndn_service_framework::ServiceProvider::AckDecision
   makeAckDecision(const std::string& rolesText,
@@ -56,6 +59,7 @@ private:
   int64_t m_expectedReadyMs = 0;
   int64_t m_provisioningStartedMs = 0;
   CapacitySnapshotProvider m_capacitySnapshotProvider;
+  std::optional<ExecutionEvidence> m_executionEvidence;
 };
 
 } // namespace ndnsf::di

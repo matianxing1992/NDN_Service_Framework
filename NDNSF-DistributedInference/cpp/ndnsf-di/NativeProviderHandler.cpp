@@ -187,7 +187,11 @@ public:
     }
     for (const auto& spec : runnerSpecs) {
       logFragmentInventoryEvent("DISK_RESIDENT", spec, localProviderName);
-      runtime.registerRunner(spec.role, runnerFactory->create(spec));
+      auto runner = runnerFactory->create(spec);
+      if (runner->executionEvidence()) {
+        executionEvidence.push_back(*runner->executionEvidence());
+      }
+      runtime.registerRunner(spec.role, std::move(runner));
       logFragmentInventoryEvent(loadedResidencyFor(spec).c_str(), spec, localProviderName);
     }
   }
@@ -239,6 +243,7 @@ public:
   std::shared_ptr<NativeModelRunnerFactory> runnerFactory;
   std::string localProviderName;
   NativeProviderRuntime runtime;
+  std::vector<ExecutionEvidence> executionEvidence;
   std::mutex executionLeaseMutex;
   std::map<std::string, std::set<std::string>> completedRolesByLease;
 };
@@ -558,6 +563,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
   runtime.capacitySnapshot = [state] {
     return state->runtime.snapshot();
   };
+  runtime.executionEvidence = state->executionEvidence;
   runtime.handler = [config = std::move(config), state = std::move(state)] (
 	           ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
 	           const ndn_service_framework::RequestMessage& request) mutable {

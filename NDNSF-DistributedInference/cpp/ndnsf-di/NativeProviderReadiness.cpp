@@ -192,7 +192,8 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
                                int64_t expectedReadyMs,
                                const AdmissionDecision& admission,
                                const ndn::Name& providerName,
-                               const ndn::Name& serviceName)
+                               const ndn::Name& serviceName,
+                               const std::string& executionEvidenceJson)
 {
   const auto provider = providerName.size() == 0 ? "/" : providerName.toUri();
   const auto service = serviceName.size() == 0 ? "/" : serviceName.toUri();
@@ -251,6 +252,9 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
     if (!value.empty()) {
       json << "," << jsonString(item.second) << ":" << jsonString(value);
     }
+  }
+  if (!executionEvidenceJson.empty()) {
+    json << ",\"executionEvidence\":" << executionEvidenceJson;
   }
   if (!reasonCode.empty()) {
     json << ",\"negativeAckReason\":" << jsonString(reasonCode);
@@ -332,6 +336,14 @@ NativeProviderReadinessState::setCapacitySnapshotProvider(
   m_capacitySnapshotProvider = std::move(provider);
 }
 
+void
+NativeProviderReadinessState::setExecutionEvidence(ExecutionEvidence evidence)
+{
+  evidence.validate();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_executionEvidence = std::move(evidence);
+}
+
 ndn_service_framework::ServiceProvider::AckDecision
 NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
                                               const ndn::Name& providerName,
@@ -345,6 +357,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
   int64_t expectedReadyMs = 0;
   int64_t provisioningStartedMs = 0;
   CapacitySnapshotProvider capacitySnapshotProvider;
+  std::optional<ExecutionEvidence> executionEvidence;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     ready = m_status == Status::Ready;
@@ -355,6 +368,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
     expectedReadyMs = m_expectedReadyMs;
     provisioningStartedMs = m_provisioningStartedMs;
     capacitySnapshotProvider = m_capacitySnapshotProvider;
+    executionEvidence = m_executionEvidence;
   }
 
   ProviderRoleWorkerSnapshot capacity;
@@ -392,7 +406,10 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
                                                              remainingReadyMs,
                                                              admission,
                                                              providerName,
-                                                             serviceName);
+                                                             serviceName,
+                                                             executionEvidence ?
+                                                               executionEvidenceToJson(*executionEvidence) :
+                                                               std::string());
   std::ostringstream payload;
   payload << "providerCapabilityHint=json64:" << base64UrlEncode(capabilityJson) << ";";
   decision.payload = toBuffer(payload.str());

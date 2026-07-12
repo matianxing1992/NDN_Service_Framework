@@ -71,6 +71,21 @@ def _typed_native_ack_payload(provider: str = "/P/backbone") -> bytes:
             "runtimeStatus": "ready",
             "leaseId": "l0",
             "leaseExpiresAtMs": "12345",
+            "executionEvidence": {
+                "schema": "ndnsf-di-execution-evidence-v1",
+                "providerName": provider,
+                "providerBootId": "boot-1",
+                "evidenceEpoch": 1,
+                "runnerKind": "onnxruntime-cpu",
+                "realCompute": True,
+                "device": {"kind": "cpu", "id": "cpu0"},
+                "runtimeVersion": "onnxruntime-test",
+                "modelDigest": "sha256:model",
+                "planDigest": "sha256:plan",
+                "artifactDigests": {"/Backbone": "sha256:artifact"},
+                "roles": ["/Backbone"],
+                "createdAtMs": 1,
+            },
         },
     ))
 
@@ -458,6 +473,8 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(snapshot[0]["queue"], 3)
         self.assertEqual(snapshot[0]["activeWorkers"], 1)
         self.assertEqual(snapshot[0]["leaseId"], "l0")
+        self.assertEqual(snapshot[0]["executionEvidence"]["providerBootId"],
+                         "boot-1")
         self.assertEqual(snapshot[0]["telemetry"]["rtt_ms"], 3.0)
 
     def test_capacity_pool_candidate_rows_add_alternates_for_each_role(self) -> None:
@@ -547,6 +564,10 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         self.assertEqual(provider["maxActiveWorkers"], 1)
         self.assertEqual(provider["latest"]["leaseId"], "l0")
         self.assertEqual(provider["latest"]["runtimeStatus"], "ready")
+        self.assertEqual(
+            provider["latest"]["executionEvidence"]["runnerKind"],
+            "onnxruntime-cpu",
+        )
 
     def test_core_envelope_summary_is_aggregated_from_provider_ack_payloads(self) -> None:
         harness = load_harness_module()
@@ -570,7 +591,13 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             ),
             operation_status=status,
             service_payload_schema="ndnsf-di-capability-v1",
-            service_payload={"roles": ["/Backbone"]},
+            service_payload={
+                "roles": ["/Backbone"],
+                "executionEvidence": {
+                    "schema": "ndnsf-di-execution-evidence-v1",
+                    "runnerKind": "onnxruntime-cpu",
+                },
+            },
         )
         payload = encode_ack_metadata(hint.to_ack_fields()).decode("utf-8")
         with tempfile.TemporaryDirectory() as tmp:
@@ -593,6 +620,8 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         latest = summary["latestProviders"]["/P/backbone"]
         self.assertEqual(latest["queueLength"], 3)
         self.assertEqual(latest["activeWorkCount"], 1)
+        self.assertEqual(latest["executionEvidence"]["runnerKind"],
+                         "onnxruntime-cpu")
 
     def test_execution_summaries_carry_core_operation_status(self) -> None:
         harness = load_harness_module()

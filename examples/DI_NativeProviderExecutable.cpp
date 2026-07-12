@@ -20,11 +20,13 @@
 #include <ndn-cxx/security/transform/buffer-source.hpp>
 #include <ndn-cxx/security/transform/stream-sink.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstdint>
@@ -122,6 +124,26 @@ epochMs()
 {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string
+sha256File(const std::string& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  if (!input.good()) {
+    throw std::runtime_error("cannot hash evidence file: " + path);
+  }
+  ndn::util::Sha256 digest;
+  std::array<char, 65536> buffer{};
+  while (input.good()) {
+    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    const auto count = input.gcount();
+    if (count > 0) {
+      digest.update(ndn::span<const uint8_t>(
+        reinterpret_cast<const uint8_t*>(buffer.data()), static_cast<std::size_t>(count)));
+    }
+  }
+  return "sha256:" + digest.toString();
 }
 
 ndn::Buffer
@@ -582,6 +604,59 @@ loadManifestSpecs(const Options& options)
 }
 
 std::map<std::string, NativeModelRunnerSpec>
+withExecutionEvidenceContext(std::map<std::string, NativeModelRunnerSpec> specs,
+                             const Options& options,
+                             const std::string& providerBootId,
+                             std::uint64_t createdAtMs)
+{
+  const auto planDigest = sha256File(options.planPath);
+  const auto manifestDigest = sha256File(options.manifestPath);
+  for (auto& item : specs) {
+    auto& spec = item.second;
+    spec.metadata["evidence.providerName"] = options.providerName;
+    spec.metadata["evidence.providerBootId"] = providerBootId;
+    spec.metadata["evidence.epoch"] = "1";
+    spec.metadata["evidence.createdAtMs"] = std::to_string(createdAtMs);
+    spec.metadata["evidence.planDigest"] = planDigest;
+    spec.metadata["evidence.modelDigest"] = manifestDigest;
+    std::ifstream artifact(spec.path, std::ios::binary);
+    spec.metadata["evidence.artifactDigest"] =
+      spec.path.empty() || !artifact.good() ? manifestDigest : sha256File(spec.path);
+  }
+  return specs;
+}
+
+ExecutionEvidence
+aggregateExecutionEvidence(const std::vector<ExecutionEvidence>& items)
+{
+  if (items.empty()) {
+    throw std::runtime_error("initialized provider runners emitted no execution evidence");
+  }
+  auto aggregate = items.front();
+  for (std::size_t i = 1; i < items.size(); ++i) {
+    const auto& item = items[i];
+    if (item.providerName != aggregate.providerName ||
+        item.providerBootId != aggregate.providerBootId ||
+        item.runnerKind != aggregate.runnerKind ||
+        item.realCompute != aggregate.realCompute ||
+        item.modelDigest != aggregate.modelDigest ||
+        item.planDigest != aggregate.planDigest ||
+        item.runtimeVersion != aggregate.runtimeVersion ||
+        item.deviceKind != aggregate.deviceKind ||
+        item.deviceId != aggregate.deviceId) {
+      throw std::runtime_error("provider runner execution evidence is internally inconsistent");
+    }
+    aggregate.roles.insert(aggregate.roles.end(), item.roles.begin(), item.roles.end());
+    aggregate.artifactDigests.insert(item.artifactDigests.begin(), item.artifactDigests.end());
+  }
+  std::sort(aggregate.roles.begin(), aggregate.roles.end());
+  aggregate.roles.erase(std::unique(aggregate.roles.begin(), aggregate.roles.end()),
+                        aggregate.roles.end());
+  aggregate.validate();
+  return aggregate;
+}
+
+std::map<std::string, NativeModelRunnerSpec>
 materializeManifestSpecs(const Options& options,
                          const std::map<std::string, NativeModelRunnerSpec>& specs,
                          std::function<std::vector<std::uint8_t>(
@@ -781,7 +856,10 @@ main(int argc, char** argv)
     }
 
     auto plan = loadPlan(options);
-    auto specs = loadManifestSpecs(options);
+    const auto providerStartedAtMs = static_cast<std::uint64_t>(std::max<long long>(0, epochMs()));
+    const auto providerBootId = options.providerName + "@" + std::to_string(providerStartedAtMs);
+    auto specs = withExecutionEvidenceContext(loadManifestSpecs(options), options,
+                                              providerBootId, providerStartedAtMs);
     const auto allowedRoles = allowedRolesForOptions(plan, options);
 
     auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
@@ -792,12 +870,19 @@ main(int argc, char** argv)
         [tracerDeterministicRunner = options.tracerDeterministicRunner]
         (const NativeModelRunnerSpec& spec) {
           if (tracerDeterministicRunner) {
-            return makeTracerDeterministicRunner(spec);
+            auto runner = makeTracerDeterministicRunner(spec);
+            auto evidence = executionEvidenceFromRunnerSpec(
+              spec, RunnerKind::SyntheticDelay, "deterministic-runner-v1", "synthetic");
+            return makeNativeModelRunner(
+              [runner] (const RoleExecutionContext& ctx) { return runner->run(ctx); },
+              std::move(evidence));
           }
+          auto evidence = executionEvidenceFromRunnerSpec(
+            spec, RunnerKind::WiringOnly, "wiring-only-v1", "wiring");
           return makeNativeModelRunner(
             [] (const RoleExecutionContext&) {
               return std::map<std::string, TensorBundle>{};
-            });
+            }, std::move(evidence));
         });
     }
     std::cout << "NDNSF_DI_NATIVE_PROVIDER_BACKENDS_READY onnxruntime=1"
@@ -1056,6 +1141,8 @@ main(int argc, char** argv)
          plan,
          specs,
          allowedRoles,
+         providerBootId,
+         providerStartedAtMs,
          factory,
          providerCert,
          controllerCert,
@@ -1143,6 +1230,8 @@ main(int argc, char** argv)
                 });
             }
 
+            materializedSpecs = withExecutionEvidenceContext(
+              std::move(materializedSpecs), options, providerBootId, providerStartedAtMs);
             auto runners = orderedSpecs(plan, materializedSpecs, allowedRoles);
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
                       << plan.roles.size()
@@ -1167,6 +1256,11 @@ main(int argc, char** argv)
 
             auto runtime = makeNativeProviderCollaborationRuntime(std::move(config));
             provisioningState->setCapacitySnapshotProvider(runtime.capacitySnapshot);
+            auto executionEvidence = aggregateExecutionEvidence(runtime.executionEvidence);
+            provisioningState->setExecutionEvidence(executionEvidence);
+            std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
+                      << executionEvidenceToJson(executionEvidence)
+                      << std::endl;
             {
               std::lock_guard<std::mutex> lock(*readyHandlerMutex);
               *readyHandler = std::move(runtime.handler);
@@ -1219,7 +1313,8 @@ main(int argc, char** argv)
       }
     }
 
-    specs = materializeManifestSpecs(options, specs);
+    specs = withExecutionEvidenceContext(
+      materializeManifestSpecs(options, specs), options, providerBootId, providerStartedAtMs);
     auto runners = orderedSpecs(plan, specs, allowedRoles);
     std::cout << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
               << plan.roles.size()
@@ -1235,10 +1330,20 @@ main(int argc, char** argv)
                                   options.workers);
 
     std::size_t registered = 0;
+    std::vector<ExecutionEvidence> checkEvidence;
     for (const auto& spec : runners) {
+      auto observedRunner = factory->create(spec);
+      if (!observedRunner->executionEvidence()) {
+        throw std::runtime_error("check-only runner emitted no execution evidence: " + spec.role);
+      }
+      checkEvidence.push_back(*observedRunner->executionEvidence());
       session.registerRunner(spec);
       ++registered;
     }
+    const auto aggregateEvidence = aggregateExecutionEvidence(checkEvidence);
+    std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "
+              << executionEvidenceToJson(aggregateEvidence)
+              << std::endl;
 
     std::cout << "NDNSF_DI_NATIVE_PROVIDER_CHECK_OK service="
               << options.serviceName

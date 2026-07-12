@@ -329,6 +329,10 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
     throw std::invalid_argument("ONNX Runtime runner requires model path");
   }
   m_impl = std::make_unique<Impl>(m_spec);
+  if (m_spec.metadata.count("evidence.providerBootId") != 0) {
+    m_evidence = executionEvidenceFromRunnerSpec(
+      m_spec, RunnerKind::OnnxRuntimeCpu, "onnxruntime-cpp", "cpu", "cpu0");
+  }
 }
 
 OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
