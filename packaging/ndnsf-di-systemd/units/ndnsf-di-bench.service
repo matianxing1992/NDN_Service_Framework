@@ -1,0 +1,25 @@
+[Unit]
+Description=NDNSF-DI bounded operator canary
+After=ndnsf-di-providers.target
+Requires=ndnsf-di-providers.target
+
+[Service]
+Type=oneshot
+User=ndnsf-di
+Group=ndnsf-di
+EnvironmentFile=-/etc/ndnsf-di/bench.env
+ExecStart=/opt/ndnsf-di/current/bin/ndnsf-di bench ${NDNSF_DI_BENCH_ARGS}
+Restart=on-failure
+RestartSec=10s
+StartLimitIntervalSec=120s
+StartLimitBurst=1
+TimeoutStartSec=900s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/run/ndnsf-di /var/log/ndnsf-di /var/lib/ndnsf-di/results

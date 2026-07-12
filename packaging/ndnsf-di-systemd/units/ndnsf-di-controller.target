@@ -1,0 +1,8 @@
+[Unit]
+Description=NDNSF-DI controller target
+After=nfd.service
+Requires=nfd.service
+Wants=ndnsf-di-controller.service
+
+[Install]
+WantedBy=multi-user.target

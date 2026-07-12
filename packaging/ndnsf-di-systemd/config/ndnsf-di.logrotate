@@ -1,0 +1,9 @@
+/var/log/ndnsf-di/*.log /var/log/ndnsf-di/*.jsonl {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    su ndnsf-di ndnsf-di
+    create 0640 ndnsf-di ndnsf-di
+}

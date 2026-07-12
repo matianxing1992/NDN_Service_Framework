@@ -1,0 +1,7 @@
+[Unit]
+Description=NDNSF-DI provider target
+After=ndnsf-di-controller.target
+Requires=ndnsf-di-controller.target
+
+[Install]
+WantedBy=multi-user.target

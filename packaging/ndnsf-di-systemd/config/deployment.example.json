@@ -1,0 +1,26 @@
+{
+  "name": "spec105-local-minindn",
+  "deployment": {
+    "role": "provider",
+    "identity": "/ndnsf/di/provider/0",
+    "nfd_endpoint": "/run/nfd/nfd.sock",
+    "certificate": "/etc/ndnsf-di/certs/provider-0.cert",
+    "trust_schema": "/etc/ndnsf-di/trust-schema.conf",
+    "release_dir": "/opt/ndnsf-di/current",
+    "model_manifest": "/opt/ndnsf-di/current/share/model-manifest.json",
+    "backend": "onnxruntime-cpu",
+    "device": "cpu0",
+    "writable_dirs": [
+      "/run/ndnsf-di",
+      "/var/lib/ndnsf-di/cache",
+      "/var/log/ndnsf-di"
+    ],
+    "startup_timeout_s": 120,
+    "shutdown_timeout_s": 30,
+    "telemetry_max_age_ms": 2000,
+    "secret_files": ["/var/lib/ndnsf-di/pib/identity.db"],
+    "status_file": "/run/ndnsf-di/status.json",
+    "metrics_file": "/run/ndnsf-di/metrics.json",
+    "harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
+  }
+}
