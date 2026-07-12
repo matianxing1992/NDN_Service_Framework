@@ -28,6 +28,13 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         source = GS_RUNTIME.read_text(encoding="utf-8")
         self.assertIn("m_user->setHandlerThreads(0);", source)
 
+    def test_telemetry_timeout_override_is_scoped_from_commands(self) -> None:
+        source = GS_RUNTIME.read_text(encoding="utf-8")
+        telemetry = source[source.index("requestTelemetryStatusForDrone(const"):source.index("telemetryForDrone", source.index("requestTelemetryStatusForDrone(const"))]
+        self.assertIn("std::min(m_timeoutMs, 5000)", telemetry)
+        command = source[source.index("sendMavlinkCommandToDrone(const"):source.index("sendMavlinkCommandToDroneSync", source.index("sendMavlinkCommandToDrone(const"))]
+        self.assertNotIn("5000", command)
+
     def test_auto_mavlink_worker_is_owned_and_joined(self) -> None:
         source = GS_WINDOW.read_text(encoding="utf-8")
         self.assertIn("m_autoMavlinkThread = std::thread", source)

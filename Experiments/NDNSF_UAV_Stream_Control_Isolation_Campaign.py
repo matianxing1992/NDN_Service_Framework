@@ -306,6 +306,12 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         "armedWaitTerminalMs": armed_wait_terminal_ms,
         "firstDroneArmedMs": first_drone_armed_ms,
         "firstGroundStationArmedMs": first_gs_armed_ms,
+        "telemetryAttemptsDuringWait": [
+            item for item in attempts
+            if str(item.get("service", "")).endswith("/UAV/Telemetry/GetStatus") and
+            arm_terminal_ms is not None and int(item.get("dispatchMs", 0)) >= arm_terminal_ms and
+            (armed_wait_terminal_ms is None or int(item.get("dispatchMs", 0)) <= armed_wait_terminal_ms)
+        ],
     }
     video_completion = bool(result["videoCompletion"]) if video_required else None
     control_completion = bool(result["controlCompletion"]) if control_required else None

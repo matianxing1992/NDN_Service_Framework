@@ -620,7 +620,7 @@ public:
       [this, droneId] {
         clearTelemetryInFlight(droneId);
         publishStatus("Telemetry timeout for drone " + droneId);
-      });
+      }, std::min(m_timeoutMs, 5000));
   }
 
   std::optional<TelemetryState>
@@ -6730,8 +6730,10 @@ private:
   postTargetedRequest(const ndn::Name& provider, const ndn::Name& service,
                       const std::string& payload,
                       std::function<void(std::string)> onSuccess,
-                      std::function<void()> onTimeout = {})
+                      std::function<void()> onTimeout = {},
+                      int timeoutOverrideMs = -1)
   {
+    const int requestTimeoutMs = timeoutOverrideMs > 0 ? timeoutOverrideMs : m_timeoutMs;
     const auto queuedMs = nowMilliseconds();
     NDN_LOG_INFO("GS_TARGETED_PHASE phase=queued provider=" << provider.toUri()
                  << " service=" << service.toUri()
@@ -6739,7 +6741,8 @@ private:
                  << " elapsed_ms=0 status=queued");
     boost::asio::post(m_face.getIoContext(), [this, provider, service, payload,
                                 onSuccess = std::move(onSuccess),
-                                onTimeout = std::move(onTimeout), queuedMs] {
+                                onTimeout = std::move(onTimeout), queuedMs,
+                                requestTimeoutMs] {
       if (!m_containerReady.load() || !m_user) {
         NDN_LOG_INFO("GS_TARGETED_PHASE phase=dispatch-rejected provider="
                      << provider.toUri() << " service=" << service.toUri()
@@ -6759,7 +6762,7 @@ private:
         provider,
         service,
         std::move(requestMessage),
-        m_timeoutMs,
+        requestTimeoutMs,
         [this, service, provider, requestId, requestStartMs,
          onTimeout = std::move(onTimeout)](const ndn::Name&) {
           const auto timeoutMs = nowMilliseconds();
