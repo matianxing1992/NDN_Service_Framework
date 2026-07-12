@@ -599,11 +599,14 @@ def handle_qwen_onnx_stage(ctx: ProviderRuntimeContext, *,
         print("LLM_PIPELINE_QWEN_ONNX_STAGE_FINAL", f"role={ctx.role}", f"bytes={len(output)}", flush=True)
         return
 
+    if not output.startswith(b"NDITB001"):
+        raise RuntimeError(
+            "Qwen ONNX pilot intermediate output must use the typed tensor bundle")
     data_name = _planned_output_name(ctx)
     publish_start = time.perf_counter()
     ctx.publish_output_large_reference(
         output,
-        object_type="application/x-ndnsf-di-qwen-onnx-hidden",
+        object_type="application/x-ndnsf-di-tensor-bundle",
         object_id=f"{ctx.role.strip('/').replace('/', '-')}-hidden-state",
         data_name=data_name,
         max_segment_size=7000,

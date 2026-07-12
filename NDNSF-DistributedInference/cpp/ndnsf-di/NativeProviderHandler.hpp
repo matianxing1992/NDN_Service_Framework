@@ -33,6 +33,9 @@ struct NativeProviderHandlerConfig
   ndn_service_framework::ProviderExecutionLeaseTable* executionLeaseTable = nullptr;
   std::string executionLeaseTargetService;
   uint64_t executionLeaseHardDeadlineMs = 120000;
+  std::shared_ptr<KvStateStore> kvStateStore;
+  std::string kvOutputScope = "kv-state";
+  std::uint64_t kvSecurityEpoch = 0;
 };
 
 std::optional<std::vector<uint8_t>>

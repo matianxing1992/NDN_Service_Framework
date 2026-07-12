@@ -14,6 +14,7 @@ import inspect
 import json
 import os
 import shutil
+import struct
 import time
 from dataclasses import dataclass
 from io import BytesIO
@@ -753,11 +754,93 @@ def _npz_payload(values: dict[str, Any]) -> bytes:
     return buffer.getvalue()
 
 
-def _load_npz_payload(payload: bytes) -> dict[str, Any]:
+_TENSOR_DTYPE_TO_CODE = {
+    "float32": 1,
+    "float16": 2,
+    "int64": 3,
+    "bool": 4,
+}
+_TENSOR_CODE_TO_DTYPE = {value: key for key, value in _TENSOR_DTYPE_TO_CODE.items()}
+
+
+def _native_tensor_bundle_payload(tensors: dict[str, Any]) -> bytes:
+    import numpy as np
+
+    if len(tensors) > 256:
+        raise ValueError("native tensor bundle exceeds tensor-count limit")
+    output = bytearray(b"NDITB001")
+    output.extend(struct.pack("<I", len(tensors)))
+    for name, value in tensors.items():
+        name_bytes = str(name).encode("utf-8")
+        array = np.ascontiguousarray(value)
+        dtype_name = str(array.dtype)
+        if not name_bytes or len(name_bytes) > 1024 or dtype_name not in _TENSOR_DTYPE_TO_CODE:
+            raise ValueError(f"unsupported native tensor: {name!r} dtype={dtype_name}")
+        if array.ndim > 16 or any(int(dim) <= 0 for dim in array.shape):
+            raise ValueError(f"invalid native tensor shape: {name!r} {array.shape}")
+        payload = array.tobytes(order="C")
+        output.extend(struct.pack("<I", len(name_bytes)))
+        output.extend(name_bytes)
+        output.extend(struct.pack("<II", _TENSOR_DTYPE_TO_CODE[dtype_name], array.ndim))
+        for dim in array.shape:
+            output.extend(struct.pack("<q", int(dim)))
+        output.extend(struct.pack("<Q", len(payload)))
+        output.extend(payload)
+    return bytes(output)
+
+
+def _decode_native_tensor_bundle(payload: bytes) -> dict[str, Any]:
+    import numpy as np
+
+    if not payload.startswith(b"NDITB001"):
+        raise ValueError("payload is not an NDNSF-DI native tensor bundle")
+    offset = 8
+
+    def take(fmt: str):
+        nonlocal offset
+        size = struct.calcsize(fmt)
+        if offset + size > len(payload):
+            raise ValueError("truncated native tensor bundle")
+        value = struct.unpack_from(fmt, payload, offset)
+        offset += size
+        return value[0] if len(value) == 1 else value
+
+    count = take("<I")
+    if count > 256:
+        raise ValueError("native tensor bundle exceeds tensor-count limit")
+    result = {}
+    for _ in range(count):
+        name_size = take("<I")
+        if name_size < 1 or name_size > 1024 or offset + name_size > len(payload):
+            raise ValueError("invalid native tensor name")
+        name = payload[offset:offset + name_size].decode("utf-8")
+        offset += name_size
+        dtype_code, rank = take("<II")
+        if dtype_code not in _TENSOR_CODE_TO_DTYPE or rank > 16:
+            raise ValueError("unsupported native tensor dtype or rank")
+        shape = tuple(int(take("<q")) for _ in range(rank))
+        if any(dim <= 0 for dim in shape):
+            raise ValueError("invalid native tensor dimension")
+        size = take("<Q")
+        dtype = np.dtype(_TENSOR_CODE_TO_DTYPE[dtype_code])
+        expected = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
+        if size != expected or offset + size > len(payload):
+            raise ValueError("native tensor payload size mismatch")
+        result[name] = np.frombuffer(payload, dtype=dtype, count=expected // dtype.itemsize,
+                                     offset=offset).reshape(shape).copy()
+        offset += size
+    if offset != len(payload):
+        raise ValueError("native tensor bundle has trailing bytes")
+    return result
+
+
+def _load_qwen_hidden_payload(payload: bytes) -> tuple[dict[str, Any], str]:
+    if payload.startswith(b"NDITB001"):
+        return _decode_native_tensor_bundle(payload), "typed-tensor-bundle"
     import numpy as np
 
     with np.load(BytesIO(payload), allow_pickle=False) as data:
-        return {name: data[name] for name in data.files}
+        return {name: data[name] for name in data.files}, "legacy-npz-comparison"
 
 
 def _safe_array_text(value: Any) -> str:
@@ -1767,10 +1850,8 @@ def run_qwen_onnx_stage(
         )
         expected_start = 0
     else:
-        incoming = _load_npz_payload(input_payload)
-        schema = _safe_array_text(incoming.get("schema", ""))
-        if schema != "ndnsf-di-qwen-onnx-hidden-v1":
-            raise ValueError("unexpected ONNX hidden-state payload schema")
+        incoming, transport = _load_qwen_hidden_payload(input_payload)
+        record("tensor_transport", transport)
         input_ids = incoming["input_ids"].astype(np.int64)
         attention_mask = incoming.get(
             "attention_mask",
@@ -1784,7 +1865,7 @@ def run_qwen_onnx_stage(
         expected_start = int(incoming["next_layer"].item())
         request_id = _safe_array_text(incoming.get("request_id", ""))
         session_id = _safe_array_text(incoming.get("session_id", ""))
-        context_epoch = int(incoming.get("context_epoch", np.asarray(0)).item())
+        context_epoch = int(incoming.get("context_epoch", np.asarray([0])).reshape(-1)[0])
     record("decode_ms", (time.perf_counter() - decode_start) * 1000.0)
     record("embed_ms", 0.0)
     if expected_start != start:
@@ -1807,17 +1888,14 @@ def run_qwen_onnx_stage(
     record("mask_ms", 0.0)
     if stage_index < stage_count - 1:
         encode_start = time.perf_counter()
-        payload = _npz_payload({
-            "schema": np.asarray("ndnsf-di-qwen-onnx-hidden-v1"),
+        payload = _native_tensor_bundle_payload({
             "hidden_states": np.asarray(outputs[0], dtype=np.float32),
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "position_ids": position_ids,
-            "next_layer": np.asarray(end, dtype=np.int64),
-            "stage_index": np.asarray(stage_index, dtype=np.int64),
-            "request_id": np.asarray(request_id),
-            "session_id": np.asarray(session_id),
-            "context_epoch": np.asarray(context_epoch, dtype=np.int64),
+            "next_layer": np.asarray([end], dtype=np.int64),
+            "stage_index": np.asarray([stage_index], dtype=np.int64),
+            "context_epoch": np.asarray([context_epoch], dtype=np.int64),
         })
         record("encode_ms", (time.perf_counter() - encode_start) * 1000.0)
         record("final_head_ms", 0.0)

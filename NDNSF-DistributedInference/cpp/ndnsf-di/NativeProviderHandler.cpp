@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include "ndn-service-framework/utils.hpp"
 
@@ -480,6 +481,55 @@ allPlanRolesAssignedToLocal(const NativeExecutionPlan& plan,
   return true;
 }
 
+std::uint64_t
+parseRequiredUint64(const std::map<std::string, std::string>& fields,
+                    const char* name)
+{
+  const auto value = nativeProviderFieldValue(fields, {name});
+  if (value.empty()) {
+    throw std::invalid_argument(std::string("missing KV binding field: ") + name);
+  }
+  std::size_t consumed = 0;
+  const auto parsed = std::stoull(value, &consumed);
+  if (consumed != value.size()) {
+    throw std::invalid_argument(std::string("invalid KV binding field: ") + name);
+  }
+  return parsed;
+}
+
+KvStateBinding
+kvBindingFromAssignment(const NativeModelRunnerSpec& spec,
+                        const std::map<std::string, std::string>& fields,
+                        const std::string& sessionId,
+                        const std::string& role,
+                        const std::string& providerName,
+                        std::uint64_t expectedSecurityEpoch)
+{
+  KvStateBinding binding;
+  binding.sessionId = sessionId;
+  binding.stage = role;
+  binding.contextEpoch = parseRequiredUint64(fields, "kvContextEpoch");
+  binding.modelDigest = nativeProviderFieldValue(fields, {"kvModelDigest"});
+  binding.planDigest = nativeProviderFieldValue(fields, {"kvPlanDigest"});
+  binding.providerName = providerName;
+  binding.providerBootId = nativeProviderFieldValue(fields, {"kvProviderBootId"});
+  binding.securityEpoch = parseRequiredUint64(fields, "kvSecurityEpoch");
+  binding.validate();
+
+  const auto expectedModel = nativeProviderFieldValue(
+    spec.metadata, {"evidence.modelDigest"});
+  const auto expectedPlan = nativeProviderFieldValue(
+    spec.metadata, {"evidence.planDigest"});
+  const auto expectedBoot = nativeProviderFieldValue(
+    spec.metadata, {"evidence.providerBootId"});
+  if (binding.modelDigest != expectedModel || binding.planDigest != expectedPlan ||
+      binding.providerBootId != expectedBoot ||
+      binding.securityEpoch != expectedSecurityEpoch) {
+    throw std::invalid_argument("KV_BINDING_MISMATCH");
+  }
+  return binding;
+}
+
 std::optional<std::vector<uint8_t>>
 executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
                                 const NativeProviderHandlerConfig& config,
@@ -599,9 +649,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         config.freshnessMs);
 
       const auto role = ctx.role();
+      const auto assignmentFields = parseNativeProviderAssignmentFields(
+        ctx.assignment().assignmentPayload);
       if (config.executionLeaseTable != nullptr) {
-        const auto fields = parseNativeProviderAssignmentFields(
-          ctx.assignment().assignmentPayload);
+        const auto& fields = assignmentFields;
         const auto leaseId = nativeProviderFieldValue(fields, {"executionLeaseId"});
         const auto providerEpoch = nativeProviderFieldValue(
           fields, {"executionLeaseEpoch"});
@@ -682,6 +733,45 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                   *spec,
                                   ctx.localProvider().toUri());
       }
+      std::optional<KvStateBinding> kvBinding;
+      std::optional<TensorBundle> cachedKvState;
+      const auto kvMode = nativeProviderFieldValue(assignmentFields, {"kvMode"});
+      if (!kvMode.empty()) {
+        const auto* runnerSpec = runnerSpecForRole(state->runnerSpecs, role);
+        if (runnerSpec == nullptr || !config.kvStateStore) {
+          completeExecutionLease();
+          ctx.fail("KV_STATE_UNAVAILABLE");
+          return;
+        }
+        try {
+          kvBinding = kvBindingFromAssignment(
+            *runnerSpec,
+            assignmentFields,
+            ctx.sessionId(),
+            role,
+            ctx.localProvider().toUri(),
+            config.kvSecurityEpoch);
+        }
+        catch (const std::exception&) {
+          completeExecutionLease();
+          ctx.fail("KV_BINDING_MISMATCH");
+          return;
+        }
+        if (kvMode == "cache-hit" || kvMode == "delta-only") {
+          cachedKvState = config.kvStateStore->lookup(*kvBinding);
+          if (!cachedKvState) {
+            completeExecutionLease();
+            ctx.fail(kvMode == "delta-only" ?
+                       "CACHE_MISS_FULL_CONTEXT_REQUIRED" : "KV_STATE_UNAVAILABLE");
+            return;
+          }
+        }
+        else if (kvMode != "full-context") {
+          completeExecutionLease();
+          ctx.fail("KV_BINDING_MISMATCH");
+          return;
+        }
+      }
       const bool localFullPlan =
         roleSpec.outputs.empty() &&
         allPlanRolesAssignedToLocal(state->plan,
@@ -691,6 +781,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       auto initialInputs = (localFullPlan || roleSpec.inputs.empty())
         ? initialInputsFromRequest(ctx, request)
         : std::map<std::string, TensorBundle>{};
+      if (cachedKvState) {
+        initialInputs["kv-state"] = std::move(*cachedKvState);
+      }
       const auto submittedSteady = std::chrono::steady_clock::now();
       const auto submittedEpoch = epochMs();
       logProviderCapacity(ctx.sessionId(),
@@ -714,6 +807,21 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           roleSpec,
           std::move(io),
           std::move(initialInputs)).get();
+        if (kvBinding && config.kvStateStore) {
+          auto kvOutput = result.outputsByScope.find(config.kvOutputScope);
+          if (kvOutput == result.outputsByScope.end()) {
+            kvOutput = std::find_if(
+              result.outputsByScope.begin(), result.outputsByScope.end(), [] (const auto& item) {
+                return isEncodedTensorBundle(item.second.payload);
+              });
+          }
+          if (kvOutput != result.outputsByScope.end() &&
+              !config.kvStateStore->put(*kvBinding, kvOutput->second)) {
+            completeExecutionLease();
+            ctx.fail("KV_STATE_CAPACITY_EXCEEDED");
+            return;
+          }
+        }
         logProviderTiming(ctx.sessionId(), role, result, submittedSteady, submittedEpoch);
 
         finalPayload = nativeProviderFinalResponsePayload(

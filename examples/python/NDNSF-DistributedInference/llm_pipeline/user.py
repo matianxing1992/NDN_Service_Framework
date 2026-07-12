@@ -141,6 +141,10 @@ def main() -> int:
     qwen_summary = {}
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME) and args.qwen_runtime_summary:
         qwen_summary = json.loads(Path(args.qwen_runtime_summary).read_text(encoding="utf-8"))
+    if args.runtime == QWEN_ONNX_RUNTIME:
+        # Inter-stage transport is the NDITB001 typed tensor bundle. Legacy NPZ
+        # decoding exists only inside the library as a labeled comparison fixture.
+        print("LLM_PIPELINE_TENSOR_TRANSPORT typed-tensor-bundle", flush=True)
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
         if not qwen_summary:
             raise SystemExit("--qwen-runtime-summary is required for Qwen runtimes")
