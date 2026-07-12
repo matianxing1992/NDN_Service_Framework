@@ -2112,6 +2112,23 @@ hidden-state payloads. Future work should add a production tensor-bundle codec,
 warm repeated benchmarking, and eventually a native/C++ or optimized runtime
 path for stage execution.
 
+### Provider-observed execution evidence
+
+NativeTracer deployment summaries use `executionEvidence` as the execution
+identity source. A record is created only after its runner backend/session has
+initialized and binds the provider boot ID and epoch, installed roles, model
+and artifact digests, plan digest, runtime version, and device. The summary's
+`runnerClassification` is derived from those records. The deprecated
+`runnerMode` field is compatibility output only and must not be used to claim
+real model compute. Inspect a summary with:
+
+```bash
+python3 tools/ndnsf_runtime.py di evidence --summary results/.../summary.json
+```
+
+The MiniNDN candidate gate blocks missing, synthetic, mixed, contradictory, or
+digest-mismatched evidence. Physical acceptance remains owned by Spec 106.
+
 ### Real Qwen ONNX pipeline example
 
 Qwen can also be exported into multiple ONNX stages. This is similar to the

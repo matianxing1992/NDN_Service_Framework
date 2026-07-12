@@ -318,7 +318,7 @@ def main() -> int:
         "modelFamily": "llm",
         "modelFormat": "onnx",
         "plannerKind": "llm-pipeline",
-        "runnerMode": "deterministic",
+        "configuredRunnerProfile": "deterministic-fixture",
         "stageExecutionDelayMs": args.stage_execution_delay_ms,
         "stageExecutionDelayScale": args.stage_execution_delay_scale,
         "targetRps": args.target_rps,

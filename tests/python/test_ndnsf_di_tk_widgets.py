@@ -221,7 +221,12 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             run2.mkdir()
             template = {
                 "status": "SUCCESS",
-                "runnerMode": "qwen-onnx-native",
+                "runnerClassification": "onnxruntime-cpu",
+                "executionEvidence": [{
+                    "providerName": "/provider/A",
+                    "runnerKind": "onnxruntime-cpu",
+                    "realCompute": True,
+                }],
                 "miniNDNRun": "started",
                 "dependencyExecution": {
                     "status": "executed",
@@ -273,6 +278,7 @@ class DistributedInferenceGuiWidgetTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["label"], "rps=0.2 run=1")
             self.assertEqual(rows[0]["status"], "SUCCESS")
+            self.assertEqual(rows[0]["runnerClassification"], "onnxruntime-cpu")
             self.assertEqual(rows[0]["successRate"], "1.0")
             self.assertEqual(rows[0]["p50Ms"], "11.0")
             self.assertEqual(rows[0]["providerCount"], "2")

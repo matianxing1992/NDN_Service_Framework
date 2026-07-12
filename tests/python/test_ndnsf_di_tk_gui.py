@@ -246,7 +246,8 @@ class TkGuiHelperTests(unittest.TestCase):
             summary_path.write_text(json.dumps({
                 "status": "SUCCESS",
                 "miniNDNRun": "completed",
-                "runnerMode": "onnx",
+                "runnerClassification": "onnxruntime-cpu",
+                "executionEvidence": [{"providerName": "/P/backbone"}],
                 "userExecution": {"status": "executed"},
                 "dependencyExecution": {"status": "executed"},
                 "coreEnvelopeSummary": {
@@ -273,6 +274,9 @@ class TkGuiHelperTests(unittest.TestCase):
                 summary = run_headless_qwen_minindn(args)
 
         self.assertTrue(summary["ok"])
+        self.assertEqual(summary["runnerClassification"], "onnxruntime-cpu")
+        self.assertEqual(summary["executionEvidence"][0]["providerName"],
+                         "/P/backbone")
         self.assertEqual(summary["coreEnvelopeSummary"]["eventCount"], 2)
         self.assertEqual(
             summary["coreEnvelopeSummary"]["envelopeCounts"]["providerCapabilityHint"],

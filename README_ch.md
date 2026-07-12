@@ -671,6 +671,14 @@ inference API。当前路径支持 ONNX chunk policy、dependency-driven executi
 tests。它仍然是 NDNSF core 之上的应用包；model-specific splitter 和 planner 保留在该包中，
 不会放进 framework core。
 
+NativeTracer 部署汇总以 provider 初始化后发布的 `executionEvidence` 作为执行身份真值；
+`runnerClassification` 由这些记录机械推导。记录绑定 provider boot/epoch、角色、模型和
+artifact digest、plan digest、runtime 版本及 device。旧 `runnerMode` 仅是派生兼容字段，
+不能证明真实模型计算。可用
+`python3 tools/ndnsf_runtime.py di evidence --summary results/.../summary.json`
+检查。证据缺失、synthetic、mixed、矛盾或 digest 不一致时，Spec 105 MiniNDN 候选门禁
+必须 BLOCK；真机验收归 Spec 106。
+
 Spec 084 简化完成后，多个 user 不再依赖 advisory coordinator。每个 user 根据 typed
 provider hint 独立规划；只有 provider 自己签发并 fail-closed 管理的 lease 才能授权独占
 执行。被拒绝的 user 做有界重规划。模型生命周期和调度策略仍归 DI，通用 lease 与

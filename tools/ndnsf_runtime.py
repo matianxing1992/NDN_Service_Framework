@@ -775,6 +775,38 @@ def run_di_search(args: argparse.Namespace) -> int:
     return run_di_command("native-tracer-rps-search", command, args)
 
 
+def execution_evidence_view(summary: dict[str, Any]) -> dict[str, Any]:
+    """Return the provider-observed execution identity from a run summary.
+
+    Legacy runnerMode is deliberately not consulted: it is only a derived
+    compatibility field and cannot establish real compute.
+    """
+    records = summary.get("executionEvidence", [])
+    if not isinstance(records, list):
+        records = []
+    classification = str(summary.get("runnerClassification", "invalid-evidence"))
+    valid_records = [item for item in records if isinstance(item, dict)]
+    return {
+        "status": "available" if valid_records and classification != "invalid-evidence" else "missing",
+        "runnerClassification": classification,
+        "providerCount": len({str(item.get("providerName", "")) for item in valid_records}),
+        "executionEvidence": valid_records,
+    }
+
+
+def run_di_evidence(args: argparse.Namespace) -> int:
+    try:
+        summary = json.loads(Path(args.summary).read_text(encoding="utf-8"))
+        if not isinstance(summary, dict):
+            raise ValueError("summary root must be an object")
+        view = execution_evidence_view(summary)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps({"status": "unreadable", "error": str(exc)}, sort_keys=True))
+        return 2
+    print(json.dumps(view, indent=2, sort_keys=True))
+    return 0 if view["status"] == "available" else 2
+
+
 def add_di_launcher_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", default=str(DEFAULT_DI_PROFILE),
                         help="Runtime profile to pass as --runtime-profile")
@@ -847,6 +879,11 @@ def build_parser() -> argparse.ArgumentParser:
     di_search = di_sub.add_parser("search", help="launch the LLM proportional RPS search helper")
     add_di_launcher_args(di_search)
     di_search.set_defaults(func=run_di_search)
+
+    di_evidence = di_sub.add_parser(
+        "evidence", help="read provider-observed execution evidence from summary.json")
+    di_evidence.add_argument("--summary", required=True)
+    di_evidence.set_defaults(func=run_di_evidence)
     return parser
 
 

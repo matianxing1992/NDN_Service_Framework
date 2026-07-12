@@ -256,6 +256,29 @@ class RuntimeDoctorTests(unittest.TestCase):
                 self.assertIn("--out-root", command)
                 self.assertIn("/tmp/ndnsf-wrapper-test", command)
 
+    def test_di_evidence_ignores_legacy_runner_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            summary = Path(tmp) / "summary.json"
+            summary.write_text(json.dumps({
+                "runnerMode": "qwen-onnx-native",
+                "runnerClassification": "synthetic-delay",
+                "executionEvidence": [{
+                    "providerName": "/provider/A",
+                    "runnerKind": "synthetic-delay",
+                    "realCompute": False,
+                }],
+            }), encoding="utf-8")
+            proc = subprocess.run(
+                ["python3", str(TOOL), "di", "evidence", "--summary", str(summary)],
+                cwd=REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["runnerClassification"], "synthetic-delay")
+        self.assertNotIn("runnerMode", payload)
+
 
 if __name__ == "__main__":
     unittest.main()
