@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 
 from ndnsf_distributed_inference.deployment import (
@@ -9,7 +10,13 @@ from ndnsf_distributed_inference.deployment import (
     LeaseOperationResponse,
     LeaseTransactionError,
     NdnsfLeaseTransport,
+    PlanRevalidationError,
     ProviderLeaseAssignment,
+    ProviderTelemetryRegistry,
+)
+from ndnsf_distributed_inference.runtime_v1 import (
+    MeasuredTelemetrySnapshotV1,
+    PlanFeasibilityRequirementsV1,
 )
 
 
@@ -45,6 +52,60 @@ def assignments() -> tuple[ProviderLeaseAssignment, ...]:
 
 
 class DistributedLeaseTransactionTest(unittest.TestCase):
+    def test_plan_predicates_are_revalidated_after_prepare_before_commit(self) -> None:
+        registry = ProviderTelemetryRegistry()
+        sampled_at = int(time.time() * 1000)
+        base = dict(
+            provider_boot_id="boot-a", resource_sequence=1,
+            measured_at_ms=sampled_at, source="linux-proc", status="measured",
+            host_total_memory_bytes=10_000, host_available_memory_bytes=8_000,
+            ready_queue=0, evidence_epoch=1,
+        )
+        registry.retain(MeasuredTelemetrySnapshotV1(
+            provider_name="/provider/A", sequence=1, **base))
+        registry.retain(MeasuredTelemetrySnapshotV1(
+            provider_name="/provider/B", sequence=1, **base))
+
+        class PressureAfterPrepareTransport(FakeLeaseTransport):
+            def request(self, provider: str, payload: bytes) -> bytes:
+                request = LeaseOperationRequest.from_bytes(payload)
+                response = super().request(provider, payload)
+                if provider == "/provider/B" and request.operation is LeaseOperation.PREPARE:
+                    registry.retain(MeasuredTelemetrySnapshotV1(
+                        provider_name="/provider/A", sequence=2,
+                        resource_sequence=2, ready_queue=9,
+                        **{key: value for key, value in base.items()
+                           if key not in {"resource_sequence", "ready_queue"}},
+                    ))
+                return response
+
+        requirements = {
+            provider: PlanFeasibilityRequirementsV1(
+                expected_provider_name=provider,
+                expected_provider_boot_id="boot-a",
+                maximum_ready_queue=2,
+                maximum_telemetry_age_ms=5_000,
+            )
+            for provider in ("/provider/A", "/provider/B")
+        }
+        transport = PressureAfterPrepareTransport()
+        with self.assertRaises(PlanRevalidationError) as raised:
+            DistributedLeaseTransaction(transport).acquire(
+                request_id="request-pressure", plan_digest="plan-1",
+                service_name="/Inference/NativeTracer",
+                assignments=assignments(), expires_at_ms=sampled_at + 5_000,
+                telemetry_registry=registry,
+                feasibility_requirements_by_provider=requirements,
+            )
+        self.assertEqual(raised.exception.provider, "/provider/A")
+        self.assertEqual(raised.exception.decision.decision, "defer")
+        self.assertIn("READY_QUEUE_PRESSURE",
+                      raised.exception.decision.reason_codes)
+        operations = [request.operation for _, request in transport.calls]
+        self.assertNotIn(LeaseOperation.COMMIT, operations)
+        self.assertEqual(operations[-2:],
+                         [LeaseOperation.ABORT, LeaseOperation.ABORT])
+
     def test_ndnsf_transport_retries_idempotent_wire_operation(self) -> None:
         class Response:
             def __init__(self, status, payload=b"", error=""):

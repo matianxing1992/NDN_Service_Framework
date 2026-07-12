@@ -24,7 +24,12 @@ from ndnsf import (
     to_plain,
 )
 
-from .runtime_v1 import MeasuredTelemetrySnapshotV1
+from .runtime_v1 import (
+    MeasuredTelemetrySnapshotV1,
+    PlanFeasibilityDecisionV1,
+    PlanFeasibilityRequirementsV1,
+    evaluate_plan_feasibility,
+)
 
 
 LEASE_SERVICE_NAME = "/Inference/Control/Lease"
@@ -427,6 +432,15 @@ class LeaseTransactionError(RuntimeError):
         self.response = response
 
 
+class PlanRevalidationError(RuntimeError):
+    def __init__(self, provider: str, decision: PlanFeasibilityDecisionV1):
+        reasons = ",".join(decision.reason_codes) or "PLAN_REVALIDATION_FAILED"
+        super().__init__(
+            f"plan revalidation {decision.decision} for {provider}: {reasons}")
+        self.provider = provider
+        self.decision = decision
+
+
 class DistributedLeaseTransaction:
     """User-owned prepare-all/commit-all transaction over secured NDNSF calls."""
 
@@ -444,6 +458,9 @@ class DistributedLeaseTransaction:
         capacity_wait_ms: int = 0,
         capacity_poll_ms: int = 100,
         reservation_ttl_ms: int = 0,
+        telemetry_registry: ProviderTelemetryRegistry | None = None,
+        feasibility_requirements_by_provider:
+        Mapping[str, PlanFeasibilityRequirementsV1] | None = None,
     ) -> DistributedLeaseSet:
         assignments = tuple(assignments)
         deadline = time.monotonic() + max(0, capacity_wait_ms) / 1000.0
@@ -463,6 +480,10 @@ class DistributedLeaseTransaction:
                     assignments=assignments,
                     expires_at_ms=attempt_expires_at_ms,
                     attempt=attempt,
+                    telemetry_registry=telemetry_registry,
+                    feasibility_requirements_by_provider=(
+                        feasibility_requirements_by_provider
+                    ),
                 )
             except LeaseTransactionError as error:
                 if (
@@ -486,6 +507,9 @@ class DistributedLeaseTransaction:
         assignments: tuple[ProviderLeaseAssignment, ...],
         expires_at_ms: int,
         attempt: int,
+        telemetry_registry: ProviderTelemetryRegistry | None,
+        feasibility_requirements_by_provider:
+        Mapping[str, PlanFeasibilityRequirementsV1] | None,
     ) -> DistributedLeaseSet:
         prepared: list[CommittedProviderLease] = []
         committed: list[CommittedProviderLease] = []
@@ -520,6 +544,28 @@ class DistributedLeaseTransaction:
                 )
 
             for lease in prepared:
+                requirements = (feasibility_requirements_by_provider or {}).get(
+                    lease.assignment.provider)
+                if requirements is not None:
+                    snapshot = (
+                        telemetry_registry.get(lease.assignment.provider)
+                        if telemetry_registry is not None else None
+                    )
+                    if snapshot is None:
+                        decision = PlanFeasibilityDecisionV1(
+                            decision="defer",
+                            reason_codes=("TELEMETRY_REQUIRED",),
+                            predicates=(),
+                        )
+                    else:
+                        decision = evaluate_plan_feasibility(
+                            snapshot,
+                            requirements,
+                            at_ms=int(time.time() * 1000),
+                        )
+                    if decision.decision != "reuse":
+                        raise PlanRevalidationError(
+                            lease.assignment.provider, decision)
                 response = self._call(
                     lease.assignment.provider,
                     LeaseOperationRequest(
