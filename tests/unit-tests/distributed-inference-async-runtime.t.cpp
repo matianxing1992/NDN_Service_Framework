@@ -1795,6 +1795,38 @@ BOOST_AUTO_TEST_CASE(NativeProviderExecutionBindingValidatesAttemptBootAndPlan)
     "DI_PLAN_BINDING_MISMATCH");
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderExecutionControlCancelsAndSupersedesInPayload)
+{
+  ExecutionAttemptAuthority authority;
+  BOOST_REQUIRE_EQUAL(authority.admit({"request-control", 1}),
+                      ExecutionAttemptAdmission::Accepted);
+  const auto cancelled = applyNativeProviderExecutionControl({
+    {"schema", "ndnsf-di-execution-control-v1"},
+    {"operation", "CANCEL"},
+    {"requestId", "request-control"},
+    {"attemptEpoch", "1"},
+    {"supersededByAttemptEpoch", "2"},
+  }, authority);
+  BOOST_REQUIRE(cancelled.recognized);
+  BOOST_CHECK(cancelled.status);
+  BOOST_CHECK(!authority.isAuthoritative({"request-control", 1}));
+
+  ExecutionAttemptAuthority supersedeAuthority;
+  BOOST_REQUIRE_EQUAL(supersedeAuthority.admit({"request-control", 1}),
+                      ExecutionAttemptAdmission::Accepted);
+  const auto superseded = applyNativeProviderExecutionControl({
+    {"schema", "ndnsf-di-execution-control-v1"},
+    {"operation", "SUPERSEDE"},
+    {"requestId", "request-control"},
+    {"attemptEpoch", "1"},
+    {"supersededByAttemptEpoch", "2"},
+  }, supersedeAuthority);
+  BOOST_REQUIRE(superseded.recognized);
+  BOOST_CHECK(superseded.status);
+  BOOST_CHECK(!supersedeAuthority.isAuthoritative({"request-control", 1}));
+  BOOST_CHECK(supersedeAuthority.isAuthoritative({"request-control", 2}));
+}
+
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanReturnsNoStaticSegmentsForDynamicEdges)
 {
   DependencyEdge dynamicEdge{
@@ -2998,6 +3030,15 @@ BOOST_AUTO_TEST_CASE(NativeProviderTelemetryCollectorCachesMergedFactsAndEwma)
       value.readyQueueDepth = 2;
       value.waitingForInputCount = 1;
       value.activeWorkerCount = 3;
+      value.dependencyWaitWorkerCount = 4;
+      value.dependencyWaitQueueCapacity = 1024;
+      value.dependencyWaitQueuedCount = 2;
+      value.dependencyWaitActiveCount = 1;
+      value.dependencyWaitCompleted = 10;
+      value.dependencyWaitCancelled = 2;
+      value.dependencyWaitDeadlineExpired = 1;
+      value.dependencyWaitFailed = 3;
+      value.dependencyWaitRejected = 4;
       return value;
     },
     std::chrono::seconds(1),
@@ -3041,6 +3082,19 @@ BOOST_AUTO_TEST_CASE(NativeProviderTelemetryCollectorCachesMergedFactsAndEwma)
   BOOST_CHECK(lastJson.find("\"processRssBytes\":1000") !=
               std::string::npos);
   BOOST_CHECK(lastJson.find("\"stageServiceTimeEwmaMs\":200") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"dependencyWaitWorkers\":4") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"dependencyWaitQueueCapacity\":1024") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"dependencyWaitQueued\":2") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"dependencyWaitCancelled\":2") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"dependencyWaitRejected\":4") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find(
+    "\"dependencyWaitOverloadReason\":\"DEPENDENCY_WAIT_SCHEDULER_OVERLOAD\"") !=
               std::string::npos);
 }
 

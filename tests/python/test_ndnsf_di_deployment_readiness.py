@@ -17,6 +17,10 @@ from ndnsf_distributed_inference.runtime_v1 import (
     ExecutionEvidenceV1,
     classify_execution_evidence,
 )
+from ndnsf_distributed_inference.deployment import (
+    BoundedRecoveryController,
+    RecoveryReason,
+)
 from ndnsf_distributed_inference.release_gate import DIMENSIONS, build_release_gate
 from ndnsf_distributed_inference.qwen_pilot import (
     BoundedGenerationScheduler,
@@ -69,6 +73,80 @@ def evidence_payload(value: ExecutionEvidenceV1) -> dict[str, object]:
 
 
 class DeploymentReadinessContractsTest(unittest.TestCase):
+    def test_bounded_recovery_replaces_provider_once_and_rejects_old_result(self) -> None:
+        for reason in (
+            RecoveryReason.PROVIDER_LOST,
+            RecoveryReason.STRAGGLER_DEADLINE,
+            RecoveryReason.TELEMETRY_STALE,
+        ):
+            with self.subTest(reason=reason):
+                recovery = BoundedRecoveryController(
+                    "request-1", request_deadline_ms=2_000,
+                    started_at_ms=1_000, max_replacements=1)
+                first = recovery.start("/provider/A")
+                action = recovery.recover(
+                    reason, at_ms=1_200, replacement_provider="/provider/B")
+                self.assertEqual(action.action, "replace")
+                self.assertEqual(action.attempt_epoch, 2)
+                self.assertEqual(action.remaining_deadline_ms, 800)
+                self.assertEqual(action.provider, "/provider/B")
+                self.assertEqual(action.control_payloads[0]["operation"], "CANCEL")
+                self.assertEqual(action.control_payloads[1]["operation"], "SUPERSEDE")
+                self.assertFalse(recovery.accept_result(first.attempt_epoch, b"old"))
+                self.assertTrue(recovery.accept_result(action.attempt_epoch, b"new"))
+                self.assertFalse(recovery.accept_result(action.attempt_epoch, b"duplicate"))
+
+    def test_cache_miss_retries_full_context_with_new_attempt_epoch(self) -> None:
+        recovery = BoundedRecoveryController(
+            "request-cache", request_deadline_ms=5_000,
+            started_at_ms=1_000, max_replacements=1)
+        recovery.start("/provider/A")
+        action = recovery.recover(
+            RecoveryReason.CACHE_MISS_FULL_CONTEXT_REQUIRED, at_ms=1_100)
+        self.assertEqual(action.action, "retry-full-context")
+        self.assertEqual(action.provider, "/provider/A")
+        self.assertEqual(action.attempt_epoch, 2)
+        self.assertTrue(action.full_context_required)
+
+    def test_recovery_fails_exactly_for_no_replacement_and_deadline(self) -> None:
+        no_replacement = BoundedRecoveryController(
+            "request-none", request_deadline_ms=2_000, started_at_ms=1_000)
+        no_replacement.start("/provider/A")
+        terminal = no_replacement.recover(
+            RecoveryReason.PROVIDER_LOST, at_ms=1_100)
+        self.assertEqual(terminal.action, "fail")
+        self.assertEqual(terminal.terminal_reason,
+                         RecoveryReason.NO_COMPATIBLE_REPLACEMENT)
+        self.assertFalse(no_replacement.accept_result(1, b"late"))
+
+        expired = BoundedRecoveryController(
+            "request-expired", request_deadline_ms=2_000, started_at_ms=1_000)
+        expired.start("/provider/A")
+        deadline = expired.recover(
+            RecoveryReason.STRAGGLER_DEADLINE,
+            at_ms=2_000, replacement_provider="/provider/B")
+        self.assertEqual(deadline.action, "fail")
+        self.assertEqual(deadline.terminal_reason,
+                         RecoveryReason.REQUEST_DEADLINE)
+        self.assertEqual(deadline.remaining_deadline_ms, 0)
+
+    def test_second_replacement_is_bounded_and_control_uses_existing_payload(self) -> None:
+        recovery = BoundedRecoveryController(
+            "request-bounded", request_deadline_ms=5_000,
+            started_at_ms=1_000, max_replacements=1)
+        recovery.start("/provider/A")
+        first = recovery.recover(
+            RecoveryReason.PROVIDER_LOST,
+            at_ms=1_100, replacement_provider="/provider/B")
+        self.assertEqual(first.control_payloads[0]["schema"],
+                         "ndnsf-di-execution-control-v1")
+        second = recovery.recover(
+            RecoveryReason.PROVIDER_LOST,
+            at_ms=1_200, replacement_provider="/provider/C")
+        self.assertEqual(second.action, "fail")
+        self.assertEqual(second.terminal_reason,
+                         RecoveryReason.NO_COMPATIBLE_REPLACEMENT)
+
     def test_native_open_loop_driver_reports_generation_level_progress(self) -> None:
         pipeline_dir = (
             Path(__file__).resolve().parents[2] /

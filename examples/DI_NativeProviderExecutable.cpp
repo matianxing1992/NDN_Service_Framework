@@ -1302,6 +1302,13 @@ main(int argc, char** argv)
               std::lock_guard<std::mutex> lock(*readyHandlerMutex);
               *readyHandler = std::move(runtime.handler);
             }
+            provider.updateNdnsdMeta("providerBootId", providerBootId);
+            std::cout << "NDNSF_DI_PROVIDER_BOOT_READY"
+                      << " provider=" << options.providerName
+                      << " providerBootId=" << providerBootId
+                      << " attemptAuthority=fresh"
+                      << " kvState=fresh"
+                      << std::endl;
             provisioningState->markReady("native model/runtime artifacts ready");
             provider.updateNdnsdMeta("runtimeStatus", "ready");
             std::cout << "NDNSF_DI_NATIVE_PROVIDER_PROVISION_READY"

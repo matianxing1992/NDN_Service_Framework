@@ -7,6 +7,7 @@
 #include <exception>
 #include <future>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -229,11 +230,20 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
         return;
       }
       const auto reason = result.reason.empty() ? toString(result.status) : result.reason;
+      std::cout << "\nNDNSF_DI_PROVIDER_WAIT_TERMINAL"
+                << " session=" << state->item.sessionId
+                << " role=" << state->item.role.role
+                << " status=" << toString(result.status)
+                << " reason=" << reason << std::endl;
       failPromise(state->item.promise,
                   std::make_exception_ptr(std::runtime_error(
                     "dependency wait failed: " + reason)));
     });
   if (submitted != DependencyWaitSubmitResult::Accepted) {
+    std::cout << "\nNDNSF_DI_PROVIDER_WAIT_ADMISSION"
+              << " session=" << state->item.sessionId
+              << " role=" << state->item.role.role
+              << " status=" << toString(submitted) << std::endl;
     failPromise(state->item.promise,
                 std::make_exception_ptr(std::runtime_error(
                   std::string("dependency wait admission failed: ") +
@@ -267,6 +277,15 @@ ProviderRoleWorker::snapshot() const
   snapshot.readyQueueDepth = m_queue.size();
   const auto waitSnapshot = m_dependencyWaitScheduler->snapshot();
   snapshot.waitingForInputCount = waitSnapshot.queuedCount + waitSnapshot.activeCount;
+  snapshot.dependencyWaitWorkerCount = waitSnapshot.workerCount;
+  snapshot.dependencyWaitQueueCapacity = waitSnapshot.queueCapacity;
+  snapshot.dependencyWaitQueuedCount = waitSnapshot.queuedCount;
+  snapshot.dependencyWaitActiveCount = waitSnapshot.activeCount;
+  snapshot.dependencyWaitCompleted = waitSnapshot.completed;
+  snapshot.dependencyWaitCancelled = waitSnapshot.cancelled;
+  snapshot.dependencyWaitDeadlineExpired = waitSnapshot.deadlineExpired;
+  snapshot.dependencyWaitFailed = waitSnapshot.failed;
+  snapshot.dependencyWaitRejected = waitSnapshot.rejected;
   snapshot.activeWorkerCount = m_activeWorkers;
   snapshot.stopping = m_stopping;
   return snapshot;

@@ -57,6 +57,19 @@ validateNativeProviderExecutionBinding(
   const std::string& expectedPlanDigest,
   ExecutionAttemptAuthority& authority);
 
+struct NativeProviderExecutionControlResult
+{
+  bool recognized = false;
+  bool status = false;
+  std::string reason;
+  ExecutionAttemptKey attempt;
+};
+
+NativeProviderExecutionControlResult
+applyNativeProviderExecutionControl(
+  const std::map<std::string, std::string>& fields,
+  ExecutionAttemptAuthority& authority);
+
 std::optional<std::vector<uint8_t>>
 nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
                                    const ProviderRoleResult& result,

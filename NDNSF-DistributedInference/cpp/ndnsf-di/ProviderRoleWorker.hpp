@@ -63,6 +63,15 @@ struct ProviderRoleWorkerSnapshot
   std::size_t readyQueueDepth = 0;
   std::size_t waitingForInputCount = 0;
   std::size_t activeWorkerCount = 0;
+  std::size_t dependencyWaitWorkerCount = 0;
+  std::size_t dependencyWaitQueueCapacity = 0;
+  std::size_t dependencyWaitQueuedCount = 0;
+  std::size_t dependencyWaitActiveCount = 0;
+  std::size_t dependencyWaitCompleted = 0;
+  std::size_t dependencyWaitCancelled = 0;
+  std::size_t dependencyWaitDeadlineExpired = 0;
+  std::size_t dependencyWaitFailed = 0;
+  std::size_t dependencyWaitRejected = 0;
   bool stopping = false;
 
   std::size_t pendingWorkCount() const

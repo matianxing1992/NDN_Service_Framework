@@ -6,6 +6,7 @@ import base64
 from dataclasses import dataclass, field
 from enum import Enum
 import json
+import logging
 import os
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol
@@ -31,9 +32,187 @@ from .runtime_v1 import (
     evaluate_plan_feasibility,
 )
 
+_LOG = logging.getLogger("ndnsf.di.recovery")
+
 
 LEASE_SERVICE_NAME = "/Inference/Control/Lease"
 LEASE_CODEC_SCHEMA = "ndnsf-di-execution-lease-operation-v1"
+
+
+class RecoveryReason(str, Enum):
+    PROVIDER_LOST = "PROVIDER_LOST"
+    STRAGGLER_DEADLINE = "STRAGGLER_DEADLINE"
+    TELEMETRY_STALE = "TELEMETRY_STALE"
+    CACHE_MISS_FULL_CONTEXT_REQUIRED = "CACHE_MISS_FULL_CONTEXT_REQUIRED"
+    NO_COMPATIBLE_REPLACEMENT = "NO_COMPATIBLE_REPLACEMENT"
+    REQUEST_DEADLINE = "REQUEST_DEADLINE"
+
+
+@dataclass(frozen=True)
+class RecoveryAttempt:
+    request_id: str
+    attempt_epoch: int
+    provider: str
+    remaining_deadline_ms: int
+
+
+@dataclass(frozen=True)
+class RecoveryAction:
+    action: str
+    request_id: str
+    attempt_epoch: int
+    provider: str = ""
+    remaining_deadline_ms: int = 0
+    terminal_reason: RecoveryReason | None = None
+    full_context_required: bool = False
+    control_payloads: tuple[dict[str, Any], ...] = ()
+
+
+class BoundedRecoveryController:
+    """Own one request's bounded replacement and final-result authority."""
+
+    def __init__(
+        self,
+        request_id: str,
+        *,
+        request_deadline_ms: int,
+        started_at_ms: int,
+        max_replacements: int = 1,
+    ) -> None:
+        if not request_id or request_deadline_ms <= started_at_ms:
+            raise ValueError("recovery requires request identity and a future deadline")
+        if max_replacements < 0:
+            raise ValueError("max_replacements must be non-negative")
+        self.request_id = request_id
+        self.request_deadline_ms = int(request_deadline_ms)
+        self.started_at_ms = int(started_at_ms)
+        self.max_replacements = int(max_replacements)
+        self._attempt_epoch = 0
+        self._provider = ""
+        self._replacements = 0
+        self._terminal = False
+        self._terminal_reason: RecoveryReason | None = None
+        self._events: list[dict[str, Any]] = []
+
+    def start(self, provider: str) -> RecoveryAttempt:
+        if self._attempt_epoch != 0 or not provider:
+            raise ValueError("recovery start requires one non-empty initial provider")
+        self._attempt_epoch = 1
+        self._provider = provider
+        self._record("ATTEMPT_STARTED", provider=provider)
+        return RecoveryAttempt(
+            self.request_id, self._attempt_epoch, provider,
+            self.request_deadline_ms - self.started_at_ms,
+        )
+
+    def recover(
+        self,
+        reason: RecoveryReason | str,
+        *,
+        at_ms: int,
+        replacement_provider: str = "",
+    ) -> RecoveryAction:
+        if self._attempt_epoch == 0:
+            raise RuntimeError("recovery controller has not started")
+        reason = RecoveryReason(reason)
+        remaining = max(0, self.request_deadline_ms - int(at_ms))
+        if self._terminal:
+            return self._failure(self._terminal_reason or reason, remaining)
+        if remaining <= 0:
+            return self._terminate(RecoveryReason.REQUEST_DEADLINE, remaining)
+
+        cache_retry = reason is RecoveryReason.CACHE_MISS_FULL_CONTEXT_REQUIRED
+        next_provider = self._provider if cache_retry else replacement_provider
+        if self._replacements >= self.max_replacements or not next_provider:
+            return self._terminate(
+                RecoveryReason.NO_COMPATIBLE_REPLACEMENT, remaining)
+
+        old_epoch = self._attempt_epoch
+        old_provider = self._provider
+        self._replacements += 1
+        self._attempt_epoch += 1
+        self._provider = next_provider
+        control_payloads = (
+            self._control_payload(
+                "CANCEL", old_epoch, provider=old_provider,
+                superseded_by_epoch=self._attempt_epoch),
+            self._control_payload(
+                "SUPERSEDE", old_epoch, provider=old_provider,
+                superseded_by_epoch=self._attempt_epoch),
+        )
+        action = "retry-full-context" if cache_retry else "replace"
+        self._record(
+            "REPLACEMENT_DECISION", reason=reason.value, action=action,
+            oldAttemptEpoch=old_epoch, provider=next_provider,
+            remainingDeadlineMs=remaining,
+        )
+        return RecoveryAction(
+            action=action,
+            request_id=self.request_id,
+            attempt_epoch=self._attempt_epoch,
+            provider=next_provider,
+            remaining_deadline_ms=remaining,
+            full_context_required=cache_retry,
+            control_payloads=control_payloads,
+        )
+
+    def accept_result(self, attempt_epoch: int, payload: bytes) -> bool:
+        del payload  # authority depends on attempt state, never payload content.
+        if self._terminal or int(attempt_epoch) != self._attempt_epoch:
+            self._record(
+                "RESULT_REJECTED", observedAttemptEpoch=int(attempt_epoch),
+                reason="OLD_OR_DUPLICATE_ATTEMPT")
+            return False
+        self._terminal = True
+        self._record("RESULT_AUTHORITATIVE", observedAttemptEpoch=int(attempt_epoch))
+        return True
+
+    def events(self) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(item) for item in self._events)
+
+    def _terminate(self, reason: RecoveryReason, remaining: int) -> RecoveryAction:
+        self._terminal = True
+        self._terminal_reason = reason
+        self._record(
+            "TERMINAL_FAILURE", reason=reason.value,
+            remainingDeadlineMs=remaining)
+        return self._failure(reason, remaining)
+
+    def _failure(self, reason: RecoveryReason, remaining: int) -> RecoveryAction:
+        return RecoveryAction(
+            action="fail", request_id=self.request_id,
+            attempt_epoch=self._attempt_epoch, provider=self._provider,
+            remaining_deadline_ms=remaining, terminal_reason=reason,
+        )
+
+    def _control_payload(
+        self,
+        operation: str,
+        attempt_epoch: int,
+        *,
+        provider: str,
+        superseded_by_epoch: int,
+    ) -> dict[str, Any]:
+        return {
+            "schema": "ndnsf-di-execution-control-v1",
+            "transport": "existing-di-service-payload",
+            "operation": operation,
+            "requestId": self.request_id,
+            "attemptEpoch": int(attempt_epoch),
+            "providerName": provider,
+            "supersededByAttemptEpoch": int(superseded_by_epoch),
+        }
+
+    def _record(self, event: str, **fields: Any) -> None:
+        record = {
+            "event": event,
+            "requestId": self.request_id,
+            "attemptEpoch": self._attempt_epoch,
+            **fields,
+        }
+        self._events.append(record)
+        _LOG.info("NDNSF_DI_RECOVERY %s", json.dumps(
+            record, sort_keys=True, separators=(",", ":")))
 
 
 class ProviderTelemetryRegistry:

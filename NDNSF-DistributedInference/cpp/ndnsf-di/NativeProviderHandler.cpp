@@ -69,6 +69,48 @@ validateNativeProviderExecutionBinding(
   return result;
 }
 
+NativeProviderExecutionControlResult
+applyNativeProviderExecutionControl(
+  const std::map<std::string, std::string>& fields,
+  ExecutionAttemptAuthority& authority)
+{
+  NativeProviderExecutionControlResult result;
+  if (nativeProviderFieldValue(fields, {"schema"}) !=
+      "ndnsf-di-execution-control-v1") {
+    return result;
+  }
+  result.recognized = true;
+  const auto operation = nativeProviderFieldValue(fields, {"operation"});
+  result.attempt.requestId = nativeProviderFieldValue(fields, {"requestId"});
+  try {
+    result.attempt.attemptEpoch = std::stoull(
+      nativeProviderFieldValue(fields, {"attemptEpoch"}));
+    result.attempt.validate();
+    if (operation == "CANCEL") {
+      result.status = authority.cancel(result.attempt);
+      result.reason = result.status ? "CANCELLED" : "CANCEL_REJECTED";
+      return result;
+    }
+    if (operation == "SUPERSEDE") {
+      const auto nextEpoch = std::stoull(nativeProviderFieldValue(
+        fields, {"supersededByAttemptEpoch"}));
+      authority.cancel(result.attempt);
+      ExecutionAttemptKey replacement{result.attempt.requestId, nextEpoch};
+      replacement.validate();
+      const auto admitted = authority.admit(replacement);
+      result.status = admitted == ExecutionAttemptAdmission::Accepted;
+      result.reason = result.status ? "SUPERSEDED" :
+        std::string("SUPERSEDE_") + toString(admitted);
+      return result;
+    }
+    result.reason = "CONTROL_OPERATION_UNSUPPORTED";
+  }
+  catch (const std::exception&) {
+    result.reason = "CONTROL_BINDING_INVALID";
+  }
+  return result;
+}
+
 namespace {
 
 std::vector<uint8_t>
@@ -723,6 +765,23 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       activatedLeaseId.clear();
     };
     try {
+      const auto controlFields = parseNativeProviderAssignmentFields(request.getPayload());
+      const auto control = applyNativeProviderExecutionControl(
+        controlFields, state->attemptAuthority);
+      if (control.recognized) {
+        std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
+                  << " decision=" << (control.status ? "control-applied" : "control-rejected")
+                  << " reason=" << control.reason
+                  << " requestId=" << control.attempt.requestId
+                  << " attemptEpoch=" << control.attempt.attemptEpoch
+                  << std::endl;
+        const auto response = std::string("schema=ndnsf-di-execution-control-v1;") +
+          "status=" + (control.status ? "1;" : "0;") +
+          "reason=" + control.reason + ";";
+        ctx.publishFinalResponse(ndn::Buffer(
+          reinterpret_cast<const std::uint8_t*>(response.data()), response.size()));
+        return;
+      }
       auto assignment = state->baseAssignment;
       for (const auto& item : ctx.assignment().roleProviders) {
         assignment.providerByRole[item.first] = item.second.toUri();
@@ -748,6 +807,10 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           config.planDigest,
           state->attemptAuthority);
         if (!binding.status) {
+          std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
+                    << " decision=reject"
+                    << " reason=" << binding.reason
+                    << " role=" << role << std::endl;
           ctx.fail(binding.reason);
           return;
         }
@@ -999,6 +1062,12 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                           "after_complete",
                           state->runtime.snapshot());
       if (executionAttempt && !state->attemptAuthority.complete(*executionAttempt)) {
+        std::cout << "\nNDNSF_DI_EXECUTION_ATTEMPT"
+                  << " decision=reject"
+                  << " reason=DI_ATTEMPT_DUPLICATE_TERMINAL"
+                  << " requestId=" << executionAttempt->requestId
+                  << " attemptEpoch=" << executionAttempt->attemptEpoch
+                  << std::endl;
         completeExecutionLease();
         ctx.fail("DI_ATTEMPT_DUPLICATE_TERMINAL");
         return;
