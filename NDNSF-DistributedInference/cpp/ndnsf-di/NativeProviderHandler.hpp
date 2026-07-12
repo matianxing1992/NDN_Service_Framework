@@ -36,6 +36,8 @@ struct NativeProviderHandlerConfig
   std::shared_ptr<KvStateStore> kvStateStore;
   std::string kvOutputScope = "kv-state";
   std::uint64_t kvSecurityEpoch = 0;
+  std::shared_ptr<std::function<void(std::chrono::milliseconds)>>
+    stageServiceTimeObserver;
 };
 
 std::optional<std::vector<uint8_t>>

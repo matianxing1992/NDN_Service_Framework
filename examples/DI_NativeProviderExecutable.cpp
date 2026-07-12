@@ -942,6 +942,24 @@ main(int argc, char** argv)
       auto provisioningState = std::make_shared<NativeProviderReadinessState>();
       auto readyHandler = std::make_shared<std::optional<CollaborationHandler>>();
       auto readyHandlerMutex = std::make_shared<std::mutex>();
+      auto capacitySnapshot = std::make_shared<
+        NativeProviderReadinessState::CapacitySnapshotProvider>();
+      auto capacitySnapshotMutex = std::make_shared<std::mutex>();
+      ProviderResourceProbeConfig resourceConfig;
+      resourceConfig.providerName = options.providerName;
+      resourceConfig.providerBootId = providerBootId;
+      auto resourceProbe = std::make_shared<LinuxProviderResourceProbe>(resourceConfig);
+      auto telemetryCollector = std::make_shared<NativeProviderTelemetryCollector>(
+        resourceProbe,
+        [capacitySnapshot, capacitySnapshotMutex] {
+          std::lock_guard<std::mutex> lock(*capacitySnapshotMutex);
+          return *capacitySnapshot ? (*capacitySnapshot)() : ProviderRoleWorkerSnapshot{};
+        });
+      auto stageServiceTimeObserver = std::make_shared<
+        std::function<void(std::chrono::milliseconds)>>();
+      telemetryCollector->start();
+      provisioningState->setTelemetrySnapshotProvider(
+        [telemetryCollector] { return telemetryCollector->snapshot(); });
       if (options.enableAdmissionLease) {
         provider.setGenericAdmissionLeaseRequired(ndn::Name(options.serviceName), true);
         std::cout << "NDNSF_DI_NATIVE_PROVIDER_ADMISSION_LEASE_REQUIRED"
@@ -1150,6 +1168,10 @@ main(int argc, char** argv)
          provisioningState,
          readyHandler,
          readyHandlerMutex,
+         capacitySnapshot,
+         capacitySnapshotMutex,
+         telemetryCollector,
+         stageServiceTimeObserver,
          executionLeaseService,
          &provider] () mutable {
           try {
@@ -1250,6 +1272,7 @@ main(int argc, char** argv)
             config.kvStateStore = std::make_shared<KvStateStore>(
               64ULL * 1024ULL * 1024ULL, 128);
             config.kvStateStore->setProviderBootId(providerBootId);
+            config.stageServiceTimeObserver = stageServiceTimeObserver;
             if (options.requireExecutionLease) {
               config.executionLeaseTable = &executionLeaseService->table();
               config.executionLeaseTargetService = options.serviceName;
@@ -1258,7 +1281,15 @@ main(int argc, char** argv)
               std::max(1000, options.admissionLeaseTtlMs));
 
             auto runtime = makeNativeProviderCollaborationRuntime(std::move(config));
-            provisioningState->setCapacitySnapshotProvider(runtime.capacitySnapshot);
+            {
+              std::lock_guard<std::mutex> lock(*capacitySnapshotMutex);
+              *capacitySnapshot = runtime.capacitySnapshot;
+            }
+            *stageServiceTimeObserver = [telemetryCollector](
+              std::chrono::milliseconds duration) {
+              telemetryCollector->recordStageServiceTime(duration);
+            };
+            telemetryCollector->refresh();
             auto executionEvidence = aggregateExecutionEvidence(runtime.executionEvidence);
             provisioningState->setExecutionEvidence(executionEvidence);
             std::cout << "NDNSF_DI_EXECUTION_EVIDENCE "

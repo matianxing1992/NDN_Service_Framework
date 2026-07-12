@@ -2708,6 +2708,78 @@ BOOST_AUTO_TEST_CASE(LinuxProviderResourceProbeReadsLocalProc)
 #endif
 }
 
+BOOST_AUTO_TEST_CASE(NativeProviderTelemetryCollectorCachesMergedFactsAndEwma)
+{
+  class FakeProbe final : public ProviderResourceProbe
+  {
+  public:
+    void start() override { ++starts; }
+    void stop() noexcept override { ++stops; }
+    ProviderResourceSnapshot sample(std::chrono::milliseconds) override
+    {
+      return latest();
+    }
+    ProviderResourceSnapshot latest() const override
+    {
+      ++reads;
+      ProviderResourceSnapshot value;
+      value.status = ResourceProbeStatus::Measured;
+      value.source = "fixture";
+      value.providerName = "/provider/A";
+      value.providerBootId = "boot-a";
+      value.sequence = 9;
+      value.measuredAtMs = 1'000;
+      value.hostTotalMemoryBytes = 8'000;
+      value.hostAvailableMemoryBytes = 4'000;
+      value.processRssBytes = 1'000;
+      return value;
+    }
+
+    int starts = 0;
+    int stops = 0;
+    mutable int reads = 0;
+  };
+
+  auto probe = std::make_shared<FakeProbe>();
+  int capacityReads = 0;
+  NativeProviderTelemetryCollector collector(
+    probe,
+    [&capacityReads] {
+      ++capacityReads;
+      ProviderRoleWorkerSnapshot value;
+      value.workerCount = 4;
+      value.readyQueueDepth = 2;
+      value.waitingForInputCount = 1;
+      value.activeWorkerCount = 3;
+      return value;
+    },
+    std::chrono::seconds(1),
+    0.5);
+  collector.recordStageServiceTime(std::chrono::milliseconds(100));
+  collector.recordStageServiceTime(std::chrono::milliseconds(300));
+  collector.refresh();
+  const auto snapshot = collector.snapshot();
+  BOOST_CHECK_EQUAL(probe->reads, 1);
+  BOOST_CHECK_EQUAL(capacityReads, 1);
+  BOOST_CHECK_EQUAL(snapshot.resources.processRssBytes, 1'000);
+  BOOST_CHECK_EQUAL(snapshot.capacity.pendingWorkCount(), 6);
+  BOOST_CHECK_EQUAL(snapshot.completedStages, 2);
+  BOOST_CHECK_CLOSE(snapshot.stageServiceTimeEwmaMs, 200.0, 0.001);
+  BOOST_CHECK_CLOSE(snapshot.stageServiceRateEwmaPerSecond,
+                    6.6666666667, 0.001);
+
+  NativeProviderReadinessState readiness;
+  readiness.markReady("ready");
+  readiness.setTelemetrySnapshotProvider([&collector] { return collector.snapshot(); });
+  for (int i = 0; i < 10; ++i) {
+    const auto decision = readiness.makeAckDecision(
+      "/Backbone", ndn::Name("/provider/A"), ndn::Name("/service"));
+    BOOST_CHECK(decision.status);
+  }
+  BOOST_CHECK_EQUAL(probe->reads, 1);
+  BOOST_CHECK_EQUAL(capacityReads, 1);
+}
+
 BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
 {
   ExecutionEvidence evidence;

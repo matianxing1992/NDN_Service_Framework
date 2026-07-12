@@ -850,6 +850,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                                        initialInputs,
                                                        submittedSteady,
                                                        submittedEpoch);
+        if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
+          const auto elapsed = std::max(
+            std::chrono::milliseconds(1),
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - submittedSteady));
+          (*config.stageServiceTimeObserver)(elapsed);
+        }
       }
       else {
         auto result = state->runtime.executeRoleAsync(
@@ -900,6 +907,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
         }
         logProviderTiming(ctx.sessionId(), role, result, submittedSteady, submittedEpoch);
+        if (config.stageServiceTimeObserver && *config.stageServiceTimeObserver) {
+          const auto elapsed = std::max(
+            std::chrono::milliseconds(1),
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+              result.timing.finishedAt - result.timing.startedAt));
+          (*config.stageServiceTimeObserver)(elapsed);
+        }
 
         finalPayload = nativeProviderFinalResponsePayload(
           roleSpec,

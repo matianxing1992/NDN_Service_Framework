@@ -3,12 +3,15 @@
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstdint>
 #include <charconv>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 namespace ndnsf::di {
@@ -277,6 +280,175 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
 
 } // namespace
 
+class NativeProviderTelemetryCollector::Impl
+{
+public:
+  Impl(std::shared_ptr<ProviderResourceProbe> resourceProbe,
+       CapacitySnapshotProvider capacityProvider,
+       std::chrono::milliseconds sampleInterval,
+       double ewmaAlpha)
+    : resourceProbe(std::move(resourceProbe))
+    , capacityProvider(std::move(capacityProvider))
+    , sampleInterval(sampleInterval)
+    , ewmaAlpha(ewmaAlpha)
+  {
+    if (!this->resourceProbe) {
+      throw std::invalid_argument("resource probe must not be null");
+    }
+    if (!this->capacityProvider) {
+      throw std::invalid_argument("capacity provider must not be empty");
+    }
+    if (sampleInterval <= std::chrono::milliseconds::zero()) {
+      throw std::invalid_argument("telemetry sample interval must be positive");
+    }
+    if (!(ewmaAlpha > 0.0 && ewmaAlpha <= 1.0)) {
+      throw std::invalid_argument("telemetry EWMA alpha must be in (0, 1]");
+    }
+  }
+
+  ~Impl()
+  {
+    stop();
+  }
+
+  void
+  refresh()
+  {
+    const auto resources = resourceProbe->latest();
+    const auto capacity = capacityProvider();
+    const auto sampledAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lock(mutex);
+    current.resources = resources;
+    current.capacity = capacity;
+    current.sampledAtMs = sampledAtMs;
+    ++current.sequence;
+  }
+
+  void
+  recordStageServiceTime(std::chrono::milliseconds duration)
+  {
+    if (duration <= std::chrono::milliseconds::zero()) {
+      return;
+    }
+    const auto serviceMs = static_cast<double>(duration.count());
+    const auto serviceRate = 1000.0 / serviceMs;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (current.completedStages == 0) {
+      current.stageServiceTimeEwmaMs = serviceMs;
+      current.stageServiceRateEwmaPerSecond = serviceRate;
+    }
+    else {
+      current.stageServiceTimeEwmaMs =
+        ewmaAlpha * serviceMs + (1.0 - ewmaAlpha) * current.stageServiceTimeEwmaMs;
+      current.stageServiceRateEwmaPerSecond =
+        ewmaAlpha * serviceRate +
+        (1.0 - ewmaAlpha) * current.stageServiceRateEwmaPerSecond;
+    }
+    ++current.completedStages;
+  }
+
+  NativeProviderTelemetrySnapshot
+  snapshot() const
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    return current;
+  }
+
+  void
+  start()
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (worker.joinable()) {
+      return;
+    }
+    stopping = false;
+    resourceProbe->start();
+    worker = std::thread([this] {
+      refresh();
+      while (true) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (condition.wait_for(lock, sampleInterval,
+                               [this] { return stopping; })) {
+          break;
+        }
+        lock.unlock();
+        refresh();
+      }
+    });
+  }
+
+  void
+  stop() noexcept
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      stopping = true;
+    }
+    condition.notify_all();
+    if (worker.joinable()) {
+      worker.join();
+    }
+    resourceProbe->stop();
+  }
+
+public:
+  std::shared_ptr<ProviderResourceProbe> resourceProbe;
+  CapacitySnapshotProvider capacityProvider;
+  std::chrono::milliseconds sampleInterval;
+  double ewmaAlpha;
+  mutable std::mutex mutex;
+  std::condition_variable condition;
+  NativeProviderTelemetrySnapshot current;
+  bool stopping = false;
+  std::thread worker;
+};
+
+NativeProviderTelemetryCollector::NativeProviderTelemetryCollector(
+  std::shared_ptr<ProviderResourceProbe> resourceProbe,
+  CapacitySnapshotProvider capacityProvider,
+  std::chrono::milliseconds sampleInterval,
+  double ewmaAlpha)
+  : m_impl(std::make_unique<Impl>(std::move(resourceProbe),
+                                  std::move(capacityProvider),
+                                  sampleInterval,
+                                  ewmaAlpha))
+{
+}
+
+NativeProviderTelemetryCollector::~NativeProviderTelemetryCollector() = default;
+
+void
+NativeProviderTelemetryCollector::start()
+{
+  m_impl->start();
+}
+
+void
+NativeProviderTelemetryCollector::stop() noexcept
+{
+  m_impl->stop();
+}
+
+void
+NativeProviderTelemetryCollector::refresh()
+{
+  m_impl->refresh();
+}
+
+void
+NativeProviderTelemetryCollector::recordStageServiceTime(
+  std::chrono::milliseconds duration)
+{
+  m_impl->recordStageServiceTime(duration);
+}
+
+NativeProviderTelemetrySnapshot
+NativeProviderTelemetryCollector::snapshot() const
+{
+  return m_impl->snapshot();
+}
+
 void
 NativeProviderReadinessState::markInstalling(std::string message)
 {
@@ -337,6 +509,14 @@ NativeProviderReadinessState::setCapacitySnapshotProvider(
 }
 
 void
+NativeProviderReadinessState::setTelemetrySnapshotProvider(
+  TelemetrySnapshotProvider provider)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_telemetrySnapshotProvider = std::move(provider);
+}
+
+void
 NativeProviderReadinessState::setExecutionEvidence(ExecutionEvidence evidence)
 {
   evidence.validate();
@@ -357,6 +537,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
   int64_t expectedReadyMs = 0;
   int64_t provisioningStartedMs = 0;
   CapacitySnapshotProvider capacitySnapshotProvider;
+  TelemetrySnapshotProvider telemetrySnapshotProvider;
   std::optional<ExecutionEvidence> executionEvidence;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -368,11 +549,15 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
     expectedReadyMs = m_expectedReadyMs;
     provisioningStartedMs = m_provisioningStartedMs;
     capacitySnapshotProvider = m_capacitySnapshotProvider;
+    telemetrySnapshotProvider = m_telemetrySnapshotProvider;
     executionEvidence = m_executionEvidence;
   }
 
   ProviderRoleWorkerSnapshot capacity;
-  if (capacitySnapshotProvider) {
+  if (telemetrySnapshotProvider) {
+    capacity = telemetrySnapshotProvider().capacity;
+  }
+  else if (capacitySnapshotProvider) {
     capacity = capacitySnapshotProvider();
   }
 
