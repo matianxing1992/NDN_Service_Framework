@@ -61,6 +61,18 @@ payloadText(const TensorBundle& value)
   return std::string(value.payload.begin(), value.payload.end());
 }
 
+template<typename T>
+std::vector<std::uint8_t>
+rawTensorPayload(std::initializer_list<T> values)
+{
+  std::vector<T> typed(values);
+  std::vector<std::uint8_t> payload(typed.size() * sizeof(T));
+  if (!payload.empty()) {
+    std::memcpy(payload.data(), typed.data(), payload.size());
+  }
+  return payload;
+}
+
 std::string
 ackPayloadText(const ndn_service_framework::ServiceProvider::AckDecision& decision)
 {
@@ -977,6 +989,97 @@ BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRunsFloat32ModelWhenFixtureProvided)
 #endif
 }
 
+BOOST_AUTO_TEST_CASE(OnnxRuntimeProviderSelectionRequiresExplicitCpuFallback)
+{
+  NativeModelRunnerSpec spec;
+  spec.metadata["executionProvider"] = "cuda";
+  spec.metadata["deviceId"] = "2";
+  const std::vector<std::string> cpuOnly{"CPUExecutionProvider"};
+  BOOST_CHECK_THROW(resolveOnnxRuntimeProviderSelection(spec, cpuOnly),
+                    std::runtime_error);
+
+  spec.metadata["allowCpuFallback"] = "true";
+  const auto fallback = resolveOnnxRuntimeProviderSelection(spec, cpuOnly);
+  BOOST_CHECK_EQUAL(fallback.requestedProvider, "cuda");
+  BOOST_CHECK_EQUAL(fallback.selectedProvider, "cpu");
+  BOOST_CHECK_EQUAL(fallback.deviceId, "cpu0");
+  BOOST_CHECK(fallback.usedCpuFallback);
+
+  spec.metadata["allowCpuFallback"] = "false";
+  const auto cuda = resolveOnnxRuntimeProviderSelection(
+    spec, {"CUDAExecutionProvider", "CPUExecutionProvider"});
+  BOOST_CHECK_EQUAL(cuda.selectedProvider, "cuda");
+  BOOST_CHECK_EQUAL(cuda.deviceId, "2");
+  BOOST_CHECK(!cuda.usedCpuFallback);
+
+  spec.metadata["executionProvider"] = "tensorrt";
+  BOOST_CHECK_THROW(resolveOnnxRuntimeProviderSelection(spec, cpuOnly),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRunsDynamicPilotDtypesAndReportsDeviceEvidence)
+{
+  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_TYPED_MODEL");
+  if (modelPath == nullptr || std::string(modelPath).empty()) {
+    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_TYPED_MODEL not set; skipping typed ONNX smoke");
+    return;
+  }
+#ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  BOOST_FAIL("NDNSF_DI_TEST_ONNX_TYPED_MODEL requires C++ ONNX Runtime backend");
+#else
+  NativeModelRunnerSpec spec;
+  spec.role = "/LLM/Stage/0";
+  spec.backend = "onnxruntime";
+  spec.path = modelPath;
+  spec.metadata = {
+    {"executionProvider", "cpu"},
+    {"inputNames", "input_ids,attention_mask,hidden_states"},
+    {"outputNames", "ids_out,mask_out,hidden_out"},
+    {"outputBundleScope", "pilot-output"},
+    {"evidence.providerName", "/provider/A"},
+    {"evidence.providerBootId", "boot-a"},
+    {"evidence.evidenceEpoch", "1"},
+    {"evidence.roles", "/LLM/Stage/0"},
+    {"evidence.modelDigest", "sha256:model"},
+    {"evidence.planDigest", "sha256:plan"},
+    {"evidence.artifactDigests", "/LLM/Stage/0=sha256:artifact"},
+    {"evidence.createdAtMs", "1"},
+  };
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  auto unavailableCudaSpec = spec;
+  unavailableCudaSpec.metadata["executionProvider"] = "cuda";
+  unavailableCudaSpec.metadata["allowCpuFallback"] = "false";
+  BOOST_CHECK_THROW(factory.create(unavailableCudaSpec), std::runtime_error);
+  auto runner = factory.create(spec);
+
+  RoleExecutionContext ctx;
+  ctx.sessionId = "typed-onnx";
+  ctx.role = spec.role;
+  ctx.inputsByScope["pilot-input"] = makeEncodedTensorBundle(
+    "pilot-input",
+    {
+      NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+                  rawTensorPayload<std::int64_t>({1, 2, 3})},
+      NamedTensor{"attention_mask", TensorElementType::Bool, {1, 3},
+                  rawTensorPayload<std::uint8_t>({1, 1, 1})},
+      NamedTensor{"hidden_states", TensorElementType::Float16, {1, 3, 4},
+                  std::vector<std::uint8_t>(24, 0)},
+    });
+  const auto outputs = runner->run(ctx);
+  BOOST_REQUIRE(outputs.count("pilot-output") == 1);
+  const auto decoded = decodeTensorBundle(outputs.at("pilot-output").payload);
+  BOOST_CHECK(findTensor(decoded, "ids_out").elementType == TensorElementType::Int64);
+  BOOST_CHECK(findTensor(decoded, "mask_out").elementType == TensorElementType::Bool);
+  BOOST_CHECK(findTensor(decoded, "hidden_out").elementType == TensorElementType::Float16);
+  BOOST_CHECK_EQUAL(findTensor(decoded, "hidden_out").shape[1], 3);
+  BOOST_REQUIRE(runner->executionEvidence());
+  BOOST_CHECK(runner->executionEvidence()->runnerKind == RunnerKind::OnnxRuntimeCpu);
+  BOOST_CHECK_EQUAL(runner->executionEvidence()->deviceKind, "cpu");
+  BOOST_CHECK(!runner->executionEvidence()->runtimeVersion.empty());
+#endif
+}
+
 BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecRoundTripsMultipleFloat32Tensors)
 {
   const auto payload = encodeTensorBundle({
@@ -1021,6 +1124,57 @@ BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecSelectsNamedTensorSubset)
   BOOST_CHECK_EQUAL(tensors[1].name, "z");
   BOOST_CHECK_THROW(selectTensorBundle("missing", bundle, {"missing"}),
                     std::out_of_range);
+}
+
+BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecRoundTripsPilotDtypesDynamicShapesAndKvOutputs)
+{
+  const std::vector<NamedTensor> tensors{
+    NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+                rawTensorPayload<std::int64_t>({1, 2, 3})},
+    NamedTensor{"attention_mask", TensorElementType::Bool, {1, 3},
+                rawTensorPayload<std::uint8_t>({1, 1, 1})},
+    NamedTensor{"hidden_states", TensorElementType::Float16, {1, 3, 4},
+                std::vector<std::uint8_t>(1 * 3 * 4 * 2, 0)},
+    NamedTensor{"present.0.key", TensorElementType::Float32, {1, 2, 3, 4},
+                std::vector<std::uint8_t>(1 * 2 * 3 * 4 * 4, 0)},
+    NamedTensor{"present.0.value", TensorElementType::Float32, {1, 2, 3, 4},
+                std::vector<std::uint8_t>(1 * 2 * 3 * 4 * 4, 0)},
+  };
+  const auto decoded = decodeTensorBundle(encodeTensorBundle(tensors));
+  BOOST_REQUIRE_EQUAL(decoded.size(), tensors.size());
+  BOOST_CHECK(findTensor(decoded, "input_ids").elementType == TensorElementType::Int64);
+  BOOST_CHECK(findTensor(decoded, "attention_mask").elementType == TensorElementType::Bool);
+  BOOST_CHECK(findTensor(decoded, "hidden_states").elementType == TensorElementType::Float16);
+  BOOST_CHECK_EQUAL(findTensor(decoded, "present.0.key").shape[2], 3);
+
+  auto dynamic = tensors;
+  dynamic[0].shape = {1, 5};
+  dynamic[0].payload = rawTensorPayload<std::int64_t>({1, 2, 3, 4, 5});
+  BOOST_CHECK_EQUAL(
+    findTensor(decodeTensorBundle(encodeTensorBundle(dynamic)), "input_ids").shape[1],
+    5);
+}
+
+BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecRejectsMalformedShapesTypesAndPayloadSizes)
+{
+  BOOST_CHECK_THROW(
+    encodeTensorBundle({NamedTensor{"bad", TensorElementType::Int64, {1, 2},
+                                    rawTensorPayload<std::int64_t>({1})}}),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    encodeTensorBundle({NamedTensor{"bad", TensorElementType::Float32, {1, -1}, {}}}),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    encodeTensorBundle({NamedTensor{"bad", static_cast<TensorElementType>(999), {1},
+                                    std::vector<std::uint8_t>(4, 0)}}),
+    std::invalid_argument);
+
+  auto encoded = encodeTensorBundle({
+    NamedTensor{"x", TensorElementType::Float32, {1},
+                rawTensorPayload<float>({1.0f})},
+  });
+  encoded.pop_back();
+  BOOST_CHECK_THROW(decodeTensorBundle(encoded), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPublishesEdgeTensorSubsetFromBundle)

@@ -10,6 +10,13 @@ from ndnsf_distributed_inference.runtime_v1 import (
     classify_execution_evidence,
 )
 from ndnsf_distributed_inference.release_gate import DIMENSIONS, build_release_gate
+from ndnsf_distributed_inference.qwen_pilot import (
+    CacheResolution,
+    QwenPilotRequest,
+    QwenPilotTerminalError,
+    greedy_decode_fixture,
+    resolve_cache_request,
+)
 
 
 def evidence(kind: str, *, real: bool, artifact: str = "sha256:a") -> ExecutionEvidenceV1:
@@ -50,6 +57,38 @@ def evidence_payload(value: ExecutionEvidenceV1) -> dict[str, object]:
 
 
 class DeploymentReadinessContractsTest(unittest.TestCase):
+    def test_qwen_pilot_greedy_token_fixtures_1_2_and_32(self) -> None:
+        logits = [[-1.0, float(index), 100.0 + index] for index in range(32)]
+        self.assertEqual(greedy_decode_fixture(logits, 1), [2])
+        self.assertEqual(greedy_decode_fixture(logits, 2), [2, 2])
+        self.assertEqual(greedy_decode_fixture(logits, 32), [2] * 32)
+
+    def test_qwen_pilot_admission_enforces_input_and_output_bounds(self) -> None:
+        QwenPilotRequest(tuple(range(512)), 32).validate()
+        with self.assertRaises(ValueError):
+            QwenPilotRequest(tuple(range(513)), 1).validate()
+        with self.assertRaises(ValueError):
+            QwenPilotRequest((1,), 33).validate()
+        with self.assertRaises(ValueError):
+            QwenPilotRequest((), 1).validate()
+
+    def test_qwen_pilot_cache_hit_rebuild_and_delta_only_failure(self) -> None:
+        self.assertEqual(
+            resolve_cache_request(cache_present=True, full_context_present=False,
+                                  delta_only=True),
+            CacheResolution.HIT,
+        )
+        self.assertEqual(
+            resolve_cache_request(cache_present=False, full_context_present=True,
+                                  delta_only=False),
+            CacheResolution.FULL_CONTEXT_REBUILD,
+        )
+        with self.assertRaises(QwenPilotTerminalError) as caught:
+            resolve_cache_request(cache_present=False, full_context_present=False,
+                                  delta_only=True)
+        self.assertEqual(caught.exception.reason,
+                         "CACHE_MISS_FULL_CONTEXT_REQUIRED")
+
     def test_release_gate_blocks_missing_synthetic_mixed_and_digest_mismatch(self) -> None:
         dimensions = {name: {"status": "PASS", "artifacts": [f"{name}.json"]}
                       for name in DIMENSIONS}

@@ -13,6 +13,9 @@ namespace ndnsf::di {
 enum class TensorElementType : std::uint32_t
 {
   Float32 = 1,
+  Float16 = 2,
+  Int64 = 3,
+  Bool = 4,
 };
 
 struct NamedTensor
@@ -22,6 +25,12 @@ struct NamedTensor
   std::vector<std::int64_t> shape;
   std::vector<std::uint8_t> payload;
 };
+
+std::size_t
+tensorElementByteSize(TensorElementType elementType);
+
+void
+validateNamedTensor(const NamedTensor& tensor);
 
 bool
 isEncodedTensorBundle(const std::vector<std::uint8_t>& payload);

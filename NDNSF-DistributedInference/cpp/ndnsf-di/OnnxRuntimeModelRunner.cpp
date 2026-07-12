@@ -4,6 +4,96 @@
 #include <stdexcept>
 #include <utility>
 
+#include <algorithm>
+#include <cctype>
+
+namespace ndnsf::di {
+namespace {
+
+std::string
+runnerMetadataValue(const NativeModelRunnerSpec& spec,
+                    std::initializer_list<const char*> keys)
+{
+  for (const auto* key : keys) {
+    const auto found = spec.metadata.find(key);
+    if (found != spec.metadata.end() && !found->second.empty()) {
+      return found->second;
+    }
+  }
+  return "";
+}
+
+bool
+runnerMetadataBool(const NativeModelRunnerSpec& spec,
+                   std::initializer_list<const char*> keys)
+{
+  auto value = runnerMetadataValue(spec, keys);
+  std::transform(value.begin(), value.end(), value.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+bool
+hasProvider(const std::vector<std::string>& providers, const std::string& name)
+{
+  return std::find(providers.begin(), providers.end(), name) != providers.end();
+}
+
+} // namespace
+
+OnnxRuntimeProviderSelection
+resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
+                                    const std::vector<std::string>& availableProviders)
+{
+  auto requested = runnerMetadataValue(
+    spec, {"executionProvider", "execution_provider", "device.kind", "deviceKind"});
+  if (requested.empty()) {
+    requested = "cpu";
+  }
+  std::transform(requested.begin(), requested.end(), requested.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  if (requested == "cudaexecutionprovider") requested = "cuda";
+  if (requested == "cpuexecutionprovider") requested = "cpu";
+  if (requested != "cuda" && requested != "cpu") {
+    throw std::invalid_argument("unsupported ONNX Runtime execution provider: " + requested);
+  }
+
+  OnnxRuntimeProviderSelection result;
+  result.requestedProvider = requested;
+  result.deviceId = runnerMetadataValue(
+    spec, {"deviceId", "device_id", "device.id", "cudaDeviceId", "cuda_device_id"});
+  if (result.deviceId.empty()) {
+    result.deviceId = requested == "cuda" ? "0" : "cpu0";
+  }
+  if (requested == "cpu") {
+    if (!hasProvider(availableProviders, "CPUExecutionProvider")) {
+      throw std::runtime_error("required ONNX Runtime CPUExecutionProvider is unavailable");
+    }
+    result.selectedProvider = "cpu";
+    result.deviceId = "cpu0";
+    return result;
+  }
+  if (hasProvider(availableProviders, "CUDAExecutionProvider")) {
+    result.selectedProvider = "cuda";
+    return result;
+  }
+  if (!runnerMetadataBool(spec, {"allowCpuFallback", "allow_cpu_fallback"})) {
+    throw std::runtime_error(
+      "required ONNX Runtime CUDAExecutionProvider is unavailable; CPU fallback is disabled");
+  }
+  if (!hasProvider(availableProviders, "CPUExecutionProvider")) {
+    throw std::runtime_error("CUDA provider unavailable and CPU fallback provider is unavailable");
+  }
+  result.selectedProvider = "cpu";
+  result.deviceId = "cpu0";
+  result.usedCpuFallback = true;
+  return result;
+}
+
+} // namespace ndnsf
+
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
 
 #pragma GCC diagnostic push
@@ -12,9 +102,7 @@
 #include <onnxruntime_cxx_api.h>
 #pragma GCC diagnostic pop
 
-#include <algorithm>
 #include <chrono>
-#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -36,11 +124,21 @@ ortEnv()
 }
 
 Ort::SessionOptions
-makeSessionOptions()
+makeSessionOptions(const OnnxRuntimeProviderSelection& selection)
 {
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(1);
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+  if (selection.selectedProvider == "cuda") {
+    OrtCUDAProviderOptions cudaOptions{};
+    try {
+      cudaOptions.device_id = std::stoi(selection.deviceId);
+    }
+    catch (const std::exception&) {
+      throw std::invalid_argument("invalid ONNX Runtime CUDA device ID: " + selection.deviceId);
+    }
+    options.AppendExecutionProvider_CUDA(cudaOptions);
+  }
   return options;
 }
 
@@ -177,17 +275,37 @@ elementCount(const std::vector<int64_t>& shape)
   return count;
 }
 
-std::vector<float>
-payloadAsFloat32(const std::vector<uint8_t>& payload)
+ONNXTensorElementDataType
+toOnnxElementType(TensorElementType type)
 {
-  if (payload.size() % sizeof(float) != 0) {
-    throw std::invalid_argument("ONNX Runtime tensor payload is not float32-aligned");
+  switch (type) {
+    case TensorElementType::Float32:
+      return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+    case TensorElementType::Float16:
+      return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+    case TensorElementType::Int64:
+      return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
+    case TensorElementType::Bool:
+      return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
   }
-  std::vector<float> values(payload.size() / sizeof(float));
-  if (!values.empty()) {
-    std::memcpy(values.data(), payload.data(), payload.size());
+  throw std::invalid_argument("unsupported NDNSF tensor element type");
+}
+
+TensorElementType
+fromOnnxElementType(ONNXTensorElementDataType type)
+{
+  switch (type) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+      return TensorElementType::Float32;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+      return TensorElementType::Float16;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+      return TensorElementType::Int64;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
+      return TensorElementType::Bool;
+    default:
+      throw std::runtime_error("ONNX Runtime tensor dtype is not supported by the pilot codec");
   }
-  return values;
 }
 
 NamedTensor
@@ -200,16 +318,6 @@ tensorForInput(const TensorBundle& bundle,
     return findTensor(tensors, inputName);
   }
   return makeFloat32Tensor(inputName, fallbackShape, bundle.payload);
-}
-
-std::vector<uint8_t>
-float32AsPayload(const float* values, std::size_t count)
-{
-  std::vector<uint8_t> payload(count * sizeof(float));
-  if (!payload.empty()) {
-    std::memcpy(payload.data(), values, payload.size());
-  }
-  return payload;
 }
 
 std::vector<int64_t>
@@ -313,11 +421,13 @@ class OnnxRuntimeModelRunner::Impl
 {
 public:
   explicit Impl(const NativeModelRunnerSpec& spec)
-    : sessionOptions(makeSessionOptions())
+    : selection(resolveOnnxRuntimeProviderSelection(spec, Ort::GetAvailableProviders()))
+    , sessionOptions(makeSessionOptions(selection))
     , session(ortEnv(), spec.path.c_str(), sessionOptions)
   {
   }
 
+  OnnxRuntimeProviderSelection selection;
   Ort::SessionOptions sessionOptions;
   Ort::Session session;
 };
@@ -330,8 +440,13 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
   }
   m_impl = std::make_unique<Impl>(m_spec);
   if (m_spec.metadata.count("evidence.providerBootId") != 0) {
+    const bool isCuda = m_impl->selection.selectedProvider == "cuda";
     m_evidence = executionEvidenceFromRunnerSpec(
-      m_spec, RunnerKind::OnnxRuntimeCpu, "onnxruntime-cpp", "cpu", "cpu0");
+      m_spec,
+      isCuda ? RunnerKind::OnnxRuntimeCuda : RunnerKind::OnnxRuntimeCpu,
+      Ort::GetVersionString(),
+      isCuda ? "cuda" : "cpu",
+      m_impl->selection.deviceId);
   }
 }
 
@@ -357,7 +472,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
   }
 
-  std::vector<std::vector<float>> inputBuffers;
+  std::vector<std::vector<std::uint8_t>> inputBuffers;
   std::vector<std::vector<int64_t>> inputShapes;
   std::vector<Ort::Value> inputValues;
   std::vector<const char*> inputNamePtrs;
@@ -373,26 +488,29 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     inputShapes.push_back(shapeForInput(m_spec, inputName, i, tensorInfo.GetShape()));
     const auto& bundle = inputBundleFor(ctx, m_spec, inputName, i);
     auto tensor = tensorForInput(bundle, inputName, inputShapes.back());
-    if (tensor.elementType != TensorElementType::Float32) {
-      throw std::invalid_argument("ONNX Runtime runner currently supports float32 inputs only");
+    validateNamedTensor(tensor);
+    const auto onnxType = toOnnxElementType(tensor.elementType);
+    if (tensorInfo.GetElementType() != onnxType) {
+      throw std::invalid_argument("ONNX Runtime input dtype mismatch for " + inputName);
     }
     if (!tensor.shape.empty()) {
       inputShapes.back() = tensor.shape;
     }
-    inputBuffers.push_back(payloadAsFloat32(tensor.payload));
+    inputBuffers.push_back(std::move(tensor.payload));
     const auto expected = elementCount(inputShapes.back());
-    if (inputBuffers.back().size() != expected) {
+    if (inputBuffers.back().size() != expected * tensorElementByteSize(tensor.elementType)) {
       throw std::invalid_argument(
-        "ONNX Runtime input element count mismatch for " + inputName);
+        "ONNX Runtime input byte count mismatch for " + inputName);
     }
 
     inputNamePtrs.push_back(inputName.c_str());
-    inputValues.push_back(Ort::Value::CreateTensor<float>(
+    inputValues.push_back(Ort::Value::CreateTensor(
       memoryInfo,
       inputBuffers.back().data(),
       inputBuffers.back().size(),
       inputShapes.back().data(),
-      inputShapes.back().size()));
+      inputShapes.back().size(),
+      onnxType));
   }
 
   std::vector<std::string> outputNames = metadataNames(
@@ -439,16 +557,15 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       throw std::runtime_error("ONNX Runtime output is not a tensor");
     }
     auto tensorInfo = value.GetTensorTypeAndShapeInfo();
-    if (tensorInfo.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      throw std::runtime_error("ONNX Runtime runner currently supports float32 outputs only");
-    }
+    const auto elementType = fromOnnxElementType(tensorInfo.GetElementType());
     const auto count = tensorInfo.GetElementCount();
-    const auto* data = value.GetTensorData<float>();
+    const auto* data = static_cast<const std::uint8_t*>(value.GetTensorRawData());
     NamedTensor tensor;
     tensor.name = outputNames[i];
-    tensor.elementType = TensorElementType::Float32;
+    tensor.elementType = elementType;
     tensor.shape = tensorInfo.GetShape();
-    tensor.payload = float32AsPayload(data, count);
+    tensor.payload.assign(data, data + count * tensorElementByteSize(elementType));
+    validateNamedTensor(tensor);
     namedOutputs.push_back(std::move(tensor));
   }
 
@@ -483,7 +600,6 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       padding.shape = {static_cast<std::int64_t>((padBytes + sizeof(float) - 1) /
                                                  sizeof(float))};
       padding.payload.assign(padding.shape.front() * sizeof(float), 0);
-      padding.payload.resize(padBytes, 0);
       namedOutputs.push_back(std::move(padding));
     }
     TensorBundle bundle = makeEncodedTensorBundle("onnx-output-bundle", namedOutputs);

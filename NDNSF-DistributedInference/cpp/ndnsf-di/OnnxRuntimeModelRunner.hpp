@@ -3,7 +3,21 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
+#include <vector>
+
 namespace ndnsf::di {
+
+struct OnnxRuntimeProviderSelection
+{
+  std::string requestedProvider;
+  std::string selectedProvider;
+  std::string deviceId;
+  bool usedCpuFallback = false;
+};
+
+OnnxRuntimeProviderSelection
+resolveOnnxRuntimeProviderSelection(const NativeModelRunnerSpec& spec,
+                                    const std::vector<std::string>& availableProviders);
 
 class OnnxRuntimeModelRunner final : public NativeModelRunner
 {
