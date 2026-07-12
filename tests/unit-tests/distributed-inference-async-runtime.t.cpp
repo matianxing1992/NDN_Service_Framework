@@ -2368,4 +2368,44 @@ BOOST_AUTO_TEST_CASE(ExecutionAttemptAndTerminalReasonRoundTrip)
   BOOST_CHECK_THROW(terminalReasonFromString("MAGIC_FAILURE"), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(NativeRunnerFactoryPreservesObservedExecutionEvidence)
+{
+  auto makeEvidence = [] (RunnerKind kind, bool real, std::string device) {
+    ExecutionEvidence evidence;
+    evidence.providerName = "/provider/A";
+    evidence.providerBootId = "boot-a";
+    evidence.runnerKind = kind;
+    evidence.realCompute = real;
+    evidence.deviceKind = real ? "cpu" : "synthetic";
+    evidence.deviceId = std::move(device);
+    evidence.runtimeVersion = "test-runtime";
+    evidence.modelDigest = "sha256:model";
+    evidence.planDigest = "sha256:plan";
+    evidence.artifactDigests["/role"] = "sha256:artifact";
+    evidence.roles = {"/role"};
+    evidence.createdAtMs = 1;
+    return evidence;
+  };
+  auto noop = [] (const RoleExecutionContext&) {
+    return std::map<std::string, TensorBundle>{};
+  };
+  auto synthetic = makeNativeModelRunner(noop,
+    makeEvidence(RunnerKind::SyntheticDelay, false, ""));
+  auto wiring = makeNativeModelRunner(noop,
+    makeEvidence(RunnerKind::WiringOnly, false, ""));
+  auto cpu = makeNativeModelRunner(noop,
+    makeEvidence(RunnerKind::OnnxRuntimeCpu, true, "cpu0"));
+  auto cudaEvidence = makeEvidence(RunnerKind::OnnxRuntimeCuda, true, "GPU-1");
+  cudaEvidence.deviceKind = "cuda";
+  auto cuda = makeNativeModelRunner(noop, std::move(cudaEvidence));
+  BOOST_REQUIRE(synthetic->executionEvidence());
+  BOOST_REQUIRE(wiring->executionEvidence());
+  BOOST_REQUIRE(cpu->executionEvidence());
+  BOOST_REQUIRE(cuda->executionEvidence());
+  BOOST_CHECK(synthetic->executionEvidence()->runnerKind == RunnerKind::SyntheticDelay);
+  BOOST_CHECK(wiring->executionEvidence()->runnerKind == RunnerKind::WiringOnly);
+  BOOST_CHECK(cpu->executionEvidence()->runnerKind == RunnerKind::OnnxRuntimeCpu);
+  BOOST_CHECK(cuda->executionEvidence()->runnerKind == RunnerKind::OnnxRuntimeCuda);
+}
+
 } // namespace ndnsf::di::test

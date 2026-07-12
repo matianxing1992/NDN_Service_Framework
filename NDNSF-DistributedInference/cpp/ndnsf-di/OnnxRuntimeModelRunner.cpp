@@ -516,6 +516,12 @@ registerOnnxRuntimeBackend(RegistryNativeModelRunnerFactory& factory)
     });
 }
 
+const std::optional<ExecutionEvidence>&
+OnnxRuntimeModelRunner::executionEvidence() const
+{
+  return m_evidence;
+}
+
 } // namespace ndnsf::di
 
 #else
@@ -531,6 +537,12 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(NativeModelRunnerSpec spec)
 }
 
 OnnxRuntimeModelRunner::~OnnxRuntimeModelRunner() = default;
+
+const std::optional<ExecutionEvidence>&
+OnnxRuntimeModelRunner::executionEvidence() const
+{
+  return m_evidence;
+}
 
 std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext&)

@@ -2,10 +2,12 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_MODEL_RUNNER_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace ndnsf::di {
@@ -26,22 +28,33 @@ public:
 
   virtual std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) = 0;
+
+  virtual const std::optional<ExecutionEvidence>&
+  executionEvidence() const;
 };
 
 class LambdaModelRunner final : public NativeModelRunner
 {
 public:
-  explicit LambdaModelRunner(RoleRunner runner);
+  explicit LambdaModelRunner(RoleRunner runner,
+                             std::optional<ExecutionEvidence> evidence = std::nullopt);
 
   std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) final;
 
+  const std::optional<ExecutionEvidence>&
+  executionEvidence() const final;
+
 private:
   RoleRunner m_runner;
+  std::optional<ExecutionEvidence> m_evidence;
 };
 
 std::shared_ptr<NativeModelRunner>
 makeNativeModelRunner(RoleRunner runner);
+
+std::shared_ptr<NativeModelRunner>
+makeNativeModelRunner(RoleRunner runner, ExecutionEvidence evidence);
 
 class NativeModelRunnerFactory
 {

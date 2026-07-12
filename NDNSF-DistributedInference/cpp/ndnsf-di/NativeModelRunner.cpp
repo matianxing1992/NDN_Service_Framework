@@ -5,18 +5,40 @@
 
 namespace ndnsf::di {
 
-LambdaModelRunner::LambdaModelRunner(RoleRunner runner)
+const std::optional<ExecutionEvidence>&
+NativeModelRunner::executionEvidence() const
+{
+  static const std::optional<ExecutionEvidence> none;
+  return none;
+}
+
+LambdaModelRunner::LambdaModelRunner(RoleRunner runner,
+                                     std::optional<ExecutionEvidence> evidence)
   : m_runner(std::move(runner))
+  , m_evidence(std::move(evidence))
 {
   if (!m_runner) {
     throw std::invalid_argument("LambdaModelRunner requires a runner");
   }
 }
 
+const std::optional<ExecutionEvidence>&
+LambdaModelRunner::executionEvidence() const
+{
+  return m_evidence;
+}
+
 std::map<std::string, TensorBundle>
 LambdaModelRunner::run(const RoleExecutionContext& ctx)
 {
   return m_runner(ctx);
+}
+
+std::shared_ptr<NativeModelRunner>
+makeNativeModelRunner(RoleRunner runner, ExecutionEvidence evidence)
+{
+  evidence.validate();
+  return std::make_shared<LambdaModelRunner>(std::move(runner), std::move(evidence));
 }
 
 std::shared_ptr<NativeModelRunner>

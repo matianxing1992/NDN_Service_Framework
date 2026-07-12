@@ -14,11 +14,15 @@ public:
   std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) final;
 
+  const std::optional<ExecutionEvidence>&
+  executionEvidence() const final;
+
 private:
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   class Impl;
 #endif
   NativeModelRunnerSpec m_spec;
+  std::optional<ExecutionEvidence> m_evidence;
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   std::unique_ptr<Impl> m_impl;
 #endif
