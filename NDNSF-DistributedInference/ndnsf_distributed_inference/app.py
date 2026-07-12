@@ -348,7 +348,8 @@ class APPClient:
                               freshness_ms: int = 60000,
                               dynamic_provisioning: bool | None = None,
                               runtime: RuntimeSpec | None = None,
-                              artifact_references: dict | str | Path | None = None) -> InferenceResult:
+                              artifact_references: dict | str | Path | None = None,
+                              role_app_requirements: Mapping[str, bytes] | None = None) -> InferenceResult:
         """Run one distributed inference request for a deployed service.
 
         The normal application-facing path is service-level: the caller names
@@ -382,6 +383,7 @@ class APPClient:
             ack_timeout_ms=ack_timeout_ms,
             timeout_ms=timeout_ms,
             freshness_ms=freshness_ms,
+            role_app_requirements=role_app_requirements,
         )
 
     def service_plan(
@@ -470,6 +472,7 @@ class APPClient:
         ack_timeout_ms: int = 500,
         timeout_ms: int = 30000,
         freshness_ms: int = 60000,
+        role_app_requirements: Mapping[str, bytes] | None = None,
     ) -> InferenceResult:
         service_policy = self.deployment.service_policy(service)
         role_names = list(service_policy.roles)
@@ -497,6 +500,7 @@ class APPClient:
                     role=role,
                     service=service,
                     allow_dynamic_provisioning=False,
+                    app_requirement=bytes((role_app_requirements or {}).get(role, b"")),
                 )
                 for role in role_names
             ],

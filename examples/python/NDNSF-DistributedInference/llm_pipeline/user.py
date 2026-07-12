@@ -25,6 +25,8 @@ from llm_pipeline_lib import (
     run_qwen_onnx_stage,
     run_local_pipeline,
     run_local_tiny_transformer_pipeline,
+    _decode_native_tensor_bundle,
+    _native_tensor_bundle_payload,
 )
 
 
@@ -104,6 +106,9 @@ def main() -> int:
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
     parser.add_argument("--qwen-runtime-summary", default="")
+    parser.add_argument("--native-cpu-provider", action="store_true")
+    parser.add_argument("--qwen-service-manifest", default="")
+    parser.add_argument("--max-new-tokens", type=int, default=1)
     parser.add_argument("--session-id", default="")
     parser.add_argument("--context-epoch", type=int, default=0)
     parser.add_argument(
@@ -137,6 +142,10 @@ def main() -> int:
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument("--metrics-csv", default="")
     args = parser.parse_args()
+    if args.max_new_tokens < 1 or args.max_new_tokens > 32:
+        raise SystemExit("--max-new-tokens must be between 1 and 32")
+    if args.native_cpu_provider and args.publish_input_reference:
+        raise SystemExit("native CPU pilot does not yet accept referenced request bundles")
 
     qwen_summary = {}
     if args.runtime in (QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME) and args.qwen_runtime_summary:
@@ -199,7 +208,8 @@ def main() -> int:
     local_qwen_onnx = None
     if (
         args.runtime == QWEN_ONNX_RUNTIME and
-        args.context_input_mode == "append-token-delta-after-first"
+        (args.native_cpu_provider or
+         args.context_input_mode == "append-token-delta-after-first")
     ):
         local_qwen_onnx = _LocalQwenOnnxRunner(
             client.deployment.service_policy(SERVICE),
@@ -280,6 +290,7 @@ def main() -> int:
                 expected_doc = local_doc
                 if (
                     args.runtime == QWEN_ONNX_RUNTIME and
+                    not args.native_cpu_provider and
                     local_qwen_onnx is not None and
                     qwen_full_context_doc is not None
                 ):
@@ -306,13 +317,108 @@ def main() -> int:
                 )
                 expected_doc = local_doc
             started = time.perf_counter()
-            result = client.distributed_inference(
-                SERVICE,
-                request_payload,
-                dynamic_provisioning=False,
-                ack_timeout_ms=args.ack_timeout_ms,
-                timeout_ms=args.timeout_ms,
-            )
+            if args.native_cpu_provider:
+                import numpy as np
+
+                if local_qwen_onnx is None:
+                    raise RuntimeError("native CPU pilot requires the local ONNX oracle")
+                context_doc = decode_qwen_pipeline_context(request_payload)
+                manifest = json.loads(
+                    Path(args.qwen_service_manifest).read_text(encoding="utf-8"))
+                logical_session = qwen_session_id or f"{args.request_id}-{index}"
+                expected_tokens: list[int] = []
+                generated_tokens: list[int] = []
+                response = {}
+                result = None
+                for token_index in range(args.max_new_tokens):
+                    oracle_payload = encode_qwen_pipeline_context(
+                        context_doc["inputIds"],
+                        attention_mask=context_doc.get("attentionMask"),
+                        request_id=f"{args.request_id}-{index}-oracle-{token_index}",
+                    )
+                    oracle = local_qwen_onnx.run(oracle_payload)
+                    expected_token = int(oracle["topToken"])
+                    expected_tokens.append(expected_token)
+
+                    full_ids = np.asarray(context_doc["inputIds"], dtype=np.int64)
+                    full_mask = np.asarray(context_doc["attentionMask"], dtype=np.int64)
+                    if token_index == 0:
+                        ids = full_ids
+                        positions = np.arange(
+                            full_ids.shape[1], dtype=np.int64)[None, :]
+                    else:
+                        ids = full_ids[:, -1:]
+                        positions = np.asarray(
+                            [[full_ids.shape[1] - 1]], dtype=np.int64)
+                    tensors = {
+                        "input_ids": ids,
+                        "attention_mask": full_mask,
+                        "position_ids": positions,
+                    }
+                    if token_index == 0:
+                        for stage in manifest["stages"]:
+                            for name in stage["cacheInputs"]:
+                                shape = stage["tensorContracts"][name]["shape"]
+                                tensors[name] = np.empty(
+                                    (ids.shape[0], int(shape[1]), 0, int(shape[3])),
+                                    dtype=np.float32,
+                                )
+                    native_payload = _native_tensor_bundle_payload(tensors)
+                    kv_mode = "full-context" if token_index == 0 else "cache-hit"
+                    requirement = (
+                        f"kvMode={kv_mode};kvSessionId={logical_session};"
+                        f"kvContextEpoch={token_index};"
+                        f"kvNextContextEpoch={token_index + 1};"
+                        "kvSecurityEpoch=0;"
+                    ).encode("utf-8")
+                    result = client.distributed_inference(
+                        SERVICE,
+                        native_payload,
+                        dynamic_provisioning=False,
+                        ack_timeout_ms=args.ack_timeout_ms,
+                        timeout_ms=args.timeout_ms,
+                        role_app_requirements={
+                            str(stage["role"]): requirement
+                            for stage in manifest["stages"]
+                        },
+                    )
+                    if not result.status:
+                        break
+                    native_response = _decode_native_tensor_bundle(result.payload)
+                    logits = np.asarray(native_response["logits"])
+                    token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
+                    generated_tokens.append(token)
+                    if token != expected_token:
+                        print("LLM_PIPELINE_USER_TOKEN_MISMATCH",
+                              f"tokenIndex={token_index}",
+                              f"expected={expected_token}", f"actual={token}")
+                        return 3
+                    context_doc["inputIds"] = [
+                        [*row, token] for row in context_doc["inputIds"]
+                    ]
+                    context_doc["attentionMask"] = [
+                        [*row, 1] for row in context_doc["attentionMask"]
+                    ]
+                if result is None:
+                    raise RuntimeError("native bounded generation executed no token steps")
+                expected_doc = {
+                    "topToken": expected_tokens[-1],
+                    "generatedTokens": expected_tokens,
+                }
+                response = {
+                    "schema": "ndnsf-di-qwen-onnx-response-v1",
+                    "topToken": generated_tokens[-1] if generated_tokens else -1,
+                    "generatedTokens": generated_tokens,
+                    "tokenCount": len(generated_tokens),
+                }
+            else:
+                result = client.distributed_inference(
+                    SERVICE,
+                    request_payload,
+                    dynamic_provisioning=False,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=args.timeout_ms,
+                )
             distributed_ms = (time.perf_counter() - started) * 1000.0
             if not result.status:
                 if metrics_file:
@@ -328,9 +434,14 @@ def main() -> int:
                     f"local_ms={local.elapsed_ms:.2f}",
                 )
                 return 2
-            response = decode_payload(result.payload)
+            if not args.native_cpu_provider:
+                response = decode_payload(result.payload)
             if args.runtime in (TINY_TRANSFORMERS_RUNTIME, QWEN_TRANSFORMERS_RUNTIME, QWEN_ONNX_RUNTIME):
-                matches = response.get("topToken") == expected_doc.get("topToken")
+                matches = (
+                    response.get("generatedTokens") == expected_doc.get("generatedTokens")
+                    if args.native_cpu_provider else
+                    response.get("topToken") == expected_doc.get("topToken")
+                )
             else:
                 matches = response.get("lineage") == expected_doc.get("lineage")
             if not matches:

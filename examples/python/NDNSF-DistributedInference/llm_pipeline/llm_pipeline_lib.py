@@ -776,7 +776,7 @@ def _native_tensor_bundle_payload(tensors: dict[str, Any]) -> bytes:
         dtype_name = str(array.dtype)
         if not name_bytes or len(name_bytes) > 1024 or dtype_name not in _TENSOR_DTYPE_TO_CODE:
             raise ValueError(f"unsupported native tensor: {name!r} dtype={dtype_name}")
-        if array.ndim > 16 or any(int(dim) <= 0 for dim in array.shape):
+        if array.ndim > 16 or any(int(dim) < 0 for dim in array.shape):
             raise ValueError(f"invalid native tensor shape: {name!r} {array.shape}")
         payload = array.tobytes(order="C")
         output.extend(struct.pack("<I", len(name_bytes)))
@@ -819,7 +819,7 @@ def _decode_native_tensor_bundle(payload: bytes) -> dict[str, Any]:
         if dtype_code not in _TENSOR_CODE_TO_DTYPE or rank > 16:
             raise ValueError("unsupported native tensor dtype or rank")
         shape = tuple(int(take("<q")) for _ in range(rank))
-        if any(dim <= 0 for dim in shape):
+        if any(dim < 0 for dim in shape):
             raise ValueError("invalid native tensor dimension")
         size = take("<Q")
         dtype = np.dtype(_TENSOR_CODE_TO_DTYPE[dtype_code])
@@ -1883,6 +1883,16 @@ def run_qwen_onnx_stage(
         feed["position_ids"] = position_ids
     if "attention_mask" in available_inputs:
         feed["attention_mask"] = attention_mask
+    for item in session.get_inputs():
+        if not item.name.startswith(("past_key.", "past_value.")):
+            continue
+        shape = item.shape
+        if len(shape) != 4 or not isinstance(shape[1], int) or not isinstance(shape[3], int):
+            raise ValueError(f"unsupported Qwen KV input shape for {item.name}: {shape}")
+        feed[item.name] = np.empty(
+            (int(input_ids.shape[0]), int(shape[1]), 0, int(shape[3])),
+            dtype=np.float32,
+        )
     outputs = session.run(None, feed)
     record("layers_ms", (time.perf_counter() - run_start) * 1000.0)
     record("mask_ms", 0.0)

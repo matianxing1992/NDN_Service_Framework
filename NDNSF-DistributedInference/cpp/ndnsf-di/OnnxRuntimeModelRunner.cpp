@@ -267,8 +267,8 @@ elementCount(const std::vector<int64_t>& shape)
 {
   std::size_t count = 1;
   for (const auto dim : shape) {
-    if (dim <= 0) {
-      throw std::invalid_argument("ONNX Runtime runner requires static positive tensor shapes");
+    if (dim < 0) {
+      throw std::invalid_argument("ONNX Runtime runner requires resolved non-negative tensor shapes");
     }
     count *= static_cast<std::size_t>(dim);
   }
@@ -395,6 +395,23 @@ inputBundleFor(const RoleExecutionContext& ctx,
   }
 
   throw std::out_of_range("missing ONNX Runtime input bundle for input: " + inputName);
+}
+
+NamedTensor
+passthroughTensorFor(const RoleExecutionContext& ctx, const std::string& name)
+{
+  for (const auto& item : ctx.inputsByScope) {
+    if (!isEncodedTensorBundle(item.second.payload)) {
+      continue;
+    }
+    const auto tensors = decodeTensorBundle(item.second.payload);
+    try {
+      return findTensor(tensors, name);
+    }
+    catch (const std::out_of_range&) {
+    }
+  }
+  throw std::out_of_range("missing ONNX Runtime passthrough tensor: " + name);
 }
 
 std::string
@@ -561,12 +578,27 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     const auto count = tensorInfo.GetElementCount();
     const auto* data = static_cast<const std::uint8_t*>(value.GetTensorRawData());
     NamedTensor tensor;
-    tensor.name = outputNames[i];
+    tensor.name = metadataValue(
+      m_spec,
+      {"outputAlias." + outputNames[i], "output_alias." + outputNames[i]});
+    if (tensor.name.empty()) {
+      tensor.name = outputNames[i];
+    }
     tensor.elementType = elementType;
     tensor.shape = tensorInfo.GetShape();
     tensor.payload.assign(data, data + count * tensorElementByteSize(elementType));
     validateNamedTensor(tensor);
     namedOutputs.push_back(std::move(tensor));
+  }
+  for (const auto& name : metadataNames(
+         m_spec, {"passthroughTensors", "passthrough_tensors"})) {
+    const auto duplicate = std::find_if(
+      namedOutputs.begin(), namedOutputs.end(), [&name] (const NamedTensor& tensor) {
+        return tensor.name == name;
+      });
+    if (duplicate == namedOutputs.end()) {
+      namedOutputs.push_back(passthroughTensorFor(ctx, name));
+    }
   }
 
   std::map<std::string, TensorBundle> result;
@@ -608,6 +640,16 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       {"outputBundleScope", "output_bundle_scope", "outputScope", "output_scope"});
     result.emplace(bundleScope.empty() ? "onnx-output-bundle" : bundleScope,
                    std::move(bundle));
+  }
+  const auto kvOutputNames = metadataNames(
+    m_spec, {"kvOutputTensors", "kv_output_tensors"});
+  if (!kvOutputNames.empty()) {
+    auto kvTensors = selectTensors(namedOutputs, kvOutputNames);
+    const auto kvScope = metadataValue(
+      m_spec, {"kvOutputScope", "kv_output_scope"});
+    result.emplace(
+      kvScope.empty() ? "kv-state" : kvScope,
+      makeEncodedTensorBundle("kv-state", kvTensors));
   }
   const auto packageDone = std::chrono::steady_clock::now();
   if (runtimeTimingEnabled()) {

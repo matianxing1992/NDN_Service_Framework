@@ -97,8 +97,8 @@ validateNamedTensor(const NamedTensor& tensor)
   }
   std::uint64_t elements = 1;
   for (const auto dim : tensor.shape) {
-    if (dim <= 0 || static_cast<std::uint64_t>(dim) > MAX_TENSOR_DIMENSION) {
-      throw std::invalid_argument("tensor bundle tensor dimension must be bounded and positive");
+    if (dim < 0 || static_cast<std::uint64_t>(dim) > MAX_TENSOR_DIMENSION) {
+      throw std::invalid_argument("tensor bundle tensor dimension must be bounded and non-negative");
     }
     const auto value = static_cast<std::uint64_t>(dim);
     if (elements > std::numeric_limits<std::uint64_t>::max() / value) {

@@ -85,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layers", type=int, default=24)
     parser.add_argument(
         "--runtime",
-        choices=("fake", "tiny-transformers", "qwen-transformers", "qwen-onnx"),
+        choices=("fake", "tiny-transformers", "qwen-transformers", "qwen-onnx",
+                 "qwen-onnx-cpu-native"),
         default="fake",
     )
     parser.add_argument("--transformer-layers", type=int, default=4)
@@ -111,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt", default="Explain NDNSF-DI pipeline inference.")
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--measured-requests", type=int, default=1)
+    parser.add_argument("--max-new-tokens", type=int, default=1)
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument(
@@ -149,6 +151,7 @@ def python_path_entries() -> list[str]:
     entries = [
         str(REPO / "NDNSF-DistributedInference"),
         str(REPO / "pythonWrapper"),
+        str(REPO / "NDNSF-DistributedRepo/pythonWrapper"),
         str(LLM_DIR),
         str(REPO / "Experiments"),
         site.getusersitepackages(),
@@ -649,6 +652,89 @@ def generate_policy_bundle(env: dict[str, str]) -> None:
     ], cwd=str(REPO), env=env, check=True)
 
 
+def write_native_qwen_bundle(out_dir: Path) -> tuple[Path, Path]:
+    manifest_source = json.loads(
+        (out_dir / "qwen-onnx-service-manifest.json").read_text(encoding="utf-8"))
+    roles = [str(stage["role"]) for stage in manifest_source["stages"]]
+    dependencies = []
+    manifest_dependencies = []
+    for index in range(2):
+        next_stage = manifest_source["stages"][index + 1]
+        tensors = [
+            "hidden_states", "attention_mask", "position_ids",
+        ]
+        dependency = {
+            "producers": [roles[index]], "consumers": [roles[index + 1]],
+            "keyScope": f"pipeline-stage-{index}-to-{index + 1}",
+            "topicPrefix": "/activation/llm",
+            "objectNameTemplate": (
+                "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/"
+                "{keyScope}/{producerRole}/bundle/{sequence}"),
+            "expectedSegments": 0, "expectedBytes": 0, "required": True,
+            "segmentNaming": {"mode": "ndn-segment-component",
+                              "staticSegmentCount": 0, "dynamicFallback": True},
+            "tensors": tensors,
+        }
+        dependencies.append(dependency)
+        manifest_dependencies.append({
+            "producers": dependency["producers"], "consumers": dependency["consumers"],
+            "key_scope": dependency["keyScope"], "topic_prefix": dependency["topicPrefix"],
+            "object_name_template": dependency["objectNameTemplate"],
+            "expected_segments": 0, "expected_bytes": 0, "required": True,
+            "tensors": tensors,
+        })
+    artifacts = []
+    for index, stage in enumerate(manifest_source["stages"]):
+        passthrough = ["attention_mask", "position_ids"]
+        metadata = {
+            "inputNames": ",".join(stage["inputNames"]),
+            "outputNames": ",".join(stage["outputNames"]),
+            "forceOutputBundle": "true",
+            "executionProvider": "cpu",
+            "allowCpuFallback": "false",
+            "passthroughTensors": ",".join(passthrough),
+            "kvTensorMap": ",".join(
+                f"{input_name}={output_name}"
+                for input_name, output_name in zip(
+                    stage["cacheInputs"], stage["cacheOutputs"])
+            ),
+            "kvOutputTensors": ",".join(stage["cacheOutputs"]),
+            "kvOutputScope": "kv-state",
+            "outputBundleScope": (
+                "final-response" if index == 2 else f"pipeline-stage-{index}-to-{index + 1}"),
+        }
+        if index < 2:
+            metadata["outputAlias.hidden_states_out"] = "hidden_states"
+        if index > 0:
+            for name in ("hidden_states", "attention_mask", "position_ids"):
+                metadata[f"inputScope.{name}"] = f"pipeline-stage-{index - 1}-to-{index}"
+        artifacts.append({
+            "role": stage["role"], "path": stage["path"],
+            "artifact": f"/Artifact/QwenPilot/Stage/{index}",
+            "filename": Path(stage["path"]).name, "kind": "model",
+            "backend": "onnxruntime", "metadata": metadata,
+        })
+    plan = {"version": 2, "services": [{
+        "schemaVersion": 2, "service": SERVICE,
+        "model": "/Model/Qwen2.5-0.5B-Instruct", "modelFamily": "llm",
+        "modelFormat": "onnx", "plannerKind": "llm-pipeline",
+        "runtimeBackend": "onnxruntime", "roles": roles,
+        "dependencies": dependencies,
+    }]}
+    service_manifest = {"services": [{
+        "name": SERVICE, "model": "/Model/Qwen2.5-0.5B-Instruct",
+        "roles": roles, "dependencies": manifest_dependencies,
+        "artifacts": artifacts, "modelFamily": "llm", "modelFormat": "onnx",
+        "plannerKind": "llm-pipeline", "runtimeBackend": "onnxruntime",
+    }]}
+    plan_path = out_dir / "native-qwen-execution-plan.json"
+    manifest_path = out_dir / "native-qwen-service-manifest.json"
+    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(service_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return plan_path, manifest_path
+
+
 def main() -> int:
     global OUT, CONFIG
     args = build_parser().parse_args()
@@ -664,7 +750,7 @@ def main() -> int:
         if not CONFIG.exists():
             raise SystemExit(
                 f"--reuse-existing-policy requested but {CONFIG} does not exist")
-        if args.runtime in ("qwen-transformers", "qwen-onnx") and not (
+        if args.runtime in ("qwen-transformers", "qwen-onnx", "qwen-onnx-cpu-native") and not (
             OUT / "qwen-pipeline-runtime.json"
         ).exists():
             raise SystemExit(
@@ -673,10 +759,11 @@ def main() -> int:
         OUT.mkdir(parents=True, exist_ok=True)
         print(f"LLM_PIPELINE_REUSE_POLICY policy={CONFIG}")
     else:
+        policy_runtime = "qwen-onnx" if args.runtime == "qwen-onnx-cpu-native" else args.runtime
         prepare_policy(
             args.stages,
             args.layers,
-            runtime=args.runtime,
+            runtime=policy_runtime,
             transformer_layers=args.transformer_layers,
             qwen_model=args.qwen_model,
             qwen_prompt=args.prompt,
@@ -693,8 +780,13 @@ def main() -> int:
     }
     if args.large_fetch_timing:
         base_env["NDNSF_COLLAB_LARGE_FETCH_TIMING"] = "1"
+    if args.runtime == "qwen-onnx-cpu-native":
+        base_env["NDNSF_DI_RUNTIME_TIMING"] = "1"
     base_env.pop("NDN_CLIENT_TRANSPORT", None)
     generate_policy_bundle(base_env)
+    native_plan = native_manifest = None
+    if args.runtime == "qwen-onnx-cpu-native":
+        native_plan, native_manifest = write_native_qwen_bundle(OUT)
 
     subprocess.run(["pkill", "-f", "llm_pipeline/(provider|user)\\.py"],
                    check=False)
@@ -834,19 +926,40 @@ def main() -> int:
                 if provider_id else
                 " "
             )
+            if args.runtime == "qwen-onnx-cpu-native":
+                if native_plan is None or native_manifest is None:
+                    raise RuntimeError("native Qwen plan/manifest were not generated")
+                provider_command = (
+                    f"cd {perf.shell_quote(REPO)} && exec "
+                    f"{perf.shell_quote(REPO / 'build/examples/di-native-provider')} "
+                    f"--plan {perf.shell_quote(native_plan)} "
+                    f"--manifest {perf.shell_quote(native_manifest)} "
+                    f"--service {perf.shell_quote(SERVICE)} "
+                    f"--provider {perf.shell_quote(STAGE_IDENTITIES[stage_index])} "
+                    f"--roles {perf.shell_quote(f'/LLM/Pipeline/Stage/{stage_index}')} "
+                    f"--group {perf.shell_quote(GROUP_IDENTITY)} "
+                    f"--controller {perf.shell_quote(CONTROLLER_IDENTITY)} "
+                    f"--trust-schema {perf.shell_quote(REPO / 'examples/trust-schema.conf')} "
+                    "--workers 1 --serve"
+                )
+                ready_marker = "NDNSF_DI_NATIVE_PROVIDER_SERVE_READY"
+            else:
+                provider_command = (
+                    base + perf.shell_quote(LLM_DIR / "provider.py") + common +
+                    provider_id_arg +
+                    f"--roles /LLM/Pipeline/Stage/{stage_index} "
+                    f"--runtime {args.runtime} "
+                    f"--stages {args.stages} "
+                    f"--transformer-layers {args.transformer_layers} "
+                    f"--compute-delay-ms {args.compute_delay_ms}"
+                )
+                ready_marker = "LLM_PIPELINE_PROVIDER_READY"
             proc, log_path = start_process(
                 ndn, node_name, f"stage{stage_index}-provider",
-                base + perf.shell_quote(LLM_DIR / "provider.py") + common +
-                provider_id_arg +
-                f"--roles /LLM/Pipeline/Stage/{stage_index} "
-                f"--runtime {args.runtime} "
-                f"--stages {args.stages} "
-                f"--transformer-layers {args.transformer_layers} "
-                f"--compute-delay-ms {args.compute_delay_ms}",
-                node_env[node_name], processes,
+                provider_command, node_env[node_name], processes,
             )
             provider_logs.append(log_path)
-            if not wait_log(log_path, "LLM_PIPELINE_PROVIDER_READY", args.provider_start_timeout_s, proc):
+            if not wait_log(log_path, ready_marker, args.provider_start_timeout_s, proc):
                 raise RuntimeError(f"stage provider did not start; log={log_path}")
         log(f"Waiting {args.provider_wait_s:.1f}s for providers")
         time.sleep(args.provider_wait_s)
@@ -854,6 +967,12 @@ def main() -> int:
         user_log = OUT / "llm-pipeline-user.log"
         metrics_csv = OUT / "llm-pipeline-user-measured.csv"
         user_out = user_log.open("wb")
+        user_runtime = "qwen-onnx" if args.runtime == "qwen-onnx-cpu-native" else args.runtime
+        native_user_args = (
+            "--native-cpu-provider --qwen-service-manifest {}".format(
+                perf.shell_quote(OUT / "qwen-onnx-service-manifest.json"))
+            if args.runtime == "qwen-onnx-cpu-native" else ""
+        )
         user_proc = getPopen(
             ndn.net[USER_NODE],
             base + perf.shell_quote(LLM_DIR / "user.py") + common +
@@ -863,12 +982,13 @@ def main() -> int:
             "--context-input-mode {} --delta-token-ids {} "
             "--ack-timeout-ms {} --timeout-ms {} "
             "--warmup-requests {} --measured-requests {} "
+            "--max-new-tokens {} "
             "--measured-duration-s {} --request-interval-ms {} "
-            "--metrics-csv {} {}".format(
+            "--metrics-csv {} {} {}".format(
                 perf.shell_quote(args.prompt),
                 args.stages,
                 args.compute_delay_ms,
-                args.runtime,
+                user_runtime,
                 args.transformer_layers,
                 perf.shell_quote(OUT / "qwen-pipeline-runtime.json"),
                 args.context_input_mode,
@@ -877,10 +997,12 @@ def main() -> int:
                 args.timeout_ms,
                 args.warmup_requests,
                 args.measured_requests,
+                args.max_new_tokens,
                 args.measured_duration_s,
                 args.request_interval_ms,
                 perf.shell_quote(metrics_csv),
                 "--publish-input-reference" if args.publish_input_reference else "",
+                native_user_args,
             ),
             envDict=node_env[USER_NODE],
             shell=True,
@@ -896,6 +1018,8 @@ def main() -> int:
         for stage_index, log_path in enumerate(provider_logs):
             text = log_path.read_text(errors="replace")
             expected = (
+                "NDNSF_DI_ONNX_TIMING"
+                if args.runtime == "qwen-onnx-cpu-native" else
                 "LLM_PIPELINE_QWEN_ONNX_STAGE_FINAL"
                 if args.runtime == "qwen-onnx" and stage_index == args.stages - 1 else
                 "LLM_PIPELINE_QWEN_ONNX_STAGE_OUTPUT"
@@ -936,7 +1060,7 @@ def main() -> int:
                 f"p95_ms={summary_match.group(5)} "
                 f"stages={args.stages} runtime={args.runtime} metrics_csv={metrics_csv}"
             )
-        if args.runtime in ("qwen-transformers", "qwen-onnx"):
+        if args.runtime in ("qwen-transformers", "qwen-onnx", "qwen-onnx-cpu-native"):
             write_qwen_stage_profile(provider_logs, metrics_csv, OUT)
             write_collab_large_fetch_profile(provider_logs, OUT)
         print(

@@ -1035,7 +1035,10 @@ BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRunsDynamicPilotDtypesAndReportsDeviceEvi
     {"executionProvider", "cpu"},
     {"inputNames", "input_ids,attention_mask,hidden_states"},
     {"outputNames", "ids_out,mask_out,hidden_out"},
+    {"outputAlias.hidden_out", "hidden_states"},
     {"outputBundleScope", "pilot-output"},
+    {"kvOutputTensors", "hidden_states"},
+    {"kvOutputScope", "kv-state"},
     {"evidence.providerName", "/provider/A"},
     {"evidence.providerBootId", "boot-a"},
     {"evidence.evidenceEpoch", "1"},
@@ -1068,11 +1071,15 @@ BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRunsDynamicPilotDtypesAndReportsDeviceEvi
     });
   const auto outputs = runner->run(ctx);
   BOOST_REQUIRE(outputs.count("pilot-output") == 1);
+  BOOST_REQUIRE(outputs.count("kv-state") == 1);
   const auto decoded = decodeTensorBundle(outputs.at("pilot-output").payload);
   BOOST_CHECK(findTensor(decoded, "ids_out").elementType == TensorElementType::Int64);
   BOOST_CHECK(findTensor(decoded, "mask_out").elementType == TensorElementType::Bool);
-  BOOST_CHECK(findTensor(decoded, "hidden_out").elementType == TensorElementType::Float16);
-  BOOST_CHECK_EQUAL(findTensor(decoded, "hidden_out").shape[1], 3);
+  BOOST_CHECK(findTensor(decoded, "hidden_states").elementType == TensorElementType::Float16);
+  BOOST_CHECK_EQUAL(findTensor(decoded, "hidden_states").shape[1], 3);
+  const auto kvDecoded = decodeTensorBundle(outputs.at("kv-state").payload);
+  BOOST_CHECK_EQUAL(kvDecoded.size(), 1);
+  BOOST_CHECK_EQUAL(kvDecoded.front().name, "hidden_states");
   BOOST_REQUIRE(runner->executionEvidence());
   BOOST_CHECK(runner->executionEvidence()->runnerKind == RunnerKind::OnnxRuntimeCpu);
   BOOST_CHECK_EQUAL(runner->executionEvidence()->deviceKind, "cpu");
@@ -1139,6 +1146,7 @@ BOOST_AUTO_TEST_CASE(NativeTensorBundleCodecRoundTripsPilotDtypesDynamicShapesAn
                 std::vector<std::uint8_t>(1 * 2 * 3 * 4 * 4, 0)},
     NamedTensor{"present.0.value", TensorElementType::Float32, {1, 2, 3, 4},
                 std::vector<std::uint8_t>(1 * 2 * 3 * 4 * 4, 0)},
+    NamedTensor{"past.1.key", TensorElementType::Float32, {1, 2, 0, 4}, {}},
   };
   const auto decoded = decodeTensorBundle(encodeTensorBundle(tensors));
   BOOST_REQUIRE_EQUAL(decoded.size(), tensors.size());

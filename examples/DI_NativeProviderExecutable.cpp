@@ -1247,6 +1247,9 @@ main(int argc, char** argv)
             config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
             config.workerCount = options.workers;
+            config.kvStateStore = std::make_shared<KvStateStore>(
+              64ULL * 1024ULL * 1024ULL, 128);
+            config.kvStateStore->setProviderBootId(providerBootId);
             if (options.requireExecutionLease) {
               config.executionLeaseTable = &executionLeaseService->table();
               config.executionLeaseTargetService = options.serviceName;
