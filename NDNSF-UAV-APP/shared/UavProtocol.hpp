@@ -221,6 +221,27 @@ struct FlightActionControlState
   std::string statusLine() const;
 };
 
+struct AutoControlSequenceStep
+{
+  std::string command = "none";
+  std::string prerequisite = "none";
+  std::string phase = "idle";
+  std::string reason = "pending";
+  uint64_t startedMs = 0;
+  uint64_t finishedMs = 0;
+  uint64_t dispatchCount = 0;
+  bool dispatched = false;
+  bool terminal = false;
+
+  bool beginWait(std::string commandName, std::string prerequisiteName, uint64_t nowMs);
+  bool satisfy(std::string observedReason, uint64_t nowMs);
+  bool expire(std::string expiryReason, uint64_t nowMs);
+  bool markDispatched(uint64_t nowMs);
+  bool terminate(std::string terminalReason, uint64_t nowMs);
+  bool isTerminal() const;
+  uint64_t elapsedMs(uint64_t nowMs) const;
+};
+
 struct VideoState
 {
   std::string droneId = "unknown";

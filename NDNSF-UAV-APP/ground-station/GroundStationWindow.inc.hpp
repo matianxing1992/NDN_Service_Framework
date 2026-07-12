@@ -947,23 +947,27 @@ public:
     if (autoMavlinkTest) {
       m_autoMavlinkThread = std::thread([this, autoStart] {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        Glib::signal_idle().connect_once([this] {
-          m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
-        });
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        Glib::signal_idle().connect_once([this] {
-          m_runtime.sendMavlinkCommand(
-            "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
-        });
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-        Glib::signal_idle().connect_once([this] {
-          m_runtime.sendMavlinkCommand("land");
-        });
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        Glib::signal_idle().connect_once([this] {
-          m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
-        });
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        bool sequenceOk = runAutoControlStep(
+          "arm", "telemetry-ready", {{"arm", "true"}});
+        if (sequenceOk) {
+          sequenceOk = runAutoControlStep(
+            "takeoff", "armed", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+        }
+        if (sequenceOk) {
+          sequenceOk = runAutoControlStep("land", "airborne");
+        }
+        // Emergency Stop is the bounded cleanup step and remains valid even
+        // when an earlier command or convergence wait fails.
+        const bool emergencyOk = runAutoControlStep(
+          "emergency_stop", sequenceOk ? "disarmed" : "none",
+          {{"force_code", "21196"}});
+        const auto sequenceNowMs = nowMilliseconds();
+        NDN_LOG_INFO("UAV_AUTO_CONTROL_PHASE phase=terminal"
+                     << " drone=" << m_runtime.targetDroneId()
+                     << " step=sequence prerequisite=none"
+                     << " timestamp_ms=" << sequenceNowMs
+                     << " elapsed_ms=0 reason="
+                     << (sequenceOk && emergencyOk ? "completed" : "command-or-convergence-failed"));
         if (!autoStart) {
           Glib::signal_idle().connect_once([this] {
             hide();
@@ -1441,6 +1445,7 @@ public:
     m_manualActive = false;
     m_manualControlDone = true;
     m_gamepadDone = true;
+    m_autoControlStop = true;
     if (m_autoMavlinkThread.joinable()) {
       m_autoMavlinkThread.join();
     }
@@ -1453,6 +1458,124 @@ public:
   }
 
 private:
+  void
+  logAutoControlPhase(const AutoControlSequenceStep& step) const
+  {
+    const auto nowMs = nowMilliseconds();
+    NDN_LOG_INFO("UAV_AUTO_CONTROL_PHASE phase=" << step.phase
+                 << " drone=" << m_runtime.targetDroneId()
+                 << " step=" << step.command
+                 << " prerequisite=" << step.prerequisite
+                 << " timestamp_ms=" << nowMs
+                 << " elapsed_ms=" << step.elapsedMs(nowMs)
+                 << " reason=" << step.reason);
+  }
+
+  bool
+  waitForAutoControlPrerequisite(AutoControlSequenceStep& step,
+                                 const std::string& commandName,
+                                 const std::string& prerequisite,
+                                 std::chrono::milliseconds timeout)
+  {
+    const auto startedMs = nowMilliseconds();
+    if (!step.beginWait(commandName, prerequisite, startedMs)) {
+      return false;
+    }
+    logAutoControlPhase(step);
+    if (prerequisite == "none") {
+      step.satisfy("not-required", nowMilliseconds());
+      logAutoControlPhase(step);
+      return true;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!m_autoControlStop.load() && std::chrono::steady_clock::now() < deadline) {
+      // Reuse the runtime's asynchronous telemetry path and in-flight guard.
+      // A synchronous helper would leave stack-captured callbacks vulnerable
+      // to a late response after its local wait has timed out.
+      m_runtime.requestTelemetryStatusForDrone(m_runtime.targetDroneId());
+      const auto telemetry = m_runtime.telemetryForDrone(m_runtime.targetDroneId());
+      bool satisfied = false;
+      std::string observedReason = "no-telemetry";
+      if (telemetry && telemetry->timestampMs >= startedMs) {
+        const auto readiness = ReadinessState::fromTelemetry(*telemetry);
+        const auto safety = SafetyState::fromTelemetry(*telemetry);
+        const auto gate = FlightSafetyGateState::fromStates(
+          m_runtime.targetDroneId(), readiness, safety);
+        if (prerequisite == "telemetry-ready") {
+          satisfied = gate.actionAllowed("arm", observedReason);
+        }
+        else if (prerequisite == "armed") {
+          satisfied = gate.actionAllowed("takeoff", observedReason);
+        }
+        else if (prerequisite == "airborne") {
+          satisfied = telemetry->armed == "true" &&
+                      telemetry->landedStateName != "on-ground" &&
+                      gate.actionAllowed("land", observedReason);
+          if (!satisfied && observedReason == "ok") {
+            observedReason = "not-airborne";
+          }
+        }
+        else if (prerequisite == "disarmed") {
+          satisfied = telemetry->armed == "false";
+          observedReason = satisfied ? "disarmed" : "still-armed";
+        }
+      }
+      if (satisfied) {
+        step.satisfy(observedReason, nowMilliseconds());
+        logAutoControlPhase(step);
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    const auto reason = m_autoControlStop.load() ? "shutdown" :
+      prerequisite + "-state-not-converged";
+    step.expire(reason, nowMilliseconds());
+    logAutoControlPhase(step);
+    return false;
+  }
+
+  bool
+  runAutoControlStep(const std::string& commandName,
+                     const std::string& prerequisite,
+                     Fields params = {})
+  {
+    AutoControlSequenceStep step;
+    if (!waitForAutoControlPrerequisite(
+          step, commandName, prerequisite, std::chrono::seconds(10))) {
+      return false;
+    }
+    if (!step.markDispatched(nowMilliseconds())) {
+      return false;
+    }
+    logAutoControlPhase(step);
+    const auto dispatchMs = nowMilliseconds();
+    Glib::signal_idle().connect_once(
+      [this, commandName, params = std::move(params)] () mutable {
+        m_runtime.sendMavlinkCommand(commandName, std::move(params));
+      });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
+    while (!m_autoControlStop.load() && std::chrono::steady_clock::now() < deadline) {
+      const auto command = m_runtime.commandForDrone(m_runtime.targetDroneId());
+      if (command && command->command == commandName &&
+          command->updatedMs >= dispatchMs && command->accepted != "unknown") {
+        const auto reason = command->isTimeout() ? "timeout" :
+          (command->isAccepted() ? "response" :
+           (command->ackResult.empty() ? command->detail : command->ackResult));
+        step.terminate(reason, nowMilliseconds());
+        logAutoControlPhase(step);
+        return command->isAccepted();
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    step.terminate(m_autoControlStop.load() ? "shutdown" : "command-state-not-terminal",
+                   nowMilliseconds());
+    logAutoControlPhase(step);
+    return false;
+  }
+
   FlightSafetyGateState
   selectedFlightSafetyGateState() const
   {
@@ -4683,6 +4806,7 @@ private:
   std::thread m_manualControlThread;
   std::thread m_gamepadThread;
   std::thread m_autoMavlinkThread;
+  std::atomic<bool> m_autoControlStop{false};
   std::atomic<bool> m_manualControlDone{false};
   std::atomic<bool> m_gamepadDone{false};
   std::atomic<bool> m_patrolUploadInFlight{false};

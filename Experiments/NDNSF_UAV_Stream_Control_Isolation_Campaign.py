@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import statistics
 import subprocess
 import sys
@@ -119,6 +120,13 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
     )
     targeted_phase_counts: dict[str, int] = {}
     command_stages: dict[str, str] = {}
+    state_convergence_stages: dict[str, str] = {}
+    automation_dispatch_counts: dict[str, int] = {}
+    automation_terminal_reasons: dict[str, str] = {}
+    arm_terminal_ms: int | None = None
+    arm_accepted = False
+    takeoff_attempt_ms: int | None = None
+    armed_telemetry_ms: list[int] = []
     for line in log_text.splitlines():
         fields = base.fields_from_line(line)
         if "GS_TARGETED_PHASE" in line and "phase" in fields:
@@ -126,6 +134,25 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
             targeted_phase_counts[phase] = targeted_phase_counts.get(phase, 0) + 1
         if "UAV_CONTROL_COMMAND" in line and "command" in fields and "phase" in fields:
             command_stages[fields["command"]] = fields["phase"]
+            if fields["command"] == "arm" and fields["phase"] in TERMINAL_COMMAND_STAGES:
+                arm_terminal_ms = int(fields.get("timestamp_ms", "0")) or arm_terminal_ms
+                arm_accepted = fields.get("accepted") == "true"
+            if fields["command"] == "takeoff" and fields["phase"] == "attempt":
+                takeoff_attempt_ms = int(fields.get("timestamp_ms", "0")) or takeoff_attempt_ms
+        if "UAV_AUTO_CONTROL_PHASE" in line and "phase" in fields:
+            phase = fields["phase"]
+            prerequisite = fields.get("prerequisite", "none")
+            step = fields.get("step", "sequence")
+            if phase in {"wait-begin", "satisfied", "expired"} and prerequisite != "none":
+                state_convergence_stages[prerequisite] = phase
+            if phase == "dispatch":
+                automation_dispatch_counts[step] = automation_dispatch_counts.get(step, 0) + 1
+            if phase == "terminal":
+                automation_terminal_reasons[step] = fields.get("reason", "unknown")
+        if "GS_STATUS Telemetry" in line and fields.get("armed") == "true":
+            timestamp = re.match(r"^(\d+(?:\.\d+)?)", line)
+            if timestamp:
+                armed_telemetry_ms.append(int(float(timestamp.group(1)) * 1000))
     lifecycle_abort_reason = next(
         (marker for marker in LIFECYCLE_ABORT_MARKERS if marker in log_text), "")
     unterminated_command_attempts = {
@@ -133,6 +160,23 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         for command, stage in command_stages.items()
         if stage not in TERMINAL_COMMAND_STAGES
     }
+    unterminated_automation_waits = {
+        prerequisite: stage
+        for prerequisite, stage in state_convergence_stages.items()
+        if stage == "wait-begin"
+    }
+    state_convergence_complete = not unterminated_automation_waits
+    automation_single_attempt = all(
+        count <= 1 for count in automation_dispatch_counts.values())
+    automation_sequence_complete = (
+        automation_terminal_reasons.get("sequence") == "completed"
+        if "sequence" in automation_terminal_reasons else None
+    )
+    armed_telemetry_before_takeoff = bool(
+        arm_terminal_ms is not None and takeoff_attempt_ms is not None and
+        any(arm_terminal_ms < observed_ms <= takeoff_attempt_ms
+            for observed_ms in armed_telemetry_ms)
+    )
     video_completion = bool(result["videoCompletion"]) if video_required else None
     control_completion = bool(result["controlCompletion"]) if control_required else None
     result.update({
@@ -152,6 +196,15 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
             not control_required or
             (bool(command_stages) and not unterminated_command_attempts)
         ),
+        "stateConvergenceStages": state_convergence_stages,
+        "automationDispatchCounts": automation_dispatch_counts,
+        "automationTerminalReasons": automation_terminal_reasons,
+        "unterminatedAutomationWaits": unterminated_automation_waits,
+        "stateConvergenceComplete": state_convergence_complete,
+        "automationSingleAttempt": automation_single_attempt,
+        "automationSequenceComplete": automation_sequence_complete,
+        "armAccepted": arm_accepted,
+        "armedTelemetryBeforeTakeoff": armed_telemetry_before_takeoff,
     })
     result["completion"] = (
         bool(result["processCompletion"]) and
@@ -169,6 +222,8 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
     result["accepted"] = (
         not result["lifecycleAbort"] and
         bool(result["commandStagesComplete"]) and
+        bool(result["stateConvergenceComplete"]) and
+        bool(result["automationSingleAttempt"]) and
         base.is_run_accepted(
             result,
             max_pending_chunks=48,
@@ -191,6 +246,9 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         control_rows = [row for row in rows if row["controlRequired"]]
         command_stage_counts: dict[str, dict[str, int]] = {}
         unterminated_command_attempt_counts: dict[str, int] = {}
+        convergence_stage_counts: dict[str, dict[str, int]] = {}
+        unterminated_automation_wait_counts: dict[str, int] = {}
+        duplicate_automation_dispatch_runs = 0
         for row in control_rows:
             for command, stage in row.get("controlCommandStages", {}).items():
                 stage_counts = command_stage_counts.setdefault(str(command), {})
@@ -200,6 +258,16 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     command_name = str(command)
                     unterminated_command_attempt_counts[command_name] = (
                         unterminated_command_attempt_counts.get(command_name, 0) + 1)
+            for prerequisite, stage in row.get("stateConvergenceStages", {}).items():
+                stage_counts = convergence_stage_counts.setdefault(str(prerequisite), {})
+                stage_name = str(stage)
+                stage_counts[stage_name] = stage_counts.get(stage_name, 0) + 1
+                if stage_name == "wait-begin":
+                    prerequisite_name = str(prerequisite)
+                    unterminated_automation_wait_counts[prerequisite_name] = (
+                        unterminated_automation_wait_counts.get(prerequisite_name, 0) + 1)
+            if not bool(row.get("automationSingleAttempt", True)):
+                duplicate_automation_dispatch_runs += 1
         aggregates.append({
             "workloadMode": mode,
             "fecParityShards": WORKLOADS[mode]["parity"],
@@ -213,6 +281,17 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 row["controlCompletion"] is True for row in control_rows),
             "controlCommandStageCounts": command_stage_counts,
             "unterminatedCommandAttemptCounts": unterminated_command_attempt_counts,
+            "stateConvergenceStageCounts": convergence_stage_counts,
+            "stateConvergenceCompletedRuns": sum(
+                bool(row.get("stateConvergenceComplete", True)) for row in control_rows),
+            "unterminatedAutomationWaitCounts": unterminated_automation_wait_counts,
+            "duplicateAutomationDispatchRuns": duplicate_automation_dispatch_runs,
+            "automationSequenceRunCount": sum(
+                row.get("automationSequenceComplete") is not None for row in control_rows),
+            "automationSequenceCompletedRuns": sum(
+                row.get("automationSequenceComplete") is True for row in control_rows),
+            "armedTelemetryBeforeTakeoffRuns": sum(
+                bool(row.get("armedTelemetryBeforeTakeoff", False)) for row in control_rows),
             "meanDecodedFrames": (
                 statistics.fmean(row["decodedFrames"] for row in video_rows)
                 if video_rows else None

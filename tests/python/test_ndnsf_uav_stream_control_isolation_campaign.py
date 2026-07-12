@@ -34,6 +34,23 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         self.assertIn("if (m_autoMavlinkThread.joinable())", source)
         self.assertIn("m_autoMavlinkThread.join();", source)
 
+    def test_auto_mavlink_sequence_is_state_driven_and_single_attempt(self) -> None:
+        source = GS_WINDOW.read_text(encoding="utf-8")
+        self.assertIn("runAutoControlStep", source)
+        self.assertIn("waitForAutoControlPrerequisite", source)
+        self.assertIn("UAV_AUTO_CONTROL_PHASE", source)
+        self.assertIn("m_autoControlStop", source)
+        helper_start = source.index("waitForAutoControlPrerequisite")
+        helper_end = source.index("runAutoControlStep", helper_start)
+        helper = source[helper_start:helper_end]
+        self.assertIn("requestTelemetryStatusForDrone(", helper)
+        self.assertNotIn("requestTelemetryStatusForDroneSync(", helper)
+        event_source = "".join(
+            line for line in source.splitlines()
+            if "UAV_AUTO_CONTROL_PHASE" in line or "<< step." in line)
+        for sensitive in ("payload", "token", "certificate", "credential", "private_key"):
+            self.assertNotIn(sensitive, event_source.lower())
+
     def test_primary_matrix_has_five_cells_and_fifteen_runs(self) -> None:
         campaign = load_campaign()
         modes = campaign.parse_workload_modes(campaign.DEFAULT_WORKLOADS)
@@ -117,6 +134,110 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         self.assertTrue(result["controlCompletion"])
         self.assertFalse(result["commandStagesComplete"])
         self.assertEqual(result["unterminatedCommandAttempts"], {"land": "attempt"})
+        self.assertFalse(result["accepted"])
+
+    def test_state_convergence_events_are_terminal_and_correlated(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "MAVLink arm drone=A accepted=true\n"
+                "MAVLink takeoff drone=A accepted=true\n"
+                "MAVLink land drone=A accepted=true\n"
+                "UAV_AUTO_CONTROL_PHASE phase=wait-begin drone=A step=takeoff "
+                "prerequisite=armed timestamp_ms=100 elapsed_ms=0 reason=waiting\n"
+                "UAV_AUTO_CONTROL_PHASE phase=satisfied drone=A step=takeoff "
+                "prerequisite=armed timestamp_ms=150 elapsed_ms=50 reason=observed\n"
+                "UAV_AUTO_CONTROL_PHASE phase=dispatch drone=A step=takeoff "
+                "prerequisite=armed timestamp_ms=151 elapsed_ms=51 reason=single-attempt\n"
+                "UAV_AUTO_CONTROL_PHASE phase=terminal drone=A step=takeoff "
+                "prerequisite=armed timestamp_ms=180 elapsed_ms=80 reason=response\n"
+                "UAV_AUTO_CONTROL_PHASE phase=terminal drone=A step=sequence "
+                "prerequisite=none timestamp_ms=181 elapsed_ms=0 reason=completed\n"
+                "UAV_CONTROL_COMMAND phase=response drone=A command=takeoff "
+                "timestamp_ms=180 elapsed_ms=29 accepted=true reason=ok\n"
+                "GS_GUI_EXIT rc=0\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        self.assertEqual(result["stateConvergenceStages"], {"armed": "satisfied"})
+        self.assertEqual(result["automationDispatchCounts"], {"takeoff": 1})
+        self.assertEqual(result["unterminatedAutomationWaits"], {})
+        self.assertTrue(result["stateConvergenceComplete"])
+        self.assertTrue(result["automationSequenceComplete"])
+        self.assertTrue(result["accepted"])
+
+    def test_arm_telemetry_takeoff_order_is_correlated(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "100.000 INFO UAV_CONTROL_COMMAND phase=response drone=A command=arm "
+                "timestamp_ms=100000 elapsed_ms=50 accepted=true reason=ok\n"
+                "100.500 INFO GS_STATUS Telemetry drone=A armed=true ready=ready\n"
+                "101.000 INFO UAV_CONTROL_COMMAND phase=attempt drone=A command=takeoff "
+                "timestamp_ms=101000 elapsed_ms=0 accepted=unknown reason=attempt\n"
+                "101.050 INFO UAV_CONTROL_COMMAND phase=response drone=A command=takeoff "
+                "timestamp_ms=101050 elapsed_ms=50 accepted=true reason=ok\n"
+                "MAVLink arm drone=A accepted=true\n"
+                "MAVLink takeoff drone=A accepted=true\n"
+                "MAVLink land drone=A accepted=true\n"
+                "GS_GUI_EXIT rc=0\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        self.assertTrue(result["armAccepted"])
+        self.assertTrue(result["armedTelemetryBeforeTakeoff"])
+
+    def test_duplicate_automation_dispatch_rejects_run(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "MAVLink arm drone=A accepted=true\n"
+                "MAVLink takeoff drone=A accepted=true\n"
+                "MAVLink land drone=A accepted=true\n"
+                "UAV_AUTO_CONTROL_PHASE phase=dispatch drone=A step=takeoff "
+                "prerequisite=armed timestamp_ms=100 elapsed_ms=10 reason=single-attempt\n"
+                "UAV_AUTO_CONTROL_PHASE phase=dispatch drone=A step=takeoff "
+                "prerequisite=armed timestamp_ms=101 elapsed_ms=11 reason=single-attempt\n"
+                "UAV_CONTROL_COMMAND phase=response drone=A command=takeoff "
+                "timestamp_ms=120 elapsed_ms=20 accepted=true reason=ok\n"
+                "GS_GUI_EXIT rc=0\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        self.assertFalse(result["automationSingleAttempt"])
+        self.assertFalse(result["accepted"])
+
+    def test_unterminated_state_wait_rejects_clean_process(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "MAVLink arm drone=A accepted=true\n"
+                "MAVLink takeoff drone=A accepted=true\n"
+                "MAVLink land drone=A accepted=true\n"
+                "UAV_AUTO_CONTROL_PHASE phase=wait-begin drone=A step=takeoff "
+                "prerequisite=armed timestamp_ms=100 elapsed_ms=0 reason=waiting\n"
+                "GS_GUI_EXIT rc=0\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        self.assertEqual(result["unterminatedAutomationWaits"], {"armed": "wait-begin"})
+        self.assertFalse(result["stateConvergenceComplete"])
         self.assertFalse(result["accepted"])
 
     def test_lifecycle_abort_is_independent_of_command_completion(self) -> None:

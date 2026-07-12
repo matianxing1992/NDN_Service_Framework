@@ -10,6 +10,7 @@ namespace {
 using ndnsf::examples::uav::FlightSafetyGateState;
 using ndnsf::examples::uav::FlightActionControlState;
 using ndnsf::examples::uav::FlightCommandState;
+using ndnsf::examples::uav::AutoControlSequenceStep;
 using ndnsf::examples::uav::DroneListRowState;
 using ndnsf::examples::uav::Fields;
 using ndnsf::examples::uav::MissionControlState;
@@ -121,6 +122,34 @@ makeMissionState(const std::string& phase)
 }
 
 BOOST_AUTO_TEST_SUITE(UavProtocolState)
+
+BOOST_AUTO_TEST_CASE(AutoControlSequenceStepIsMonotonicAndDispatchesOnce)
+{
+  AutoControlSequenceStep step;
+  BOOST_CHECK(step.beginWait("takeoff", "armed", 100));
+  BOOST_CHECK_EQUAL(step.phase, "wait-begin");
+  BOOST_CHECK(!step.markDispatched(110));
+  BOOST_CHECK(step.satisfy("armed", 125));
+  BOOST_CHECK_EQUAL(step.phase, "satisfied");
+  BOOST_CHECK(step.markDispatched(130));
+  BOOST_CHECK(!step.markDispatched(131));
+  BOOST_CHECK_EQUAL(step.dispatchCount, 1);
+  BOOST_CHECK(step.terminate("response", 170));
+  BOOST_CHECK(step.isTerminal());
+  BOOST_CHECK(!step.expire("late", 180));
+}
+
+BOOST_AUTO_TEST_CASE(AutoControlSequenceStepExpiresWithoutDispatch)
+{
+  AutoControlSequenceStep step;
+  BOOST_CHECK(step.beginWait("takeoff", "armed", 200));
+  BOOST_CHECK(step.expire("armed-state-not-converged", 2700));
+  BOOST_CHECK(step.isTerminal());
+  BOOST_CHECK(!step.markDispatched(2701));
+  BOOST_CHECK_EQUAL(step.dispatchCount, 0);
+  BOOST_CHECK_EQUAL(step.reason, "armed-state-not-converged");
+  BOOST_CHECK_EQUAL(step.elapsedMs(2800), 2500);
+}
 
 BOOST_AUTO_TEST_CASE(FlightSafetyGateCombinesReadinessAndSafety)
 {

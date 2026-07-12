@@ -1151,6 +1151,91 @@ FlightSafetyGateState::actionAllowed(const std::string& action, std::string& rea
   return true;
 }
 
+bool
+AutoControlSequenceStep::beginWait(std::string commandName,
+                                   std::string prerequisiteName,
+                                   uint64_t nowMs)
+{
+  if (phase != "idle" || terminal || dispatched) {
+    return false;
+  }
+  command = std::move(commandName);
+  prerequisite = std::move(prerequisiteName);
+  phase = "wait-begin";
+  reason = "waiting";
+  startedMs = nowMs;
+  finishedMs = 0;
+  return true;
+}
+
+bool
+AutoControlSequenceStep::satisfy(std::string observedReason, uint64_t nowMs)
+{
+  if (phase != "wait-begin" || terminal) {
+    return false;
+  }
+  phase = "satisfied";
+  reason = std::move(observedReason);
+  finishedMs = nowMs;
+  return true;
+}
+
+bool
+AutoControlSequenceStep::expire(std::string expiryReason, uint64_t nowMs)
+{
+  if (phase != "wait-begin" || terminal || dispatched) {
+    return false;
+  }
+  phase = "expired";
+  reason = std::move(expiryReason);
+  finishedMs = nowMs;
+  terminal = true;
+  return true;
+}
+
+bool
+AutoControlSequenceStep::markDispatched(uint64_t nowMs)
+{
+  if (phase != "satisfied" || terminal || dispatched) {
+    return false;
+  }
+  phase = "dispatch";
+  reason = "single-attempt";
+  finishedMs = nowMs;
+  dispatched = true;
+  ++dispatchCount;
+  return true;
+}
+
+bool
+AutoControlSequenceStep::terminate(std::string terminalReason, uint64_t nowMs)
+{
+  if (!dispatched || terminal || phase != "dispatch") {
+    return false;
+  }
+  phase = "terminal";
+  reason = std::move(terminalReason);
+  finishedMs = nowMs;
+  terminal = true;
+  return true;
+}
+
+bool
+AutoControlSequenceStep::isTerminal() const
+{
+  return terminal;
+}
+
+uint64_t
+AutoControlSequenceStep::elapsedMs(uint64_t nowMs) const
+{
+  if (startedMs == 0) {
+    return 0;
+  }
+  const auto endMs = finishedMs == 0 ? nowMs : finishedMs;
+  return endMs >= startedMs ? endMs - startedMs : 0;
+}
+
 std::string
 FlightSafetyGateState::statusLine() const
 {
