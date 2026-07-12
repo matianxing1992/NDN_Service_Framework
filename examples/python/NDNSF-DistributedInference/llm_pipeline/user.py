@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 
 from ndnsf_distributed_inference import APPClient
+from ndnsf_distributed_inference.qwen_pilot import (
+    BoundedGenerationScheduler,
+    GenerationQueueFull,
+)
 
 from llm_pipeline_lib import (
     QWEN_ONNX_RUNTIME,
@@ -136,7 +140,7 @@ def _native_role_requirements(manifest: dict, logical_session: str,
 
 def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                           expected_tokens: list[int], metrics_file) -> int:
-    """Submit bounded generations at a fixed open-loop rate without retries."""
+    """Submit fixed-rate generations while workers own complete token loops."""
     import numpy as np
 
     if args.request_interval_ms <= 0:
@@ -146,15 +150,25 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
             "open-loop expected token count must equal --max-new-tokens")
     interval_s = args.request_interval_ms / 1000.0
     offered = max(1, int(args.measured_duration_s / interval_s))
+    generation_workers = 4
     condition = threading.Condition()
     completed: list[dict] = []
-    live_futures = []
+    states: list[dict] = []
+    live_generation_futures = []
+    live_network_futures = []
+    scheduler = BoundedGenerationScheduler(
+        max_workers=generation_workers,
+        max_queued=max(0, offered - generation_workers),
+    )
 
     def finish(state: dict, status: str, error: str = "") -> None:
-        state["status"] = status
-        state["error"] = error
-        state["elapsed_ms"] = (time.perf_counter() - state["started"]) * 1000.0
         with condition:
+            if state["status"] != "pending":
+                return
+            state["status"] = status
+            state["error"] = error
+            state["elapsed_ms"] = (
+                time.perf_counter() - state["started"]) * 1000.0
             completed.append(state)
             if metrics_file:
                 metrics_file.write(
@@ -163,28 +177,37 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                 metrics_file.flush()
             condition.notify_all()
 
-    def submit_step(state: dict) -> None:
-        token_index = len(state["generated"])
-        payload = _native_step_payload(
-            state["context"], manifest, token_index, args.native_first_kv_mode)
-        requirements = _native_role_requirements(
-            manifest, state["logical_session"], token_index,
-            args.native_first_kv_mode)
-
-        def on_result(result) -> None:
-            if not result.status:
-                finish(state, "failed", str(result.error))
-                return
-            try:
+    def run_generation(state: dict, report_progress) -> dict:
+        try:
+            while len(state["generated"]) < args.max_new_tokens:
+                token_index = len(state["generated"])
+                payload = _native_step_payload(
+                    state["context"], manifest, token_index,
+                    args.native_first_kv_mode)
+                requirements = _native_role_requirements(
+                    manifest, state["logical_session"], token_index,
+                    args.native_first_kv_mode)
+                future = client.async_distributed_inference(
+                    SERVICE,
+                    payload,
+                    dynamic_provisioning=False,
+                    ack_timeout_ms=args.ack_timeout_ms,
+                    timeout_ms=args.timeout_ms,
+                    role_app_requirements=requirements,
+                )
+                with condition:
+                    live_network_futures.append(future)
+                result = future.result()
+                if not result.status:
+                    raise RuntimeError(str(result.error))
                 response = _decode_native_tensor_bundle(result.payload)
                 logits = np.asarray(response["logits"])
                 token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
                 expected = expected_tokens[token_index]
                 if token != expected:
-                    finish(
-                        state, "failed",
-                        f"TOKEN_MISMATCH index={token_index} expected={expected} actual={token}")
-                    return
+                    raise RuntimeError(
+                        f"TOKEN_MISMATCH index={token_index} "
+                        f"expected={expected} actual={token}")
                 state["generated"].append(token)
                 state["context"]["inputIds"] = [
                     [*row, token] for row in state["context"]["inputIds"]
@@ -192,24 +215,12 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                 state["context"]["attentionMask"] = [
                     [*row, 1] for row in state["context"]["attentionMask"]
                 ]
-                if len(state["generated"]) == args.max_new_tokens:
-                    finish(state, "ok")
-                else:
-                    submit_step(state)
-            except Exception as exc:
-                finish(state, "failed", str(exc))
-
-        future = client.async_distributed_inference(
-            SERVICE,
-            payload,
-            dynamic_provisioning=False,
-            ack_timeout_ms=args.ack_timeout_ms,
-            timeout_ms=args.timeout_ms,
-            role_app_requirements=requirements,
-            on_result=on_result,
-            on_error=lambda exc: finish(state, "failed", str(exc)),
-        )
-        live_futures.append(future)
+                report_progress(len(state["generated"]))
+            finish(state, "ok")
+            return state
+        except BaseException as exc:
+            finish(state, "failed", str(exc))
+            raise
 
     campaign_started = time.perf_counter()
     for index in range(offered):
@@ -230,9 +241,20 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                 ],
             },
             "generated": [],
+            "status": "pending",
+            "error": "",
             "started": time.perf_counter(),
         }
-        submit_step(state)
+        states.append(state)
+        try:
+            future = scheduler.submit(
+                state["logical_session"],
+                lambda report_progress, state=state: run_generation(
+                    state, report_progress),
+            )
+            live_generation_futures.append(future)
+        except GenerationQueueFull as exc:
+            finish(state, "failed", str(exc))
     completion_deadline = (
         campaign_started + args.measured_duration_s + args.timeout_ms / 1000.0 + 5.0)
     with condition:
@@ -245,6 +267,7 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
     failed = [state for state in completed if state["status"] != "ok"]
     unfinished = offered - len(completed)
     latencies = [float(state["elapsed_ms"]) for state in ok]
+    scheduler_snapshot = scheduler.snapshot()
     print(
         "LLM_PIPELINE_OPEN_LOOP_SUMMARY",
         f"offered={offered}", f"completed={len(ok)}", f"failed={len(failed)}",
@@ -254,11 +277,28 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
         f"p50_ms={_percentile(latencies, 0.50):.2f}",
         f"p95_ms={_percentile(latencies, 0.95):.2f}",
         f"p99_ms={_percentile(latencies, 0.99):.2f}",
+        f"generationWorkers={generation_workers}",
+        f"activeAtCutoff={scheduler_snapshot.active}",
+        f"queuedAtCutoff={scheduler_snapshot.queued}",
+        f"maxActiveObserved={scheduler_snapshot.max_active_observed}",
+        f"maxQueuedObserved={scheduler_snapshot.max_queued_observed}",
+        f"schedulerCompleted={scheduler_snapshot.completed}",
+        f"schedulerFailed={scheduler_snapshot.failed}",
         f"expectedTokens={json.dumps(expected_tokens, separators=(',', ':'))}",
         flush=True,
     )
-    for future in live_futures:
+    print(
+        "LLM_PIPELINE_OPEN_LOOP_PROGRESS",
+        "tokenProgress=" + json.dumps(
+            scheduler_snapshot.token_progress, sort_keys=True,
+            separators=(",", ":")),
+        flush=True,
+    )
+    for future in live_generation_futures:
         future.cancel()
+    for future in live_network_futures:
+        future.cancel()
+    scheduler.shutdown(wait=False)
     client.shutdown(wait=False)
     if len(ok) != offered:
         if metrics_file:
