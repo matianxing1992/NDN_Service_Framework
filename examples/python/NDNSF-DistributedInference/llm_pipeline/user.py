@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import statistics
 import threading
@@ -211,9 +212,7 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
                 token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
                 expected = expected_tokens[token_index]
                 if token != expected:
-                    raise RuntimeError(
-                        f"TOKEN_MISMATCH index={token_index} "
-                        f"expected={expected} actual={token}")
+                    raise RuntimeError(f"TOKEN_MISMATCH index={token_index}")
                 state["generated"].append(token)
                 state["context"]["inputIds"] = [
                     [*row, token] for row in state["context"]["inputIds"]
@@ -274,6 +273,8 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
     unfinished = offered - len(completed)
     latencies = [float(state["elapsed_ms"]) for state in ok]
     scheduler_snapshot = scheduler.snapshot()
+    expected_token_digest = hashlib.sha256(json.dumps(
+        expected_tokens, separators=(",", ":")).encode("utf-8")).hexdigest()
     print(
         "LLM_PIPELINE_OPEN_LOOP_SUMMARY",
         f"offered={offered}", f"completed={len(ok)}", f"failed={len(failed)}",
@@ -291,7 +292,8 @@ def _run_native_open_loop(client, args, qwen_summary: dict, manifest: dict,
         f"maxQueuedObserved={scheduler_snapshot.max_queued_observed}",
         f"schedulerCompleted={scheduler_snapshot.completed}",
         f"schedulerFailed={scheduler_snapshot.failed}",
-        f"expectedTokens={json.dumps(expected_tokens, separators=(',', ':'))}",
+        f"expectedTokenCount={len(expected_tokens)}",
+        f"expectedTokenDigest={expected_token_digest}",
         flush=True,
     )
     print(

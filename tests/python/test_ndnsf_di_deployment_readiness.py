@@ -349,6 +349,9 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
         self.assertIn("offered=2 completed=2 failed=0 unfinished=0", rendered)
         self.assertIn("generationWorkers=4", rendered)
         self.assertIn("campaignId=spec105-r1-scheduler-fixture", rendered)
+        self.assertIn("expectedTokenCount=2", rendered)
+        self.assertIn("expectedTokenDigest=", rendered)
+        self.assertNotIn("expectedTokens=", rendered)
         self.assertIn(
             'tokenProgress={"scheduler-fixture-open-0":2,'
             '"scheduler-fixture-open-1":2}', rendered)
