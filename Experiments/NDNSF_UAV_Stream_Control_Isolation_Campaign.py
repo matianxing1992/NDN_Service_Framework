@@ -28,6 +28,43 @@ WORKLOADS = {
     "combined-fec1": {"video": True, "control": True, "parity": 1},
 }
 DEFAULT_WORKLOADS = ",".join(WORKLOADS)
+PROVIDER_LIFECYCLE_LOG = (
+    "ndn_service_framework.*=WARN:ndn_service_framework.ServiceProvider=TRACE:"
+    "ndn_service_framework.examples.*=INFO:nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN"
+)
+
+
+def campaign_child_env(provider_lifecycle_trace: bool) -> dict[str, str] | None:
+    if not provider_lifecycle_trace:
+        return None
+    env = os.environ.copy()
+    env["NDNSF_APP_NDN_LOG"] = PROVIDER_LIFECYCLE_LOG
+    return env
+
+
+def classify_targeted_core(terminal_phase: str, handler_phases: set[str],
+                           core_events: set[str]) -> str:
+    if terminal_phase == "response":
+        return "user-response"
+    if "RESPONSE_PUBLISH_FAILED" in core_events:
+        return "publish-failed"
+    if "RESPONSE_PUBLISHED" in core_events and "handler-return" in handler_phases:
+        return "response-published-no-user-response"
+    if ("RESPONSE_PUBLISHED" in core_events and
+            "TARGETED_REQUEST_ACCEPTED" not in core_events):
+        return "pre-handler-rejected-response-published"
+    if not core_events:
+        return "provider-not-observed"
+    if "ACK_PUBLISHED" in core_events and "TARGETED_REQUEST_ACCEPTED" not in core_events:
+        return "ack-published-selection-not-completed"
+    if "REQUEST_RECEIVED" in core_events and "REQUEST_DECRYPT_DONE" not in core_events:
+        return "request-received-decrypt-not-completed"
+    return "provider-core-incomplete"
+
+
+def trace_field(line: str, key: str) -> str:
+    match = re.search(r"(?:^|\s)" + re.escape(key) + r"=([^\s]+)", line)
+    return match.group(1) if match else ""
 LIFECYCLE_ABORT_MARKERS = (
     "terminate called without an active exception",
     "__pthread_tpp_change_priority",
@@ -197,6 +234,7 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         (marker for marker in LIFECYCLE_ABORT_MARKERS if marker in log_text), "")
     drone_armed_ms: list[int] = []
     provider_telemetry_phases: dict[str, set[str]] = {}
+    provider_core_events: dict[str, set[str]] = {}
     for line in drone_log_text.splitlines():
         fields = base.fields_from_line(line)
         if "DRONE_HEADLESS_STATUS" in line and fields.get("armed") == "true":
@@ -206,6 +244,11 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         if "UAV_TELEMETRY_PROVIDER_PHASE" in line and fields.get("request_id"):
             provider_telemetry_phases.setdefault(fields["request_id"], set()).add(
                 fields.get("phase", "unknown"))
+        if "[NDNSF_TRACE]" in line and trace_field(line, "role") == "provider":
+            trace_request_id = trace_field(line, "requestId")
+            if trace_request_id:
+                provider_core_events.setdefault(trace_request_id, set()).add(
+                    trace_field(line, "event") or "unknown")
     unterminated_command_attempts = {
         command: stage
         for command, stage in command_stages.items()
@@ -321,6 +364,10 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         if not str(attempt.get("service", "")).endswith("/UAV/Telemetry/GetStatus"):
             continue
         phases = provider_telemetry_phases.get(str(attempt.get("requestId", "")), set())
+        core_events = provider_core_events.get(str(attempt.get("requestId", "")), set())
+        attempt["providerCoreEvents"] = sorted(core_events)
+        attempt["coreAttribution"] = classify_targeted_core(
+            str(attempt.get("terminalPhase", "")), phases, core_events)
         if attempt.get("terminalPhase") == "response":
             attempt["providerAttribution"] = "user-response"
         elif "handler-return" in phases:
@@ -500,6 +547,7 @@ def main() -> int:
     parser.add_argument("--auto-stop-seconds", type=int, default=60)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reparse-existing", action="store_true")
+    parser.add_argument("--provider-lifecycle-trace", action="store_true")
     args = parser.parse_args()
     if args.runs < 1:
         raise SystemExit("--runs must be positive")
@@ -577,6 +625,7 @@ def main() -> int:
                 check=False,
                 stdout=output,
                 stderr=subprocess.STDOUT,
+                env=campaign_child_env(args.provider_lifecycle_trace),
             )
         runs.append(parse_mode_run(
             run_dir,
@@ -600,6 +649,7 @@ def main() -> int:
             "linkDelayMs": 1,
             "bandwidthMbps": 1000,
             "automaticRetry": False,
+            "providerLifecycleTrace": args.provider_lifecycle_trace,
         },
         "runCount": len(runs),
         "runs": runs,

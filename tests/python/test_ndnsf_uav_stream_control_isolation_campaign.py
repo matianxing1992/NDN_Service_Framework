@@ -25,6 +25,26 @@ def load_campaign():
 
 
 class UavStreamControlIsolationCampaignTest(unittest.TestCase):
+    def test_provider_lifecycle_trace_environment_is_opt_in(self) -> None:
+        campaign = load_campaign()
+        self.assertIsNone(campaign.campaign_child_env(False))
+        env = campaign.campaign_child_env(True)
+        self.assertIn("ServiceProvider=TRACE", env["NDNSF_APP_NDN_LOG"])
+
+    def test_targeted_core_attribution_categories(self) -> None:
+        campaign = load_campaign()
+        classify = campaign.classify_targeted_core
+        self.assertEqual(classify("response", set(), set()), "user-response")
+        self.assertEqual(classify("timeout", set(), {"RESPONSE_PUBLISH_FAILED"}), "publish-failed")
+        self.assertEqual(classify("timeout", {"handler-return"}, {"TARGETED_REQUEST_ACCEPTED", "RESPONSE_PUBLISHED"}), "response-published-no-user-response")
+        self.assertEqual(classify("timeout", set(), {"RESPONSE_PUBLISHED"}), "pre-handler-rejected-response-published")
+        self.assertEqual(classify("timeout", set(), set()), "provider-not-observed")
+        self.assertEqual(classify("timeout", set(), {"REQUEST_RECEIVED"}), "request-received-decrypt-not-completed")
+        self.assertEqual(classify("timeout", set(), {"REQUEST_RECEIVED", "REQUEST_DECRYPT_DONE", "ACK_PUBLISHED"}), "ack-published-selection-not-completed")
+        line = "[NDNSF_TRACE] role=provider event=RESPONSE_PUBLISHED requestId=/r serviceName=/S"
+        self.assertEqual(campaign.trace_field(line, "requestId"), "/r")
+        self.assertEqual(campaign.trace_field(line, "serviceName"), "/S")
+
     def test_ground_station_control_callbacks_are_serialized(self) -> None:
         source = GS_RUNTIME.read_text(encoding="utf-8")
         self.assertIn("m_user->setHandlerThreads(0);", source)
