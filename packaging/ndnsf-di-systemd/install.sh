@@ -35,6 +35,12 @@ if [ "$activate_only" = false ]; then
   else
     cp -a "$release" "$destination"
   fi
+  mkdir -p "$root/etc/systemd/system" "$root/usr/lib/tmpfiles.d" "$root/etc/logrotate.d"
+  cp -a "$release/share/ndnsf-di-systemd/units/." "$root/etc/systemd/system/"
+  cp "$release/share/ndnsf-di-systemd/config/ndnsf-di.tmpfiles.conf" \
+    "$root/usr/lib/tmpfiles.d/ndnsf-di.conf"
+  cp "$release/share/ndnsf-di-systemd/config/ndnsf-di.logrotate" \
+    "$root/etc/logrotate.d/ndnsf-di"
 fi
 [ -d "$destination" ] || { echo "installed release missing: $destination" >&2; exit 1; }
 if [ -L "$prefix/current" ]; then
@@ -42,4 +48,7 @@ if [ -L "$prefix/current" ]; then
   ln -sfn "$old" "$prefix/previous"
 fi
 ln -sfn "releases/$release_id" "$prefix/current"
+if [ -z "$root" ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload
+fi
 echo "activated $release_id; authoritative Repo preserved at $root/var/lib/ndnsf-repo"

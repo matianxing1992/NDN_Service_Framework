@@ -2,6 +2,8 @@
 Description=NDNSF authoritative Repo %i
 After=network-online.target nfd.service
 Requires=nfd.service
+StartLimitIntervalSec=60s
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -11,8 +13,6 @@ EnvironmentFile=-/etc/ndnsf-di/repo-%i.env
 ExecStart=/opt/ndnsf-di/current/bin/ndn-repo-ng ${NDNSF_DI_REPO_ARGS}
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=60s
-StartLimitBurst=3
 TimeoutStartSec=60s
 TimeoutStopSec=30s
 KillSignal=SIGTERM

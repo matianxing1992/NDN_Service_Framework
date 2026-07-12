@@ -3,6 +3,8 @@ Description=NDNSF-DI provider %i
 After=network-online.target nfd.service ndnsf-di-controller.service
 Requires=nfd.service ndnsf-di-controller.service
 PartOf=ndnsf-di-providers.target
+StartLimitIntervalSec=60s
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -12,8 +14,6 @@ EnvironmentFile=-/etc/ndnsf-di/provider-%i.env
 ExecStart=/opt/ndnsf-di/current/bin/di-native-provider ${NDNSF_DI_PROVIDER_ARGS}
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=60s
-StartLimitBurst=3
 TimeoutStartSec=120s
 TimeoutStopSec=30s
 KillSignal=SIGTERM
