@@ -13,6 +13,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeServiceManifest.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderResourceProbe.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
@@ -2543,6 +2544,168 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(capacityJson.find("\"workers\":4") != std::string::npos);
   BOOST_CHECK(capacityJson.find("\"idleWorkers\":1") != std::string::npos);
   BOOST_CHECK(capacityPayload.find("providerCapabilityHint=json64:") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderResourceSnapshotFreshnessFailsClosed)
+{
+  ProviderResourceSnapshot snapshot;
+  snapshot.status = ResourceProbeStatus::Measured;
+  snapshot.source = "linux-proc";
+  snapshot.providerName = "/provider/A";
+  snapshot.providerBootId = "boot-a";
+  snapshot.sequence = 7;
+  snapshot.measuredAtMs = 1'000;
+  snapshot.hostTotalMemoryBytes = 8'000;
+  snapshot.hostAvailableMemoryBytes = 4'000;
+  snapshot.processRssBytes = 1'000;
+
+  BOOST_CHECK(snapshot.isMeasured());
+  BOOST_CHECK(snapshot.isFresh(2'999, 2'000));
+  BOOST_CHECK(!snapshot.isFresh(3'001, 2'000));
+  BOOST_CHECK(!snapshot.isFresh(999, 2'000));
+
+  snapshot.status = ResourceProbeStatus::ReadError;
+  BOOST_CHECK(!snapshot.isMeasured());
+  BOOST_CHECK(!snapshot.isFresh(1'001, 2'000));
+}
+
+BOOST_AUTO_TEST_CASE(LinuxProviderResourceProbeParsesExactMemoryFacts)
+{
+  ProviderResourceProbeConfig config;
+  config.providerName = "/provider/A";
+  config.providerBootId = "boot-a";
+  LinuxProviderResourceProbe probe(config, [] (const std::string& path,
+                                                std::chrono::milliseconds) {
+    if (path == "/proc/meminfo") {
+      return ResourceTextRead{
+        ResourceProbeStatus::Measured,
+        "MemTotal:       8000 kB\nMemAvailable:   3000 kB\n",
+        ""};
+    }
+    if (path == "/proc/self/status") {
+      return ResourceTextRead{
+        ResourceProbeStatus::Measured,
+        "Name:\tdi-native\nVmRSS:\t1250 kB\n",
+        ""};
+    }
+    return ResourceTextRead{ResourceProbeStatus::Unsupported, "", "unsupported-source"};
+  });
+
+  const auto snapshot = probe.sample(std::chrono::milliseconds(25));
+  BOOST_CHECK(snapshot.isMeasured());
+  BOOST_CHECK(snapshot.matchesIdentity("/provider/A", "boot-a"));
+  BOOST_CHECK_EQUAL(snapshot.sequence, 1);
+  BOOST_CHECK_EQUAL(snapshot.hostTotalMemoryBytes, 8'192'000);
+  BOOST_CHECK_EQUAL(snapshot.hostAvailableMemoryBytes, 3'072'000);
+  BOOST_CHECK_EQUAL(snapshot.processRssBytes, 1'280'000);
+  BOOST_CHECK_EQUAL(snapshot.source, "linux-proc");
+  BOOST_CHECK(snapshot.measuredAtMs > 0);
+  BOOST_CHECK(snapshot.errorCode.empty());
+}
+
+BOOST_AUTO_TEST_CASE(LinuxProviderResourceProbeFailsClosedAndRedactsReaderErrors)
+{
+  const std::vector<ResourceProbeStatus> statuses = {
+    ResourceProbeStatus::ReadError,
+    ResourceProbeStatus::Unsupported,
+    ResourceProbeStatus::TimedOut,
+  };
+  for (const auto status : statuses) {
+    ProviderResourceProbeConfig config;
+    config.providerName = "/provider/A";
+    config.providerBootId = "boot-a";
+    LinuxProviderResourceProbe probe(config, [status] (const std::string&,
+                                                        std::chrono::milliseconds) {
+      return ResourceTextRead{status, "secret=/private/raw/proc-data", "bad /secret"};
+    });
+    const auto snapshot = probe.sample(std::chrono::milliseconds(25));
+    BOOST_CHECK_EQUAL(static_cast<int>(snapshot.status), static_cast<int>(status));
+    BOOST_CHECK(!snapshot.isMeasured());
+    BOOST_CHECK_EQUAL(snapshot.errorCode, "meminfo-read-failed");
+    BOOST_CHECK(snapshot.errorCode.find("secret") == std::string::npos);
+    BOOST_CHECK_EQUAL(snapshot.hostTotalMemoryBytes, 0);
+    BOOST_CHECK_EQUAL(snapshot.hostAvailableMemoryBytes, 0);
+    BOOST_CHECK_EQUAL(snapshot.processRssBytes, 0);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(LinuxProviderResourceProbeRejectsMalformedAndMissingIdentity)
+{
+  ProviderResourceProbeConfig config;
+  config.providerName = "/provider/A";
+  config.providerBootId = "boot-a";
+  LinuxProviderResourceProbe malformed(config, [] (const std::string& path,
+                                                     std::chrono::milliseconds) {
+    if (path == "/proc/meminfo") {
+      return ResourceTextRead{
+        ResourceProbeStatus::Measured,
+        "MemTotal: 8 MB\nMemTotal: 9 kB\nMemAvailable: 3 kB\n",
+        ""};
+    }
+    return ResourceTextRead{ResourceProbeStatus::Measured, "VmRSS: 1 kB\n", ""};
+  });
+  const auto malformedSnapshot = malformed.sample(std::chrono::milliseconds(25));
+  BOOST_CHECK_EQUAL(static_cast<int>(malformedSnapshot.status),
+                    static_cast<int>(ResourceProbeStatus::MalformedInput));
+  BOOST_CHECK_EQUAL(malformedSnapshot.errorCode, "proc-memory-malformed");
+  BOOST_CHECK_EQUAL(malformedSnapshot.hostTotalMemoryBytes, 0);
+
+  config.providerBootId.clear();
+  bool readerCalled = false;
+  LinuxProviderResourceProbe missingIdentity(
+    config, [&readerCalled] (const std::string&, std::chrono::milliseconds) {
+      readerCalled = true;
+      return ResourceTextRead{};
+    });
+  const auto identitySnapshot =
+    missingIdentity.sample(std::chrono::milliseconds(25));
+  BOOST_CHECK_EQUAL(static_cast<int>(identitySnapshot.status),
+                    static_cast<int>(ResourceProbeStatus::IdentityMismatch));
+  BOOST_CHECK_EQUAL(identitySnapshot.errorCode, "probe-identity-missing");
+  BOOST_CHECK(!readerCalled);
+  BOOST_CHECK(!identitySnapshot.matchesIdentity("/provider/A", "boot-a"));
+}
+
+BOOST_AUTO_TEST_CASE(LinuxProviderResourceProbeBackgroundStopsAndMarksStale)
+{
+  ProviderResourceProbeConfig config;
+  config.providerName = "/provider/A";
+  config.providerBootId = "boot-a";
+  config.sampleInterval = std::chrono::milliseconds(1);
+  config.readTimeout = std::chrono::milliseconds(25);
+  config.maximumAge = std::chrono::milliseconds(0);
+  LinuxProviderResourceProbe probe(config, [] (const std::string& path,
+                                                std::chrono::milliseconds) {
+    return ResourceTextRead{
+      ResourceProbeStatus::Measured,
+      path == "/proc/meminfo" ?
+        "MemTotal: 8 kB\nMemAvailable: 3 kB\n" : "VmRSS: 1 kB\n",
+      ""};
+  });
+  probe.start();
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  probe.stop();
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  const auto snapshot = probe.latest();
+  BOOST_CHECK(snapshot.sequence > 0);
+  BOOST_CHECK_EQUAL(static_cast<int>(snapshot.status),
+                    static_cast<int>(ResourceProbeStatus::Stale));
+  BOOST_CHECK_EQUAL(snapshot.errorCode, "sample-stale");
+}
+
+BOOST_AUTO_TEST_CASE(LinuxProviderResourceProbeReadsLocalProc)
+{
+#ifdef __linux__
+  ProviderResourceProbeConfig config;
+  config.providerName = "/provider/local";
+  config.providerBootId = "boot-local";
+  LinuxProviderResourceProbe probe(config);
+  const auto snapshot = probe.sample(std::chrono::milliseconds(250));
+  BOOST_REQUIRE(snapshot.isMeasured());
+  BOOST_CHECK(snapshot.hostTotalMemoryBytes > 0);
+  BOOST_CHECK(snapshot.hostAvailableMemoryBytes > 0);
+  BOOST_CHECK(snapshot.processRssBytes > 0);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
