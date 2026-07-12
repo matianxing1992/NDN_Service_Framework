@@ -303,6 +303,140 @@ class PlanPredicateResultV1:
     limit: Any = None
 
 
+@dataclass(frozen=True)
+class PlanFeasibilityRequirementsV1:
+    expected_provider_name: str = ""
+    expected_provider_boot_id: str = ""
+    minimum_evidence_epoch: int = 0
+    expected_runner_kind: str = ""
+    expected_runtime_version: str = ""
+    expected_model_digest: str = ""
+    expected_plan_digest: str = ""
+    expected_artifact_digests: dict[str, str] = field(default_factory=dict)
+    expected_device_id: str = ""
+    maximum_telemetry_age_ms: int = 2000
+    minimum_free_host_memory_bytes: int = 0
+    maximum_ready_queue: int = 0
+    maximum_waiting_dependencies: int = 0
+    maximum_active_workers: int = 0
+    expected_membership_version: str = ""
+    expected_network_profile_version: str = ""
+    expected_cache_version: str = ""
+
+
+@dataclass(frozen=True)
+class PlanFeasibilityDecisionV1:
+    decision: str
+    reason_codes: tuple[str, ...]
+    predicates: tuple[PlanPredicateResultV1, ...]
+
+
+def evaluate_plan_feasibility(
+    telemetry: MeasuredTelemetrySnapshotV1,
+    requirements: PlanFeasibilityRequirementsV1,
+    *,
+    at_ms: int,
+) -> PlanFeasibilityDecisionV1:
+    """Evaluate mandatory fail-closed predicates before candidate scoring."""
+    predicates: list[PlanPredicateResultV1] = []
+    failures: list[tuple[str, str]] = []
+
+    def check(name: str, passed: bool, observed: Any, limit: Any,
+              reason: str, failure_decision: str) -> None:
+        predicates.append(PlanPredicateResultV1(
+            name=name,
+            status="PASS" if passed else "FAIL",
+            observed=observed,
+            limit=limit,
+        ))
+        if not passed:
+            failures.append((reason, failure_decision))
+
+    measured_source = telemetry.source not in {
+        "", "configured", "profile", "unavailable"
+    } and telemetry.status == "measured"
+    check("measured-source", measured_source,
+          {"source": telemetry.source, "status": telemetry.status},
+          "non-configured measured source", "TELEMETRY_NOT_MEASURED", "reject")
+    check("freshness", telemetry.is_fresh(
+        at_ms=at_ms, maximum_age_ms=requirements.maximum_telemetry_age_ms),
+        at_ms - telemetry.measured_at_ms,
+        requirements.maximum_telemetry_age_ms,
+        "TELEMETRY_STALE", "defer")
+
+    expected_checks = (
+        ("provider-name", telemetry.provider_name,
+         requirements.expected_provider_name, "PROVIDER_IDENTITY_MISMATCH", "reject"),
+        ("provider-boot", telemetry.provider_boot_id,
+         requirements.expected_provider_boot_id, "PROVIDER_BOOT_CHANGED", "replan"),
+        ("runner-kind", telemetry.runner_kind,
+         requirements.expected_runner_kind, "RUNNER_IDENTITY_MISMATCH", "reject"),
+        ("runtime-version", telemetry.runtime_version,
+         requirements.expected_runtime_version, "RUNTIME_IDENTITY_MISMATCH", "reject"),
+        ("model-digest", telemetry.model_digest,
+         requirements.expected_model_digest, "MODEL_IDENTITY_MISMATCH", "reject"),
+        ("plan-digest", telemetry.plan_digest,
+         requirements.expected_plan_digest, "PLAN_IDENTITY_MISMATCH", "reject"),
+        ("device-id", telemetry.device_id,
+         requirements.expected_device_id, "DEVICE_IDENTITY_MISMATCH", "reject"),
+        ("membership-version", telemetry.membership_version,
+         requirements.expected_membership_version, "MEMBERSHIP_VERSION_CHANGED", "replan"),
+        ("network-profile-version", telemetry.network_profile_version,
+         requirements.expected_network_profile_version, "NETWORK_VERSION_CHANGED", "replan"),
+        ("cache-version", telemetry.cache_version,
+         requirements.expected_cache_version, "CACHE_VERSION_CHANGED", "replan"),
+    )
+    for name, observed, expected, reason, failure_decision in expected_checks:
+        if expected:
+            check(name, observed == expected, observed, expected,
+                  reason, failure_decision)
+    if requirements.minimum_evidence_epoch > 0:
+        check("evidence-epoch",
+              telemetry.evidence_epoch >= requirements.minimum_evidence_epoch,
+              telemetry.evidence_epoch, requirements.minimum_evidence_epoch,
+              "EVIDENCE_EPOCH_REGRESSED", "reject")
+    if requirements.expected_artifact_digests:
+        check("artifact-digests",
+              telemetry.artifact_digests == requirements.expected_artifact_digests,
+              telemetry.artifact_digests,
+              requirements.expected_artifact_digests,
+              "ARTIFACT_IDENTITY_MISMATCH", "reject")
+    if requirements.minimum_free_host_memory_bytes > 0:
+        check("free-host-memory",
+              telemetry.host_available_memory_bytes >=
+              requirements.minimum_free_host_memory_bytes,
+              telemetry.host_available_memory_bytes,
+              requirements.minimum_free_host_memory_bytes,
+              "HOST_MEMORY_PRESSURE", "defer")
+    if requirements.maximum_ready_queue > 0:
+        check("ready-queue", telemetry.ready_queue <= requirements.maximum_ready_queue,
+              telemetry.ready_queue, requirements.maximum_ready_queue,
+              "READY_QUEUE_PRESSURE", "defer")
+    if requirements.maximum_waiting_dependencies > 0:
+        check("waiting-dependencies",
+              telemetry.waiting_dependencies <=
+              requirements.maximum_waiting_dependencies,
+              telemetry.waiting_dependencies,
+              requirements.maximum_waiting_dependencies,
+              "DEPENDENCY_QUEUE_PRESSURE", "defer")
+    if requirements.maximum_active_workers > 0:
+        check("active-workers",
+              telemetry.active_workers <= requirements.maximum_active_workers,
+              telemetry.active_workers, requirements.maximum_active_workers,
+              "ACTIVE_WORKER_PRESSURE", "defer")
+
+    priority = {"reuse": 0, "defer": 1, "replan": 2, "reject": 3}
+    decision = "reuse"
+    for _, candidate_decision in failures:
+        if priority[candidate_decision] > priority[decision]:
+            decision = candidate_decision
+    return PlanFeasibilityDecisionV1(
+        decision=decision,
+        reason_codes=tuple(reason for reason, _ in failures),
+        predicates=tuple(predicates),
+    )
+
+
 class TerminalReasonV1(str, Enum):
     NONE = "NONE"
     PROVIDER_LOST = "PROVIDER_LOST"
@@ -1288,9 +1422,43 @@ def score_runtime_candidate(role: PlanRole,
                             candidate: dict[str, Any],
                             *,
                             runtime_required: bool = True,
-                            now_ms_value: int | None = None) -> dict[str, Any]:
-    metadata = _metadata_from_candidate(candidate)
+                            now_ms_value: int | None = None,
+                            feasibility_requirements:
+                            PlanFeasibilityRequirementsV1 | None = None) -> dict[str, Any]:
     provider = str(candidate.get("providerName", candidate.get("provider", "")))
+    if feasibility_requirements is not None:
+        telemetry = candidate.get("measuredTelemetrySnapshot")
+        if isinstance(telemetry, dict):
+            telemetry = MeasuredTelemetrySnapshotV1.from_service_payload(telemetry)
+        if not isinstance(telemetry, MeasuredTelemetrySnapshotV1):
+            return {
+                "provider": provider,
+                "roleId": role.role_id,
+                "valid": False,
+                "reason": "TELEMETRY_REQUIRED",
+                "feasibilityDecision": "defer",
+                "planPredicates": [],
+                "scoreMs": float("inf"),
+            }
+        feasibility = evaluate_plan_feasibility(
+            telemetry,
+            feasibility_requirements,
+            at_ms=now_ms() if now_ms_value is None else int(now_ms_value),
+        )
+        if feasibility.decision != "reuse":
+            return {
+                "provider": provider,
+                "roleId": role.role_id,
+                "valid": False,
+                "reason": (
+                    feasibility.reason_codes[0]
+                    if feasibility.reason_codes else "PLAN_FEASIBILITY_REJECTED"
+                ),
+                "feasibilityDecision": feasibility.decision,
+                "planPredicates": to_plain(feasibility.predicates),
+                "scoreMs": float("inf"),
+            }
+    metadata = _metadata_from_candidate(candidate)
     if metadata is None:
         if runtime_required:
             return {
@@ -1361,7 +1529,10 @@ def choose_runtime_assignment(template: PlanTemplate,
                               request_id: str,
                               runtime_required: bool = True,
                               network_matrix: ProviderNetworkMatrix | None = None,
-                              excluded_providers: Iterable[str] = ()) -> RuntimeAssignment:
+                              excluded_providers: Iterable[str] = (),
+                              feasibility_requirements_by_provider:
+                              dict[str, PlanFeasibilityRequirementsV1] | None = None,
+                              telemetry_at_ms: int | None = None) -> RuntimeAssignment:
     excluded = set(str(item) for item in excluded_providers if str(item))
     role_assignments: dict[str, dict[str, Any]] = {}
     rejected: list[dict[str, Any]] = []
@@ -1375,7 +1546,15 @@ def choose_runtime_assignment(template: PlanTemplate,
                 "reason": "PROVIDER_EXCLUDED",
                 "scoreMs": float("inf"),
             } if str(candidate.get("providerName", candidate.get("provider", ""))) in excluded
-             else score_runtime_candidate(role, candidate, runtime_required=runtime_required))
+             else score_runtime_candidate(
+                 role,
+                 candidate,
+                 runtime_required=runtime_required,
+                 now_ms_value=telemetry_at_ms,
+                 feasibility_requirements=(feasibility_requirements_by_provider or {}).get(
+                     str(candidate.get("providerName", candidate.get("provider", "")))
+                 ),
+             ))
             for candidate in provider_candidates.get(role.role_id, [])
         ]
         role_scores[role.role_id] = scored
@@ -1417,7 +1596,10 @@ def choose_edge_aware_runtime_assignment(template: PlanTemplate,
                                          request_id: str,
                                          runtime_required: bool = True,
                                          network_matrix: ProviderNetworkMatrix | None = None,
-                                         excluded_providers: Iterable[str] = ()
+                                         excluded_providers: Iterable[str] = (),
+                                         feasibility_requirements_by_provider:
+                                         dict[str, PlanFeasibilityRequirementsV1] | None = None,
+                                         telemetry_at_ms: int | None = None,
                                          ) -> RuntimeAssignment:
     excluded = set(str(item) for item in excluded_providers if str(item))
     scored_by_role: dict[str, list[dict[str, Any]]] = {}
@@ -1431,7 +1613,15 @@ def choose_edge_aware_runtime_assignment(template: PlanTemplate,
                 "reason": "PROVIDER_EXCLUDED",
                 "scoreMs": float("inf"),
             } if str(candidate.get("providerName", candidate.get("provider", ""))) in excluded
-             else score_runtime_candidate(role, candidate, runtime_required=runtime_required))
+             else score_runtime_candidate(
+                 role,
+                 candidate,
+                 runtime_required=runtime_required,
+                 now_ms_value=telemetry_at_ms,
+                 feasibility_requirements=(feasibility_requirements_by_provider or {}).get(
+                     str(candidate.get("providerName", candidate.get("provider", "")))
+                 ),
+             ))
             for candidate in provider_candidates.get(role.role_id, [])
         ]
         scored_by_role[role.role_id] = scored
@@ -1486,7 +1676,10 @@ def choose_bounded_replan_assignment(template: PlanTemplate,
                                      replan_records: Iterable[ReplanRecord] = (),
                                      max_attempts: int = 2,
                                      runtime_required: bool = True,
-                                     network_matrix: ProviderNetworkMatrix | None = None
+                                     network_matrix: ProviderNetworkMatrix | None = None,
+                                     feasibility_requirements_by_provider:
+                                     dict[str, PlanFeasibilityRequirementsV1] | None = None,
+                                     telemetry_at_ms: int | None = None,
                                      ) -> RuntimeAssignment:
     records = list(replan_records)
     attempt = len(records) + 1
@@ -1504,6 +1697,8 @@ def choose_bounded_replan_assignment(template: PlanTemplate,
         runtime_required=runtime_required,
         network_matrix=network_matrix,
         excluded_providers=excluded,
+        feasibility_requirements_by_provider=feasibility_requirements_by_provider,
+        telemetry_at_ms=telemetry_at_ms,
     )
     breakdown = dict(assignment.score_breakdown)
     breakdown["replanCount"] = len(records)

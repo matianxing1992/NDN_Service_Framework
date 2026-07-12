@@ -21,6 +21,14 @@ from ndnsf import (
     encode_ack_metadata,
     encode_provider_capability_ack,
 )
+from ndnsf_distributed_inference.runtime_v1 import (
+    MeasuredTelemetrySnapshotV1,
+    ModelFragmentKey,
+    PlanFeasibilityRequirementsV1,
+    PlanRole,
+    evaluate_plan_feasibility,
+    score_runtime_candidate,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -105,6 +113,107 @@ def load_plan_tracer_module():
 
 
 class RuntimeAwareCampaignTest(unittest.TestCase):
+    def test_configured_or_stale_memory_cannot_satisfy_feasibility_gate(self) -> None:
+        requirements = PlanFeasibilityRequirementsV1(
+            expected_provider_name="/provider/A",
+            expected_provider_boot_id="boot-a",
+            minimum_free_host_memory_bytes=1_000,
+            maximum_ready_queue=4,
+        )
+        configured = MeasuredTelemetrySnapshotV1(
+            provider_name="/provider/A", provider_boot_id="boot-a",
+            sequence=1, measured_at_ms=1_000,
+            source="configured", status="configured",
+            host_total_memory_bytes=10_000_000,
+            host_available_memory_bytes=9_000_000,
+        )
+        configured_decision = evaluate_plan_feasibility(
+            configured, requirements, at_ms=1_001)
+        self.assertEqual(configured_decision.decision, "reject")
+        self.assertIn("TELEMETRY_NOT_MEASURED", configured_decision.reason_codes)
+
+        stale = MeasuredTelemetrySnapshotV1(
+            provider_name="/provider/A", provider_boot_id="boot-a",
+            sequence=1, measured_at_ms=1_000,
+            source="linux-proc", status="measured",
+            host_total_memory_bytes=10_000_000,
+            host_available_memory_bytes=9_000_000,
+        )
+        stale_decision = evaluate_plan_feasibility(stale, requirements, at_ms=3_001)
+        self.assertEqual(stale_decision.decision, "defer")
+        self.assertIn("TELEMETRY_STALE", stale_decision.reason_codes)
+
+        scored = score_runtime_candidate(
+            PlanRole("/Stage/0", ModelFragmentKey("qwen")),
+            {"providerName": "/provider/A", "measuredTelemetrySnapshot": configured},
+            feasibility_requirements=requirements,
+            now_ms_value=1_001,
+        )
+        self.assertFalse(scored["valid"])
+        self.assertEqual(scored["reason"], "TELEMETRY_NOT_MEASURED")
+        self.assertEqual(scored["feasibilityDecision"], "reject")
+
+    def test_plan_feasibility_emits_reuse_replan_defer_and_reject(self) -> None:
+        base = dict(
+            provider_name="/provider/A", provider_boot_id="boot-a",
+            sequence=2, resource_sequence=2,
+            measured_at_ms=2_000, sampled_at_ms=2_010,
+            source="linux-proc", status="measured",
+            host_total_memory_bytes=10_000,
+            host_available_memory_bytes=5_000,
+            ready_queue=1, waiting_dependencies=1,
+            active_workers=1, worker_count=4,
+            evidence_epoch=3, runner_kind="onnxruntime-cpu",
+            runtime_version="ort-1.26", model_digest="sha256:model",
+            plan_digest="sha256:plan",
+            artifact_digests={"/Stage/0": "sha256:stage0"},
+            device_id="cpu0", membership_version="members-v1",
+            network_profile_version="network-v1", cache_version="cache-v1",
+        )
+        requirements = PlanFeasibilityRequirementsV1(
+            expected_provider_name="/provider/A",
+            expected_provider_boot_id="boot-a",
+            minimum_evidence_epoch=3,
+            expected_runner_kind="onnxruntime-cpu",
+            expected_runtime_version="ort-1.26",
+            expected_model_digest="sha256:model",
+            expected_plan_digest="sha256:plan",
+            expected_artifact_digests={"/Stage/0": "sha256:stage0"},
+            expected_device_id="cpu0",
+            minimum_free_host_memory_bytes=4_000,
+            maximum_ready_queue=2,
+            maximum_waiting_dependencies=2,
+            maximum_active_workers=2,
+            expected_membership_version="members-v1",
+            expected_network_profile_version="network-v1",
+            expected_cache_version="cache-v1",
+        )
+        reuse = evaluate_plan_feasibility(
+            MeasuredTelemetrySnapshotV1(**base), requirements, at_ms=2_100)
+        self.assertEqual(reuse.decision, "reuse")
+        self.assertTrue(all(item.status == "PASS" for item in reuse.predicates))
+
+        replan = evaluate_plan_feasibility(
+            MeasuredTelemetrySnapshotV1(**{**base, "provider_boot_id": "boot-b"}),
+            requirements, at_ms=2_100)
+        self.assertEqual(replan.decision, "replan")
+        self.assertIn("PROVIDER_BOOT_CHANGED", replan.reason_codes)
+
+        reject = evaluate_plan_feasibility(
+            MeasuredTelemetrySnapshotV1(**{**base, "runtime_version": "ort-drift"}),
+            requirements, at_ms=2_100)
+        self.assertEqual(reject.decision, "reject")
+        self.assertIn("RUNTIME_IDENTITY_MISMATCH", reject.reason_codes)
+
+        defer = evaluate_plan_feasibility(
+            MeasuredTelemetrySnapshotV1(**{
+                **base, "host_available_memory_bytes": 1_000, "ready_queue": 9,
+            }),
+            requirements, at_ms=2_100)
+        self.assertEqual(defer.decision, "defer")
+        self.assertIn("HOST_MEMORY_PRESSURE", defer.reason_codes)
+        self.assertIn("READY_QUEUE_PRESSURE", defer.reason_codes)
+
     def test_dry_run_accepts_multi_user_runtime_aware_arguments(self) -> None:
         env = dict(os.environ)
         env["PYTHONPATH"] = ":".join([
