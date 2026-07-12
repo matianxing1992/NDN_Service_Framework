@@ -196,7 +196,8 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
                                const AdmissionDecision& admission,
                                const ndn::Name& providerName,
                                const ndn::Name& serviceName,
-                               const std::string& executionEvidenceJson)
+                               const std::string& executionEvidenceJson,
+                               const NativeProviderTelemetrySnapshot* telemetry)
 {
   const auto provider = providerName.size() == 0 ? "/" : providerName.toUri();
   const auto service = serviceName.size() == 0 ? "/" : serviceName.toUri();
@@ -213,6 +214,8 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
        << "\"activeWorkCount\":" << capacity.activeWorkerCount << ","
        << "\"queueLength\":" << capacity.pendingWorkCount() << ","
        << "\"capacityHints\":{"
+       << "\"source\":\"configured\","
+       << "\"configuredOnly\":true,"
        << "\"roles\":" << jsonString(rolesText) << ","
        << "\"readyQueue\":" << capacity.readyQueueDepth << ","
        << "\"waitingInputs\":" << capacity.waitingForInputCount << ","
@@ -256,6 +259,67 @@ makeProviderCapabilityHintJson(const ProviderRoleWorkerSnapshot& capacity,
       json << "," << jsonString(item.second) << ":" << jsonString(value);
     }
   }
+  json << ",\"configuredOnly\":true"
+       << ",\"configuredSource\":\"environment-and-launch-profile\""
+       << ",\"configuredCapability\":{"
+       << "\"schema\":\"ndnsf-di-configured-capability-v1\","
+       << "\"source\":\"configured\","
+       << "\"roles\":" << jsonString(rolesText) << ","
+       << "\"workerLimit\":" << capacity.workerCount << ","
+       << "\"backends\":[\"onnxruntime\"],"
+       << "\"values\":{";
+  bool firstConfiguredValue = true;
+  for (const auto& item : envFields) {
+    const auto value = envText(item.first);
+    if (!value.empty()) {
+      if (!firstConfiguredValue) {
+        json << ",";
+      }
+      firstConfiguredValue = false;
+      json << jsonString(item.second) << ":" << jsonString(value);
+    }
+  }
+  json << "}}"
+       << ",\"measuredTelemetry\":{"
+       << "\"schema\":\"ndnsf-di-measured-telemetry-v1\",";
+  if (telemetry != nullptr) {
+    const auto& resources = telemetry->resources;
+    json << "\"source\":"
+         << jsonString(resources.source.empty() ? "unavailable" : resources.source) << ","
+         << "\"status\":" << jsonString(toString(resources.status)) << ","
+         << "\"providerName\":" << jsonString(resources.providerName) << ","
+         << "\"providerBootId\":" << jsonString(resources.providerBootId) << ","
+         << "\"sequence\":" << telemetry->sequence << ","
+         << "\"resourceSequence\":" << resources.sequence << ","
+         << "\"sampledAtMs\":" << telemetry->sampledAtMs << ","
+         << "\"resourceMeasuredAtMs\":" << resources.measuredAtMs << ","
+         << "\"hostTotalMemoryBytes\":" << resources.hostTotalMemoryBytes << ","
+         << "\"hostAvailableMemoryBytes\":"
+         << resources.hostAvailableMemoryBytes << ","
+         << "\"processRssBytes\":" << resources.processRssBytes << ","
+         << "\"readyQueue\":" << telemetry->capacity.readyQueueDepth << ","
+         << "\"waitingDependencies\":"
+         << telemetry->capacity.waitingForInputCount << ","
+         << "\"activeWorkers\":" << telemetry->capacity.activeWorkerCount << ","
+         << "\"workers\":" << telemetry->capacity.workerCount << ","
+         << "\"completedStages\":" << telemetry->completedStages << ","
+         << "\"stageServiceTimeEwmaMs\":" << telemetry->stageServiceTimeEwmaMs << ","
+         << "\"stageServiceRateEwmaPerSecond\":"
+         << telemetry->stageServiceRateEwmaPerSecond << ","
+         << "\"errorCode\":" << jsonString(resources.errorCode);
+  }
+  else {
+    json << "\"source\":\"unavailable\","
+         << "\"status\":\"unsupported\","
+         << "\"providerName\":\"\","
+         << "\"providerBootId\":\"\","
+         << "\"sequence\":0,"
+         << "\"resourceSequence\":0,"
+         << "\"sampledAtMs\":0,"
+         << "\"resourceMeasuredAtMs\":0,"
+         << "\"errorCode\":\"telemetry-not-configured\"";
+  }
+  json << "}";
   if (!executionEvidenceJson.empty()) {
     json << ",\"executionEvidence\":" << executionEvidenceJson;
   }
@@ -538,6 +602,7 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
   int64_t provisioningStartedMs = 0;
   CapacitySnapshotProvider capacitySnapshotProvider;
   TelemetrySnapshotProvider telemetrySnapshotProvider;
+  std::optional<NativeProviderTelemetrySnapshot> telemetrySnapshot;
   std::optional<ExecutionEvidence> executionEvidence;
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -555,7 +620,8 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
 
   ProviderRoleWorkerSnapshot capacity;
   if (telemetrySnapshotProvider) {
-    capacity = telemetrySnapshotProvider().capacity;
+    telemetrySnapshot = telemetrySnapshotProvider();
+    capacity = telemetrySnapshot->capacity;
   }
   else if (capacitySnapshotProvider) {
     capacity = capacitySnapshotProvider();
@@ -594,7 +660,9 @@ NativeProviderReadinessState::makeAckDecision(const std::string& rolesText,
                                                              serviceName,
                                                              executionEvidence ?
                                                                executionEvidenceToJson(*executionEvidence) :
-                                                               std::string());
+                                                               std::string(),
+                                                             telemetrySnapshot ?
+                                                               &*telemetrySnapshot : nullptr);
   std::ostringstream payload;
   payload << "providerCapabilityHint=json64:" << base64UrlEncode(capabilityJson) << ";";
   decision.payload = toBuffer(payload.str());

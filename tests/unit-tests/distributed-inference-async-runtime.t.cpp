@@ -2524,6 +2524,13 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(readyJson.find("\"runnerKind\":\"onnxruntime-cuda\"") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"queue\":0") != std::string::npos);
   BOOST_CHECK(readyJson.find("\"workers\":0") != std::string::npos);
+  BOOST_CHECK(readyJson.find(
+    "\"configuredCapability\":{\"schema\":\"ndnsf-di-configured-capability-v1\"") !=
+              std::string::npos);
+  BOOST_CHECK(readyJson.find(
+    "\"measuredTelemetry\":{\"schema\":\"ndnsf-di-measured-telemetry-v1\","
+    "\"source\":\"unavailable\",\"status\":\"unsupported\"") !=
+              std::string::npos);
   BOOST_CHECK(ackPayloadText(readyAck).find("providerCapabilityHint=json64:") !=
               std::string::npos);
 
@@ -2771,13 +2778,30 @@ BOOST_AUTO_TEST_CASE(NativeProviderTelemetryCollectorCachesMergedFactsAndEwma)
   NativeProviderReadinessState readiness;
   readiness.markReady("ready");
   readiness.setTelemetrySnapshotProvider([&collector] { return collector.snapshot(); });
+  std::string lastJson;
   for (int i = 0; i < 10; ++i) {
     const auto decision = readiness.makeAckDecision(
       "/Backbone", ndn::Name("/provider/A"), ndn::Name("/service"));
     BOOST_CHECK(decision.status);
+    lastJson = typedCapabilityJson(decision);
   }
   BOOST_CHECK_EQUAL(probe->reads, 1);
   BOOST_CHECK_EQUAL(capacityReads, 1);
+  BOOST_CHECK(lastJson.find(
+    "\"configuredCapability\":{\"schema\":\"ndnsf-di-configured-capability-v1\","
+    "\"source\":\"configured\"") != std::string::npos);
+  BOOST_CHECK(lastJson.find(
+    "\"measuredTelemetry\":{\"schema\":\"ndnsf-di-measured-telemetry-v1\","
+    "\"source\":\"fixture\",\"status\":\"measured\"") != std::string::npos);
+  BOOST_CHECK(lastJson.find("\"providerBootId\":\"boot-a\"") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"resourceSequence\":9") != std::string::npos);
+  BOOST_CHECK(lastJson.find("\"hostTotalMemoryBytes\":8000") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"processRssBytes\":1000") !=
+              std::string::npos);
+  BOOST_CHECK(lastJson.find("\"stageServiceTimeEwmaMs\":200") !=
+              std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
