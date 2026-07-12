@@ -2,6 +2,7 @@
 #define NDNSF_DISTRIBUTED_INFERENCE_PROVIDER_ROLE_WORKER_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <chrono>
@@ -92,7 +93,11 @@ public:
 class ProviderRoleWorker
 {
 public:
-  explicit ProviderRoleWorker(std::size_t workerCount = std::thread::hardware_concurrency());
+  explicit ProviderRoleWorker(
+    std::size_t workerCount = std::thread::hardware_concurrency(),
+    std::size_t dependencyWaitWorkers = 4,
+    std::size_t dependencyWaitQueueCapacity = 1024,
+    std::chrono::milliseconds dependencyWaitTimeout = std::chrono::seconds(120));
   ~ProviderRoleWorker();
 
   std::future<ProviderRoleResult>
@@ -170,12 +175,13 @@ private:
   std::condition_variable m_cv;
   std::deque<WorkItem> m_queue;
   std::vector<std::thread> m_workers;
-  std::vector<std::thread> m_inputWaiters;
+  std::unique_ptr<DependencyWaitScheduler> m_dependencyWaitScheduler;
   std::mutex m_exactForwardCacheMutex;
   std::unordered_map<std::string, std::map<std::string, TensorBundle>> m_exactForwardCache;
   std::vector<std::string> m_exactForwardCacheOrder;
   std::size_t m_exactForwardCacheMaxEntries = 128;
-  std::size_t m_waitingForInputs = 0;
+  std::chrono::milliseconds m_dependencyWaitTimeout;
+  std::atomic<std::uint64_t> m_nextDependencyWaitId{1};
   std::size_t m_activeWorkers = 0;
   bool m_stopping = false;
 };

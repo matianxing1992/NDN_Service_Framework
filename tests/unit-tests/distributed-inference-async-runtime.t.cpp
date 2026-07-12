@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
@@ -18,6 +19,7 @@
 #include "ndn-service-framework/NegativeAckReason.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -1282,6 +1284,140 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerUsesProviderLocalExactForwardCache)
   BOOST_CHECK_EQUAL(runCount, 2);
   BOOST_CHECK(!third.exactForwardCacheHit);
   BOOST_CHECK_NE(second.exactForwardCacheKey, third.exactForwardCacheKey);
+}
+
+BOOST_AUTO_TEST_CASE(DependencyWaitSchedulerBoundsOneThousandWaitsAndCompletesOnce)
+{
+  DependencyWaitScheduler scheduler(4, 1000);
+  std::atomic<bool> release{false};
+  std::atomic<std::size_t> terminalCount{0};
+  std::atomic<std::size_t> unexpectedTerminals{0};
+  std::atomic<std::size_t> duplicateTerminals{0};
+  std::mutex terminalMutex;
+  std::set<std::string> terminalIds;
+
+  for (std::size_t i = 0; i < 1000; ++i) {
+    const auto id = "wait-" + std::to_string(i);
+    const auto admitted = scheduler.submit(
+      id,
+      std::chrono::steady_clock::now() + std::chrono::seconds(5),
+      [&release] (const DependencyWaitControl& control) {
+        while (!release.load()) {
+          if (control.isCancelled()) return DependencyWaitStatus::Cancelled;
+          if (control.deadlineExpired()) return DependencyWaitStatus::DeadlineExpired;
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return DependencyWaitStatus::Completed;
+      },
+      [&] (const DependencyWaitResult& result) {
+        if (result.status != DependencyWaitStatus::Completed) {
+          ++unexpectedTerminals;
+        }
+        std::lock_guard<std::mutex> lock(terminalMutex);
+        if (!terminalIds.insert(result.waitId).second) {
+          ++duplicateTerminals;
+        }
+        ++terminalCount;
+      });
+    BOOST_REQUIRE_EQUAL(admitted, DependencyWaitSubmitResult::Accepted);
+  }
+
+  const auto loaded = scheduler.snapshot();
+  BOOST_CHECK_EQUAL(loaded.workerCount, 4);
+  BOOST_CHECK_LE(loaded.activeCount, 4);
+  BOOST_CHECK_EQUAL(loaded.activeCount + loaded.queuedCount, 1000);
+  release = true;
+  BOOST_REQUIRE(scheduler.waitForIdle(std::chrono::seconds(5)));
+  const auto done = scheduler.snapshot();
+  BOOST_CHECK_EQUAL(done.activeCount, 0);
+  BOOST_CHECK_EQUAL(done.queuedCount, 0);
+  BOOST_CHECK_EQUAL(done.completed, 1000);
+  BOOST_CHECK_EQUAL(terminalCount.load(), 1000);
+  BOOST_CHECK_EQUAL(unexpectedTerminals.load(), 0);
+  BOOST_CHECK_EQUAL(duplicateTerminals.load(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(DependencyWaitSchedulerRejectsOverflowExpiresAndCancels)
+{
+  DependencyWaitScheduler scheduler(1, 1);
+  std::atomic<bool> release{false};
+  auto blockingTask = [&release] (const DependencyWaitControl& control) {
+    while (!release.load()) {
+      if (control.isCancelled()) return DependencyWaitStatus::Cancelled;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return DependencyWaitStatus::Completed;
+  };
+  auto ignore = [] (const DependencyWaitResult&) {};
+
+  BOOST_REQUIRE_EQUAL(scheduler.submit(
+    "active", std::chrono::steady_clock::now() + std::chrono::seconds(5),
+    blockingTask, ignore), DependencyWaitSubmitResult::Accepted);
+  while (scheduler.snapshot().activeCount == 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  BOOST_REQUIRE_EQUAL(scheduler.submit(
+    "queued", std::chrono::steady_clock::now() + std::chrono::seconds(5),
+    blockingTask, ignore), DependencyWaitSubmitResult::Accepted);
+  BOOST_CHECK_EQUAL(scheduler.submit(
+    "overflow", std::chrono::steady_clock::now() + std::chrono::seconds(5),
+    blockingTask, ignore), DependencyWaitSubmitResult::QueueFull);
+
+  BOOST_CHECK(scheduler.cancel("active"));
+  BOOST_CHECK(scheduler.cancel("queued"));
+  BOOST_REQUIRE(scheduler.waitForIdle(std::chrono::seconds(2)));
+  auto cancelled = scheduler.snapshot();
+  BOOST_CHECK_EQUAL(cancelled.cancelled, 2);
+  BOOST_CHECK_EQUAL(cancelled.rejected, 1);
+
+  std::promise<DependencyWaitResult> expiredPromise;
+  auto expiredFuture = expiredPromise.get_future();
+  BOOST_REQUIRE_EQUAL(scheduler.submit(
+    "expired", std::chrono::steady_clock::now() + std::chrono::milliseconds(10),
+    [] (const DependencyWaitControl& control) {
+      while (!control.deadlineExpired()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      return DependencyWaitStatus::DeadlineExpired;
+    },
+    [&expiredPromise] (const DependencyWaitResult& result) {
+      expiredPromise.set_value(result);
+    }), DependencyWaitSubmitResult::Accepted);
+  BOOST_REQUIRE(expiredFuture.wait_for(std::chrono::seconds(1)) ==
+                std::future_status::ready);
+  BOOST_CHECK_EQUAL(expiredFuture.get().status,
+                    DependencyWaitStatus::DeadlineExpired);
+  BOOST_CHECK_EQUAL(scheduler.snapshot().deadlineExpired, 1);
+}
+
+BOOST_AUTO_TEST_CASE(DependencyWaitSchedulerShutdownCancelsPendingWork)
+{
+  std::atomic<std::size_t> terminals{0};
+  DependencyWaitScheduler scheduler(2, 16);
+  for (std::size_t i = 0; i < 16; ++i) {
+    BOOST_REQUIRE_EQUAL(scheduler.submit(
+      "shutdown-" + std::to_string(i),
+      std::chrono::steady_clock::now() + std::chrono::seconds(5),
+      [] (const DependencyWaitControl& control) {
+        while (!control.isCancelled()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return DependencyWaitStatus::Cancelled;
+      },
+      [&terminals] (const DependencyWaitResult&) { ++terminals; }),
+      DependencyWaitSubmitResult::Accepted);
+  }
+  scheduler.shutdown();
+  const auto stopped = scheduler.snapshot();
+  BOOST_CHECK(stopped.stopping);
+  BOOST_CHECK_EQUAL(stopped.activeCount, 0);
+  BOOST_CHECK_EQUAL(stopped.queuedCount, 0);
+  BOOST_CHECK_EQUAL(terminals.load(), 16);
+  BOOST_CHECK_EQUAL(scheduler.submit(
+    "late", std::chrono::steady_clock::now() + std::chrono::seconds(1),
+    [] (const DependencyWaitControl&) { return DependencyWaitStatus::Completed; },
+    [] (const DependencyWaitResult&) {}),
+    DependencyWaitSubmitResult::ShuttingDown);
 }
 
 BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendAcceptsEncodedTensorBundleInput)

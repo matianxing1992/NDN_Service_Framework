@@ -53,7 +53,13 @@ fnv1a64Hex(const std::string& value)
 
 } // namespace
 
-ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount)
+ProviderRoleWorker::ProviderRoleWorker(std::size_t workerCount,
+                                       std::size_t dependencyWaitWorkers,
+                                       std::size_t dependencyWaitQueueCapacity,
+                                       std::chrono::milliseconds dependencyWaitTimeout)
+  : m_dependencyWaitScheduler(std::make_unique<DependencyWaitScheduler>(
+      dependencyWaitWorkers, dependencyWaitQueueCapacity))
+  , m_dependencyWaitTimeout(dependencyWaitTimeout)
 {
   if (workerCount == 0) {
     workerCount = 1;
@@ -71,11 +77,7 @@ ProviderRoleWorker::~ProviderRoleWorker()
     m_stopping = true;
   }
   m_cv.notify_all();
-  for (auto& waiter : m_inputWaiters) {
-    if (waiter.joinable()) {
-      waiter.join();
-    }
-  }
+  m_dependencyWaitScheduler->shutdown();
   for (auto& worker : m_workers) {
     if (worker.joinable()) {
       worker.join();
@@ -183,37 +185,60 @@ void
 ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
                                             std::vector<PendingInput> pendingInputs)
 {
+  struct WaitState
   {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_stopping) {
-      failPromise(item.promise,
-                  std::make_exception_ptr(std::logic_error(
-                    "ProviderRoleWorker is stopping")));
-      return;
-    }
-    ++m_waitingForInputs;
-  }
-  std::lock_guard<std::mutex> lock(m_mutex);
-  m_inputWaiters.emplace_back(
-    [this, item = std::move(item), pendingInputs = std::move(pendingInputs)] () mutable {
+    WorkItem item;
+    std::vector<PendingInput> pendingInputs;
+  };
+  auto state = std::make_shared<WaitState>(WaitState{
+    std::move(item), std::move(pendingInputs),
+  });
+  const auto waitId = state->item.sessionId + "|" + state->item.role.role + "|" +
+                      std::to_string(m_nextDependencyWaitId.fetch_add(1));
+  const auto deadline = std::chrono::steady_clock::now() + m_dependencyWaitTimeout;
+  const auto submitted = m_dependencyWaitScheduler->submit(
+    waitId,
+    deadline,
+    [state] (const DependencyWaitControl& control) {
       try {
-        for (auto& pending : pendingInputs) {
+        for (auto& pending : state->pendingInputs) {
+          while (pending.future.wait_for(std::chrono::milliseconds(2)) !=
+                 std::future_status::ready) {
+            if (control.isCancelled()) {
+              return DependencyWaitStatus::Cancelled;
+            }
+            if (control.deadlineExpired()) {
+              return DependencyWaitStatus::DeadlineExpired;
+            }
+          }
           auto bundle = pending.future.get();
           pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
           pending.timing.bytes = bundle.payload.size();
-          item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
-          item.inputTimings.push_back(std::move(pending.timing));
+          state->item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
+          state->item.inputTimings.push_back(std::move(pending.timing));
         }
-        enqueueReady(std::move(item));
+        return DependencyWaitStatus::Completed;
       }
       catch (...) {
-        failPromise(item.promise, std::current_exception());
+        throw;
       }
-      std::lock_guard<std::mutex> lock(m_mutex);
-      if (m_waitingForInputs > 0) {
-        --m_waitingForInputs;
+    },
+    [this, state] (const DependencyWaitResult& result) mutable {
+      if (result.status == DependencyWaitStatus::Completed) {
+        enqueueReady(std::move(state->item));
+        return;
       }
+      const auto reason = result.reason.empty() ? toString(result.status) : result.reason;
+      failPromise(state->item.promise,
+                  std::make_exception_ptr(std::runtime_error(
+                    "dependency wait failed: " + reason)));
     });
+  if (submitted != DependencyWaitSubmitResult::Accepted) {
+    failPromise(state->item.promise,
+                std::make_exception_ptr(std::runtime_error(
+                  std::string("dependency wait admission failed: ") +
+                  toString(submitted))));
+  }
 }
 
 void
@@ -240,7 +265,8 @@ ProviderRoleWorker::snapshot() const
   ProviderRoleWorkerSnapshot snapshot;
   snapshot.workerCount = m_workers.size();
   snapshot.readyQueueDepth = m_queue.size();
-  snapshot.waitingForInputCount = m_waitingForInputs;
+  const auto waitSnapshot = m_dependencyWaitScheduler->snapshot();
+  snapshot.waitingForInputCount = waitSnapshot.queuedCount + waitSnapshot.activeCount;
   snapshot.activeWorkerCount = m_activeWorkers;
   snapshot.stopping = m_stopping;
   return snapshot;
