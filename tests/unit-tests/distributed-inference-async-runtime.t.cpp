@@ -1691,6 +1691,110 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNam
   BOOST_CHECK_THROW(roleSpecFor(plan, "/Missing", "/run-7", assignment), std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(ExecutionAttemptEpochScopesDependencyNamesAndMetadata)
+{
+  NativeExecutionPlan plan;
+  plan.serviceName = "/Inference/Test";
+  plan.roles = {"/Stage/0", "/Stage/1"};
+  plan.dependencies.push_back(NativeDependencySpec{
+    {"/Stage/0"}, {"/Stage/1"}, "stage-0-to-1", "/DI",
+    "/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}", 1,
+  });
+  NativeProviderAssignment assignment;
+  assignment.providerByRole["/Stage/0"] = "/provider/A";
+  assignment.providerByRole["/Stage/1"] = "/provider/B";
+
+  const ExecutionAttemptKey first{"request-7", 1};
+  const ExecutionAttemptKey replacement{"request-7", 2};
+  const auto firstRole = roleSpecFor(
+    plan, "/Stage/1", first, assignment, "/provider/B");
+  const auto replacementRole = roleSpecFor(
+    plan, "/Stage/1", replacement, assignment, "/provider/B");
+  BOOST_REQUIRE_EQUAL(firstRole.inputs.size(), 1);
+  BOOST_REQUIRE_EQUAL(replacementRole.inputs.size(), 1);
+  BOOST_CHECK_NE(firstRole.inputs[0].plannedDataName,
+                 replacementRole.inputs[0].plannedDataName);
+  BOOST_CHECK_EQUAL(firstRole.requestId, "request-7");
+  BOOST_CHECK_EQUAL(firstRole.attemptEpoch, 1);
+  BOOST_CHECK_EQUAL(replacementRole.attemptEpoch, 2);
+  BOOST_CHECK(firstRole.inputs[0].plannedDataName.find("attempt=1") !=
+              std::string::npos);
+  BOOST_CHECK(replacementRole.inputs[0].plannedDataName.find("attempt=2") !=
+              std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ExecutionAttemptAuthorityRejectsOldCancelledAndDuplicateTerminal)
+{
+  ExecutionAttemptAuthority authority;
+  const ExecutionAttemptKey first{"request-9", 1};
+  const ExecutionAttemptKey replacement{"request-9", 2};
+  const ExecutionAttemptKey finalAttempt{"request-9", 3};
+
+  BOOST_CHECK_EQUAL(authority.admit(first), ExecutionAttemptAdmission::Accepted);
+  BOOST_CHECK(authority.isAuthoritative(first));
+  BOOST_CHECK(authority.complete(first));
+  BOOST_CHECK(!authority.complete(first));
+
+  BOOST_CHECK_EQUAL(authority.admit(replacement),
+                    ExecutionAttemptAdmission::Accepted);
+  BOOST_CHECK(!authority.isAuthoritative(first));
+  BOOST_CHECK_EQUAL(authority.admit(first), ExecutionAttemptAdmission::Stale);
+  BOOST_CHECK(authority.cancel(replacement));
+  BOOST_CHECK(!authority.isAuthoritative(replacement));
+  BOOST_CHECK(!authority.complete(replacement));
+
+  BOOST_CHECK_EQUAL(authority.admit(finalAttempt),
+                    ExecutionAttemptAdmission::Accepted);
+  BOOST_CHECK(authority.isAuthoritative(finalAttempt));
+  BOOST_CHECK(authority.complete(finalAttempt));
+  BOOST_CHECK(!authority.complete(finalAttempt));
+}
+
+BOOST_AUTO_TEST_CASE(NativeProviderExecutionBindingValidatesAttemptBootAndPlan)
+{
+  ExecutionAttemptAuthority authority;
+  const std::map<std::string, std::string> fields{
+    {"executionRequestId", "request-11"},
+    {"executionAttemptEpoch", "1"},
+    {"executionProviderBootId", "boot-a"},
+    {"executionPlanDigest", "sha256:plan"},
+  };
+  const auto accepted = validateNativeProviderExecutionBinding(
+    fields, "boot-a", "sha256:plan", authority);
+  BOOST_REQUIRE(accepted.status);
+  BOOST_CHECK_EQUAL(accepted.attempt.requestId, "request-11");
+  BOOST_CHECK_EQUAL(accepted.attempt.attemptEpoch, 1);
+  BOOST_CHECK(authority.complete(accepted.attempt));
+
+  const auto duplicate = validateNativeProviderExecutionBinding(
+    fields, "boot-a", "sha256:plan", authority);
+  BOOST_CHECK(!duplicate.status);
+  BOOST_CHECK_EQUAL(duplicate.reason, "DI_ATTEMPT_DUPLICATE_TERMINAL");
+
+  auto staleFields = fields;
+  staleFields["executionAttemptEpoch"] = "2";
+  const auto replacement = validateNativeProviderExecutionBinding(
+    staleFields, "boot-a", "sha256:plan", authority);
+  BOOST_REQUIRE(replacement.status);
+  const auto stale = validateNativeProviderExecutionBinding(
+    fields, "boot-a", "sha256:plan", authority);
+  BOOST_CHECK(!stale.status);
+  BOOST_CHECK_EQUAL(stale.reason, "DI_ATTEMPT_STALE");
+
+  auto wrongBoot = staleFields;
+  wrongBoot["executionAttemptEpoch"] = "3";
+  wrongBoot["executionProviderBootId"] = "boot-b";
+  BOOST_CHECK_EQUAL(validateNativeProviderExecutionBinding(
+    wrongBoot, "boot-a", "sha256:plan", authority).reason,
+    "DI_PROVIDER_BOOT_MISMATCH");
+  auto wrongPlan = wrongBoot;
+  wrongPlan["executionProviderBootId"] = "boot-a";
+  wrongPlan["executionPlanDigest"] = "sha256:other";
+  BOOST_CHECK_EQUAL(validateNativeProviderExecutionBinding(
+    wrongPlan, "boot-a", "sha256:plan", authority).reason,
+    "DI_PLAN_BINDING_MISMATCH");
+}
+
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanReturnsNoStaticSegmentsForDynamicEdges)
 {
   DependencyEdge dynamicEdge{

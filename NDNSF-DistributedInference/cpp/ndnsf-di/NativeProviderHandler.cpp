@@ -18,6 +18,57 @@
 #include <utility>
 
 namespace ndnsf::di {
+
+NativeProviderExecutionBindingResult
+validateNativeProviderExecutionBinding(
+  const std::map<std::string, std::string>& fields,
+  const std::string& expectedProviderBootId,
+  const std::string& expectedPlanDigest,
+  ExecutionAttemptAuthority& authority)
+{
+  NativeProviderExecutionBindingResult result;
+  result.attempt.requestId = nativeProviderFieldValue(
+    fields, {"executionRequestId"});
+  const auto epochText = nativeProviderFieldValue(
+    fields, {"executionAttemptEpoch"});
+  const auto providerBootId = nativeProviderFieldValue(
+    fields, {"executionProviderBootId"});
+  const auto planDigest = nativeProviderFieldValue(
+    fields, {"executionPlanDigest", "executionLeasePlanDigest"});
+  if (result.attempt.requestId.empty() || epochText.empty()) {
+    result.reason = "DI_ATTEMPT_BINDING_MISSING";
+    return result;
+  }
+  try {
+    std::size_t consumed = 0;
+    result.attempt.attemptEpoch = std::stoull(epochText, &consumed);
+    if (consumed != epochText.size()) {
+      throw std::invalid_argument("trailing epoch text");
+    }
+    result.attempt.validate();
+  }
+  catch (const std::exception&) {
+    result.reason = "DI_ATTEMPT_EPOCH_INVALID";
+    return result;
+  }
+  if (expectedProviderBootId.empty() || providerBootId != expectedProviderBootId) {
+    result.reason = "DI_PROVIDER_BOOT_MISMATCH";
+    return result;
+  }
+  if (expectedPlanDigest.empty() || planDigest != expectedPlanDigest) {
+    result.reason = "DI_PLAN_BINDING_MISMATCH";
+    return result;
+  }
+  const auto admission = authority.admit(result.attempt);
+  if (admission != ExecutionAttemptAdmission::Accepted) {
+    result.reason = std::string("DI_ATTEMPT_") + toString(admission);
+    return result;
+  }
+  result.status = true;
+  result.reason = "OK";
+  return result;
+}
+
 namespace {
 
 std::vector<uint8_t>
@@ -247,6 +298,7 @@ public:
   std::vector<ExecutionEvidence> executionEvidence;
   std::mutex executionLeaseMutex;
   std::map<std::string, std::set<std::string>> completedRolesByLease;
+  ExecutionAttemptAuthority attemptAuthority;
 };
 
 void
@@ -688,6 +740,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const auto role = ctx.role();
       const auto assignmentFields = parseNativeProviderAssignmentFields(
         ctx.assignment().assignmentPayload);
+      std::optional<ExecutionAttemptKey> executionAttempt;
+      if (config.requireExecutionAttemptBinding) {
+        auto binding = validateNativeProviderExecutionBinding(
+          assignmentFields,
+          config.providerBootId,
+          config.planDigest,
+          state->attemptAuthority);
+        if (!binding.status) {
+          ctx.fail(binding.reason);
+          return;
+        }
+        executionAttempt = std::move(binding.attempt);
+      }
       if (config.executionLeaseTable != nullptr) {
         const auto& fields = assignmentFields;
         const auto leaseId = nativeProviderFieldValue(fields, {"executionLeaseId"});
@@ -760,11 +825,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.fail(*bindingError);
         return;
       }
-      const auto roleSpec = roleSpecFor(state->plan,
-                                        role,
-                                        ctx.sessionId(),
-                                        assignment,
-                                        ctx.localProvider().toUri());
+      const auto executionSessionId = executionAttempt
+        ? executionAttempt->scopedSessionId()
+        : ctx.sessionId();
+      const auto roleSpec = executionAttempt
+        ? roleSpecFor(state->plan,
+                      role,
+                      *executionAttempt,
+                      assignment,
+                      ctx.localProvider().toUri())
+        : roleSpecFor(state->plan,
+                      role,
+                      executionSessionId,
+                      assignment,
+                      ctx.localProvider().toUri());
       if (const auto* spec = runnerSpecForRole(state->runnerSpecs, role)) {
         logFragmentInventoryEvent("EXECUTION_OBSERVED",
                                   *spec,
@@ -844,7 +918,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (localFullPlan) {
         finalPayload = executeLocalPlanAndFinalPayload(*state,
                                                        config,
-                                                       ctx.sessionId(),
+                                                       executionSessionId,
                                                        assignment,
                                                        ctx.localProvider().toUri(),
                                                        initialInputs,
@@ -860,7 +934,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       else {
         auto result = state->runtime.executeRoleAsync(
-          ctx.sessionId(),
+          executionSessionId,
           roleSpec,
           std::move(io),
           std::move(initialInputs)).get();
@@ -924,6 +998,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                           role,
                           "after_complete",
                           state->runtime.snapshot());
+      if (executionAttempt && !state->attemptAuthority.complete(*executionAttempt)) {
+        completeExecutionLease();
+        ctx.fail("DI_ATTEMPT_DUPLICATE_TERMINAL");
+        return;
+      }
       completeExecutionLease();
       if (nativeTraceEnabled()) {
         std::cout << "\nNDNSF_DI_NATIVE_FINAL_RESPONSE_DECISION"

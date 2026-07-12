@@ -1268,6 +1268,9 @@ main(int argc, char** argv)
             config.runnerFactory = factory;
             config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
+            config.providerBootId = providerBootId;
+            config.planDigest = sha256File(options.planPath);
+            config.requireExecutionAttemptBinding = options.requireExecutionLease;
             config.workerCount = options.workers;
             config.kvStateStore = std::make_shared<KvStateStore>(
               64ULL * 1024ULL * 1024ULL, 128);

@@ -4,11 +4,57 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
+#include <mutex>
+#include <ostream>
 #include <string>
 #include <vector>
 
 namespace ndnsf::di {
+
+struct ExecutionAttemptKey
+{
+  std::string requestId;
+  std::uint64_t attemptEpoch = 0;
+
+  void validate() const;
+  std::string scopedSessionId() const;
+  std::map<std::string, std::string> assignmentFields() const;
+
+  bool operator==(const ExecutionAttemptKey& other) const noexcept;
+};
+
+enum class ExecutionAttemptAdmission
+{
+  Accepted,
+  Stale,
+  Cancelled,
+  DuplicateTerminal,
+};
+
+const char* toString(ExecutionAttemptAdmission admission) noexcept;
+std::ostream& operator<<(std::ostream& os, ExecutionAttemptAdmission admission);
+
+class ExecutionAttemptAuthority
+{
+public:
+  ExecutionAttemptAdmission admit(const ExecutionAttemptKey& key);
+  bool cancel(const ExecutionAttemptKey& key);
+  bool complete(const ExecutionAttemptKey& key);
+  bool isAuthoritative(const ExecutionAttemptKey& key) const;
+
+private:
+  struct State
+  {
+    std::uint64_t currentEpoch = 0;
+    bool cancelled = false;
+    bool terminal = false;
+  };
+
+  mutable std::mutex m_mutex;
+  std::map<std::string, State> m_states;
+};
 
 struct SegmentNamingSpec
 {
@@ -100,6 +146,13 @@ RoleSpec
 roleSpecFor(const NativeExecutionPlan& plan,
             const std::string& role,
             const std::string& sessionId,
+            const NativeProviderAssignment& assignment,
+            const std::string& localProvider = "");
+
+RoleSpec
+roleSpecFor(const NativeExecutionPlan& plan,
+            const std::string& role,
+            const ExecutionAttemptKey& attempt,
             const NativeProviderAssignment& assignment,
             const std::string& localProvider = "");
 

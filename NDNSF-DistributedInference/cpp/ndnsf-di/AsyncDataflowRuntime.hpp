@@ -15,6 +15,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace ndnsf::di {
@@ -46,13 +47,32 @@ struct DependencyEdge
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
   std::vector<std::string> tensors;
+  std::string requestId;
+  std::uint64_t attemptEpoch = 0;
 };
 
 struct RoleSpec
 {
+  RoleSpec() = default;
+
+  RoleSpec(std::string role,
+           std::vector<DependencyEdge> inputs,
+           std::vector<DependencyEdge> outputs,
+           std::string requestId = {},
+           std::uint64_t attemptEpoch = 0)
+    : role(std::move(role))
+    , inputs(std::move(inputs))
+    , outputs(std::move(outputs))
+    , requestId(std::move(requestId))
+    , attemptEpoch(attemptEpoch)
+  {
+  }
+
   std::string role;
   std::vector<DependencyEdge> inputs;
   std::vector<DependencyEdge> outputs;
+  std::string requestId;
+  std::uint64_t attemptEpoch = 0;
 };
 
 struct RoleExecutionContext

@@ -5,6 +5,119 @@
 
 namespace ndnsf::di {
 
+void
+ExecutionAttemptKey::validate() const
+{
+  if (requestId.empty() || attemptEpoch == 0) {
+    throw std::invalid_argument(
+      "execution attempt requires requestId and positive attemptEpoch");
+  }
+}
+
+std::string
+ExecutionAttemptKey::scopedSessionId() const
+{
+  validate();
+  return trimSlashes(requestId) + "/attempt=" + std::to_string(attemptEpoch);
+}
+
+std::map<std::string, std::string>
+ExecutionAttemptKey::assignmentFields() const
+{
+  validate();
+  return {
+    {"executionRequestId", requestId},
+    {"executionAttemptEpoch", std::to_string(attemptEpoch)},
+  };
+}
+
+bool
+ExecutionAttemptKey::operator==(const ExecutionAttemptKey& other) const noexcept
+{
+  return requestId == other.requestId && attemptEpoch == other.attemptEpoch;
+}
+
+const char*
+toString(ExecutionAttemptAdmission admission) noexcept
+{
+  switch (admission) {
+  case ExecutionAttemptAdmission::Accepted: return "ACCEPTED";
+  case ExecutionAttemptAdmission::Stale: return "STALE";
+  case ExecutionAttemptAdmission::Cancelled: return "CANCELLED";
+  case ExecutionAttemptAdmission::DuplicateTerminal: return "DUPLICATE_TERMINAL";
+  }
+  return "STALE";
+}
+
+std::ostream&
+operator<<(std::ostream& os, ExecutionAttemptAdmission admission)
+{
+  return os << toString(admission);
+}
+
+ExecutionAttemptAdmission
+ExecutionAttemptAuthority::admit(const ExecutionAttemptKey& key)
+{
+  key.validate();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  auto& state = m_states[key.requestId];
+  if (key.attemptEpoch < state.currentEpoch) {
+    return ExecutionAttemptAdmission::Stale;
+  }
+  if (key.attemptEpoch > state.currentEpoch) {
+    state = State{key.attemptEpoch, false, false};
+    return ExecutionAttemptAdmission::Accepted;
+  }
+  if (state.terminal) {
+    return ExecutionAttemptAdmission::DuplicateTerminal;
+  }
+  if (state.cancelled) {
+    return ExecutionAttemptAdmission::Cancelled;
+  }
+  return ExecutionAttemptAdmission::Accepted;
+}
+
+bool
+ExecutionAttemptAuthority::cancel(const ExecutionAttemptKey& key)
+{
+  key.validate();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto found = m_states.find(key.requestId);
+  if (found == m_states.end() || found->second.currentEpoch != key.attemptEpoch ||
+      found->second.terminal || found->second.cancelled) {
+    return false;
+  }
+  found->second.cancelled = true;
+  return true;
+}
+
+bool
+ExecutionAttemptAuthority::complete(const ExecutionAttemptKey& key)
+{
+  key.validate();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto found = m_states.find(key.requestId);
+  if (found == m_states.end() || found->second.currentEpoch != key.attemptEpoch ||
+      found->second.terminal || found->second.cancelled) {
+    return false;
+  }
+  found->second.terminal = true;
+  return true;
+}
+
+bool
+ExecutionAttemptAuthority::isAuthoritative(const ExecutionAttemptKey& key) const
+{
+  if (key.requestId.empty() || key.attemptEpoch == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto found = m_states.find(key.requestId);
+  return found != m_states.end() &&
+         found->second.currentEpoch == key.attemptEpoch &&
+         !found->second.cancelled && !found->second.terminal;
+}
+
 NativeDependencySpec::NativeDependencySpec(std::vector<std::string> producers,
                                            std::vector<std::string> consumers,
                                            std::string keyScope,
@@ -199,6 +312,29 @@ roleSpecFor(const NativeExecutionPlan& plan,
         });
       }
     }
+  }
+  return spec;
+}
+
+RoleSpec
+roleSpecFor(const NativeExecutionPlan& plan,
+            const std::string& role,
+            const ExecutionAttemptKey& attempt,
+            const NativeProviderAssignment& assignment,
+            const std::string& localProvider)
+{
+  attempt.validate();
+  auto spec = roleSpecFor(plan, role, attempt.scopedSessionId(),
+                          assignment, localProvider);
+  spec.requestId = attempt.requestId;
+  spec.attemptEpoch = attempt.attemptEpoch;
+  for (auto& edge : spec.inputs) {
+    edge.requestId = attempt.requestId;
+    edge.attemptEpoch = attempt.attemptEpoch;
+  }
+  for (auto& edge : spec.outputs) {
+    edge.requestId = attempt.requestId;
+    edge.attemptEpoch = attempt.attemptEpoch;
   }
   return spec;
 }

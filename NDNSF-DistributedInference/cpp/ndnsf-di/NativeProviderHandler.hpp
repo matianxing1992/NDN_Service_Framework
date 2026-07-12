@@ -26,6 +26,9 @@ struct NativeProviderHandlerConfig
   std::vector<NativeModelRunnerSpec> runnerSpecs;
   std::string finalResponseScope = "final-response";
   std::string localProviderName;
+  std::string providerBootId;
+  std::string planDigest;
+  bool requireExecutionAttemptBinding = false;
   int fetchTimeoutMs = 30000;
   std::size_t maxSegmentSize = 7000;
   int freshnessMs = 60000;
@@ -39,6 +42,20 @@ struct NativeProviderHandlerConfig
   std::shared_ptr<std::function<void(std::chrono::milliseconds)>>
     stageServiceTimeObserver;
 };
+
+struct NativeProviderExecutionBindingResult
+{
+  bool status = false;
+  std::string reason;
+  ExecutionAttemptKey attempt;
+};
+
+NativeProviderExecutionBindingResult
+validateNativeProviderExecutionBinding(
+  const std::map<std::string, std::string>& fields,
+  const std::string& expectedProviderBootId,
+  const std::string& expectedPlanDigest,
+  ExecutionAttemptAuthority& authority);
 
 std::optional<std::vector<uint8_t>>
 nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
