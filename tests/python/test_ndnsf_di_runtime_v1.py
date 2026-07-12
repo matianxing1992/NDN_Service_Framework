@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from ndnsf_distributed_inference.runtime_v1 import (
@@ -23,6 +24,7 @@ from ndnsf_distributed_inference.runtime_v1 import (
     ModelFragmentKey,
     ModelManifestV1,
     PlanCache,
+    PlanLeaseBindingsV1,
     ProviderFragmentInventoryManager,
     ProviderProfileV1,
     RuntimeTelemetryV1,
@@ -620,6 +622,53 @@ class RuntimeV1ContractsTest(unittest.TestCase):
             report = Path(tmp) / "report.json"
             write_runtime_report(report, lease=lease)
             self.assertTrue(report.exists())
+
+    def test_bound_plan_cache_requires_exact_current_runtime_facts(self) -> None:
+        plan = {"planId": "bound-plan", "plannerMode": "runtime-aware"}
+        model = ModelManifestV1(model_id="qwen", revision="r1", layers=12)
+        providers = [ProviderProfileV1(
+            "/provider/A", llm_stage_capacity_mb=8192, flops_tflops=8)]
+        telemetry = MeasuredTelemetrySnapshotV1(
+            provider_name="/provider/A", provider_boot_id="boot-a",
+            sequence=7, resource_sequence=6, measured_at_ms=1_000,
+            source="linux-proc", status="measured", evidence_epoch=3,
+            runner_kind="onnxruntime-cpu", runtime_version="ort-1.26",
+            model_digest="sha256:model", plan_digest="sha256:plan",
+            artifact_digests={"/Stage/0": "sha256:stage0"},
+            device_id="cpu0", membership_version="members-v1",
+            network_profile_version="network-v1", cache_version="cache-v1",
+        )
+        lease = make_plan_lease(
+            plan, model=model, providers=providers,
+            telemetry_by_provider={"/provider/A": telemetry},
+            membership_version="members-v1",
+            network_profile_version="network-v1",
+            cache_version="cache-v1",
+        )
+        self.assertIsInstance(lease.bindings, PlanLeaseBindingsV1)
+        self.assertEqual(lease.bindings.provider_boot_ids,
+                         {"/provider/A": "boot-a"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = PlanCache(Path(tmp) / "bound-cache.json")
+            cache.put(lease)
+            cache.save()
+            loaded = PlanCache(cache.path)
+            self.assertIsNone(loaded.get(lease.plan_key))
+            self.assertIsNotNone(loaded.get(
+                lease.plan_key, bindings=lease.bindings))
+            self.assertIsNone(loaded.get(
+                lease.plan_key,
+                bindings=replace(
+                    lease.bindings,
+                    provider_boot_ids={"/provider/A": "boot-b"}),
+            ))
+            self.assertIsNone(loaded.get(
+                lease.plan_key,
+                bindings=replace(
+                    lease.bindings,
+                    telemetry_versions={"/provider/A": "boot-a:8:7"}),
+            ))
 
     def test_runtime_smoke_payload(self) -> None:
         payload = runtime_v1_smoke()

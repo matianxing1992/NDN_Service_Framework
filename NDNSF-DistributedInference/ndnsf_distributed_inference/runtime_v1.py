@@ -2203,6 +2203,81 @@ class PlanKeyV1:
 
 
 @dataclass(frozen=True)
+class PlanLeaseBindingsV1:
+    """Exact external facts that make a cached plan safe to reuse."""
+
+    membership_version: str
+    provider_boot_ids: dict[str, str]
+    evidence_epochs: dict[str, int]
+    runtime_identity_digests: dict[str, str]
+    telemetry_versions: dict[str, str]
+    network_profile_version: str
+    cache_version: str
+
+    @classmethod
+    def capture(
+        cls,
+        telemetry_by_provider: dict[str, MeasuredTelemetrySnapshotV1],
+        *,
+        provider_set: Iterable[str],
+        membership_version: str,
+        network_profile_version: str,
+        cache_version: str,
+    ) -> "PlanLeaseBindingsV1":
+        expected = set(str(item) for item in provider_set)
+        observed = set(telemetry_by_provider)
+        if observed != expected:
+            raise ValueError(
+                "plan lease telemetry provider set mismatch: "
+                f"expected={sorted(expected)!r} observed={sorted(observed)!r}")
+        if not membership_version or not network_profile_version or not cache_version:
+            raise ValueError(
+                "bound plan lease requires membership, network-profile, and cache versions")
+
+        boot_ids: dict[str, str] = {}
+        evidence_epochs: dict[str, int] = {}
+        runtime_digests: dict[str, str] = {}
+        telemetry_versions: dict[str, str] = {}
+        for provider in sorted(expected):
+            item = telemetry_by_provider[provider]
+            if item.provider_name != provider:
+                raise ValueError(f"telemetry provider identity mismatch for {provider}")
+            if item.status != "measured" or item.source in {
+                "", "configured", "profile", "unavailable"
+            }:
+                raise ValueError(f"bound plan lease requires measured telemetry for {provider}")
+            if item.membership_version != membership_version:
+                raise ValueError(f"membership version mismatch for {provider}")
+            if item.network_profile_version != network_profile_version:
+                raise ValueError(f"network-profile version mismatch for {provider}")
+            if item.cache_version != cache_version:
+                raise ValueError(f"cache version mismatch for {provider}")
+            if not item.provider_boot_id or item.evidence_epoch <= 0 or item.sequence <= 0:
+                raise ValueError(f"incomplete telemetry binding for {provider}")
+            boot_ids[provider] = item.provider_boot_id
+            evidence_epochs[provider] = item.evidence_epoch
+            runtime_digests[provider] = stable_digest({
+                "runnerKind": item.runner_kind,
+                "runtimeVersion": item.runtime_version,
+                "modelDigest": item.model_digest,
+                "planDigest": item.plan_digest,
+                "artifactDigests": item.artifact_digests,
+                "deviceId": item.device_id,
+            }, length=32)
+            telemetry_versions[provider] = (
+                f"{item.provider_boot_id}:{item.sequence}:{item.resource_sequence}")
+        return cls(
+            membership_version=membership_version,
+            provider_boot_ids=boot_ids,
+            evidence_epochs=evidence_epochs,
+            runtime_identity_digests=runtime_digests,
+            telemetry_versions=telemetry_versions,
+            network_profile_version=network_profile_version,
+            cache_version=cache_version,
+        )
+
+
+@dataclass(frozen=True)
 class PlanLeaseV1:
     plan_key: PlanKeyV1
     plan_id: str
@@ -2213,9 +2288,11 @@ class PlanLeaseV1:
     created_at_ms: int = field(default_factory=now_ms)
     expires_at_ms: int = 0
     valid_until_versions: dict[str, str] = field(default_factory=dict)
+    bindings: PlanLeaseBindingsV1 | None = None
 
     def is_valid(self, *, now_ms_value: int | None = None,
-                 versions: dict[str, str] | None = None) -> bool:
+                 versions: dict[str, str] | None = None,
+                 bindings: PlanLeaseBindingsV1 | None = None) -> bool:
         current = now_ms() if now_ms_value is None else int(now_ms_value)
         if self.expires_at_ms and current >= self.expires_at_ms:
             return False
@@ -2223,6 +2300,8 @@ class PlanLeaseV1:
             expected = self.valid_until_versions.get(key)
             if expected is not None and expected != value:
                 return False
+        if self.bindings is not None and bindings != self.bindings:
+            return False
         return True
 
 
@@ -2236,11 +2315,12 @@ class PlanCache:
     def put(self, lease: PlanLeaseV1) -> None:
         self._leases[lease.plan_key.digest()] = lease
 
-    def get(self, key: PlanKeyV1, *, versions: dict[str, str] | None = None) -> PlanLeaseV1 | None:
+    def get(self, key: PlanKeyV1, *, versions: dict[str, str] | None = None,
+            bindings: PlanLeaseBindingsV1 | None = None) -> PlanLeaseV1 | None:
         lease = self._leases.get(key.digest())
         if lease is None:
             return None
-        return lease if lease.is_valid(versions=versions) else None
+        return lease if lease.is_valid(versions=versions, bindings=bindings) else None
 
     def load(self) -> None:
         payload = read_json(self.path)
@@ -2747,10 +2827,27 @@ def make_plan_lease(plan: dict[str, Any], *,
                     context_class: str = "short",
                     target_rps: float = 0.0,
                     cache_placement: CachePlacementDecision | None = None,
+                    telemetry_by_provider:
+                    dict[str, MeasuredTelemetrySnapshotV1] | None = None,
+                    membership_version: str = "",
+                    network_profile_version: str = "",
+                    cache_version: str = "",
                     ttl_ms: int = 0) -> PlanLeaseV1:
     provider_set = tuple(sorted(provider.provider for provider in providers))
     capability_version = stable_digest([to_plain(provider) for provider in providers], length=16)
-    cache_version = stable_digest(cache_placement, length=16) if cache_placement else ""
+    effective_cache_version = (
+        cache_version or
+        (stable_digest(cache_placement, length=16) if cache_placement else "")
+    )
+    bindings = None
+    if telemetry_by_provider is not None:
+        bindings = PlanLeaseBindingsV1.capture(
+            telemetry_by_provider,
+            provider_set=provider_set,
+            membership_version=membership_version,
+            network_profile_version=network_profile_version,
+            cache_version=effective_cache_version,
+        )
     key = PlanKeyV1(
         model_id=model.model_id,
         model_revision=model.revision,
@@ -2758,7 +2855,8 @@ def make_plan_lease(plan: dict[str, Any], *,
         target_rps=target_rps,
         provider_set=provider_set,
         capability_version=capability_version,
-        cache_version=cache_version,
+        network_version=network_profile_version,
+        cache_version=effective_cache_version,
         planner_mode=str(plan.get("plannerMode", "proportional")),
     )
     created = now_ms()
@@ -2776,8 +2874,11 @@ def make_plan_lease(plan: dict[str, Any], *,
         expires_at_ms=(created + ttl_ms if ttl_ms > 0 else 0),
         valid_until_versions={
             "capability": capability_version,
-            **({"cache": cache_version} if cache_version else {}),
+            **({"membership": membership_version} if membership_version else {}),
+            **({"network": network_profile_version} if network_profile_version else {}),
+            **({"cache": effective_cache_version} if effective_cache_version else {}),
         },
+        bindings=bindings,
     )
 
 
@@ -2785,6 +2886,30 @@ def lease_from_dict(payload: dict[str, Any]) -> PlanLeaseV1:
     key_payload = dict(payload["plan_key"])
     placement_payload = payload.get("cache_placement")
     placement = CachePlacementDecision(**placement_payload) if placement_payload else None
+    bindings_payload = payload.get("bindings")
+    bindings = None
+    if bindings_payload:
+        bindings = PlanLeaseBindingsV1(
+            membership_version=str(bindings_payload["membership_version"]),
+            provider_boot_ids={
+                str(key): str(value)
+                for key, value in bindings_payload["provider_boot_ids"].items()
+            },
+            evidence_epochs={
+                str(key): int(value)
+                for key, value in bindings_payload["evidence_epochs"].items()
+            },
+            runtime_identity_digests={
+                str(key): str(value)
+                for key, value in bindings_payload["runtime_identity_digests"].items()
+            },
+            telemetry_versions={
+                str(key): str(value)
+                for key, value in bindings_payload["telemetry_versions"].items()
+            },
+            network_profile_version=str(bindings_payload["network_profile_version"]),
+            cache_version=str(bindings_payload["cache_version"]),
+        )
     return PlanLeaseV1(
         plan_key=PlanKeyV1(
             model_id=key_payload["model_id"],
@@ -2805,6 +2930,7 @@ def lease_from_dict(payload: dict[str, Any]) -> PlanLeaseV1:
         created_at_ms=int(payload.get("created_at_ms", 0)),
         expires_at_ms=int(payload.get("expires_at_ms", 0)),
         valid_until_versions=dict(payload.get("valid_until_versions", {})),
+        bindings=bindings,
     )
 
 
