@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 
 MAX_INPUT_TOKENS = 512
@@ -62,3 +62,46 @@ def resolve_cache_request(*, cache_present: bool, full_context_present: bool,
     if full_context_present and not delta_only:
         return CacheResolution.FULL_CONTEXT_REBUILD
     raise QwenPilotTerminalError("CACHE_MISS_FULL_CONTEXT_REQUIRED")
+
+
+def compare_token_sequences(expected: Sequence[int], actual: Sequence[int]) -> None:
+    if len(expected) != len(actual):
+        raise QwenPilotTerminalError(
+            f"TOKEN_COUNT_MISMATCH expected={len(expected)} actual={len(actual)}")
+    for index, (expected_token, actual_token) in enumerate(zip(expected, actual)):
+        if expected_token != actual_token:
+            raise QwenPilotTerminalError(
+                f"TOKEN_MISMATCH index={index} expected={expected_token} actual={actual_token}")
+
+
+class QwenPilotOrchestrator:
+    """Bounded greedy loop around an injected tokenizer and staged-logit call."""
+
+    def __init__(self,
+                 tokenizer: Callable[[str], Sequence[int]],
+                 staged_logits: Callable[[tuple[int, ...]], Sequence[float]]) -> None:
+        self._tokenizer = tokenizer
+        self._staged_logits = staged_logits
+
+    def request(self, prompt: str, max_new_tokens: int) -> QwenPilotRequest:
+        if not isinstance(prompt, str) or not prompt:
+            raise ValueError("Qwen pilot prompt must not be empty")
+        request = QwenPilotRequest(
+            tuple(int(token) for token in self._tokenizer(prompt)),
+            int(max_new_tokens),
+        )
+        request.validate()
+        return request
+
+    def generate(self, request: QwenPilotRequest) -> list[int]:
+        request.validate()
+        context = list(request.input_token_ids)
+        generated: list[int] = []
+        for _ in range(request.max_new_tokens):
+            logits = self._staged_logits(tuple(context))
+            if not logits:
+                raise QwenPilotTerminalError("EMPTY_LOGITS")
+            token = max(range(len(logits)), key=lambda index: logits[index])
+            generated.append(token)
+            context.append(token)
+        return generated

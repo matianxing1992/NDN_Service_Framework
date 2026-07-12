@@ -13,7 +13,9 @@ from ndnsf_distributed_inference.release_gate import DIMENSIONS, build_release_g
 from ndnsf_distributed_inference.qwen_pilot import (
     CacheResolution,
     QwenPilotRequest,
+    QwenPilotOrchestrator,
     QwenPilotTerminalError,
+    compare_token_sequences,
     greedy_decode_fixture,
     resolve_cache_request,
 )
@@ -88,6 +90,23 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
                                   delta_only=True)
         self.assertEqual(caught.exception.reason,
                          "CACHE_MISS_FULL_CONTEXT_REQUIRED")
+
+    def test_qwen_pilot_tokenization_orchestration_and_exact_comparison(self) -> None:
+        contexts: list[tuple[int, ...]] = []
+        orchestrator = QwenPilotOrchestrator(
+            tokenizer=lambda prompt: [len(prompt), 7],
+            staged_logits=lambda context: (
+                contexts.append(context) or [0.0, 1.0, float(len(context))]
+            ),
+        )
+        request = orchestrator.request("pilot", 2)
+        actual = orchestrator.generate(request)
+        self.assertEqual(actual, [2, 2])
+        self.assertEqual(contexts, [(5, 7), (5, 7, 2)])
+        compare_token_sequences([2, 2], actual)
+        with self.assertRaises(QwenPilotTerminalError) as mismatch:
+            compare_token_sequences([2, 1], actual)
+        self.assertIn("index=1", mismatch.exception.reason)
 
     def test_release_gate_blocks_missing_synthetic_mixed_and_digest_mismatch(self) -> None:
         dimensions = {name: {"status": "PASS", "artifacts": [f"{name}.json"]}

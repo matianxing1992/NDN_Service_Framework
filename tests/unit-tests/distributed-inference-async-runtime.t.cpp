@@ -1420,6 +1420,57 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRejectsMissingRoleRunner)
   BOOST_CHECK_THROW(runtime.executeRoleAsync("run-6", role, io), std::out_of_range);
 }
 
+BOOST_AUTO_TEST_CASE(KvStateStoreBindsReplacesEvictsAndInvalidatesOnBoot)
+{
+  KvStateStore store(8, 2);
+  store.setProviderBootId("boot-a");
+  KvStateBinding first{
+    "session-a", "/LLM/Stage/0", 1, "sha256:model", "sha256:plan",
+    "/provider/A", "boot-a", 7,
+  };
+  BOOST_CHECK(store.put(first, bundle("kv-a", "1234")));
+  BOOST_REQUIRE(store.lookup(first));
+  BOOST_CHECK_EQUAL(payloadText(*store.lookup(first)), "1234");
+
+  auto wrongEpoch = first;
+  wrongEpoch.contextEpoch = 2;
+  BOOST_CHECK(!store.lookup(wrongEpoch));
+  auto wrongPlan = first;
+  wrongPlan.planDigest = "sha256:other";
+  BOOST_CHECK(!store.lookup(wrongPlan));
+  auto wrongSecurity = first;
+  wrongSecurity.securityEpoch = 8;
+  BOOST_CHECK(!store.lookup(wrongSecurity));
+
+  BOOST_CHECK(store.put(first, bundle("kv-a-new", "5678")));
+  BOOST_CHECK_EQUAL(store.size(), 1);
+  BOOST_CHECK_EQUAL(payloadText(*store.lookup(first)), "5678");
+
+  auto second = first;
+  second.sessionId = "session-b";
+  BOOST_CHECK(store.put(second, bundle("kv-b", "abcd")));
+  BOOST_REQUIRE(store.lookup(first)); // make first most recently used
+  auto third = first;
+  third.sessionId = "session-c";
+  BOOST_CHECK(store.put(third, bundle("kv-c", "WXYZ")));
+  BOOST_CHECK(store.lookup(first));
+  BOOST_CHECK(!store.lookup(second));
+  BOOST_CHECK(store.lookup(third));
+  BOOST_CHECK_EQUAL(store.usedBytes(), 8);
+
+  store.setProviderBootId("boot-b");
+  BOOST_CHECK_EQUAL(store.size(), 0);
+  BOOST_CHECK_EQUAL(store.usedBytes(), 0);
+  BOOST_CHECK(!store.put(first, bundle("old-boot", "1234")));
+  auto newBoot = first;
+  newBoot.providerBootId = "boot-b";
+  BOOST_CHECK(store.put(newBoot, bundle("new-boot", "1234")));
+  BOOST_CHECK(store.erase(newBoot.sessionId, newBoot.stage));
+  BOOST_CHECK_EQUAL(store.size(), 0);
+
+  BOOST_CHECK(!store.put(newBoot, bundle("too-large", "123456789")));
+}
+
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanBuildsRoleLocalSpecsWithDeterministicNames)
 {
   NativeExecutionPlan plan;
