@@ -109,10 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider-start-timeout-s", type=float, default=20.0)
     parser.add_argument("--ack-timeout-ms", type=int, default=1500)
     parser.add_argument("--timeout-ms", type=int, default=60000)
+    parser.add_argument("--ndn-log", default="ndn_service_framework.*=INFO")
     parser.add_argument("--prompt", default="Explain NDNSF-DI pipeline inference.")
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--measured-requests", type=int, default=1)
     parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument(
+        "--native-first-kv-mode",
+        choices=("full-context", "delta-only"),
+        default="full-context",
+    )
     parser.add_argument("--measured-duration-s", type=float, default=0.0)
     parser.add_argument("--request-interval-ms", type=float, default=0.0)
     parser.add_argument(
@@ -775,7 +781,7 @@ def main() -> int:
         "PYTHONFAULTHANDLER": "1",
         "PYTHONUNBUFFERED": "1",
         "PYTHONPATH": ":".join(python_path_entries()),
-        "NDN_LOG": "ndn_service_framework.*=INFO",
+        "NDN_LOG": args.ndn_log,
         "NDNSF_RESPONSE_LARGE_DATA_THRESHOLD": "1024",
     }
     if args.large_fetch_timing:
@@ -983,6 +989,7 @@ def main() -> int:
             "--ack-timeout-ms {} --timeout-ms {} "
             "--warmup-requests {} --measured-requests {} "
             "--max-new-tokens {} "
+            "--native-first-kv-mode {} "
             "--measured-duration-s {} --request-interval-ms {} "
             "--metrics-csv {} {} {}".format(
                 perf.shell_quote(args.prompt),
@@ -998,6 +1005,7 @@ def main() -> int:
                 args.warmup_requests,
                 args.measured_requests,
                 args.max_new_tokens,
+                args.native_first_kv_mode,
                 args.measured_duration_s,
                 args.request_interval_ms,
                 perf.shell_quote(metrics_csv),

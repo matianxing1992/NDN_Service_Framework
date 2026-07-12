@@ -109,6 +109,11 @@ def main() -> int:
     parser.add_argument("--native-cpu-provider", action="store_true")
     parser.add_argument("--qwen-service-manifest", default="")
     parser.add_argument("--max-new-tokens", type=int, default=1)
+    parser.add_argument(
+        "--native-first-kv-mode",
+        choices=("full-context", "delta-only"),
+        default="full-context",
+    )
     parser.add_argument("--session-id", default="")
     parser.add_argument("--context-epoch", type=int, default=0)
     parser.add_argument(
@@ -342,7 +347,7 @@ def main() -> int:
 
                     full_ids = np.asarray(context_doc["inputIds"], dtype=np.int64)
                     full_mask = np.asarray(context_doc["attentionMask"], dtype=np.int64)
-                    if token_index == 0:
+                    if token_index == 0 and args.native_first_kv_mode == "full-context":
                         ids = full_ids
                         positions = np.arange(
                             full_ids.shape[1], dtype=np.int64)[None, :]
@@ -364,7 +369,9 @@ def main() -> int:
                                     dtype=np.float32,
                                 )
                     native_payload = _native_tensor_bundle_payload(tensors)
-                    kv_mode = "full-context" if token_index == 0 else "cache-hit"
+                    kv_mode = (
+                        args.native_first_kv_mode if token_index == 0 else "cache-hit"
+                    )
                     requirement = (
                         f"kvMode={kv_mode};kvSessionId={logical_session};"
                         f"kvContextEpoch={token_index};"
