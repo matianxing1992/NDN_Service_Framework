@@ -118,6 +118,10 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         (run_dir / "ground-station.log").read_text(encoding="utf-8", errors="replace")
         if (run_dir / "ground-station.log").exists() else ""
     )
+    drone_log_text = (
+        (run_dir / "drone.log").read_text(encoding="utf-8", errors="replace")
+        if (run_dir / "drone.log").exists() else ""
+    )
     targeted_phase_counts: dict[str, int] = {}
     command_stages: dict[str, str] = {}
     state_convergence_stages: dict[str, str] = {}
@@ -134,6 +138,8 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
     auto_arm_terminal_reason = "unknown"
     arm_command_terminal_ms: int | None = None
     arm_command_terminal_phase = "unknown"
+    armed_wait_terminal_ms: int | None = None
+    armed_wait_stage = "unknown"
     for line in log_text.splitlines():
         fields = base.fields_from_line(line)
         if "GS_TARGETED_PHASE" in line and "phase" in fields:
@@ -180,12 +186,22 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
                     auto_arm_terminal_reason = fields.get("reason", "unknown")
             if step == "arm" and prerequisite == "telemetry-ready" and phase in {"satisfied", "expired"}:
                 auto_arm_wait_terminal_ms = int(fields.get("timestamp_ms", "0") or 0)
+            if step == "takeoff" and prerequisite == "armed" and phase in {"satisfied", "expired"}:
+                armed_wait_terminal_ms = int(fields.get("timestamp_ms", "0") or 0)
+                armed_wait_stage = phase
         if "GS_STATUS Telemetry" in line and fields.get("armed") == "true":
             timestamp = re.match(r"^(\d+(?:\.\d+)?)", line)
             if timestamp:
                 armed_telemetry_ms.append(int(float(timestamp.group(1)) * 1000))
     lifecycle_abort_reason = next(
         (marker for marker in LIFECYCLE_ABORT_MARKERS if marker in log_text), "")
+    drone_armed_ms: list[int] = []
+    for line in drone_log_text.splitlines():
+        fields = base.fields_from_line(line)
+        if "DRONE_HEADLESS_STATUS" in line and fields.get("armed") == "true":
+            timestamp = re.match(r"^(\d+(?:\.\d+)?)", line)
+            if timestamp:
+                drone_armed_ms.append(int(float(timestamp.group(1)) * 1000))
     unterminated_command_attempts = {
         command: stage
         for command, stage in command_stages.items()
@@ -268,6 +284,29 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
             ["unterminated-targeted:" + request_id for request_id in unterminated_targeted]
         ),
     }
+    first_drone_armed_ms = next((value for value in drone_armed_ms
+                                 if arm_terminal_ms is not None and value >= arm_terminal_ms and
+                                 (armed_wait_terminal_ms is None or value <= armed_wait_terminal_ms)), None)
+    first_gs_armed_ms = next((value for value in armed_telemetry_ms
+                              if arm_terminal_ms is not None and value >= arm_terminal_ms and
+                              (armed_wait_terminal_ms is None or value <= armed_wait_terminal_ms)), None)
+    if armed_wait_stage == "satisfied":
+        visibility_class = "satisfied"
+    elif armed_wait_stage == "expired" and first_gs_armed_ms is not None:
+        visibility_class = "final-observation-missed"
+    elif armed_wait_stage == "expired" and first_drone_armed_ms is not None:
+        visibility_class = "ground-telemetry-not-visible"
+    elif armed_wait_stage == "expired" and drone_log_text:
+        visibility_class = "drone-not-armed"
+    else:
+        visibility_class = "unknown"
+    armed_visibility = {
+        "class": visibility_class,
+        "armResponseMs": arm_terminal_ms,
+        "armedWaitTerminalMs": armed_wait_terminal_ms,
+        "firstDroneArmedMs": first_drone_armed_ms,
+        "firstGroundStationArmedMs": first_gs_armed_ms,
+    }
     video_completion = bool(result["videoCompletion"]) if video_required else None
     control_completion = bool(result["controlCompletion"]) if control_required else None
     result.update({
@@ -297,6 +336,7 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         "armAccepted": arm_accepted,
         "armedTelemetryBeforeTakeoff": armed_telemetry_before_takeoff,
         "initialControlAttribution": initial_control_attribution,
+        "armedVisibility": armed_visibility,
     })
     result["completion"] = (
         bool(result["processCompletion"]) and
@@ -342,6 +382,7 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         unterminated_automation_wait_counts: dict[str, int] = {}
         duplicate_automation_dispatch_runs = 0
         attribution_boundary_counts: dict[str, int] = {}
+        armed_visibility_counts: dict[str, int] = {}
         for row in control_rows:
             for command, stage in row.get("controlCommandStages", {}).items():
                 stage_counts = command_stage_counts.setdefault(str(command), {})
@@ -365,6 +406,8 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             boundary = str(attribution.get("earliestBoundary", "unknown"))
             attribution_boundary_counts[boundary] = (
                 attribution_boundary_counts.get(boundary, 0) + 1)
+            visibility = str(row.get("armedVisibility", {}).get("class", "unknown"))
+            armed_visibility_counts[visibility] = armed_visibility_counts.get(visibility, 0) + 1
         aggregates.append({
             "workloadMode": mode,
             "fecParityShards": WORKLOADS[mode]["parity"],
@@ -390,6 +433,7 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "armedTelemetryBeforeTakeoffRuns": sum(
                 bool(row.get("armedTelemetryBeforeTakeoff", False)) for row in control_rows),
             "initialControlAttributionBoundaryCounts": attribution_boundary_counts,
+            "armedVisibilityCounts": armed_visibility_counts,
             "initialControlAttributionCompleteRuns": sum(
                 bool(row.get("initialControlAttribution", {}).get("evidenceComplete", False))
                 for row in control_rows),

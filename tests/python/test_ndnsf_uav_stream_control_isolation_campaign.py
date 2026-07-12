@@ -50,6 +50,9 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
             if "UAV_AUTO_CONTROL_PHASE" in line or "<< step." in line)
         for sensitive in ("payload", "token", "certificate", "credential", "private_key"):
             self.assertNotIn(sensitive, event_source.lower())
+        final_read = source[source.index("Close the polling-boundary race"):source.index("const auto reason", source.index("Close the polling-boundary race"))]
+        self.assertIn("autoControlPrerequisiteSatisfied", final_read)
+        self.assertNotIn("requestTelemetryStatusForDrone", final_read)
 
     def test_primary_matrix_has_five_cells_and_fifteen_runs(self) -> None:
         campaign = load_campaign()
@@ -279,6 +282,29 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
             result["initialControlAttribution"]["earliestBoundary"],
             "armed-convergence-expired",
         )
+
+    def test_drone_and_ground_station_armed_visibility_are_distinguished(self) -> None:
+        campaign = load_campaign()
+        for include_ground, expected in (
+                (False, "ground-telemetry-not-visible"),
+                (True, "final-observation-missed")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                run_dir = Path(tmp)
+                gs = (
+                    "UAV_CONTROL_COMMAND phase=response drone=A command=arm timestamp_ms=1000 elapsed_ms=10 accepted=true reason=success\n"
+                    "UAV_AUTO_CONTROL_PHASE phase=expired drone=A step=takeoff prerequisite=armed timestamp_ms=11000 elapsed_ms=10000 reason=armed-state-not-converged\n"
+                )
+                if include_ground:
+                    gs += "10.900 INFO GS_STATUS Telemetry drone=A armed=true ready=ready\n"
+                (run_dir / "ground-station.log").write_text(gs, encoding="utf-8")
+                (run_dir / "drone.log").write_text(
+                    "2.000 INFO DRONE_HEADLESS_STATUS identity=/D armed=true readiness=ready\n",
+                    encoding="utf-8")
+                result = campaign.parse_mode_run(
+                    run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                    loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+                )
+                self.assertEqual(result["armedVisibility"]["class"], expected)
 
     def test_duplicate_automation_dispatch_rejects_run(self) -> None:
         campaign = load_campaign()

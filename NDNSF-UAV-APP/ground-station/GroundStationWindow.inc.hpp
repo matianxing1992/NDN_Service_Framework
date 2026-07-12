@@ -1458,6 +1458,46 @@ public:
   }
 
 private:
+  bool
+  autoControlPrerequisiteSatisfied(const std::string& prerequisite,
+                                   uint64_t startedMs,
+                                   uint64_t latestObservationMs,
+                                   std::string& observedReason) const
+  {
+    const auto telemetry = m_runtime.telemetryForDrone(m_runtime.targetDroneId());
+    if (!telemetry || telemetry->timestampMs < startedMs ||
+        telemetry->timestampMs > latestObservationMs) {
+      observedReason = "no-telemetry";
+      return false;
+    }
+    const auto readiness = ReadinessState::fromTelemetry(*telemetry);
+    const auto safety = SafetyState::fromTelemetry(*telemetry);
+    const auto gate = FlightSafetyGateState::fromStates(
+      m_runtime.targetDroneId(), readiness, safety);
+    if (prerequisite == "telemetry-ready") {
+      return gate.actionAllowed("arm", observedReason);
+    }
+    if (prerequisite == "armed") {
+      return gate.actionAllowed("takeoff", observedReason);
+    }
+    if (prerequisite == "airborne") {
+      const bool satisfied = telemetry->armed == "true" &&
+                             telemetry->landedStateName != "on-ground" &&
+                             gate.actionAllowed("land", observedReason);
+      if (!satisfied && observedReason == "ok") {
+        observedReason = "not-airborne";
+      }
+      return satisfied;
+    }
+    if (prerequisite == "disarmed") {
+      const bool satisfied = telemetry->armed == "false";
+      observedReason = satisfied ? "disarmed" : "still-armed";
+      return satisfied;
+    }
+    observedReason = "unknown-prerequisite";
+    return false;
+  }
+
   void
   logAutoControlPhase(const AutoControlSequenceStep& step) const
   {
@@ -1489,44 +1529,30 @@ private:
     }
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto deadlineMs = startedMs + static_cast<uint64_t>(timeout.count());
     while (!m_autoControlStop.load() && std::chrono::steady_clock::now() < deadline) {
       // Reuse the runtime's asynchronous telemetry path and in-flight guard.
       // A synchronous helper would leave stack-captured callbacks vulnerable
       // to a late response after its local wait has timed out.
       m_runtime.requestTelemetryStatusForDrone(m_runtime.targetDroneId());
-      const auto telemetry = m_runtime.telemetryForDrone(m_runtime.targetDroneId());
-      bool satisfied = false;
       std::string observedReason = "no-telemetry";
-      if (telemetry && telemetry->timestampMs >= startedMs) {
-        const auto readiness = ReadinessState::fromTelemetry(*telemetry);
-        const auto safety = SafetyState::fromTelemetry(*telemetry);
-        const auto gate = FlightSafetyGateState::fromStates(
-          m_runtime.targetDroneId(), readiness, safety);
-        if (prerequisite == "telemetry-ready") {
-          satisfied = gate.actionAllowed("arm", observedReason);
-        }
-        else if (prerequisite == "armed") {
-          satisfied = gate.actionAllowed("takeoff", observedReason);
-        }
-        else if (prerequisite == "airborne") {
-          satisfied = telemetry->armed == "true" &&
-                      telemetry->landedStateName != "on-ground" &&
-                      gate.actionAllowed("land", observedReason);
-          if (!satisfied && observedReason == "ok") {
-            observedReason = "not-airborne";
-          }
-        }
-        else if (prerequisite == "disarmed") {
-          satisfied = telemetry->armed == "false";
-          observedReason = satisfied ? "disarmed" : "still-armed";
-        }
-      }
-      if (satisfied) {
+      if (autoControlPrerequisiteSatisfied(
+            prerequisite, startedMs, deadlineMs, observedReason)) {
         step.satisfy(observedReason, nowMilliseconds());
         logAutoControlPhase(step);
         return true;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Close the polling-boundary race without another network request or any
+    // timeout extension. State timestamped after the deadline remains invalid.
+    std::string finalReason = "no-telemetry";
+    if (!m_autoControlStop.load() && autoControlPrerequisiteSatisfied(
+          prerequisite, startedMs, deadlineMs, finalReason)) {
+      step.satisfy(finalReason, nowMilliseconds());
+      logAutoControlPhase(step);
+      return true;
     }
 
     const auto reason = m_autoControlStop.load() ? "shutdown" :
