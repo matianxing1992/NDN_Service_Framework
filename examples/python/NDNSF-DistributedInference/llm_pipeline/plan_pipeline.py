@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
 from llm_pipeline_lib import (
     QWEN_ONNX_RUNTIME,
     QWEN_TRANSFORMERS_RUNTIME,
@@ -54,12 +58,24 @@ def main() -> int:
         qwen_allow_download=args.qwen_allow_download,
         qwen_dtype=args.qwen_dtype,
     )
+    manifest_path = Path(args.policy).parent / "qwen-onnx-service-manifest.json"
+    if args.runtime == QWEN_ONNX_RUNTIME:
+        if not manifest_path.exists():
+            raise RuntimeError(f"Qwen ONNX service manifest was not generated: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if int(manifest.get("stageCount", 0)) != 3 or len(manifest.get("stages", [])) != 3:
+            raise RuntimeError("Qwen pilot requires exactly three exported ONNX stages")
+        manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    else:
+        manifest_digest = ""
     print(
         "LLM_PIPELINE_POLICY_OK",
         f"service={args.service}",
         f"stages={args.stages}",
         f"layers={args.layers}",
         f"policy={policy}",
+        f"manifest={manifest_path if manifest_digest else ''}",
+        f"manifestSha256={manifest_digest}",
     )
     return 0
 

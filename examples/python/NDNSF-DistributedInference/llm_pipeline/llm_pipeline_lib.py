@@ -9,6 +9,7 @@ boundaries.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import os
@@ -39,6 +40,14 @@ DEFAULT_PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
 TINY_TRANSFORMERS_RUNTIME = "tiny-transformers"
 QWEN_TRANSFORMERS_RUNTIME = "qwen-transformers"
 QWEN_ONNX_RUNTIME = "qwen-onnx"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _is_loadable_torch_file(torch: Any, path: Path) -> bool:
@@ -344,6 +353,33 @@ def qwen_onnx_stage_spec(*, role: str,
         "runtime": QWEN_ONNX_RUNTIME,
         "modelFormat": "onnx",
         "runtimeBackend": "onnxruntime",
+    })
+    start = int(spec["layerRange"]["start"])
+    end = int(spec["layerRange"]["endExclusive"])
+    cache_inputs = [
+        name
+        for layer in range(start, end)
+        for name in (f"past_key.{layer}", f"past_value.{layer}")
+    ]
+    cache_outputs = [
+        name
+        for layer in range(start, end)
+        for name in (f"present_key.{layer}", f"present_value.{layer}")
+    ]
+    primary_inputs = (
+        ["input_ids", "attention_mask", "position_ids"]
+        if int(spec["stageIndex"]) == 0
+        else ["attention_mask", "hidden_states", "position_ids"]
+    )
+    spec.update({
+        "inputNames": [*primary_inputs, *cache_inputs],
+        "outputNames": [
+            "logits" if int(spec["stageIndex"]) == int(spec["stageCount"]) - 1
+            else "hidden_states_out",
+            *cache_outputs,
+        ],
+        "cacheInputs": cache_inputs,
+        "cacheOutputs": cache_outputs,
     })
     return spec
 
@@ -741,27 +777,74 @@ def _onnx_stage_wrapper(model: Any):
     start = int(getattr(model, "ndnsf_stage_start"))
     end = int(getattr(model, "ndnsf_stage_end"))
 
+    layer_indices = list(range(start, end))
+
+    class _ExportCache:
+        def __init__(self, values):
+            self.values = {
+                layer: [values[index * 2], values[index * 2 + 1]]
+                for index, layer in enumerate(layer_indices)
+            }
+
+        def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
+            del cache_kwargs
+            past_key, past_value = self.values[int(layer_idx)]
+            present_key = torch.cat((past_key, key_states), dim=2)
+            present_value = torch.cat((past_value, value_states), dim=2)
+            self.values[int(layer_idx)] = [present_key, present_value]
+            return present_key, present_value
+
     class _QwenOnnxStage(nn.Module):
         def __init__(self):
             super().__init__()
             self.model = model
 
-        def forward(self, input_ids, hidden_states, position_ids):
+        def forward(self, input_ids, attention_mask, hidden_states, position_ids, *past_values):
             base = self.model.model
             if stage_index == 0:
                 hidden_states = base.embed_tokens(input_ids)
+            cache = _ExportCache(past_values)
+            query_length = hidden_states.shape[1]
+            past_length = past_values[0].shape[2]
+            key_length = past_length + query_length
+            query_positions = past_length + torch.arange(
+                query_length, device=hidden_states.device)
+            key_positions = torch.arange(key_length, device=hidden_states.device)
+            allowed = key_positions.unsqueeze(0) <= query_positions.unsqueeze(1)
+            minimum = torch.finfo(hidden_states.dtype).min
+            causal_mask = torch.where(
+                allowed,
+                torch.zeros((), dtype=hidden_states.dtype, device=hidden_states.device),
+                torch.full((), minimum, dtype=hidden_states.dtype,
+                           device=hidden_states.device),
+            ).unsqueeze(0).unsqueeze(0)
+            padding_mask = (1 - attention_mask.to(hidden_states.dtype)).unsqueeze(1).unsqueeze(1)
+            causal_mask = causal_mask + padding_mask * minimum
             position_embeddings = _rotary_embeddings(base, hidden_states, position_ids)
             for layer in list(base.layers):
-                hidden_states = _run_transformer_layer(
-                    layer,
-                    hidden_states,
+                output = _call_with_supported_kwargs(
+                    layer.forward,
+                    hidden_states=hidden_states,
                     position_ids=position_ids,
                     position_embeddings=position_embeddings,
-                    attention_mask=None,
+                    attention_mask=causal_mask,
+                    past_key_value=cache,
+                    use_cache=True,
+                    cache_position=position_ids[0],
+                    output_attentions=False,
                 )
+                hidden_states = output[0] if isinstance(output, tuple) else output
+            primary = hidden_states
             if stage_index < stage_count - 1:
-                return hidden_states
-            return self.model.lm_head(base.norm(hidden_states))
+                primary = hidden_states
+            else:
+                primary = self.model.lm_head(base.norm(hidden_states))
+            cache_outputs = tuple(
+                value
+                for layer in layer_indices
+                for value in cache.values[layer]
+            )
+            return (primary, *cache_outputs)
 
     wrapper = _QwenOnnxStage()
     wrapper.eval()
@@ -780,18 +863,41 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
         dtype=torch.float32,
     )
     position_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
-    input_names = ["input_ids", "hidden_states", "position_ids"]
-    output_names = ["logits" if stage_index == stage_count - 1 else "hidden_states_out"]
+    layer_indices = list(range(start, end))
+    kv_heads = int(getattr(model.config, "num_key_value_heads",
+                           model.config.num_attention_heads))
+    head_dim = int(hidden_size // model.config.num_attention_heads)
+    past_values = tuple(
+        torch.empty((int(sample_input_ids.shape[0]), kv_heads, 0, head_dim),
+                    dtype=torch.float32)
+        for _ in range(len(layer_indices) * 2)
+    )
+    attention_mask = torch.ones(
+        (int(sample_input_ids.shape[0]), seq_len), dtype=torch.long)
+    input_names = ["input_ids", "attention_mask", "hidden_states", "position_ids"] + [
+        name for layer in layer_indices
+        for name in (f"past_key.{layer}", f"past_value.{layer}")
+    ]
+    output_names = ["logits" if stage_index == stage_count - 1 else "hidden_states_out"] + [
+        name for layer in layer_indices
+        for name in (f"present_key.{layer}", f"present_value.{layer}")
+    ]
     dynamic_axes = {
         "input_ids": {1: "seq"},
         "hidden_states": {1: "seq"},
         "position_ids": {1: "seq"},
+        "attention_mask": {1: "total_seq"},
         output_names[0]: {1: "seq"},
     }
+    for layer in layer_indices:
+        dynamic_axes[f"past_key.{layer}"] = {2: "past_seq"}
+        dynamic_axes[f"past_value.{layer}"] = {2: "past_seq"}
+        dynamic_axes[f"present_key.{layer}"] = {2: "total_seq"}
+        dynamic_axes[f"present_value.{layer}"] = {2: "total_seq"}
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         wrapper,
-        (sample_input_ids, dummy_hidden, position_ids),
+        (sample_input_ids, attention_mask, dummy_hidden, position_ids, *past_values),
         str(onnx_path),
         input_names=input_names,
         output_names=output_names,
@@ -799,12 +905,91 @@ def _export_qwen_onnx_stage(model: Any, onnx_path: Path,
         opset_version=17,
         do_constant_folding=True,
     )
+    import onnx
+
+    graph = onnx.load(str(onnx_path), load_external_data=False).graph
+    actual_input_names = [value.name for value in graph.input]
+    actual_output_names = [value.name for value in graph.output]
+
+    def contract(value):
+        tensor = value.type.tensor_type
+        dimensions = []
+        for dim in tensor.shape.dim:
+            dimensions.append(
+                int(dim.dim_value) if dim.HasField("dim_value") else str(dim.dim_param)
+            )
+        return {"elementType": int(tensor.elem_type), "shape": dimensions}
+
     return {
         "stageIndex": stage_index,
         "stageCount": stage_count,
         "layerRange": {"start": start, "endExclusive": end},
-        "inputNames": input_names,
-        "outputNames": output_names,
+        "inputNames": actual_input_names,
+        "outputNames": actual_output_names,
+        "cacheInputs": [name for name in actual_input_names if name.startswith("past_")],
+        "cacheOutputs": [name for name in actual_output_names if name.startswith("present_")],
+        "tensorContracts": {
+            value.name: contract(value)
+            for value in [*graph.input, *graph.output]
+        },
+    }
+
+
+def _validate_qwen_onnx_stages(artifacts: list[SplitArtifact], *,
+                               input_ids: Any, attention_mask: Any,
+                               config: Any) -> dict[str, Any]:
+    import numpy as np
+    import onnxruntime as ort
+
+    hidden = np.zeros(
+        (int(input_ids.shape[0]), int(input_ids.shape[1]), int(config.hidden_size)),
+        dtype=np.float32,
+    )
+    ids = input_ids.detach().cpu().numpy().astype(np.int64)
+    mask = attention_mask.detach().cpu().numpy().astype(np.int64)
+    position_ids = np.arange(ids.shape[1], dtype=np.int64).reshape(1, -1)
+    kv_heads = int(getattr(config, "num_key_value_heads", config.num_attention_heads))
+    head_dim = int(config.hidden_size // config.num_attention_heads)
+    stage_records = []
+    logits = None
+    for artifact in artifacts:
+        options = ort.SessionOptions()
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        session = ort.InferenceSession(
+            artifact.path, sess_options=options, providers=["CPUExecutionProvider"])
+        feed = {}
+        for item in session.get_inputs():
+            if item.name == "input_ids":
+                feed[item.name] = ids
+            elif item.name == "attention_mask":
+                feed[item.name] = mask
+            elif item.name == "hidden_states":
+                feed[item.name] = hidden
+            elif item.name == "position_ids":
+                feed[item.name] = position_ids
+            elif item.name.startswith(("past_key.", "past_value.")):
+                feed[item.name] = np.empty(
+                    (ids.shape[0], kv_heads, 0, head_dim), dtype=np.float32)
+            else:
+                raise RuntimeError(f"unrecognized exported Qwen input: {item.name}")
+        outputs = session.run(None, feed)
+        primary = np.asarray(outputs[0])
+        if artifact.metadata["stageIndex"] < artifact.metadata["stageCount"] - 1:
+            hidden = primary.astype(np.float32, copy=False)
+        else:
+            logits = primary
+        stage_records.append({
+            "role": artifact.role,
+            "primaryShape": list(primary.shape),
+            "cacheOutputCount": len(outputs) - 1,
+        })
+        del session
+    if logits is None:
+        raise RuntimeError("Qwen stage validation produced no logits")
+    return {
+        "topToken": int(np.argmax(logits[:, -1, :], axis=-1)[0]),
+        "logitsShape": list(logits.shape),
+        "stages": stage_records,
     }
 
 
@@ -891,8 +1076,13 @@ def write_qwen_onnx_stage_artifacts(
                 "hiddenSize": int(full_model.config.hidden_size),
                 "inputNames": export_info["inputNames"],
                 "outputNames": export_info["outputNames"],
+                "cacheInputs": export_info["cacheInputs"],
+                "cacheOutputs": export_info["cacheOutputs"],
+                "tensorContracts": export_info["tensorContracts"],
             },
         ))
+    validation = None
+    expected_top_token = None
     if prompt:
         with torch.no_grad():
             tokens = tokenizer(prompt, return_tensors="pt")
@@ -906,6 +1096,17 @@ def write_qwen_onnx_stage_artifacts(
             ).logits
             full_ms = (time.perf_counter() - started) * 1000.0
             top_token = int(torch.argmax(logits[:, -1, :], dim=-1).item())
+            expected_top_token = top_token
+        validation = _validate_qwen_onnx_stages(
+            artifacts,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            config=full_model.config,
+        )
+        if validation["topToken"] != expected_top_token:
+            raise RuntimeError(
+                "staged Qwen ONNX top token differs from frozen full-model baseline: "
+                f"{validation['topToken']} != {expected_top_token}")
         runtime_summary = {
             "schema": "ndnsf-di-qwen-onnx-pipeline-runtime-v1",
             "model": model_name,
@@ -917,12 +1118,41 @@ def write_qwen_onnx_stage_artifacts(
             "inputIds": input_ids.cpu().tolist(),
             "attentionMask": attention_mask.cpu().tolist(),
             "expectedTopToken": top_token,
+            "stagedValidation": validation,
             "fullMs": full_ms,
         }
         (Path(output_dir) / "qwen-pipeline-runtime.json").write_text(
             json.dumps(runtime_summary, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+    manifest = {
+        "schema": "ndnsf-di-qwen-onnx-service-manifest-v1",
+        "model": model_name,
+        "modelRevision": str(getattr(full_model.config, "_commit_hash", "") or ""),
+        "tokenizer": str(getattr(tokenizer, "name_or_path", model_name)),
+        "stageCount": stages,
+        "layerCount": layer_count,
+        "expectedTopToken": expected_top_token,
+        "stagedValidation": validation,
+        "stages": [],
+    }
+    for artifact in artifacts:
+        path = Path(artifact.path)
+        manifest["stages"].append({
+            "role": artifact.role,
+            "stageIndex": artifact.metadata["stageIndex"],
+            "layerRange": artifact.metadata["layerRange"],
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": _sha256_file(path),
+            "inputNames": artifact.metadata["inputNames"],
+            "outputNames": artifact.metadata["outputNames"],
+            "cacheInputs": artifact.metadata["cacheInputs"],
+            "cacheOutputs": artifact.metadata["cacheOutputs"],
+            "tensorContracts": artifact.metadata["tensorContracts"],
+        })
+    (Path(output_dir) / "qwen-onnx-service-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return artifacts
 
 
