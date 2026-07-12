@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 from pathlib import Path
 import statistics
 import subprocess
@@ -25,6 +27,36 @@ WORKLOADS = {
     "combined-fec1": {"video": True, "control": True, "parity": 1},
 }
 DEFAULT_WORKLOADS = ",".join(WORKLOADS)
+LIFECYCLE_ABORT_MARKERS = (
+    "terminate called without an active exception",
+    "__pthread_tpp_change_priority",
+)
+TERMINAL_COMMAND_STAGES = frozenset({"response", "timeout", "blocked", "busy"})
+CAMPAIGN_LOCK_NAME = ".campaign.lock"
+
+
+def acquire_campaign_lock(out_dir: Path):
+    """Hold an exclusive output-directory lock for the campaign lifetime."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lock = (out_dir / CAMPAIGN_LOCK_NAME).open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        lock.close()
+        raise RuntimeError(f"campaign output directory is already in use: {out_dir}") from exc
+    lock.seek(0)
+    lock.truncate()
+    lock.write(f"pid={os.getpid()}\n")
+    lock.flush()
+    return lock
+
+
+def require_fresh_output(out_dir: Path) -> None:
+    """Reject accidental retries or reuse of measured campaign output."""
+    existing = [path for path in out_dir.iterdir() if path.name != CAMPAIGN_LOCK_NAME]
+    if existing:
+        raise RuntimeError(
+            f"campaign output directory is not empty; refusing to overwrite evidence: {out_dir}")
 
 
 def parse_workload_modes(value: str) -> list[str]:
@@ -94,6 +126,13 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
             targeted_phase_counts[phase] = targeted_phase_counts.get(phase, 0) + 1
         if "UAV_CONTROL_COMMAND" in line and "command" in fields and "phase" in fields:
             command_stages[fields["command"]] = fields["phase"]
+    lifecycle_abort_reason = next(
+        (marker for marker in LIFECYCLE_ABORT_MARKERS if marker in log_text), "")
+    unterminated_command_attempts = {
+        command: stage
+        for command, stage in command_stages.items()
+        if stage not in TERMINAL_COMMAND_STAGES
+    }
     video_completion = bool(result["videoCompletion"]) if video_required else None
     control_completion = bool(result["controlCompletion"]) if control_required else None
     result.update({
@@ -104,9 +143,15 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         "fecParityShards": int(workload["parity"]),
         "videoCompletion": video_completion,
         "controlCompletion": control_completion,
-        "lifecycleAbort": "terminate called without an active exception" in log_text,
+        "lifecycleAbort": bool(lifecycle_abort_reason),
+        "lifecycleAbortReason": lifecycle_abort_reason,
         "targetedPhaseCounts": targeted_phase_counts,
         "controlCommandStages": command_stages,
+        "unterminatedCommandAttempts": unterminated_command_attempts,
+        "commandStagesComplete": (
+            not control_required or
+            (bool(command_stages) and not unterminated_command_attempts)
+        ),
     })
     result["completion"] = (
         bool(result["processCompletion"]) and
@@ -121,10 +166,14 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         int(result["staleSessionRejectCount"]) > 0 or
         int(result["staleStreamRejectCount"]) > 0
     )
-    result["accepted"] = base.is_run_accepted(
-        result,
-        max_pending_chunks=48,
-        max_pending_bytes=16 * 1024 * 1024,
+    result["accepted"] = (
+        not result["lifecycleAbort"] and
+        bool(result["commandStagesComplete"]) and
+        base.is_run_accepted(
+            result,
+            max_pending_chunks=48,
+            max_pending_bytes=16 * 1024 * 1024,
+        )
     )
     return result
 
@@ -140,6 +189,17 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         video_rows = [row for row in rows if row["videoRequired"]]
         control_rows = [row for row in rows if row["controlRequired"]]
+        command_stage_counts: dict[str, dict[str, int]] = {}
+        unterminated_command_attempt_counts: dict[str, int] = {}
+        for row in control_rows:
+            for command, stage in row.get("controlCommandStages", {}).items():
+                stage_counts = command_stage_counts.setdefault(str(command), {})
+                stage_name = str(stage)
+                stage_counts[stage_name] = stage_counts.get(stage_name, 0) + 1
+                if stage_name not in TERMINAL_COMMAND_STAGES:
+                    command_name = str(command)
+                    unterminated_command_attempt_counts[command_name] = (
+                        unterminated_command_attempt_counts.get(command_name, 0) + 1)
         aggregates.append({
             "workloadMode": mode,
             "fecParityShards": WORKLOADS[mode]["parity"],
@@ -151,6 +211,8 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "controlRunCount": len(control_rows),
             "controlCompletedRuns": sum(
                 row["controlCompletion"] is True for row in control_rows),
+            "controlCommandStageCounts": command_stage_counts,
+            "unterminatedCommandAttemptCounts": unterminated_command_attempt_counts,
             "meanDecodedFrames": (
                 statistics.fmean(row["decodedFrames"] for row in video_rows)
                 if video_rows else None
@@ -195,7 +257,12 @@ def main() -> int:
         raise SystemExit(str(exc)) from exc
 
     out_dir = Path(args.out).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        campaign_lock = acquire_campaign_lock(out_dir)
+        if not args.dry_run and not args.reparse_existing:
+            require_fresh_output(out_dir)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     topology = out_dir / f"uav-loss-{args.loss_percent:02d}.conf"
     topology.write_text(base.topology_text(args.loss_percent), encoding="utf-8")
 
@@ -290,6 +357,7 @@ def main() -> int:
     (out_dir / "campaign-summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
+    campaign_lock.close()
     return 0 if summary["status"] in {"SUCCESS", "DRY_RUN"} else 1
 
 

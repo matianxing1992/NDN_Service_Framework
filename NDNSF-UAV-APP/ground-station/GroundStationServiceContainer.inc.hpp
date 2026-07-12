@@ -135,7 +135,10 @@ public:
         }
         m_user = std::make_unique<ndn_service_framework::ServiceUser>(
           m_face, m_config.groupPrefix, m_gsCert, m_controllerCert, m_config.trustSchema);
-        m_user->setHandlerThreads(2);
+        // Ground-station control responses are small and share runtime/UI state.
+        // Keep their callbacks on the Face thread so telemetry timeouts and
+        // command responses cannot mutate that state concurrently.
+        m_user->setHandlerThreads(0);
         m_user->init();
         m_coreContainer.useUser("ground-station", *m_user);
         m_user->fetchPermissionsFromController(m_config.controllerPrefix);

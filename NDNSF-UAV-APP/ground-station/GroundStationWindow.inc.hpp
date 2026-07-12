@@ -945,22 +945,31 @@ public:
     }
 
     if (autoMavlinkTest) {
-      std::thread([this, autoStart] {
+      m_autoMavlinkThread = std::thread([this, autoStart] {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+        Glib::signal_idle().connect_once([this] {
+          m_runtime.sendMavlinkCommand("arm", {{"arm", "true"}});
+        });
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        m_runtime.sendMavlinkCommand("takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+        Glib::signal_idle().connect_once([this] {
+          m_runtime.sendMavlinkCommand(
+            "takeoff", {{"altitude_m", PX4_SITL_TAKEOFF_AMSL_M}});
+        });
         std::this_thread::sleep_for(std::chrono::seconds(3));
-        m_runtime.sendMavlinkCommand("land");
+        Glib::signal_idle().connect_once([this] {
+          m_runtime.sendMavlinkCommand("land");
+        });
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
+        Glib::signal_idle().connect_once([this] {
+          m_runtime.sendMavlinkCommand("emergency_stop", {{"force_code", "21196"}});
+        });
         std::this_thread::sleep_for(std::chrono::seconds(3));
         if (!autoStart) {
           Glib::signal_idle().connect_once([this] {
             hide();
           });
         }
-      }).detach();
+      });
     }
 
     if (autoKeyboardTest) {
@@ -1432,6 +1441,9 @@ public:
     m_manualActive = false;
     m_manualControlDone = true;
     m_gamepadDone = true;
+    if (m_autoMavlinkThread.joinable()) {
+      m_autoMavlinkThread.join();
+    }
     if (m_manualControlThread.joinable()) {
       m_manualControlThread.join();
     }
@@ -4670,6 +4682,7 @@ private:
   std::set<guint> m_pressedKeys;
   std::thread m_manualControlThread;
   std::thread m_gamepadThread;
+  std::thread m_autoMavlinkThread;
   std::atomic<bool> m_manualControlDone{false};
   std::atomic<bool> m_gamepadDone{false};
   std::atomic<bool> m_patrolUploadInFlight{false};

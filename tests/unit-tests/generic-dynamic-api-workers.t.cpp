@@ -621,6 +621,45 @@ BOOST_AUTO_TEST_CASE(UserResponseCallbackCanRunOffEventLoopAfterStateUpdate)
   BOOST_CHECK(pendingGoneBeforeCallback);
 }
 
+BOOST_AUTO_TEST_CASE(UserResponseCallbackRunsInlineWhenHandlerThreadsAreDisabled)
+{
+  ndn::security::KeyChain keyChain("pib-memory:user-callback-inline",
+                                   "tpm-memory:user-callback-inline");
+  ndn::DummyClientFace face(keyChain);
+  const auto eventLoopThread = std::this_thread::get_id();
+  const ndn::Name requesterName("/test/user/callback-inline");
+  const ndn::Name providerName("/test/provider/callback-inline");
+  const ndn::Name serviceName("/HELLO");
+  const ndn::Name requestId("/request-callback-inline");
+  auto userCert = makeRsaIdentity(keyChain, requesterName);
+  auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-user-callback-inline"));
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
+                        "examples/trust-any.conf");
+  user.setHandlerThreads(0);
+
+  bool callbackRan = false;
+  bool callbackOnEventLoop = false;
+  bool pendingGoneBeforeCallback = false;
+
+  user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
+  user.setPendingResponseHandlerForTest(requestId, [&] (const ResponseMessage&) {
+    callbackRan = true;
+    callbackOnEventLoop = std::this_thread::get_id() == eventLoopThread;
+    pendingGoneBeforeCallback = !user.hasPendingCall(requestId);
+  });
+
+  ResponseMessage response;
+  response.setStatus(true);
+  response.setUserToken("user-token");
+  BOOST_CHECK(user.handleDecryptedResponseByName(
+    makeResponseNameV2(providerName, requesterName, serviceName, requestId),
+    response));
+
+  BOOST_CHECK(callbackRan);
+  BOOST_CHECK(callbackOnEventLoop);
+  BOOST_CHECK(pendingGoneBeforeCallback);
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()
