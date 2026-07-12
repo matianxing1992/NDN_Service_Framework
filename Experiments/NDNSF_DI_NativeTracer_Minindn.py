@@ -36,6 +36,7 @@ from ndnsf import (  # noqa: E402
     parse_ack_metadata,
     to_plain,
 )
+from ndnsf_distributed_inference.runtime_v1 import MeasuredTelemetrySnapshotV1  # noqa: E402
 from ndnsf_distributed_inference.runtime_v1_evidence import write_minindn_runtime_v1_evidence  # noqa: E402
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
@@ -471,7 +472,49 @@ def capacity_pool_candidate_rows(primary_rows: list[dict[str, str]]) -> list[dic
 
 
 def llm_provider_resource_profile(provider: str) -> dict[str, str]:
-    return dict(LLM_PROVIDER_RESOURCE_PROFILES.get(provider, {}))
+    profile = dict(LLM_PROVIDER_RESOURCE_PROFILES.get(provider, {}))
+    if profile:
+        profile.update({
+            "resourceFactSource": "configured",
+            "resourceFactStatus": "configured",
+            "physicalGpuEvidence": "false",
+        })
+    return profile
+
+
+def load_controlled_host_telemetry(path: Path) -> dict[str, dict[str, object]]:
+    """Load typed MiniNDN host facts while rejecting physical-GPU claims."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != "ndnsf-di-controlled-host-telemetry-v1":
+        raise ValueError("unsupported controlled host telemetry schema")
+    if payload.get("scope") != "minindn-host-simulation":
+        raise ValueError("controlled host telemetry scope must be MiniNDN simulation")
+    if payload.get("physicalGpuEvidence") is not False:
+        raise ValueError("controlled host telemetry cannot claim physical GPU evidence")
+    providers = payload.get("providers")
+    if not isinstance(providers, dict) or not providers:
+        raise ValueError("controlled host telemetry providers are missing")
+
+    validated: dict[str, dict[str, object]] = {}
+    for provider, service_payload in providers.items():
+        if not isinstance(service_payload, dict):
+            raise ValueError(f"controlled host telemetry payload is invalid for {provider}")
+        measured = service_payload.get("measuredTelemetry")
+        evidence = service_payload.get("executionEvidence")
+        if not isinstance(measured, dict) or not isinstance(evidence, dict):
+            raise ValueError(f"controlled host telemetry sections are missing for {provider}")
+        if measured.get("source") != "controlled-minindn-host-probe":
+            raise ValueError(f"controlled host telemetry source is invalid for {provider}")
+        if any("gpu" in str(key).lower() for key in measured):
+            raise ValueError("controlled host telemetry cannot contain GPU measurements")
+        device = evidence.get("device", {})
+        if not isinstance(device, dict) or str(device.get("kind", "")).lower() != "cpu":
+            raise ValueError("controlled host telemetry execution device must be CPU")
+        snapshot = MeasuredTelemetrySnapshotV1.from_service_payload(service_payload)
+        if snapshot.provider_name != str(provider) or snapshot.device_kind.lower() != "cpu":
+            raise ValueError(f"controlled host telemetry identity mismatch for {provider}")
+        validated[str(provider)] = dict(service_payload)
+    return validated
 
 
 def llm_provider_resource_env(provider: str) -> dict[str, str]:
@@ -485,6 +528,9 @@ def llm_provider_resource_env(provider: str) -> dict[str, str]:
         "NDNSF_DI_PROVIDER_LLM_STAGE_CAPACITY_MB": profile["llmStageCapacityMb"],
         "NDNSF_DI_PROVIDER_LLM_MAX_STAGE_LAYERS": profile["llmMaxStageLayers"],
         "NDNSF_DI_PROVIDER_MODEL_FAMILIES": profile["modelFamilies"],
+        "NDNSF_DI_PROVIDER_RESOURCE_FACT_SOURCE": profile["resourceFactSource"],
+        "NDNSF_DI_PROVIDER_RESOURCE_FACT_STATUS": profile["resourceFactStatus"],
+        "NDNSF_DI_PROVIDER_PHYSICAL_GPU_EVIDENCE": profile["physicalGpuEvidence"],
     }
 
 
@@ -589,7 +635,9 @@ def write_runtime_hints_json(path: Path,
                              *,
                              role_execution_delay_ms: float,
                              provider_admission_max_active_workers: int,
-                             provider_admission_max_queue: int) -> None:
+                             provider_admission_max_queue: int,
+                             controlled_host_telemetry:
+                             dict[str, dict[str, object]] | None = None) -> None:
     role_compute_ms = {
         "/Backbone": 4.0,
         "/Head/Shard/0": 2.5,
@@ -646,10 +694,20 @@ def write_runtime_hints_json(path: Path,
             "roles": {},
         })
         providers[provider]["roles"][role] = hint
+    controlled = controlled_host_telemetry or {}
+    for provider, service_payload in controlled.items():
+        if provider in providers:
+            providers[provider]["controlledMeasuredHostTelemetry"] = service_payload
     path.write_text(json.dumps({
         "schema": "ndnsf-di-runtime-hints-v1",
         "generatedAtMs": generated_at_ms,
         "source": "MiniNDN harness provider profile snapshot",
+        "controlledHostTelemetry": {
+            "status": "injected" if controlled else "disabled",
+            "scope": "minindn-host-simulation",
+            "physicalGpuEvidence": False,
+            "providerCount": len(controlled),
+        },
         "providerRoles": provider_roles,
         "providers": providers,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2671,6 +2729,11 @@ def main() -> int:
     parser.add_argument("--runtime-aware-user-planner", action="store_true",
                         default=bool(default_value(profile_defaults, "runtime_aware_user_planner", False)),
                         help="Enable runtime-aware user-side planner metadata and campaign metrics")
+    parser.add_argument(
+        "--controlled-host-telemetry-json", default="",
+        help=("Typed controlled MiniNDN host telemetry fixture; host/CPU facts only, "
+              "never physical GPU evidence"),
+    )
     parser.add_argument("--provider-network-matrix-json",
                         default=default_value(profile_defaults, "provider_network_matrix_json", ""),
                         help=("Optional core ProviderNetworkMatrix JSON, or a previous "
@@ -2799,6 +2862,10 @@ def main() -> int:
         raise SystemExit("--overload-fast-fail-timeout-ms must be non-negative")
     topology_file = Path(args.topology_file).resolve()
     args.topology_file = str(topology_file)
+    controlled_host_telemetry = (
+        load_controlled_host_telemetry(Path(args.controlled_host_telemetry_json))
+        if args.controlled_host_telemetry_json else {}
+    )
 
     multi_user_workload = (
         load_multi_user_workload(args.multi_user_workload)
@@ -2819,6 +2886,13 @@ def main() -> int:
             "providerNetworkMatrixJson": args.provider_network_matrix_json,
             "providerPairTelemetryProbeEnabled": (
                 not args.skip_provider_pair_telemetry_probe),
+            "controlledHostTelemetry": {
+                "path": args.controlled_host_telemetry_json,
+                "status": "validated" if controlled_host_telemetry else "disabled",
+                "scope": "minindn-host-simulation",
+                "physicalGpuEvidence": False,
+                "providerCount": len(controlled_host_telemetry),
+            },
             "multiUserWorkload": multi_user_workload,
             "requests": args.requests,
             "concurrency": args.concurrency,
@@ -3074,11 +3148,19 @@ def main() -> int:
             role_execution_delay_ms=args.role_execution_delay_ms,
             provider_admission_max_active_workers=args.provider_admission_max_active_workers,
             provider_admission_max_queue=args.provider_admission_max_queue,
+            controlled_host_telemetry=controlled_host_telemetry,
         )
         summary["providerLaunchRows"] = launch_rows
         summary["primaryAssignmentRows"] = primary_assignment_rows
         summary["candidateAssignmentRows"] = assignment_rows
         summary["runtimeHintsJson"] = str(runtime_hints_json)
+        summary["controlledHostTelemetry"] = {
+            "path": args.controlled_host_telemetry_json,
+            "status": "injected" if controlled_host_telemetry else "disabled",
+            "scope": "minindn-host-simulation",
+            "physicalGpuEvidence": False,
+            "providerCount": len(controlled_host_telemetry),
+        }
         summary["providerLaunchMode"] = (
             "capacity-pool" if resolved_assignment == "capacity-pool" else
             "static-assignment")

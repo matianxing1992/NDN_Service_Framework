@@ -1,8 +1,14 @@
 {
   "profileId": "minindn-llm-2gb-4gb-8gb-v1",
+  "resourceFactSource": "configured",
+  "resourceFactStatus": "configured",
+  "physicalGpuEvidence": false,
   "providers": [
     {
       "provider": "/NDNSF-DI/Tracer/provider/llm-2gb",
+      "resourceFactSource": "configured",
+      "resourceFactStatus": "configured",
+      "physicalGpuEvidence": false,
       "node": "arizona",
       "gpuMemoryMb": 2048,
       "ramMemoryMb": 8192,
@@ -15,6 +21,9 @@
     },
     {
       "provider": "/NDNSF-DI/Tracer/provider/llm-4gb",
+      "resourceFactSource": "configured",
+      "resourceFactStatus": "configured",
+      "physicalGpuEvidence": false,
       "node": "wustl",
       "gpuMemoryMb": 4096,
       "ramMemoryMb": 16384,
@@ -27,6 +36,9 @@
     },
     {
       "provider": "/NDNSF-DI/Tracer/provider/llm-8gb",
+      "resourceFactSource": "configured",
+      "resourceFactStatus": "configured",
+      "physicalGpuEvidence": false,
       "node": "ucla",
       "gpuMemoryMb": 8192,
       "ramMemoryMb": 32768,

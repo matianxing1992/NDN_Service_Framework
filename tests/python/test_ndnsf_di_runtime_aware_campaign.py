@@ -98,6 +98,37 @@ def _typed_native_ack_payload(provider: str = "/P/backbone") -> bytes:
     ))
 
 
+def _measured_host_service_payload(provider: str) -> dict:
+    return {
+        "measuredTelemetry": {
+            "schema": "ndnsf-di-measured-telemetry-v1",
+            "source": "controlled-minindn-host-probe", "status": "measured",
+            "providerName": provider, "providerBootId": "boot-fixture-1",
+            "sequence": 1, "resourceSequence": 1,
+            "sampledAtMs": 4_102_444_800_000,
+            "resourceMeasuredAtMs": 4_102_444_800_000,
+            "hostTotalMemoryBytes": 8_192_000,
+            "hostAvailableMemoryBytes": 4_096_000,
+            "processRssBytes": 1_024_000,
+            "readyQueue": 0, "waitingDependencies": 0,
+            "activeWorkers": 0, "workers": 1,
+            "membershipVersion": "members-v1",
+            "networkProfileVersion": "network-v1",
+            "cacheVersion": "cache-v1",
+        },
+        "executionEvidence": {
+            "schema": "ndnsf-di-execution-evidence-v1",
+            "providerName": provider, "providerBootId": "boot-fixture-1",
+            "evidenceEpoch": 1, "runnerKind": "onnxruntime-cpu",
+            "realCompute": True, "device": {"kind": "cpu", "id": "cpu0"},
+            "runtimeVersion": "onnxruntime-fixture",
+            "modelDigest": "sha256:model", "planDigest": "sha256:plan",
+            "artifactDigests": {"/Backbone": "sha256:artifact"},
+            "roles": ["/Backbone"], "createdAtMs": 4_102_444_799_000,
+        },
+    }
+
+
 def load_plan_tracer_module():
     tracer_dir = str(PLAN_TRACER.parent)
     old_path = list(sys.path)
@@ -113,6 +144,72 @@ def load_plan_tracer_module():
 
 
 class RuntimeAwareCampaignTest(unittest.TestCase):
+    def test_minindn_static_resource_profiles_are_configured_only(self) -> None:
+        harness = load_harness_module()
+        fixture = json.loads(harness.RUNTIME_V1_PROVIDER_PROFILES.read_text(
+            encoding="utf-8"))
+        self.assertEqual(fixture["resourceFactSource"], "configured")
+        self.assertEqual(fixture["resourceFactStatus"], "configured")
+        self.assertFalse(fixture["physicalGpuEvidence"])
+        self.assertTrue(all(
+            item["resourceFactSource"] == "configured"
+            and item["resourceFactStatus"] == "configured"
+            and item["physicalGpuEvidence"] is False
+            for item in fixture["providers"]
+        ))
+        for suffix in ("2gb", "4gb", "8gb"):
+            profile = harness.llm_provider_resource_profile(
+                f"/NDNSF-DI/Tracer/provider/llm-{suffix}")
+            self.assertEqual(profile["resourceFactSource"], "configured")
+            self.assertEqual(profile["resourceFactStatus"], "configured")
+            self.assertEqual(profile["physicalGpuEvidence"], "false")
+
+    def test_controlled_host_telemetry_injection_is_typed_and_not_gpu_evidence(self) -> None:
+        harness = load_harness_module()
+        provider = "/P/backbone"
+        fixture = {
+            "schema": "ndnsf-di-controlled-host-telemetry-v1",
+            "scope": "minindn-host-simulation",
+            "physicalGpuEvidence": False,
+            "providers": {provider: _measured_host_service_payload(provider)},
+        }
+        rows = [{
+            "assignment": "primary", "role": "/Backbone",
+            "provider": provider, "node": "memphis", "service": harness.SERVICE,
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture_path = Path(tmp) / "controlled-host.json"
+            fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+            controlled = harness.load_controlled_host_telemetry(fixture_path)
+            output_path = Path(tmp) / "runtime-hints.json"
+            harness.write_runtime_hints_json(
+                output_path, rows, role_execution_delay_ms=0,
+                provider_admission_max_active_workers=1,
+                provider_admission_max_queue=1,
+                controlled_host_telemetry=controlled,
+            )
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        injected = payload["providers"][provider]["controlledMeasuredHostTelemetry"]
+        self.assertEqual(injected["measuredTelemetry"]["source"],
+                         "controlled-minindn-host-probe")
+        self.assertFalse(payload["controlledHostTelemetry"]["physicalGpuEvidence"])
+        self.assertNotIn("freeGpuMemoryMb", injected["measuredTelemetry"])
+
+    def test_controlled_host_telemetry_rejects_physical_gpu_claim(self) -> None:
+        harness = load_harness_module()
+        provider = "/P/backbone"
+        fixture = {
+            "schema": "ndnsf-di-controlled-host-telemetry-v1",
+            "scope": "minindn-host-simulation",
+            "physicalGpuEvidence": True,
+            "providers": {provider: _measured_host_service_payload(provider)},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "invalid.json"
+            path.write_text(json.dumps(fixture), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "physical GPU"):
+                harness.load_controlled_host_telemetry(path)
+
     def test_configured_or_stale_memory_cannot_satisfy_feasibility_gate(self) -> None:
         requirements = PlanFeasibilityRequirementsV1(
             expected_provider_name="/provider/A",
