@@ -1,0 +1,50 @@
+{
+  "schema": "ndnsf-di-qwen-pilot-model-v1",
+  "model": {
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "files": {
+      "config.json": "sha256:18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45",
+      "generation_config.json": "sha256:e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6",
+      "model.safetensors": "sha256:fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe",
+      "tokenizer.json": "sha256:c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+      "tokenizer_config.json": "sha256:5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583"
+    }
+  },
+  "tokenizer": {
+    "paddingSide": "left",
+    "truncation": false,
+    "addGenerationPrompt": true,
+    "useFast": true
+  },
+  "layout": {
+    "stageCount": 3,
+    "layerCount": 24,
+    "stages": [
+      {"role": "/LLM/Stage/0", "layerStart": 0, "layerEndExclusive": 8},
+      {"role": "/LLM/Stage/1", "layerStart": 8, "layerEndExclusive": 16},
+      {"role": "/LLM/Stage/2", "layerStart": 16, "layerEndExclusive": 24}
+    ]
+  },
+  "generation": {
+    "batchSize": 1,
+    "maxInputTokens": 512,
+    "outputTokens": 32,
+    "doSample": false,
+    "temperature": 0.0,
+    "topK": 0,
+    "seed": 105
+  },
+  "numerics": {
+    "tokenEqualityRequired": true,
+    "float32AbsoluteTolerance": 0.0001,
+    "float16AbsoluteTolerance": 0.005,
+    "diagnosticTopK": 5
+  },
+  "prompts": [
+    {"id": "p32", "expectedTokenCount": 32, "text": "NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named"},
+    {"id": "p128", "expectedTokenCount": 128, "text": "NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery"},
+    {"id": "p512", "expectedTokenCount": 512, "text": "NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback. NDNSF coordinates named-data inference stages with authorization, telemetry, bounded scheduling, cache validation, recovery, observability, and rollback"}
+  ],
+  "digestProcedure": "SHA-256 over exact file bytes; JSON manifests use UTF-8 canonical sorted-key compact encoding before hashing"
+}

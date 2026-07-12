@@ -1,0 +1,40 @@
+{
+  "schema": "ndnsf-di-qwen-pilot-campaign-v1",
+  "scope": "local-minindn-candidate",
+  "modelManifest": "examples/ndnsf-di-qwen-pilot.model.json",
+  "topology": "Experiments/Topology/AI_Lab.conf",
+  "providers": [
+    {"name": "/NDNSF-DI/Tracer/provider/llm-2gb", "primary": "/LLM/Stage/0", "fallback": "/LLM/Stage/2", "resourceSource": "configured-fixture"},
+    {"name": "/NDNSF-DI/Tracer/provider/llm-4gb", "primary": "/LLM/Stage/1", "fallback": "/LLM/Stage/0", "resourceSource": "configured-fixture"},
+    {"name": "/NDNSF-DI/Tracer/provider/llm-8gb", "primary": "/LLM/Stage/2", "fallback": "/LLM/Stage/1", "resourceSource": "configured-fixture"}
+  ],
+  "performance": {
+    "warmupOutsideMeasurement": true,
+    "repetitions": 3,
+    "measurementSeconds": 60,
+    "offeredRps": 1.0,
+    "requestCap": 60,
+    "logging": "INFO",
+    "trace": false,
+    "automaticRetry": false,
+    "replacementRun": false
+  },
+  "acceptance": {
+    "minimumCompletionRate": 0.99,
+    "minimumOfferedLoadFraction": 0.95,
+    "maximumDistributedToSingleP95Ratio": 2.0,
+    "tokenEqualityRequired": true,
+    "maximumTelemetryAgeMs": 2000
+  },
+  "localOperations": {
+    "cleanStagingRuns": 2,
+    "upgradeRollbackDrills": 2,
+    "soakSeconds": 86400,
+    "soakOfferedRps": 1.0,
+    "scheduledProviderRestart": 1
+  },
+  "securityClassification": "application-auth-path-executed",
+  "minindnCandidateStatus": "PASS|BLOCK",
+  "physicalProductionStatus": "DEFERRED",
+  "physicalAcceptanceSpec": "specs/106-ndnsf-di-physical-pilot"
+}

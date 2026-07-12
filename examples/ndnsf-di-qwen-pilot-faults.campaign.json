@@ -1,0 +1,26 @@
+{
+  "schema": "ndnsf-di-qwen-pilot-fault-campaign-v1",
+  "baseCampaign": "examples/ndnsf-di-qwen-pilot.campaign.json",
+  "replacementAttempts": 1,
+  "automaticRetry": false,
+  "replacementRun": false,
+  "providerLossSeeds": [10501, 10502, 10503, 10504, 10505],
+  "faults": [
+    {"id": "provider-kill", "point": "stage-active", "expect": "epoch-1-or-terminal"},
+    {"id": "provider-restart", "point": "after-kv-create", "expect": "new-boot-old-kv-rejected"},
+    {"id": "straggler", "point": "role-compute", "expect": "bounded-deadline"},
+    {"id": "missing-segment", "point": "dependency-fetch", "expect": "DEPENDENCY_MISSING"},
+    {"id": "hash-mismatch", "point": "dependency-validate", "expect": "DEPENDENCY_HASH_MISMATCH"},
+    {"id": "stale-telemetry", "point": "before-lease-commit", "expect": "replan-or-reject"},
+    {"id": "cache-eviction", "point": "decode", "expect": "rebuild-or-explicit-failure"},
+    {"id": "late-epoch-0", "point": "after-epoch-1", "expect": "observed-and-ignored"}
+  ],
+  "stopOn": [
+    "incorrect-token",
+    "security-bypass",
+    "stale-authoritative-result",
+    "unbounded-thread-growth",
+    "unbounded-memory-growth",
+    "corrupt-repo-state"
+  ]
+}
