@@ -1,0 +1,15 @@
+{
+  "schema": "ndnsf-di-execution-evidence-v1",
+  "providerName": "/provider/A",
+  "providerBootId": "boot-a",
+  "evidenceEpoch": 1,
+  "runnerKind": "onnxruntime-cuda",
+  "realCompute": true,
+  "device": {"kind": "cuda", "id": "GPU-uuid"},
+  "runtimeVersion": "onnxruntime=example;cuda=example",
+  "modelDigest": "sha256:model",
+  "planDigest": "sha256:plan",
+  "artifactDigests": {"/LLM/Stage/0": "sha256:artifact"},
+  "roles": ["/LLM/Stage/0"],
+  "createdAtMs": 1
+}

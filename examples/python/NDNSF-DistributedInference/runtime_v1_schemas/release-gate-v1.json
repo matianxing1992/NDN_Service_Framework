@@ -1,0 +1,19 @@
+{
+  "schema": "ndnsf-di-release-gate-v1",
+  "releaseId": "candidate-a",
+  "sourceCommit": "example",
+  "profileDigest": "sha256:profile",
+  "dimensions": {
+    "evidenceIntegrity": {"status": "PASS", "artifacts": []},
+    "correctness": {"status": "PASS", "artifacts": []},
+    "performance": {"status": "PASS", "artifacts": []},
+    "applicationSecurity": {"status": "PASS", "artifacts": []},
+    "recovery": {"status": "PASS", "artifacts": []},
+    "operations": {"status": "PASS", "artifacts": []}
+  },
+  "minindnCandidateOverall": "PASS",
+  "physicalProductionOverall": "DEFERRED",
+  "physicalAcceptanceSpec": "specs/106-ndnsf-di-physical-pilot",
+  "limitations": ["MiniNDN is not physical production evidence"],
+  "generatedAtMs": 1
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "ndnsf-di-provider-telemetry-v1",
+  "providerName": "/provider/A",
+  "providerBootId": "boot-a",
+  "sequence": 1,
+  "measuredAtMs": 1,
+  "probe": {"source": "nvidia", "status": "measured", "durationMs": 3},
+  "gpu": {"deviceId": "GPU-uuid", "totalMb": 8192, "freeMb": 4096, "usedMb": 4096, "utilizationPct": 50},
+  "runtime": {"resident": true, "evidenceEpoch": 1, "artifactDigests": {}},
+  "scheduler": {"readyQueue": 0, "waitingDependencies": 0, "activeWorkers": 1, "idleWorkers": 0},
+  "serviceRate": {"stageRpsEwma": 1.0, "latencyMsEwma": 100.0, "samples": 10},
+  "cache": {"budgetMb": 512, "usedMb": 0, "sessions": 0, "hits": 0, "misses": 0, "evictions": 0}
+}

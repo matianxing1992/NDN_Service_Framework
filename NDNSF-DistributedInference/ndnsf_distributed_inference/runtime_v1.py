@@ -61,6 +61,157 @@ class CacheEventKind(str, Enum):
     EXPIRE = "expire"
 
 
+class RunnerKind(str, Enum):
+    SYNTHETIC_DELAY = "synthetic-delay"
+    WIRING_ONLY = "wiring-only"
+    ONNXRUNTIME_CPU = "onnxruntime-cpu"
+    ONNXRUNTIME_CUDA = "onnxruntime-cuda"
+    TRANSFORMERS = "transformers"
+    LLAMA_SERVER = "llama-server"
+    UNKNOWN = "unknown"
+
+
+REAL_RUNNER_KINDS = {
+    RunnerKind.ONNXRUNTIME_CPU,
+    RunnerKind.ONNXRUNTIME_CUDA,
+    RunnerKind.TRANSFORMERS,
+    RunnerKind.LLAMA_SERVER,
+}
+
+
+@dataclass(frozen=True)
+class ExecutionEvidenceV1:
+    provider_name: str
+    provider_boot_id: str
+    runner_kind: RunnerKind
+    real_compute: bool
+    runtime_version: str
+    model_digest: str
+    plan_digest: str
+    artifact_digests: dict[str, str]
+    roles: tuple[str, ...]
+    device_kind: str
+    device_id: str = ""
+    evidence_epoch: int = 0
+    created_at_ms: int = field(default_factory=now_ms)
+    schema: str = "ndnsf-di-execution-evidence-v1"
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ExecutionEvidenceV1":
+        forbidden = {"key", "privateKey", "token", "userToken", "providerToken",
+                     "prompt", "payload", "tensor", "kvPayload"}
+        leaked = forbidden.intersection(payload)
+        if leaked:
+            raise ValueError(f"execution evidence contains forbidden fields: {sorted(leaked)}")
+        if payload.get("schema") != "ndnsf-di-execution-evidence-v1":
+            raise ValueError("unsupported execution evidence schema")
+        device = dict(payload.get("device", {}))
+        value = cls(
+            provider_name=str(payload.get("providerName", "")),
+            provider_boot_id=str(payload.get("providerBootId", "")),
+            evidence_epoch=int(payload.get("evidenceEpoch", 0)),
+            runner_kind=RunnerKind(str(payload.get("runnerKind", "unknown"))),
+            real_compute=bool(payload.get("realCompute", False)),
+            device_kind=str(device.get("kind", payload.get("deviceKind", ""))),
+            device_id=str(device.get("id", payload.get("deviceId", ""))),
+            runtime_version=str(payload.get("runtimeVersion", "")),
+            model_digest=str(payload.get("modelDigest", "")),
+            plan_digest=str(payload.get("planDigest", "")),
+            artifact_digests={str(k): str(v) for k, v in dict(payload.get("artifactDigests", {})).items()},
+            roles=tuple(str(item) for item in payload.get("roles", [])),
+            created_at_ms=int(payload.get("createdAtMs", 0)),
+        )
+        value.validate()
+        return value
+
+    def validate(self) -> None:
+        required = (self.provider_name, self.provider_boot_id, self.runtime_version,
+                    self.model_digest, self.plan_digest, self.device_kind)
+        if not all(required) or not self.roles or not self.artifact_digests or self.created_at_ms <= 0:
+            raise ValueError("execution evidence missing required field")
+        if self.real_compute != (self.runner_kind in REAL_RUNNER_KINDS):
+            raise ValueError("execution evidence real-compute classification mismatch")
+        if self.runner_kind == RunnerKind.ONNXRUNTIME_CUDA and not self.device_id:
+            raise ValueError("CUDA evidence requires a device id")
+
+
+def classify_execution_evidence(items: Iterable[ExecutionEvidenceV1]) -> str:
+    evidence = tuple(items)
+    if not evidence:
+        return "invalid-evidence"
+    for item in evidence:
+        item.validate()
+    identity = {(item.real_compute, item.runner_kind, item.model_digest, item.plan_digest,
+                 tuple(sorted(item.artifact_digests.items())))
+                for item in evidence}
+    if len(identity) != 1:
+        return "invalid-evidence"
+    if not evidence[0].real_compute:
+        return evidence[0].runner_kind.value
+    return evidence[0].runner_kind.value
+
+
+@dataclass(frozen=True)
+class ProviderCapabilityV3:
+    provider_name: str
+    supported_runner_kinds: tuple[str, ...]
+    total_gpu_memory_mb: int = 0
+    source: str = "profile"
+
+
+@dataclass(frozen=True)
+class MeasuredTelemetrySnapshotV1:
+    provider_name: str
+    provider_boot_id: str
+    sequence: int
+    measured_at_ms: int
+    source: str
+    status: str
+    device_id: str = ""
+    free_gpu_memory_mb: int = 0
+    ready_queue: int = 0
+    waiting_dependencies: int = 0
+    active_workers: int = 0
+
+    def is_fresh(self, *, at_ms: int, maximum_age_ms: int = 2000) -> bool:
+        age = int(at_ms) - self.measured_at_ms
+        return self.source == "measured" and self.status == "measured" and 0 <= age <= maximum_age_ms
+
+
+@dataclass(frozen=True)
+class PlanPredicateResultV1:
+    name: str
+    status: str
+    observed: Any = None
+    limit: Any = None
+
+
+class TerminalReasonV1(str, Enum):
+    NONE = "NONE"
+    PROVIDER_LOST = "PROVIDER_LOST"
+    STRAGGLER_DEADLINE = "STRAGGLER_DEADLINE"
+    DEPENDENCY_MISSING = "DEPENDENCY_MISSING"
+    DEPENDENCY_HASH_MISMATCH = "DEPENDENCY_HASH_MISMATCH"
+    PLAN_STALE = "PLAN_STALE"
+    TELEMETRY_STALE = "TELEMETRY_STALE"
+    CACHE_MISS_FULL_CONTEXT_REQUIRED = "CACHE_MISS_FULL_CONTEXT_REQUIRED"
+    ATTEMPT_CANCELLED = "ATTEMPT_CANCELLED"
+    NO_COMPATIBLE_REPLACEMENT = "NO_COMPATIBLE_REPLACEMENT"
+    REQUEST_DEADLINE = "REQUEST_DEADLINE"
+
+
+@dataclass(frozen=True)
+class ExecutionAttemptV1:
+    request_id: str
+    attempt_epoch: int
+    plan_id: str
+    terminal_reason: TerminalReasonV1 = TerminalReasonV1.NONE
+
+    def __post_init__(self) -> None:
+        if not self.request_id or not self.plan_id or self.attempt_epoch not in (0, 1):
+            raise ValueError("invalid execution attempt")
+
+
 class RoleWorkStatus(str, Enum):
     QUEUED = "queued"
     WAITING_DEPENDENCY = "waiting_dependency"

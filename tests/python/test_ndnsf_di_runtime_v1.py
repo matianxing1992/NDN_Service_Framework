@@ -13,6 +13,8 @@ from ndnsf_distributed_inference.runtime_v1 import (
     DependencyTransferItem,
     ExactForwardCacheEntry,
     ExactForwardCacheManager,
+    ExecutionAttemptV1,
+    ExecutionEvidenceV1,
     FailureAction,
     FragmentResidency,
     GenericAdmissionLease,
@@ -24,6 +26,10 @@ from ndnsf_distributed_inference.runtime_v1 import (
     ProviderFragmentInventoryManager,
     ProviderProfileV1,
     RuntimeTelemetryV1,
+    RunnerKind,
+    MeasuredTelemetrySnapshotV1,
+    ProviderCapabilityV3,
+    TerminalReasonV1,
     RolePipelineScheduler,
     RoleWorkItem,
     RetryPolicy,
@@ -61,6 +67,47 @@ from ndnsf_distributed_inference.runtime_v1_evidence import write_minindn_runtim
 
 
 class RuntimeV1ContractsTest(unittest.TestCase):
+    def test_configured_capability_is_not_measured_telemetry(self) -> None:
+        capability = ProviderCapabilityV3(
+            provider_name="p0",
+            supported_runner_kinds=("onnxruntime-cuda",),
+            total_gpu_memory_mb=8192,
+        )
+        self.assertEqual(capability.source, "profile")
+        measured = MeasuredTelemetrySnapshotV1(
+            provider_name="p0", provider_boot_id="boot", sequence=1,
+            measured_at_ms=1000, source="measured", status="measured",
+            device_id="GPU-1", free_gpu_memory_mb=4096,
+        )
+        self.assertTrue(measured.is_fresh(at_ms=2999))
+        self.assertFalse(measured.is_fresh(at_ms=3001))
+        configured = MeasuredTelemetrySnapshotV1(
+            provider_name="p0", provider_boot_id="boot", sequence=1,
+            measured_at_ms=1000, source="profile", status="configured",
+        )
+        self.assertFalse(configured.is_fresh(at_ms=1001))
+
+    def test_execution_attempt_is_bounded_and_typed(self) -> None:
+        attempt = ExecutionAttemptV1("req", 1, "plan", TerminalReasonV1.PROVIDER_LOST)
+        self.assertEqual(attempt.attempt_epoch, 1)
+        with self.assertRaises(ValueError):
+            ExecutionAttemptV1("req", 2, "plan")
+
+    def test_execution_evidence_schema_and_redaction(self) -> None:
+        payload = {
+            "schema": "ndnsf-di-execution-evidence-v1",
+            "providerName": "/p0", "providerBootId": "boot", "evidenceEpoch": 1,
+            "runnerKind": "onnxruntime-cuda", "realCompute": True,
+            "device": {"kind": "cuda", "id": "GPU-1"},
+            "runtimeVersion": "ort", "modelDigest": "sha256:m",
+            "planDigest": "sha256:p", "artifactDigests": {"/s0": "sha256:a"},
+            "roles": ["/s0"], "createdAtMs": 1,
+        }
+        value = ExecutionEvidenceV1.from_dict(payload)
+        self.assertEqual(value.runner_kind, RunnerKind.ONNXRUNTIME_CUDA)
+        with self.assertRaises(ValueError):
+            ExecutionEvidenceV1.from_dict({**payload, "token": "secret"})
+
     def test_ack_metadata_round_trip_keeps_legacy_and_typed_fields(self) -> None:
         profile = ProviderProfileV1(
             provider="llm-8gb",

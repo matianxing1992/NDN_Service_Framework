@@ -1,0 +1,7 @@
+{
+  "schema": "ndnsf-di-execution-attempt-v1",
+  "requestId": "request-a",
+  "attemptEpoch": 0,
+  "planId": "plan-a",
+  "terminalReason": "NONE"
+}

@@ -1,0 +1,8 @@
+{
+  "planId": "plan-a",
+  "decision": "reuse",
+  "checkedAtMs": 1,
+  "predicates": [{"name": "telemetry-fresh", "status": "pass", "observed": 100, "limit": 2000}],
+  "selectedProviders": ["/provider/A"],
+  "rejectedProviders": []
+}

@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
@@ -2313,6 +2314,58 @@ BOOST_AUTO_TEST_CASE(NativeProviderReadinessAckControlsSelectionEligibility)
   BOOST_CHECK(capacityJson.find("\"workers\":4") != std::string::npos);
   BOOST_CHECK(capacityJson.find("\"idleWorkers\":1") != std::string::npos);
   BOOST_CHECK(capacityPayload.find("providerCapabilityHint=json64:") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ExecutionEvidenceRoundTripsAndExcludesSecrets)
+{
+  ExecutionEvidence evidence;
+  evidence.providerName = "/provider/A";
+  evidence.providerBootId = "boot-a";
+  evidence.evidenceEpoch = 3;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCuda;
+  evidence.realCompute = true;
+  evidence.deviceKind = "cuda";
+  evidence.deviceId = "GPU-1";
+  evidence.runtimeVersion = "onnxruntime=1;cuda=1";
+  evidence.modelDigest = "sha256:model";
+  evidence.planDigest = "sha256:plan";
+  evidence.artifactDigests["/LLM/Stage/0"] = "sha256:stage0";
+  evidence.roles = {"/LLM/Stage/0"};
+  evidence.createdAtMs = 1234;
+  const auto json = executionEvidenceToJson(evidence);
+  BOOST_CHECK(json.find("token") == std::string::npos);
+  BOOST_CHECK(json.find("prompt") == std::string::npos);
+  const auto decoded = executionEvidenceFromJson(json);
+  BOOST_CHECK_EQUAL(decoded.providerBootId, "boot-a");
+  BOOST_CHECK(decoded.runnerKind == RunnerKind::OnnxRuntimeCuda);
+  BOOST_CHECK_EQUAL(decoded.artifactDigests.at("/LLM/Stage/0"), "sha256:stage0");
+}
+
+BOOST_AUTO_TEST_CASE(ExecutionEvidenceRejectsMissingUnknownAndSecretFields)
+{
+  BOOST_CHECK_THROW(executionEvidenceFromJson("{\"schema\":\"ndnsf-di-execution-evidence-v2\"}"),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(executionEvidenceFromJson("{\"schema\":\"ndnsf-di-execution-evidence-v1\"}"),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(executionEvidenceFromJson(
+    "{\"schema\":\"ndnsf-di-execution-evidence-v1\",\"token\":\"secret\"}"),
+    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(ExecutionAttemptAndTerminalReasonRoundTrip)
+{
+  ExecutionAttemptMetadata attempt;
+  attempt.requestId = "req-1";
+  attempt.attemptEpoch = 1;
+  attempt.planId = "plan-1";
+  attempt.terminalReason = TerminalReason::ProviderLost;
+  const auto decoded = executionAttemptFromJson(executionAttemptToJson(attempt));
+  BOOST_CHECK_EQUAL(decoded.requestId, "req-1");
+  BOOST_CHECK_EQUAL(decoded.attemptEpoch, 1);
+  BOOST_CHECK(decoded.terminalReason == TerminalReason::ProviderLost);
+  attempt.attemptEpoch = 2;
+  BOOST_CHECK_THROW(executionAttemptToJson(attempt), std::invalid_argument);
+  BOOST_CHECK_THROW(terminalReasonFromString("MAGIC_FAILURE"), std::invalid_argument);
 }
 
 } // namespace ndnsf::di::test
