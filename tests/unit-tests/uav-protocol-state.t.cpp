@@ -123,6 +123,25 @@ makeMissionState(const std::string& phase)
 
 BOOST_AUTO_TEST_SUITE(UavProtocolState)
 
+BOOST_AUTO_TEST_CASE(FlightCommandEvidenceFactoriesPreserveTimeSemantics)
+{
+  const auto pending = FlightCommandState::makePending("A", "arm", 1000, 10500);
+  BOOST_CHECK_EQUAL(pending.rttMs, 0);
+  BOOST_CHECK_EQUAL(pending.updatedMs, 1000);
+  BOOST_CHECK_EQUAL(pending.timeoutMs, 10500);
+  BOOST_CHECK_EQUAL(pending.accepted, "unknown");
+
+  const auto timeout = FlightCommandState::makeTimeout("A", "arm", 1000, 11500, 10500);
+  BOOST_CHECK_EQUAL(timeout.rttMs, 10500);
+  BOOST_CHECK_EQUAL(timeout.updatedMs, 11500);
+  BOOST_CHECK_EQUAL(timeout.timeoutMs, 10500);
+  BOOST_CHECK(timeout.isTimeout());
+
+  const auto clockRegression = FlightCommandState::makeTimeout("A", "arm", 1000, 900, 10500);
+  BOOST_CHECK_EQUAL(clockRegression.rttMs, 0);
+  BOOST_CHECK_EQUAL(clockRegression.updatedMs, 1000);
+}
+
 BOOST_AUTO_TEST_CASE(AutoControlSequenceStepIsMonotonicAndDispatchesOnce)
 {
   AutoControlSequenceStep step;

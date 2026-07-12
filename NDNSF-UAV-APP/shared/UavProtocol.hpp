@@ -135,6 +135,15 @@ struct FlightCommandState
   uint64_t updatedMs = 0;
   uint64_t timeoutMs = 0;
 
+  static FlightCommandState makePending(const std::string& droneId,
+                                        const std::string& command,
+                                        uint64_t attemptMs,
+                                        uint64_t timeoutMs);
+  static FlightCommandState makeTimeout(const std::string& droneId,
+                                        const std::string& command,
+                                        uint64_t attemptMs,
+                                        uint64_t terminalMs,
+                                        uint64_t timeoutMs);
   static FlightCommandState fromFields(const Fields& fields);
   Fields toFields() const;
   bool isAccepted() const;

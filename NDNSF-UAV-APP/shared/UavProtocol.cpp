@@ -896,6 +896,42 @@ FlightCommandState::isAccepted() const
   return accepted == "true";
 }
 
+FlightCommandState
+FlightCommandState::makePending(const std::string& droneId,
+                                const std::string& command,
+                                uint64_t attemptMs,
+                                uint64_t timeoutMs)
+{
+  FlightCommandState state;
+  state.droneId = droneId;
+  state.command = command;
+  state.detail = "targeted-request-sent";
+  state.rttMs = 0;
+  state.updatedMs = attemptMs;
+  state.timeoutMs = timeoutMs;
+  return state;
+}
+
+FlightCommandState
+FlightCommandState::makeTimeout(const std::string& droneId,
+                                const std::string& command,
+                                uint64_t attemptMs,
+                                uint64_t terminalMs,
+                                uint64_t timeoutMs)
+{
+  FlightCommandState state;
+  state.droneId = droneId;
+  state.command = command;
+  state.accepted = "false";
+  state.ackResult = "timeout";
+  state.forwardedBytes = "0";
+  state.detail = "operator-timeout-decision";
+  state.updatedMs = std::max(attemptMs, terminalMs);
+  state.rttMs = terminalMs >= attemptMs ? terminalMs - attemptMs : 0;
+  state.timeoutMs = timeoutMs;
+  return state;
+}
+
 bool
 FlightCommandState::isTimeout() const
 {

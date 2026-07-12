@@ -195,6 +195,91 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         self.assertTrue(result["armAccepted"])
         self.assertTrue(result["armedTelemetryBeforeTakeoff"])
 
+    def test_arm_sender_timeout_and_observer_mismatch_are_attributed(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "GS_TARGETED_PHASE phase=dispatched provider=/P service=/UAV/MAVLink/Execute "
+                "request_id=/arm timestamp_ms=1000 elapsed_ms=0 status=pending\n"
+                "UAV_AUTO_CONTROL_PHASE phase=dispatch drone=A step=arm prerequisite=telemetry-ready "
+                "timestamp_ms=1000 elapsed_ms=10 reason=single-attempt\n"
+                "GS_TARGETED_PHASE phase=timeout provider=/P service=/UAV/MAVLink/Execute "
+                "request_id=/arm timestamp_ms=11500 elapsed_ms=10500 status=timeout\n"
+                "UAV_CONTROL_COMMAND phase=timeout drone=A command=arm timestamp_ms=11500 "
+                "elapsed_ms=10500 accepted=false reason=timeout\n"
+                "UAV_AUTO_CONTROL_PHASE phase=terminal drone=A step=arm prerequisite=telemetry-ready "
+                "timestamp_ms=13000 elapsed_ms=12000 reason=command-state-not-terminal\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        attribution = result["initialControlAttribution"]
+        self.assertEqual(attribution["earliestBoundary"], "arm-sender-timeout")
+        self.assertTrue(attribution["observerMismatch"])
+        self.assertEqual(attribution["armAttempt"]["requestId"], "/arm")
+        self.assertEqual(
+            set(attribution["armAttempt"]),
+            {"provider", "service", "requestId", "dispatchMs", "terminalPhase",
+             "terminalMs", "elapsedMs", "status"},
+        )
+
+    def test_initial_telemetry_timeout_and_late_overlap_are_attributed(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "GS_TARGETED_PHASE phase=dispatched provider=/P service=/UAV/Telemetry/GetStatus "
+                "request_id=/t1 timestamp_ms=1000 elapsed_ms=0 status=pending\n"
+                "UAV_AUTO_CONTROL_PHASE phase=wait-begin drone=A step=arm prerequisite=telemetry-ready "
+                "timestamp_ms=1500 elapsed_ms=0 reason=waiting\n"
+                "GS_TARGETED_PHASE phase=timeout provider=/P service=/UAV/Telemetry/GetStatus "
+                "request_id=/t1 timestamp_ms=11500 elapsed_ms=10500 status=timeout\n"
+                "GS_TARGETED_PHASE phase=dispatched provider=/P service=/UAV/Telemetry/GetStatus "
+                "request_id=/t2 timestamp_ms=11510 elapsed_ms=0 status=pending\n"
+                "UAV_AUTO_CONTROL_PHASE phase=expired drone=A step=arm prerequisite=telemetry-ready "
+                "timestamp_ms=11525 elapsed_ms=10025 reason=telemetry-ready-state-not-converged\n"
+                "GS_TARGETED_PHASE phase=response provider=/P service=/UAV/Telemetry/GetStatus "
+                "request_id=/t2 timestamp_ms=12500 elapsed_ms=990 status=success\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        attribution = result["initialControlAttribution"]
+        self.assertEqual(attribution["earliestBoundary"], "telemetry-sender-timeout")
+        self.assertTrue(attribution["telemetryDeadlineOverlap"])
+        self.assertEqual(len(attribution["telemetryAttempts"]), 2)
+
+    def test_arm_response_followed_by_armed_expiry_is_not_reported_as_success(self) -> None:
+        campaign = load_campaign()
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ground-station.log").write_text(
+                "UAV_AUTO_CONTROL_PHASE phase=dispatch drone=A step=arm prerequisite=telemetry-ready "
+                "timestamp_ms=1000 elapsed_ms=10 reason=single-attempt\n"
+                "GS_TARGETED_PHASE phase=dispatched provider=/P service=/UAV/MAVLink/Execute "
+                "request_id=/arm timestamp_ms=1000 elapsed_ms=0 status=pending\n"
+                "GS_TARGETED_PHASE phase=response provider=/P service=/UAV/MAVLink/Execute "
+                "request_id=/arm timestamp_ms=1100 elapsed_ms=100 status=success\n"
+                "UAV_CONTROL_COMMAND phase=response drone=A command=arm timestamp_ms=1100 "
+                "elapsed_ms=100 accepted=true reason=success\n"
+                "UAV_AUTO_CONTROL_PHASE phase=expired drone=A step=takeoff prerequisite=armed "
+                "timestamp_ms=11100 elapsed_ms=10000 reason=armed-state-not-converged\n",
+                encoding="utf-8",
+            )
+            result = campaign.parse_mode_run(
+                run_dir, 0, ["launcher"], mode="control-only", repetition=1,
+                loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
+            )
+        self.assertEqual(
+            result["initialControlAttribution"]["earliestBoundary"],
+            "armed-convergence-expired",
+        )
+
     def test_duplicate_automation_dispatch_rejects_run(self) -> None:
         campaign = load_campaign()
         with tempfile.TemporaryDirectory() as tmp:

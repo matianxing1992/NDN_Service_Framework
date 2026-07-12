@@ -1495,20 +1495,8 @@ public:
     const auto missionId = "manual-" + commandName + "-" + std::to_string(nowMilliseconds());
     const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
     const auto requestStartMs = nowMilliseconds();
-    updateCommandState(FlightCommandState{
-      droneId,
-      commandName,
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "targeted-request-sent",
-      requestStartMs,
-      m_timeoutMs,
-    });
+    updateCommandState(FlightCommandState::makePending(
+      droneId, commandName, requestStartMs, m_timeoutMs));
     postTargetedRequest(
       droneIdentity(m_config, droneId),
       m_config.serviceMavlinkExecute,
@@ -1558,21 +1546,8 @@ public:
                      << " timestamp_ms=" << timeoutMs
                      << " elapsed_ms=" << (timeoutMs - requestStartMs)
                      << " accepted=false reason=timeout");
-        auto timeoutState = FlightCommandState{
-          droneId,
-          commandName,
-          "false",
-          "timeout",
-          "unknown",
-          "unknown",
-          "unknown",
-          "unknown",
-          "0",
-          "operator-timeout-decision",
-          nowMilliseconds(),
-          0,
-          m_timeoutMs
-        };
+        auto timeoutState = FlightCommandState::makeTimeout(
+          droneId, commandName, requestStartMs, timeoutMs, m_timeoutMs);
         updateCommandState(timeoutState);
         publishStatus("MAVLink " + commandName +
                       " timed out for drone=" + droneId +
@@ -1631,20 +1606,10 @@ public:
     const auto missionId = "auto-" + commandName + "-" + std::to_string(nowMilliseconds());
     const auto payload = makeMavlinkCommandPayload(commandName, missionId, params);
     const auto requestStartMs = nowMilliseconds();
-    updateCommandState(FlightCommandState{
-      droneId,
-      commandName,
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "unknown",
-      "sync-targeted-request-sent",
-      requestStartMs,
-      m_timeoutMs,
-    });
+    auto pendingState = FlightCommandState::makePending(
+      droneId, commandName, requestStartMs, m_timeoutMs);
+    pendingState.detail = "sync-targeted-request-sent";
+    updateCommandState(pendingState);
     postTargetedRequest(
       droneIdentity(m_config, droneId),
       m_config.serviceMavlinkExecute,
@@ -1672,23 +1637,9 @@ public:
         cv.notify_all();
       },
       [&] {
-        auto timeoutState = FlightCommandState{
-          droneId,
-          commandName,
-          "false",
-          "timeout",
-          "unknown",
-          "unknown",
-          "unknown",
-          "unknown",
-          "0",
-          "operator-timeout-decision",
-          nowMilliseconds(),
-          0,
-          m_timeoutMs
-        };
-        timeoutState.timeoutMs = m_timeoutMs;
-        timeoutState.rttMs = 0;
+        const auto timeoutMs = nowMilliseconds();
+        auto timeoutState = FlightCommandState::makeTimeout(
+          droneId, commandName, requestStartMs, timeoutMs, m_timeoutMs);
         updateCommandState(timeoutState);
         publishStatus("MAVLink " + commandName +
                       " timed out for drone=" + droneId +

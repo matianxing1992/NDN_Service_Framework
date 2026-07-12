@@ -127,16 +127,40 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
     arm_accepted = False
     takeoff_attempt_ms: int | None = None
     armed_telemetry_ms: list[int] = []
+    targeted_attempts: dict[str, dict[str, Any]] = {}
+    auto_arm_dispatch_ms: int | None = None
+    auto_arm_wait_terminal_ms: int | None = None
+    auto_arm_terminal_ms: int | None = None
+    auto_arm_terminal_reason = "unknown"
+    arm_command_terminal_ms: int | None = None
+    arm_command_terminal_phase = "unknown"
     for line in log_text.splitlines():
         fields = base.fields_from_line(line)
         if "GS_TARGETED_PHASE" in line and "phase" in fields:
             phase = fields["phase"]
             targeted_phase_counts[phase] = targeted_phase_counts.get(phase, 0) + 1
+            request_id = fields.get("request_id", "none")
+            if request_id != "none":
+                attempt = targeted_attempts.setdefault(request_id, {
+                    "provider": fields.get("provider", "unknown"),
+                    "service": fields.get("service", "unknown"),
+                    "requestId": request_id,
+                })
+                timestamp_ms = int(fields.get("timestamp_ms", "0") or 0)
+                if phase == "dispatched":
+                    attempt["dispatchMs"] = timestamp_ms
+                if phase in {"response", "timeout", "dispatch-rejected"}:
+                    attempt["terminalPhase"] = phase
+                    attempt["terminalMs"] = timestamp_ms
+                    attempt["elapsedMs"] = int(fields.get("elapsed_ms", "0") or 0)
+                    attempt["status"] = fields.get("status", "unknown")
         if "UAV_CONTROL_COMMAND" in line and "command" in fields and "phase" in fields:
             command_stages[fields["command"]] = fields["phase"]
             if fields["command"] == "arm" and fields["phase"] in TERMINAL_COMMAND_STAGES:
                 arm_terminal_ms = int(fields.get("timestamp_ms", "0")) or arm_terminal_ms
                 arm_accepted = fields.get("accepted") == "true"
+                arm_command_terminal_ms = arm_terminal_ms
+                arm_command_terminal_phase = fields["phase"]
             if fields["command"] == "takeoff" and fields["phase"] == "attempt":
                 takeoff_attempt_ms = int(fields.get("timestamp_ms", "0")) or takeoff_attempt_ms
         if "UAV_AUTO_CONTROL_PHASE" in line and "phase" in fields:
@@ -147,8 +171,15 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
                 state_convergence_stages[prerequisite] = phase
             if phase == "dispatch":
                 automation_dispatch_counts[step] = automation_dispatch_counts.get(step, 0) + 1
+                if step == "arm":
+                    auto_arm_dispatch_ms = int(fields.get("timestamp_ms", "0") or 0)
             if phase == "terminal":
                 automation_terminal_reasons[step] = fields.get("reason", "unknown")
+                if step == "arm":
+                    auto_arm_terminal_ms = int(fields.get("timestamp_ms", "0") or 0)
+                    auto_arm_terminal_reason = fields.get("reason", "unknown")
+            if step == "arm" and prerequisite == "telemetry-ready" and phase in {"satisfied", "expired"}:
+                auto_arm_wait_terminal_ms = int(fields.get("timestamp_ms", "0") or 0)
         if "GS_STATUS Telemetry" in line and fields.get("armed") == "true":
             timestamp = re.match(r"^(\d+(?:\.\d+)?)", line)
             if timestamp:
@@ -177,6 +208,66 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         any(arm_terminal_ms < observed_ms <= takeoff_attempt_ms
             for observed_ms in armed_telemetry_ms)
     )
+    attempts = sorted(targeted_attempts.values(), key=lambda item: int(item.get("dispatchMs", 0)))
+    telemetry_cutoff = auto_arm_dispatch_ms or auto_arm_wait_terminal_ms
+    telemetry_attempts = [
+        item for item in attempts
+        if str(item.get("service", "")).endswith("/UAV/Telemetry/GetStatus") and
+        (telemetry_cutoff is None or int(item.get("dispatchMs", 0)) <= telemetry_cutoff)
+    ]
+    arm_attempt = next((
+        item for item in attempts
+        if str(item.get("service", "")).endswith("/UAV/MAVLink/Execute") and
+        auto_arm_dispatch_ms is not None and
+        int(item.get("dispatchMs", 0)) >= auto_arm_dispatch_ms
+    ), None)
+    telemetry_deadline_overlap = bool(
+        state_convergence_stages.get("telemetry-ready") == "expired" and
+        auto_arm_wait_terminal_ms is not None and any(
+            int(item.get("dispatchMs", 0)) <= auto_arm_wait_terminal_ms <
+            int(item.get("terminalMs", 0)) for item in telemetry_attempts
+        )
+    )
+    observer_mismatch = bool(
+        arm_command_terminal_ms is not None and auto_arm_terminal_ms is not None and
+        arm_command_terminal_ms < auto_arm_terminal_ms and
+        auto_arm_terminal_reason == "command-state-not-terminal"
+    )
+    if lifecycle_abort_reason:
+        earliest_boundary = "lifecycle-abort"
+    elif any(item.get("terminalPhase") == "timeout" for item in telemetry_attempts) and not auto_arm_dispatch_ms:
+        earliest_boundary = "telemetry-sender-timeout"
+    elif not auto_arm_dispatch_ms and state_convergence_stages.get("telemetry-ready") == "expired":
+        earliest_boundary = "telemetry-convergence-expired"
+    elif arm_attempt and arm_attempt.get("terminalPhase") == "timeout":
+        earliest_boundary = "arm-sender-timeout"
+    elif arm_command_terminal_phase in {"blocked", "busy"}:
+        earliest_boundary = "arm-local-block"
+    elif (arm_attempt and arm_attempt.get("terminalPhase") == "response" and
+          state_convergence_stages.get("armed") == "expired"):
+        earliest_boundary = "armed-convergence-expired"
+    elif arm_attempt and arm_attempt.get("terminalPhase") == "response":
+        earliest_boundary = "arm-response"
+    else:
+        earliest_boundary = "unknown"
+    unterminated_targeted = [
+        str(item.get("requestId", "unknown"))
+        for item in telemetry_attempts + ([arm_attempt] if arm_attempt else [])
+        if "terminalPhase" not in item
+    ]
+    initial_control_attribution = {
+        "earliestBoundary": earliest_boundary,
+        "evidenceComplete": earliest_boundary != "unknown",
+        "telemetryAttempts": telemetry_attempts,
+        "telemetryDeadlineOverlap": telemetry_deadline_overlap,
+        "armAttempt": arm_attempt,
+        "automationArmTerminal": auto_arm_terminal_reason,
+        "observerMismatch": observer_mismatch,
+        "unknownReasons": (
+            (["no-terminal-initial-control-evidence"] if earliest_boundary == "unknown" else []) +
+            ["unterminated-targeted:" + request_id for request_id in unterminated_targeted]
+        ),
+    }
     video_completion = bool(result["videoCompletion"]) if video_required else None
     control_completion = bool(result["controlCompletion"]) if control_required else None
     result.update({
@@ -205,6 +296,7 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
         "automationSequenceComplete": automation_sequence_complete,
         "armAccepted": arm_accepted,
         "armedTelemetryBeforeTakeoff": armed_telemetry_before_takeoff,
+        "initialControlAttribution": initial_control_attribution,
     })
     result["completion"] = (
         bool(result["processCompletion"]) and
@@ -249,6 +341,7 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         convergence_stage_counts: dict[str, dict[str, int]] = {}
         unterminated_automation_wait_counts: dict[str, int] = {}
         duplicate_automation_dispatch_runs = 0
+        attribution_boundary_counts: dict[str, int] = {}
         for row in control_rows:
             for command, stage in row.get("controlCommandStages", {}).items():
                 stage_counts = command_stage_counts.setdefault(str(command), {})
@@ -268,6 +361,10 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         unterminated_automation_wait_counts.get(prerequisite_name, 0) + 1)
             if not bool(row.get("automationSingleAttempt", True)):
                 duplicate_automation_dispatch_runs += 1
+            attribution = row.get("initialControlAttribution", {})
+            boundary = str(attribution.get("earliestBoundary", "unknown"))
+            attribution_boundary_counts[boundary] = (
+                attribution_boundary_counts.get(boundary, 0) + 1)
         aggregates.append({
             "workloadMode": mode,
             "fecParityShards": WORKLOADS[mode]["parity"],
@@ -292,6 +389,20 @@ def aggregate_cells(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 row.get("automationSequenceComplete") is True for row in control_rows),
             "armedTelemetryBeforeTakeoffRuns": sum(
                 bool(row.get("armedTelemetryBeforeTakeoff", False)) for row in control_rows),
+            "initialControlAttributionBoundaryCounts": attribution_boundary_counts,
+            "initialControlAttributionCompleteRuns": sum(
+                bool(row.get("initialControlAttribution", {}).get("evidenceComplete", False))
+                for row in control_rows),
+            "commandObserverMismatchRuns": sum(
+                bool(row.get("initialControlAttribution", {}).get("observerMismatch", False))
+                for row in control_rows),
+            "telemetryDeadlineOverlapRuns": sum(
+                bool(row.get("initialControlAttribution", {}).get("telemetryDeadlineOverlap", False))
+                for row in control_rows),
+            "unterminatedInitialTargetedAttemptRuns": sum(
+                any(str(reason).startswith("unterminated-targeted:") for reason in
+                    row.get("initialControlAttribution", {}).get("unknownReasons", []))
+                for row in control_rows),
             "meanDecodedFrames": (
                 statistics.fmean(row["decodedFrames"] for row in video_rows)
                 if video_rows else None
