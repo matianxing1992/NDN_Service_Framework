@@ -2,13 +2,129 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Iterable, Sequence
+from threading import BoundedSemaphore, Lock
+from typing import Callable, Iterable, Sequence, TypeVar
 
 
 MAX_INPUT_TOKENS = 512
 MAX_OUTPUT_TOKENS = 32
+GenerationResult = TypeVar("GenerationResult")
+
+
+class GenerationQueueFull(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class GenerationSchedulerSnapshot:
+    active: int
+    queued: int
+    completed: int
+    failed: int
+    unfinished: int
+    max_active_observed: int
+    max_queued_observed: int
+    token_progress: dict[str, int]
+
+
+class BoundedGenerationScheduler:
+    """Run each bounded generation as one worker-owned application job."""
+
+    def __init__(self, *, max_workers: int, max_queued: int) -> None:
+        if max_workers < 1:
+            raise ValueError("max_workers must be positive")
+        if max_queued < 0:
+            raise ValueError("max_queued must be non-negative")
+        self._capacity = BoundedSemaphore(max_workers + max_queued)
+        self._lock = Lock()
+        self._active = 0
+        self._queued = 0
+        self._completed = 0
+        self._failed = 0
+        self._max_active_observed = 0
+        self._max_queued_observed = 0
+        self._token_progress: dict[str, int] = {}
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="ndnsf-di-generation",
+        )
+
+    def submit(
+        self,
+        session_id: str,
+        generation: Callable[[Callable[[int], None]], GenerationResult],
+    ) -> Future:
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        if not self._capacity.acquire(blocking=False):
+            raise GenerationQueueFull("generation scheduler queue is full")
+        with self._lock:
+            if session_id in self._token_progress:
+                self._capacity.release()
+                raise ValueError(f"duplicate generation session: {session_id}")
+            self._token_progress[session_id] = 0
+            self._queued += 1
+            self._max_queued_observed = max(
+                self._max_queued_observed, self._queued)
+
+        def run_generation() -> GenerationResult:
+            with self._lock:
+                self._queued -= 1
+                self._active += 1
+                self._max_active_observed = max(
+                    self._max_active_observed, self._active)
+
+            def report_progress(token_count: int) -> None:
+                with self._lock:
+                    next_count = int(token_count)
+                    current_count = self._token_progress[session_id]
+                    if next_count <= current_count:
+                        raise ValueError(
+                            "generation token progress must increase monotonically")
+                    self._token_progress[session_id] = next_count
+
+            try:
+                result = generation(report_progress)
+            except BaseException:
+                with self._lock:
+                    self._failed += 1
+                raise
+            else:
+                with self._lock:
+                    self._completed += 1
+                return result
+            finally:
+                with self._lock:
+                    self._active -= 1
+                self._capacity.release()
+
+        try:
+            return self._executor.submit(run_generation)
+        except BaseException:
+            with self._lock:
+                self._queued -= 1
+                self._token_progress.pop(session_id, None)
+            self._capacity.release()
+            raise
+
+    def snapshot(self) -> GenerationSchedulerSnapshot:
+        with self._lock:
+            return GenerationSchedulerSnapshot(
+                active=self._active,
+                queued=self._queued,
+                completed=self._completed,
+                failed=self._failed,
+                unfinished=self._active + self._queued,
+                max_active_observed=self._max_active_observed,
+                max_queued_observed=self._max_queued_observed,
+                token_progress=dict(self._token_progress),
+            )
+
+    def shutdown(self, wait: bool = True) -> None:
+        self._executor.shutdown(wait=wait)
 
 
 class CacheResolution(str, Enum):
