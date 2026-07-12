@@ -7,8 +7,11 @@ import contextlib
 from concurrent.futures import Future
 import importlib.util
 import io
+import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
@@ -73,6 +76,90 @@ def evidence_payload(value: ExecutionEvidenceV1) -> dict[str, object]:
 
 
 class DeploymentReadinessContractsTest(unittest.TestCase):
+    def test_runtime_cli_separates_real_adapters_from_contract_smoke(self) -> None:
+        cli = [sys.executable, "-m", "ndnsf_distributed_inference.runtime_v1"]
+        legacy = subprocess.run(
+            cli + ["run", "--plan", "/tmp/legacy-plan.json"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(legacy.returncode, 2)
+        self.assertIn("contract-smoke", legacy.stderr)
+
+        smoke = subprocess.run(
+            cli + ["contract-smoke", "schema-sample"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(smoke.returncode, 0, smoke.stderr)
+        self.assertEqual(json.loads(smoke.stdout)["status"], "contract-smoke")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "deployment.json"
+            profile.write_text(json.dumps({
+                "deployment": {"harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"},
+            }), encoding="utf-8")
+            request = root / "request.json"
+            request.write_text("{}", encoding="utf-8")
+            plan = root / "plan.json"
+            plan.write_text("{}", encoding="utf-8")
+            campaign = root / "campaign.json"
+            campaign.write_text(json.dumps({
+                "runner": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+            }), encoding="utf-8")
+            cases = [
+                (["provider", "--profile", str(profile), "--dry-run"],
+                 "di-native-provider"),
+                (["run", "--profile", str(profile), "--plan", str(plan),
+                  "--request", str(request), "--out", str(root / "result.json"),
+                  "--dry-run"], "NDNSF_DI_LlmPipeline_Minindn.py"),
+                (["bench", "--campaign", str(campaign), "--out", str(root / "bench"),
+                  "--dry-run"], "NDNSF_DI_LlmPipeline_Minindn.py"),
+            ]
+            for args, adapter in cases:
+                with self.subTest(command=args[0]):
+                    proc = subprocess.run(
+                        cli + args, text=True, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, check=False)
+                    self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["mode"], "production-adapter")
+                    self.assertIn(adapter, " ".join(payload["command"]))
+
+    def test_systemd_package_contract_is_hardened_and_reversible(self) -> None:
+        root = Path(__file__).resolve().parents[2] / "packaging" / "ndnsf-di-systemd"
+        required = [
+            "units/ndnsf-di-controller.service",
+            "units/ndnsf-di-provider@.service",
+            "units/ndnsf-di-repo@.service",
+            "units/ndnsf-di-bench.service",
+            "units/ndnsf-di-controller.target",
+            "units/ndnsf-di-providers.target",
+            "config/ndnsf-di.tmpfiles.conf",
+            "config/ndnsf-di.logrotate",
+            "config/deployment.example.json",
+            "install.sh",
+            "rollback.sh",
+            "create-release.sh",
+            "README.md",
+            "README_ch.md",
+        ]
+        missing = [name for name in required if not (root / name).is_file()]
+        self.assertEqual(missing, [])
+        units = "\n".join(
+            path.read_text(encoding="utf-8") for path in (root / "units").glob("*")
+            if path.is_file())
+        for directive in (
+            "User=ndnsf-di", "NoNewPrivileges=true", "ProtectSystem=strict",
+            "PrivateTmp=true", "Restart=on-failure", "RestartSec=",
+            "TimeoutStopSec=", "After=", "Requires=",
+        ):
+            self.assertIn(directive, units)
+        install = (root / "install.sh").read_text(encoding="utf-8")
+        rollback = (root / "rollback.sh").read_text(encoding="utf-8")
+        self.assertIn("sha256sum", install)
+        self.assertIn("current", install)
+        self.assertIn("previous", rollback)
+        self.assertIn("authoritative", install.lower())
+        self.assertNotIn("rm -rf /var/lib/ndn", install + rollback)
+
     def test_bounded_recovery_replaces_provider_once_and_rejects_old_result(self) -> None:
         for reason in (
             RecoveryReason.PROVIDER_LOST,

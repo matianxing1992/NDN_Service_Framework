@@ -10,6 +10,50 @@ TOOL = REPO / "tools" / "ndnsf_runtime.py"
 
 
 class RuntimeDoctorTests(unittest.TestCase):
+    def test_deployment_profile_checks_and_redacts_operational_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            profile = {
+                "name": "spec105-local",
+                "deployment": {
+                    "role": "provider",
+                    "identity": "/ndnsf/di/provider/0",
+                    "nfd_endpoint": str(tmpdir / "missing-nfd.sock"),
+                    "certificate": str(tmpdir / "missing.cert"),
+                    "trust_schema": str(tmpdir / "missing-trust.conf"),
+                    "release_dir": str(tmpdir / "missing-release"),
+                    "model_manifest": str(tmpdir / "missing-model.json"),
+                    "backend": "cuda",
+                    "device": "GPU-secret-uuid",
+                    "writable_dirs": [str(tmpdir / "missing-state")],
+                    "startup_timeout_s": 0,
+                    "shutdown_timeout_s": 0,
+                    "telemetry_max_age_ms": 0,
+                    "secret_files": [str(tmpdir / "identity-secret.key")],
+                },
+            }
+            profile_path = tmpdir / "deployment.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            proc = subprocess.run(
+                ["python3", str(TOOL), "doctor", "--profile", str(profile_path)],
+                cwd=REPO, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=False)
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertNotIn("GPU-secret-uuid", proc.stdout)
+            self.assertNotIn("identity-secret.key", proc.stdout)
+            payload = json.loads(proc.stdout)
+            deployment = payload["deployment"]
+            self.assertFalse(deployment["ready"])
+            for check in (
+                "role_identity", "nfd", "identity_certificate", "trust_schema",
+                "release", "backend_device", "model_artifact", "writable_dirs",
+                "lifecycle_bounds", "telemetry_probe", "disk_permissions",
+            ):
+                self.assertIn(check, deployment["checks"])
+            self.assertEqual(deployment["device"], "<redacted>")
+            self.assertEqual(deployment["secret_files"], ["<redacted>"])
+
     def test_doctor_generates_missing_token_file_and_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
