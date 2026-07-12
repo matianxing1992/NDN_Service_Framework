@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import copy
 import unittest
+
+from ndnsf_distributed_inference.deployment import ProviderTelemetryRegistry
 
 from ndnsf_distributed_inference.runtime_v1 import (
     DiFragmentRuntimeState,
@@ -14,6 +17,7 @@ from ndnsf_distributed_inference.runtime_v1 import (
     GenericAdmissionLease,
     GenericProviderRuntimeHint,
     ModelFragmentKey,
+    MeasuredTelemetrySnapshotV1,
     PeerNetworkMetric,
     PlanDependency,
     PlanRole,
@@ -86,6 +90,154 @@ def candidate(provider: str,
 
 
 class RuntimeAwarePlannerTest(unittest.TestCase):
+    @staticmethod
+    def measured_payload(*, boot: str = "boot-a", sequence: int = 7,
+                         evidence_epoch: int = 4) -> dict:
+        return {
+            "measuredTelemetry": {
+                "schema": "ndnsf-di-measured-telemetry-v1",
+                "source": "linux-proc", "status": "measured",
+                "providerName": "/provider/A", "providerBootId": boot,
+                "sequence": sequence, "resourceSequence": sequence,
+                "sampledAtMs": 1000 + sequence,
+                "resourceMeasuredAtMs": 990 + sequence,
+                "hostTotalMemoryBytes": 8_192_000,
+                "hostAvailableMemoryBytes": 3_072_000,
+                "processRssBytes": 1_280_000,
+                "readyQueue": 2, "waitingDependencies": 1,
+                "activeWorkers": 3, "workers": 4,
+                "completedStages": 10,
+                "stageServiceTimeEwmaMs": 200.0,
+                "stageServiceRateEwmaPerSecond": 5.0,
+                "membershipVersion": "members-v1",
+                "networkProfileVersion": "network-v1",
+                "cacheVersion": "cache-v1",
+            },
+            "executionEvidence": {
+                "schema": "ndnsf-di-execution-evidence-v1",
+                "providerName": "/provider/A", "providerBootId": boot,
+                "evidenceEpoch": evidence_epoch,
+                "runnerKind": "onnxruntime-cpu", "realCompute": True,
+                "device": {"kind": "cpu", "id": "cpu0"},
+                "runtimeVersion": "ort-1.26.0",
+                "modelDigest": "sha256:model", "planDigest": "sha256:plan",
+                "artifactDigests": {"/Stage/0": "sha256:stage0"},
+                "roles": ["/Stage/0"], "createdAtMs": 900,
+            },
+        }
+
+    def test_telemetry_registry_retires_old_boot_and_rejects_stale_sequence(self) -> None:
+        registry = ProviderTelemetryRegistry()
+        first = registry.retain_from_service_payload(
+            self.measured_payload(),
+            expected_provider_name="/provider/A",
+            expected_provider_boot_id="boot-a",
+        )
+        self.assertEqual(registry.get("/provider/A"), first)
+        with self.assertRaisesRegex(ValueError, "sequence did not advance"):
+            registry.retain_from_service_payload(self.measured_payload())
+        identity_drift = self.measured_payload(sequence=8)
+        identity_drift["executionEvidence"]["runtimeVersion"] = "ort-drift"
+        with self.assertRaisesRegex(ValueError, "runtime or artifact identity"):
+            registry.retain_from_service_payload(identity_drift)
+        evidence_regression = self.measured_payload(sequence=8, evidence_epoch=3)
+        with self.assertRaisesRegex(ValueError, "evidence epoch regressed"):
+            registry.retain_from_service_payload(evidence_regression)
+
+        next_boot = registry.retain_from_service_payload(
+            self.measured_payload(boot="boot-b", sequence=1, evidence_epoch=5)
+        )
+        self.assertEqual(registry.get("/provider/A"), next_boot)
+        with self.assertRaisesRegex(ValueError, "retired provider boot"):
+            registry.retain_from_service_payload(
+                self.measured_payload(boot="boot-a", sequence=8, evidence_epoch=6)
+            )
+        with self.assertRaisesRegex(ValueError, "expected provider boot"):
+            registry.retain_from_service_payload(
+                self.measured_payload(boot="boot-c", sequence=1, evidence_epoch=6),
+                expected_provider_boot_id="boot-z",
+            )
+
+    def test_measured_telemetry_parses_typed_payload_and_evidence_identity(self) -> None:
+        snapshot = MeasuredTelemetrySnapshotV1.from_service_payload({
+            "configuredCapability": {
+                "schema": "ndnsf-di-configured-capability-v1",
+                "source": "configured",
+                "values": {"ramMemoryMb": "8192"},
+            },
+            "measuredTelemetry": {
+                "schema": "ndnsf-di-measured-telemetry-v1",
+                "source": "linux-proc",
+                "status": "measured",
+                "providerName": "/provider/A",
+                "providerBootId": "boot-a",
+                "sequence": 7,
+                "resourceSequence": 9,
+                "sampledAtMs": 1000,
+                "resourceMeasuredAtMs": 990,
+                "hostTotalMemoryBytes": 8_192_000,
+                "hostAvailableMemoryBytes": 3_072_000,
+                "processRssBytes": 1_280_000,
+                "readyQueue": 2,
+                "waitingDependencies": 1,
+                "activeWorkers": 3,
+                "workers": 4,
+                "completedStages": 10,
+                "stageServiceTimeEwmaMs": 200.0,
+                "stageServiceRateEwmaPerSecond": 5.0,
+                "membershipVersion": "members-v1",
+                "networkProfileVersion": "network-v1",
+                "cacheVersion": "cache-v1",
+            },
+            "executionEvidence": {
+                "schema": "ndnsf-di-execution-evidence-v1",
+                "providerName": "/provider/A",
+                "providerBootId": "boot-a",
+                "evidenceEpoch": 4,
+                "runnerKind": "onnxruntime-cpu",
+                "realCompute": True,
+                "device": {"kind": "cpu", "id": "cpu0"},
+                "runtimeVersion": "ort-1.26.0",
+                "modelDigest": "sha256:model",
+                "planDigest": "sha256:plan",
+                "artifactDigests": {"/Stage/0": "sha256:stage0"},
+                "roles": ["/Stage/0"],
+                "createdAtMs": 900,
+            },
+        })
+
+        self.assertEqual(snapshot.provider_boot_id, "boot-a")
+        self.assertEqual(snapshot.evidence_epoch, 4)
+        self.assertEqual(snapshot.runtime_version, "ort-1.26.0")
+        self.assertEqual(snapshot.artifact_digests, {"/Stage/0": "sha256:stage0"})
+        self.assertEqual(snapshot.host_available_memory_bytes, 3_072_000)
+        self.assertEqual(snapshot.ready_queue, 2)
+        self.assertEqual(snapshot.membership_version, "members-v1")
+        self.assertTrue(snapshot.is_fresh(at_ms=2990, maximum_age_ms=2000))
+        self.assertFalse(snapshot.is_fresh(at_ms=3001, maximum_age_ms=2000))
+        self.assertFalse(snapshot.is_fresh(at_ms=989, maximum_age_ms=2000))
+
+    def test_measured_telemetry_rejects_configured_misbound_and_malformed_facts(self) -> None:
+        configured = self.measured_payload()
+        configured["measuredTelemetry"]["source"] = "configured"
+        with self.assertRaisesRegex(ValueError, "not measured"):
+            MeasuredTelemetrySnapshotV1.from_service_payload(configured)
+
+        misbound = self.measured_payload()
+        misbound["executionEvidence"]["providerBootId"] = "boot-wrong"
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
+            MeasuredTelemetrySnapshotV1.from_service_payload(misbound)
+
+        for field, value in (
+            ("readyQueue", -1),
+            ("workers", "not-an-integer"),
+            ("hostAvailableMemoryBytes", 9_000_000),
+        ):
+            malformed = copy.deepcopy(self.measured_payload())
+            malformed["measuredTelemetry"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                MeasuredTelemetrySnapshotV1.from_service_payload(malformed)
+
     def test_fragment_and_di_state_round_trip(self) -> None:
         key = fragment()
         state = DiFragmentRuntimeState(

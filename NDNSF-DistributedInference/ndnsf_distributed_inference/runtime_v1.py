@@ -172,10 +172,127 @@ class MeasuredTelemetrySnapshotV1:
     ready_queue: int = 0
     waiting_dependencies: int = 0
     active_workers: int = 0
+    resource_sequence: int = 0
+    sampled_at_ms: int = 0
+    host_total_memory_bytes: int = 0
+    host_available_memory_bytes: int = 0
+    process_rss_bytes: int = 0
+    worker_count: int = 0
+    completed_stages: int = 0
+    stage_service_time_ewma_ms: float = 0.0
+    stage_service_rate_ewma_per_second: float = 0.0
+    evidence_epoch: int = 0
+    runner_kind: str = ""
+    runtime_version: str = ""
+    model_digest: str = ""
+    plan_digest: str = ""
+    artifact_digests: dict[str, str] = field(default_factory=dict)
+    device_kind: str = ""
+    membership_version: str = ""
+    network_profile_version: str = ""
+    cache_version: str = ""
+    error_code: str = ""
+
+    @classmethod
+    def from_service_payload(cls, payload: dict[str, Any]) -> "MeasuredTelemetrySnapshotV1":
+        measured = payload.get("measuredTelemetry")
+        if not isinstance(measured, dict):
+            raise ValueError("measured telemetry section is missing")
+        if measured.get("schema") != "ndnsf-di-measured-telemetry-v1":
+            raise ValueError("measured telemetry schema is unsupported")
+        evidence_payload = payload.get("executionEvidence")
+        if not isinstance(evidence_payload, dict):
+            raise ValueError("measured telemetry execution evidence is missing")
+        evidence = ExecutionEvidenceV1.from_dict(evidence_payload)
+        evidence.validate()
+
+        provider_name = str(measured.get("providerName", ""))
+        provider_boot_id = str(measured.get("providerBootId", ""))
+        source = str(measured.get("source", ""))
+        status = str(measured.get("status", ""))
+        if source in {"", "configured", "profile", "unavailable"}:
+            raise ValueError("configured or unavailable telemetry is not measured")
+        if provider_name != evidence.provider_name or provider_boot_id != evidence.provider_boot_id:
+            raise ValueError("telemetry and execution evidence identity mismatch")
+
+        def nonnegative_int(name: str, *, required_positive: bool = False) -> int:
+            value = measured.get(name, 0)
+            if isinstance(value, bool):
+                raise ValueError(f"invalid measured telemetry integer: {name}")
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid measured telemetry integer: {name}") from exc
+            if parsed < 0 or (required_positive and parsed <= 0):
+                raise ValueError(f"invalid measured telemetry integer: {name}")
+            return parsed
+
+        sequence = nonnegative_int("sequence", required_positive=status == "measured")
+        resource_sequence = nonnegative_int(
+            "resourceSequence", required_positive=status == "measured")
+        sampled_at_ms = nonnegative_int(
+            "sampledAtMs", required_positive=status == "measured")
+        measured_at_ms = nonnegative_int(
+            "resourceMeasuredAtMs", required_positive=status == "measured")
+        host_total = nonnegative_int("hostTotalMemoryBytes")
+        host_available = nonnegative_int("hostAvailableMemoryBytes")
+        process_rss = nonnegative_int("processRssBytes")
+        if status == "measured" and (host_total <= 0 or host_available > host_total):
+            raise ValueError("invalid measured host memory facts")
+
+        def nonnegative_float(name: str) -> float:
+            try:
+                parsed = float(measured.get(name, 0.0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid measured telemetry number: {name}") from exc
+            if parsed < 0.0:
+                raise ValueError(f"invalid measured telemetry number: {name}")
+            return parsed
+
+        return cls(
+            provider_name=provider_name,
+            provider_boot_id=provider_boot_id,
+            sequence=sequence,
+            measured_at_ms=measured_at_ms,
+            source=source,
+            status=status,
+            device_id=evidence.device_id,
+            ready_queue=nonnegative_int("readyQueue"),
+            waiting_dependencies=nonnegative_int("waitingDependencies"),
+            active_workers=nonnegative_int("activeWorkers"),
+            resource_sequence=resource_sequence,
+            sampled_at_ms=sampled_at_ms,
+            host_total_memory_bytes=host_total,
+            host_available_memory_bytes=host_available,
+            process_rss_bytes=process_rss,
+            worker_count=nonnegative_int("workers"),
+            completed_stages=nonnegative_int("completedStages"),
+            stage_service_time_ewma_ms=nonnegative_float("stageServiceTimeEwmaMs"),
+            stage_service_rate_ewma_per_second=nonnegative_float(
+                "stageServiceRateEwmaPerSecond"),
+            evidence_epoch=evidence.evidence_epoch,
+            runner_kind=evidence.runner_kind.value,
+            runtime_version=evidence.runtime_version,
+            model_digest=evidence.model_digest,
+            plan_digest=evidence.plan_digest,
+            artifact_digests=dict(evidence.artifact_digests),
+            device_kind=evidence.device_kind,
+            membership_version=str(measured.get(
+                "membershipVersion", payload.get("membershipVersion", ""))),
+            network_profile_version=str(measured.get(
+                "networkProfileVersion", payload.get("networkProfileVersion", ""))),
+            cache_version=str(measured.get(
+                "cacheVersion", payload.get("cacheVersion", ""))),
+            error_code=str(measured.get("errorCode", "")),
+        )
 
     def is_fresh(self, *, at_ms: int, maximum_age_ms: int = 2000) -> bool:
         age = int(at_ms) - self.measured_at_ms
-        return self.source == "measured" and self.status == "measured" and 0 <= age <= maximum_age_ms
+        return (
+            self.source not in {"", "configured", "profile", "unavailable"}
+            and self.status == "measured"
+            and 0 <= age <= maximum_age_ms
+        )
 
 
 @dataclass(frozen=True)

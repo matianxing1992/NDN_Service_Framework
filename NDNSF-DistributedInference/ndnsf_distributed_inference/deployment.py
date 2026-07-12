@@ -24,9 +24,65 @@ from ndnsf import (
     to_plain,
 )
 
+from .runtime_v1 import MeasuredTelemetrySnapshotV1
+
 
 LEASE_SERVICE_NAME = "/Inference/Control/Lease"
 LEASE_CODEC_SCHEMA = "ndnsf-di-execution-lease-operation-v1"
+
+
+class ProviderTelemetryRegistry:
+    """Retain only monotonic measured telemetry for each provider boot."""
+
+    def __init__(self) -> None:
+        self._current: dict[str, MeasuredTelemetrySnapshotV1] = {}
+        self._retired_boots: dict[str, set[str]] = {}
+
+    def retain_from_service_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        expected_provider_name: str = "",
+        expected_provider_boot_id: str = "",
+    ) -> MeasuredTelemetrySnapshotV1:
+        snapshot = MeasuredTelemetrySnapshotV1.from_service_payload(payload)
+        if expected_provider_name and snapshot.provider_name != expected_provider_name:
+            raise ValueError("telemetry does not match expected provider name")
+        if expected_provider_boot_id and snapshot.provider_boot_id != expected_provider_boot_id:
+            raise ValueError("telemetry does not match expected provider boot")
+        self.retain(snapshot)
+        return snapshot
+
+    def retain(self, snapshot: MeasuredTelemetrySnapshotV1) -> None:
+        if not snapshot.provider_name or not snapshot.provider_boot_id:
+            raise ValueError("telemetry provider identity is incomplete")
+        retired = self._retired_boots.setdefault(snapshot.provider_name, set())
+        if snapshot.provider_boot_id in retired:
+            raise ValueError("telemetry arrived from a retired provider boot")
+        current = self._current.get(snapshot.provider_name)
+        if current is not None and current.provider_boot_id == snapshot.provider_boot_id:
+            if snapshot.sequence <= current.sequence:
+                raise ValueError("telemetry sequence did not advance")
+            if snapshot.resource_sequence <= current.resource_sequence:
+                raise ValueError("resource telemetry sequence did not advance")
+            if snapshot.evidence_epoch < current.evidence_epoch:
+                raise ValueError("execution evidence epoch regressed")
+            current_identity = (
+                current.runner_kind, current.runtime_version, current.model_digest,
+                current.plan_digest, tuple(sorted(current.artifact_digests.items())),
+            )
+            next_identity = (
+                snapshot.runner_kind, snapshot.runtime_version, snapshot.model_digest,
+                snapshot.plan_digest, tuple(sorted(snapshot.artifact_digests.items())),
+            )
+            if current_identity != next_identity:
+                raise ValueError("runtime or artifact identity changed within provider boot")
+        elif current is not None:
+            retired.add(current.provider_boot_id)
+        self._current[snapshot.provider_name] = snapshot
+
+    def get(self, provider_name: str) -> MeasuredTelemetrySnapshotV1 | None:
+        return self._current.get(provider_name)
 
 
 def deployment_roles_from_ack_candidate(candidate: AckCandidate) -> list[str]:
