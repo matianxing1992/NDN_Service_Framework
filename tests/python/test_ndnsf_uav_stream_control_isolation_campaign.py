@@ -13,6 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 CAMPAIGN = REPO / "Experiments/NDNSF_UAV_Stream_Control_Isolation_Campaign.py"
 GS_RUNTIME = REPO / "NDNSF-UAV-APP/ground-station/GroundStationServiceContainer.inc.hpp"
 GS_WINDOW = REPO / "NDNSF-UAV-APP/ground-station/GroundStationWindow.inc.hpp"
+DRONE_RUNTIME = REPO / "NDNSF-UAV-APP/drone/DroneServiceContainer.inc.hpp"
 
 
 def load_campaign():
@@ -34,6 +35,14 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         self.assertIn("std::min(m_timeoutMs, 5000)", telemetry)
         command = source[source.index("sendMavlinkCommandToDrone(const"):source.index("sendMavlinkCommandToDroneSync", source.index("sendMavlinkCommandToDrone(const"))]
         self.assertNotIn("5000", command)
+
+    def test_provider_telemetry_events_are_metadata_only(self) -> None:
+        source = DRONE_RUNTIME.read_text(encoding="utf-8")
+        block = source[source.index("UAV_TELEMETRY_PROVIDER_PHASE"):source.index("ServiceInvocationMode::NormalAndTargeted", source.index("UAV_TELEMETRY_PROVIDER_PHASE"))]
+        for field in ("phase=handler-enter", "request_id=", "service=", "timestamp_ms=", "status="):
+            self.assertIn(field, block)
+        for sensitive in ("payload", "token", "certificate", "credential", "private_key"):
+            self.assertNotIn(sensitive, block.lower())
 
     def test_auto_mavlink_worker_is_owned_and_joined(self) -> None:
         source = GS_WINDOW.read_text(encoding="utf-8")
@@ -255,6 +264,11 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
                 "request_id=/t2 timestamp_ms=12500 elapsed_ms=990 status=success\n",
                 encoding="utf-8",
             )
+            (run_dir / "drone.log").write_text(
+                "11.000 INFO UAV_TELEMETRY_PROVIDER_PHASE phase=handler-enter request_id=/t1 service=/UAV/Telemetry/GetStatus timestamp_ms=11000 status=running\n"
+                "11.010 INFO UAV_TELEMETRY_PROVIDER_PHASE phase=handler-return request_id=/t1 service=/UAV/Telemetry/GetStatus timestamp_ms=11010 status=success\n",
+                encoding="utf-8",
+            )
             result = campaign.parse_mode_run(
                 run_dir, 0, ["launcher"], mode="control-only", repetition=1,
                 loss_percent=5, duration_seconds=60, elapsed_seconds=8.0,
@@ -263,6 +277,14 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         self.assertEqual(attribution["earliestBoundary"], "telemetry-sender-timeout")
         self.assertTrue(attribution["telemetryDeadlineOverlap"])
         self.assertEqual(len(attribution["telemetryAttempts"]), 2)
+        self.assertEqual(
+            attribution["telemetryAttempts"][0]["providerAttribution"],
+            "handler-returned-no-user-response",
+        )
+        self.assertEqual(
+            attribution["telemetryAttempts"][1]["providerAttribution"],
+            "user-response",
+        )
 
     def test_arm_response_followed_by_armed_expiry_is_not_reported_as_success(self) -> None:
         campaign = load_campaign()

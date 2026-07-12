@@ -196,12 +196,16 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
     lifecycle_abort_reason = next(
         (marker for marker in LIFECYCLE_ABORT_MARKERS if marker in log_text), "")
     drone_armed_ms: list[int] = []
+    provider_telemetry_phases: dict[str, set[str]] = {}
     for line in drone_log_text.splitlines():
         fields = base.fields_from_line(line)
         if "DRONE_HEADLESS_STATUS" in line and fields.get("armed") == "true":
             timestamp = re.match(r"^(\d+(?:\.\d+)?)", line)
             if timestamp:
                 drone_armed_ms.append(int(float(timestamp.group(1)) * 1000))
+        if "UAV_TELEMETRY_PROVIDER_PHASE" in line and fields.get("request_id"):
+            provider_telemetry_phases.setdefault(fields["request_id"], set()).add(
+                fields.get("phase", "unknown"))
     unterminated_command_attempts = {
         command: stage
         for command, stage in command_stages.items()
@@ -313,6 +317,18 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
             (armed_wait_terminal_ms is None or int(item.get("dispatchMs", 0)) <= armed_wait_terminal_ms)
         ],
     }
+    for attempt in attempts:
+        if not str(attempt.get("service", "")).endswith("/UAV/Telemetry/GetStatus"):
+            continue
+        phases = provider_telemetry_phases.get(str(attempt.get("requestId", "")), set())
+        if attempt.get("terminalPhase") == "response":
+            attempt["providerAttribution"] = "user-response"
+        elif "handler-return" in phases:
+            attempt["providerAttribution"] = "handler-returned-no-user-response"
+        elif "handler-enter" in phases:
+            attempt["providerAttribution"] = "handler-entered-no-return"
+        else:
+            attempt["providerAttribution"] = "handler-not-observed"
     video_completion = bool(result["videoCompletion"]) if video_required else None
     control_completion = bool(result["controlCompletion"]) if control_required else None
     result.update({

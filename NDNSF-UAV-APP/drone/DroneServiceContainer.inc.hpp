@@ -3463,7 +3463,23 @@ private:
     m_provider->addService(
       m_config.serviceTelemetryStatus,
       ndn_service_framework::ServiceProvider::AckStrategyHandler(ackHandler),
-      ndn_service_framework::ServiceProvider::SimpleRequestHandler(telemetryHandler),
+      ndn_service_framework::ServiceProvider::RequestHandler(
+        [telemetryHandler](const ndn::Name&, const ndn::Name&,
+                           const ndn::Name& serviceName, const ndn::Name& requestId,
+                           const ndn_service_framework::RequestMessage& request) {
+          NDN_LOG_INFO("UAV_TELEMETRY_PROVIDER_PHASE phase=handler-enter"
+                       << " request_id=" << requestId.toUri()
+                       << " service=" << serviceName.toUri()
+                       << " timestamp_ms=" << nowMilliseconds()
+                       << " status=running");
+          auto response = telemetryHandler(request);
+          NDN_LOG_INFO("UAV_TELEMETRY_PROVIDER_PHASE phase=handler-return"
+                       << " request_id=" << requestId.toUri()
+                       << " service=" << serviceName.toUri()
+                       << " timestamp_ms=" << nowMilliseconds()
+                       << " status=" << (response.getStatus() ? "success" : "failure"));
+          return response;
+        }),
       ServiceInvocationMode::NormalAndTargeted);
 
     m_provider->addService(
