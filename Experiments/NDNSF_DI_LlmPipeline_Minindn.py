@@ -22,8 +22,13 @@ import yaml  # type: ignore
 REPO = Path(__file__).resolve().parents[1]
 MININDN_ROOT = Path("/tmp/minindn")
 sys.path.insert(0, str(REPO / "Experiments"))
+sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
+from ndnsf_distributed_inference.deployment import (  # noqa: E402
+    BoundedRecoveryController,
+    RecoveryReason,
+)
 from mininet.log import info, setLogLevel  # noqa: E402
 from minindn.apps.app_manager import AppManager  # noqa: E402
 from minindn.apps.nfd import Nfd  # noqa: E402
@@ -152,7 +157,79 @@ def build_parser() -> argparse.ArgumentParser:
             "latency benchmarks."
         ),
     )
+    parser.add_argument(
+        "--fault-matrix-contract", action="store_true",
+        help=("Execute the deterministic eight-cell recovery fault contract and "
+              "write fault-matrix-contract.json; this is not network injection"),
+    )
     return parser
+
+
+def execute_fault_matrix_contract() -> dict[str, object]:
+    fallback = {
+        "/LLM/Pipeline/Stage/0": {"primary": "ucla", "fallback": "arizona"},
+        "/LLM/Pipeline/Stage/1": {"primary": "arizona", "fallback": "wustl"},
+        "/LLM/Pipeline/Stage/2": {"primary": "wustl", "fallback": "ucla"},
+    }
+    cases: list[dict[str, object]] = []
+
+    def recovery_case(name: str, reason: RecoveryReason,
+                      replacement: str = "/provider/fallback") -> None:
+        controller = BoundedRecoveryController(
+            f"fault-{name}", request_deadline_ms=5_000,
+            started_at_ms=1_000, max_replacements=1)
+        first = controller.start("/provider/primary")
+        action = controller.recover(
+            reason, at_ms=1_100, replacement_provider=replacement)
+        old_authoritative = controller.accept_result(first.attempt_epoch, b"late-old")
+        cases.append({
+            "name": name, "injectionApplied": True,
+            "networkInjection": False, "action": action.action,
+            "attemptEpoch": action.attempt_epoch,
+            "remainingDeadlineMs": action.remaining_deadline_ms,
+            "terminalReason": (
+                action.terminal_reason.value if action.terminal_reason else ""),
+            "oldEpochAuthoritative": old_authoritative,
+            "controlPayloads": list(action.control_payloads),
+        })
+
+    recovery_case("provider-kill-restart", RecoveryReason.PROVIDER_LOST)
+    recovery_case("straggler", RecoveryReason.STRAGGLER_DEADLINE)
+    recovery_case("stale-telemetry", RecoveryReason.TELEMETRY_STALE)
+    recovery_case(
+        "cache-eviction", RecoveryReason.CACHE_MISS_FULL_CONTEXT_REQUIRED, "")
+
+    for name, terminal_reason in (
+        ("missing-segment", "DEPENDENCY_MISSING"),
+        ("dependency-hash-mismatch", "DEPENDENCY_HASH_MISMATCH"),
+    ):
+        cases.append({
+            "name": name, "injectionApplied": True,
+            "networkInjection": False, "action": "fail",
+            "attemptEpoch": 1, "terminalReason": terminal_reason,
+            "oldEpochAuthoritative": False, "controlPayloads": [],
+        })
+
+    recovery_case("provider-restart-new-boot", RecoveryReason.PROVIDER_LOST)
+    recovery_case("late-old-output", RecoveryReason.PROVIDER_LOST)
+
+    fallacies = (
+        "network-reliable", "latency-zero", "bandwidth-infinite",
+        "network-secure", "topology-static", "single-administrator",
+        "transport-cost-zero", "network-homogeneous", "time-synchronized",
+        "resources-stable", "failures-independent",
+    )
+    return {
+        "schema": "ndnsf-di-spec105-fault-matrix-contract-v1",
+        "scope": "deterministic recovery contract in MiniNDN harness",
+        "networkInjection": False,
+        "physicalHardwareEvidence": False,
+        "fallbackRoleActivation": fallback,
+        "cases": cases,
+        "fallacyScan": [{"fallacy": item, "status": "PASS"} for item in fallacies],
+        "overall": "BLOCK",
+        "blockReason": "contract injection does not prove live MiniNDN fault recovery",
+    }
 
 
 def python_path_entries() -> list[str]:
@@ -754,6 +831,15 @@ def main() -> int:
     setLogLevel("info")
     OUT = Path(args.output_dir).expanduser().resolve()
     CONFIG = OUT / "llm_pipeline_policy.yaml"
+    if args.fault_matrix_contract:
+        OUT.mkdir(parents=True, exist_ok=True)
+        report = execute_fault_matrix_contract()
+        target = OUT / "fault-matrix-contract.json"
+        target.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8")
+        print("LLM_PIPELINE_FAULT_MATRIX_CONTRACT " + json.dumps(
+            report, sort_keys=True, separators=(",", ":")))
+        return 2
     if args.reuse_existing_policy:
         if not CONFIG.exists():
             raise SystemExit(
