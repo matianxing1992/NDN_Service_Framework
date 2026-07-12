@@ -27,6 +27,18 @@ destination="$prefix/releases/$release_id"
 mkdir -p "$prefix/releases" "$root/etc/ndnsf-di" "$root/var/lib/ndnsf-di/cache" "$root/var/log/ndnsf-di"
 # Authoritative Repo state is deliberately outside the release tree and is never copied or removed.
 mkdir -p "$root/var/lib/ndnsf-repo"
+if [ -z "$root" ]; then
+  for account in ndnsf-di ndnsf-di-repo; do
+    if ! getent passwd "$account" >/dev/null 2>&1; then
+      useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin \
+        --user-group "$account"
+    fi
+  done
+  chown ndnsf-di:ndnsf-di /var/lib/ndnsf-di/cache /var/log/ndnsf-di
+  chown ndnsf-di-repo:ndnsf-di-repo /var/lib/ndnsf-repo
+else
+  printf '%s\n' ndnsf-di ndnsf-di-repo > "$root/etc/ndnsf-di/service-accounts.required"
+fi
 if [ "$activate_only" = false ]; then
   if [ -e "$destination" ]; then
     cmp "$release/release-manifest.json" "$destination/release-manifest.json" >/dev/null || {
@@ -43,11 +55,14 @@ if [ "$activate_only" = false ]; then
     "$root/etc/logrotate.d/ndnsf-di"
 fi
 [ -d "$destination" ] || { echo "installed release missing: $destination" >&2; exit 1; }
+target="releases/$release_id"
 if [ -L "$prefix/current" ]; then
   old=$(readlink "$prefix/current")
-  ln -sfn "$old" "$prefix/previous"
+  if [ "$old" != "$target" ]; then
+    ln -sfn "$old" "$prefix/previous"
+  fi
 fi
-ln -sfn "releases/$release_id" "$prefix/current"
+ln -sfn "$target" "$prefix/current"
 if [ -z "$root" ] && command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
 fi

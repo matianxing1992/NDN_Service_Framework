@@ -28,6 +28,15 @@ process composition, and a common large-data reference abstraction. The UAV and
 DistributedInference applications are application layers that validate and
 stress these framework mechanisms.
 
+The current NDNSF-DI local deployment result is an evidence-backed **BLOCK**,
+not a production PASS: evidence integrity and correctness pass, while fixed
+1 RPS performance, live recovery, operations and soak do not. Physical work is
+deferred exclusively to Spec 106. See
+[`docs/NDNSF-DI-deployment-candidate.md`](docs/NDNSF-DI-deployment-candidate.md)
+for architecture, CLI, build/test, experiment and release details, and
+[`packaging/ndnsf-di-systemd/README.md`](packaging/ndnsf-di-systemd/README.md)
+for the local operator runbook.
+
 ## 1. Prerequisites
 
 To keep the stack version-consistent, use the following repositories:

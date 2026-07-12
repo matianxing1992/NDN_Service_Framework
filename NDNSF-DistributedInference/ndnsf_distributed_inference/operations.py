@@ -14,6 +14,9 @@ from typing import Any
 @dataclass(frozen=True)
 class MetricsSnapshot:
     sampled_at_ms: int = 0
+    release_id: str = ""
+    plan_id: str = ""
+    evidence_epoch: int = 0
     counters: dict[str, int] = field(default_factory=dict)
     gauges: dict[str, float] = field(default_factory=dict)
     labels: dict[str, str] = field(default_factory=dict)
@@ -22,6 +25,9 @@ class MetricsSnapshot:
     def from_dict(cls, value: dict[str, Any]) -> "MetricsSnapshot":
         return cls(
             sampled_at_ms=int(value.get("sampledAtMs", value.get("sampled_at_ms", 0)) or 0),
+            release_id=str(value.get("releaseId", value.get("release_id", ""))),
+            plan_id=str(value.get("planId", value.get("plan_id", ""))),
+            evidence_epoch=int(value.get("evidenceEpoch", value.get("evidence_epoch", 0)) or 0),
             counters={str(k): int(v) for k, v in value.get("counters", {}).items()},
             gauges={str(k): float(v) for k, v in value.get("gauges", {}).items()},
             labels={str(k): str(v) for k, v in value.get("labels", {}).items()},
@@ -31,6 +37,9 @@ class MetricsSnapshot:
         payload = asdict(self)
         payload["schema"] = "ndnsf-di-metrics-v1"
         payload["sampledAtMs"] = payload.pop("sampled_at_ms") or int(time.time() * 1000)
+        payload["releaseId"] = payload.pop("release_id")
+        payload["planId"] = payload.pop("plan_id")
+        payload["evidenceEpoch"] = payload.pop("evidence_epoch")
         return payload
 
 

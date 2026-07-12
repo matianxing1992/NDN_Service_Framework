@@ -3224,6 +3224,19 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         session_id=args.session_id,
     )
     write_json(args.out, lease)
+    write_json(args.explain, {
+        "schema": "ndnsf-di-plan-explain-v1",
+        "planId": lease.plan_id,
+        "planDigest": stable_digest(to_plain(lease)),
+        "model": str(Path(args.model).resolve()),
+        "modelDigest": stable_digest(read_json(args.model)),
+        "providers": str(Path(args.providers).resolve()),
+        "providersDigest": stable_digest(read_json(args.providers)),
+        "targetRps": args.target_rps,
+        "contextClass": args.context_class,
+        "prefixId": args.prefix_id,
+        "sessionId": args.session_id,
+    })
     return 0
 
 
@@ -3346,6 +3359,20 @@ def _resolve_command(value: Any, default: list[str]) -> list[str]:
     return list(value)
 
 
+def _expand_command(value: Any, mapping: dict[str, str],
+                    required: tuple[str, ...]) -> list[str]:
+    command = _resolve_command(value, [])
+    rendered = "\n".join(command)
+    missing = [key for key in required if "{" + key + "}" not in rendered]
+    if missing:
+        raise ValueError(
+            "deployment adapter command does not consume: " + ", ".join(missing))
+    try:
+        return [part.format_map(mapping) for part in command]
+    except KeyError as exc:
+        raise ValueError(f"unknown deployment adapter placeholder: {exc.args[0]}") from exc
+
+
 def _emit_or_execute(command: list[str], args: argparse.Namespace,
                      *, identities: dict[str, str] | None = None) -> int:
     payload = {
@@ -3370,8 +3397,12 @@ def _deployment_payload(path: str | Path) -> tuple[dict[str, Any], dict[str, Any
 
 def _cmd_production_provider(args: argparse.Namespace) -> int:
     payload, deployment = _deployment_payload(args.profile)
-    default = [str(_repo_root() / "build/examples/di-native-provider"), "--check-only"]
-    command = _resolve_command(deployment.get("provider_command"), default)
+    if "provider_command" not in deployment:
+        print("provider profile requires deployment.provider_command", file=sys.stderr)
+        return 2
+    command = _expand_command(deployment["provider_command"], {
+        "profile": str(Path(args.profile).resolve()),
+    }, ("profile",))
     return _emit_or_execute(command, args, identities={
         "profile": str(Path(args.profile).resolve()),
         "release": str(deployment.get("release_dir", "")),
@@ -3392,11 +3423,15 @@ def _cmd_production_run(args: argparse.Namespace) -> int:
     if not args.profile or not args.request or not args.out:
         return _deprecated_simulation("run")
     _payload, deployment = _deployment_payload(args.profile)
-    harness = str(deployment.get(
-        "harness", "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"))
-    command = _resolve_command(deployment.get("run_command"), [
-        sys.executable, harness, "--output-dir", str(Path(args.out).parent),
-    ])
+    if "run_command" not in deployment:
+        print("deployment profile requires deployment.run_command", file=sys.stderr)
+        return 2
+    command = _expand_command(deployment["run_command"], {
+        "profile": str(Path(args.profile).resolve()),
+        "plan": str(Path(args.plan).resolve()),
+        "request": str(Path(args.request).resolve()),
+        "out": str(Path(args.out).resolve()),
+    }, ("profile", "plan", "request", "out"))
     return _emit_or_execute(command, args, identities={
         "profile": str(Path(args.profile).resolve()),
         "plan": str(Path(args.plan).resolve()),
@@ -3411,15 +3446,21 @@ def _cmd_production_bench(args: argparse.Namespace) -> int:
     campaign = read_json(args.campaign)
     runner = str(campaign.get("runner", "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"))
     perf = campaign.get("performance", {})
-    command = _resolve_command(campaign.get("command"), [
-        sys.executable, runner,
-        "--output-dir", str(args.out),
-        "--measured-duration-s", str(perf.get("measurementSeconds", 60)),
-        "--request-interval-ms", str(1000.0 / float(perf.get("offeredRps", 1.0))),
-        "--max-new-tokens", str(campaign.get("maxNewTokens", 32)),
-        "--campaign-id", str(campaign.get("campaignId", "operator-bench")),
-        "--runner-mode", "qwen-onnx-native",
-    ])
+    if "command" in campaign:
+        command = _expand_command(campaign["command"], {
+            "campaign": str(Path(args.campaign).resolve()),
+            "out": str(Path(args.out).resolve()),
+        }, ("campaign", "out"))
+    else:
+        command = [
+            sys.executable, runner,
+            "--output-dir", str(args.out),
+            "--runtime", "qwen-onnx-cpu-native",
+            "--measured-duration-s", str(perf.get("measurementSeconds", 60)),
+            "--request-interval-ms", str(1000.0 / float(perf.get("offeredRps", 1.0))),
+            "--max-new-tokens", str(campaign.get("maxNewTokens", 32)),
+            "--campaign-id", str(campaign.get("campaignId", "operator-bench")),
+        ]
     return _emit_or_execute(command, args, identities={
         "campaign": str(Path(args.campaign).resolve()),
         "output": str(Path(args.out).resolve()),
@@ -3436,6 +3477,30 @@ def _cmd_production_doctor(args: argparse.Namespace) -> int:
     })
 
 
+def _snapshot_binding_errors(snapshot: dict[str, Any], deployment: dict[str, Any],
+                             schema: str) -> list[str]:
+    errors = []
+    if snapshot.get("schema") != schema:
+        errors.append("SCHEMA_MISMATCH")
+    try:
+        age_ms = now_ms() - int(snapshot.get("sampledAtMs", 0))
+        max_age_ms = int(deployment.get("telemetry_max_age_ms", 0))
+    except (TypeError, ValueError):
+        age_ms = -1
+        max_age_ms = 0
+    if max_age_ms <= 0 or age_ms < 0 or age_ms > max_age_ms:
+        errors.append("SNAPSHOT_STALE")
+    bindings = (
+        ("releaseId", str(deployment.get("release_id", ""))),
+        ("planId", str(deployment.get("plan_id", ""))),
+        ("evidenceEpoch", deployment.get("evidence_epoch", 0)),
+    )
+    for key, expected in bindings:
+        if expected in ("", 0) or snapshot.get(key) != expected:
+            errors.append(f"{key.upper()}_MISMATCH")
+    return errors
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     _payload, deployment = _deployment_payload(args.profile)
     status_path = Path(str(deployment.get("status_file", "/run/ndnsf-di/status.json")))
@@ -3443,6 +3508,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         "schema": "ndnsf-di-status-v1", "ready": False,
         "reason": "STATUS_FILE_MISSING", "statusFile": str(status_path),
     }
+    errors = _snapshot_binding_errors(status, deployment, "ndnsf-di-status-v1")
+    if errors:
+        status["ready"] = False
+        status["reason"] = errors[0]
+        status["errors"] = errors
     status["profile"] = str(Path(args.profile).resolve())
     print(json.dumps(status, indent=2, sort_keys=True))
     return 0 if status.get("ready") else 1
@@ -3452,7 +3522,15 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
     from .operations import MetricsSnapshot, atomic_export_metrics
     _payload, deployment = _deployment_payload(args.profile)
     source = Path(str(deployment.get("metrics_file", "/run/ndnsf-di/metrics.json")))
-    snapshot = MetricsSnapshot.from_dict(read_json(source) if source.is_file() else {})
+    if not source.is_file():
+        print(f"metrics snapshot missing: {source}", file=sys.stderr)
+        return 2
+    raw = read_json(source)
+    errors = _snapshot_binding_errors(raw, deployment, "ndnsf-di-metrics-v1")
+    if errors:
+        print("metrics snapshot invalid: " + ",".join(errors), file=sys.stderr)
+        return 2
+    snapshot = MetricsSnapshot.from_dict(raw)
     atomic_export_metrics(snapshot, args.out, args.format)
     return 0
 
@@ -3470,6 +3548,7 @@ def main(argv: list[str] | None = None) -> int:
     plan.add_argument("--model", required=True)
     plan.add_argument("--providers", required=True)
     plan.add_argument("--out", required=True)
+    plan.add_argument("--explain", required=True)
     plan.add_argument("--target-rps", type=float, default=0.0)
     plan.add_argument("--context-class", default="short")
     plan.add_argument("--prefix-id", default="")

@@ -24,6 +24,13 @@ execution、面向已知 provider 的 Targeted invocation、同进程 trusted lo
 基于 ServiceContainer 的进程内组合，以及通用 large-data reference abstraction。
 UAV 和 DistributedInference 是应用层 workload，用来验证并压力测试这些框架机制。
 
+当前 NDNSF-DI 本机部署结论是有证据支持的 **BLOCK**，不是生产 PASS：evidence
+integrity 与 correctness 通过，但固定 1 RPS 性能、live recovery、operations 和 soak
+未通过或未执行。真机工作只归 Spec 106。架构、CLI、构建测试、实验和 release 细节见
+[`docs/NDNSF-DI-deployment-candidate.md`](docs/NDNSF-DI-deployment-candidate.md)，
+本机运维步骤见
+[`packaging/ndnsf-di-systemd/README_ch.md`](packaging/ndnsf-di-systemd/README_ch.md)。
+
 ## 1. 前置条件
 
 为了保证整个软件栈的版本一致，建议使用下面这些仓库：

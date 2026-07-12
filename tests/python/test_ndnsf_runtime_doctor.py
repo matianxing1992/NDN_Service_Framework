@@ -13,13 +13,22 @@ class RuntimeDoctorTests(unittest.TestCase):
     def test_deployment_profile_checks_and_redacts_operational_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
+            certificate = tmpdir / "provider.cert"
+            certificate.write_bytes(b"tampered-certificate")
+            telemetry = tmpdir / "telemetry.json"
+            telemetry.write_text(json.dumps({
+                "schema": "ndnsf-di-measured-telemetry-v1",
+                "source": "linux-proc", "status": "measured", "sampledAtMs": 1,
+            }), encoding="utf-8")
             profile = {
                 "name": "spec105-local",
                 "deployment": {
                     "role": "provider",
                     "identity": "/ndnsf/di/provider/0",
                     "nfd_endpoint": str(tmpdir / "missing-nfd.sock"),
-                    "certificate": str(tmpdir / "missing.cert"),
+                    "certificate": str(certificate),
+                    "certificate_name": "/ndnsf/di/provider/0/KEY/test/self/v=1",
+                    "certificate_sha256": "sha256:" + "0" * 64,
                     "trust_schema": str(tmpdir / "missing-trust.conf"),
                     "release_dir": str(tmpdir / "missing-release"),
                     "model_manifest": str(tmpdir / "missing-model.json"),
@@ -29,6 +38,7 @@ class RuntimeDoctorTests(unittest.TestCase):
                     "startup_timeout_s": 0,
                     "shutdown_timeout_s": 0,
                     "telemetry_max_age_ms": 0,
+                    "telemetry_file": str(telemetry),
                     "secret_files": [str(tmpdir / "identity-secret.key")],
                 },
             }
@@ -53,6 +63,10 @@ class RuntimeDoctorTests(unittest.TestCase):
                 self.assertIn(check, deployment["checks"])
             self.assertEqual(deployment["device"], "<redacted>")
             self.assertEqual(deployment["secret_files"], ["<redacted>"])
+            self.assertFalse(deployment["checks"]["identity_certificate"]["ok"])
+            self.assertFalse(deployment["checks"]["telemetry_probe"]["ok"])
+            self.assertGreater(deployment["checks"]["telemetry_probe"]["sampleAgeMs"], 2000)
+            self.assertFalse(deployment["checks"]["plan_evidence"]["ok"])
 
     def test_doctor_generates_missing_token_file_and_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

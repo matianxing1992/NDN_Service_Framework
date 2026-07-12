@@ -5,9 +5,23 @@
     "identity": "/ndnsf/di/provider/0",
     "nfd_endpoint": "/run/nfd/nfd.sock",
     "certificate": "/etc/ndnsf-di/certs/provider-0.cert",
+    "certificate_name": "/ndnsf/di/provider/0/KEY/REPLACE/issuer/v=REPLACE",
+    "certificate_sha256": "sha256:REPLACE_WITH_64_HEX",
     "trust_schema": "/etc/ndnsf-di/trust-schema.conf",
+    "trust_schema_sha256": "sha256:REPLACE_WITH_64_HEX",
     "release_dir": "/opt/ndnsf-di/current",
+    "release_manifest": "/opt/ndnsf-di/current/release-manifest.json",
+    "release_id": "REPLACE_RELEASE_ID",
+    "release_manifest_sha256": "sha256:REPLACE_WITH_64_HEX",
     "model_manifest": "/opt/ndnsf-di/current/share/model-manifest.json",
+    "model_manifest_sha256": "sha256:REPLACE_WITH_64_HEX",
+    "plan": "/etc/ndnsf-di/plan.json",
+    "plan_id": "REPLACE_PLAN_ID",
+    "plan_sha256": "sha256:REPLACE_WITH_64_HEX",
+    "evidence": "/run/ndnsf-di/execution-evidence.json",
+    "evidence_epoch": 1,
+    "evidence_sha256": "sha256:REPLACE_WITH_64_HEX",
+    "telemetry_file": "/run/ndnsf-di/telemetry.json",
     "backend": "onnxruntime-cpu",
     "device": "cpu0",
     "writable_dirs": [
@@ -21,6 +35,23 @@
     "secret_files": ["/var/lib/ndnsf-di/pib/identity.db"],
     "status_file": "/run/ndnsf-di/status.json",
     "metrics_file": "/run/ndnsf-di/metrics.json",
-    "harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"
+    "harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+    "provider_command": [
+      "/usr/bin/env",
+      "NDNSF_DI_PROFILE={profile}",
+      "/opt/ndnsf-di/current/bin/di-native-provider",
+      "--plan", "/etc/ndnsf-di/plan.json",
+      "--manifest", "/opt/ndnsf-di/current/share/model-manifest.json",
+      "--provider", "/ndnsf/di/provider/0",
+      "--controller", "/ndnsf/di/controller",
+      "--trust-schema", "/etc/ndnsf-di/trust-schema.conf",
+      "--roles", "/LLM/Stage/0",
+      "--serve", "--require-execution-lease"
+    ],
+    "run_command": [
+      "/opt/ndnsf-di/current/bin/ndnsf-di-run-adapter",
+      "--profile", "{profile}", "--plan", "{plan}",
+      "--request", "{request}", "--out", "{out}"
+    ]
   }
 }

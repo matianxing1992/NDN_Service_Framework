@@ -24,6 +24,13 @@ The long-term goal is not to wrap a Python executor around NDNSF forever.
 Instead, Python should describe the service and submit inference jobs, while
 the providers execute dependency-driven inference through native C++ workers.
 
+Deployment status, operator commands and evidence boundaries are maintained in
+[`docs/NDNSF-DI-deployment-candidate.md`](../docs/NDNSF-DI-deployment-candidate.md).
+Spec 105 currently closes as `minindnCandidateOverall=BLOCK`; physical
+production stays `DEFERRED` to Spec 106. Simulated Runtime v1 behavior is only
+available under `ndnsf-di contract-smoke`; production adapters must consume the
+bound profile/plan/request/output command-template fields and fail closed.
+
 Layering:
 
 ```text

@@ -8,6 +8,7 @@ fresh VMs before optional Python dependencies are installed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -115,6 +116,10 @@ DEPLOYMENT_KEYS = {
     "startup_timeout_s", "shutdown_timeout_s", "telemetry_max_age_ms",
     "secret_files", "status_file", "metrics_file", "harness",
     "provider_command", "run_command",
+    "certificate_name", "certificate_sha256", "trust_schema_sha256",
+    "release_manifest", "release_id", "release_manifest_sha256",
+    "model_manifest_sha256", "plan", "plan_id", "plan_sha256",
+    "evidence", "evidence_epoch", "evidence_sha256", "telemetry_file",
 }
 
 
@@ -364,9 +369,14 @@ def validate_profile_payload(payload: dict[str, Any], require_di: bool = False) 
         "role", "identity", "nfd_endpoint", "certificate", "trust_schema",
         "release_dir", "model_manifest", "backend", "device", "status_file",
         "metrics_file", "harness",
+        "certificate_name", "certificate_sha256", "trust_schema_sha256",
+        "release_manifest", "release_id", "release_manifest_sha256",
+        "model_manifest_sha256", "plan", "plan_id", "plan_sha256",
+        "evidence", "evidence_sha256", "telemetry_file",
     ):
         validate_string(deployment, key, "deployment", errors)
-    for key in ("startup_timeout_s", "shutdown_timeout_s", "telemetry_max_age_ms"):
+    for key in ("startup_timeout_s", "shutdown_timeout_s", "telemetry_max_age_ms",
+                "evidence_epoch"):
         validate_int(deployment, key, "deployment", errors)
     for key in ("writable_dirs", "secret_files", "provider_command", "run_command"):
         if key in deployment and (
@@ -422,6 +432,29 @@ def deployment_preflight(payload: dict[str, Any]) -> dict[str, Any]:
         exists = bool(path and (path.is_dir() if directory else path.is_file()))
         return {"ok": exists, "path": str(path) if path else ""}
 
+    def digest_status(path_key: str, digest_key: str) -> dict[str, Any]:
+        raw = deployment.get(path_key, "")
+        expected = str(deployment.get(digest_key, "")).lower()
+        path = Path(str(raw)) if raw else None
+        actual = hashlib.sha256(path.read_bytes()).hexdigest() if path and path.is_file() else ""
+        return {
+            "ok": bool(actual and expected.startswith("sha256:") and
+                       actual == expected[7:]),
+            "path": str(path) if path else "",
+            "digest": f"sha256:{actual}" if actual else "",
+        }
+
+    def json_object(path_key: str) -> tuple[Path | None, dict[str, Any]]:
+        raw = deployment.get(path_key, "")
+        path = Path(str(raw)) if raw else None
+        if not path or not path.is_file():
+            return path, {}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return path, {}
+        return path, value if isinstance(value, dict) else {}
+
     role = str(deployment.get("role", ""))
     identity = str(deployment.get("identity", ""))
     role_identity = {
@@ -430,6 +463,41 @@ def deployment_preflight(payload: dict[str, Any]) -> dict[str, Any]:
         "role": role,
         "identity": identity,
     }
+    certificate = digest_status("certificate", "certificate_sha256")
+    certificate_name = str(deployment.get("certificate_name", ""))
+    certificate["name"] = certificate_name
+    certificate["ok"] = bool(
+        certificate["ok"] and certificate_name.startswith(identity.rstrip("/") + "/KEY/"))
+    trust_schema = digest_status("trust_schema", "trust_schema_sha256")
+    release_manifest_path, release_manifest = json_object("release_manifest")
+    release_manifest_digest = digest_status("release_manifest", "release_manifest_sha256")
+    release_id = str(deployment.get("release_id", ""))
+    release = path_status("release_dir", directory=True)
+    release["manifest"] = str(release_manifest_path) if release_manifest_path else ""
+    release["releaseId"] = release_id
+    release["ok"] = bool(
+        release["ok"] and release_manifest_digest["ok"] and
+        release_manifest.get("schema") == "ndnsf-di-release-manifest-v1" and
+        release_manifest.get("releaseId") == release_id)
+    model_artifact = digest_status("model_manifest", "model_manifest_sha256")
+    plan_path, plan_payload = json_object("plan")
+    plan = digest_status("plan", "plan_sha256")
+    plan_id = str(deployment.get("plan_id", ""))
+    plan["planId"] = plan_id
+    plan["ok"] = bool(plan["ok"] and plan_payload.get("planId") == plan_id)
+    evidence_path, evidence_payload = json_object("evidence")
+    evidence = digest_status("evidence", "evidence_sha256")
+    evidence_epoch = deployment.get("evidence_epoch", 0)
+    evidence["evidenceEpoch"] = evidence_epoch
+    try:
+        observed_evidence_epoch = int(evidence_payload.get("evidenceEpoch", 0))
+    except (TypeError, ValueError):
+        observed_evidence_epoch = -1
+    evidence["ok"] = bool(
+        evidence["ok"] and
+        evidence_payload.get("schema") == "ndnsf-di-execution-evidence-v1" and
+        evidence_payload.get("providerName") == identity and
+        observed_evidence_epoch == evidence_epoch)
     nfd_path = Path(str(deployment.get("nfd_endpoint", "")))
     nfd = {"ok": nfd_path.exists() and nfd_path.is_socket(), "endpoint": str(nfd_path)}
     backend = str(deployment.get("backend", ""))
@@ -452,10 +520,22 @@ def deployment_preflight(payload: dict[str, Any]) -> dict[str, Any]:
         "shutdownTimeoutS": shutdown,
     }
     telemetry_age = deployment.get("telemetry_max_age_ms", 0)
+    telemetry_path, telemetry_payload = json_object("telemetry_file")
+    sampled_at = telemetry_payload.get("sampledAtMs", 0)
+    try:
+        sampled_age = now_ms() - int(sampled_at)
+    except (TypeError, ValueError):
+        sampled_age = -1
     telemetry = {
-        "ok": isinstance(telemetry_age, int) and 0 < telemetry_age <= 2000,
-        "source": "linux-proc",
+        "ok": isinstance(telemetry_age, int) and 0 < telemetry_age <= 2000
+              and telemetry_payload.get("schema") == "ndnsf-di-measured-telemetry-v1"
+              and telemetry_payload.get("source") == "linux-proc"
+              and telemetry_payload.get("status") == "measured"
+              and 0 <= sampled_age <= telemetry_age,
+        "source": str(telemetry_payload.get("source", "")),
         "maximumAgeMs": telemetry_age,
+        "sampleAgeMs": sampled_age,
+        "path": str(telemetry_path) if telemetry_path else "",
     }
     secret_paths = [Path(str(value)) for value in deployment.get("secret_files", [])]
     secrets_secure = bool(secret_paths)
@@ -476,11 +556,13 @@ def deployment_preflight(payload: dict[str, Any]) -> dict[str, Any]:
     checks = {
         "role_identity": role_identity,
         "nfd": nfd,
-        "identity_certificate": path_status("certificate"),
-        "trust_schema": path_status("trust_schema"),
-        "release": path_status("release_dir", directory=True),
+        "identity_certificate": certificate,
+        "trust_schema": trust_schema,
+        "release": release,
         "backend_device": backend_device,
-        "model_artifact": path_status("model_manifest"),
+        "model_artifact": model_artifact,
+        "plan_evidence": {"ok": plan["ok"] and evidence["ok"],
+                          "plan": plan, "evidence": evidence},
         "writable_dirs": writable_status,
         "lifecycle_bounds": lifecycle,
         "telemetry_probe": telemetry,

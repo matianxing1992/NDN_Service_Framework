@@ -13,6 +13,7 @@ mkdir -p "$work"
 create="$repo/packaging/ndnsf-di-systemd/create-release.sh"
 install="$repo/packaging/ndnsf-di-systemd/install.sh"
 rollback="$repo/packaging/ndnsf-di-systemd/rollback.sh"
+uninstall="$repo/packaging/ndnsf-di-systemd/uninstall.sh"
 common_artifacts="--artifact /bin/true:bin/App_ServiceController
 --artifact /bin/true:bin/di-native-provider
 --artifact /bin/true:bin/ndnsf-di
@@ -28,6 +29,13 @@ printf '%s\n' authoritative-repo-sentinel > "$work/root/var/lib/ndnsf-repo/catal
 repo_before=$(sha256sum "$work/root/var/lib/ndnsf-repo/catalog.sentinel")
 "$install" --release "$work/release-n" --root "$work/root"
 "$install" --release "$work/release-n1" --root "$work/root"
+[ "$(readlink "$work/root/opt/ndnsf-di/previous")" = "releases/spec105-staging-n" ] || {
+  echo "N to N+1 did not retain release N" >&2; exit 1;
+}
+"$install" --release "$work/release-n1" --root "$work/root"
+[ "$(readlink "$work/root/opt/ndnsf-di/previous")" = "releases/spec105-staging-n" ] || {
+  echo "same-release activation destroyed rollback point" >&2; exit 1;
+}
 "$rollback" --root "$work/root"
 repo_after=$(sha256sum "$work/root/var/lib/ndnsf-repo/catalog.sentinel")
 [ "$repo_before" = "$repo_after" ] || { echo "authoritative Repo changed" >&2; exit 1; }
@@ -58,4 +66,13 @@ if missing:
     raise SystemExit("missing hardening directives: " + ", ".join(missing))
 print("STATIC_SECURITY_PASS directives=" + str(len(required)))
 PY
+grep -qx ndnsf-di "$work/root/etc/ndnsf-di/service-accounts.required"
+grep -qx ndnsf-di-repo "$work/root/etc/ndnsf-di/service-accounts.required"
+"$uninstall" --root "$work/root"
+[ ! -e "$work/root/etc/systemd/system/ndnsf-di-controller.service" ] || {
+  echo "uninstall retained controller unit" >&2; exit 1;
+}
+[ -f "$work/root/var/lib/ndnsf-repo/catalog.sentinel" ] || {
+  echo "uninstall removed authoritative Repo" >&2; exit 1;
+}
 echo "STAGING_PASS root=$work/root repoDigest=$(printf '%s' "$repo_after" | cut -d' ' -f1)"

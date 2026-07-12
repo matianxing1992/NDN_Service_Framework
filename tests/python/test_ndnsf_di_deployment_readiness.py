@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 from concurrent.futures import Future
+import hashlib
 import importlib.util
 import io
 import json
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 
@@ -24,7 +26,11 @@ from ndnsf_distributed_inference.deployment import (
     BoundedRecoveryController,
     RecoveryReason,
 )
-from ndnsf_distributed_inference.release_gate import DIMENSIONS, build_release_gate
+from ndnsf_distributed_inference.release_gate import (
+    DIMENSIONS,
+    build_release_gate,
+    verify_evidence_manifest,
+)
 from ndnsf_distributed_inference.qwen_pilot import (
     BoundedGenerationScheduler,
     CacheResolution,
@@ -76,6 +82,30 @@ def evidence_payload(value: ExecutionEvidenceV1) -> dict[str, object]:
 
 
 class DeploymentReadinessContractsTest(unittest.TestCase):
+    def test_release_gate_manifest_rejects_missing_and_tampered_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proof = root / "proof.md"
+            proof.write_text("immutable proof\n", encoding="utf-8")
+            digest = hashlib.sha256(proof.read_bytes()).hexdigest()
+            payload = {
+                "evidence_root": str(root),
+                "evidence_manifest": [{"path": "proof.md", "sha256": "sha256:" + digest}],
+                "dimensions": {
+                    name: {"status": "PASS", "artifacts": ["proof.md"]}
+                    for name in DIMENSIONS
+                },
+            }
+            self.assertEqual(verify_evidence_manifest(payload), [])
+            proof.write_text("tampered\n", encoding="utf-8")
+            self.assertEqual(
+                verify_evidence_manifest(payload),
+                ["EVIDENCE_DIGEST_MISMATCH:proof.md", "EVIDENCE_UNBOUND:proof.md"],
+            )
+            proof.unlink()
+            errors = verify_evidence_manifest(payload)
+            self.assertIn("EVIDENCE_MISSING:proof.md", errors)
+
     def test_runtime_cli_separates_real_adapters_from_contract_smoke(self) -> None:
         cli = [sys.executable, "-m", "ndnsf_distributed_inference.runtime_v1"]
         legacy = subprocess.run(
@@ -92,12 +122,19 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            adapter = Path(__file__).resolve().parents[1] / "fixtures" / "spec105_production_adapter.py"
             profile = root / "deployment.json"
             status_file = root / "status.json"
             metrics_file = root / "metrics.json"
-            status_file.write_text(json.dumps({"ready": True}), encoding="utf-8")
+            sampled_at_ms = int(time.time() * 1000)
+            status_file.write_text(json.dumps({
+                "schema": "ndnsf-di-status-v1", "ready": True,
+                "sampledAtMs": sampled_at_ms, "releaseId": "release-r1",
+                "planId": "plan-r1", "evidenceEpoch": 1,
+            }), encoding="utf-8")
             metrics_file.write_text(json.dumps({
-                "sampledAtMs": 1,
+                "schema": "ndnsf-di-metrics-v1", "sampledAtMs": sampled_at_ms,
+                "releaseId": "release-r1", "planId": "plan-r1", "evidenceEpoch": 1,
                 "counters": {"requests_completed_total": 3},
                 "gauges": {"queue_depth": 0},
                 "labels": {"provider": "local"},
@@ -107,6 +144,18 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
                     "harness": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
                     "status_file": str(status_file),
                     "metrics_file": str(metrics_file),
+                    "telemetry_max_age_ms": 2000,
+                    "release_id": "release-r1", "plan_id": "plan-r1",
+                    "evidence_epoch": 1,
+                    "provider_command": [
+                        sys.executable, str(adapter), "provider",
+                        "--profile", "{profile}",
+                    ],
+                    "run_command": [
+                        sys.executable, str(adapter), "run",
+                        "--profile", "{profile}", "--plan", "{plan}",
+                        "--request", "{request}", "--out", "{out}",
+                    ],
                 },
             }), encoding="utf-8")
             request = root / "request.json"
@@ -115,18 +164,21 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
             plan.write_text("{}", encoding="utf-8")
             campaign = root / "campaign.json"
             campaign.write_text(json.dumps({
-                "runner": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+                "command": [
+                    sys.executable, str(adapter), "bench",
+                    "--campaign", "{campaign}", "--out", "{out}",
+                ],
             }), encoding="utf-8")
             cases = [
                 (["provider", "--profile", str(profile), "--dry-run"],
-                 "di-native-provider"),
+                 "spec105_production_adapter.py"),
                 (["run", "--profile", str(profile), "--plan", str(plan),
                   "--request", str(request), "--out", str(root / "result.json"),
-                  "--dry-run"], "NDNSF_DI_LlmPipeline_Minindn.py"),
+                  "--dry-run"], "spec105_production_adapter.py"),
                 (["bench", "--campaign", str(campaign), "--out", str(root / "bench"),
-                  "--dry-run"], "NDNSF_DI_LlmPipeline_Minindn.py"),
+                  "--dry-run"], "spec105_production_adapter.py"),
             ]
-            for args, adapter in cases:
+            for args, expected_adapter in cases:
                 with self.subTest(command=args[0]):
                     proc = subprocess.run(
                         cli + args, text=True, stdout=subprocess.PIPE,
@@ -134,8 +186,80 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
                     self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
                     payload = json.loads(proc.stdout)
                     self.assertEqual(payload["mode"], "production-adapter")
-                    self.assertIn(adapter, " ".join(payload["command"]))
+                    self.assertIn(expected_adapter, " ".join(payload["command"]))
 
+            provider_run = subprocess.run(
+                cli + ["provider", "--profile", str(profile)], text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(provider_run.returncode, 0, provider_run.stderr)
+            self.assertEqual(json.loads(provider_run.stdout)["mode"], "provider")
+            result_out = root / "result.json"
+            run_result = subprocess.run(
+                cli + ["run", "--profile", str(profile), "--plan", str(plan),
+                       "--request", str(request), "--out", str(result_out)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(run_result.returncode, 0, run_result.stderr)
+            self.assertEqual(json.loads(result_out.read_text())["mode"], "run")
+            bench_out = root / "bench-result.json"
+            bench_result = subprocess.run(
+                cli + ["bench", "--campaign", str(campaign), "--out", str(bench_out)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(bench_result.returncode, 0, bench_result.stderr)
+            self.assertEqual(json.loads(bench_out.read_text())["mode"], "bench")
+
+            default_campaign = root / "default-campaign.json"
+            default_campaign.write_text(json.dumps({
+                "runner": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+                "campaignId": "fixture-campaign",
+                "performance": {"measurementSeconds": 60, "offeredRps": 1.0},
+            }), encoding="utf-8")
+            default_bench = subprocess.run(
+                cli + ["bench", "--campaign", str(default_campaign),
+                       "--out", str(root / "default-bench"), "--dry-run"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(default_bench.returncode, 0, default_bench.stderr)
+            default_command = json.loads(default_bench.stdout)["command"]
+            self.assertIn("--runtime", default_command)
+            self.assertIn("qwen-onnx-cpu-native", default_command)
+            self.assertNotIn("--runner-mode", default_command)
+
+            broken = root / "broken-profile.json"
+            broken.write_text(json.dumps({"deployment": {
+                "run_command": [sys.executable, str(adapter), "run", "--plan", "{plan}"],
+            }}), encoding="utf-8")
+            rejected = subprocess.run(
+                cli + ["run", "--profile", str(broken), "--plan", str(plan),
+                       "--request", str(request), "--out", str(root / "bad.json")],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("does not consume", rejected.stderr)
+
+            model = root / "model.json"
+            providers = root / "providers.json"
+            model.write_text(json.dumps({
+                "modelId": "qwen-test", "revision": "r1", "modelFamily": "llm",
+                "layers": 2, "memoryPerLayerMb": 1.0, "flopsPerLayerTflop": 0.01,
+            }), encoding="utf-8")
+            providers.write_text(json.dumps({"providers": [{
+                "provider": "local", "gpuMemoryMb": 0, "ramMemoryMb": 8192,
+                "flopsTflops": 1.0, "llmStageCapacityMb": 1024,
+            }]}), encoding="utf-8")
+            explain = root / "plan-explain.json"
+            planned = subprocess.run(
+                cli + ["plan", "--model", str(model), "--providers", str(providers),
+                       "--out", str(root / "planned.json"), "--explain", str(explain)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(planned.returncode, 0, planned.stderr)
+            self.assertEqual(json.loads(explain.read_text())["schema"],
+                             "ndnsf-di-plan-explain-v1")
+
+            fresh_ms = int(time.time() * 1000)
+            fresh_status = json.loads(status_file.read_text())
+            fresh_status["sampledAtMs"] = fresh_ms
+            status_file.write_text(json.dumps(fresh_status), encoding="utf-8")
+            fresh_metrics = json.loads(metrics_file.read_text())
+            fresh_metrics["sampledAtMs"] = fresh_ms
+            metrics_file.write_text(json.dumps(fresh_metrics), encoding="utf-8")
             status = subprocess.run(
                 cli + ["status", "--profile", str(profile), "--json"],
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
@@ -151,6 +275,21 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
             self.assertIn("ndnsf_di_requests_completed_total", rendered)
             self.assertIn('provider="local"', rendered)
             self.assertFalse(list(root.glob(".metrics.prom.*")))
+
+            stale_status = json.loads(status_file.read_text())
+            stale_status["sampledAtMs"] = 1
+            status_file.write_text(json.dumps(stale_status), encoding="utf-8")
+            stale = subprocess.run(
+                cli + ["status", "--profile", str(profile), "--json"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertNotEqual(stale.returncode, 0)
+            self.assertIn("SNAPSHOT_STALE", json.loads(stale.stdout)["errors"])
+            metrics_file.unlink()
+            missing_metrics = subprocess.run(
+                cli + ["metrics", "--profile", str(profile), "--out", str(root / "missing.json")],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertNotEqual(missing_metrics.returncode, 0)
+            self.assertFalse((root / "missing.json").exists())
 
     def test_systemd_package_contract_is_hardened_and_reversible(self) -> None:
         root = Path(__file__).resolve().parents[2] / "packaging" / "ndnsf-di-systemd"
@@ -188,6 +327,14 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
         self.assertIn("previous", rollback)
         self.assertIn("authoritative", install.lower())
         self.assertNotIn("rm -rf /var/lib/ndn", install + rollback)
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [str(root / "validate-staging.sh"), "--work-root",
+                 str(Path(tmp) / "stage")],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("STAGING_PASS", proc.stdout)
+            self.assertIn("authoritative Repo preserved", proc.stdout)
 
     def test_bounded_recovery_replaces_provider_once_and_rejects_old_result(self) -> None:
         for reason in (

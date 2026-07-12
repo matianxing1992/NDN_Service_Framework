@@ -17,9 +17,10 @@ GPU 主机、物理网络、真实生产身份和跨主机验收全部由 Spec 1
 ndnsf-di doctor --profile /etc/ndnsf-di/deployment.json --json
 ```
 
-doctor 必须验证身份、NFD socket、证书、trust schema、CPU ONNX 后端、模型
-manifest、可写目录、生命周期边界、磁盘/权限和新鲜 Linux telemetry 源；
-任一失败都必须停止。
+先替换全部 `REPLACE_*` 字段。doctor 必须验证身份/证书名称与 digest、NFD socket、
+trust/release/model/plan/execution-evidence digest、CPU ONNX 后端、可写目录、
+生命周期边界、磁盘/权限和实测的新鲜 Linux telemetry 文件；配置的 freshness
+不能冒充 probe，任一失败都必须停止。
 
 ## 2. 构建与发布
 
@@ -90,5 +91,6 @@ sudo systemctl stop ndnsf-di-bench.service ndnsf-di-providers.target \
 sudo packaging/ndnsf-di-systemd/uninstall.sh
 ```
 
-只有确认范围后才能加 `--purge-disposable-cache`。卸载只移除激活链接并可选
-清理 DI cache，始终保留权威 Repo。清理前必须保存日志和失败证据。
+只有确认范围后才能加 `--purge-disposable-cache`。卸载会停止/disable 已安装
+target，移除激活链接、unit、tmpfiles 与 logrotate 资产，并可选清理 DI cache；
+始终保留权威 Repo 和 operator profile。清理前必须保存日志和失败证据。

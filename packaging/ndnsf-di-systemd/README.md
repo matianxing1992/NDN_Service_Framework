@@ -19,10 +19,11 @@ Validate before installation:
 ndnsf-di doctor --profile /etc/ndnsf-di/deployment.json --json
 ```
 
-The doctor must report the expected identity, NFD socket, certificate, trust
-schema, CPU ONNX backend, model manifest, writable directories, lifecycle
-bounds, disk/permission state, and fresh Linux telemetry source. A failure is a
-stop condition.
+Replace every `REPLACE_*` field first. The doctor must report the expected
+identity/certificate name and digest, NFD socket, trust/release/model/plan and
+execution-evidence digests, CPU ONNX backend, writable directories, lifecycle
+bounds, disk/permission state, and a measured fresh Linux telemetry file.
+Configured freshness is not a probe. A failure is a stop condition.
 
 ## 2. Build and release
 
@@ -97,5 +98,7 @@ sudo packaging/ndnsf-di-systemd/uninstall.sh
 ```
 
 Use `--purge-disposable-cache` only after confirming its scope. Uninstall
-removes activation links and optionally the DI cache, but always preserves the
-authoritative Repo. Preserve logs and failed evidence before cleanup.
+stops/disables installed targets, removes activation links, units, tmpfiles and
+logrotate assets, and optionally removes the DI cache. It always preserves the
+authoritative Repo and operator profiles. Preserve logs and failed evidence
+before cleanup.
