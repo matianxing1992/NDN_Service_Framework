@@ -239,6 +239,15 @@ DependencyWaitScheduler::finish(const std::shared_ptr<Job>& job,
               << " reason=" << (reason.empty() ? toString(status) : reason)
               << std::endl;
   }
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    switch (status) {
+    case DependencyWaitStatus::Completed: ++m_completed; break;
+    case DependencyWaitStatus::Cancelled: ++m_cancelled; break;
+    case DependencyWaitStatus::DeadlineExpired: ++m_deadlineExpired; break;
+    case DependencyWaitStatus::Failed: ++m_failed; break;
+    }
+  }
   try {
     job->completion(DependencyWaitResult{job->waitId, status, std::move(reason)});
   }
@@ -251,12 +260,6 @@ DependencyWaitScheduler::finish(const std::shared_ptr<Job>& job,
       --m_activeCount;
     }
     m_jobs.erase(job->waitId);
-    switch (status) {
-    case DependencyWaitStatus::Completed: ++m_completed; break;
-    case DependencyWaitStatus::Cancelled: ++m_cancelled; break;
-    case DependencyWaitStatus::DeadlineExpired: ++m_deadlineExpired; break;
-    case DependencyWaitStatus::Failed: ++m_failed; break;
-    }
     if (m_queue.empty() && m_activeCount == 0 && m_jobs.empty()) {
       m_idleCv.notify_all();
     }
