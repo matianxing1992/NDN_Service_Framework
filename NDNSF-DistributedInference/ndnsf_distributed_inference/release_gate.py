@@ -19,7 +19,9 @@ DIMENSIONS = (
 def build_release_gate(*, release_id: str, source_commit: str,
                        profile_digest: str,
                        dimensions: dict[str, dict[str, Any]],
-                       execution_evidence: list[dict[str, Any]]) -> dict[str, Any]:
+                       execution_evidence: list[dict[str, Any]],
+                       limitations: list[str] | None = None,
+                       generated_at_ms: int = 0) -> dict[str, Any]:
     evidence_status = "BLOCK"
     classification = "invalid-evidence"
     try:
@@ -53,6 +55,8 @@ def build_release_gate(*, release_id: str, source_commit: str,
         "minindnCandidateOverall": overall,
         "physicalProductionOverall": "DEFERRED",
         "physicalAcceptanceSpec": "specs/106-ndnsf-di-physical-pilot",
+        "limitations": list(limitations or []),
+        "generatedAtMs": int(generated_at_ms),
     }
 
 

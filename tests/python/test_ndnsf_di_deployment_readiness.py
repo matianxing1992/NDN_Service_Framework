@@ -578,6 +578,16 @@ class DeploymentReadinessContractsTest(unittest.TestCase):
         second = evidence("onnxruntime-cuda", real=True, artifact="sha256:b")
         self.assertEqual(classify_execution_evidence([first, second]), "invalid-evidence")
 
+    def test_disjoint_sharded_artifact_evidence_aggregates(self) -> None:
+        first = evidence_payload(evidence("onnxruntime-cpu", real=True))
+        second = evidence_payload(evidence("onnxruntime-cpu", real=True))
+        second["providerName"] = "/provider/B"
+        second["providerBootId"] = "boot-b"
+        second["roles"] = ["/LLM/Stage/1"]
+        second["artifactDigests"] = {"/LLM/Stage/1": "sha256:b"}
+        parsed = [ExecutionEvidenceV1.from_dict(item) for item in (first, second)]
+        self.assertEqual(classify_execution_evidence(parsed), "onnxruntime-cpu")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -144,11 +144,18 @@ def classify_execution_evidence(items: Iterable[ExecutionEvidenceV1]) -> str:
         return "invalid-evidence"
     for item in evidence:
         item.validate()
-    identity = {(item.real_compute, item.runner_kind, item.model_digest, item.plan_digest,
-                 tuple(sorted(item.artifact_digests.items())))
+    identity = {(item.real_compute, item.runner_kind, item.runtime_version,
+                 item.model_digest, item.plan_digest, item.device_kind)
                 for item in evidence}
     if len(identity) != 1:
         return "invalid-evidence"
+    observed_artifacts: dict[str, str] = {}
+    for item in evidence:
+        for role, digest in item.artifact_digests.items():
+            existing = observed_artifacts.get(role)
+            if existing is not None and existing != digest:
+                return "invalid-evidence"
+            observed_artifacts[role] = digest
     if not evidence[0].real_compute:
         return evidence[0].runner_kind.value
     return evidence[0].runner_kind.value
