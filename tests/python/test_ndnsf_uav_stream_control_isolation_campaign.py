@@ -30,6 +30,10 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         self.assertIsNone(campaign.campaign_child_env(False))
         env = campaign.campaign_child_env(True)
         self.assertIn("ServiceProvider=TRACE", env["NDNSF_APP_NDN_LOG"])
+        self.assertNotIn("ServiceUser=TRACE", env["NDNSF_APP_NDN_LOG"])
+        both = campaign.campaign_child_env(False, True)
+        self.assertIn("ServiceProvider=TRACE", both["NDNSF_APP_NDN_LOG"])
+        self.assertIn("ServiceUser=TRACE", both["NDNSF_APP_NDN_LOG"])
 
     def test_targeted_core_attribution_categories(self) -> None:
         campaign = load_campaign()
@@ -44,6 +48,14 @@ class UavStreamControlIsolationCampaignTest(unittest.TestCase):
         line = "[NDNSF_TRACE] role=provider event=RESPONSE_PUBLISHED requestId=/r serviceName=/S"
         self.assertEqual(campaign.trace_field(line, "requestId"), "/r")
         self.assertEqual(campaign.trace_field(line, "serviceName"), "/S")
+
+    def test_targeted_user_attribution_categories(self) -> None:
+        campaign = load_campaign()
+        classify = campaign.classify_targeted_user
+        self.assertEqual(classify("response", set()), "user-response")
+        self.assertEqual(classify("timeout", {"REQUEST_PUBLISHED"}), "request-published-no-ack")
+        self.assertEqual(classify("timeout", {"REQUEST_PUBLISHED", "ACK_RECEIVED"}), "ack-received-selection-not-published")
+        self.assertEqual(classify("timeout", {"REQUEST_PUBLISHED", "ACK_RECEIVED", "SELECTION_PUBLISHED"}), "selection-published-no-response")
 
     def test_ground_station_control_callbacks_are_serialized(self) -> None:
         source = GS_RUNTIME.read_text(encoding="utf-8")

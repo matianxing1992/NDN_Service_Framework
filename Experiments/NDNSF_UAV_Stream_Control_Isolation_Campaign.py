@@ -32,13 +32,20 @@ PROVIDER_LIFECYCLE_LOG = (
     "ndn_service_framework.*=WARN:ndn_service_framework.ServiceProvider=TRACE:"
     "ndn_service_framework.examples.*=INFO:nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN"
 )
+TARGETED_LIFECYCLE_LOG = (
+    "ndn_service_framework.*=WARN:ndn_service_framework.ServiceProvider=TRACE:"
+    "ndn_service_framework.ServiceUser=TRACE:ndn_service_framework.examples.*=INFO:"
+    "nacabe.*=WARN:ndnsvs.*=WARN:ndnsd.*=WARN"
+)
 
 
-def campaign_child_env(provider_lifecycle_trace: bool) -> dict[str, str] | None:
-    if not provider_lifecycle_trace:
+def campaign_child_env(provider_lifecycle_trace: bool,
+                       targeted_lifecycle_trace: bool = False) -> dict[str, str] | None:
+    if not provider_lifecycle_trace and not targeted_lifecycle_trace:
         return None
     env = os.environ.copy()
-    env["NDNSF_APP_NDN_LOG"] = PROVIDER_LIFECYCLE_LOG
+    env["NDNSF_APP_NDN_LOG"] = (
+        TARGETED_LIFECYCLE_LOG if targeted_lifecycle_trace else PROVIDER_LIFECYCLE_LOG)
     return env
 
 
@@ -65,6 +72,18 @@ def classify_targeted_core(terminal_phase: str, handler_phases: set[str],
 def trace_field(line: str, key: str) -> str:
     match = re.search(r"(?:^|\s)" + re.escape(key) + r"=([^\s]+)", line)
     return match.group(1) if match else ""
+
+
+def classify_targeted_user(terminal_phase: str, events: set[str]) -> str:
+    if terminal_phase == "response":
+        return "user-response"
+    if events & {"SELECTION_PUBLISHED", "COMPACT_SELECTION_PUBLISHED"}:
+        return "selection-published-no-response"
+    if events & {"ACK_RECEIVED", "ACK_MATCHED_PENDING_CALL"}:
+        return "ack-received-selection-not-published"
+    if "REQUEST_PUBLISHED" in events:
+        return "request-published-no-ack"
+    return "user-core-incomplete" if events else "user-no-core-evidence"
 LIFECYCLE_ABORT_MARKERS = (
     "terminate called without an active exception",
     "__pthread_tpp_change_priority",
@@ -175,10 +194,16 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
     auto_arm_terminal_reason = "unknown"
     arm_command_terminal_ms: int | None = None
     arm_command_terminal_phase = "unknown"
+    user_core_events: dict[str, set[str]] = {}
     armed_wait_terminal_ms: int | None = None
     armed_wait_stage = "unknown"
     for line in log_text.splitlines():
         fields = base.fields_from_line(line)
+        if "[NDNSF_TRACE]" in line and trace_field(line, "role") == "user":
+            trace_request_id = trace_field(line, "requestId")
+            if trace_request_id:
+                user_core_events.setdefault(trace_request_id, set()).add(
+                    trace_field(line, "event") or "unknown")
         if "GS_TARGETED_PHASE" in line and "phase" in fields:
             phase = fields["phase"]
             targeted_phase_counts[phase] = targeted_phase_counts.get(phase, 0) + 1
@@ -365,7 +390,11 @@ def parse_mode_run(run_dir: Path, returncode: int, command: list[str], *,
             continue
         phases = provider_telemetry_phases.get(str(attempt.get("requestId", "")), set())
         core_events = provider_core_events.get(str(attempt.get("requestId", "")), set())
+        user_events = user_core_events.get(str(attempt.get("requestId", "")), set())
         attempt["providerCoreEvents"] = sorted(core_events)
+        attempt["userCoreEvents"] = sorted(user_events)
+        attempt["userAttribution"] = classify_targeted_user(
+            str(attempt.get("terminalPhase", "")), user_events)
         attempt["coreAttribution"] = classify_targeted_core(
             str(attempt.get("terminalPhase", "")), phases, core_events)
         if attempt.get("terminalPhase") == "response":
@@ -548,6 +577,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reparse-existing", action="store_true")
     parser.add_argument("--provider-lifecycle-trace", action="store_true")
+    parser.add_argument("--targeted-lifecycle-trace", action="store_true")
     args = parser.parse_args()
     if args.runs < 1:
         raise SystemExit("--runs must be positive")
@@ -625,7 +655,8 @@ def main() -> int:
                 check=False,
                 stdout=output,
                 stderr=subprocess.STDOUT,
-                env=campaign_child_env(args.provider_lifecycle_trace),
+                env=campaign_child_env(args.provider_lifecycle_trace,
+                                       args.targeted_lifecycle_trace),
             )
         runs.append(parse_mode_run(
             run_dir,
@@ -650,6 +681,7 @@ def main() -> int:
             "bandwidthMbps": 1000,
             "automaticRetry": False,
             "providerLifecycleTrace": args.provider_lifecycle_trace,
+            "targetedLifecycleTrace": args.targeted_lifecycle_trace,
         },
         "runCount": len(runs),
         "runs": runs,
