@@ -12,6 +12,7 @@ same input prompt through:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
 import time
@@ -274,6 +275,169 @@ def benchmark_decode(fn, warmup: int, iterations: int) -> tuple[list[float], Any
     return samples, logits
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def make_staged_sessions(manifest: dict[str, Any], intra_op_threads: int):
+    import onnxruntime as ort
+
+    sessions = []
+    for stage in sorted(manifest["stages"], key=lambda item: int(item["stageIndex"])):
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        if intra_op_threads > 0:
+            opts.intra_op_num_threads = intra_op_threads
+        sessions.append((
+            stage,
+            ort.InferenceSession(
+                str(stage["path"]), sess_options=opts,
+                providers=["CPUExecutionProvider"],
+            ),
+        ))
+    return sessions
+
+
+def staged_kv_generate_once(sessions, prompt_ids: np.ndarray,
+                            max_new_tokens: int) -> tuple[list[int], list[float]]:
+    generated: list[int] = []
+    step_ms: list[float] = []
+    attention_mask = np.ones_like(prompt_ids, dtype=np.int64)
+    cache_by_stage: list[dict[str, np.ndarray]] = [dict() for _ in sessions]
+    current_ids = prompt_ids
+    for token_index in range(max_new_tokens):
+        started = time.perf_counter()
+        position_ids = np.arange(
+            attention_mask.shape[1] - current_ids.shape[1],
+            attention_mask.shape[1], dtype=np.int64,
+        )[None, :]
+        hidden_states = None
+        logits = None
+        for stage_index, (stage, session) in enumerate(sessions):
+            feed: dict[str, np.ndarray] = {
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+            }
+            if stage_index == 0:
+                feed["input_ids"] = current_ids
+            else:
+                if hidden_states is None:
+                    raise RuntimeError("staged baseline has no hidden-state input")
+                feed["hidden_states"] = hidden_states
+            for name in stage["cacheInputs"]:
+                cached = cache_by_stage[stage_index].get(name)
+                if cached is None:
+                    shape = stage["tensorContracts"][name]["shape"]
+                    cached = np.empty(
+                        (current_ids.shape[0], int(shape[1]), 0, int(shape[3])),
+                        dtype=np.float32,
+                    )
+                feed[name] = cached
+            output_names = list(stage["outputNames"])
+            values = session.run(output_names, feed)
+            outputs = dict(zip(output_names, values))
+            for input_name, output_name in zip(
+                    stage["cacheInputs"], stage["cacheOutputs"]):
+                cache_by_stage[stage_index][input_name] = outputs[output_name]
+            if stage_index + 1 == len(sessions):
+                logits = outputs["logits"]
+            else:
+                hidden_states = outputs["hidden_states_out"]
+        if logits is None:
+            raise RuntimeError("staged baseline produced no logits")
+        token = int(np.argmax(logits[:, -1, :], axis=-1)[0])
+        generated.append(token)
+        step_ms.append((time.perf_counter() - started) * 1000.0)
+        current_ids = np.asarray([[token]], dtype=np.int64)
+        attention_mask = np.concatenate(
+            [attention_mask, np.ones((attention_mask.shape[0], 1), dtype=np.int64)],
+            axis=1,
+        )
+    return generated, step_ms
+
+
+def run_matched_staged_baseline(args) -> int:
+    import onnxruntime as ort
+    from transformers import AutoTokenizer
+
+    manifest_path = Path(args.qwen_service_manifest).expanduser().resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        local_files_only=not args.allow_download,
+        trust_remote_code=True,
+    )
+    prompt = repeated_prompt(args.prompt, args.prompt_repeat)
+    prompt_ids = tokenizer(prompt, return_tensors="np")["input_ids"].astype(np.int64)
+    sessions = make_staged_sessions(manifest, args.intra_op_threads)
+    for _ in range(max(0, args.warmup)):
+        staged_kv_generate_once(sessions, prompt_ids, args.max_new_tokens)
+    totals: list[float] = []
+    ttft: list[float] = []
+    inter_token: list[float] = []
+    sequences: list[list[int]] = []
+    for _ in range(max(1, args.iterations)):
+        generated, steps = staged_kv_generate_once(
+            sessions, prompt_ids, args.max_new_tokens)
+        sequences.append(generated)
+        totals.append(sum(steps))
+        ttft.append(steps[0])
+        inter_token.extend(steps[1:])
+    if any(sequence != sequences[0] for sequence in sequences[1:]):
+        raise RuntimeError("matched staged baseline is not token deterministic")
+    artifacts = []
+    for stage in manifest["stages"]:
+        path = Path(stage["path"])
+        artifacts.append({
+            "role": stage["role"],
+            "path": str(path),
+            "sha256": sha256_file(path),
+            "declaredSha256": "sha256:" + str(stage["sha256"]),
+        })
+    summary = {
+        "schema": "ndnsf-di-qwen-matched-single-node-baseline-v1",
+        "model": args.model,
+        "modelRevision": manifest.get("modelRevision", ""),
+        "tokenizer": manifest.get("tokenizer", args.model),
+        "prompt": prompt,
+        "inputTokenIds": prompt_ids.tolist(),
+        "inputTokenCount": int(prompt_ids.shape[1]),
+        "generation": {"strategy": "greedy", "batch": 1,
+                       "maxNewTokens": int(args.max_new_tokens)},
+        "generatedTokens": sequences[0],
+        "warmup": max(0, args.warmup),
+        "iterations": max(1, args.iterations),
+        "backend": "onnxruntime-cpu",
+        "runtimeVersion": ort.__version__,
+        "providers": ort.get_available_providers(),
+        "logging": "INFO",
+        "serviceManifest": str(manifest_path),
+        "serviceManifestSha256": sha256_file(manifest_path),
+        "artifacts": artifacts,
+        "total": summarize(totals),
+        "ttft": summarize(ttft),
+        "interToken": summarize(inter_token),
+    }
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = output_dir / "qwen-matched-single-node-summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        "QWEN_MATCHED_SINGLE_NODE_OK",
+        f"tokens={json.dumps(sequences[0], separators=(',', ':'))}",
+        f"total_p50_ms={summary['total']['p50Ms']:.2f}",
+        f"ttft_p50_ms={summary['ttft']['p50Ms']:.2f}",
+        f"inter_token_p50_ms={summary['interToken']['p50Ms']:.2f}",
+        f"summary={summary_path}",
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -288,7 +452,14 @@ def main() -> int:
     parser.add_argument("--onnx-path", default="")
     parser.add_argument("--intra-op-threads", type=int, default=0)
     parser.add_argument("--decode-tokens", type=int, default=0)
+    parser.add_argument("--qwen-service-manifest", default="")
+    parser.add_argument("--max-new-tokens", type=int, default=32)
     args = parser.parse_args()
+
+    if args.max_new_tokens < 1 or args.max_new_tokens > 32:
+        raise SystemExit("--max-new-tokens must be between 1 and 32")
+    if args.qwen_service_manifest:
+        return run_matched_staged_baseline(args)
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
